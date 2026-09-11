@@ -3623,7 +3623,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     }
 
     Ok(ExportPlan {
-        image: writer.finish(),
+        image: writer.finish()?,
         contents,
         skipped_special,
     })

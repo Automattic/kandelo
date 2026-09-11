@@ -66,6 +66,23 @@ const SB_INODE_BITMAP_BLOCKS: usize = 44;
 const SB_BLOCK_BITMAP_BLOCKS: usize = 48;
 const SB_INODE_TABLE_BLOCKS: usize = 52;
 const SB_GENERATION: usize = 56;
+/// Inode holding the deferred-file section ("SDEF"), or 0 when the image
+/// declares no deferred files.
+///
+/// The section is stored as an ordinary inode's data — it needs block
+/// addressing, growth and indirect blocks, and the format already has all
+/// three for files, so this reuses `inode_block_map`, the allocator, and both
+/// readers verbatim instead of adding a second way to address blocks. The
+/// inode is deliberately unlinked: no directory entry points at it, so it is
+/// invisible to every path lookup and every directory walk.
+///
+/// A consistency checker must consult THIS FIELD before judging reachability.
+/// An unlinked inode with `nlink = 1` looks like a leak to a checker that only
+/// walks directories, and the reason it is not one is that the superblock
+/// names it. That is why the field exists rather than, say, a flag on the
+/// inode: reachability is decided from the superblock, which a checker reads
+/// first, so the inode can never be silently reclaimed as garbage.
+const SB_DEFERRED_INODE: usize = 76;
 const SB_MAX_SIZE_BLOCKS: usize = 68;
 const SB_GROW_CHUNK_BLOCKS: usize = 72;
 
@@ -215,6 +232,7 @@ pub struct SffsWriter {
     inode_table: Vec<u8>,
     blocks: BTreeMap<u32, BlockContent>,
     dir_indexes: BTreeMap<u32, Vec<FreeSlot>>,
+    deferred: Vec<crate::sffs_deferred::DeferredRecord>,
 }
 
 fn w32(buf: &mut [u8], off: usize, value: u32) {
@@ -318,6 +336,7 @@ impl SffsWriter {
             inode_table: vec![0u8; inode_table_blocks as usize * BLOCK_SIZE],
             blocks: BTreeMap::new(),
             dir_indexes: BTreeMap::new(),
+            deferred: Vec::new(),
         };
 
         for b in 0..data_start {
@@ -1026,6 +1045,70 @@ impl SffsWriter {
         self.ino_w32(ino, INO_DATA_SEQUENCE, seq);
     }
 
+    /// Create a file whose CONTENTS the image does not carry.
+    ///
+    /// The body gets a real inode with real metadata and no data, and the
+    /// deferred section gets a record saying how big the file actually is and
+    /// carrying the opaque description of where to get it. One writer produces
+    /// both, in one artifact, so they cannot disagree — which is the whole
+    /// reason the record lives here rather than in a separate section written
+    /// by somebody else.
+    ///
+    /// `payload` is never interpreted. See [`crate::sffs_deferred`].
+    pub fn create_deferred_file(
+        &mut self,
+        parent: u32,
+        name: &[u8],
+        mode: u32,
+        size: u64,
+        payload: &[u8],
+    ) -> Result<u32, Errno> {
+        if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+            return Err(Errno::EINVAL);
+        }
+        let ino = self.create_file(parent, name, mode, Content::Bytes(b""))?;
+        self.deferred.push(crate::sffs_deferred::DeferredRecord {
+            ino,
+            size,
+            payload: payload.to_vec(),
+        });
+        Ok(ino)
+    }
+
+    /// Write the deferred section into an unlinked inode and name it in the
+    /// superblock. Returns the inode, or 0 when nothing is deferred — in which
+    /// case not one block is allocated and the image is byte-identical to one
+    /// built before this section existed.
+    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {
+        if self.deferred.is_empty() {
+            return Ok(0);
+        }
+        // `encode` requires ascending inodes. Allocation already produces them
+        // in that order, so this sort is a belt on braces rather than a fix —
+        // but it means a future caller that creates deferred files out of
+        // order gets a correct image instead of a rejected one.
+        let mut records = core::mem::take(&mut self.deferred);
+        records.sort_by_key(|record| record.ino);
+        let section = crate::sffs_deferred::encode(&records)?;
+
+        let ino = self.inode_alloc()?;
+        let now = self.now_ms;
+        // Mode 0: nothing may open it even if something contrives a path to
+        // it. There is no such path — no directory entry references this
+        // inode — but the permission bits should not be the only thing
+        // standing between a guest and the image's own metadata.
+        self.ino_w32(ino, INO_MODE, S_IFREG);
+        // `nlink = 1` with no directory entry. See `SB_DEFERRED_INODE` for why
+        // that is not a leak and what a consistency checker owes it.
+        self.ino_w32(ino, INO_LINK_COUNT, 1);
+        self.ino_w64(ino, INO_SIZE, 0);
+        self.ino_w64(ino, INO_ATIME, now);
+        self.ino_w64(ino, INO_MTIME, now);
+        self.ino_w64(ino, INO_CTIME, now);
+        self.write_content(ino, Content::Bytes(&section))?;
+        Ok(ino)
+    }
+
     pub fn symlink(&mut self, parent: u32, name: &[u8], target: &[u8]) -> Result<u32, Errno> {
         self.precheck(parent, name)?;
         if target.is_empty() {
@@ -1138,7 +1221,11 @@ impl SffsWriter {
     }
 
     /// Seal the filesystem and hand back an offset-addressable image.
-    pub fn finish(self) -> SffsImage {
+    ///
+    /// Fallible now, because sealing writes the deferred section. An image
+    /// with no deferred files cannot fail here and allocates nothing extra.
+    pub fn finish(mut self) -> Result<SffsImage, Errno> {
+        let deferred_inode = self.emit_deferred_section()?;
         let mut superblock = vec![0u8; BLOCK_SIZE];
         w32(&mut superblock, SB_MAGIC, SFFS_MAGIC);
         w32(&mut superblock, SB_VERSION, SFFS_VERSION);
@@ -1177,8 +1264,11 @@ impl SffsWriter {
         w32(&mut superblock, SB_GENERATION, self.generation);
         w32(&mut superblock, SB_MAX_SIZE_BLOCKS, self.max_blocks);
         w32(&mut superblock, SB_GROW_CHUNK_BLOCKS, GROW_CHUNK_BLOCKS);
+        // Zero when nothing is deferred, which is what every image written
+        // before this section existed already has here.
+        w32(&mut superblock, SB_DEFERRED_INODE, deferred_inode);
 
-        SffsImage {
+        Ok(SffsImage {
             superblock,
             inode_bitmap: self.inode_bitmap,
             block_bitmap: self.block_bitmap,
@@ -1189,7 +1279,7 @@ impl SffsWriter {
             block_bitmap_start: self.block_bitmap_start,
             inode_table_start: self.inode_table_start,
             data_start: self.data_start,
-        }
+        })
     }
 }
 
@@ -1499,7 +1589,7 @@ mod tests {
             0,
         );
 
-        (w.finish(), content)
+        (w.finish().expect("finish"), content)
     }
 
     fn build_small() -> (SffsImage, Slices) {
@@ -1557,7 +1647,7 @@ mod tests {
             0,
         );
 
-        (w.finish(), content)
+        (w.finish().expect("finish"), content)
     }
 
     /// Reports where two images first differ, with enough context to name the
@@ -1637,7 +1727,7 @@ mod tests {
             let name = format!("s{i}").into_bytes();
             write_file(&mut w, slots, &name, Content::Bytes(b""), 0o644, 0, 0);
         }
-        w.finish()
+        w.finish().expect("finish")
     }
 
     #[test]
@@ -1713,7 +1803,7 @@ mod tests {
         for i in 0..6000usize {
             write_file(&mut w, tail, &name4(i), Content::Bytes(b""), 0o644, 0, 0);
         }
-        w.finish()
+        w.finish().expect("finish")
     }
 
     #[test]
@@ -1797,7 +1887,7 @@ mod tests {
             0,
             0,
         );
-        let image = w.finish();
+        let image = w.finish().expect("finish");
         let actual = image.to_vec(&NoContent).expect("emit");
         assert!(
             first_difference(&actual, &expected).is_some(),
@@ -2072,7 +2162,7 @@ mod tests {
         // One generation bump per grow, plus one per inode allocated.
         assert_eq!(w.generation, generation_before + grows + 1);
 
-        let image = w.finish();
+        let image = w.finish().expect("finish");
         // The grown image is still mountable and the file still reads back.
         let source = SffsImageSource {
             image: &image,
@@ -2115,7 +2205,7 @@ mod tests {
             .create_file(root, b"f", 0o644, Content::Bytes(b"x"))
             .expect("create");
         w.set_times(ino, 111, 222, 333);
-        let image = w.finish();
+        let image = w.finish().expect("finish");
         let source = SffsImageSource {
             image: &image,
             content: &NoContent,
@@ -2124,4 +2214,174 @@ mod tests {
         let st = fs.stat_ino(ino).expect("stat");
         assert_eq!((st.atime_ms, st.mtime_ms, st.ctime_ms), (111, 222, 333));
     }
+
+    // ── Deferred files carried in the body ───────────────────────────
+
+    #[test]
+    fn a_deferred_file_round_trips_through_the_existing_reader() {
+        // One writer produces the stub and the record, in one artifact, so the
+        // two cannot disagree. That is the whole reason the record lives in
+        // the body instead of a separate section written by somebody else.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        let url: &[u8] = b"https://example.invalid/big.bin";
+        let deferred = w
+            .create_deferred_file(root, b"big.bin", 0o644, 4242, url)
+            .expect("deferred");
+        write_file(&mut w, root, b"present", Content::Bytes(b"here"), 0o600, 0, 0);
+        let image = w.finish().expect("finish");
+
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+
+        // The stub is a real, ordinary file in the tree.
+        let ino = fs.resolve(b"/big.bin", true).expect("resolve");
+        assert_eq!(ino, deferred);
+        assert_eq!(fs.stat_ino(ino).unwrap().mode, 0x8000 | 0o644);
+
+        let section = fs
+            .deferred_section()
+            .expect("read section")
+            .expect("section present");
+        assert_eq!(section.len(), 1);
+        let record = section.get(deferred).expect("record for the stub");
+        assert_eq!(record.size, 4242);
+        assert_eq!(record.payload, url);
+
+        // The ordinary file is not in the section.
+        let present = fs.resolve(b"/present", true).unwrap();
+        assert!(section.get(present).is_none());
+    }
+
+    #[test]
+    fn an_image_with_no_deferred_files_carries_no_section_and_costs_nothing() {
+        // The common case must not pay for the rare one. An image that defers
+        // nothing allocates no extra block and writes a zero in the superblock
+        // — which is exactly what every image written before this section
+        // existed already has there.
+        let mut plain = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = plain.root();
+        write_file(&mut plain, root, b"f", Content::Bytes(b"x"), 0o644, 0, 0);
+        let plain = plain.finish().expect("finish");
+
+        let bytes = plain.to_vec(&NoContent).expect("emit");
+        assert_eq!(
+            u32::from_le_bytes([bytes[76], bytes[77], bytes[78], bytes[79]]),
+            0,
+            "no section means a zero in the superblock"
+        );
+
+        let source = SffsImageSource {
+            image: &plain,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+        assert!(fs.deferred_section().expect("no section").is_none());
+    }
+
+    #[test]
+    fn the_section_inode_is_unreachable_by_name() {
+        // The inode holding the section is deliberately unlinked. Nothing in
+        // the directory tree points at it, so no path resolves to it and no
+        // directory walk returns it — the superblock is the only thing that
+        // names it.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_deferred_file(root, b"a", 0o644, 10, b"u")
+            .expect("deferred");
+        let image = w.finish().expect("finish");
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+
+        let names: Vec<Vec<u8>> = fs
+            .read_dir(ROOT_INO)
+            .expect("read_dir")
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names.len(), 3, "., .. and a — nothing else");
+        assert!(names.iter().any(|n| n == b"a"));
+
+        // It is nonetheless a live inode, because the superblock names it.
+        // A consistency checker that walks only directories would call this a
+        // leak; it must read the superblock field first.
+        let section_ino = fs.geometry().deferred_inode;
+        assert!(section_ino != 0);
+        assert_eq!(fs.stat_ino(section_ino).unwrap().nlink, 1);
+    }
+
+    #[test]
+    fn many_deferred_files_keep_their_own_payloads() {
+        // Records are keyed by inode and looked up by binary search, so a
+        // mixed tree must not cross payloads between files.
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 1024 * 1024,
+            max_size_bytes: Some(8 * 1024 * 1024),
+            growable_to_bytes: 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let root = w.root();
+        let dir = w.mkdir(root, b"d", 0o755).expect("mkdir");
+        let mut expected = alloc::vec::Vec::new();
+        for i in 0..64usize {
+            let name = format!("f{i}").into_bytes();
+            let payload = format!("https://example.invalid/{i}").into_bytes();
+            let parent = if i % 2 == 0 { root } else { dir };
+            // Interleave ordinary files so the stubs are not contiguous.
+            if i % 3 == 0 {
+                let ordinary = format!("o{i}").into_bytes();
+                write_file(&mut w, parent, &ordinary, Content::Bytes(b"z"), 0o644, 0, 0);
+            }
+            let ino = w
+                .create_deferred_file(parent, &name, 0o644, i as u64 * 1000, &payload)
+                .expect("deferred");
+            expected.push((ino, i as u64 * 1000, payload));
+        }
+        let image = w.finish().expect("finish");
+        let source = SffsImageSource {
+            image: &image,
+            content: &NoContent,
+        };
+        let fs = Sffs::mount(source).expect("mount");
+        let section = fs.deferred_section().unwrap().expect("section");
+        assert_eq!(section.len(), 64);
+        for (ino, size, payload) in expected {
+            let record = section.get(ino).expect("record");
+            assert_eq!(record.size, size);
+            assert_eq!(record.payload, payload, "payload for inode {ino}");
+        }
+    }
+
+    #[test]
+    fn a_corrupt_section_is_refused_rather_than_half_read() {
+        // The section is untrusted input: an image can arrive from a shared
+        // link. A damaged section must fail the read, not yield some records.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_deferred_file(root, b"a", 0o644, 10, b"payload")
+            .expect("deferred");
+        let image = w.finish().expect("finish");
+        let mut bytes = image.to_vec(&NoContent).expect("emit");
+
+        // Find the section by its magic and break it.
+        let at = bytes
+            .windows(4)
+            .position(|w| w == b"SDEF")
+            .expect("section is in the image");
+        bytes[at + 8] ^= 0xff; // record count
+
+        let fs = Sffs::mount(bytes.as_slice()).expect("mount");
+        assert!(
+            fs.deferred_section().is_err(),
+            "a corrupt section must be refused"
+        );
+    }
+
 }

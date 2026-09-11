@@ -255,6 +255,7 @@ pub struct Sffs<S: BlockSource> {
     source: S,
     pub(crate) inode_table_start: u32,
     total_inodes: u32,
+    deferred_inode: u32,
 }
 
 /// The superblock facts a mounted [`Sffs`] keeps, separated from the source so
@@ -270,9 +271,19 @@ pub struct Sffs<S: BlockSource> {
 pub struct SffsGeometry {
     pub inode_table_start: u32,
     pub total_inodes: u32,
+    /// Inode holding the deferred-file section, or 0 when the image declares
+    /// none. Carried here for the same reason the other two are: a caller that
+    /// mounts once and re-addresses the filesystem later should not have to
+    /// re-read and re-validate the superblock to find it.
+    pub deferred_inode: u32,
 }
 
 pub(crate) const SB_TOTAL_INODES: u64 = 16;
+/// Inode holding the deferred-file section, or 0. See
+/// [`crate::sffs_deferred`] for the section, and the writer's own
+/// `SB_DEFERRED_INODE` for why a consistency checker must read this field
+/// before judging that inode unreachable.
+const SB_DEFERRED_INODE: u64 = 76;
 
 impl<S: BlockSource> Sffs<S> {
     pub fn mount(source: S) -> Result<Sffs<S>, Errno> {
@@ -297,7 +308,11 @@ impl<S: BlockSource> Sffs<S> {
             .checked_mul(BLOCK_SIZE as u64)
             .ok_or(Errno::EINVAL)?;
         if table_end > source.len() { return Err(Errno::EINVAL); }
-        Ok(Sffs { source, inode_table_start, total_inodes })
+        // Read unvalidated: 0 means "no section", which is what every image
+        // written before this field existed carries here, so an older image
+        // reads as having none rather than as corrupt.
+        let deferred_inode = source_u32(&source, SB_DEFERRED_INODE).map_err(container_errno)?;
+        Ok(Sffs { source, inode_table_start, total_inodes, deferred_inode })
     }
 
     /// The validated superblock geometry of this mount.
@@ -305,6 +320,7 @@ impl<S: BlockSource> Sffs<S> {
         SffsGeometry {
             inode_table_start: self.inode_table_start,
             total_inodes: self.total_inodes,
+            deferred_inode: self.deferred_inode,
         }
     }
 
@@ -321,6 +337,7 @@ impl<S: BlockSource> Sffs<S> {
             source,
             inode_table_start: geometry.inode_table_start,
             total_inodes: geometry.total_inodes,
+            deferred_inode: geometry.deferred_inode,
         }
     }
 
@@ -482,6 +499,33 @@ impl<S: BlockSource> Sffs<S> {
             if e.name == name { return Ok(e.ino); }
         }
         Err(Errno::ENOENT)
+    }
+
+    /// The image's deferred-file section, or `None` when it declares none.
+    ///
+    /// Reads the unlinked inode the superblock names and parses it. The
+    /// payload inside each record is returned untouched — see
+    /// [`crate::sffs_deferred`] for why this layer refuses to look inside it.
+    ///
+    /// An image written before this section existed carries 0 in the
+    /// superblock field and reads as `None`, not as corrupt.
+    pub fn deferred_section(&self) -> Result<Option<crate::sffs_deferred::DeferredSection>, Errno> {
+        if self.deferred_inode == 0 {
+            return Ok(None);
+        }
+        let stat = self.stat_ino(self.deferred_inode)?;
+        // The section is metadata the image carries about itself, so its size
+        // is bounded by the image; a size past that is corruption, not a large
+        // section, and must not drive an allocation.
+        if stat.size > self.source.len() {
+            return Err(Errno::EINVAL);
+        }
+        let mut buf = alloc::vec![0u8; stat.size as usize];
+        let read = self.read_at(self.deferred_inode, 0, &mut buf)?;
+        if read as u64 != stat.size {
+            return Err(Errno::EINVAL);
+        }
+        crate::sffs_deferred::decode(&buf).map(Some)
     }
 
     /// Reads a symlink's target. Short targets (`size <= 40`) are stored
