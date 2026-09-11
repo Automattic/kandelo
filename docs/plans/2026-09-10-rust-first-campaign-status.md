@@ -2416,6 +2416,21 @@ All inside `./scripts/dev-shell.sh`, vitest from `host/` via
   1 failed — the same file (`host-owned-process-reap`) and the same two
   cases. 63 passed / 2 failed of 65. The base was measured minutes before,
   not inherited.
+- **Nine worker-lifecycle/entry suites, before and after, in this worktree:**
+  **16 failed / 102 passed of 118 at BOTH** `d6f4f188f` and the tip — the
+  same six files (`environment-lifecycle`, `ordinary-process-exit`,
+  `process-wait-lifecycle`, `spawn-credential-order`, `spawn-pid-authority`,
+  `vfork-lifecycle-guest`) and the same counts. Five of the six are the
+  pre-existing set this plan already names. The sixth,
+  `vfork-lifecycle-guest`, fails at *both* revisions with
+  `rootfsImage:"default" requested but no rootfs image was available` — it
+  never collects a test, because this worktree has no `host/wasm/rootfs.vfs`.
+  That is provisioning, not a regression, and it means **the suite the
+  previous tranche called the gate for exactly this kind of change did not
+  execute here either.** `./run.sh rebuild rootfs` was started to close that
+  and did not finish within the session; it builds the rootfs package set
+  from source (sudo, bash, ncurses, …) and is far longer than the plan's
+  provisioning list implies.
 - **Browser: NOT run.** Every group here has a browser half that Node cannot
   execute: the exec retirement predicate's alias release, the fabricated
   `exit` event and its latch, `handleInit`'s side-module compilation and
