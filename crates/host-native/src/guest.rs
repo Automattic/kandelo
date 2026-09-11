@@ -13007,6 +13007,21 @@ fn marshal_in(
                 }
                 n + 1 // include the NUL
             }
+            // A caller-native record: the byte count is a property of the
+            // CALLING PROCESS's data model, not of this syscall's arguments.
+            // The rule is the one `host/src/kernel-worker.ts` applies
+            // (`pointerWidth === 8 ? wasm64Size : wasm32Size`), and the kernel
+            // selects the matching parse from the same process's registered
+            // pointer width on its side of the channel.
+            //
+            // This host instantiates wasm32 guests only — `parse_guest_module`
+            // rejects any other `ptr_width` at load — so the caller's model is
+            // always ILP32 and the wasm32 size is the correct selection. That
+            // assumption is the same one the `KernelDereferenced` arm above
+            // already documents. A wasm64 guest cannot reach here today; if
+            // this host ever instantiates one, this must read that process's
+            // registered width instead of resolving the width statically.
+            SyscallArgSize::ProcessLayout { wasm32_size, .. } => wasm32_size as usize,
             other => anyhow::bail!("syscall {syscall_nr}: unsupported arg size {other:?}"),
         };
         if d.nullable && guest_ptr == 0 {

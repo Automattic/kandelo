@@ -3167,4 +3167,146 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Every syscall number whose descriptor carries a caller-native
+    /// (`ProcessLayout`) record, derived from the authoritative table rather
+    /// than listed by hand.
+    ///
+    /// The hand-listing is exactly the mistake this item exists to prevent:
+    /// these syscalls share no identifier, so the census that missed them
+    /// missed them by sweeping comments. Anything that reads the set must read
+    /// it from `SYSCALL_ARG_DESCRIPTORS`, the way
+    /// `crates/shared/src/host_abi.rs` derives its own reviewed-set
+    /// assertions.
+    fn process_layout_syscall_numbers() -> Vec<u32> {
+        use wasm_posix_shared::host_abi::{SyscallArgSize, SYSCALL_ARG_DESCRIPTORS};
+
+        SYSCALL_ARG_DESCRIPTORS
+            .iter()
+            .filter(|entry| {
+                entry
+                    .args
+                    .iter()
+                    .any(|arg| matches!(arg.size, SyscallArgSize::ProcessLayout { .. }))
+            })
+            .map(|entry| entry.syscall_number)
+            .collect()
+    }
+
+    /// Run `native_process_layout.wasm` once, shared by the coverage test and
+    /// the descriptor-derived guard below so the fixture is not executed twice.
+    fn run_process_layout_fixture(path: &Path) -> anyhow::Result<RunOutcome> {
+        let guest = include_bytes!("../fixtures/native_process_layout.wasm");
+        run_trivial_guest(path, guest)
+    }
+
+    /// B24: the caller-native record syscalls, driven through the REAL channel
+    /// against the REAL kernel.
+    ///
+    /// Twelve-plus syscalls carry a pointer argument whose record size is a
+    /// property of the calling process's data model. Host and kernel must pick
+    /// the same size, and until this test nothing checked that agreement
+    /// through the channel: `runtime-core`'s tests call `syscalls::` directly,
+    /// below the dispatcher where a pointer-width regression lived, and the
+    /// TypeScript host suites mock `kernel_handle_channel`. A regression that
+    /// returned EINVAL to every caller of all of them left 257 Vitest files,
+    /// 54 host-native smoke tests and 1,952 runtime-core tests green.
+    ///
+    /// The fixture checks a plausible RECORD for each, not merely a non-error
+    /// return, and guards the EXTENT of every output record with a trailing
+    /// canary -- so a wasm32 caller served the (doubled) wasm64 size for
+    /// `stack_t`, `struct itimerval` or `struct mq_attr` is caught here too,
+    /// not only by a wasm64 guest. See `fixtures/native_process_layout.c` for
+    /// what each exit code means.
+    #[test]
+    fn smoke_process_layout_records_through_channel() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+
+        let outcome = run_process_layout_fixture(&path)?;
+
+        assert_eq!(
+            outcome.exit_code,
+            0,
+            "guest exit code (each nonzero code names one syscall and one \
+             failed property in fixtures/native_process_layout.c) \
+             (stdout: {:?}, stderr: {:?}, trace: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+            outcome.syscall_trace,
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.stdout),
+            concat!(
+                "statfs: bsize=4096 frsize=4096 namelen=255 blocks=262144\n",
+                "fstatfs: bsize=4096 namelen=255 blocks=262144\n",
+                "sysinfo: totalram=536870912 freeram=268435456 procs=1 unit=1\n",
+                "sigaltstack: installed size=65536 readback=65536\n",
+                "setitimer: old record cleared\n",
+                "getitimer: record cleared\n",
+                "timer_create: created from sigevent\n",
+                "rt_sigqueueinfo+rt_sigtimedwait: signo=12 sival=4242\n",
+                "mq_open+mq_getsetattr: maxmsg=4 msgsize=32 curmsgs=0\n",
+                "mq_notify: registered from sigevent\n",
+                "waitid: ENOSYS (still TypeScript-host-owned)\n",
+            ),
+            "the fixture's per-syscall record report must match exactly; the \
+             values are the kernel's own compiled-in constants (rootfs::statfs, \
+             sys_sysinfo) or values the guest supplied earlier in the same run",
+        );
+        assert!(outcome.stderr.is_empty(), "guest wrote unexpected stderr");
+        Ok(())
+    }
+
+    /// B24's self-extending half: the fixture's exercised set must COVER the
+    /// descriptor table.
+    ///
+    /// A hand-written list of the caller-native syscalls would repeat the
+    /// census mistake that created this hole. Instead the required set comes
+    /// from `SYSCALL_ARG_DESCRIPTORS`, and the exercised set comes from the
+    /// fixture's real syscall trace -- so adding a `ProcessLayout` descriptor
+    /// without driving it from `native_process_layout.c` fails the build here,
+    /// naming the syscall number that has no coverage.
+    ///
+    /// The trace says a syscall was DISPATCHED; the sibling test above is what
+    /// says each one produced a correct record. Both are needed: neither alone
+    /// would stop a descriptor being added with a call but no assertion, or an
+    /// assertion added for a syscall that never reached the kernel.
+    #[test]
+    fn process_layout_descriptors_are_all_exercised() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+
+        let outcome = run_process_layout_fixture(&path)?;
+        let exercised: std::collections::BTreeSet<u32> =
+            outcome.syscall_trace.iter().copied().collect();
+
+        let required = process_layout_syscall_numbers();
+        assert!(
+            !required.is_empty(),
+            "no ProcessLayout descriptors found -- the derivation is reading \
+             the wrong table"
+        );
+
+        let missing: Vec<u32> = required
+            .iter()
+            .copied()
+            .filter(|nr| !exercised.contains(nr))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these syscalls carry a SyscallArgSize::ProcessLayout descriptor \
+             but are never dispatched by fixtures/native_process_layout.c, so \
+             their caller-native record size is not covered through the \
+             channel: {missing:?}\n  Add a call (and a plausible-record \
+             assertion) to that fixture, rebuild it with \
+             crates/host-native/fixtures/build-fixtures.sh, and extend the \
+             expected output block in \
+             smoke_process_layout_records_through_channel.\n  Exercised set \
+             from the fixture's trace: {exercised:?}",
+        );
+        Ok(())
+    }
 }
