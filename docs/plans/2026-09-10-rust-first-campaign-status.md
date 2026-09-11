@@ -3232,54 +3232,73 @@ Either way **the enforcement matters more than the fix**: a per-realm
 initialisation contract with no check is what produced four unrelated-looking
 bugs from one deletion.
 
-### B26 — the host suite cannot reliably finish, and it is the ship gate
+### B26 — CLOSED. The exit-144 kills are not the test suite
 
-**Measured, not impressionistic.** Three full `vitest run` invocations from
-`host/` were killed with **exit 144**, one of them during global setup with
-nothing else running on the machine. The two that completed took roughly **24
-minutes of test time** each. The agent that measured it put it as *"roughly a
-coin flip to survive."*
+**This entry was written wrong twice, with two different confident causes, and
+the corrections are the useful part.**
 
-That is a ship-gate problem rather than a nuisance. The maintainer intends to
-ship on a green host suite; **a gate that cannot reliably complete is not a
-gate**, and every attribution argument above depends on being able to run the
-suite twice.
+- *First version:* "the host suite cannot reliably finish, and it is the ship
+  gate" — three runs killed, framed as a coin flip.
+- *Second version:* cause identified as cross-agent contention, on the strength
+  of nine concurrent vitest processes.
+- **Both wrong.**
 
-**Cause identified 2026-09-11: cross-agent contention, not memory.** A fourth
-death was diagnosed rather than retried. `pgrep` showed **nine vitest processes
-running, several belonging to a different agent's worktree**, and the last two
-deaths occurred *at startup with 73% of memory free* — so it is not the running
-agent's own footprint. The machine is shared and several agents run full suites
-concurrently, each taking ~24 minutes.
+**The decisive observation.** Two of the tasks that exited 144 contained **no
+Vitest, no Node, no Nix and no Wasm**. They were pure Bash:
 
-Ruled out or demoted:
+    until grep -aq "Test Files" "$F"; do sleep 20; done
 
-- **Memory pressure** — 73% free at the moment of death.
-- **Worker count** — a retry at `--maxWorkers=3` died too, so the local default
-  of 4 is not the whole story.
-- The `SIGURG` reading of 128+16 remains unexplained but is now secondary: the
-  correlation with concurrent runs is much stronger than any signal-number
-  theory.
+Both produced **zero bytes of output** and both ended `[exited with code 144]`.
+A Vitest pool watchdog, a Node OOM, a Nix failure, memory pressure and
+cross-agent contention are *all* excluded by that one fact: none of them can
+reach an idle `sleep` loop. The coordinator's own waiter task died the same way
+and was read as the suite failing.
 
-**The coordination rule this implies, now standing:** *at most one full host
-Vitest on this machine at a time, across all agents and the coordinator.* Agent
-briefs should say so. Targeted suites are fine concurrently; a 427-file run is
-not. The coordinator has already paid for ignoring the general form of this
-rule twice tonight — a false `xtask` byte-identity failure that passes 2/2 in
-isolation, and a `./run.sh setup` writing into a live agent's isolated cache
-root while cargo reported "Blocking waiting for file lock on package cache".
+Supporting measurements taken while kills were happening: **73% memory free**,
+703 user processes against a `kern.maxprocperuid` of 8000, fd limit 1048576.
+Nothing near exhaustion. The kills cluster in *time*, not at a threshold — and
+the two runs that completed each ran about half an hour, so it is not a lifetime
+cap either.
 
-The agent that diagnosed it **declined to start a fifth run**, on the grounds
-that it would degrade a sibling's work for a number obtainable another way.
-That is the right call and the reason the cause got found at all.
+**It is a background-task termination in the agent harness**, and nothing in the
+repository can observe the trigger. That is recorded as an unknown rather than
+dressed up, precisely because every plausible story is one the evidence rules
+out.
 
-**This outranks individual migration items right now.** A reliable end-to-end
-run of this suite is worth more than any single deletion, because without it the
-campaign cannot make the claim it intends to ship on. Adjacent evidence:
-concurrency also produced two *false* failures for the coordinator tonight — an
+### What this actually means for the gate
+
+**Every run that was not externally killed, finished.** Two produced complete
+results (~24 minutes of test time each). A third died in global setup from a
+diagnosed, reproducible cause:
+`cargo run -p xtask -- build-deps program-index` is **not safe against a
+concurrent `cargo` in the same checkout**. The suite never once failed to
+complete on its own merits.
+
+So the operational guidance is small, and the ship gate is intact:
+
+1. **Nothing else may touch `cargo` while the suite runs.** That killed one of
+   six attempts, and it is the only self-inflicted failure in the set.
+2. **An exit 144 carries no test information.** Do not read it as a failure;
+   re-run.
+3. **Budget ~25 minutes**, plus fixture builds in a cold worktree.
+
+A gate that occasionally needs a retry is a far smaller problem than a gate that
+cannot complete. The evidence says this is the former.
+
+**The coordination rule from the second version is withdrawn as a diagnosis but
+kept as hygiene:** concurrent full suites still contend for the cargo lock, and
+the coordinator produced two false failures tonight by ignoring that — an
 `xtask` byte-identity test that passes 2/2 in isolation, and a `./run.sh setup`
-that was writing into a live agent's isolated cache root while cargo reported
-"Blocking waiting for file lock on package cache".
+writing into a live agent's cache root. Serialise full runs because of the cargo
+rule above, not because of 144.
+
+### One detail the attribution method must not lose
+
+What made the controlled baseline work was staging **each side's own kernel**.
+Reusing one branch's `kernel.wasm` against the other's host code manufactures
+failures — that kernel exports `kernel_set_process_pointer_width` and no longer
+stamps slot 5 — and produces a confident, wrong attribution. That is the step
+most likely to be skipped by whoever applies the method next.
 
 ### HOW TO ATTRIBUTE A FAILURE IN THIS SUITE — the method, and why totals lie
 
