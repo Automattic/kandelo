@@ -62,6 +62,21 @@ BASIC_EXPECTED_FAIL=(
     "unistd/fpathconf" "unistd/pathconf"                  # _PC_FILESIZEBITS is truthfully indeterminate until
                                                           # the selected VFS backend can prove a bit width
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)
+    # ── System V IPC gaps these tests were written to expose ──
+    # Both are real POSIX gaps in Kandelo, not test bugs, and both are
+    # asserted against the POSIX semantic rather than today's behaviour, so
+    # each becomes an XPASS -- which this runner treats as an error -- the
+    # moment the gap closes. See docs/posix-status.md.
+    "sys_shm/shm-attach-aliasing"                         # two shmat attachments in ONE process do not alias:
+                                                          # each is materialized as a separate host byte mirror
+                                                          # (kernel_ipc_shm_record_mapping_for_process). Sharing
+                                                          # BETWEEN processes does work -- sys_shm/shm-cross-process
+                                                          # passes -- so the gap is per-process attachment identity.
+    "sys_msg/msg-cross-process-blocking"                  # a msgrcv that actually blocks is never woken by a later
+                                                          # msgsnd: ipc.rs returns EAGAIN "for host retry" and the
+                                                          # retry is not re-armed by a send. A blocking semop IS
+                                                          # woken (sys_sem/sem-value-and-blocking passes), so this is
+                                                          # specific to the message-queue wait path.
     # aio/aio_cancel was flaky (FAIL once, XPASS next run) — left
     # off this list; if it starts failing reliably, add it back.
     # The previous Linux-CI-only XFAILs for environ propagation
