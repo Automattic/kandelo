@@ -875,6 +875,200 @@ mod tests {
     /// mmap → getpid → write → exit_group; a green run proves the whole native
     /// spine (process creation, layout, two-thread wait/notify, RAW pointer
     /// marshalling for write, anon-mmap growth, host_write → stdout, exit code).
+    /// A private scratch directory. Deliberately hand-rolled rather than
+    /// pulling `tempfile` into this crate for two tests: a campaign measured on
+    /// surface should not add a dependency it can do without in six lines.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("kandelo-host-native-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    /// Drop one export from a real kernel and re-encode the module, which is
+    /// exactly what an artifact that predates its source tree looks like from
+    /// the outside.
+    fn kernel_without_export(bytes: &[u8], drop_name: &str) -> Vec<u8> {
+        fn uleb(buf: &[u8], mut index: usize) -> (u64, usize) {
+            let (mut value, mut shift) = (0u64, 0u32);
+            loop {
+                let byte = buf[index];
+                index += 1;
+                value |= u64::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    return (value, index);
+                }
+                shift += 7;
+            }
+        }
+        fn put(out: &mut Vec<u8>, mut value: u64) {
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                out.push(byte);
+                if value == 0 {
+                    return;
+                }
+            }
+        }
+
+        let mut out = bytes[..8].to_vec();
+        let mut index = 8;
+        let mut dropped = false;
+        while index < bytes.len() {
+            let id = bytes[index];
+            index += 1;
+            let (size, body_start) = uleb(bytes, index);
+            let end = body_start + size as usize;
+            let mut body = bytes[body_start..end].to_vec();
+            if id == 7 {
+                let (count, mut cursor) = uleb(&body, 0);
+                let mut kept: Vec<(Vec<u8>, u8, u64)> = Vec::new();
+                for _ in 0..count {
+                    let (name_len, next) = uleb(&body, cursor);
+                    cursor = next;
+                    let name = body[cursor..cursor + name_len as usize].to_vec();
+                    cursor += name_len as usize;
+                    let kind = body[cursor];
+                    cursor += 1;
+                    let (target, next) = uleb(&body, cursor);
+                    cursor = next;
+                    if name == drop_name.as_bytes() {
+                        dropped = true;
+                    } else {
+                        kept.push((name, kind, target));
+                    }
+                }
+                let mut rebuilt = Vec::new();
+                put(&mut rebuilt, kept.len() as u64);
+                for (name, kind, target) in kept {
+                    put(&mut rebuilt, name.len() as u64);
+                    rebuilt.extend_from_slice(&name);
+                    rebuilt.push(kind);
+                    put(&mut rebuilt, target);
+                }
+                body = rebuilt;
+            }
+            out.push(id);
+            put(&mut out, body.len() as u64);
+            out.extend_from_slice(&body);
+            index = end;
+        }
+        assert!(dropped, "fixture must actually remove {drop_name}");
+        out
+    }
+
+    /// B29. A kernel that predates its source tree must say so.
+    ///
+    /// Before this, the ENTIRE diagnosis a reader got was
+    /// `failed to find function export kernel_set_process_pointer_width`,
+    /// repeated once per test -- a message that reads as "the kernel is broken"
+    /// when the cause is "your kernel is older than your base". Reproduced on
+    /// this suite: current kernel 57 passed / 0 failed; same kernel with that
+    /// one export removed, 27 passed / 30 failed, every failure that bare line.
+    ///
+    /// The guard was confirmed to fail: emptying
+    /// `KERNEL_ARTIFACT_ERROR_MARKERS` makes this test fail on the first
+    /// assertion, because the error then arrives with no provenance at all.
+    #[test]
+    fn a_kernel_missing_an_export_reports_its_provenance_not_just_the_symptom()
+    -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let temp = scratch_dir("stale-kernel");
+        let stale = temp.join("kernel.wasm");
+        std::fs::write(
+            &stale,
+            kernel_without_export(
+                &std::fs::read(&path)?,
+                "kernel_set_process_pointer_width",
+            ),
+        )?;
+
+        let guest = include_bytes!("../fixtures/native_hello.wasm");
+        let error = run_trivial_guest(&stale, guest)
+            .expect_err("a kernel missing a bound export cannot run a guest");
+        let rendered = format!("{error:?}");
+
+        // The symptom is still there -- nothing is hidden.
+        assert!(
+            rendered.contains("kernel_set_process_pointer_width"),
+            "the underlying wasmtime error must survive: {rendered}",
+        );
+        // ... and now the cause is too.
+        assert!(
+            rendered.contains("predates the source tree"),
+            "the failure must name artifact age as the usual cause: {rendered}",
+        );
+        assert!(
+            rendered.contains(&stale.display().to_string()),
+            "the failure must name the artifact that was actually loaded: {rendered}",
+        );
+        assert!(
+            rendered.contains("verify-fresh"),
+            "the failure must name the command that gives the verdict: {rendered}",
+        );
+        Ok(())
+    }
+
+    /// The classifier must stay OFF failures that are about the guest or the
+    /// run. A note attached to everything is a note nobody reads, and build
+    /// provenance on a guest's own assertion failure is misdirection, which is
+    /// the defect this whole item is about, pointed the other way.
+    #[test]
+    fn provenance_is_not_attached_to_failures_that_are_not_about_the_artifact() {
+        assert!(implicates_kernel_artifact(&anyhow::Error::msg(
+            "failed to find function export `kernel_set_process_pointer_width`"
+        )));
+        assert!(implicates_kernel_artifact(&anyhow::Error::msg(
+            "unknown import: `env::host_something` has not been defined"
+        )));
+        assert!(!implicates_kernel_artifact(&anyhow::Error::msg(
+            "guest exited with status 1"
+        )));
+        assert!(!implicates_kernel_artifact(&anyhow::Error::msg(
+            "wasm trap: out of bounds memory access"
+        )));
+    }
+
+    /// An artifact with no stamps and one with a stamp must be described
+    /// differently: "cannot be checked" and "can be checked" are different
+    /// facts, and collapsing them is how an unverifiable artifact comes to look
+    /// merely stale.
+    #[test]
+    fn provenance_distinguishes_an_unstamped_artifact_from_a_stamped_one() {
+        let temp = scratch_dir("stamp-shapes");
+        let empty_module = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+        let unstamped = temp.join("unstamped.wasm");
+        std::fs::write(&unstamped, empty_module).unwrap();
+        let report = kernel_artifact_provenance(&unstamped);
+        assert!(report.contains("absent"), "{report}");
+        assert!(report.contains("carries NO build key"), "{report}");
+
+        // A custom section: id 0, then size, then name length, name, payload.
+        let mut stamped_bytes = empty_module.to_vec();
+        let name = wasm_artifact::BUILD_KEY_SECTION.as_bytes();
+        let mut body = vec![name.len() as u8];
+        body.extend_from_slice(name);
+        body.extend_from_slice(&[0x5a; 32]);
+        stamped_bytes.push(0x00);
+        stamped_bytes.push(body.len() as u8);
+        stamped_bytes.extend_from_slice(&body);
+
+        let stamped = temp.join("stamped.wasm");
+        std::fs::write(&stamped, &stamped_bytes).unwrap();
+        let report = kernel_artifact_provenance(&stamped);
+        assert!(report.contains("5a5a5a5a5a5a5a5a... (present)"), "{report}");
+        assert!(report.contains("Get the verdict"), "{report}");
+        assert!(!report.contains("carries NO build key"), "{report}");
+    }
+
     #[test]
     fn smoke_runs_trivial_guest_through_channel() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {

@@ -10,11 +10,16 @@
 //!                         matrix entries.
 //!   workspace-closure-sha Print a content digest (64 hex chars) over the union
 //!                         of one or more workspace crates' cargo dependency
-//!                         closures. Args: --crates <a,b,c>. For a build
+//!                         closures. Args: --crates <a,b,c>, and for a side
+//!                         module also --recipe <repo-relative build script>,
+//!                         which folds the recipe's own digest in. For a build
 //!                         artifact with no resolver `build.toml` (so it has
 //!                         no `cargo:<crate>` cache-key input), this gives the
 //!                         same drift-proof, cargo-metadata-derived freshness
-//!                         coverage. Used by `crates/fork-module/build-wasm.sh`.
+//!                         coverage. Every `crates/*/build-wasm.sh` stamps the
+//!                         key this prints; nothing may compute part of that
+//!                         key itself, or the stamp and the checks that read it
+//!                         stop describing the same thing.
 //!   sort-package-matrix   Order a package matrix so selected package dependencies
 //!                         appear before their dependents.
 //!   partition-package-matrix

@@ -185,10 +185,60 @@ Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for
 environment or artifact reasons unrelated to a given diff. Reproduce the failure
 on a pristine `origin/main` build of the same artifact before attributing it —
-rebuild just the kernel wasm (`cargo build --release -p kandelo -Z
-build-std=core,alloc && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm
-local-binaries/kernel.wasm`) at `origin/main` and re-run the one test. Report a
+rebuild just the kernel wasm at `origin/main` and re-run the one test. Report a
 pre-existing failure as pre-existing, not as your regression.
+
+### Rebuilding just the kernel — and what each way costs you
+
+Two ways, and they are not interchangeable. Pick with the trade-off in view:
+
+```bash
+# The engine path. Produces a VERIFIABLE artifact in the tier the resolver
+# reads first, and `cargo xtask verify-fresh` can judge it.
+scripts/dev-shell.sh cargo run -p xtask -- bootstrap kernel
+
+# The cheap path. Works in a bare worktree with no submodules, and produces an
+# artifact nothing can freshness-check.
+scripts/dev-shell.sh cargo build --release -p kandelo -Z build-std=core,alloc
+scripts/dev-shell.sh bash -c 'source scripts/install-local-binary.sh;
+  install_local_binary kernel \
+    target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+    kandelo-kernel.wasm'
+```
+
+**The cheap path stages an artifact `verify-fresh` cannot verify, and the
+command says so as it installs.** Only the local-build engine stamps
+`kandelo.build.key`; it appends the key at cache-store time, and `verify-fresh`
+compares that stamp against the key the source tree currently resolves to. An
+artifact staged by `install_local_binary` carries no stamp, so the gate refuses
+it rather than judging it:
+
+```
+local-binaries/kernel.wasm carries no build key stamp; rebuild with
+`./run.sh setup` so freshness can be verified.
+```
+
+`./run.sh test` runs that gate before its suites, so a cheaply-provisioned
+worktree fails it. That is correct — an unverifiable artifact must not be scored
+as fresh — but it is a real cost of the cheap path, and the reason the engine
+path is the default recommendation here. The installer does not invent a stamp
+to make the gate pass: it is handed a caller-supplied file and cannot know the
+bytes came from this source tree, and a stamp it invented would claim a
+provenance it never checked.
+
+Use the cheap path when the engine path cannot run — a bare worktree with no
+`libc/musl` submodule cannot generate the VFS product catalog, so `bootstrap`
+stops before it builds anything. Initialising that one submodule is usually
+cheaper than losing the freshness gate:
+
+```bash
+git submodule update --init libc/musl
+```
+
+Whichever you use, stage through `install_local_binary` rather than `cp`: the
+resolver searches `local-binaries/source-only-v1/` **before** ambient
+`local-binaries/`, so a plain copy into the ambient tier can be shadowed by an
+older kernel and leave you testing the artifact you did not just build.
 
 After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
 Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale

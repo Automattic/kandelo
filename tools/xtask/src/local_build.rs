@@ -915,6 +915,15 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// depends on it). A stale input there is a cache-key mismatch that already
 /// forces a rebuild through the normal engine path, not a silent-staleness
 /// hazard this freshness check needs to duplicate.
+/// The artifacts `verify-fresh` inspects, relative to `local-binaries/`.
+///
+/// Declared here, beside the gate that reads them, and consumed by
+/// `build_deps`'s install-time freshness note so the two cannot disagree about
+/// what will be checked. A note that warned about an artifact the gate never
+/// looks at would be noise, and noise is how a real warning stops being read.
+pub(crate) const VERIFY_FRESH_KERNEL_ARTIFACTS: &[&str] =
+    &["source-only-v1/kernel.wasm", "kernel.wasm"];
+
 pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     // Every projected kernel artifact, not just the SourceOnlyV1 one.
     //
@@ -937,7 +946,7 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     // revision of this loop lost by returning Ok() from the per-artifact helper
     // and then running the machine-wide checks regardless.
     let mut any_present = false;
-    for relative in ["source-only-v1/kernel.wasm", "kernel.wasm"] {
+    for relative in VERIFY_FRESH_KERNEL_ARTIFACTS {
         any_present |= verify_fresh_kernel_artifact(repo, relative)?;
     }
     if !any_present {
@@ -2042,7 +2051,19 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // evaluated from the up-front skip decision rather than from the results,
     // so the no-op path stays reachable. Source-kind package nodes still run a
     // child; they populate the source cache and never the projection tier.
-    if run_can_materialize_into_tier(&selected, &expected_receipt_nodes, &skip_receipts) {
+    //
+    // The co-resident side modules are the second way in. They are built into
+    // `local-binaries/` before the scheduler and STAGED INTO THE TIER by the
+    // finalizer, under the projection lock but before the authority is
+    // replaced. So a run whose every package and product node is skippable can
+    // still rewrite tier bytes, and a kill in that window would leave the old
+    // authority describing side modules that are no longer there. Evaluated
+    // here, before the scheduler, because nothing the scheduler does changes
+    // these artifacts.
+    let run_writes_to_tier =
+        run_can_materialize_into_tier(&selected, &expected_receipt_nodes, &skip_receipts)
+            || !coresident_side_module_projection_is_current(&output_root, &repo);
+    if run_writes_to_tier {
         match retract_source_only_program_projection(&output_root) {
             Ok(false) => {}
             Ok(true) => eprintln!(
@@ -2191,16 +2212,15 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // authority, the finalizer would reproduce precisely what is already on
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
-    // The two node clauses here are `run_can_materialize_into_tier` negated:
-    // they ask the same question the pre-build retraction asked, and calling
-    // the one function is what stops the two from drifting. If this path ever
-    // decided a run was a no-op that the retraction had decided could mutate
-    // the tier, the authority would already be gone and this would leave it
-    // gone -- a silent regression that only shows up as a refused tier.
+    // `run_writes_to_tier` is the SAME value the pre-build retraction decided
+    // on, reused rather than recomputed. Recomputing it was how the two could
+    // drift: if this path ever judged a run a no-op that the retraction had
+    // judged capable of writing to the tier, the authority would already be
+    // gone and this would leave it gone -- a regression whose only symptom is a
+    // tier that refuses itself.
     let projection_up_to_date = package_projection_is_eligible(&selected, &results)
-        && !run_can_materialize_into_tier(&selected, &expected_receipt_nodes, &skip_receipts)
-        && source_only_program_projection_is_current(&output_root, &graph.authority_sha256)
-        && coresident_side_module_projection_is_current(&output_root, &repo);
+        && !run_writes_to_tier
+        && source_only_program_projection_is_current(&output_root, &graph.authority_sha256);
     let projection_finalization_error = if projection_up_to_date {
         None
     } else if package_projection_is_eligible(&selected, &results) {

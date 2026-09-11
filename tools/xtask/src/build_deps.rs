@@ -17534,7 +17534,78 @@ fn cmd_install_local_artifact(
         // completing member of the same session runs the check below.
         return Ok(());
     }
+    report_unverifiable_freshness(manifest, artifact, binaries_dir, arch);
     report_higher_priority_tier_shadow(manifest, artifact, source, binaries_dir, arch)
+}
+
+/// Say, at install time, that a hand-staged kernel cannot be freshness-checked.
+///
+/// WHY. Only the local-build engine stamps `kandelo.build.key`: it appends the
+/// key at cache-store time, and `cargo xtask verify-fresh` compares that stamp
+/// against the key the current source tree resolves to. An artifact installed
+/// through THIS command carries no stamp, so the gate refuses it:
+///
+///     local-binaries/kernel.wasm carries no build key stamp; rebuild with
+///     `./run.sh setup` so freshness can be verified.
+///
+/// That refusal is correct -- an unverifiable artifact must not be scored as
+/// fresh -- but it arrives later, from a different command, and names
+/// `./run.sh setup` rather than the step that made the artifact unverifiable.
+/// The provisioning this project documents for a fresh worktree is exactly this
+/// command, so the documented cheap path and the documented freshness gate are
+/// mutually incompatible, and neither of them says so. An agent following both
+/// gets a red gate about their own provisioning and is pointed at the expensive
+/// path they were told not to run.
+///
+/// WHY THIS DOES NOT STAMP. The source argument is caller-supplied. This command
+/// cannot know the bytes came from the tree whose key it would be stamping, so a
+/// stamp applied here would let a stale file, a debug build, or a copy from
+/// another worktree acquire a claim of engine provenance. Turning "cannot be
+/// verified" into "claims to have been verified" is the same defect in the
+/// opposite direction, and worse, because it is silent. The engine stamps
+/// because the engine built the bytes; this installer did not.
+///
+/// SCOPE. Only the artifacts `verify-fresh` actually inspects
+/// (`VERIFY_FRESH_KERNEL_ARTIFACTS`); a note about an artifact the gate never
+/// looks at would be noise. Skipped for a resolver-driven build
+/// (`WASM_POSIX_DEP_OUT_DIR`), where the engine is mid-run and publishes and
+/// stamps its own copy.
+fn report_unverifiable_freshness(
+    manifest: &DepsManifest,
+    artifact: &str,
+    binaries_dir: &Path,
+    arch: TargetArch,
+) {
+    if std::env::var_os("WASM_POSIX_DEP_OUT_DIR").is_some() {
+        return;
+    }
+    let Ok(declared) = declared_local_artifact(manifest, artifact) else {
+        return;
+    };
+    let mirror_rel = local_artifact_mirror_rel(manifest, &declared.mirror_relative, arch);
+    let gated = crate::local_build::VERIFY_FRESH_KERNEL_ARTIFACTS
+        .iter()
+        .any(|relative| Path::new(relative) == mirror_rel);
+    if !gated {
+        return;
+    }
+    let mirror = binaries_dir.join(&mirror_rel);
+    let Ok(bytes) = std::fs::read(&mirror) else {
+        return;
+    };
+    if wasm_artifact::read_custom_section(&bytes, wasm_artifact::BUILD_KEY_SECTION).is_some() {
+        return;
+    }
+    eprintln!(
+        "note: {} carries no {} stamp, so `cargo xtask verify-fresh` cannot \
+         verify its freshness and will refuse it. Only the local-build engine \
+         stamps. This installer deliberately does not: it cannot know the bytes \
+         it was handed came from this source tree, and a stamp it invented would \
+         claim a provenance it cannot check. For a verifiable kernel build the \
+         engine path narrowed to one product is `cargo xtask bootstrap kernel`.",
+        mirror.display(),
+        wasm_artifact::BUILD_KEY_SECTION,
+    );
 }
 
 /// The higher-priority resolver tier that lives inside a `--binaries-dir`
