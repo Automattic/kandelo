@@ -6541,3 +6541,22 @@ suite to 32/0.
 Both traps share a shape: a provisioning gap that presents as a plausible
 failure of the thing under test. The defence is the same in both cases — read
 the first line of the failure, not the tally.
+
+### The ppoll guards, mutated
+
+Three assertions police the `1bb6d6972` deletion. Each was mutated until it
+failed, because a guard nobody has seen fail is not a guard — this branch has
+found two that asserted nothing.
+
+| mutation applied to `libc/glue/channel_syscall.c` | result |
+|---|---|
+| reintroduce the `CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY` macro | FAIL — `expected … not to contain 'CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY'` |
+| reintroduce the name `extra_request_flags` | FAIL — `expected … not to contain 'extra_request_flags'` |
+| restore `case __NR_ppoll:` to the restart classifier | FAIL — restart allowlist deep-equal, 28 cases against the expected 27 |
+
+Each mutation failed exactly one test, and the one it was written for: the
+first two in `publishes call-site cancellation identity before PENDING and
+consumes it once`, the third in `keeps caught-handler restart policy on the
+reviewed syscall allowlist`. The other 138 assertions passed in every case, so
+none of the three is firing incidentally. The glue was restored byte-identical
+afterwards, verified by `diff`.
