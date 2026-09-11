@@ -15329,30 +15329,69 @@ pub fn sys_unlinkat(
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
     let resolved = resolve_at_path(proc, host, dirfd, path, PathResolveOptions::NOFOLLOW)?.path;
-    ensure_host_mutable_namespace_path(&resolved)?;
-    check_parent_writable(proc, host, &resolved)?;
+
+    // `unlinkat` is `unlink` and `rmdir` under one name, differing only in how
+    // the target is named, so each branch must reach exactly the filesystems
+    // its plain sibling reaches. The in-kernel tmpfs and rootfs overlay own
+    // their paths outright; sending one of their paths to the host is not a
+    // fallback but a lookup in a filesystem that does not contain the file.
     if flags & AT_REMOVEDIR != 0 {
+        // Mirrors `sys_rmdir`.
+        if crate::tmpfs::claims_path(&resolved) {
+            return crate::tmpfs::rmdir(&resolved);
+        }
+        if crate::rootfs::claims_path(&resolved) {
+            return crate::rootfs::rmdir(&resolved);
+        }
+        ensure_host_mutable_namespace_path(&resolved)?;
+        check_parent_writable(proc, host, &resolved)?;
         check_sticky_child(proc, host, &resolved)?;
-        crate::hostdir::rmdir(host, &resolved)
-    } else {
-        check_sticky_child(proc, host, &resolved)?;
+        return crate::hostdir::rmdir(host, &resolved);
+    }
+
+    // Mirrors `sys_unlink`: a fifo lives in the fifo/pipe table rather than the
+    // owning filesystem's inode store, and a bound AF_UNIX socket node also has
+    // a path-keyed registry entry, so both are dropped before the node is.
+    if crate::tmpfs::claims_path(&resolved) {
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
-        // AF_UNIX bind() creates a host inode; remove both the registry
-        // entry and the inode. (Same as sys_unlink.)
-        {
-            let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-            if registry.unregister(&resolved) {
-                crate::wakeup::push_datagram_writable();
-                match crate::hostdir::unlink(host, &resolved) {
-                    Ok(()) | Err(Errno::ENOENT) => return Ok(()),
-                    Err(e) => return Err(e),
-                }
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.unregister(&resolved) {
+            crate::wakeup::push_datagram_writable();
+        }
+        return crate::tmpfs::unlink(&resolved);
+    }
+    if crate::rootfs::claims_path(&resolved) {
+        if let Some(result) = unlink_fifo_marker(host, &resolved) {
+            return result;
+        }
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.unregister(&resolved) {
+            crate::wakeup::push_datagram_writable();
+        }
+        return crate::rootfs::unlink(&resolved);
+    }
+
+    ensure_host_mutable_namespace_path(&resolved)?;
+    check_parent_writable(proc, host, &resolved)?;
+    check_sticky_child(proc, host, &resolved)?;
+    if let Some(result) = unlink_fifo_marker(host, &resolved) {
+        return result;
+    }
+    // AF_UNIX bind() creates a host inode; remove both the registry
+    // entry and the inode. (Same as sys_unlink.)
+    {
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        if registry.unregister(&resolved) {
+            crate::wakeup::push_datagram_writable();
+            match crate::hostdir::unlink(host, &resolved) {
+                Ok(()) | Err(Errno::ENOENT) => return Ok(()),
+                Err(e) => return Err(e),
             }
         }
-        unlink_host_entry(host, &resolved)
     }
+    unlink_host_entry(host, &resolved)
 }
 
 /// mkdirat -- mkdir relative to directory fd.
@@ -19313,6 +19352,162 @@ mod tests {
             sys_lstat(&mut proc, &mut host, b"/srv/wire_d").unwrap_err(),
             Errno::ENOENT
         );
+    }
+
+    // -- unlinkat reaches the filesystems its siblings reach ---------------
+    //
+    // `unlinkat` is `unlink` and `rmdir` under one name. It dispatched to
+    // neither the in-kernel tmpfs nor the rootfs overlay, on either branch, so
+    // a path those filesystems own was looked up on the host instead — which
+    // does not contain the file. The file branch then returned `ENOENT`, and
+    // "remove it if it is there" logic reads `ENOENT` as success, so the
+    // observable behaviour was not an error anyone saw: it was `unlinkat`
+    // quietly doing nothing while callers proceeded as though the file were
+    // gone.
+    //
+    // Every assertion below therefore checks that the object is GONE, not
+    // merely that the call returned `Ok`. A dispatch that silently succeeded
+    // without removing anything would satisfy the weaker check.
+
+    /// Assert an object lives in the filesystem under test, so a test cannot
+    /// silently pass by exercising the host instead. `MockHostIO` answers
+    /// `lstat` for paths it has never seen, which is exactly how a removal
+    /// test can look green while checking nothing.
+    fn in_tmpfs_dev_range(dev: u64) -> bool {
+        const TMPFS_DEV_LO: u64 = 0x7400_0000;
+        const TMPFS_DEV_HI: u64 = 0x7400_0000 + 16;
+        (TMPFS_DEV_LO..TMPFS_DEV_HI).contains(&dev)
+    }
+
+    fn assert_in_tmpfs(proc: &mut Process, host: &mut MockHostIO, path: &[u8]) {
+        let st = sys_lstat(proc, host, path).expect("object should exist");
+        assert!(
+            in_tmpfs_dev_range(st.st_dev),
+            "precondition: {} must live in tmpfs, not on the host",
+            String::from_utf8_lossy(path),
+        );
+    }
+
+    /// After a removal, the owning filesystem must no longer hold the object.
+    /// A bare `ENOENT` check is not enough: the host mock can answer for a
+    /// path tmpfs still owns, which would hide the very failure under test.
+    fn assert_gone_from_tmpfs(proc: &mut Process, host: &mut MockHostIO, path: &[u8]) {
+        match sys_lstat(proc, host, path) {
+            Err(Errno::ENOENT) => {}
+            Ok(st) => assert!(
+                !in_tmpfs_dev_range(st.st_dev),
+                "{} is still in tmpfs after removal; the call reported success \
+                 without removing anything",
+                String::from_utf8_lossy(path),
+            ),
+            Err(e) => panic!("unexpected error after removal: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn unlinkat_removes_a_tmpfs_file_that_unlink_removes() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // Precondition: the plain sibling removes a file here, so a failure
+        // below is about `unlinkat` and not about the directory.
+        let fd = sys_open(&mut proc, &mut host, b"/srv/by-unlink", O_CREAT | O_RDWR, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-unlink");
+        sys_unlink(&mut proc, &mut host, b"/srv/by-unlink").unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-unlink");
+
+        let fd =
+            sys_open(&mut proc, &mut host, b"/srv/by-unlinkat", O_CREAT | O_RDWR, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat");
+        sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/srv/by-unlinkat", 0).unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat");
+    }
+
+    #[test]
+    fn unlinkat_removes_a_tmpfs_directory_that_rmdir_removes() {
+        use wasm_posix_shared::flags::AT_REMOVEDIR;
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        sys_mkdir(&mut proc, &mut host, b"/srv/by-rmdir", 0o755).unwrap();
+        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-rmdir");
+        sys_rmdir(&mut proc, &mut host, b"/srv/by-rmdir").unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-rmdir");
+
+        sys_mkdir(&mut proc, &mut host, b"/srv/by-unlinkat-dir", 0o755).unwrap();
+        assert_in_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat-dir");
+        sys_unlinkat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/srv/by-unlinkat-dir",
+            AT_REMOVEDIR,
+        )
+        .unwrap();
+        assert_gone_from_tmpfs(&mut proc, &mut host, b"/srv/by-unlinkat-dir");
+    }
+
+    #[test]
+    fn unlinkat_removes_a_rootfs_file_and_directory() {
+        use wasm_posix_shared::flags::AT_REMOVEDIR;
+        const ROOTFS_DEV: u64 = 0x7300_0000;
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        // The dispatch under test only runs for a path the overlay claims, so
+        // assert that rather than let the test quietly exercise the host path.
+        assert!(
+            crate::rootfs::claims_path(b"/by-unlinkat"),
+            "precondition: the rootfs overlay must own this path",
+        );
+
+        let fd = sys_open(&mut proc, &mut host, b"/by-unlinkat", O_CREAT | O_RDWR, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/by-unlinkat").unwrap().st_dev,
+            ROOTFS_DEV,
+            "precondition: the file must live in the rootfs overlay",
+        );
+        sys_unlinkat(&mut proc, &mut host, AT_FDCWD, b"/by-unlinkat", 0).unwrap();
+        match sys_lstat(&mut proc, &mut host, b"/by-unlinkat") {
+            Err(Errno::ENOENT) => {}
+            Ok(st) => assert_ne!(
+                st.st_dev, ROOTFS_DEV,
+                "the file is still in the rootfs overlay after unlinkat",
+            ),
+            Err(e) => panic!("unexpected error after removal: {e:?}"),
+        }
+
+        sys_mkdir(&mut proc, &mut host, b"/by-unlinkat-dir", 0o755).unwrap();
+        assert_eq!(
+            sys_lstat(&mut proc, &mut host, b"/by-unlinkat-dir").unwrap().st_dev,
+            ROOTFS_DEV,
+            "precondition: the directory must live in the rootfs overlay",
+        );
+        sys_unlinkat(
+            &mut proc,
+            &mut host,
+            AT_FDCWD,
+            b"/by-unlinkat-dir",
+            AT_REMOVEDIR,
+        )
+        .unwrap();
+        match sys_lstat(&mut proc, &mut host, b"/by-unlinkat-dir") {
+            Err(Errno::ENOENT) => {}
+            Ok(st) => assert_ne!(
+                st.st_dev, ROOTFS_DEV,
+                "the directory is still in the rootfs overlay after unlinkat",
+            ),
+            Err(e) => panic!("unexpected error after removal: {e:?}"),
+        }
     }
 
     /// Restore the rootfs enable flag and clear the store on drop (serial suite;
