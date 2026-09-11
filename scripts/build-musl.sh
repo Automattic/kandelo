@@ -389,6 +389,64 @@ if [ ! -s "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
+# Presence is not completeness. A truncated or partially-archived libc.a is
+# non-empty, so the check above passes and the failure re-emerges later as a
+# configure probe concluding some function is missing -- which is exactly the
+# `gnu/readdir.c` instance described above. The probes that matter link
+# against the sysroot, so the postcondition does too.
+missing_members=""
+for member in readdir.o opendir.o closedir.o __main_void.o; do
+    "$AR" t "$SYSROOT/lib/libc.a" "$member" >/dev/null 2>&1 ||
+        missing_members="$missing_members $member"
+done
+if [ -n "$missing_members" ]; then
+    echo "Error: $SYSROOT/lib/libc.a is missing expected members:$missing_members" >&2
+    echo "       The archive exists but is incomplete. A package configuring" >&2
+    echo "       against this sysroot will conclude the C library lacks those" >&2
+    echo "       functions and fail while naming its own sources." >&2
+    exit 1
+fi
+
+# The decisive check: compile a program against these headers that uses the
+# exact surface whose absence produced the recorded failure.
+#
+# WHY compile and not link: the recorded failure IS a compile error --
+# `incomplete definition of type 'DIR'` -- because a configure probe that
+# cannot see a complete `DIR` concludes the C library has no `readdir` and
+# compiles gnulib's replacement. Linking here would additionally require the
+# SDK's `libclang_rt.builtins.a` search flags, which this script does not
+# otherwise need; coupling to them would make this gate fail spuriously on a
+# perfectly good sysroot, which is worse than not gating at all. Truncation is
+# covered by the member check above, which reads the archive itself.
+probe_dir="$(mktemp -d)"
+trap 'rm -rf "$probe_dir"' EXIT
+cat >"$probe_dir/probe.c" <<'PROBE'
+#include <dirent.h>
+
+int main(void) {
+    DIR *d = opendir(".");
+    if (d == NULL) return 0;
+    struct dirent *e = readdir(d);
+    closedir(d);
+    return e == NULL ? 0 : 1;
+}
+PROBE
+if ! "$CC" --target=$TARGET --sysroot="$SYSROOT" -O0 -c \
+        "$probe_dir/probe.c" -o "$probe_dir/probe.o" \
+        >"$probe_dir/probe.log" 2>&1; then
+    echo "Error: the freshly built sysroot cannot compile a program that uses" >&2
+    echo "       opendir/readdir/closedir." >&2
+    echo "       $SYSROOT is INCOMPLETE even though lib/libc.a exists." >&2
+    echo "       This is the failure that otherwise surfaces later as an" >&2
+    echo "       unrelated package's error -- the recorded instance being" >&2
+    echo "       tar/wasm32's 'gnu/readdir.c:38: incomplete definition of" >&2
+    echo "       type DIR', which is gnulib's replacement readdir compiled" >&2
+    echo "       only because its probe failed against a sysroot like this." >&2
+    echo "" >&2
+    sed 's/^/       /' "$probe_dir/probe.log" >&2
+    exit 1
+fi
+
 echo ""
 echo "==> musl build complete!"
 echo "    Sysroot: $SYSROOT"
