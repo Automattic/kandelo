@@ -6477,3 +6477,51 @@ behaviour for unrelated functions. **A same-build noise-floor control for this
 round was not run**, and until it is, `epoll_ready` and `poll_ready` are best
 reported as "not regressed beyond this round's own scatter" rather than "not
 regressed".
+
+## ppoll deadline removal: the twelve-run evidence
+
+`1bb6d6972` deleted `kandelo_capture_ppoll_deadline` and
+`kandelo_ppoll_remaining`, unreachable since `553e96a2d` stopped classifying
+`__NR_ppoll` as restartable after a caught handler. The removal's evidence is
+the Sortix `signal` suite, and it needs more than one run: seven of its
+thirty-two cases are `ppoll-block-*`, and each races a child's `kill()` against
+the parent reaching `ppoll`.
+
+**Result: 32 PASS / 0 FAIL, exit 0, twelve runs out of twelve.** All seven
+`ppoll-block-*` cases passed in every run:
+
+    ppoll-block-close          ppoll-block-raise-write
+    ppoll-block-close-raise    ppoll-block-sleep-raise
+    ppoll-block-raise          ppoll-block-sleep-raise-write
+                               ppoll-block-sleep-write-raise
+
+The one-minute load average rose from 9.0 to 21.2 across the twelve runs.
+For a *race*, that direction helps rather than hurts: contention widens the
+window between the child's `kill()` and the parent's arrival in `ppoll`, so a
+latent ordering bug is more likely to show, not less. (It would invalidate a
+*timing* measurement, which is why the A/B round above was run separately on a
+quiet machine and its load logged per run.)
+
+### Two provisioning traps this round walked into, both worth writing down
+
+**A suite reporting 0 PASS is not a result.** The first twelve-run attempt
+returned `PASS: 0, FAIL: 32`, identically every time, and every failure was the
+same artifact-reader error rather than anything about `ppoll`. That was the
+tree-shaking defect fixed in `2a3493f82`, not a regression in the code under
+test. `0 PASS` means nothing ran; read the failure text before reading the
+count.
+
+**A missing `dylink_module32.wasm` fails as three racy-looking ppoll cases.**
+The second attempt returned `29 PASS / 3 FAIL`, and the three failures were
+exactly the `ppoll-block-sleep-*` cases — the shape a genuine race would take,
+in the exact cases the brief warns are racy. They were nothing of the kind. The
+first line of the failure was `fork: ENOMEM`, and beneath it `dlopen: this
+process worker has no dynamic-linking planner module; rebuild
+dylink_module32.wasm`. Those three cases are the ones that `fork()`; the
+planner module had been removed from the worktree as a stale copied artifact
+and not rebuilt. Building it with `crates/dylink-module/build-wasm.sh` took the
+suite to 32/0.
+
+Both traps share a shape: a provisioning gap that presents as a plausible
+failure of the thing under test. The defence is the same in both cases — read
+the first line of the failure, not the tally.
