@@ -3232,6 +3232,39 @@ Either way **the enforcement matters more than the fix**: a per-realm
 initialisation contract with no check is what produced four unrelated-looking
 bugs from one deletion.
 
+### B26 — the host suite cannot reliably finish, and it is the ship gate
+
+**Measured, not impressionistic.** Three full `vitest run` invocations from
+`host/` were killed with **exit 144**, one of them during global setup with
+nothing else running on the machine. The two that completed took roughly **24
+minutes of test time** each. The agent that measured it put it as *"roughly a
+coin flip to survive."*
+
+That is a ship-gate problem rather than a nuisance. The maintainer intends to
+ship on a green host suite; **a gate that cannot reliably complete is not a
+gate**, and every attribution argument above depends on being able to run the
+suite twice.
+
+Candidate causes, none confirmed:
+
+- 144 is 128+16, and on macOS signal 16 is `SIGURG`, which would be strange — so
+  this may be a Vitest or Node watchdog, a pool teardown, or memory pressure
+  rather than a true signal.
+- Worker count: `host/vitest.config.ts` uses `maxWorkers: 4` locally, 1 under
+  CI. One retry at 3 still died.
+- Memory: these suites start many `worker_threads` and large shared Wasm
+  memories, and that config's own comments record that nesting such work inside
+  Vitest's pool "has historically made task reporting unreliable under
+  contention".
+
+**This outranks individual migration items right now.** A reliable end-to-end
+run of this suite is worth more than any single deletion, because without it the
+campaign cannot make the claim it intends to ship on. Adjacent evidence:
+concurrency also produced two *false* failures for the coordinator tonight — an
+`xtask` byte-identity test that passes 2/2 in isolation, and a `./run.sh setup`
+that was writing into a live agent's isolated cache root while cargo reported
+"Blocking waiting for file lock on package cache".
+
 ### HOW TO ATTRIBUTE A FAILURE IN THIS SUITE — the method, and why totals lie
 
 The host suite carries **~103 failing files at any base**. That single fact
