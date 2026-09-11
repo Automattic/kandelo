@@ -4357,3 +4357,130 @@ failed identically. This item touches 17 files, none of them
 `binary-resolver.ts`, the worker entry, or the bundler.
 
 Targeted suites are therefore the honest evidence, and they are green.
+
+---
+
+## Item B9 — per-process pointer width, registered once
+
+A process's data model is a property of its address space, not of any one
+syscall. It used to travel per call, written into channel argument slot 5 by
+both the host and the guest's own libc glue on every call that needed a
+caller-native layout. That slot is where `preadv2` and `pwritev2` keep `flags`,
+so no `RWF_*` value ever reached the kernel: a program asking for `RWF_DSYNC`
+got an unsynchronized write and a success return.
+
+`Process` now carries `pointer_width`, established at each point an address
+space comes into being: the host registers it through the new
+`kernel_set_process_pointer_width` export during `registerProcess`; a `fork`
+child inherits it through the fork state record (version **15 → 16**); and an
+`exec` replacement is written by the kernel itself inside
+`exec_target::finish_commit`, from the artifact bytes the incoming image
+committed to, read before the point of no return. No `ABI_VERSION` bump — the
+epoch is unreleased. Host import count is unchanged at **75**, verified from
+the built kernel's import section with an identical import set.
+
+### The census lesson: twelve readers that named no constant
+
+**This is the finding worth carrying forward.** The first census searched for
+`PROCESS_POINTER_WIDTH_ARG_INDEX` and for the `caller_pointer_width!()` macro
+— the two names the feature goes by — and was wrong.
+
+**Twelve dispatch arms in `crates/kernel/src/wasm_api.rs` read the caller's
+pointer width as a bare `args[5]`, naming no constant at all.** They are the
+syscalls whose records are caller-native and so cannot be sized by the kernel's
+own target: `statfs`, `fstatfs`, `setitimer`, `getitimer`, `sigaltstack`,
+`timer_create`, `rt_sigtimedwait`, `rt_sigqueueinfo`, `sysinfo`, `mq_open`,
+the `mq_timedsend`/`mq_timedreceive` attribute path, and `mq_getsetattr`.
+Retiring the stamp left every one of them reading the caller's real sixth
+argument — almost always zero — as a data model, failing
+`ProcessDataModel::from_width` with `EINVAL` for every caller.
+
+**Three more writers were hiding the same way in the guest**, in
+`libc/glue/channel_syscall.c`: `kandelo_write_record_header`, the ioctl
+special-layout path, and the `KANDELO_WRITE_HEADER` macro each forced slot 5 to
+`sizeof(void *)`. All three were keyed on **`si == 5u`**, the slot index, not on
+any shared name. Had only the host stopped writing the slot, the guest would
+have gone on destroying `flags` in every opaque channel record it emitted.
+
+**How they were found: by sweeping the surviving comments, not the feature.**
+A grep for the prose "private sixth channel slot" / "sixth argument" / "slot 5"
+across `crates/`, `host/src/`, `libc/` and `tools/` surfaced all of them. The
+identifiers had no common substring; the *explanations* did. When a convention
+is retired, the comments that describe it are a better index of its readers
+than its own name is.
+
+### The guard, and the fact that it was seen to fail
+
+`wasm_api_reads_the_sixth_slot_only_as_the_callers_own_argument`
+(`crates/kernel/src/lib.rs`, beside the three existing `wasm_api_source_guards`)
+collects every non-comment line in `wasm_api.rs` mentioning `args[5]` and
+requires exactly one: the scalar alias `let a6 = args[5] as i32;`, which is the
+caller's own sixth argument.
+
+**The guard was verified to fail on the tree immediately before the fix**
+(`7d3c935de`), where it collects **thirteen** lines — the alias plus all twelve
+offenders. A guard that has never been seen to fail is not yet known to be a
+guard; this one has been.
+
+### preadv2/pwritev2 flags
+
+With the slot returned to its owner,
+`wasm_posix_shared::rwf_flags::check_rwf_flags` implements `RWF_NOWAIT` (it
+suppresses the blocking retry a would-block transfer parks on) and refuses every
+other `RWF_*` bit with `EOPNOTSUPP` rather than ignoring it, as Linux does. Slot
+5 of both calls is newly declared `ChannelScalarKind::U32` in the channel scalar
+contract. **musl and everything linked against it must be rebuilt**, because the
+guest side of the contract changed.
+
+Known, pre-existing, not a regression: `crates/host-native` honours neither
+`RWF_NOWAIT` nor `MSG_DONTWAIT`'s no-park behaviour. This change makes the flag
+*reachable* where it was previously destroyed for everyone; the TypeScript host
+honours it exactly as it already honours `MSG_DONTWAIT`.
+
+### What was run, and what was not
+
+Under `scripts/dev-shell.sh`, with an isolated `KANDELO_SOURCE_CACHE_ROOT`
+verified from inside the shell:
+
+- `cargo test --target aarch64-apple-darwin` for `runtime-core` (1952),
+  `wasm-posix-shared` (77), `kandelo` (4 source guards + 4 integration),
+  `wasm-artifact` (19), `host-native` (54 + 1, driving real guests against the
+  rebuilt `kernel.wasm`): all pass.
+- `dump-abi --check`: snapshot, all seven generated musl headers and the TS
+  bindings in sync, no drift, no bump. The snapshot delta is exactly three
+  entries — slot 5 of `preadv2`, slot 5 of `pwritev2`, and the
+  `kernel_set_process_pointer_width` export.
+- `npm run typecheck` from `host/`: 0 errors.
+- Targeted Vitest from `host/`: `kernel-process-registration-entry` 9/9,
+  plus `host-process-pointer-width`, `channel-scalar-contract` and
+  `generated-abi`.
+
+**Not run: the full host Vitest, and no browser.** Three attempts were each
+invalidated before producing a usable number — one killed by resource
+exhaustion, one whose global setup lost a race with a concurrent `cargo`
+invocation over the program-index transaction, and one that began before
+`fork_module32.wasm` had been built. A fourth was still inside global setup when
+this was written. **No full-suite number is claimed.**
+
+Two failures seen during those attempts are the provisioning shape this document
+already records above: `Could not find repo root (expected workspace Cargo.toml
++ package.json)` thrown by `findRepoRoot` from a bundled worker entry in a temp
+directory. That has since been root-caused elsewhere — the commit retiring the
+TypeScript WebAssembly reader left three Node entry points without an artifact
+reader, one of them `host/dist`'s own build, so `host/dist` never existed — and
+a fourth realm, the Vite dev server, was fixed separately. This item is based on
+`0ab2ccf3e`, which predates those fixes, so failures of that shape here are
+neither this item's nor real.
+
+**Pre-existing, verified rather than assumed.** `kernel-scratch-contract`
+(2 failures: a `#sysvMirrorExports` context-return, and a duplicate
+`dylink-planner` audit allowance) and `abi-version` were run at the base commit
+`0ab2ccf3e` with this item's changes absent and failed identically there.
+
+### Collision surface
+
+`host/src/process-lifecycle.ts` and `tools/xtask/src/local_build.rs` are
+untouched. `crates/runtime-core/src/process.rs` takes two hunks — one struct
+field after `secure_exec`, one initializer — and no `sys_clone` or thread-slot
+code. `crates/runtime-core/src/syscalls.rs` takes one hunk, tests only, appended
+inside the existing `mod tests`.
