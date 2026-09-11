@@ -165,6 +165,138 @@ int main(void) {
     t1 = now_us();
     report("select_ready_us_per_op", t1 - t0, READY_ITERATIONS);
 
+    /* ---- Registered-interest sweep, and an order control ----
+     *
+     * WHY: the metrics above register exactly one interest, so they cannot
+     * tell per-call work proportional to the number of *registered* interests
+     * apart from per-call work proportional to the number of *ready* results.
+     * A wait implementation that walks its whole interest set on every call
+     * costs more as the set grows even when one fd is ready throughout; one
+     * that returns as soon as it has a ready result does not. The sections
+     * below hold the ready count at exactly one and vary only the count of
+     * registered-but-idle fds, so a delta that rises with IDLE_MAX localizes
+     * the cost to interest-set traversal and a flat delta rules it out.
+     *
+     * The trailing `poll_ready_late` is a control for a different explanation
+     * of the same shape. Every section runs in one process in a fixed order,
+     * so a cost that accumulates over a process's blocking-wait history —
+     * a growing queue, a registry that is never pruned — would also make the
+     * later sections (epoll_ready, select_ready) look slower than the earlier
+     * one (poll_ready) with no interest-set mechanism involved. Repeating the
+     * *first* measurement last separates the two: if poll_ready_late is close
+     * to poll_ready, position is not the cause; if it drifts, it is.
+     */
+#define IDLE_MAX 64
+
+    static int idle_fds[IDLE_MAX][2];
+    int idle_made = 0;
+    for (; idle_made < IDLE_MAX; idle_made++) {
+        if (pipe(idle_fds[idle_made]) != 0) break;
+    }
+
+    const int sweep[] = {0, 16, 64};
+    for (unsigned s = 0; s < sizeof(sweep) / sizeof(sweep[0]); s++) {
+        int n = sweep[s];
+        if (n > idle_made) continue;
+        char name[64];
+
+        /* epoll: n registered-but-idle interests plus the one ready fd. */
+        int sepfd = epoll_create1(0);
+        if (sepfd < 0) {
+            fprintf(stderr, "blocking-wait: sweep epoll_create1 failed\n");
+            return 1;
+        }
+        for (int i = 0; i < n; i++) {
+            struct epoll_event ev;
+            memset(&ev, 0, sizeof(ev));
+            ev.events = EPOLLIN;
+            ev.data.fd = idle_fds[i][0];
+            if (epoll_ctl(sepfd, EPOLL_CTL_ADD, idle_fds[i][0], &ev) != 0) {
+                fprintf(stderr, "blocking-wait: sweep epoll_ctl idle failed\n");
+                return 1;
+            }
+        }
+        struct epoll_event rev;
+        memset(&rev, 0, sizeof(rev));
+        rev.events = EPOLLIN;
+        rev.data.fd = ready[0];
+        if (epoll_ctl(sepfd, EPOLL_CTL_ADD, ready[0], &rev) != 0) {
+            fprintf(stderr, "blocking-wait: sweep epoll_ctl ready failed\n");
+            return 1;
+        }
+        struct epoll_event sevents[8];
+        for (int i = 0; i < 50; i++) epoll_wait(sepfd, sevents, 8, TIMEOUT_MS);
+        t0 = now_us();
+        for (int i = 0; i < READY_ITERATIONS; i++) {
+            if (epoll_wait(sepfd, sevents, 8, TIMEOUT_MS) != 1) {
+                fprintf(stderr, "blocking-wait: sweep epoll_wait not 1 ready\n");
+                return 1;
+            }
+        }
+        t1 = now_us();
+        snprintf(name, sizeof(name), "epoll_ready_idle%d_us_per_op", n);
+        report(name, t1 - t0, READY_ITERATIONS);
+        close(sepfd);
+
+        /* select: the same n idle fds in the set, plus the one ready fd. */
+        int maxfd = ready[0];
+        for (int i = 0; i < n; i++) {
+            if (idle_fds[i][0] > maxfd) maxfd = idle_fds[i][0];
+        }
+        for (int i = 0; i < 50; i++) {
+            fd_set rfds;
+            struct timeval tv;
+            FD_ZERO(&rfds);
+            for (int j = 0; j < n; j++) FD_SET(idle_fds[j][0], &rfds);
+            FD_SET(ready[0], &rfds);
+            tv.tv_sec = 0;
+            tv.tv_usec = TIMEOUT_MS * 1000;
+            select(maxfd + 1, &rfds, NULL, NULL, &tv);
+        }
+        t0 = now_us();
+        for (int i = 0; i < READY_ITERATIONS; i++) {
+            fd_set rfds;
+            struct timeval tv;
+            FD_ZERO(&rfds);
+            for (int j = 0; j < n; j++) FD_SET(idle_fds[j][0], &rfds);
+            FD_SET(ready[0], &rfds);
+            tv.tv_sec = 0;
+            tv.tv_usec = TIMEOUT_MS * 1000;
+            if (select(maxfd + 1, &rfds, NULL, NULL, &tv) != 1) {
+                fprintf(stderr, "blocking-wait: sweep select not 1 ready\n");
+                return 1;
+            }
+        }
+        t1 = now_us();
+        snprintf(name, sizeof(name), "select_ready_idle%d_us_per_op", n);
+        report(name, t1 - t0, READY_ITERATIONS);
+    }
+
+    for (int i = 0; i < idle_made; i++) {
+        close(idle_fds[i][0]);
+        close(idle_fds[i][1]);
+    }
+
+    /* Order control: the first measurement, repeated last. */
+    for (int i = 0; i < 50; i++) {
+        pfd.fd = ready[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        poll(&pfd, 1, TIMEOUT_MS);
+    }
+    t0 = now_us();
+    for (int i = 0; i < READY_ITERATIONS; i++) {
+        pfd.fd = ready[0];
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (poll(&pfd, 1, TIMEOUT_MS) != 1) {
+            fprintf(stderr, "blocking-wait: late ready poll did not report ready\n");
+            return 1;
+        }
+    }
+    t1 = now_us();
+    report("poll_ready_late_us_per_op", t1 - t0, READY_ITERATIONS);
+
     close(epfd);
     close(idle[0]);
     close(idle[1]);
