@@ -3942,6 +3942,55 @@ exist.
 The open `host_debug_log` question shifted with it and is **still not settled**:
 now *72-or-73, pinned at 73*, caller intact.
 
+### THE WAIT-QUEUE CUTOVER SHIPPED A 35% HOT-PATH REGRESSION, AND MEASUREMENT CAUGHT IT
+
+The item's own author expected "roughly neutral" and wrote so. An isolated A/B
+over exactly its eight commits, same guest binary, five runs each, median µs/op:
+
+| | before | after | |
+|---|---|---|---|
+| `epoll_ready` | 30.07 | 42.17 | **+35%** |
+| `poll_ready` | 36.18 | 42.59 | **+18%** |
+| `poll_timeout` | 1382.1 | 1466.7 | +6% |
+| `select_timeout` | 1354.1 | 1443.6 | +7% |
+
+**Cause:** `handleEpollPwait` armed the deadline *before* the readiness probe,
+so **every ready `epoll_wait` — the common server-loop case — bought and retired
+a deadline nothing read**, at two kernel crossings, one of which calls back into
+the host for `CLOCK_MONOTONIC`. Fixed by arming below the probe, once the call
+is known to block.
+
+**Three things make this worth recording beyond the fix.**
+
+**The benchmark did not exist, and its absence was invisible.** Nothing in the
+suite armed a timeout — `getpid()` and throughput never reach that path. The
+agent wrote `benchmarks/programs/blocking-wait.c` and wired it into `syscall-io`
+rather than treating a missing benchmark as someone else's problem. Without it
+the regression was unobservable, and the item would have shipped with it on the
+strength of a plausible analysis.
+
+**The author refused to claim the fix's size.** Two attempts disagreed and both
+were discarded: the machine was at load 89 under a concurrent tip-wide suite,
+and — the part that matters — its harness alternated eager→lazy in *both* rounds
+instead of counterbalancing, so a rising load trend biased one arm
+systematically. That is a harness bug found in one's own instrument before
+reporting a number, which is the discipline this campaign has spent a day
+learning. The claim made was only the shape: *the ready path now does zero
+crossings where it did two.*
+
+**The scope left undone was left deliberately.** `select`, `pselect6` and
+`sigtimedwait` still arm eagerly — same waste, but `remainingMs` is read from
+five branches each, their ready path is not in the benchmark, and the same agent
+is about to touch select semantics for the conformance work. Widening the diff
+before that is the wrong order.
+
+**What this says about the campaign's performance contract.** Two items shipped
+recently with "performance not measured" stated honestly, which the contract
+permits. This one had a benchmark *written for it* and still needed a second
+look, because the first measurement was taken with a biased harness. Honest
+non-measurement and careless measurement are not equally safe: the first leaves
+a known gap, the second fills it with a wrong number.
+
 ### B30 — a reaped build publishes an authority for a build that never finished
 
 `local_build.rs` gained a retraction: an **incomplete** build now withdraws the
