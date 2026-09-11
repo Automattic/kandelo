@@ -3942,6 +3942,52 @@ exist.
 The open `host_debug_log` question shifted with it and is **still not settled**:
 now *72-or-73, pinned at 73*, caller intact.
 
+### B30 — a reaped build publishes an authority for a build that never finished
+
+`local_build.rs` gained a retraction: an **incomplete** build now withdraws the
+source-only projection authority, so a partial tier resolves to nothing rather
+than to a lie. It fires on a failed node.
+
+**It does not fire when the build is killed.** A `./run.sh setup` reaped at 91
+nodes (harness exit 144, not a build failure) left the authority *published*,
+describing artifacts the build had not finished producing. The resolver then
+reports, correctly and unhelpfully:
+
+    whole tier refused: programs/wasm32/dash.wasm is not declared by the
+    source-only projection authority (the tier was materialized by a different
+    build than the one this projection describes)
+
+That message is true and the tier is genuinely unusable — but the cause is "your
+build was killed", and nothing says so. **40 of 93 failing files in a tip-wide
+host-suite measurement were this**, i.e. the measurement was of my own partial
+provisioning, not of the branch.
+
+The fix shape is the retraction firing on abnormal termination as well as on a
+failed node — a trap handler, or publishing the authority only as the final
+atomic step. Adjacent to B29: both are cases where an artifact's *state* is
+correct and the *explanation* is missing.
+
+### Tip-wide host suite, measured against a current tier and a 73-import kernel
+
+| | base | tip, stale tier | tip, rebuilt tier |
+|---|---|---|---|
+| Failed files | 103 | 112 | **93** |
+| Passed | 259 | 311 | **332** |
+| Skipped | **65** | 4 | 3 |
+| Failed tests | — | 202 | **154** |
+
+The cluster that dominated every earlier run is nearly gone:
+`void kernel ingress kernel initialization completion failed` went **84 → 4**.
+`Could not find repo root` and `artifact lacks an __abi_version export` remain
+at **0**, where they were 228 and 118 at a mid-campaign base.
+
+What is left, and it is a different shape from before: 47 test timeouts, 40
+closure refusals (**B30, mine**), 7+4 `vi.fn()` call-count assertions, 5
+`unreachable`, 4 kernel-init, 4 artifact-policy refusals, 3 `SNDCTL_DSP_GETFMTS`.
+These are individually readable failures rather than a flood from one
+environmental cause — which is the first time that has been true for this suite
+in the campaign.
+
 ### B29 — a stale kernel artifact fails as "the kernel is broken"
 
 After rebasing onto a new base, `local-binaries/source-only-v1/kernel.wasm` can
