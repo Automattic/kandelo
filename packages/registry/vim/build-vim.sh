@@ -55,9 +55,13 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Resolve ncurses via the dep cache ---
-# An env-var short-circuit lets a caller (e.g. another resolver run,
-# or a wrapper script) pass the prefix in directly and skip the cargo
-# invocation. Otherwise we ask the resolver to build-or-hit the cache.
+# `WASM_POSIX_DEP_NCURSES_DIR` is the normal path: ncurses is a declared
+# dependency (package.toml), so the build engine builds it first and hands
+# the prefix over. The fallback below is for a standalone invocation with no
+# engine around it. It must stay a fallback -- when the engine IS running,
+# resolving ncurses here races the engine's own ncurses node for the same
+# content-addressed entry, and the loser fails with "concurrent cache winner
+# differs from staged build".
 NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
 if [ -z "$NCURSES_PREFIX" ]; then
     echo "==> Resolving ncurses via cargo xtask build-deps..."
