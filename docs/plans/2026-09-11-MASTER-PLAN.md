@@ -474,12 +474,34 @@ repetition is the substitute, and it is what produced the numbers above.
   eight retries deep on the same dead host — cascading through `coreutils-docs`
   to every image product. **The sha256 is already pinned, which is what makes
   fallbacks safe**: integrity does not depend on which host answered.
-- **B37 — the SDK build mutates an input of its own cache key.** It runs `npm`
-  inside the source tree, so the key it finishes with is not the key it started
-  with. It fails *every* time, and presents as a concurrent-edit race — the more
-  dangerous reading, because that one invites a retry loop instead of a fix.
+- **B37 — DISPROVED, and the correction matters more than the item.** I filed
+  this as "the SDK build mutates an input of its own cache key" on the strength
+  of one failure message. It **did not reproduce**: a full `local-build` ran
+  98/98 nodes, Products 7/7, exit 0, with zero "cache key changed". A
+  before/after snapshot of every declared kandelo-sdk input *and* every global
+  toolchain input came back empty — not one moved. `npm` does run in the tree,
+  but nothing it writes is a cache-key input of that package.
 
-## Known hazard
+  What landed instead is the part that was real: the refusal printed two opaque
+  shas and now names the inputs that moved. Same shape as B29 and B30 — the
+  state was correct and the explanation was missing.
+
+## Known hazards
+
+**A package's cache key depends on build state, not on its source closure.**
+`libc/musl` is a global toolchain input digested by an unfiltered recursive
+directory read, and `build-musl.sh` runs `make` **in-tree**. Measured:
+2,698 → 4,170 → 4,238 entries and three different digests as the submodule was
+initialised, then built for wasm32, then wasm64 — and that digest is hashed into
+**every** library and program key. This is the exact inverse of the
+closure-derived principle the campaign adopted. **NEEDS-DEFER-DECISION:**
+changing what `libc/musl` contributes would shift every package key and force a
+full rebuild, so it is a cache-key semantics decision rather than a fix.
+
+**The drift report understates drift.** `global_package_toolchain_digests`
+memoizes per process, so the pre- and post-build keys *necessarily* agree about
+global inputs even when the tree moved underneath. The report now re-reads them
+uncached and says so.
 
 **The documented cheap provisioning path and the documented freshness gate are
 mutually incompatible.** `install_local_binary` stages a kernel with no custom
