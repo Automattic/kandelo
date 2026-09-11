@@ -48368,6 +48368,42 @@ impl HostIO for RelSymlinkMock {
         assert!(proc.prepared_exec_targets.is_empty());
     }
 
+    /// The production shape: the target lives in the in-kernel overlay, so
+    /// `prepare` takes the rootfs branch and the header read goes through a
+    /// rootfs sentinel handle rather than a host handle. The MockHostIO cases
+    /// above all take the host-mount branch and therefore never exercise it.
+    #[test]
+    fn probe_resolves_an_overlay_target_without_trapping() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
+
+        let mut proc = Process::new(166);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+
+        // An overlay-owned executable, created through the normal write path.
+        let fd = sys_open(&mut proc, &mut host, b"/bin/ovl", O_CREAT | O_RDWR, 0o755)
+            .unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, fd, b"\0asm").unwrap(), 4);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: proc.exec_generation,
+        };
+        assert_eq!(
+            crate::exec_target::probe(
+                &mut proc, &mut locks, &mut host, owner, pid, AT_FDCWD, b"/bin/ovl", 0,
+            ),
+            Ok(b"/bin/ovl".to_vec()),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
     #[test]
     fn resolve_shebang_releases_the_interpreter_token_when_its_header_read_fails() {
         // Fix-round-1 regression test: the one-level-limit check used to
