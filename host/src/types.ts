@@ -237,7 +237,16 @@ export interface NetworkAddress {
 export interface TcpConnectionPeer {
   send(data: Uint8Array, flags: number): number;
   recv(maxLen: number, flags: number): Uint8Array;
-  poll?(events: number): number;
+  /**
+   * Report what this engine can observe about the connection, as a
+   * `NET_READINESS` fact word (`host/src/generated/abi.ts`).
+   *
+   * This is deliberately *not* `revents`. Deciding which of
+   * POLLIN/POLLOUT/POLLERR/POLLHUP belongs in `revents` is a POSIX decision
+   * and the kernel makes it, in `runtime_core::net_readiness`. Report facts
+   * here and nothing else.
+   */
+  readiness?(): number;
   /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
   /** Orderly close: flush/FIN the write half and orphan the receive half. */
@@ -270,8 +279,20 @@ export interface NetworkIO {
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
-  /** Return POSIX poll revents bits for this connection handle. */
-  poll?(handle: number, events: number): number;
+  /**
+   * Report what this engine can observe about a connection handle, as a
+   * `NET_READINESS` fact word (`host/src/generated/abi.ts`).
+   *
+   * This is deliberately *not* `revents`. Deciding which of
+   * POLLIN/POLLOUT/POLLERR/POLLHUP belongs in `revents` is a POSIX decision
+   * and the kernel makes it, in `runtime_core::net_readiness`. Report facts
+   * here and nothing else.
+   *
+   * A backend that omits this is reported to the kernel as
+   * `NET_READINESS.UNOBSERVABLE`, whose documented handling is
+   * wake-every-round with `EAGAIN` from `recv`/`send`.
+   */
+  readiness?(handle: number): number;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
   listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;

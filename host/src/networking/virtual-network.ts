@@ -7,6 +7,7 @@ import type {
   UdpReceiveTarget,
 } from "../types";
 import { EagainError } from "./fetch-backend";
+import { NET_READINESS } from "../generated/abi";
 
 const EADDRNOTAVAIL = 99;
 const ENETUNREACH = 101;
@@ -15,10 +16,6 @@ const ENOTCONN = 107;
 const EISCONN = 106;
 const ECONNREFUSED = 111;
 const EHOSTUNREACH = 113;
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 const ANY = "0.0.0.0";
@@ -121,25 +118,38 @@ class VirtualTcpPeer implements TcpConnectionPeer {
     throw new EagainError();
   }
 
-  poll(events: number): number {
-    let revents = 0;
+  /**
+   * Report the fabric-observable state of this endpoint. No POSIX readiness
+   * decision is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(): number {
+    // A reset takes the connection down in both directions at once.
     if (this.reset) {
-      revents |= POLLERR;
+      return NET_READINESS.ERROR
+        | (ECONNRESET << NET_READINESS.ERRNO_SHIFT)
+        | NET_READINESS.RECV_EOF
+        | NET_READINESS.SEND_CLOSED
+        | NET_READINESS.HANGUP;
     }
-    if ((events & POLLIN) !== 0) {
-      if (this.recvBuf.length > 0 || !this.peer || this.peer.writeClosed || this.readClosed) {
-        revents |= POLLIN;
-      }
-      if (!this.peer || this.peer.writeClosed) {
-        revents |= POLLHUP;
-      }
+
+    let facts = 0;
+    if (this.recvBuf.length > 0) facts |= NET_READINESS.RECV_READY;
+    if (!this.peer || this.peer.writeClosed || this.readClosed) {
+      facts |= NET_READINESS.RECV_EOF;
     }
-    if ((events & POLLOUT) !== 0) {
-      if (!this.writeClosed && this.peer && !this.peer.readClosed && !this.peer.reset) {
-        revents |= POLLOUT;
-      }
+    // A hangup is both directions down, matching Linux's
+    // `sk_shutdown == SHUTDOWN_MASK`. A bare peer FIN is end-of-stream, not a
+    // hangup; this used to raise POLLHUP on a half-close, and then only when
+    // the caller happened to have asked for POLLIN.
+    if ((!this.peer || this.peer.writeClosed) && this.writeClosed) {
+      facts |= NET_READINESS.HANGUP;
     }
-    return revents;
+    if (this.writeClosed || !this.peer || this.peer.readClosed || this.peer.reset) {
+      facts |= NET_READINESS.SEND_CLOSED;
+    } else {
+      facts |= NET_READINESS.SEND_READY;
+    }
+    return facts;
   }
 
   shutdown(how: number): void {
@@ -476,13 +486,15 @@ export class VirtualNetworkBackend implements NetworkIO {
     return conn.recv(maxLen, flags);
   }
 
-  poll(handle: number, events: number): number {
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: ENOTCONN });
-    if (typeof conn.poll === "function") {
-      return conn.poll(events);
+    if (typeof conn.readiness === "function") {
+      return conn.readiness();
     }
-    return events;
+    // A peer with no readiness source. This used to `return events`, telling
+    // the caller every event it asked about was ready; say so instead.
+    return NET_READINESS.UNOBSERVABLE;
   }
 
   close(handle: number): void {

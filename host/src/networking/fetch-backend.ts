@@ -1,4 +1,5 @@
 import type { NetworkIO } from "../types";
+import { NET_READINESS } from "../generated/abi";
 import { validateSyntheticDnsHostname } from "./hostname";
 import {
   BrowserCorsProxy,
@@ -26,10 +27,6 @@ export class EagainError extends Error {
   constructor() { super("EAGAIN"); }
 }
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 interface ConnectionState {
@@ -212,30 +209,29 @@ export class FetchNetworkBackend implements NetworkIO {
     return result;
   }
 
-  poll(handle: number, events: number): number {
+  /**
+   * Report what a `fetch` promise's settlement makes observable. No POSIX
+   * readiness decision is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
-    if (conn.fetchError) return POLLERR;
 
-    let revents = 0;
-    if ((events & POLLOUT) !== 0) {
-      revents |= POLLOUT;
+    let facts = 0;
+    if (conn.fetchError) facts |= NET_READINESS.ERROR;
+    if (conn.responseBuf && conn.responseOffset < conn.responseBuf.length) {
+      facts |= NET_READINESS.RECV_READY;
     }
-    if (
-      (events & POLLIN) !== 0 &&
-      conn.responseBuf &&
-      conn.responseOffset < conn.responseBuf.length
-    ) {
-      revents |= POLLIN;
+    if (conn.fetchDone && !conn.fetchError) {
+      // The response is complete: every byte beyond `responseBuf` is EOF.
+      if (!conn.responseBuf || conn.responseOffset >= conn.responseBuf.length) {
+        facts |= NET_READINESS.RECV_EOF;
+      }
     }
-    if (
-      conn.fetchDone &&
-      conn.responseBuf &&
-      conn.responseOffset >= conn.responseBuf.length
-    ) {
-      revents |= POLLHUP;
-    }
-    return revents;
+    // `send` appends to a buffer and dispatches when the request is complete,
+    // so this engine always accepts a write.
+    facts |= NET_READINESS.SEND_READY;
+    return facts;
   }
 
   close(handle: number): void {

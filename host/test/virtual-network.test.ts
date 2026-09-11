@@ -5,11 +5,8 @@ import {
   VIRTUAL_NETWORK_ERRNO,
 } from "../src/networking/virtual-network";
 import type { TcpConnectionPeer, UdpDatagram } from "../src/types";
+import { NET_READINESS } from "../src/generated/abi";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
@@ -108,11 +105,18 @@ describe("LocalVirtualNetwork", () => {
 
     net.detachMachine("server");
 
-    const revents = client.poll!(7, POLLIN | POLLOUT);
-    expect(revents & POLLERR).toBe(POLLERR);
-    expect(revents & POLLIN).toBe(POLLIN);
-    expect(revents & POLLOUT).toBe(0);
-    expect(revents & POLLHUP).toBe(POLLHUP);
+    // The backend reports facts; the kernel turns them into revents, and its
+    // own tests (`runtime_core::net_readiness`) pin that mapping. A reset
+    // takes both directions down, so it is an error, end-of-stream, a hangup,
+    // and no longer writable — which the kernel renders as
+    // POLLERR | POLLIN | POLLHUP with POLLOUT suppressed.
+    const facts = client.readiness!(7);
+    expect(facts & NET_READINESS.ERROR).toBe(NET_READINESS.ERROR);
+    expect(facts >>> NET_READINESS.ERRNO_SHIFT)
+      .toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
+    expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+    expect(facts & NET_READINESS.HANGUP).toBe(NET_READINESS.HANGUP);
+    expect(facts & NET_READINESS.SEND_READY).toBe(0);
     try {
       client.recv(7, 16, 0);
       throw new Error("recv after detached peer unexpectedly succeeded");
@@ -149,9 +153,13 @@ describe("LocalVirtualNetwork", () => {
 
     expect(new TextDecoder().decode(client.recv(7, 16, 0))).toBe("queued");
     expect(client.recv(7, 16, 0)).toHaveLength(0);
-    const revents = client.poll!(7, POLLIN | POLLOUT);
-    expect(revents & POLLIN).toBe(POLLIN);
-    expect(revents & POLLOUT).toBe(POLLOUT);
+    // A bare peer FIN is end-of-stream, not a hangup: the write half is still
+    // live, so the kernel reports POLLIN and keeps POLLOUT set. This endpoint
+    // used to raise POLLHUP here, and only when POLLIN was requested.
+    const facts = client.readiness!(7);
+    expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+    expect(facts & NET_READINESS.SEND_READY).toBe(NET_READINESS.SEND_READY);
+    expect(facts & NET_READINESS.HANGUP).toBe(0);
     expect(client.send(7, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
     expect(client.send(7, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
     client.close(7);

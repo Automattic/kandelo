@@ -2,11 +2,8 @@ import * as net from "net";
 import type { NetworkIO } from "../types";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
+import { NET_READINESS } from "../generated/abi";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 /**
@@ -161,30 +158,34 @@ export class TcpNetworkBackend implements NetworkIO {
     throw new EagainError();
   }
 
-  poll(handle: number, events: number): number {
+  /**
+   * Report the OS-level facts `net.Socket` exposes. No POSIX readiness
+   * decision is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
 
-    if (conn.error) return POLLERR;
-
-    let revents = 0;
-    if ((events & POLLIN) !== 0 && (conn.recvBuf.length > 0 || conn.readEnded || conn.closed)) {
-      revents |= POLLIN;
+    let facts = 0;
+    if (conn.error) {
+      facts |= NET_READINESS.ERROR
+        | (mapNetErrnoCode((conn.error as NodeJS.ErrnoException).code)
+          << NET_READINESS.ERRNO_SHIFT);
     }
-    if (conn.closed) {
-      revents |= POLLHUP;
-    }
+    if (conn.recvBuf.length > 0) facts |= NET_READINESS.RECV_READY;
+    if (conn.readEnded || conn.closed) facts |= NET_READINESS.RECV_EOF;
+    if (conn.closed) facts |= NET_READINESS.HANGUP;
     if (
-      (events & POLLOUT) !== 0 &&
-      conn.connected &&
-      !conn.closed &&
-      !conn.socket.destroyed &&
-      !conn.socket.writableEnded &&
-      conn.socket.writable
+      conn.closed ||
+      conn.socket.destroyed ||
+      conn.socket.writableEnded ||
+      !conn.socket.writable
     ) {
-      revents |= POLLOUT;
+      facts |= NET_READINESS.SEND_CLOSED;
+    } else if (conn.connected) {
+      facts |= NET_READINESS.SEND_READY;
     }
-    return revents;
+    return facts;
   }
 
   close(handle: number): void {

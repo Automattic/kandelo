@@ -14,6 +14,7 @@
  */
 
 import type { NetworkIO } from "../types";
+import { NET_READINESS } from "../generated/abi";
 import { EagainError } from "./fetch-backend";
 import { validateSyntheticDnsHostname } from "./hostname";
 import {
@@ -40,10 +41,6 @@ import {
   parseHttpRequest,
 } from "./http1";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 // ------------------------------------------------------------------ types
@@ -735,42 +732,43 @@ export class TlsNetworkBackend implements NetworkIO {
     return result;
   }
 
-  poll(handle: number, events: number): number {
+  /**
+   * Report what each transport makes observable. No POSIX readiness decision
+   * is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
 
-    let revents = 0;
-    if ((events & POLLOUT) !== 0 && (conn.kind === "http" || !conn.closed)) {
-      revents |= POLLOUT;
-    }
+    let facts = 0;
 
     if (conn.kind === "http") {
-      if (conn.fetchError) return revents | POLLERR;
-      if (
-        (events & POLLIN) !== 0 &&
-        conn.responseBuf &&
-        conn.responseOffset < conn.responseBuf.length
-      ) {
-        revents |= POLLIN;
+      if (conn.fetchError) facts |= NET_READINESS.ERROR;
+      if (conn.responseBuf && conn.responseOffset < conn.responseBuf.length) {
+        facts |= NET_READINESS.RECV_READY;
       }
       if (
-        conn.fetchDone &&
-        conn.responseBuf &&
-        conn.responseOffset >= conn.responseBuf.length
+        conn.fetchDone
+        && !conn.fetchError
+        && (!conn.responseBuf || conn.responseOffset >= conn.responseBuf.length)
       ) {
-        revents |= POLLHUP;
+        facts |= NET_READINESS.RECV_EOF;
       }
-      return revents;
+      // `send` buffers the request and dispatches when it is complete.
+      return facts | NET_READINESS.SEND_READY;
     }
 
-    if (conn.error) return revents | POLLERR;
-    if ((events & POLLIN) !== 0 && conn.clientDownstreamBuf.length > 0) {
-      revents |= POLLIN;
-    }
+    if (conn.error) facts |= NET_READINESS.ERROR;
+    if (conn.clientDownstreamBuf.length > 0) facts |= NET_READINESS.RECV_READY;
     if (conn.closed && conn.clientDownstreamBuf.length === 0) {
-      revents |= POLLHUP;
+      facts |= NET_READINESS.RECV_EOF | NET_READINESS.HANGUP;
     }
-    return revents;
+    if (conn.closed) {
+      facts |= NET_READINESS.SEND_CLOSED;
+    } else {
+      facts |= NET_READINESS.SEND_READY;
+    }
+    return facts;
   }
 
   // ---- Utilities ----

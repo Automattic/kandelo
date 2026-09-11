@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backend";
 import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
+import { NET_READINESS } from "../src/generated/abi";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -108,15 +109,15 @@ class LoopbackMitmTls implements TlsMitmConnection {
 }
 
 async function waitForReadable(
-  backend: Pick<TlsNetworkBackend, "poll">,
+  backend: Pick<TlsNetworkBackend, "readiness">,
   handle: number,
 ): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
-    if ((backend.poll(handle, 0x0001) & 0x0001) !== 0) return;
+    if ((backend.readiness(handle) & NET_READINESS.RECV_READY) !== 0) return;
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  throw new Error("timed out waiting for readable poll");
+  throw new Error("timed out waiting for readable bytes");
 }
 
 describe("FetchNetworkBackend", () => {
@@ -196,11 +197,38 @@ describe("FetchNetworkBackend", () => {
     });
   });
 
-  describe("poll", () => {
-    it("reports writable readiness without echoing requested error bits", () => {
+  describe("readiness", () => {
+    it("reports facts only — a fresh connection accepts a write and has nothing to read", () => {
       const backend = new FetchNetworkBackend();
       backend.connect(1, new Uint8Array([93, 184, 216, 34]), 80);
-      expect(backend.poll(1, 0x0004 | 0x0008)).toBe(0x0004);
+      // No `events` argument exists to echo back: this backend can no longer
+      // claim readiness the caller merely asked about. It reports that the
+      // engine will take a write, and nothing else.
+      expect(backend.readiness(1)).toBe(NET_READINESS.SEND_READY);
+    });
+
+    it("reports a completed empty-bodied response as end-of-stream, not hangup", async () => {
+      // A finished HTTP response is EOF on this response, not a dead
+      // connection: the kernel turns RECV_EOF into POLLIN (recv returns 0)
+      // and leaves POLLOUT set for the next keep-alive request. This backend
+      // used to report POLLHUP here, alongside an unconditional POLLOUT —
+      // a pair POSIX calls mutually exclusive.
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("hi")));
+      const backend = new FetchNetworkBackend();
+      const addr = backend.getaddrinfo("example.com");
+      backend.connect(1, addr, 80);
+      backend.send(
+        1,
+        new TextEncoder().encode("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+        0,
+      );
+      await waitForReadable(backend, 1);
+      while (backend.recv(1, 4096, 0).length > 0) { /* drain */ }
+
+      const facts = backend.readiness(1);
+      expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+      expect(facts & NET_READINESS.HANGUP).toBe(0);
+      expect(facts & NET_READINESS.SEND_READY).toBe(NET_READINESS.SEND_READY);
     });
   });
 
@@ -627,7 +655,8 @@ describe("TlsNetworkBackend TLS MITM path", () => {
 
     await waitForReadable(backend, 1);
     const peeked = backend.recv(1, 8, MSG_PEEK);
-    expect(backend.poll(1, 0x0001) & 0x0001).toBe(0x0001);
+    expect(backend.readiness(1) & NET_READINESS.RECV_READY)
+      .toBe(NET_READINESS.RECV_READY);
     const consumed = backend.recv(1, 8, 0);
     expect(peeked).toEqual(consumed);
     const response = decoder.decode(

@@ -490,6 +490,21 @@ export const EPOLL_EVENTS = {
   EPOLLHUP: 16,
 } as const;
 
+/* Facts a host network engine reports over `host_net_readiness`.
+* The host reports these; the kernel alone decides `revents` from
+* them (runtime_core::net_readiness::stream_revents). */
+export const NET_READINESS = {
+  RECV_READY: 1,
+  RECV_EOF: 2,
+  SEND_READY: 4,
+  SEND_CLOSED: 8,
+  HANGUP: 16,
+  ERROR: 32,
+  UNOBSERVABLE: 64,
+  ERRNO_SHIFT: 16,
+  FLAG_MASK: 65535,
+} as const;
+
 export const OPEN_FLAGS = {
   O_RDONLY: 0,
   O_WRONLY: 1,
