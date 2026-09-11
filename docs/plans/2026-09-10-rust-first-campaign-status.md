@@ -6420,3 +6420,60 @@ So the operational guidance for anyone driving this suite, agent or human:
 
 A gate that needs a retry loop is worse than one that does not, but it is a
 different and much smaller problem than a suite that cannot complete.
+
+## Select/pselect6 lazy arming: measured
+
+`handleSelect` and `handlePselect6` armed their kernel-owned wait deadline
+before asking the kernel whether anything was ready, so every ready call, every
+error, every caught signal and every `timeout=0` probe bought and retired a
+deadline nothing read — two kernel crossings, one of which calls the host for
+`CLOCK_MONOTONIC`. `69e2fa95d` had already made that move for `epoll_pwait` and
+left these two alone. Moving the arm below the readiness probe in both is
+commit `6e73846ea`.
+
+**Apparatus.** A host-TypeScript-only change cannot be measured by
+`benchmarks/wait-ab-bisect.sh`, which stages a worktree per commit and varies
+the *kernel* per arm. Instead one working tree, one kernel wasm, one guest
+binary, one `node_modules`, with `host/src/kernel-worker.ts` swapped between
+single-run invocations — so the arms differ in exactly one file and nothing
+else *can* differ. Otherwise the proven shape: `A B B A` counterbalancing, one
+process per run, aggregation on minima and p10.
+
+**Conditions.** 24 runs, 12 per arm, eager arm from `1bb6d6972`, lazy arm the
+working tree. One-minute load average **2.79–3.37 for the whole round**, logged
+per run; it never rose above 3.4. Every run succeeded.
+
+| metric | A_min (eager) | B_min (lazy) | dMin | dP10 |
+|---|---|---|---|---|
+| `select_ready` | 32.66 | 30.78 | **−1.89** | **−2.80** |
+| `select_ready_idle0` | 32.83 | 30.17 | **−2.66** | **−2.34** |
+| `select_ready_idle16` | 32.97 | 30.47 | **−2.50** | **−2.59** |
+| `select_ready_idle64` | 32.18 | 29.68 | **−2.50** | **−2.75** |
+| `epoll_ready` | 29.82 | 30.72 | +0.90 | +1.20 |
+| `epoll_ready_idle0` | 29.30 | 29.29 | −0.00 | +0.20 |
+| `epoll_ready_idle16` | 28.46 | 28.81 | +0.35 | +1.13 |
+| `epoll_ready_idle64` | 28.89 | 29.06 | +0.17 | +0.41 |
+| `poll_ready` | 33.48 | 35.41 | +1.94 | +0.79 |
+| `poll_ready_late` | 28.89 | 29.27 | +0.37 | +0.40 |
+
+**The result.** All four `select_*` readiness metrics move in the predicted
+direction, on both statistics, by **2.3–2.8 µs**. That is four independent
+metrics agreeing in sign and magnitude, and it recovers the +2.68 dMin / +1.39
+dP10 that eager arming was known to carry.
+
+**What the controls actually say, stated honestly.** The six metrics this
+change does not touch scatter from −0.00 to +1.94, with no consistent
+structure, and `epoll_ready` (+0.90 / +1.20) and `poll_ready` (+1.94 / +0.79)
+sit above the ±0.7 µs floor measured elsewhere from a same-build comparison. So
+the correct claim is **not** "the controls are flat". It is that this round's
+own resolution is wider than ±0.7, and the select effect is outside that wider
+band and coherent across four metrics where the controls are incoherent across
+six.
+
+A mechanism for a small uniform control shift exists and should not be hidden:
+`kernel-worker.ts` is a single ~25,000-line file, and moving code inside it
+changes byte layout, which can shift V8 parse/compile and inline-cache
+behaviour for unrelated functions. **A same-build noise-floor control for this
+round was not run**, and until it is, `epoll_ready` and `poll_ready` are best
+reported as "not regressed beyond this round's own scatter" rather than "not
+regressed".
