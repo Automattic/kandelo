@@ -5173,4 +5173,239 @@ mod shared_mapping_tests {
         assert!(table.is_empty());
         table.synchronize_for_boundary(1, &mut io).unwrap();
     }
+
+    // -- whole-lifecycle drives over a NON-EMPTY mixed table ---------------
+    //
+    // Every test above exercises one method over a table holding one kind of
+    // backing. Production has never run any of them over a table holding
+    // both: `inherit_process_mappings` is reached only over an empty map, and
+    // `synchronize_for_boundary` is covered only by its `is_empty` early-out.
+    // These drive the fork/sync/flush/remap/unmap/teardown sequence in order,
+    // over one process holding an anonymous and a file mapping at once.
+
+    /// pid 1 holding an anonymous `MAP_SHARED` at 0 and a file-backed one at
+    /// 32, in a single table.
+    fn mixed_table_for_one_process(io: &mut MockIo, key: &str) -> SharedMappingTable {
+        let mut table = SharedMappingTable::new();
+        // Seed the anonymous region before tracking so its snapshot is the
+        // same filler the file backing carries. Publication is diff-against-
+        // snapshot, so a byte differing from the snapshot *is* a write: with
+        // a zero snapshot a `.` filler would itself read as a whole-range
+        // write and each peer would clobber the other.
+        io.poke(1, 0, b"........");
+        table.track_anonymous_mapping(1, 0, 8, true, io).unwrap();
+
+        let stat = io.stat_of(10);
+        {
+            let backing = table.get_or_create_file_backing(key, &stat, true, io).unwrap();
+            // The backing is created with `ref_count: 0`; the mapping that
+            // caused it takes its own reference. In the host this is
+            // `prepareSharedMmapFromFile`'s `backing.refCount++`, and there is
+            // no Rust counterpart for it yet — the mmap-from-file registration
+            // path is part of the policy layer that has still to be written.
+            // Doing it here is what the missing caller will do.
+            backing.ref_count += 1;
+        }
+        let initial = table
+            .file_backing_mut(key)
+            .unwrap()
+            .read_range(0, 8, io)
+            .unwrap();
+        io.write_process(1, 32, &initial).unwrap();
+        table.insert_mapping(
+            1,
+            32,
+            SharedMapping::file(3, 0, 8, true, true, String::from(key), initial, 0),
+        );
+        table
+    }
+
+    #[test]
+    fn a_mixed_table_survives_the_whole_fork_lifecycle() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = mixed_table_for_one_process(&mut io, &key);
+
+        // A boundary sync with the early-out no longer covering for it.
+        assert!(!table.is_empty());
+        table.synchronize_for_boundary(1, &mut io).unwrap();
+
+        // fork(): one call inherits both kinds.
+        table.inherit_process_mappings(1, 2, &mut io).unwrap();
+        assert!(table.mapping(2, 0).is_some(), "anon mapping inherited");
+        assert!(table.mapping(2, 32).is_some(), "file mapping inherited");
+
+        // Disjoint writes in each process, through each kind.
+        io.poke(1, 0, b"AAAA....");
+        io.poke(2, 0, b"....BBBB");
+        io.poke(1, 32, b"CCCC....");
+        io.poke(2, 32, b"....DDDD");
+
+        // Both peers must now be counted, or the sole-observer deferral
+        // suppresses coherence between two live processes.
+        assert_eq!(
+            table.file_backing(&key).unwrap().ref_count,
+            2,
+            "fork left one reference per mapping"
+        );
+
+        table.synchronize_for_boundary(1, &mut io).unwrap();
+        table.synchronize_for_boundary(2, &mut io).unwrap();
+        table.synchronize_for_boundary(1, &mut io).unwrap();
+
+        assert_eq!(io.peek(1, 0, 8), b"AAAABBBB".to_vec(), "anon, parent");
+        assert_eq!(io.peek(2, 0, 8), b"AAAABBBB".to_vec(), "anon, child");
+        assert_eq!(io.peek(1, 32, 8), b"CCCCDDDD".to_vec(), "file, parent");
+        assert_eq!(io.peek(2, 32, 8), b"CCCCDDDD".to_vec(), "file, child");
+
+        // One flush spanning both mappings reaches the file.
+        assert!(table.flush_mappings(1, 0, 64, &mut io));
+        assert_eq!(io.files[&10], b"CCCCDDDD".to_vec());
+
+        // Teardown, one process at a time.
+        table.release_all_for_process(2, true, &mut io);
+        assert!(table.mapping(2, 0).is_none());
+        assert!(table.mapping(2, 32).is_none());
+        table.release_all_for_process(1, true, &mut io);
+        assert!(table.is_empty(), "the table drains once every process is gone");
+    }
+
+    #[test]
+    fn a_file_backing_is_counted_per_mapping_across_fork_and_teardown() {
+        // The accounting is split across three places: creation counts
+        // nothing, `inherit_process_mappings` counts each inherited mapping,
+        // and `release_mapping` discounts every mapping it drops. It balances
+        // only if the registration path counts the mapping that created the
+        // backing. If a future caller omits that, the count is one short for
+        // the whole life of the mapping and the *first* process to exit takes
+        // the backing to zero — flushing and closing the host handle while a
+        // live peer still has the file mapped. Pin the invariant here so that
+        // omission fails as a test rather than as a lost write.
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = mixed_table_for_one_process(&mut io, &key);
+
+        assert_eq!(
+            table.file_backing(&key).unwrap().ref_count,
+            1,
+            "the mapping that created the backing holds one reference"
+        );
+
+        table.inherit_process_mappings(1, 2, &mut io).unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().ref_count, 2);
+
+        // The parent exits first. The backing must survive for the child.
+        table.release_all_for_process(1, true, &mut io);
+        let surviving = table
+            .file_backing(&key)
+            .expect("the child's mapping still holds the backing");
+        assert_eq!(surviving.ref_count, 1);
+        assert!(
+            table.mapping(2, 32).is_some(),
+            "the child's file mapping outlives its parent"
+        );
+
+        // Only the child's exit may close it.
+        table.release_all_for_process(2, true, &mut io);
+        assert!(table.file_backing(&key).is_none(), "last reference closed it");
+    }
+
+    #[test]
+    fn an_address_reissued_after_unmap_gets_its_own_byte_store() {
+        // `release_host_region` frees only bookkeeping, and the range it frees
+        // is immediately reusable by the same `find_gap` allocator that
+        // answers `mmap_anonymous`. A table keyed by address must not let a
+        // departed tenant's backing answer for the new one.
+        let mut io = MockIo::new().with_process(1, 64);
+        let mut table = SharedMappingTable::new();
+
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        io.poke(1, 0, b"OLDOLDOL");
+        table.synchronize_for_boundary(1, &mut io).unwrap();
+        let first = table.mapping(1, 0).unwrap().backing_key.clone().unwrap();
+
+        table.cleanup_mappings(1, 0, 8, &mut io);
+        assert!(table.mapping(1, 0).is_none(), "unmap drops the entry");
+        assert!(
+            table.anon_backing(&first).is_none(),
+            "the departed store is released, not orphaned"
+        );
+
+        // The allocator re-issues the same address.
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        let second = table.mapping(1, 0).unwrap().backing_key.clone().unwrap();
+        assert_ne!(first, second, "the re-issued address gets its own store");
+    }
+
+    #[test]
+    fn teardown_then_reuse_of_the_same_address_does_not_resurrect_a_mapping() {
+        // The ordering hazard stated as a test: an address-space release
+        // followed by a re-reservation at the same address, with the mapping
+        // release in between.
+        let mut io = MockIo::new().with_process(1, 64);
+        let mut table = SharedMappingTable::new();
+
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        table.release_all_for_process(1, true, &mut io);
+        assert!(table.is_empty(), "teardown drained the process");
+
+        // A pthread slot reserving the same address afterwards.
+        table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+        assert_eq!(
+            table.mappings_for(1).count(),
+            1,
+            "exactly one live mapping at the re-issued address"
+        );
+    }
+
+    #[test]
+    fn a_remap_moves_a_file_mapping_without_disturbing_its_anon_neighbour() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = mixed_table_for_one_process(&mut io, &key);
+
+        io.poke(1, 0, b"ANONANON");
+        io.poke(1, 32, b"FILEFILE");
+        table.flush_mappings(1, 0, 64, &mut io);
+
+        // mremap the file mapping from 32 to 48.
+        table.remap_mapping(1, 32, 48, 8, &mut io).unwrap();
+        assert!(table.mapping(1, 32).is_none(), "old address released");
+        assert!(table.mapping(1, 48).is_some(), "new address tracked");
+        assert_eq!(io.peek(1, 48, 8), b"FILEFILE".to_vec(), "bytes moved");
+
+        // The anonymous neighbour is untouched and still coherent.
+        let anon = table.mapping(1, 0).expect("anon mapping still tracked");
+        assert_eq!(anon.backing_kind, Some(BackingKind::Anonymous));
+        assert_eq!(io.peek(1, 0, 8), b"ANONANON".to_vec());
+    }
+
+    #[test]
+    fn a_partial_unmap_of_one_kind_leaves_the_other_kinds_mapping_intact() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = mixed_table_for_one_process(&mut io, &key);
+
+        // Unmap the tail half of the anonymous mapping only.
+        table.cleanup_mappings(1, 4, 4, &mut io);
+
+        let anon = table
+            .mapping(1, 0)
+            .expect("head of the anon mapping survives");
+        assert_eq!(anon.len, 4, "the surviving head is shortened");
+        assert!(
+            table.mapping(1, 32).is_some(),
+            "the file mapping is not swept up by a neighbour's unmap"
+        );
+    }
 }
