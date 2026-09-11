@@ -142,6 +142,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_epoll_wake_indices",
   "kernel_exec_target_artifact_policy",
   "kernel_exec_target_prepare",
+  "kernel_exec_target_probe",
   "kernel_exec_target_read",
   "kernel_exec_target_shebang",
   "kernel_get_cwd",
@@ -229,6 +230,7 @@ const REQUIRED_POINTER_1 = intrinsicObjectFreeze([1] as const);
 const REQUIRED_POINTER_2 = intrinsicObjectFreeze([2] as const);
 const REQUIRED_POINTER_3 = intrinsicObjectFreeze([3] as const);
 const REQUIRED_POINTER_3_5 = intrinsicObjectFreeze([3, 5] as const);
+const REQUIRED_POINTER_3_6 = intrinsicObjectFreeze([3, 6] as const);
 const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
 const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
@@ -297,6 +299,9 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_0_4;
     case "kernel_getsockopt":
       return REQUIRED_POINTER_3_5;
+    case "kernel_exec_target_probe":
+      // path bytes at arg 3, resolved-path buffer at arg 6.
+      return REQUIRED_POINTER_3_6;
     case "kernel_wait_child_poll":
       return REQUIRED_POINTER_5;
     case "kernel_inject_datagram":
@@ -343,6 +348,7 @@ function isKernelScratchExportName(
     case "kernel_epoll_wake_indices":
     case "kernel_exec_target_artifact_policy":
     case "kernel_exec_target_prepare":
+    case "kernel_exec_target_probe":
     case "kernel_exec_target_read":
     case "kernel_exec_target_shebang":
     case "kernel_get_cwd":

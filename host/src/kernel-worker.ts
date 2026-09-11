@@ -8431,6 +8431,89 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /**
+   * Resolve `path` to the image a launch would actually run, retaining
+   * nothing.
+   *
+   * This is the question the SYS_SPAWN preflight asks BEFORE
+   * `kernel_spawn_process` builds a child and applies its `file_actions`,
+   * which POSIX requires to run exactly once. The kernel answers with its own
+   * executability rules — existence, regular-file-ness, `X_OK`, directories
+   * refused with EACCES, resolution against the caller's CWD, and exactly one
+   * `#!` retarget with ENOEXEC beyond — instead of the host re-deciding any of
+   * them in TypeScript.
+   *
+   * `kernel_exec_target_probe` releases every token it takes on both its
+   * success and failure paths, so the ledger is unchanged by the call. That is
+   * what keeps the preflight side-effect-free while still letting it consult
+   * the authority, and it is why calling this speculatively, twice per spawn,
+   * or again after a deferred kernel entry is safe.
+   *
+   * The path goes in at lease offset 0 and the resolved path comes back after
+   * it, so one lease carries both.
+   */
+  execTargetProbe(
+    pid: number,
+    callerTid: number,
+    dirfd: number,
+    path: string,
+    flags: number,
+  ): { resolvedPath: string } | { errno: number } {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const encodedPath = new TextEncoder().encode(path);
+    const pathLen = encodedPath.byteLength;
+    if (pathLen > POSIX_PATH_MAX_BYTES) return { errno: ENAMETOOLONG };
+    const region = this.#requireMainScratchRegion();
+    const outCap = region.capacity - pathLen;
+    if (pathLen > region.capacity || outCap <= 0) {
+      return { errno: ENAMETOOLONG };
+    }
+    let result: { resolvedPath: string } | { errno: number } = { errno: EIO };
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel exec target probe pid=${pid}`,
+      (entry) => {
+        const previousPid = this.currentHandlePid;
+        this.currentHandlePid = pid;
+        try {
+          result = region.withLease((lease) => {
+            lease.copyFrom(encodedPath, 0, 0, pathLen);
+            const raw = this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_exec_target_probe",
+              [
+                pid,
+                callerTid,
+                dirfd,
+                lease.exportPointer(0, pathLen),
+                pathLen,
+                flags,
+                lease.exportPointer(pathLen, outCap),
+                outCap,
+              ],
+            );
+            if (!Number.isSafeInteger(raw)) return { errno: EIO };
+            if (raw < 0) return { errno: -raw };
+            return {
+              resolvedPath: new TextDecoder().decode(
+                lease.copyOut(pathLen, raw),
+              ),
+            };
+          });
+          completed = true;
+        } finally {
+          this.currentHandlePid = previousPid;
+        }
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel exec target probe");
+    }
+    return result;
+  }
+
   /** Prepare one target through the pending spawn child's final namespace. */
   spawnExecTargetPrepare(
     parentPid: number,

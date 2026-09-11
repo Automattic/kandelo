@@ -3697,6 +3697,84 @@ pub extern "C" fn kernel_exec_target_prepare(
     }
 }
 
+/// Answer the spawn preflight's question without retaining anything.
+///
+/// Resolves `path` the way a launch would — the caller's CWD, `X_OK`,
+/// regular-file-ness, directories refused with `EACCES`, and exactly one `#!`
+/// retarget with `ENOEXEC` beyond — and writes the absolute path of the image
+/// that launch would actually run into `out_ptr`. A non-script resolves to
+/// itself.
+///
+/// Returns the path byte length written, or a negative errno. `EOVERFLOW`
+/// when `out_len` cannot hold the path.
+///
+/// The preflight must stay side-effect-free because POSIX requires a spawn's
+/// `file_actions` to run exactly once and the preflight runs BEFORE them,
+/// speculatively and repeatedly. `exec_target::probe` therefore releases every
+/// token it takes before returning, on both the success and the failure path,
+/// so this export leaves the prepared-target ledger exactly as it found it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_probe(
+    pid: u32,
+    caller_tid: u32,
+    dirfd: i32,
+    path_ptr: usize,
+    path_len: usize,
+    flags: u32,
+    out_ptr: usize,
+    out_len: usize,
+) -> i64 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(error) => return -(error as i64),
+    };
+    if out_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i64);
+    }
+    if out_len != 0 && (out_ptr == 0 || out_ptr.checked_add(out_len).is_none()) {
+        return -(Errno::EFAULT as i64);
+    }
+    let out: &mut [u8] = if out_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) }
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
+        Some(pair) => pair,
+        None => return -(Errno::ESRCH as i64),
+    };
+    if !proc.is_live_explicit_tid(caller_tid) {
+        return -(Errno::ESRCH as i64);
+    }
+    let mut host = WasmHostIO;
+    let owner = crate::exec_target::PreparedExecOwner::Process {
+        pid,
+        caller_tid,
+        generation: proc.exec_generation,
+    };
+    let resolved = match crate::exec_target::probe(
+        proc,
+        advisory_locks,
+        &mut host,
+        owner,
+        pid,
+        dirfd,
+        path,
+        flags,
+    ) {
+        Ok(resolved) => resolved,
+        Err(error) => return -(error as i64),
+    };
+    if resolved.len() > out.len() {
+        // `probe` has already released everything, so an undersized caller
+        // buffer costs the answer and nothing else.
+        return -(Errno::EOVERFLOW as i64);
+    }
+    out[..resolved.len()].copy_from_slice(&resolved);
+    resolved.len() as i64
+}
+
 /// Prepare the exact initial executable for a newly allocated spawn child.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_exec_target_prepare(

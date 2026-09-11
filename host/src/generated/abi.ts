@@ -760,6 +760,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_exec_commit",
   "kernel_exec_target_cancel",
   "kernel_exec_target_prepare",
+  "kernel_exec_target_probe",
   "kernel_exec_target_read",
   "kernel_exec_target_shebang",
   "kernel_exec_target_size",
