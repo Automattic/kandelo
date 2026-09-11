@@ -751,6 +751,11 @@ claimed.
 
 ## B2+B3 policy layer landed, and the cutover is blocked behind it (2026-09-11)
 
+> **Superseded 2026-09-11 by "Handle retention landed" below.** The four
+> refusals this section records are implemented; the blocker it names is
+> closed. The premise verification and the refcount finding here remain
+> accurate and are what the follow-up built on.
+
 **The coherence layer now exists in Rust, and the deletion still cannot be
 performed.** The blocker is not the policy and not the benchmark. It is that
 the kernel's `SharedMappingIo` deliberately refuses four of the capabilities
@@ -862,6 +867,122 @@ boundaries often. No benchmark was run and none should be cited. A general
 syscall benchmark reaches only `synchronize_for_boundary`'s early-out — a true
 result about the wrong code. Nothing added here has a production caller yet, so
 there is also nothing here that could have been measured in place.
+
+## Handle retention landed — the mapping cutover is unblocked (2026-09-11)
+
+**The four refusals are gone and none of them cost a host import.** The
+previous increment recorded that `WasmSharedMappingIo` refused
+`retain_handle`, `fd_stat`, `fd_pwrite` and `close_fd`, so neither half of the
+file-backed mapping subsystem could be made live however complete the policy
+was. All five methods are now implemented, and the host import count is
+unchanged at **73 functions plus `env.memory`** — verified name for name, not
+merely counted, by diffing the import sections of two kernels built from the
+trees on either side of the change.
+
+### Every premise was re-verified on the branch before anything was built
+
+- **Only one production `SharedMappingIo`.** Confirmed: `wasm_api.rs:1153`.
+  The two other impls are `#[cfg(test)]` doubles, in `memory.rs` and
+  `shared_mapping_policy.rs`.
+- **`get_or_create_file_backing` calls `io.retain_handle(...)?` on both
+  paths.** Confirmed at `memory.rs:2664` and `:2677`, both propagating.
+- **`process_table.rs` already refcounts OFDs so only the last process queues
+  the underlying `host_close`.** Confirmed at `process_table.rs:582-596`,
+  backed by `ofd.rs`'s `HOST_HANDLE_REFS`, where a handle *absent* from the map
+  means "count of 1, safe to close".
+
+One inherited premise had **already been fixed** and the ledger did not say so.
+The reference-counting asymmetry recorded last increment — `FileBacking`
+created at `ref_count: 0` with nothing counting the mapping that caused it — is
+closed by `shared_mapping_policy::acquire_file_backing`, which landed in
+`5f0304fcc` in the same increment that wrote the finding. This change therefore
+**built on the fix rather than repeating it**, and closed the remaining hazard
+with a doc note: `get_or_create_file_backing` still hands back an uncounted
+backing, which was harmless while the method could not succeed in production
+and is a live trap now that it can.
+
+### The design, and the mistake it avoids
+
+A mapping-held reference is a **second, independent count** layered on the
+cross-process descriptor refcount, not a bump of it. Two reasons, the second
+sharper than the first:
+
+- the cross-process count reaching zero is exactly the moment a single-process
+  mapping still needs the handle, so there is nothing there to piggyback on;
+- `release_ofd_reference_impl` performs `release_final_ofd_locks` inside the
+  same branch that performs the close. Deferring within that count would keep
+  an `F_OFD_SETLK` record alive for as long as the file stayed mapped. POSIX
+  releases the *description*'s locks when the description ends; the extra
+  reference `mmap` takes is on the **file**, not on the description.
+
+So the description ends on time — OFD freed, fd number reusable, locks gone —
+and only the physical `host_close` is withheld and marked owed to the last
+mapping reference. Three sites consult the table, each chosen where the
+close is *decided* rather than where it is drained, so no drain site can
+reintroduce the bug: the final OFD release (`syscalls.rs`), teardown of a
+process that never reached `sys_exit` (`process_table.rs`), and release of
+a descriptor queued in SCM_RIGHTS (`pipe.rs`).
+
+The fd-writeback trio needed no new mechanism at all. It serves files the
+kernel owns itself, which have no stable host handle to map, so it reaches them
+the way a guest would: `shared_mapping_fd_facts`, `sys_pwrite`,
+`sys_close_with_locks`. The TypeScript being replaced re-entered the
+kernel with a synthesized `SYS_CLOSE` channel record to do the same thing.
+
+### Every guard was mutation-tested, and one of them was not a guard
+
+Five guards were added. Each was removed, shown failing, and restored:
+
+| Mutation | What it said |
+|---|---|
+| drop the negative-handle refusal | `left: Ok(()) right: Err(EBADF)` |
+| drop the already-owed-close refusal | `left: Ok(()) right: Err(EBADF)` |
+| drop the deferral at the final OFD release | `a mapped file's handle must not be closed while the mapping lives; closed [100]` |
+| drop the deferral at teardown | `teardown queued a close for a handle a mapping still holds: [0, 1, 2, 9452200]` |
+| fold the lock release inside the deferral | `the description ended, so its OFD lock must be gone even though the file is still mapped` |
+
+The fifth is the one worth recording. It **passed** on the first attempt, which
+meant the lock assertion was decorative. The test took a POSIX record lock,
+which is process-owned and cleaned up on a path no ordering of the deferral can
+reach; it now takes an OFD lock, whose removal is precisely what
+`release_final_ofd_locks` performs. The assertion that justifies the whole
+two-counts design was, until that mutation ran, asserting nothing.
+
+### Numbers
+
+- Production TypeScript: **0**, and that is the honest figure. This is a
+  prerequisite, not a deletion; its payoff is that B2+B3 can now proceed.
+  `kernel.ts`'s `retainedHostFileHandles`/`descriptorClosePending` and
+  `kernel-worker.ts`'s writeback-dup refcount become deletable *with* that
+  cutover, not before it, because the host is still driving mappings today.
+- Host imports: **73 functions plus `env.memory`**, before and after, import
+  sections diffed name for name.
+- Driver glue: **0**.
+- Rust: +546 / −32 across six files, roughly a third production and two thirds
+  tests.
+
+### ABI
+
+**No delta.** `xtask dump-abi` over the freshly built kernel left
+`abi/snapshot.json` and every generated file byte-identical; the working tree
+held only the six source files after regeneration. No `ABI_VERSION` bump.
+
+### Inert until the cutover wires it up, and that is deliberate
+
+Nothing populates the retention table in production yet: the exports that would
+call `retain_handle` are what B2+B3 adds. `host_close_deferred_by_mapping`
+therefore answers "not deferred" for every handle today, so the close paths
+behave exactly as they did. That is a property worth keeping in mind when
+reading the validation — the suites prove the mechanism is correct, not that it
+is exercised by a running machine. The first thing the cutover should do is
+re-run this file's tests with the exports live.
+
+### Performance was not measured
+
+Unchanged from the previous increment and named the same way: the cost of the
+Rust shared-mapping path relative to the host implementation it would replace.
+Nothing added here has a production caller, so there is nothing here that could
+have been measured in place.
 
 ## In-scope test failures — coordinator owns these
 
@@ -3625,7 +3746,7 @@ them.**
 | # | Item | State |
 |---|---|---|
 | B1 | K1 step 5 — image `entries[]` + ABI stamp | **Superseded by D-B6.** Maintainer chose the full subsystem removal; scoping proved it needs the kernel to write the image. Split into W-1…W-4 |
-| B2 | K7 — shared-mapping coherence + mapping cutover | **Merged with B3 into one item.** Dispatch with the fd-facts kernel export as its first commit; needs `syscalls.rs`, held while B8 has it |
+| B2 | K7 — shared-mapping coherence + mapping cutover | **Merged with B3 into one item.** Opening move and policy layer landed; handle retention landed 2026-09-11, so the cutover's remaining prerequisite is gone. Needs `syscalls.rs`, held while B8 has it |
 | B3 | *(folded into B2)* | B3 alone failed twice; anon and file share one container across 15 interleaved sites |
 | B4 | The measured 3.7× SysV regression | Zero-import remedy identified: hoist destination validation *before* the source view. `host_proc_read_bytes`'s second copy narrows a grow-detach window and must stay. Needs `syscalls.rs` |
 | B5 | K11 device pieces | **CLOSED.** Piece 3 cut over (TS −100 / Rust +626); pieces 2 and 4 immovable for named reasons; a dead Node TLS backend deleted (−3,556) |

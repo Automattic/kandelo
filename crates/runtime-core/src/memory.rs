@@ -2653,6 +2653,19 @@ impl SharedMappingTable {
     /// An open description's access mode cannot change, so a writable source
     /// for an existing read-only backing must be a *distinct* `O_RDWR` handle
     /// for the same file; the backing adopts it and releases the old one.
+    ///
+    /// **The caller owes the reference for the mapping that caused this.** A
+    /// new backing is returned at `ref_count == 0` and an existing one is
+    /// returned uncounted, while `inherit_process_mappings` counts every
+    /// inherited mapping and `release_mapping` discounts every mapping it
+    /// drops. A caller that skips the increment leaves the count one short for
+    /// the life of the mapping: the first process to exit takes the backing to
+    /// zero and closes the host handle while a live peer still has the file
+    /// mapped, and — more quietly — two real peers both sit in the
+    /// sole-observer deferral and never see each other's writes.
+    /// [`crate::shared_mapping_policy::acquire_file_backing`] is the path that
+    /// does this correctly and is what production calls; a second direct caller
+    /// must take the reference too.
     pub fn get_or_create_file_backing(
         &mut self,
         key: &str,
