@@ -135,8 +135,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     const sendDelta = (dx: number, dy: number) => {
       if (dx === 0 && dy === 0) return;
       // The kernel splits a displacement wider than one PS/2 packet across
-      // consecutive packets (`crates/runtime-core/src/mouse.rs`).
-      sink.injectMouseEvent(dx, -dy, buttons);
+      // consecutive packets, and inverts screen-sense Y into the PS/2 sense
+      // (`crates/runtime-core/src/mouse.rs`). Pass canvas deltas unchanged.
+      sink.injectMouseEvent(dx, dy, buttons);
       wasmCursorX += dx;
       wasmCursorY += dy;
     };

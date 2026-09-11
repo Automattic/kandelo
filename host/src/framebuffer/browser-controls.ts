@@ -520,8 +520,10 @@ export function scalePointerLockMouseDelta(
 
   return {
     dx: movementX * scaleX * sensitivity,
-    // Browser coordinates are positive-down; PS/2 is positive-up.
-    dy: -movementY * scaleY * sensitivity,
+    // Screen sense throughout: positive is down, as the browser reports it.
+    // `crates/runtime-core/src/mouse.rs` inverts to the PS/2 sense when it
+    // builds the packet, because the packet's sign bits are its to own.
+    dy: movementY * scaleY * sensitivity,
   };
 }
 

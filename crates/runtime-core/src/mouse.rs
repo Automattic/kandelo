@@ -24,9 +24,10 @@
 //! byte so a naive reader that just treats the byte as `int8_t` still
 //! gets the right value.
 //!
-//! Y is reported with positive = up to match Linux mousedev. Browser
-//! mouse coordinates have positive = down, so the canvas listener
-//! inverts dy before calling `BrowserKernel.injectMouseEvent`.
+//! Y is reported with positive = up to match Linux mousedev. Callers pass
+//! screen-sense deltas (positive = down) and [`inject_event`] performs the
+//! inversion, so the convention lives with the packet layout it serves
+//! rather than in each host.
 //!
 //! ## Single-owner
 //!
@@ -80,10 +81,22 @@ const MAX_PACKETS_PER_EVENT: usize = MAX_QUEUED_BYTES / PACKET_LEN;
 
 /// Encode and enqueue a mouse event.
 ///
-/// `dy` is in the *PS/2 sense* — positive = mouse moved up; the host is
-/// responsible for inverting browser positive-down deltas before
-/// calling. `buttons` is a bitmask: bit 0 = left, bit 1 = right, bit 2 =
-/// middle.
+/// `dy` is in the *screen sense* — positive = pointer moved **down**, which is
+/// the convention every windowing system and every one of this platform's
+/// hosts already speaks. This function inverts it to the PS/2 sense
+/// (positive = up) when it builds the packet, because the packet layout and
+/// its sign bits are this module's to own. `buttons` is a bitmask: bit 0 =
+/// left, bit 1 = right, bit 2 = middle.
+///
+/// WHY the conversion lives here: it used to live in the host, applied
+/// independently at two call sites — `scalePointerLockMouseDelta` in
+/// `host/src/framebuffer/browser-controls.ts` and `sendDelta` in
+/// `apps/browser-demos/pages/kandelo/panes/Modeset.tsx` — while this module
+/// owned the layout that the convention exists to satisfy. Two copies of one
+/// decision, living in a different layer from the thing that decides it, is
+/// how a third host arrives and gets it backwards with nothing to catch it.
+/// The direction is now pinned by
+/// `screen_sense_dy_is_inverted_into_the_ps2_packet` below.
 ///
 /// A PS/2 packet carries at most `-128..=127` per axis. A larger
 /// displacement is **split across consecutive packets** so the full
@@ -112,7 +125,9 @@ const MAX_PACKETS_PER_EVENT: usize = MAX_QUEUED_BYTES / PACKET_LEN;
 /// Workstream K11.
 pub fn inject_event(dx: i32, dy: i32, buttons: u32) {
     let mut remaining_x = dx;
-    let mut remaining_y = dy;
+    // Screen sense in, PS/2 sense out. `saturating_neg` so `i32::MIN` cannot
+    // panic; the split loop clamps to one packet's range regardless.
+    let mut remaining_y = dy.saturating_neg();
     let mut packets = 0usize;
     loop {
         let step_x = remaining_x.clamp(i8::MIN as i32, i8::MAX as i32);
@@ -219,7 +234,7 @@ mod tests {
     #[test]
     fn inject_then_read_one_packet() {
         let _g = fresh();
-        inject_event(5, -7, 0b001); // left button, dx=+5, dy=-7
+        inject_event(5, 7, 0b001); // left button, dx=+5, dy=-7
         assert!(has_data());
         let mut buf = [0u8; 3];
         assert_eq!(read_into(&mut buf), 3);
@@ -236,7 +251,7 @@ mod tests {
         // packet and carries the remainder in the packets after it; see
         // `large_displacement_splits_across_packets_preserving_total`.
         let _g = fresh();
-        inject_event(500, -500, 0);
+        inject_event(500, 500, 0);
         let mut buf = [0u8; 3];
         read_into(&mut buf);
         assert_eq!(buf[1] as i8, 127);
@@ -249,8 +264,8 @@ mod tests {
     #[test]
     fn read_drains_in_packet_order() {
         let _g = fresh();
-        inject_event(1, 2, 0);
-        inject_event(3, 4, 0b010);
+        inject_event(1, -2, 0);
+        inject_event(3, -4, 0b010);
         let mut buf = [0u8; 6];
         assert_eq!(read_into(&mut buf), 6);
         assert_eq!(buf[1] as i8, 1);
@@ -263,7 +278,7 @@ mod tests {
     #[test]
     fn small_buf_drains_partial_then_resumes() {
         let _g = fresh();
-        inject_event(10, 20, 0);
+        inject_event(10, -20, 0);
         let mut buf = [0u8; 2];
         assert_eq!(read_into(&mut buf), 2);
         let mut buf2 = [0u8; 4];
@@ -274,8 +289,8 @@ mod tests {
     #[test]
     fn reset_drops_pending() {
         let _g = fresh();
-        inject_event(1, 1, 0);
-        inject_event(2, 2, 0);
+        inject_event(1, -1, 0);
+        inject_event(2, -2, 0);
         assert!(has_data());
         reset();
         assert!(!has_data());
@@ -296,7 +311,7 @@ mod tests {
     #[test]
     fn displacement_within_one_packet_stays_one_packet() {
         let _g = fresh();
-        inject_event(127, -128, 0b010);
+        inject_event(127, 128, 0b010);
         assert_eq!(drain_packets(), alloc::vec![(0b010, 127, -128)]);
     }
 
@@ -311,7 +326,7 @@ mod tests {
     #[test]
     fn large_displacement_splits_across_packets_preserving_total() {
         let _g = fresh();
-        inject_event(300, -260, 0b101);
+        inject_event(300, 260, 0b101);
         let packets = drain_packets();
         // Both axes advance together, so a fast diagonal stays diagonal.
         assert_eq!(
@@ -327,7 +342,7 @@ mod tests {
     #[test]
     fn one_axis_finishing_early_does_not_stop_the_other() {
         let _g = fresh();
-        inject_event(5, 400, 0);
+        inject_event(5, -400, 0);
         let packets = drain_packets();
         assert_eq!(packets, alloc::vec![(0, 5, 127), (0, 0, 127), (0, 0, 127), (0, 0, 19)]);
         assert_eq!(packets.iter().map(|p| p.2).sum::<i32>(), 400);
