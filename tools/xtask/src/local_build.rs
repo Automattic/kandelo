@@ -5486,9 +5486,23 @@ mod tests {
         let path = output
             .join(".kandelo")
             .join("source-only-program-projection-v1.json");
+        // An authority from before the tier recorded its selection state
+        // cannot answer the resolver's identity question, so no graph
+        // authority makes it current: it must be republished.
         write(
             &path,
             &format!(r#"{{"graphAuthoritySha256":"{authority}","nodes":[]}}"#),
+        );
+        assert!(
+            !source_only_program_projection_is_current(output, &authority),
+            "a projection with no recorded selection state is never current"
+        );
+
+        write(
+            &path,
+            &format!(
+                r#"{{"graphAuthoritySha256":"{authority}","selectionProjection":{{"format":"kandelo-program-packages-v2","identities":{{}},"packages":{{}}}},"nodes":[]}}"#
+            ),
         );
 
         assert!(

@@ -21502,6 +21502,9 @@ revision = {revision}
             ":",
             &[("app", "app.wasm")],
         );
+        for name in ["libdep", "app"] {
+            write_source_only_repository_inputs(&root, name);
+        }
         let registry = Registry {
             roots: vec![root.clone()],
         };
