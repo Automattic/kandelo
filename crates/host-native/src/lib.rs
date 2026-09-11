@@ -244,6 +244,12 @@ pub fn kernel_engine() -> wasmtime::Result<Engine> {
     // this is a required, not optional, knob for this engine — flagged here
     // for N1-R/fork review, not silently opted into.
     config.shared_memory(true);
+    // B27b: a wasm64 guest's `env.memory` is a 64-bit memory, and the validator
+    // rejects the module outright without this. The kernel itself is a wasm32
+    // module and is unaffected; this only permits the engine to load a guest
+    // whose data model is LP64, which is what the wasm64 arm of the
+    // caller-native record coverage runs.
+    config.wasm_memory64(true);
     Engine::new(&config)
 }
 
@@ -3193,10 +3199,29 @@ mod tests {
             .collect()
     }
 
-    /// Run `native_process_layout.wasm` once, shared by the coverage test and
-    /// the descriptor-derived guard below so the fixture is not executed twice.
-    fn run_process_layout_fixture(path: &Path) -> anyhow::Result<RunOutcome> {
-        let guest = include_bytes!("../fixtures/native_process_layout.wasm");
+    /// The two data models `fixtures/native_process_layout.c` is built for.
+    ///
+    /// B27b: the wasm32 arm catches the regression that actually happened (a
+    /// width read as 0 in the dispatcher). It cannot catch one that only
+    /// manifests at width 8 — and that is the likelier future regression,
+    /// precisely because wasm64 has no guests in daily use to notice it.
+    /// Everything below runs once per entry.
+    const PROCESS_LAYOUT_WIDTHS: [u8; 2] = [4, 8];
+
+    /// Run `native_process_layout` at one data model, shared by the coverage
+    /// test and the descriptor-derived guard below so a fixture is not
+    /// executed twice for the same width.
+    ///
+    /// Both artifacts come from the SAME C source through the same recipe
+    /// (`fixtures/build-fixtures.sh`), so a difference in what they observe is
+    /// a difference in the platform's handling of the data model, never a
+    /// difference between two hand-maintained programs.
+    fn run_process_layout_fixture(path: &Path, pointer_width: u8) -> anyhow::Result<RunOutcome> {
+        let guest: &[u8] = match pointer_width {
+            4 => include_bytes!("../fixtures/native_process_layout.wasm"),
+            8 => include_bytes!("../fixtures/native_process_layout.wasm64.wasm"),
+            other => anyhow::bail!("no process-layout fixture for pointer width {other}"),
+        };
         run_trivial_guest(path, guest)
     }
 
@@ -3223,44 +3248,67 @@ mod tests {
     /// width-misread regression this test exists for. It stops at exit code 4,
     /// the first record (`statfs`), whose fields then parse at wasm64 offsets.
     /// See `fixtures/native_process_layout.c` for what each exit code means.
+    ///
+    /// B27b: it now runs at BOTH data models, from the same C source. The
+    /// EXPECTED OUTPUT IS IDENTICAL AT BOTH, and that is the point — every
+    /// value in the block is either a kernel constant or a value the guest
+    /// supplied earlier in the same run, so neither depends on how wide a
+    /// pointer is. What does depend on it is how many bytes each record
+    /// occupies, and a disagreement about that shows up here as a changed
+    /// value, not as a changed expectation.
+    ///
+    /// The wasm64 arm was also seen to fail, on a host built to register
+    /// width 4 for every process: the wasm64 guest then stops at exit code 4
+    /// on `statfs`, because the kernel parses its LP64 record at ILP32
+    /// offsets. That is the regression class the wasm32 arm structurally
+    /// cannot reach.
     #[test]
     fn smoke_process_layout_records_through_channel() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
 
-        let outcome = run_process_layout_fixture(&path)?;
+        for width in PROCESS_LAYOUT_WIDTHS {
+            let outcome = run_process_layout_fixture(&path, width)?;
 
-        assert_eq!(
-            outcome.exit_code,
-            0,
-            "guest exit code (each nonzero code names one syscall and one \
-             failed property in fixtures/native_process_layout.c) \
-             (stdout: {:?}, stderr: {:?}, trace: {:?})",
-            String::from_utf8_lossy(&outcome.stdout),
-            String::from_utf8_lossy(&outcome.stderr),
-            outcome.syscall_trace,
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.stdout),
-            concat!(
-                "statfs: bsize=4096 frsize=4096 namelen=255 blocks=262144\n",
-                "fstatfs: bsize=4096 namelen=255 blocks=262144\n",
-                "sysinfo: totalram=536870912 freeram=268435456 procs=1 unit=1\n",
-                "sigaltstack: installed size=65536 readback=65536\n",
-                "setitimer: old record cleared\n",
-                "getitimer: record cleared\n",
-                "timer_create: created from sigevent\n",
-                "rt_sigqueueinfo+rt_sigtimedwait: signo=12 sival=4242\n",
-                "mq_open+mq_getsetattr: maxmsg=4 msgsize=32 curmsgs=0\n",
-                "mq_notify: registered from sigevent\n",
-                "waitid: ENOSYS (still TypeScript-host-owned)\n",
-            ),
-            "the fixture's per-syscall record report must match exactly; the \
-             values are the kernel's own compiled-in constants (rootfs::statfs, \
-             sys_sysinfo) or values the guest supplied earlier in the same run",
-        );
-        assert!(outcome.stderr.is_empty(), "guest wrote unexpected stderr");
+            assert_eq!(
+                outcome.exit_code,
+                0,
+                "guest exit code at pointer width {width} (each nonzero code \
+                 names one syscall and one failed property in \
+                 fixtures/native_process_layout.c) \
+                 (stdout: {:?}, stderr: {:?}, trace: {:?})",
+                String::from_utf8_lossy(&outcome.stdout),
+                String::from_utf8_lossy(&outcome.stderr),
+                outcome.syscall_trace,
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&outcome.stdout),
+                concat!(
+                    "statfs: bsize=4096 frsize=4096 namelen=255 blocks=262144\n",
+                    "fstatfs: bsize=4096 namelen=255 blocks=262144\n",
+                    "sysinfo: totalram=536870912 freeram=268435456 procs=1 unit=1\n",
+                    "sigaltstack: installed size=65536 readback=65536\n",
+                    "setitimer: old record cleared\n",
+                    "getitimer: record cleared\n",
+                    "timer_create: created from sigevent\n",
+                    "rt_sigqueueinfo+rt_sigtimedwait: signo=12 sival=4242\n",
+                    "mq_open+mq_getsetattr: maxmsg=4 msgsize=32 curmsgs=0\n",
+                    "mq_notify: registered from sigevent\n",
+                    "waitid: ENOSYS (still TypeScript-host-owned)\n",
+                ),
+                "the fixture's per-syscall record report must match exactly at \
+                 pointer width {width}; the values are the kernel's own \
+                 compiled-in constants (rootfs::statfs, sys_sysinfo) or values \
+                 the guest supplied earlier in the same run, so they do not \
+                 differ between data models -- only the record SIZES do",
+            );
+            assert!(
+                outcome.stderr.is_empty(),
+                "guest at pointer width {width} wrote unexpected stderr: {:?}",
+                String::from_utf8_lossy(&outcome.stderr),
+            );
+        }
         Ok(())
     }
 
@@ -3278,15 +3326,16 @@ mod tests {
     /// says each one produced a correct record. Both are needed: neither alone
     /// would stop a descriptor being added with a call but no assertion, or an
     /// assertion added for a syscall that never reached the kernel.
+    ///
+    /// B27b: the requirement now holds AT EACH DATA MODEL independently. A
+    /// descriptor covered only at wasm32 is a descriptor whose wasm64 size
+    /// nothing has ever exercised, and the per-width loop below says so by
+    /// name rather than letting one width's coverage stand in for the other's.
     #[test]
     fn process_layout_descriptors_are_all_exercised() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-
-        let outcome = run_process_layout_fixture(&path)?;
-        let exercised: std::collections::BTreeSet<u32> =
-            outcome.syscall_trace.iter().copied().collect();
 
         let required = process_layout_syscall_numbers();
         assert!(
@@ -3295,23 +3344,30 @@ mod tests {
              the wrong table"
         );
 
-        let missing: Vec<u32> = required
-            .iter()
-            .copied()
-            .filter(|nr| !exercised.contains(nr))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "these syscalls carry a SyscallArgSize::ProcessLayout descriptor \
-             but are never dispatched by fixtures/native_process_layout.c, so \
-             their caller-native record size is not covered through the \
-             channel: {missing:?}\n  Add a call (and a plausible-record \
-             assertion) to that fixture, rebuild it with \
-             crates/host-native/fixtures/build-fixtures.sh, and extend the \
-             expected output block in \
-             smoke_process_layout_records_through_channel.\n  Exercised set \
-             from the fixture's trace: {exercised:?}",
-        );
+        for width in PROCESS_LAYOUT_WIDTHS {
+            let outcome = run_process_layout_fixture(&path, width)?;
+            let exercised: std::collections::BTreeSet<u32> =
+                outcome.syscall_trace.iter().copied().collect();
+
+            let missing: Vec<u32> = required
+                .iter()
+                .copied()
+                .filter(|nr| !exercised.contains(nr))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "these syscalls carry a SyscallArgSize::ProcessLayout \
+                 descriptor but are never dispatched by \
+                 fixtures/native_process_layout.c at pointer width {width}, so \
+                 their caller-native record size is not covered through the \
+                 channel at that data model: {missing:?}\n  Add a call (and a \
+                 plausible-record assertion) to that fixture, rebuild BOTH \
+                 arms with crates/host-native/fixtures/build-fixtures.sh, and \
+                 extend the expected output block in \
+                 smoke_process_layout_records_through_channel.\n  Exercised \
+                 set from the fixture's trace: {exercised:?}",
+            );
+        }
         Ok(())
     }
 }

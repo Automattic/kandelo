@@ -176,3 +176,47 @@ scripts/dev-shell.sh bash -lc '
 ```
 
 Like every other fixture, `__abi_version` must match the kernel's ABI.
+
+## `native_process_layout.wasm` and `native_process_layout.wasm64.wasm`
+
+One C source, `native_process_layout.c`, built at **both** data models. It
+drives every syscall whose descriptor carries a `SyscallArgSize::ProcessLayout`
+record — a record whose byte count is a property of the *calling process's*
+pointer width rather than of the call — through the real channel against the
+real kernel, and checks a plausible record for each rather than merely a
+non-error return. `../src/lib.rs` derives the set that must appear here from
+`SYSCALL_ARG_DESCRIPTORS` itself, so adding such a descriptor without adding
+coverage fails the test rather than passing unnoticed.
+
+**Why a second artifact exists.** The wasm32 arm catches the regression that
+actually happened (a caller width read as `0`, which made every one of these
+syscalls return `EINVAL` while the whole suite stayed green). It cannot catch a
+regression that only manifests at width **8** — and that is the likelier future
+one, precisely because wasm64 has no guests in daily use to notice it. The
+wasm64 arm is what made the native host's *missing* pointer-width registration
+visible: without it, the kernel parsed a wasm64 guest's LP64 records at ILP32
+offsets and the fixture stopped at exit code 4 on `statfs`.
+
+The expected output block is **identical at both widths**, and that is the
+point. Every value in it is either one of the kernel's own compiled-in
+constants or a value the guest supplied earlier in the same run, so none of
+them depends on how wide a pointer is. What does depend on it is how many bytes
+each record occupies — and a disagreement about that surfaces as a changed
+value, never as a changed expectation.
+
+Both arms are produced by `build-fixtures.sh`, which builds every `*.c` here at
+wasm32 and the names in its `WASM64_FIXTURES` list at wasm64 as well, from one
+compile/link helper so the two arms cannot drift apart in flags. The wasm64 arm
+needs `<repo>/sysroot64`:
+
+```sh
+scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
+scripts/dev-shell.sh crates/host-native/fixtures/build-fixtures.sh
+```
+
+Without that sysroot the script **fails loudly** instead of skipping the wasm64
+arm, because a silently un-rebuilt wasm64 fixture against a current kernel is
+exactly the stale-artifact failure this family exists to catch.
+
+Like every other fixture, `__abi_version` must match the kernel's ABI at both
+widths.

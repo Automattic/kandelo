@@ -1504,9 +1504,38 @@ struct StagedArg {
     copy_back: bool,
 }
 
+/// The Wasm value type a guest of this data model uses for a linear-memory
+/// address: `i32` for wasm32, `i64` for wasm64.
+///
+/// B27b: every host-supplied global or host import that carries a guest
+/// ADDRESS has to be declared in the guest's own index type, because Wasmtime
+/// matches import types exactly. Before the wasm64 arm existed this host wrote
+/// `ValType::I32` and `i32` parameters inline at each such site, which is the
+/// same hidden wasm32 assumption `marshal_in`'s record sizing carried.
+fn guest_index_type(pointer_width: u8) -> ValType {
+    if pointer_width == 8 { ValType::I64 } else { ValType::I32 }
+}
+
+/// A guest address as a [`Val`] of that guest's index type.
+fn guest_index_val(pointer_width: u8, addr: usize) -> Val {
+    if pointer_width == 8 { Val::I64(addr as i64) } else { Val::I32(addr as i32) }
+}
+
 /// The imported shared kernel memory the pump reads/writes scratch through.
-fn new_shared(engine: &Engine, min: u32, max: u32) -> anyhow::Result<SharedMemory> {
-    Ok(SharedMemory::new(engine, MemoryType::shared(min, max))?)
+///
+/// `pointer_width` is the DATA MODEL of the module that will import this
+/// memory: a wasm64 module declares a 64-bit `env.memory`, and a 32-bit
+/// `SharedMemory` does not satisfy that import (Wasmtime rejects the
+/// instantiation on index-type mismatch). The kernel is a wasm32 module, so
+/// its own memory is always built at width 4.
+fn new_shared(engine: &Engine, min: u32, max: u32, pointer_width: u8) -> anyhow::Result<SharedMemory> {
+    let ty = MemoryType::builder()
+        .shared(true)
+        .memory64(pointer_width == 8)
+        .min(u64::from(min))
+        .max(Some(u64::from(max)))
+        .build()?;
+    Ok(SharedMemory::new(engine, ty)?)
 }
 
 /// N1-I4 Task 2: a PRIVATE, byte-for-byte copy of `parent_mem`'s CURRENT
@@ -1538,7 +1567,15 @@ fn new_shared(engine: &Engine, min: u32, max: u32) -> anyhow::Result<SharedMemor
 /// writer to `parent_mem` at the moment of the copy.
 fn clone_guest_memory(engine: &Engine, parent_mem: &SharedMemory) -> anyhow::Result<SharedMemory> {
     let current_pages = parent_mem.size();
-    let child_mem = new_shared(engine, current_pages as u32, DEFAULT_MAX_PAGES as u32)?;
+    // The child's memory must carry the PARENT's index type: a fork child
+    // runs the parent's own module, so a 32-bit copy of a wasm64 parent
+    // would not satisfy the module's `env.memory` import.
+    let child_mem = new_shared(
+        engine,
+        current_pages as u32,
+        DEFAULT_MAX_PAGES as u32,
+        if parent_mem.ty().is_64() { 8 } else { 4 },
+    )?;
     let len = current_pages as usize * WASM_PAGE_SIZE;
     unsafe {
         core::ptr::copy_nonoverlapping(mem_base(parent_mem), mem_base(&child_mem), len);
@@ -1614,7 +1651,9 @@ pub fn run_guest(
 
     // --- Kernel instance (this thread owns it and the pump) -----------------
     let kernel_module = Module::from_file(&engine, kernel_wasm)?;
-    let kernel_mem = new_shared(&engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES)?;
+    // The kernel is a wasm32 module on every host, so its own imported
+    // memory is always 32-bit regardless of the guest's data model.
+    let kernel_mem = new_shared(&engine, KERNEL_MEMORY_MIN_PAGES, KERNEL_MEMORY_MAX_PAGES, 4)?;
     let captured = Arc::new(Mutex::new(CapturedIo::default()));
 
     // fd 0 (stdin) always; real host-directory access only for the mounts
@@ -2259,8 +2298,8 @@ mod proc_bytes_tests {
 
     fn mems() -> (Engine, SharedMemory, SharedMemory) {
         let engine = crate::kernel_engine().expect("engine");
-        let guest = new_shared(&engine, 1, 1).expect("guest mem");
-        let kernel = new_shared(&engine, 1, 1).expect("kernel mem");
+        let guest = new_shared(&engine, 1, 1, 4).expect("guest mem");
+        let kernel = new_shared(&engine, 1, 1, 4).expect("kernel mem");
         (engine, guest, kernel)
     }
 
@@ -3795,7 +3834,8 @@ fn compute_guest_memory(
         })
         .ok_or_else(|| anyhow::anyhow!("guest does not import env.memory"))?;
     let layout = ProcessLayout::compute(imported_min_pages, guest_bytes)?;
-    let memory = new_shared(engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32)?;
+    let memory =
+        new_shared(engine, layout.initial_pages as u32, DEFAULT_MAX_PAGES as u32, layout.pointer_width)?;
     Ok((memory, layout))
 }
 
@@ -6427,12 +6467,14 @@ fn spawn_guest_thread(
         let mut store = Store::new(&engine, ());
         let mut linker: Linker<()> = Linker::new(&engine);
         linker.define(&mut store, "env", "memory", guest_mem.clone()).unwrap();
-        // The guest reads env.__channel_base to find the channel; provide it as
-        // a mutable i32 global set to the layout's channel offset.
+        // The guest reads env.__channel_base to find the channel; provide it
+        // as a mutable global holding the layout's channel offset, in the
+        // guest's own index type — a wasm64 guest declares it `mut i64`, and a
+        // 32-bit global does not satisfy that import.
         let channel_base = Global::new(
             &mut store,
-            GlobalType::new(ValType::I32, Mutability::Var),
-            Val::I32(layout.channel_offset as i32),
+            GlobalType::new(guest_index_type(layout.pointer_width), Mutability::Var),
+            guest_index_val(layout.pointer_width, layout.channel_offset),
         )
         .unwrap();
         linker.define(&mut store, "env", "__channel_base", channel_base).unwrap();
@@ -6710,31 +6752,60 @@ fn spawn_guest_thread(
                 .func_wrap("kernel", "kernel_environ_count", move || -> i32 { env.len() as i32 })
                 .unwrap();
         }
+        // B27b: `char *buf` is the guest's own pointer type, so these two
+        // imports are declared `(i32 i32 i32) -> i32` by a wasm32 guest and
+        // `(i32 i64 i32) -> i32` by a wasm64 one. Wasmtime matches import
+        // types exactly, so the host must define the arm the loaded image
+        // actually declares rather than one shape for both.
         {
             let argv = launch_argv.clone();
             let mem = guest_mem.clone();
-            linker
-                .func_wrap(
-                    "kernel",
-                    "kernel_argv_read",
-                    move |_c: Caller<'_, ()>, index: u32, buf_ptr: i32, buf_max: u32| -> i32 {
-                        copy_launch_entry(&mem, &argv, index, buf_ptr, buf_max)
-                    },
-                )
-                .unwrap();
+            if layout.pointer_width == 8 {
+                linker
+                    .func_wrap(
+                        "kernel",
+                        "kernel_argv_read",
+                        move |_c: Caller<'_, ()>, index: u32, buf_ptr: i64, buf_max: u32| -> i32 {
+                            copy_launch_entry(&mem, &argv, index, buf_ptr as u64, buf_max)
+                        },
+                    )
+                    .unwrap();
+            } else {
+                linker
+                    .func_wrap(
+                        "kernel",
+                        "kernel_argv_read",
+                        move |_c: Caller<'_, ()>, index: u32, buf_ptr: i32, buf_max: u32| -> i32 {
+                            copy_launch_entry(&mem, &argv, index, buf_ptr as u32 as u64, buf_max)
+                        },
+                    )
+                    .unwrap();
+            }
         }
         {
             let env = launch_env.clone();
             let mem = guest_mem.clone();
-            linker
-                .func_wrap(
-                    "kernel",
-                    "kernel_environ_get",
-                    move |_c: Caller<'_, ()>, index: u32, buf_ptr: i32, buf_max: u32| -> i32 {
-                        copy_launch_entry(&mem, &env, index, buf_ptr, buf_max)
-                    },
-                )
-                .unwrap();
+            if layout.pointer_width == 8 {
+                linker
+                    .func_wrap(
+                        "kernel",
+                        "kernel_environ_get",
+                        move |_c: Caller<'_, ()>, index: u32, buf_ptr: i64, buf_max: u32| -> i32 {
+                            copy_launch_entry(&mem, &env, index, buf_ptr as u64, buf_max)
+                        },
+                    )
+                    .unwrap();
+            } else {
+                linker
+                    .func_wrap(
+                        "kernel",
+                        "kernel_environ_get",
+                        move |_c: Caller<'_, ()>, index: u32, buf_ptr: i32, buf_max: u32| -> i32 {
+                            copy_launch_entry(&mem, &env, index, buf_ptr as u32 as u64, buf_max)
+                        },
+                    )
+                    .unwrap();
+            }
         }
         linker.func_wrap("kernel", "kernel_get_secure_exec", || -> i32 { 0 }).unwrap();
         linker.func_wrap("kernel", "kernel_is_fork_child", || -> i32 { 0 }).unwrap();
@@ -7030,13 +7101,27 @@ fn spawn_guest_thread(
         // posix errno) rather than leaving this to the default trap-stub, so
         // a guest that calls execve() sees a truthful "not implemented yet"
         // failure instead of an abrupt host trap.
-        linker
-            .func_wrap(
-                "kernel",
-                "kernel_execve",
-                |_c: Caller<'_, ()>, _path_ptr: i32, _path_len: i32| -> i32 { -(libc_errno::ENOSYS) },
-            )
-            .unwrap();
+        // B27b: `const char *path` is the guest's own pointer type, so a
+        // wasm64 guest declares this `(i64 i32) -> i32`. The body ignores
+        // both arguments, but the DECLARED type still has to match or the
+        // instantiation fails.
+        if layout.pointer_width == 8 {
+            linker
+                .func_wrap(
+                    "kernel",
+                    "kernel_execve",
+                    |_c: Caller<'_, ()>, _path_ptr: i64, _path_len: i32| -> i32 { -(libc_errno::ENOSYS) },
+                )
+                .unwrap();
+        } else {
+            linker
+                .func_wrap(
+                    "kernel",
+                    "kernel_execve",
+                    |_c: Caller<'_, ()>, _path_ptr: i32, _path_len: i32| -> i32 { -(libc_errno::ENOSYS) },
+                )
+                .unwrap();
+        }
         // N1-I4 Task 3 (bootstrap-fix follow-up): `env.__wpk_fork_resume_
         // table` is NOT a fork-module-owned table like the 5 frame imports
         // above — it is the REAL cross-activation dispatch table `wpk_fork_
@@ -9850,10 +9935,12 @@ fn run_worker_thread(
     let mut store = Store::new(engine, ());
     let mut linker: Linker<()> = Linker::new(engine);
     linker.define(&mut store, "env", "memory", guest_mem.clone())?;
+    // Same index-type rule as `spawn_guest_thread`'s own `__channel_base`:
+    // a wasm64 guest's thread instance declares this global `mut i64`.
     let channel_base = Global::new(
         &mut store,
-        GlobalType::new(ValType::I32, Mutability::Var),
-        Val::I32(channel_offset as i32),
+        GlobalType::new(guest_index_type(layout.pointer_width), Mutability::Var),
+        guest_index_val(layout.pointer_width, channel_offset),
     )?;
     linker.define(&mut store, "env", "__channel_base", channel_base)?;
 
@@ -13174,7 +13261,7 @@ fn copy_launch_entry(
     guest_mem: &SharedMemory,
     entries: &[Vec<u8>],
     index: u32,
-    buf_ptr: i32,
+    buf_ptr: u64,
     buf_max: u32,
 ) -> i32 {
     let Some(entry) = usize::try_from(index).ok().and_then(|i| entries.get(i)) else {
@@ -13190,7 +13277,7 @@ fn copy_launch_entry(
     if buf_ptr == 0 {
         return -libc_errno::EFAULT;
     }
-    unsafe { write_bytes(guest_mem, buf_ptr as u32 as usize, entry) };
+    unsafe { write_bytes(guest_mem, buf_ptr as usize, entry) };
     len as i32
 }
 
