@@ -726,12 +726,12 @@ export function handleThreadExit(pid: number, channelOffset: number): boolean {
 /**
  * What a process-memory allocation was for, reported when it fails.
  *
- * Declared at module scope rather than inside `createProcessLifecycle` because
- * that function's inferred return type mentions it: a type declared in a
- * function body has no name a `.d.ts` can write down, so the declaration build
- * failed with TS4060 while the runtime build was fine. The host package ships
- * types, so an un-nameable type in the public surface is a build failure, not
- * a style question.
+ * Module scope and exported, not local to `createProcessLifecycle`, because
+ * that function's return type mentions it. A type reachable from an exported
+ * signature is part of the public surface whether or not anyone imports it by
+ * name, and a declaration file cannot describe it otherwise -- `tsup`'s `.d.ts`
+ * pass failed the whole `host/dist` build with TS4060 "return type of exported
+ * function has or is using private name" while it lived inside the closure.
  */
 export interface ProcessMemoryAllocationContext {
   operation:

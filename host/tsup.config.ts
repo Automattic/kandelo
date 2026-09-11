@@ -4,8 +4,32 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { hostBuildFingerprintBanner } from "./src/compiled-worker-entry";
+import { browserVirtualModuleCapabilities } from "../apps/browser-demos/browser-module-contract.mjs";
 
 const hostRoot = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The browser-only virtual modules this build must not try to resolve.
+ *
+ * `worker-entry-browser.ts` and `browser.ts` are entries here, and they import
+ * specifiers like `@wasm-artifact-module32-wasm?url` whose bytes a Vite build
+ * supplies outside the JavaScript graph. esbuild has no such resolver, so it
+ * failed the entire `host/dist` build with `Could not resolve
+ * "@wasm-artifact-module32-wasm?url"` -- which is why no `host/dist` has
+ * existed since the TypeScript WebAssembly reader was deleted, and why every
+ * Node process worker has been falling back to a temp-directory bundle of the
+ * worker entry instead.
+ *
+ * Leaving them external is the honest description: these imports are satisfied
+ * by the browser bundler, and the Node outputs that carry them are the browser
+ * entries, which Node never loads.
+ *
+ * The list comes from `browser-module-contract.mjs`, the file Vite and the
+ * browser input scanner already share, so a new virtual module cannot be added
+ * in one place and forgotten here.
+ */
+const browserVirtualModules = Object.keys(browserVirtualModuleCapabilities)
+  .flatMap((specifier) => [specifier, `${specifier}?url`]);
 
 export default defineConfig({
   entry: [
@@ -29,6 +53,7 @@ export default defineConfig({
   // which is how the browser build came to be unbuildable.
   external: [/\?url$/, /\?worker&url$/],
   format: ["esm", "cjs"],
+  external: browserVirtualModules,
   dts: true,
   sourcemap: true,
   clean: true,
