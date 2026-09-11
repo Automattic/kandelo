@@ -154,6 +154,20 @@ pub(crate) struct ProcessLayout {
     /// none. Reported to the kernel as this process's quota; the kernel
     /// refuses `clone` past it with POSIX EAGAIN.
     thread_slot_count: u32,
+    /// B27a: the process's data model, 4 for a wasm32 image and 8 for a
+    /// wasm64 one, read from the program's own memory type.
+    ///
+    /// A property of the address space, not of any one syscall: it decides how
+    /// many bytes a caller-native record occupies, so the host staging one and
+    /// the kernel parsing it must agree. It is derived here, beside the rest of
+    /// the layout, because this is where the host reads the program's bytes —
+    /// the same moment `host/src/kernel-worker.ts` calls `detectPtrWidth`.
+    ///
+    /// Derived through `wasm_artifact::detect_pointer_width`, which is the one
+    /// authority: `detectPtrWidth` on the TypeScript hosts is that same
+    /// function compiled to wasm, and `exec_target::finish_commit` calls it
+    /// directly. This host does not get its own second implementation.
+    pointer_width: u8,
 }
 
 impl ProcessLayout {
@@ -182,6 +196,7 @@ impl ProcessLayout {
             brk_base,
             max_addr,
             thread_slot_count: resolve_thread_slot_count(guest_bytes)?,
+            pointer_width: wasm_artifact::detect_pointer_width(guest_bytes),
         })
     }
 }
@@ -1669,6 +1684,15 @@ pub fn run_guest(
     let set_brk_base = kernel.get_typed_func::<(u32, i32), i32>(&mut kernel_store, "kernel_set_brk_base")?;
     let set_mmap_base = kernel.get_typed_func::<(u32, i32), i32>(&mut kernel_store, "kernel_set_mmap_base")?;
     let set_max_addr = kernel.get_typed_func::<(u32, i32), i32>(&mut kernel_store, "kernel_set_max_addr")?;
+    // B27a: the process data model. `get_typed_func` (not a fallible lookup
+    // with a silent fallback) is the point — this export is REQUIRED, exactly
+    // as `host/src/kernel-worker.ts` treats it. Until this binding existed the
+    // native host never registered a width at all, and every caller-native
+    // record on this host was sized by `Process::pointer_width`'s DEFAULT of
+    // 4: correct for the wasm32 guests this host runs today, but a default
+    // nobody chose rather than a fact anybody established.
+    let set_pointer_width =
+        kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_set_process_pointer_width")?;
     let set_current_tid = kernel.get_typed_func::<(u32, u32), i32>(&mut kernel_store, "kernel_set_current_tid")?;
     let handle_channel =
         kernel.get_typed_func::<(i32, u32, u32, i64), i32>(&mut kernel_store, "kernel_handle_channel")?;
@@ -1994,6 +2018,7 @@ pub fn run_guest(
         &set_brk_base,
         &set_mmap_base,
         &set_max_addr,
+        &set_pointer_width,
         guest_module,
         guest_mem,
         layout,
@@ -2005,6 +2030,7 @@ pub fn run_guest(
         ForkEntry::Normal, // the boot process is never itself a fork child
         boot_fork_format,
         Arc::clone(&fork_proof_of_use),
+        false, // a fresh boot image: register its data model
     )?;
     let mut processes = vec![process];
     // N1-I3a Task 3: the boot process's ppid is the sentinel `0` — never a
@@ -2034,6 +2060,7 @@ pub fn run_guest(
         &set_brk_base,
         &set_mmap_base,
         &set_max_addr,
+        &set_pointer_width,
         &spawn_process,
         &spawn_blob_decode,
         &publish_spawn_child,
@@ -6123,6 +6150,7 @@ fn launch_process(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_pointer_width: &wasmtime::TypedFunc<(u32, u32), i32>,
     guest_module: Module,
     memory: SharedMemory,
     layout: ProcessLayout,
@@ -6134,6 +6162,7 @@ fn launch_process(
     fork_entry: ForkEntry,
     fork_format: Option<Arc<GuestForkFormat>>,
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
+    replacing_exec_image: bool,
 ) -> anyhow::Result<GuestProcess> {
     let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
     if scratch_ptr <= 0 {
@@ -6186,6 +6215,38 @@ fn launch_process(
     ] {
         if val < 0 {
             anyhow::bail!("{name} failed: {val}");
+        }
+    }
+
+    // B27a: register this process's data model, because the kernel parses
+    // caller-native records for it and one kernel instance serves wasm32 and
+    // wasm64 processes at once. The host contributes it at exactly the moment
+    // an address space comes into being, because the host is what read the
+    // program's bytes — the same contract `host/src/kernel-worker.ts` states
+    // at its own `kernel_set_process_pointer_width` call.
+    //
+    // An exec re-launch deliberately does NOT re-register. `kernel_exec_
+    // commit` has already replaced the width inside `exec_target::finish_
+    // commit`, read from the incoming image's own artifact bytes before the
+    // point of no return, and the kernel's process record survives the image
+    // swap. Writing it again here would make the host a second authority over
+    // the same question — harmless while the two agree, and silently resolved
+    // in the host's favour the day they do not.
+    //
+    // A fork child DOES pass through here, and re-registering is correct
+    // rather than redundant: it is a fresh address space this host just
+    // created, from bytes this host just read, which is the same shape the
+    // TypeScript hosts' own `registerProcess` has for a fork child. The width
+    // it writes agrees with the one `kernel_fork_process` already inherited
+    // through the fork state record, because both describe the same image.
+    if !replacing_exec_image {
+        let rc = set_pointer_width
+            .call(&mut *kernel_store, (pid, u32::from(layout.pointer_width)))?;
+        if rc < 0 {
+            anyhow::bail!(
+                "kernel_set_process_pointer_width(pid={pid}, width={}) failed: {rc}",
+                layout.pointer_width
+            );
         }
     }
 
@@ -6248,6 +6309,7 @@ fn launch_vfork_borrowed_child(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_pointer_width: &wasmtime::TypedFunc<(u32, u32), i32>,
     guest_module: Module,
     guest_mem: SharedMemory,
     parent_layout: ProcessLayout,
@@ -6287,6 +6349,16 @@ fn launch_vfork_borrowed_child(
         (
             "kernel_set_max_addr",
             set_max_addr.call(&mut *kernel_store, (pid, vregion.guest_ceiling as i32))?,
+        ),
+        // B27a: a borrowed vfork child is a FRESH kernel process record (its
+        // pid came from `kernel_fork_process`) running the PARENT's image in
+        // the parent's own memory, so its data model is the parent's, and it
+        // is registered here for the same reason the sibling brk/mmap/max-addr
+        // values are re-sent: this is a launch, not an exec re-registration.
+        (
+            "kernel_set_process_pointer_width",
+            set_pointer_width
+                .call(&mut *kernel_store, (pid, u32::from(parent_layout.pointer_width)))?,
         ),
     ] {
         if val < 0 {
@@ -10444,12 +10516,13 @@ fn stage_raw(
     scratch_ptr: usize,
     syscall_nr: u32,
     args: &mut [i64; 6],
+    pointer_width: u8,
 ) -> anyhow::Result<Vec<StagedArg>> {
     unsafe {
         write_bytes(kernel_mem, scratch_ptr + DATA_OFFSET, &[0u8; 4]);
         write_bytes(kernel_mem, scratch_ptr + SYSCALL_OFFSET, &syscall_nr.to_le_bytes());
     }
-    let staged = marshal_in(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args)?;
+    let staged = marshal_in(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args, pointer_width)?;
     unsafe {
         for (i, a) in args.iter().enumerate() {
             write_bytes(kernel_mem, scratch_ptr + ARGS_OFFSET + i * ARG_SIZE, &a.to_le_bytes());
@@ -10481,6 +10554,7 @@ fn dispatch_once(
     syscall_nr: u32,
     is_record: bool,
     args: &mut [i64; 6],
+    pointer_width: u8,
     retry_token: i64,
     set_current_tid: &wasmtime::TypedFunc<(u32, u32), i32>,
     handle_channel: &wasmtime::TypedFunc<(i32, u32, u32, i64), i32>,
@@ -10509,7 +10583,7 @@ fn dispatch_once(
         }
         Ok((ret, errno, Vec::new()))
     } else {
-        let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args)?;
+        let staged = stage_raw(kernel_mem, guest_mem, scratch_ptr, syscall_nr, args, pointer_width)?;
         bind_and_dispatch(
             store, scratch_ptr, pid, ch.tid, retry_token, set_current_tid, handle_channel, guest_mem,
             current_memory, current_pid,
@@ -10810,6 +10884,7 @@ fn run_pump(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_pointer_width: &wasmtime::TypedFunc<(u32, u32), i32>,
     spawn_process: &wasmtime::TypedFunc<(u32, u32, i32, i32), i32>,
     spawn_blob_decode: &wasmtime::TypedFunc<(i32, i32, i32), i32>,
     publish_spawn_child: &wasmtime::TypedFunc<(u32, u32), i32>,
@@ -10862,10 +10937,14 @@ fn run_pump(
             let guest_mem = proc.memory.clone();
             let scratch_ptr = proc.scratch_base;
             let pid = proc.pid;
+            // The parked op belongs to THIS process, so its record sizes
+            // are this process's data model, not the one dispatching now.
+            let pointer_width = proc.layout.pointer_width;
             let mut args = read_channel_args(&guest_mem, op.channel.offset);
             let deadline_passed = op.deadline.is_some_and(|d| Instant::now() >= d);
 
-            let staged = stage_raw(kernel_mem, &guest_mem, scratch_ptr, op.syscall_nr, &mut args)?;
+            let staged =
+                stage_raw(kernel_mem, &guest_mem, scratch_ptr, op.syscall_nr, &mut args, pointer_width)?;
             if deadline_passed {
                 force_zero_timeout(kernel_mem, scratch_ptr, op.syscall_nr);
             }
@@ -10915,6 +10994,7 @@ fn run_pump(
             let pid = processes[pi].pid;
             let scratch_ptr = processes[pi].scratch_base;
             let layout = processes[pi].layout;
+            let pointer_width = layout.pointer_width;
             let guest_mem = processes[pi].memory.clone();
             let guest_module = processes[pi].module.clone();
 
@@ -10947,7 +11027,9 @@ fn run_pump(
                 // first). A spawned child's exit always just commits into the
                 // kernel and drops its channel.
                 if ch.is_main && (syscall_nr == Syscall::Exit as u32 || syscall_nr == SYS_EXIT_GROUP) {
-                    let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut args)?;
+                    let _ = stage_raw(
+                        kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut args, pointer_width,
+                    )?;
                     let _ = bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
                         &guest_mem, current_memory, current_pid,
@@ -11038,7 +11120,9 @@ fn run_pump(
                     let tls_ptr = args[3] as u32;
 
                     let mut clone_args = args;
-                    let _ = stage_raw(kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut clone_args)?;
+                    let _ = stage_raw(
+                        kernel_mem, &guest_mem, scratch_ptr, syscall_nr, &mut clone_args, pointer_width,
+                    )?;
                     bind_and_dispatch(
                         kernel_store, scratch_ptr, pid, ch.tid, 0, set_current_tid, handle_channel,
                         &guest_mem, current_memory, current_pid,
@@ -11133,7 +11217,8 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, &args, alloc_scratch,
                         spawn_blob_decode, spawn_process, publish_spawn_child, remove_process,
                         set_thread_slot_quota, set_brk_base,
-                        set_mmap_base, set_max_addr, spawn_exec_target_prepare, exec_target_size,
+                        set_mmap_base, set_max_addr, set_pointer_width,
+                        spawn_exec_target_prepare, exec_target_size,
                         exec_target_read, spawn_exec_commit, exec_target_cancel,
                         exec_target_resolve_shebang, wait_table, use_fork_module, fork_proof_of_use,
                     )?;
@@ -11182,7 +11267,7 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
                         fork_process, remove_process, alloc_scratch, set_thread_slot_quota,
                         set_brk_base, set_mmap_base,
-                        set_max_addr, use_fork_module, fork_proof_of_use, wait_table,
+                        set_max_addr, set_pointer_width, use_fork_module, fork_proof_of_use, wait_table,
                     )?;
                     ci += 1;
                     continue;
@@ -11228,6 +11313,7 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args,
                         open_flags::AT_FDCWD, path_bytes, argv_ptr, envp_ptr, 0, alloc_scratch,
                         set_thread_slot_quota, set_brk_base, set_mmap_base, set_max_addr,
+                        set_pointer_width,
                         exec_target_prepare, exec_target_size,
                         exec_target_read, exec_commit, exec_target_cancel, exec_target_resolve_shebang,
                         remove_process, wait_table, use_fork_module, fork_proof_of_use,
@@ -11267,7 +11353,8 @@ fn run_pump(
                         kernel_store, engine, kernel_mem, processes, pi, ch, syscall_nr, &args, dirfd,
                         path_bytes, argv_ptr, envp_ptr, flags, alloc_scratch, set_thread_slot_quota,
                         set_brk_base, set_mmap_base,
-                        set_max_addr, exec_target_prepare, exec_target_size, exec_target_read, exec_commit,
+                        set_max_addr, set_pointer_width, exec_target_prepare, exec_target_size,
+                        exec_target_read, exec_commit,
                         exec_target_cancel, exec_target_resolve_shebang, remove_process, wait_table,
                         use_fork_module, fork_proof_of_use,
                     )? {
@@ -11281,7 +11368,8 @@ fn run_pump(
 
                 let (ret, errno, staged) = dispatch_once(
                     kernel_store, &guest_mem, kernel_mem, scratch_ptr, pid, ch, syscall_nr, is_record,
-                    &mut args, 0, set_current_tid, handle_channel, current_memory, current_pid,
+                    &mut args, pointer_width, 0, set_current_tid, handle_channel, current_memory,
+                    current_pid,
                 )?;
 
                 if !is_record
@@ -11456,6 +11544,7 @@ fn handle_spawn(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_pointer_width: &wasmtime::TypedFunc<(u32, u32), i32>,
     spawn_exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, u32, u32), i32>,
     exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
@@ -11696,6 +11785,7 @@ fn handle_spawn(
         set_brk_base,
         set_mmap_base,
         set_max_addr,
+        set_pointer_width,
         child_module,
         child_mem,
         child_layout,
@@ -11707,6 +11797,7 @@ fn handle_spawn(
         ForkEntry::Normal, // a posix_spawn child is a fresh image, never a fork replay
         child_fork_format,
         Arc::clone(fork_proof_of_use),
+        false, // a fresh spawn image: register its data model
     )?;
     processes.push(child);
     let child_pi = processes.len() - 1;
@@ -11823,6 +11914,7 @@ fn handle_fork(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_pointer_width: &wasmtime::TypedFunc<(u32, u32), i32>,
     use_fork_module: bool,
     fork_proof_of_use: &Arc<Mutex<ForkProofOfUse>>,
     wait_table: &Arc<Mutex<WaitTable>>,
@@ -11942,6 +12034,7 @@ fn handle_fork(
                 set_brk_base,
                 set_mmap_base,
                 set_max_addr,
+                set_pointer_width,
                 child_module,
                 child_mem,
                 layout,
@@ -12051,6 +12144,7 @@ fn handle_fork(
         set_brk_base,
         set_mmap_base,
         set_max_addr,
+        set_pointer_width,
         child_module,
         child_mem,
         layout,
@@ -12062,6 +12156,7 @@ fn handle_fork(
         fork_entry,
         fork_format,
         Arc::clone(fork_proof_of_use),
+        false, // a fork child's address space is new to this host
     )?;
     processes.push(child);
 
@@ -12192,6 +12287,7 @@ fn handle_exec_common(
     set_brk_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_mmap_base: &wasmtime::TypedFunc<(u32, i32), i32>,
     set_max_addr: &wasmtime::TypedFunc<(u32, i32), i32>,
+    set_pointer_width: &wasmtime::TypedFunc<(u32, u32), i32>,
     exec_target_prepare: &wasmtime::TypedFunc<(u32, u32, i32, u32, u32, u32), i32>,
     exec_target_size: &wasmtime::TypedFunc<(u32, u32), i64>,
     exec_target_read: &wasmtime::TypedFunc<(u32, u32, u32, i32, u32, u32), i32>,
@@ -12386,6 +12482,7 @@ fn handle_exec_common(
         set_brk_base,
         set_mmap_base,
         set_max_addr,
+        set_pointer_width,
         new_module,
         new_mem,
         new_layout,
@@ -12397,6 +12494,7 @@ fn handle_exec_common(
         ForkEntry::Normal, // an exec'd image is never itself a fork replay
         new_fork_format,
         Arc::clone(fork_proof_of_use),
+        true, // exec: the kernel already replaced the width at commit
     ) {
         Ok(v) => v,
         Err(error) => {
@@ -12966,6 +13064,7 @@ fn marshal_in(
     scratch_ptr: usize,
     syscall_nr: u32,
     args: &mut [i64; 6],
+    pointer_width: u8,
 ) -> anyhow::Result<Vec<StagedArg>> {
     let mut staged = Vec::new();
     let mut cursor = 0usize;
@@ -12979,12 +13078,20 @@ fn marshal_in(
         // `host_proc_read_bytes`/`host_proc_write_bytes`, which this host
         // already provides. Leave the guest address in place; the caller's
         // data model is the process's registered pointer width, which the
-        // kernel looks up for itself. This host runs wasm32 guests only, and
-        // wasm32 is the width a process is created with.
+        // kernel looks up for itself — the one this host registered from the
+        // same `ProcessLayout` that `pointer_width` above came from.
         if d.size == SyscallArgSize::KernelDereferenced {
             continue;
         }
-        let guest_ptr = args[idx] as u32 as usize;
+        // A wasm32 guest address is the low 32 bits (an i32 the guest may have
+        // sign-extended into the channel slot); a wasm64 one is the whole
+        // word. Truncating a wasm64 address to 32 bits would silently alias it
+        // to a different page, so the width decides the mask.
+        let guest_ptr = if pointer_width == 8 {
+            args[idx] as u64 as usize
+        } else {
+            args[idx] as u32 as usize
+        };
         let size = match d.size {
             SyscallArgSize::Fixed { size } => size as usize,
             SyscallArgSize::Arg { arg_index, multiplier, add } => {
@@ -13014,14 +13121,15 @@ fn marshal_in(
             // selects the matching parse from the same process's registered
             // pointer width on its side of the channel.
             //
-            // This host instantiates wasm32 guests only — `parse_guest_module`
-            // rejects any other `ptr_width` at load — so the caller's model is
-            // always ILP32 and the wasm32 size is the correct selection. That
-            // assumption is the same one the `KernelDereferenced` arm above
-            // already documents. A wasm64 guest cannot reach here today; if
-            // this host ever instantiates one, this must read that process's
-            // registered width instead of resolving the width statically.
-            SyscallArgSize::ProcessLayout { wasm32_size, .. } => wasm32_size as usize,
+            // B27b: this used to resolve to `wasm32_size` unconditionally, on
+            // the stated grounds that the host runs wasm32 guests only. It now
+            // reads the CALLING process's own width — the same value this host
+            // registered with `kernel_set_process_pointer_width` at launch, so
+            // the two sides of the channel select from one fact rather than
+            // from two independent assumptions about the guest.
+            SyscallArgSize::ProcessLayout { wasm32_size, wasm64_size } => {
+                if pointer_width == 8 { wasm64_size as usize } else { wasm32_size as usize }
+            }
             other => anyhow::bail!("syscall {syscall_nr}: unsupported arg size {other:?}"),
         };
         if d.nullable && guest_ptr == 0 {
