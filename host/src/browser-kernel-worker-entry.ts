@@ -440,6 +440,7 @@ const {
   bindForkHostImports,
   configureRootfsOverlayFromImage,
   createInitProcessMemoryAllocator,
+  dispatchProcessWorkerMessage,
   processLifecycleKernelCallbacks,
   completeVforkGenerationTeardown,
   handleExec,
@@ -1147,84 +1148,29 @@ function installProcessWorkerListeners(
       },
     );
   });
-  worker.on("message", (msg: unknown) => {
-    const process = processes.get(pid);
-    if (!process || process.worker !== worker) return;
-    const m = msg as WorkerToHostMessage;
-    if (m.type === "memory_quiescent" && m.tid === undefined) {
-      // The browser entry emits this only after worker-main returns. Unlike
-      // Browser Worker.terminate(), this is an exact-generation ownership
-      // fence and can authorize dropping the allocator's strong reference.
-      if (vforkLifetimes.phaseForChild(process) !== undefined) {
-        traceVforkMechanism("memory_quiescent", `child=${pid}`);
-      }
-      process.workerQuiescence.settle();
-    }
-    if (m.type === "exec_retired" && m.tid === undefined) {
-      process.execRetirement.settle();
-    }
+  worker.on("message", (raw: unknown) => {
+    // The ownership fences, the interrupt timer, the fork host-import
+    // protocol and the fork-module proof channels are handled once for both
+    // hosts. What comes back is the disposition the hosts disagree about:
+    // `Worker.terminate()` proves nothing here, so a dead worker is finalized
+    // through the latch above, which is also what keeps the `exit` event
+    // `BrowserWorkerHandle` fabricates from finalizing a second time.
+    const disposition = dispatchProcessWorkerMessage(worker, pid, raw);
+    if (disposition.kind === "stale" || disposition.kind === "consumed") return;
     if (intentionallyTerminated.has(worker as object)) return;
-    if (m.type === "error") {
-      const signum = classifiedSignalOrFallback(m.message);
-      const status = classifiedTrapExitStatus(m.message) ?? -1;
+    if (disposition.kind === "error") {
+      const signum = classifiedSignalOrFallback(disposition.message);
+      const status = classifiedTrapExitStatus(disposition.message) ?? -1;
       finalize(
         status,
         signum,
         {
           source: "worker-main error message",
-          message: `[process-worker] ${m.message ?? "unknown error"}`,
+          message: `[process-worker] ${disposition.message ?? "unknown error"}`,
         },
       );
-    } else if (m.type === "exit") {
-      finalize(m.status ?? 0);
-    } else if (m.type === "vm_interrupt_timer") {
-      handleVmInterruptTimer(m, pid, process);
-    } else if (m.type === "fork_host_import") {
-      dispatchForkHostImport(worker, m);
-    } else if (m.type === "fork_module_frames" && m.pid === pid) {
-      // Forward the co-resident fork-module's proof-of-use (Phase 6 D5): a
-      // nonzero frame count confirms the qualifying fork ran its continuation
-      // through the module. Proof-of-use is informational success telemetry, not
-      // a host problem, so it rides the dedicated `fork_module_proof` channel and
-      // never pollutes `onHostDiagnostic`. Mirrors node-kernel-worker-entry.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message: `fork_module_frames=${m.frames}`,
-      });
-    } else if (m.type === "fork_module_child_frames" && m.pid === pid) {
-      // Forward the co-resident fork-module's REPLAY-side proof-of-use (Phase 6
-      // D7b): a nonzero count confirms a fork CHILD (e.g. a fork-from-thread
-      // child) drove its rewind through the module — the child never commits, so
-      // `fork_module_frames` cannot show this. Mirrors node-kernel-worker-entry.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message: `fork_module_child_frames=${m.frames}`,
-      });
-    } else if (m.type === "fork_module_references" && m.pid === pid) {
-      // Forward the co-resident fork-module's PER-KIND REFERENCE proof-of-use
-      // (Phase 6 D6.5): a nonzero count for a kind confirms the child's carried
-      // references of that kind were reconstructed through the module. All kinds
-      // ride one string so a reader can extract any of funcref/externref/exnref/
-      // typed-GC. Mirrors node-kernel-worker-entry.
-      postForkModuleProof({
-        pid,
-        source: "fork-module",
-        message:
-          `fork_module_references=${m.references} ` +
-          `externrefs_resolved=${m.externrefs} ` +
-          `exnrefs_reconstructed=${m.exnrefs} ` +
-          `gc_nodes_reconstructed=${m.gcNodes} ` +
-          `drive_steps_executed=${m.driveSteps} ` +
-          `static_roots_published=${m.staticRoots}`,
-      });
-    } else if (m.type === "fork_module_region" && m.pid === pid) {
-      // Record where this worker placed its co-resident fork-module region so a
-      // COPIED fork child reuses the same base instead of double-mapping the
-      // region it already inherits via its memory clone. Mirrors
-      // node-kernel-worker-entry.
-      process.forkModuleRegion = { base: m.base, bytes: m.bytes };
+    } else {
+      finalize(disposition.status);
     }
   });
 }
