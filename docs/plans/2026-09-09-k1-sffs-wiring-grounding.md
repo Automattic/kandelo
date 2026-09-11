@@ -544,13 +544,15 @@ carries a nested `"baseImage":{…,"kernelAbi":44}` as well.
 
 ### 7.2 Where it is enforced
 
-Three readers, and **none of them is the runtime load path**:
+Three readers. **The "none of them is the runtime load path" claim below is
+WRONG and was corrected on 2026-09-10** — `assertImageKernelAbi` has a live
+browser-demo load-path caller. The table row carries the correction.
 
 | site | what it does | live? |
 |---|---|---|
 | `host/src/binary-resolver.ts:2911-2926` (`hasVfsArtifactPolicyFailuresForBytes`) | `readImageMetadata(bytes)?.kernelAbi !== ABI_VERSION` → treat the artifact as a policy failure; fail-closed on any inspection error | **yes** — artifact resolution / cache invalidation |
-| `host/src/vfs/memory-fs.ts:7158-7170` (`assertImageKernelAbi`) | throws on mismatch, tolerates an absent declaration | **no caller in `host/src`, `web-libs`, `apps`, `tools`, `scripts`, or `images`** (VERIFIED by repo-wide grep excluding `dist`/`node_modules`) |
-| `scripts/vfs-has-stale-abi.mjs` | standalone CLI, "the shell resolver" peer of the TS check | **no caller anywhere.** VERIFIED: the only repo-wide references are its own usage string (`:100`) and two CI *path-scope* lists (`.github/actions/detect-change-scope/{ci-scope-paths.sh:77,test-ci-scope-paths.sh:190}`) |
+| `host/src/vfs/memory-fs.ts:7158-7170` (`assertImageKernelAbi`) | throws on mismatch, tolerates an absent declaration | **YES — CORRECTED 2026-09-10.** The "no caller" reading here was WRONG: `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1168` calls it in the browser demo boot path, after `readImageMetadata` and before `fromImage`. It is a live load-time guard. The original grep missed it; do not re-inherit the dead-code reading |
+| ~~`scripts/vfs-has-stale-abi.mjs`~~ | standalone CLI, "the shell resolver" peer of the TS check | **no caller anywhere — CONFIRMED, and DELETED 2026-09-10.** The only repo-wide references were its own usage string and two CI *path-scope* lists, all removed with it |
 
 `tools/mkrootfs/src/cli/inspect.ts:226` also reads it, for display only.
 

@@ -689,6 +689,83 @@ reachable**: once the kernel owns the SFFS layer *and* the lazy linkage, nothing
 in the image is bound to the guest ABI except the Wasm programs inside it, which
 carry their own check.
 
+### 7.5 CORRECTION 2026-09-10 — step 5 is blocked, on measurement
+
+Step 5 ("delete the JSON `entries[]`", §7.2) and §7.4's stamp removal were
+scoped against a premise that re-measurement disproves. Recorded here so the
+estimate is not inherited a third time. Steps 1-4 are unaffected and remain
+landed and correct.
+
+**§7.2 step 5 rests on a false premise.** It assumed that once the kernel
+reads `KLZY`, the host no longer needs per-member archive state, so the JSON
+`entries[]` becomes redundant. It does not.
+
+- `entries[]` and `KLZY` are two encodings of ONE in-memory structure,
+  emitted in the same breath: `saveImage` builds `archiveEntries` once
+  (`memory-fs.ts:7056`), `JSON.stringify`s it into the archive section
+  (`:7059`), and passes the SAME array to `encodeKernelLazySection`
+  (`:7081`). The JSON is the only form the host can RESTORE from; `KLZY` is
+  derived from it at every save, never read back by the host.
+- Restore-mutate-save round trips exist in PRODUCTION, not only in build
+  scripts. `host/src/vfs/rootfs-overlay-export.ts` clones the base image
+  (`:225`) and re-serializes it (`:316`) to answer the kernel's rootfs
+  snapshot request (`host/src/process-lifecycle.ts:1800`). That module's own
+  header states why: the clone carries "the lazy per-file and lazy-archive
+  descriptors, which live only in the base image".
+- So dropping `entries[]` from the persisted JSON makes the NEXT `saveImage`
+  emit a `KLZY` section with an empty file table. Every archive-backed lazy
+  stub in the exported image becomes an ordinary 0-byte regular file to the
+  kernel. That is silent corruption of a product artifact, which is the
+  failure mode the platform-values contract forbids most explicitly.
+- The mapping is not reconstructible from anything else. Every shipped
+  archive group is `kandelo-legacy-zip-v1`, and that kind carries NO
+  `inventory[]` (`memory-fs.ts:5571-5578`); only typed deferred trees do,
+  and §7.3 VERIFIED no shipped image uses those. The two remaining routes
+  are SD-B5's `SOURCE_PATH_DERIVED` assumption — which SD-B5 itself says a
+  writer must PROVE per group, and which would here be a READER betting on
+  it — or a new host-side SFFS tree walk at restore, which grows host
+  surface and re-adds exactly the walk step 4 existed to delete.
+
+The reachable version of the win is therefore NOT "remove `entries[]`". It is
+"delete the host-side archive materialization subsystem, so nothing needs
+per-member state" — a far larger, separate item.
+
+**§7.4's cost model for the stamp is wrong in its load-bearing claim.**
+
+- `MemoryFileSystem.assertImageKernelAbi` is NOT callerless. It has a live
+  production caller in the browser demo boot path,
+  `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts:1168`, which
+  runs after `readImageMetadata` and BEFORE `fromImage`. It is a genuine
+  load-time guard, not dead code. (Two other plan documents,
+  `2026-09-09-k8-vfs-authority-grounding.md:531` and
+  `2026-09-09-rust-first-value-plan.md:1330`, already refuted the
+  callerless claim; this document and
+  `2026-09-09-k1-sffs-wiring-grounding.md:552` inherited it unchecked.)
+- `host/src/binary-resolver.ts`'s ABI comparison is the ONLY discriminator
+  that lets the resolver skip a stale local `.vfs` in favour of a fresh
+  fetched one. §7.4 says to "replace the build-cache freshness signal it
+  provides"; no such replacement exists at that layer, and four tests in
+  `host/test/binary-resolver.test.ts:1524-1585` encode the behaviour.
+- `docs/agent-guidance/abi.md` and `CLAUDE.md`'s ABI contract both require
+  an ABI-mismatched VFS image to FAIL LOUDLY. The stamp is the mechanism
+  that makes that happen at load. Removing it converts a loud load-time
+  refusal into a silently-selected stale image whose programs fail later as
+  `ENOEXEC` — still a failure, but after an apparently successful boot.
+
+The one part of §7.4 that held up: `scripts/vfs-has-stale-abi.mjs` really was
+dead, verified exhaustively, and is deleted as of 2026-09-10.
+
+**Measured deletion surface, replacing the "~2,000 lines across
+`memory-fs.ts` and `sharedfs-vendor.ts`" estimate.** Under the literal step-5
+scope the deletable surface is approximately ZERO: `entries[]` is the
+serialization of live in-memory state and every consumer of that state
+survives. Under the larger "delete the host-side archive subsystem" scope the
+surface is roughly 4,900 lines in `memory-fs.ts` but only ~170 in
+`sharedfs-vendor.ts` (`replaceManyIfIdentities` and two interfaces);
+`createLazyStub` and `replaceIfIdentity` are SHARED with the URL-backed lazy
+path and stay. The original estimate was wrong in both magnitude and
+distribution.
+
 ---
 
 ## 8. STRONG DOUBT

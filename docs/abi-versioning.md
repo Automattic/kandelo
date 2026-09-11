@@ -1432,6 +1432,50 @@ lazy files still carries the section, empty, in 20 bytes. Per the ABI
 contract, an ABI-mismatched image fails loudly and is rebuilt through the
 normal package/release path.
 
+#### Removing VFS image sections inside the ABI 44 epoch
+
+Non-additive, and it rides `ABI_VERSION` 44 anyway. Recorded here
+because that is the unusual case and a future reader is owed the
+reasoning.
+
+The VFS image trailer carries three JSON sections (lazy files, lazy
+archives, image metadata) plus the binary `KLZY` kernel-lazy section.
+Adding `KLZY` was additive: no existing reader checks for trailing bytes
+or rejects unknown flag bits, so older readers cannot see it. *Removing*
+a JSON section is not additive, and `docs/agent-guidance/abi.md` lists
+"VFS image metadata that binds Wasm programs to a kernel ABI" as ABI
+surface. That would ordinarily demand a bump.
+
+**Decision: no `ABI_VERSION` bump for section removals made inside the
+ABI 44 epoch.** ABI 44 is unreleased, so its surface may still move. An
+ABI-44 image is already unreadable by an ABI-43 reader — the epoch
+boundary is what refuses it, before any section-level question
+arises — so removing sections *within* the unreleased epoch breaks
+no contract that has been handed to anyone. The obligation an epoch
+bump exists to discharge is owed to holders of artifacts built against
+a *released* epoch, and there are none.
+
+The premise was verified rather than assumed, on 2026-09-10:
+
+- No reader in the tree expects an ABI-43 image. Every image-ABI
+  comparison in the repository compares against the *current*
+  `ABI_VERSION` (`host/src/binary-resolver.ts`'s artifact-policy check
+  and `MemoryFileSystem.assertImageKernelAbi`), so an ABI-43 image is
+  already rejected by both.
+- No committed artifact or fixture depends on the JSON sections. The
+  only `.vfs` file tracked in version control is
+  `crates/runtime-core/src/testdata/tiny.vfs`, whose header flags are
+  `0x0` — it carries no lazy, archive, or metadata section at all.
+
+This decision is about the ABI *version*, and about nothing else. It
+does not by itself make any particular section safe to remove: a
+section with live readers still has to lose those readers first, on
+ordinary correctness grounds. As of 2026-09-10 the lazy-archive
+`entries[]` array and the metadata `kernelAbi` stamp both still have
+live readers; what those readers are, and why they block removal, is
+recorded in
+`docs/plans/2026-09-09-k1b-image-format-grounding.md`.
+
 An additive export is compatible only while existing required capabilities and
 existing semantics remain unchanged. ABI 43's scratch work is deliberately not
 such an addition: it expands the required host-adapter export set, removes the

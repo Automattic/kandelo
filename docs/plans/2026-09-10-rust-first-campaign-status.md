@@ -189,7 +189,7 @@ avoid a contested file. The coordinator resolves at merge.
 |---|---|---|
 | K0 probes | **DONE** | Disproved the E1 GC blockers and the V8 `epoll_pwait` crash |
 | K13a | **DONE** | Dead export deletion |
-| K1 / K1b | **DONE** (step 5 owed) | JSON + ABI stamp completes V3 |
+| K1 / K1b | **DONE** (steps 1-4); step 5 **BLOCKED** | Steps 1-4 landed. Step 5 was scoped on a premise measurement disproves — see the B1 row and the K1b grounding §7.5 |
 | K10 | **DONE** | I1/I2/I3/I7 landed earlier; I4/I5/I6 landed 2026-09-10 — the Rust module runs and `wasi-shim.ts` is deleted. See §2x of the value plan |
 | K10 | **COMPLETE** | I6 deleted `wasi-shim.ts` (−1,055); fixtures gate disproved; I4/I5 done |
 | K14 | **DONE** | |
@@ -2698,7 +2698,7 @@ keep their row so they are not re-opened.
 
 | # | Item | Why it is still here |
 |---|---|---|
-| B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **Completes V3.** Recorded only as a table cell until now; never scoped. Removes ~2,000 lines across `memory-fs.ts`/`sharedfs-vendor.ts` once the stamp goes |
+| B1 | **K1 step 5** — the JSON `entries[]` path and the image ABI stamp | **BLOCKED 2026-09-10, needs a maintainer decision.** Scoped for the first time and the scoping disproved its premise. `entries[]` is not redundant with `KLZY`: both are emitted from ONE in-memory structure in the same `saveImage` call, the JSON is the only form restore can read back, and production round-trips exist (`rootfs-overlay-export.ts`, the kernel rootfs-snapshot handler). Dropping it makes the next save emit an empty `KLZY` file table — silent 0-byte lazy files. The stamp has two LIVE readers, not the claimed zero: `assertImageKernelAbi` (`live-setup.ts:1168`) and the resolver’s only stale-vs-fresh `.vfs` discriminator. The “~2,000 lines” estimate is wrong in magnitude and distribution: ~0 under the literal scope; ~4,900 in `memory-fs.ts` but only ~170 in `sharedfs-vendor.ts` under the larger “delete the host-side archive subsystem” scope. Delivered: the genuinely dead `vfs-has-stale-abi.mjs` (-107) and the ABI decision recorded in `docs/abi-versioning.md`. See K1b grounding §7.5 |
 | B2 | **K7 re-cut piece 2** — the shared-mapping coherence layer | ~1,203 TS lines have no Rust counterpart; sized as policy, not plumbing |
 | B3 | **K7 re-cut piece 3** — anon + file mapping cutover | Gated on a **targeted** shared-mapping benchmark; a general syscall benchmark exercises only the early-out |
 | B4 | **The measured 3.7× SysV regression** | Zero-import remedy identified: hoist destination validation *before* the source view, rather than deleting `host_proc_read_bytes`'s second copy — that copy narrows a grow-detach window |
@@ -3207,9 +3207,19 @@ the E1 GC blockers · the V8 `epoll_pwait` crash · the four-JS-act dylink floor
 the K1b callerless `assertImageKernelAbi` · `netif.rs`'s "cannot itself reach" ·
 OPFS-as-live-floor · the `constants.ts` "re-export shim" KEEP · the
 pre-/post-kernel two-category framing · "16 inseparable pairs" · "~30 ABI-43
-strings" · the `describeWasmArtifactPolicyFailures` holder · wasmtime-exnref.
+strings" · the `describeWasmArtifactPolicyFailures` holder · wasmtime-exnref ·
+K1 step 5's "`entries[]` is redundant once the kernel reads `KLZY`" · K1 step
+5's "~2,000 lines across `memory-fs.ts`/`sharedfs-vendor.ts`".
 
-**Fifteen disproved claims. Seven were written by the coordinator.**
+**Seventeen disproved claims. Seven were written by the coordinator.**
+
+The `assertImageKernelAbi` entry above is worth re-reading: it was closed by
+measurement, recorded here, and then inherited as fact AGAIN by the B1 brief
+on 2026-09-10. Closing a claim in this list does not stop it propagating
+through documents that were written before the correction. Two plan files
+still carried the dead-code reading when B1 was dispatched
+(`2026-09-09-k1b-image-format-grounding.md` §7.4, now corrected in §7.5, and
+`2026-09-09-k1-sffs-wiring-grounding.md:552`, still uncorrected).
 
 ## Open decisions collected — the ones needing the maintainer, in one place
 
