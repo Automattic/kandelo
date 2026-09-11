@@ -121,6 +121,17 @@ nix_develop=(
     # path of whichever worktree populated it first, so concurrent worktrees
     # can run each other's build scripts and fail in ways that name neither.
     --keep KANDELO_SOURCE_CACHE_ROOT \
+    # WHY this one is kept: it is the same hazard as the line above, for the
+    # other half of the cache. `run.sh` reads it OUTSIDE this shell (see the
+    # `cache_root` local in `cmd_local_build`) and xtask reads it INSIDE, so
+    # stripping it did not disable the override -- it made the override
+    # SILENTLY INEFFECTIVE, and the build fell back to the shared
+    # $HOME/.cache/kandelo/programs while its caller believed it was isolated.
+    # That was found the expensive way: an agent asked to keep its package
+    # cache to itself was writing into the shared one, and nothing said so.
+    # A knob that cannot be reached from where people set it is worse than no
+    # knob, because it reports success.
+    --keep WASM_POSIX_BINARY_CACHE_ROOT \
     # WHY this one is kept: the sortix conformance runners take the os-test
     # checkout to build from here, and they run INSIDE this shell. On a
     # case-insensitive filesystem the submodule checkout is case-collapsed and
@@ -129,6 +140,14 @@ nix_develop=(
     # override silently ineffective and leave the suite permanently refused on
     # macOS. See scripts/ensure-case-sensitive-os-test.sh.
     --keep KANDELO_OS_TEST_DIR \
+    # WHY this one is kept: it is the companion knob to the line above --
+    # `ensure-case-sensitive-volume.sh` defaults the image location to
+    # $HOME/.cache/kandelo and offers this as the override, and it runs inside
+    # this shell as part of setup. Stripped, the override would be accepted
+    # without effect and the image would land in the default location anyway.
+    # An override that reports success while doing nothing is the failure this
+    # keep-list exists to prevent, not a missing feature.
+    --keep KANDELO_CASE_IMAGE_DIR \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \
