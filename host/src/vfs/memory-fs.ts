@@ -1045,10 +1045,31 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
  * writer-agnostic: when the kernel becomes the image writer, the same equality
  * still has to hold, and this gate keeps holding it to that.
  */
+/**
+ * Encode the section the JSON describes, deferring any encoder complaint.
+ *
+ * The encode runs on the freshly decoded JSON, before any importer sees it, so
+ * the comparison is against what the image SAYS rather than against whatever
+ * an importer made of it. A malformed section makes this return the error
+ * instead of throwing, so the importers' own validation — which produces the
+ * better diagnostic — still gets to speak first.
+ */
+function deriveKernelLazySection(
+  lazyEntries: readonly LazyFileEntry[],
+  archiveEntries: readonly SerializedLazyArchiveEntry[],
+): Uint8Array | Error {
+  try {
+    return encodeKernelLazySection(lazyEntries, archiveEntries);
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
 function assertKernelLazySectionMatchesJson(
   parsed: ParsedImageHeader,
   lazyEntries: readonly LazyFileEntry[],
   archiveEntries: readonly SerializedLazyArchiveEntry[],
+  derivedOrError: Uint8Array | Error,
 ): void {
   const declared = kernelLazySectionBytes(parsed);
   if (declared === null) {
@@ -1062,7 +1083,12 @@ function assertKernelLazySectionMatchesJson(
     // unreachable and the equality below always runs.
     return;
   }
-  const derived = encodeKernelLazySection(lazyEntries, archiveEntries);
+  if (derivedOrError instanceof Error) {
+    // The importers accepted the JSON, so the encoder's complaint about it is
+    // the real one and belongs to the caller now.
+    throw derivedOrError;
+  }
+  const derived = derivedOrError;
   if (!equalBytes(declared, derived)) {
     throw new Error(
       "VFS image kernel lazy linkage (KLZY) does not match its JSON lazy " +
@@ -7417,57 +7443,63 @@ export class MemoryFileSystem implements FileSystemBackend {
       metadata,
     );
 
-    // Restore lazy entries
+    // Decode both JSON halves before importing either. The binary `KLZY`
+    // section is re-derived from these PRISTINE arrays, so that the comparison
+    // below cannot be perturbed by anything an importer does to the values it
+    // is handed. See `assertKernelLazySectionMatchesJson` for why it is
+    // compared at all.
     const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
     const lazyLen = sections.lazyLen;
     let lazyEntries: LazyFileEntry[] = [];
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
-      if (lazyLen > 0) {
-        const lazyBytes = image.subarray(
-          lazyOffset + 4,
-          lazyOffset + 4 + lazyLen,
-        );
-        const entries = requireLazyTreeArray(
-          decodeJsonSection(lazyBytes, "VFS image lazy metadata"),
-          "VFS image lazy entries",
-          0,
-          MAX_LAZY_TREE_ENTRIES,
-        ) as LazyFileEntry[];
-        mfs.importLazyEntriesInternal(entries, true);
-        lazyEntries = entries;
-      }
+    if (flags & VFS_IMAGE_FLAG_HAS_LAZY && lazyLen > 0) {
+      lazyEntries = requireLazyTreeArray(
+        decodeJsonSection(
+          image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLen),
+          "VFS image lazy metadata",
+        ),
+        "VFS image lazy entries",
+        0,
+        MAX_LAZY_TREE_ENTRIES,
+      ) as LazyFileEntry[];
     }
 
-    // Restore lazy archive groups
-    let archiveEntries: SerializedLazyArchiveEntry[] = [];
+    let archiveValue: unknown = null;
     if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
       const archiveOffset = sections.archiveOffset;
       const archiveLen = view.getUint32(archiveOffset, true);
       if (archiveLen > 0) {
-        const archiveBytes = image.subarray(
-          archiveOffset + 4,
-          archiveOffset + 4 + archiveLen,
-        );
-        const entries = decodeJsonSection(
-          archiveBytes,
+        archiveValue = decodeJsonSection(
+          image.subarray(archiveOffset + 4, archiveOffset + 4 + archiveLen),
           "VFS image lazy archive metadata",
         );
-        mfs.importLazyArchiveEntriesInternal(
-          entries,
-          true,
-          Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
-          "pending",
-        );
-        // Validated by the import above, which throws on any shape the
-        // serialized archive contract does not allow.
-        archiveEntries = entries as SerializedLazyArchiveEntry[];
       }
     }
+    const archiveEntries = Array.isArray(archiveValue)
+      ? (archiveValue as SerializedLazyArchiveEntry[])
+      : [];
+    const derivedKernelLazy = deriveKernelLazySection(lazyEntries, archiveEntries);
 
-    // Both JSON halves are now validated, so re-deriving the binary section
-    // from them cannot be led astray by malformed input. See
-    // `assertKernelLazySectionMatchesJson` for why this is checked at all.
-    assertKernelLazySectionMatchesJson(parsed, lazyEntries, archiveEntries);
+    if (lazyEntries.length > 0) {
+      mfs.importLazyEntriesInternal(lazyEntries, true);
+    }
+    if (archiveValue !== null) {
+      mfs.importLazyArchiveEntriesInternal(
+        archiveValue,
+        true,
+        Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
+        "pending",
+      );
+    }
+
+    // Deliberately after the imports: their validation produces the better
+    // diagnostic for a malformed section, and only a JSON the importers
+    // accepted can meaningfully be compared against the binary one.
+    assertKernelLazySectionMatchesJson(
+      parsed,
+      lazyEntries,
+      archiveEntries,
+      derivedKernelLazy,
+    );
 
     return mfs;
   }
