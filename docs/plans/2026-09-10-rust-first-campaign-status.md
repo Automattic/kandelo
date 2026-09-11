@@ -3856,15 +3856,45 @@ needs `host_set_alarm`, an import the native host deliberately leaves to
 `define_unknown_imports_as_traps`. The fixture uses `ITIMER_VIRTUAL`, which
 exercises the marshalling but not the values.
 
-### Still owed, in dispatch order
+### Still owed, in dispatch order — refreshed 2026-09-11
 
-1. **B2** (with B3) — the largest remaining TypeScript deletion, ~2,700 lines. Blocked only on `syscalls.rs` locality.
-2. **B4** — shipping a known, measured regression contradicts the performance contract. Same file lock.
-3. **W-2…W-4** — the rest of the image-writer split, after W-1 lands.
-4. **B20's Playwright realm** — needs `findRepoRoot` extracted; `binary-resolver.ts` was under active edit.
-5. **B10, B11** — small, no ABI surface.
-6. **B24** — channel-level coverage for the twelve caller-native record syscalls, self-extending from `SYSCALL_ARG_DESCRIPTORS`.
-7. **T4** — the residual host-suite failures, once the four roots have landed and a clean full run is possible.
+**In flight (4):** the wait-queue cutover (B8, monotonic-clock deadline fix
+banked), W-1 image-backed bytes (**host imports 75 → 74 banked** — the first
+import this branch *removes* rather than trades), the conformance timeout
+investigation, and B27a+b (native pointer-width registration + the wasm64
+coverage arm).
+
+**Owed, unowned, in order:**
+
+1. **B2 (with B3)** — the shared-mapping coherence layer plus the anon/file
+   mapping cutover, ~2,700 TypeScript lines. **The largest remaining deletion on
+   the branch.** Blocked on nothing but file locality: it needs
+   `crates/runtime-core/src/syscalls.rs`, which B8 holds. Dispatch with the
+   fd-facts kernel export as its first commit — about 300 of B2's lines are host
+   code re-deriving facts the kernel already owns, including 93 that
+   hand-assemble a synthetic `fstat` channel and then recover the host handle by
+   snooping the kernel's own `host_fstat` call.
+2. **B4** — the measured 3.7× SysV regression. Shipping a known, measured
+   regression contradicts the performance contract. Zero-import remedy already
+   identified. Same file lock as B2.
+3. **The conformance timeouts' remedy**, once the investigation reports.
+4. **W-2 → W-3 → W-4** — the rest of the image-writer split, after W-1 lands.
+5. **B25** — the per-realm artifact reader. *Needs a maintainer decision first*,
+   not more work: either the "not installed in this realm" diagnostic is
+   browser-only now and its test should say so, or the five realms install
+   explicitly and something must fail when a sixth forgets.
+6. **NDD-K4-4** — `retireCurrentGenerations`, the last worker-entry duplicate.
+   Recommended to travel with the browser teardown pass.
+7. **B10, B11** — small, no ABI surface.
+8. **T4** — the residual host-suite failures, re-measured against the rebuilt
+   tier. The previous 112 was taken against a tier published before the
+   tier-identity fix and is not a code number.
+9. **B27c** — `setitimer`/`getitimer` value round-trips, which need an import
+   the native host deliberately traps. Left open rather than stubbed
+   dishonestly.
+
+**Not in this campaign, by decision:** the ~9,900-line driver-glue audit
+(campaign two's charter), B14's SysV conformance tests, NDD-BOOT-1.
 
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
