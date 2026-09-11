@@ -5262,7 +5262,38 @@ export class MemoryFileSystem implements FileSystemBackend {
     trustedLegacySnapshot: boolean,
     requireDiscriminator: boolean,
     sealedImportTrust: "reject" | "pending" | "verified",
+    /**
+     * Treat an archive member that resolves to nothing as CORRUPTION rather
+     * than as a member that has simply stopped applying. Set only when
+     * restoring an image, for the same reason as the file-entry gate: a
+     * well-formed image's members all resolve in its own body, because
+     * `saveImage` validates them against a freshly snapshotted
+     * `identityState()` before serializing.
+     *
+     * This path carries ~100x what the file-entry path does — production
+     * images hold 79 lazy files against roughly 7,467 archive members — and
+     * measurement shows EVERY archive in every production image is the
+     * non-generic shape, which is the one that silently dropped. The loud
+     * handling below guards generic trees, of which production ships none.
+     *
+     * EXPECTED RETIREMENT. This gate should become unrepresentable once
+     * archive descriptions move into the filesystem body alongside the
+     * per-file ones (see `crates/runtime-core/src/sffs_deferred.rs`). With one
+     * author there is no second description to disagree, exactly as for the
+     * `KLZY`-versus-JSON check. Retire it then; do not leave it standing out
+     * of caution once the condition is met.
+     */
+    imageIdentityIsAuthoritative = false,
   ): void {
+    const unresolvedMembers: Array<{ vfsPath: string; ino: number; size: number }> =
+      [];
+    const recordUnresolved = (e: {
+      vfsPath: string;
+      ino: number;
+      size: number;
+    }): void => {
+      unresolvedMembers.push({ vfsPath: e.vfsPath, ino: e.ino, size: e.size });
+    };
     const serialized = requireLazyTreeArray(
       serializedValue,
       "Serialized lazy archive groups",
@@ -5339,6 +5370,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} is missing from the filesystem`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (st.ino !== e.ino) {
@@ -5347,6 +5379,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} has a different inode`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (e.generation !== undefined && st.generation !== e.generation) {
@@ -5355,6 +5388,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} has a different generation`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (e.dataSequence === undefined) {
@@ -5372,6 +5406,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} has a different data sequence`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (genericTree) {
@@ -5606,6 +5641,26 @@ export class MemoryFileSystem implements FileSystemBackend {
           ),
         );
       }
+    }
+    if (unresolvedMembers.length > 0) {
+      const shown = unresolvedMembers
+        .slice(0, 5)
+        .map((m) => `${m.vfsPath} (declared inode ${m.ino}, ${m.size} bytes)`)
+        .join(", ");
+      const more =
+        unresolvedMembers.length > 5
+          ? ` and ${unresolvedMembers.length - 5} more`
+          : "";
+      throw new Error(
+        `VFS image declares ${unresolvedMembers.length} lazy archive member(s) ` +
+          `whose inode identity does not exist in the image's own filesystem ` +
+          `body: ${shown}${more}. The image's archive metadata and its ` +
+          `filesystem disagree about which inode backs each member, so ` +
+          `restoring it would drop those members' archive linkage and leave ` +
+          `them as empty regular files that can never be fetched again. This ` +
+          `means the body and the archive metadata came from different ` +
+          `producers, which assign different inode numbers.`,
+      );
     }
     for (const [key, group] of plannedInodes) {
       this.lazyArchiveInodes.set(key, group);
@@ -7568,6 +7623,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         true,
         Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
         "pending",
+        true,
       );
     }
 

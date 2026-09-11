@@ -539,8 +539,20 @@ describe("KLZY section in the image container", () => {
           };
         }),
       );
+      // This DIRECTION is now shadowed, and the expectation says so rather
+      // than pretending otherwise. A member the JSON gained is necessarily
+      // either unresolvable in the body — caught by the inode-identity gate,
+      // which runs during the import and so reports first — or a duplicate of
+      // a real one, caught by the duplicate check. There is no longer a way to
+      // gain a member that reaches the KLZY comparison, so pinning that
+      // message here would only be pinning check ORDER.
+      //
+      // The KLZY membership comparison itself is still pinned, by the sibling
+      // test above: a member the JSON LOST is present in KLZY and resolves in
+      // the body, so no earlier check has anything to say about it. That test
+      // is where this axis lives now.
       expect(() => MemoryFileSystem.fromImage(grown)).toThrow(
-        /kernel lazy linkage \(KLZY\) does not match its JSON lazy sections/,
+        /kernel lazy linkage \(KLZY\) does not match its JSON lazy sections|lazy archive member\(s\) whose inode identity does not exist|duplicate/,
       );
     });
   });

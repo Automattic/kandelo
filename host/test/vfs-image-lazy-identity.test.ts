@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { encodeKernelLazySection } from "../src/vfs/kernel-lazy-section";
+import { parseZipCentralDirectory } from "../src/vfs/zip";
+import { zipSync } from "fflate";
 
 /**
  * A lazy file's linkage survives a save/restore ONLY while the inode identity
@@ -63,6 +65,40 @@ function withLazyEntries(
   const out = new Uint8Array(head.byteLength + tail.byteLength);
   out.set(head, 0);
   out.set(tail, head.byteLength);
+  return out;
+}
+
+/**
+ * Rebuild an image's tail with new archive groups, preserving every section
+ * that follows.
+ *
+ * Carrying the trailing sections through verbatim is the whole trick: the
+ * first version of the production-image control rebuilt a tail without them
+ * and died on a JSON parse error, so it "caught" the drift on the wrong axis
+ * and would have reported a working gate on the strength of an error that
+ * proved nothing.
+ */
+function withArchiveGroups(
+  image: Uint8Array,
+  lazyOffset: number,
+  archiveOffset: number,
+  groups: readonly unknown[],
+): Uint8Array {
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  const oldArchiveLength = view.getUint32(archiveOffset, true);
+  const tailStart = archiveOffset + 4 + oldArchiveLength;
+  const json = new TextEncoder().encode(JSON.stringify(groups));
+  // Everything after the archive section (metadata, KLZY) moves as a block.
+  const trailing = image.subarray(tailStart);
+  const head = image.subarray(0, archiveOffset);
+  const out = new Uint8Array(
+    head.byteLength + 4 + json.byteLength + trailing.byteLength,
+  );
+  out.set(head, 0);
+  new DataView(out.buffer).setUint32(head.byteLength, json.byteLength, true);
+  out.set(json, head.byteLength + 4);
+  out.set(trailing, head.byteLength + 4 + json.byteLength);
+  void lazyOffset;
   return out;
 }
 
@@ -143,6 +179,52 @@ describe("VFS image lazy-file inode identity", () => {
 
     expect(() => MemoryFileSystem.fromImage(mutated)).toThrow(
       /declares 2 deferred file\(s\)[\s\S]*\/a\.bin[\s\S]*\/b\.bin/,
+    );
+  });
+
+  it("refuses an image whose ARCHIVE members miss the body", async () => {
+    // The archive path carries roughly a hundred times what the per-file path
+    // does — production images hold 79 lazy files against ~7,467 archive
+    // members — and every archive in every production image is the
+    // non-generic shape, which is the one that dropped silently. Generic
+    // trees already threw; production ships none of them.
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(256 * 1024));
+    fs.mkdir("/opt", 0o755);
+    const archive = zipSync({
+      "a.txt": new TextEncoder().encode("aaaa"),
+      "b.txt": new TextEncoder().encode("bbbbbb"),
+    });
+    fs.registerLazyArchiveFromEntries(
+      "https://example.invalid/pkg.zip",
+      parseZipCentralDirectory(archive),
+      "/opt/pkg",
+    );
+    const image = await fs.saveImage();
+
+    // Baseline: the archive members restore.
+    const clean = MemoryFileSystem.fromImage(image);
+    expect(clean.exportLazyArchiveEntries().length).toBe(1);
+
+    // Now shift every member's declared inode, leaving everything else — the
+    // same defect shape as the per-file case.
+    const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+    const bodyLength = view.getUint32(12, true);
+    const lazyOffset = VFS_IMAGE_HEADER_SIZE + bodyLength;
+    const lazyLength = view.getUint32(lazyOffset, true);
+    const archiveOffset = lazyOffset + 4 + lazyLength;
+    const archiveLength = view.getUint32(archiveOffset, true);
+    const groups = JSON.parse(
+      new TextDecoder().decode(
+        image.subarray(archiveOffset + 4, archiveOffset + 4 + archiveLength),
+      ),
+    );
+    for (const group of groups) {
+      for (const entry of group.entries) entry.ino = entry.ino + 100;
+    }
+
+    const drifted = withArchiveGroups(image, lazyOffset, archiveOffset, groups);
+    expect(() => MemoryFileSystem.fromImage(drifted)).toThrow(
+      /lazy archive member\(s\) whose inode identity does not exist/,
     );
   });
 
