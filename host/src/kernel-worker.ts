@@ -851,44 +851,70 @@ const SYS_PRCTL = ABI_SYSCALLS.Prctl;
  * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
  * event.
  *
- * WHAT IT PROTECTS. A `ppoll` that swapped in a permissive mask must OBSERVE
- * a signal before it completes on a pipe event and restores the caller's
- * mask. `tests/sortix/os-test/signal/ppoll-block-sleep-write-raise` is that
- * shape: the parent leaves SIGUSR1 pending, enters `ppoll(..., &empty)`, and
- * a child writes the pipe and then signals. Without the delay the pipe wake
- * can carry the call to completion first, and the observed failure is the
- * handler never running at all -- output `0 | POLLIN` with no `SIGUSR1`
- * line. So this is upstream of delivery: it buys the signal a chance to be
- * seen, not a chance to be handled.
+ * READ THIS BEFORE TRUSTING THE CONSTANT: its justification has expired, and
+ * it is retained pending a decision, not because it is known to be needed.
  *
- * This is a DURATION, not a switch. Even at 0 the wake still goes through a
- * timer callback rather than running synchronously; the synchronous path is
- * `scheduleWakeBlockedRetries`. Setting this to 0 shortens the grace period
- * to one timer turn, it does not remove it.
+ * WHAT IT DOES. When a broad wake coincides with a parked `ppoll`/`pselect`
+ * that entered its wait with an atomic sigmask swap, the wake is postponed by
+ * this long, so a signal arriving just after the descriptor event still has a
+ * chance to be OBSERVED before the call completes and restores the caller's
+ * mask. It is upstream of delivery: it buys the signal a chance to be seen,
+ * not a chance to be handled. It does not fire for pipe reader/writer wakes or
+ * non-signal-safe poll wakes, which run synchronously through
+ * `scheduleWakeBlockedRetries`.
  *
- * WHAT THE EVIDENCE BOUNDS, measured 2026-09-11 on the current binaries:
+ * It is a DURATION, not a switch: even at 0 the wake goes through a timer
+ * callback, so 0 shortens the grace period to one timer turn rather than
+ * removing it.
  *
- *   insufficient   0 ms  (7 failures in 40), 1 ms (3 in 12), 5 ms (1 in 12)
- *   unresolved     2 ms, 10 ms, 20 ms  (0 failures in 12 each)
- *   sufficient    50 ms  (0 failures in 52)
+ * WHY THE JUSTIFICATION EXPIRED. The only conformance case that ever
+ * exercised it is `signal/ppoll-block-sleep-write-raise`, and that case was
+ * racy only because `scripts/run-sortix-tests.sh` compiled the suite with
+ * `-D__sortix__`, asserting this platform lacks SIGSTOP/SIGCONT. It does not.
+ * Upstream makes the test deterministic by stopping the parent, writing the
+ * pipe, signalling, then continuing; the macro selected a fallback whose own
+ * comment reads "Sortix does not implement SIGSTOP yet, so just race
+ * instead". With the macro scoped to the suite whose capability claim is
+ * actually true, the test takes upstream's deterministic path.
  *
- * 0 ms against 50 ms, 40 runs per arm interleaved, is 7/40 against 0/40:
- * Fisher one-sided p = 0.006. So the delay does real work.
+ * MEASURED, same test, same harness, before and after that fix:
  *
- * 50 IS NOT KNOWN TO BE MINIMAL. It is the smallest value tested that
- * survived an adequately powered sample. 10 ms and 20 ms have twelve clean
- * runs each and that is not evidence of sufficiency: the base failure rate
- * here is a few percent to ~17%, and P(zero failures in 12 | p = 0.05) =
- * 0.54. Twelve repetitions of this test cannot distinguish a safe value
- * from an unsafe one -- a seven-value sweep at twelve rounds returned 0 ms
- * clean and 1 ms failing, which is the opposite of the truth at 0 ms and a
- * coincidence at 1 ms. Do not lower this constant on a twelve-run result.
+ *   before   0 ms: 7 failures in 40      50 ms: 0 in 40
+ *   after    0 ms: 0 failures in 190     50 ms: 0 in 190
  *
- * `ppoll` now returns EINTR after a caught handler instead of resubmitting.
- * That changes WHICH of the test's two accepted outputs a passing run
- * produces (`SIGUSR1` + `ppoll: EINTR` rather than `SIGUSR1` + `0 | POLLIN`)
- * and leaves what this constant protects unchanged -- both accepted outputs
- * require the `SIGUSR1` line, which is exactly what the grace period buys.
+ * The post-fix runs bound the 0 ms failure rate at <= 1.56% (95%, zero
+ * failures in 190); the pre-fix rate was 17.5%. P(all 7 failures landing in
+ * the pre-fix arm by chance) = 3e-6.
+ *
+ * WHAT THAT DOES AND DOES NOT SETTLE. It settles that no conformance test now
+ * motivates this constant. It does NOT settle that no program needs it: the
+ * underlying race is unchanged. The wake is a host-scheduled task, and it can
+ * still complete before a signal that the writing process has not yet sent.
+ * What the fix removed is the test that was forced to exercise it.
+ *
+ * The reason that is tolerable is a specification point rather than a
+ * measurement: POSIX does not require the signal to win that race. In the
+ * failing shape the signal is GENERATED after the writer's `write()` has
+ * already returned, so the descriptor is ready first; `pselect`'s atomicity
+ * guarantee is that a signal arriving in the mask-swap window cannot be lost
+ * BETWEEN the swap and the wait, not that a waiter must prefer a
+ * not-yet-generated signal over a ready descriptor. (`ppoll` is not in POSIX
+ * at all; `pselect` is.) A program depending on the other order depends on
+ * unspecified behaviour.
+ *
+ * The case POSIX DOES require -- a signal already pending when the mask
+ * change unblocks it must be delivered before the call returns -- is a
+ * different property, is implemented, and is not at risk here: all three
+ * `raise`-before-wait tests (`ppoll-block-raise`, `ppoll-block-raise-write`,
+ * `ppoll-block-close-raise`) passed at every delay tested including 0.
+ *
+ * SO: this is a hardware-dependent mitigation for unspecified behaviour, not
+ * a tuned parameter and not a correctness guarantee. Its value cannot be
+ * defended on hardware nobody has measured -- our own loads varied by an
+ * order of magnitude across one afternoon and moved the failure rate with
+ * them. Removing it is the likely right answer and is awaiting a maintainer
+ * decision; until then it stays at its shipped value rather than being
+ * lowered to a number that would carry the same problem in smaller type.
  */
 const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 

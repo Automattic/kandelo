@@ -6825,3 +6825,98 @@ The fix is `{print $1+0}`. No committed code was affected —
 `benchmarks/wait-ab-host-source.sh` logs the load average and never compares it
 — but it is the same family as the assert-nothing guards this branch has found
 twice, and it was caught only because the output printed the comma.
+
+## B31 resolved: the race was self-inflicted, and the constant's reason is gone
+
+The signal-safe wake delay was re-derived, and the answer turned out not to be
+a number. Three findings, in the order they overturned each other.
+
+### The test was not asserting a POSIX requirement
+
+`signal/ppoll-block-sleep-write-raise` has **no `raise()` before the wait**.
+Nothing is pending when `ppoll` is entered; the signal arrives during it, from
+the child. Both an earlier summary and this document's own earlier description
+said otherwise, and the test's upstream header comment ("blocking SIGUSR1,
+raising SIGUSR1...") is wrong about its own code. The family settles it
+mechanically:
+
+| test | `raise()` before `fork` | case |
+|---|---|---|
+| `ppoll-block-raise`, `-raise-write`, `-close-raise` | yes | signal already pending |
+| `ppoll-block-sleep-raise`, `-sleep-raise-write`, `-sleep-write-raise` | no | signal arrives during the wait |
+
+The `sleep` tests are exactly the second case, and the only failing test is one
+of them. In that shape the signal is *generated* after the writer's `write()`
+has returned, so the descriptor is ready first. `pselect`'s atomicity
+guarantee is that a signal arriving in the mask-swap window cannot be lost
+*between* the swap and the wait — not that a waiter must prefer a
+not-yet-generated signal over a ready descriptor. **POSIX does not require the
+signal to win that race.** (`ppoll` is not in POSIX at all; `pselect` is.)
+
+The case POSIX *does* require — a pending signal unblocked by a mask change is
+delivered before the call returns — is implemented and was never at risk: all
+three `raise`-before-wait tests passed at every delay tested, including 0 ms.
+
+### The race existed because we told the suite a lie about ourselves
+
+`scripts/run-sortix-tests.sh` compiled everything with `-D__sortix__`,
+commented "this platform lacks SIGSTOP/SIGCONT and getifaddrs". Exactly three
+files consult it, and only one of the two claims is true:
+
+- **getifaddrs — true.** musl implements it over netlink; this kernel has no
+  `AF_NETLINK`. Not redundant either: the symbol is a defined `T` in
+  `libc.a`, so without the suppression it would link and fail at run time.
+- **SIGSTOP/SIGCONT — false.** Implemented in `runtime-core/src/signal.rs`;
+  built without the macro the test passes 20/20.
+
+Upstream makes the test deterministic with stop/continue. The false claim
+selected a fallback whose own comment is "Sortix does not implement SIGSTOP
+yet, so just race instead" — and a wall-clock constant was then tuned so the
+degraded path would survive. Scoping the macro to the suite whose claim is
+true is `f5cb84b9c`.
+
+### With the deterministic path, the failure stops happening
+
+Same test, same harness, before and after:
+
+| | 50 ms | 0 ms |
+|---|---|---|
+| before | 0 failures in 40 | **7 failures in 40** (17.5%) |
+| after | 0 failures in 190 | **0 failures in 190** |
+
+Zero in 190 bounds the 0 ms rate at **≤ 1.56%** (95%). P(all seven failures
+landing in the pre-fix arm by chance) = 3×10⁻⁶.
+
+**What this settles and what it does not.** It settles that no conformance
+test now motivates the constant, so its justification comment — which cited
+that test by name — was false and has been rewritten. It does **not** settle
+that no program needs it: the underlying race is unchanged, the wake is still
+a host-scheduled task that can complete before a signal the writer has not yet
+sent. What was removed is the test that was *forced* to exercise it. That is
+tolerable only because of the specification point above.
+
+### The ordering fix that was proposed, and why it cannot work
+
+The proposal was to complete a signal-safe wait once the channel queue holds
+nothing further from the process that produced the event. It is not merely
+awkward: after `write()` returns the child is running guest code, and the
+kernel cannot know whether it will ever issue another syscall, let alone that
+it intends to signal. The condition is unbounded, and any bound added to it is
+the constant wearing a different hat. Closed rather than half-built.
+
+### Two method notes worth keeping
+
+**The earlier sweep's shape was noise, not a floor.** Seven values at twelve
+rounds gave 50:12/12, 20:12/12, 10:12/12, 5:11/12, 2:12/12, 1:9/12, 0:12/12 —
+non-monotone, with 0 ms clean. A focused 40-per-arm round then measured 0 ms at
+7/40. Twelve repetitions cannot resolve a rate of a few percent:
+P(zero failures in 12 | p = 0.05) = 0.54. The shipped value's own evidence
+(52 clean runs) only ever excluded 5.6%.
+
+**A harness lesson.** The 300-run round logged load per run to stdout, but the
+driver was piped through `tail`, so all but the last twelve load samples were
+lost; only the endpoints (23 at launch, 3.2 at the end) survive. A round whose
+conditions matter must write them to a file as it goes, as the sweep driver
+does. The comparison is unaffected — both arms saw the same session — but the
+absolute claim is weaker than it needed to be, and for a race test low load is
+the weak direction.
