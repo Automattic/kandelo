@@ -1578,6 +1578,52 @@ pub trait SharedMappingIo {
     fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str);
 }
 
+/// The backing key for a file object, or `None` when it has no stable
+/// identity.
+///
+/// This is the **one** place a backing key is formatted. Every producer and
+/// every consumer must come through here, because a key computed two ways is
+/// the worst failure this subsystem has available: a lookup that formats a key
+/// no backing holds answers "nothing maps that file", which is the common case
+/// and therefore indistinguishable from correct behaviour. The whole coherence
+/// layer would run and do nothing, with every test green.
+///
+/// # `st_ino == 0` is a backend declaration, not a quirk
+///
+/// A backend that cannot promise stable object identity reports `st_ino = 0`.
+/// That is the contract, written on the `PlatformIO` backend interface in
+/// `host/src/types.ts`, and this is the kernel side that consumes it. It is
+/// load-bearing across the host/kernel boundary rather than an incidental
+/// sanity check, which is why it is stated as a rule in both places instead of
+/// being left as two predicates that happen to agree.
+///
+/// The refusal used to require `dev == 0 && ino == 0` here while the host
+/// refused whenever `ino` was not positive. A backend reporting a real device
+/// and no inode — `dev=7, ino=0` — was therefore refused by the host and
+/// accepted here, which answered `"dev:7:ino:0"` and collapsed every file in
+/// that mount onto one shared backing. The host turns a refused identity into
+/// `ENOTSUP`, so the `mmap` fails; this side turned the same input into silent
+/// cross-file aliasing.
+///
+/// The host also refuses a negative `dev`. That has no counterpart here and
+/// must not grow one: `dev` is `u64`, so the branch could never be taken.
+///
+/// # `dev` must already be qualified
+///
+/// The host's key carries a backend qualifier (`vfs:{backendId}:{dev}:{ino}`)
+/// and this one does not. That is safe only because `VirtualFileSystem`'s
+/// `qualifyStat` keys its device map on the backend *object* and hands out
+/// globally unique device ids, so alias mounts agree and distinct backend
+/// instances cannot collide. Every `dev` reaching this function must be such a
+/// qualified device number. A backend-local `dev` read straight from a mount
+/// would let two files in two different directories alias onto one backing.
+pub fn file_identity_key(dev: u64, ino: u64) -> Option<String> {
+    if ino == 0 {
+        return None;
+    }
+    Some(alloc::format!("dev:{dev}:ino:{ino}"))
+}
+
 /// The kernel's own SysV attachment accounting, as the inheritance
 /// transaction needs to drive it.
 ///
@@ -4833,6 +4879,51 @@ mod shared_mapping_tests {
         assert_eq!(backing.handle, 10, "a refused upgrade must not swap the handle");
         assert!(!backing.writable, "a refused upgrade must not mark the backing writable");
         assert_eq!(crate::ofd::mapping_host_handle_refs(10), 1);
+    }
+
+    // -- the identity key --------------------------------------------------
+
+    /// The case that was live: a backend reporting a real device and no
+    /// inode. The host refuses it (`ino <= 0n`) and turns the refusal into
+    /// `ENOTSUP`, so the `mmap` fails. The kernel used to require *both* to be
+    /// zero, so it accepted this and answered a stable-looking key —
+    /// collapsing every file in that mount onto one shared backing, which
+    /// makes one file's stores appear in another.
+    #[test]
+    fn a_real_device_with_no_inode_has_no_identity() {
+        assert_eq!(file_identity_key(7, 0), None);
+    }
+
+    #[test]
+    fn an_object_with_neither_device_nor_inode_has_no_identity() {
+        assert_eq!(file_identity_key(0, 0), None);
+    }
+
+    /// `dev == 0` is a legitimate device number; only the inode carries the
+    /// backend's declaration. Refusing on `dev` would deny identity to files
+    /// a backend can perfectly well promise.
+    #[test]
+    fn a_zero_device_with_a_real_inode_still_has_identity() {
+        assert_eq!(
+            file_identity_key(0, 5).as_deref(),
+            Some("dev:0:ino:5"),
+        );
+    }
+
+    /// Distinct objects must never share a key, including when one's device
+    /// equals the other's inode — the shape a naive concatenation collides on.
+    #[test]
+    fn distinct_objects_never_share_a_key() {
+        assert_ne!(file_identity_key(1, 23), file_identity_key(12, 3));
+        assert_ne!(file_identity_key(1, 2), file_identity_key(2, 1));
+    }
+
+    /// Two descriptors onto one object — a second `open`, a hard link, a
+    /// rename — must reach the same backing. Identity is the object's, not
+    /// the descriptor's or the pathname's.
+    #[test]
+    fn one_object_reached_twice_has_one_key() {
+        assert_eq!(file_identity_key(3, 9), file_identity_key(3, 9));
     }
 
     // -- registration ------------------------------------------------------

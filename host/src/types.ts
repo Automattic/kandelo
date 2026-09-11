@@ -16,6 +16,31 @@ export interface KernelConfig {
 export interface StatResult {
   /** Exact filesystem identity values. Native backends should prefer bigint. */
   dev: number | bigint;
+  /**
+   * The file's inode number, and the backend's declaration about identity.
+   *
+   * CONTRACT, load-bearing across the host/kernel boundary: **a backend that
+   * cannot promise stable object identity reports `st_ino = 0`.**
+   *
+   * `MAP_SHARED` coherence keys one shared page cache per file object on
+   * `(dev, ino)`. Two files that report the same pair are treated as one
+   * object and share one cache, so a backend that hands out a placeholder,
+   * a recycled, or a colliding inode does not merely lose an optimisation —
+   * it causes one file's stores to appear in another. Zero is the way to say
+   * "I cannot promise this"; the mapping is then refused with `ENOTSUP`
+   * rather than silently aliased.
+   *
+   * The kernel consumes this rule in `file_identity_key`
+   * (`crates/runtime-core/src/memory.rs`), which refuses `ino == 0`. The two
+   * sides are one contract, not two predicates that happen to agree: change
+   * either and change both.
+   *
+   * `dev` must be a device number qualified across backends — see
+   * `VirtualFileSystem.qualifyStat`, which keys on the backend object so
+   * alias mounts agree and distinct backend instances cannot collide. A
+   * backend-local `dev` reaching the kernel would let two files in two
+   * different mounts alias onto one cache.
+   */
   ino: number | bigint;
   mode: number;
   nlink: number;
@@ -111,7 +136,12 @@ export interface PlatformIO {
    * pass the remembered path of an unlinked or renamed open file. Equal
    * identities must name the same underlying file object, including through
    * hard links. Return null when the backend cannot promise stable object
-   * identity (for example, a backend that reports no inode number).
+   * identity (for example, a backend that reports no inode number) — the same
+   * declaration `StatResult.ino === 0` makes, and for the same reason.
+   *
+   * RETIRING: the kernel resolves file identity itself, so this method's only
+   * caller disappears with the shared-mapping cutover. New backends should
+   * make the declaration through `StatResult.ino` and not implement this.
    */
   fileIdentity?(path: string, dev: bigint, ino: bigint): string | null;
 
@@ -121,6 +151,13 @@ export interface PlatformIO {
    * Unlike `fileIdentity`, this must not resolve the remembered pathname: an
    * open file remains a valid mmap backing after that name is unlinked or
    * renamed. Return null when the backend cannot promise stable identity.
+   *
+   * RETIRING, with the same replacement. This looked like the seam where a
+   * backend declares whether it can promise identity, which would be worth
+   * keeping — but every implementation is a pure function of `(dev, ino)`
+   * whose only other output is that null, and the kernel can already hear
+   * the null through `StatResult.ino === 0`. Keeping the method would mean
+   * keeping a host import to carry one bit that the stat already carries.
    */
   fileHandleIdentity?(handle: number, dev: bigint, ino: bigint): string | null;
 

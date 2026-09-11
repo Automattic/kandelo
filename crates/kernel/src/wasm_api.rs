@@ -1237,15 +1237,13 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         dev: u64,
         ino: u64,
     ) -> Option<alloc::string::String> {
-        // Identity is derived from the live handle's backing object, never from
-        // a pathname, so a rename or a second fd onto the same object resolves
-        // to the same backing.
-        if dev == 0 && ino == 0 {
-            // The backend cannot name this object stably, which makes it
-            // ineligible for a shared backing rather than merely unlucky.
-            return None;
-        }
-        Some(alloc::format!("dev:{dev}:ino:{ino}"))
+        // Identity is derived from the live handle's backing object, never
+        // from a pathname, so a rename or a second fd onto the same object
+        // resolves to the same backing. The rule for what counts as an
+        // identity — and the host/kernel contract behind it — lives with the
+        // key itself, because a key formatted in two places is the failure
+        // this subsystem can least afford to have.
+        runtime_core::memory::file_identity_key(dev, ino)
     }
 
     fn retain_handle(&mut self, handle: i64) -> Result<(), Errno> {
