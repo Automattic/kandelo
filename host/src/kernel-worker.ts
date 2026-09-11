@@ -24604,11 +24604,21 @@ export class CentralizedKernelWorker {
               entry,
             );
 
+        // WHY this does not retire the kernel deadline itself: `settle` runs
+        // from a host timer, from the `waitAsync` continuation, and from a
+        // signal delivery that is already inside a kernel entry. The entry
+        // gate refuses an unbound kernel export call during that third case,
+        // and `settle` has no entry to hand it.
+        //
+        // It does not need one. Every path that settles *and completes* goes
+        // through `complete` below, which opens its own entry and reaches
+        // `clearReadinessWait`; every path that settles without completing is
+        // a channel or process teardown, which retires the wait by channel
+        // generation or by pid.
         const settle = (): boolean => {
           if (settled) return false;
           settled = true;
           if (timer !== undefined) this.#cancelRegisteredTimeout(timer);
-          this.closeWaitDeadline(channel);
           this.pendingFutexWaits.delete(channel);
           return true;
         };
