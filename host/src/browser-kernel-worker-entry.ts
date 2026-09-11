@@ -32,7 +32,6 @@ import { installBrowserWasmArtifactModule } from "./browser-wasm-artifact-module
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import type {
   PreparedExecLaunchPlan,
-  PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
   VirtualPlatformIO,
@@ -57,7 +56,6 @@ import {
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
-  detectPtrWidth,
   extractAbiVersion,
   isWasmModuleBytes,
 } from "./constants";
@@ -72,7 +70,6 @@ import {
 
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import {
-  createWorkerQuiescence,
   type WorkerQuiescence,
 } from "./worker-quiescence";
 import {
@@ -378,10 +375,45 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
         injectedVforkWorkerStartFailure = true;
         throw new Error("injected vfork Worker constructor failure");
       }
+      // Exec's seam. The flag-driven variant constructs a Worker whose init
+      // message throws on its first structured-clone read, which is the
+      // failure main actually sees; the env-driven variant fails the
+      // construction outright, matching Node's.
+      if (purpose === "exec" && !injectedExecWorkerConstructionFailure) {
+        if (injectExecWorkerConstructionFailure) {
+          injectedExecWorkerConstructionFailure = true;
+          const initialPostFailureData = { ...init };
+          Object.defineProperty(
+            initialPostFailureData,
+            "__kandeloTestInitialPostFailure",
+            {
+              enumerable: true,
+              get: () => {
+                throw new Error("injected exec Worker construction failure");
+              },
+            },
+          );
+          return workerAdapter.createWorker(initialPostFailureData);
+        }
+        if (
+          init.env?.includes(
+            "KANDELO_TEST_EXEC_WORKER_CONSTRUCTION_FAILURE=once",
+          )
+        ) {
+          injectedExecWorkerConstructionFailure = true;
+          throw new Error("injected exec Worker construction failure");
+        }
+      }
       return workerAdapter.createWorker(init);
     }),
   sideModuleInitFields,
   installProcessWorkerListeners,
+  // Answer main's `pid_map_dump` with program names rather than bare numbers.
+  noteExecImagePath: (pid, path) => {
+    const g = globalThis as { __pidMap?: Map<number, string> };
+    if (!g.__pidMap) g.__pidMap = new Map();
+    g.__pidMap.set(pid, path);
+  },
   // Guest TLS verifies through the host's proxied egress, so a launch needs
   // the MITM CA on its path.
   decorateLaunchEnv: withBrowserMitmCaEnv,
@@ -407,6 +439,7 @@ const {
   allocateProcessGeneration,
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  handleExec,
   externrefProcessOwner,
   forkHostImportOwnerRuntime,
   forkHostImportsByWorker,
@@ -1360,499 +1393,7 @@ function installProcessWorkerListeners(
 
 // ── Process lifecycle callbacks ──
 
-async function handleExec(
-  request: PreparedExecLaunchRequest,
-): Promise<number | PreparedExecLaunchPlan> {
-  const {
-    pid,
-    targetBytes: bytes,
-    targetModule: programModule,
-    argv: launchArgv,
-    envp,
-    diagnosticPath,
-  } = request;
-  const initiatingInfo = processes.get(pid);
-  if (!initiatingInfo) return -3; // ESRCH
-  const vforkBorrower = vforkLifetimes.isActiveBorrower(initiatingInfo);
-  // Preallocate the replacement address space before the irreversible commit.
-  const ptrWidth = detectPtrWidth(bytes);
-  const metadataResult = kernelWorker.validateExecMetadata(
-    launchArgv,
-    envp,
-    initiatingInfo.ptrWidth,
-  );
-  if (metadataResult < 0) return metadataResult;
-  let prepared: Awaited<ReturnType<typeof createFreshProcessMemory>>;
-  try {
-    prepared = await createFreshProcessMemory(
-      pid,
-      bytes,
-      ptrWidth,
-      maxPages,
-      {
-        operation: "exec",
-        path: diagnosticPath,
-        argv: launchArgv,
-      },
-    );
-  } catch (error) {
-    if (error instanceof ProcessMemoryRetirementBacklogError) return -11;
-    if (error instanceof ProcessMemoryCapacityError) return -12;
-    throw error;
-  }
-  let preparedTransferred = false;
-  let preparedLeaseConsumed = false;
-  let replacementRegistered = false;
-  let replacementStartAttempted = false;
-  let oldMemoryRetirementSafe = false;
-  let initiatingLeaseConsumed = false;
 
-  // Resolution/compilation yielded to the event loop. Another exec may have
-  // replaced the host execution generation for this persistent PID; a stale
-  // continuation must not commit exec state against it.
-  const isInitiatingExecGeneration = () =>
-    processes.get(pid) === initiatingInfo
-    && !kernelWorker.isExecHandoffActive(pid);
-  const executionState = await retryKernelEntryResultForGeneration(
-    isInitiatingExecGeneration,
-    () => kernelWorker.isProcessExecutionActive(pid),
-  );
-  if (executionState.status === "stale" || !executionState.value) {
-    prepared.memoryLease.release();
-    return -3; // ESRCH
-  }
-  const addressSpaceState = await retryKernelEntryResultForGeneration(
-    isInitiatingExecGeneration,
-    () => kernelWorker.prepareAddressSpaceForExec(pid),
-  );
-  if (addressSpaceState.status === "stale") {
-    prepared.memoryLease.release();
-    return -3; // ESRCH
-  }
-  const addressSpaceResult = addressSpaceState.value;
-  if (addressSpaceResult < 0) {
-    prepared.memoryLease.release();
-    return addressSpaceResult;
-  }
-  let replacementWorker: ReturnType<BrowserWorkerAdapter["createWorker"]> | undefined;
-  let replacementExternrefGeneration: ForkExternrefGeneration | undefined;
-  let replacementForkHostImports: ForkHostImportOwnerWorker | undefined;
-  let launchPlanState: "ready" | "discarded" | "started" = "ready";
-  const onCommitFailure = (commitResult?: number): void => {
-    if (launchPlanState !== "ready") return;
-    launchPlanState = "discarded";
-    try {
-      prepared.memoryLease.release();
-      preparedLeaseConsumed = true;
-    } catch {
-      // Preserve the kernel's authoritative commit result.
-    }
-    if (
-      commitResult !== undefined
-      && commitResult < 0
-      && vforkBorrower
-      && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-    ) {
-      vforkLifetimes.noteFailedExec(initiatingInfo, -commitResult);
-    }
-  };
-  const startAfterCommit = async (): Promise<number> => {
-    if (launchPlanState !== "ready") {
-      throw new Error(`Exec launch plan for pid ${pid} was already consumed`);
-    }
-    launchPlanState = "started";
-    try {
-      vmInterruptTimers.clear(pid, initiatingInfo);
-
-      // Wake the exact old execution generation through the existing internal
-      // SIGKILL path. worker-main recognizes the exec-retire marker, skips
-      // SYS_EXIT for the persistent PID, returns, and lets worker-entry publish
-      // the only browser-safe memory ownership fence.
-      // Suppress ordinary crash/exit finalizers before the first retirement
-      // wake. The persistent PID is already past exec's commit point, so an
-      // error from the discarded generation must never kill the replacement.
-      if (initiatingInfo.worker) {
-        intentionallyTerminated.add(initiatingInfo.worker as object);
-      }
-      for (const thread of threadWorkers.get(pid) ?? []) {
-        intentionallyTerminated.add(thread.worker as object);
-      }
-      // Commit wakes the old mailboxes while it already owns the kernel entry.
-      // No Worker message can dispatch until this synchronous continuation
-      // marks every old Worker intentional and consumes the host-owned result.
-      const transition = kernelWorker.takeCommittedExecTransition(
-        pid,
-        initiatingInfo.memory,
-      );
-      const secureExec = transition.secureExec;
-      const mainRetirementStarted = transition.retiredChannelOffsets.has(
-        initiatingInfo.channelOffset,
-      );
-      threadedProcessPids.delete(pid);
-      if (!kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)) {
-        throw new Error(`Exec pid ${pid} changed generation during commit`);
-      }
-      replacementExternrefGeneration = externrefProcessOwner.replaceGeneration(
-        initiatingInfo.externrefGeneration,
-      );
-
-      if (transition.addressSpaceResult < 0) {
-        throw new Error("failed to detach the discarded address space");
-      }
-
-      const [mainQuiescent, threadsQuiescent] = await Promise.all([
-        mainRetirementStarted
-          ? waitForExecRetirement(
-              initiatingInfo.execRetirement,
-              initiatingInfo.workerQuiescence,
-            )
-          : Promise.resolve(false),
-        terminateThreadWorkers(pid, true, THREADED_WORKER_TERMINATION_SETTLE_MS),
-      ]);
-      if (initiatingInfo.worker) {
-        intentionallyTerminated.add(initiatingInfo.worker as object);
-        forkHostImportsByWorker.get(initiatingInfo.worker as object)?.close();
-        await initiatingInfo.worker.terminate().catch(() => {});
-      }
-      if (mainQuiescent) {
-        // Thread fences retire their own exact listeners during slot reclaim.
-        // Settle the main channel independently so one unresponsive sibling
-        // cannot retain an otherwise finished waitAsync closure.
-        await kernelWorker.settleRetiredChannelListeners(
-          pid,
-          initiatingInfo.memory,
-          initiatingInfo.channelOffset,
-        );
-      }
-      const mainFramebufferReleased =
-        await releaseMainFramebufferGeneration(pid, initiatingInfo);
-      oldMemoryRetirementSafe =
-        mainQuiescent
-        && threadsQuiescent
-        && initiatingInfo.memoryRetirementSafe
-        && mainFramebufferReleased;
-      const handoffExitSignal = await retryKernelEntryResult(
-        () => kernelWorker.finalizeExecHandoffTermination(pid),
-      );
-      if (handoffExitSignal > 0) {
-        prepared.memoryLease.release();
-        preparedLeaseConsumed = true;
-        externrefProcessOwner.releaseGeneration(
-          replacementExternrefGeneration,
-        );
-        replacementExternrefGeneration = undefined;
-        await awaitFinalizedProcessTeardown(
-          pid,
-          signalExitStatus(handoffExitSignal),
-          initiatingInfo.worker,
-          handoffExitSignal,
-          "signal",
-        );
-        return 0;
-      }
-
-      // DIAGNOSTIC: track pid → exec path so the sysprof dump can name
-      // each pid (otherwise the table is just opaque numbers).
-      {
-        const g = globalThis as { __pidMap?: Map<number, string> };
-        if (!g.__pidMap) g.__pidMap = new Map();
-        g.__pidMap.set(pid, diagnosticPath);
-      }
-      const {
-        memory: newMemory,
-        memoryLease: newMemoryLease,
-        layout: newLayout,
-      } = prepared;
-      const newChannelOffset = newLayout.channelOffset;
-      replacementForkHostImports = forkHostImportOwnerRuntime.createWorker({
-        pid,
-        generationId: replacementExternrefGeneration.id,
-        authorizeSender: () => {
-          const current = processes.get(pid);
-          if (
-            !replacementWorker
-            || !current
-            || current.worker !== replacementWorker
-            || current.externrefGeneration !== replacementExternrefGeneration
-          ) {
-            throw new Error(`stale fork host-import sender for exec pid=${pid}`);
-          }
-        },
-      });
-
-      const execInitData: CentralizedWorkerInitMessage = {
-        type: "centralized_init",
-        pid,
-        programBytes: bytes,
-        programModule,
-        memory: newMemory,
-        channelOffset: newChannelOffset,
-        secureExec,
-        externrefGenerationId: replacementExternrefGeneration.id,
-        forkHostImports: replacementForkHostImports.init,
-        argv: launchArgv,
-        env: envp,
-        ptrWidth,
-        kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-        kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
-        ...sideModuleInitFields(ptrWidth),
-      };
-
-      replacementWorker = new DeferredWorkerHandle(() => {
-        if (
-          injectExecWorkerConstructionFailure
-          && !injectedExecWorkerConstructionFailure
-        ) {
-          injectedExecWorkerConstructionFailure = true;
-          const initialPostFailureData = { ...execInitData };
-          Object.defineProperty(
-            initialPostFailureData,
-            "__kandeloTestInitialPostFailure",
-            {
-              enumerable: true,
-              get: () => {
-                throw new Error("injected exec Worker construction failure");
-              },
-            },
-          );
-          return workerAdapter.createWorker(initialPostFailureData);
-        }
-        if (
-          envp.includes("KANDELO_TEST_EXEC_WORKER_CONSTRUCTION_FAILURE=once")
-          && !injectedExecWorkerConstructionFailure
-        ) {
-          injectedExecWorkerConstructionFailure = true;
-          throw new Error("injected exec Worker construction failure");
-        }
-        return workerAdapter.createWorker(execInitData);
-      });
-      kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-        preserveProcessState: true,
-        ptrWidth,
-        metadataPtrWidth: initiatingInfo.ptrWidth,
-        brkBase: newLayout.brkBase,
-        mmapBase: newLayout.mmapBase,
-        maxAddr: newLayout.maxAddr,
-        threadSlotQuota: newLayout.threadSlotCount,
-        // Refresh kernel-owned argv/environment for procfs and kernel APIs.
-        argv: launchArgv,
-        env: envp,
-      });
-      replacementRegistered = true;
-      bindForkHostImports(replacementWorker, replacementForkHostImports);
-
-      // Clear cached thread module — the new program binary is different
-      threadModuleCache.delete(pid);
-
-      processes.set(pid, {
-        generation: allocateProcessGeneration(),
-        memory: newMemory,
-        memoryLease: newMemoryLease,
-        workerQuiescence: createWorkerQuiescence(),
-        execRetirement: createWorkerQuiescence(),
-        memoryRetirementSafe: true,
-        aliasExposed: false,
-        programBytes: bytes,
-        programModule,
-        worker: replacementWorker,
-        argv: launchArgv,
-        channelOffset: newChannelOffset,
-        ptrWidth,
-        secureExec,
-        layout: newLayout,
-        externrefGeneration: replacementExternrefGeneration,
-      });
-      preparedTransferred = true;
-
-      if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
-      else initiatingInfo.memoryLease.releaseAfterForcedTermination();
-      initiatingLeaseConsumed = true;
-
-      // Wire post-exec error/exit handling. The handleFork listener (on the
-      // pre-exec worker) is gone with the terminated worker; without re-arming
-      // here, a wasm trap in the exec'd binary leaves waitpid blocked forever.
-      installProcessWorkerListeners(replacementWorker, pid);
-      const startDisposition = await retryKernelEntryResult(() =>
-        kernelWorker.startProcessWorkerWhenRunnable(
-          pid,
-          newMemory,
-          () => {
-            replacementStartAttempted = true;
-            if (!(replacementWorker as DeferredWorkerHandle).start()) {
-              throw new Error(`Exec replacement Worker for pid ${pid} was cancelled`);
-            }
-            if (
-              vforkBorrower
-              && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-            ) {
-              completeVforkGenerationTeardown(
-                initiatingInfo,
-                oldMemoryRetirementSafe && initiatingLeaseConsumed,
-                "exec",
-                new Error(
-                  `vfork child ${pid} exec retired without exact browser ownership`,
-                ),
-              );
-            }
-          },
-          () => {
-            replacementForkHostImports?.close();
-            void replacementWorker?.terminate();
-          },
-          (error) => {
-            if (
-              vforkBorrower
-              && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-            ) {
-              completeVforkGenerationTeardown(
-                initiatingInfo,
-                oldMemoryRetirementSafe && initiatingLeaseConsumed,
-                "trap",
-                error,
-              );
-            }
-            const message = error instanceof Error ? error.message : String(error);
-            reportHostDiagnostic({
-              pid,
-              status: signalExitStatus(SIGSEGV),
-              source: "exec post-commit transition",
-              message: `[exec] post-commit transition failed: ${message}`,
-            });
-            handleExit(
-              pid,
-              signalExitStatus(SIGSEGV),
-              SIGSEGV,
-              replacementWorker,
-              "trap",
-            );
-            return true;
-          },
-        ),
-      );
-      if (startDisposition === "stale") {
-        throw new Error(`Exec pid ${pid} changed generation before Worker launch`);
-      }
-      if (startDisposition === "dead") {
-        replacementForkHostImports.close();
-        // startProcessWorkerWhenRunnable proved that the replacement Worker was
-        // never started. Publish the equivalent ownership fence so the ordinary
-        // exit teardown can retire listeners and release its lease safely.
-        processes.get(pid)?.workerQuiescence.settle();
-        kernelWorker.finishProcessExecHandoff(pid);
-        const signal = await retryKernelEntryResult(
-          () => kernelWorker.finalizeExecHandoffTermination(pid),
-        );
-        if (vforkBorrower) {
-          completeVforkGenerationTeardown(
-            initiatingInfo,
-            oldMemoryRetirementSafe,
-            "exec",
-            new Error(
-              `vfork child ${pid} exec retired without exact browser ownership`,
-            ),
-          );
-        }
-        await awaitFinalizedProcessTeardown(
-          pid,
-          signal > 0 ? signalExitStatus(signal) : 0,
-          replacementWorker,
-          signal > 0 ? signal : undefined,
-          signal > 0 ? "signal" : "exit",
-        );
-        return 0;
-      }
-      kernelWorker.finishProcessExecHandoff(pid);
-      return 0;
-    } catch (err) {
-      replacementForkHostImports?.close();
-      if (replacementExternrefGeneration) {
-        externrefProcessOwner.releaseGeneration(replacementExternrefGeneration);
-        replacementExternrefGeneration = undefined;
-      }
-      if (initiatingInfo.worker) {
-        intentionallyTerminated.add(initiatingInfo.worker as object);
-      }
-      threadedProcessPids.delete(pid);
-      try {
-        const failedGenerationMemory =
-          preparedTransferred || replacementRegistered
-            ? prepared.memoryLease.memory
-            : initiatingInfo.memory;
-        kernelWorker.prepareProcessForExec(pid, failedGenerationMemory);
-      } catch {
-        // Continue with best-effort process death below.
-      }
-      if (replacementWorker && processes.get(pid)?.worker !== replacementWorker) {
-        await terminateTrackedWorker(replacementWorker);
-      }
-      if (!preparedTransferred && !preparedLeaseConsumed) {
-        const replacementGeneration = {
-          memory: prepared.memoryLease.memory,
-          memoryLease: prepared.memoryLease,
-        };
-        const detachResult = await detachExactProcessGeneration({
-          pid,
-          generation: replacementGeneration,
-          operation: replacementRegistered ? "deactivate" : "none",
-          retire: (commit) => {
-            if (replacementStartAttempted) {
-              prepared.memoryLease.releaseAfterForcedTermination();
-            } else {
-              prepared.memoryLease.release();
-            }
-            commit();
-          },
-        });
-        if (detachResult.status === "released") {
-          preparedLeaseConsumed = true;
-        } else {
-          reportRetainedProcessGeneration(
-            pid,
-            "exec replacement rollback",
-            detachResult,
-            signalExitStatus(SIGSEGV),
-          );
-        }
-      }
-      if (preparedTransferred && !initiatingLeaseConsumed) {
-        if (oldMemoryRetirementSafe) {
-          initiatingInfo.memoryLease.release();
-        } else {
-          initiatingInfo.memoryLease.releaseAfterForcedTermination();
-        }
-        initiatingLeaseConsumed = true;
-      }
-      if (
-        vforkBorrower
-        && preparedTransferred
-        && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
-      ) {
-        completeVforkGenerationTeardown(
-          initiatingInfo,
-          oldMemoryRetirementSafe && initiatingLeaseConsumed,
-          "trap",
-          err,
-        );
-      }
-
-      const message = err instanceof Error ? err.message : String(err);
-      try {
-        reportHostDiagnostic({
-          pid,
-          status: signalExitStatus(SIGSEGV),
-          source: "exec post-commit transition",
-          message: `[exec] post-commit transition failed: ${message}`,
-        });
-      } catch {
-        // A closed host port must not prevent kernel-side reap.
-      }
-      try { kernelWorker.notifyHostProcessCrashed(pid, SIGSEGV); } catch { /* best-effort */ }
-      handleExit(pid, signalExitStatus(SIGSEGV), SIGSEGV);
-      return 0;
-    }
-  };
-  return { onCommitFailure, startAfterCommit };
-}
 
 /**
  * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
