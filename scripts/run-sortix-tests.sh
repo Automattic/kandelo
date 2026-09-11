@@ -659,6 +659,7 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_BUILTINS=explicit \
         run_with_timeout "$this_timeout" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null >"$host_diagnostic_file" 2>&1)

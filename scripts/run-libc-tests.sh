@@ -298,6 +298,7 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM= \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_BUILTINS=explicit \
         timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null 2>&1)
