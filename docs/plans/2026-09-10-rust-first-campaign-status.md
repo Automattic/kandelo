@@ -3909,6 +3909,72 @@ __abi_version export` while the export is demonstrably present — harmless toda
 but `policy.rs` turns that same condition into a **hard failure** when a fork
 surface is present, so it is a latent trap rather than noise.
 
+### HOST IMPORTS 75 → 73, AND WHY THE TWO REDUCTIONS COMPOSED SAFELY
+
+Two items removed a **different** host import, neither could see the other, and
+**both pinned 74**:
+
+- the wait-queue cutover deleted `host_nanosleep` (75 → 74 on its base);
+- the image-backed-bytes item collapsed `host_blob_read` and
+  `host_fetch_archive` into one `host_fetch_deferred(kind, …)` (75 → 74 on its
+  base).
+
+Merged, the built kernel has **73 function imports** plus `env.memory`.
+
+**Why that was safe is the reusable part, and it is not the arithmetic.** Both
+agents measured the count by **walking the built artifact's import section**
+rather than reporting the pinned constant. Had either reported the constant, the
+merge would have landed a pin disagreeing with the kernel, and the gate would
+have caught it only as a bare count mismatch — with no way to tell *which* of
+the two reductions was wrong.
+
+The trap is live and has caught three agents: a raw import-*entry* count reads
+one higher than the function count, because `env.memory` is an entry.
+
+**This is the number that tracks V4.** Production TypeScript is only ≈−3,400
+because roughly 9,900 lines of host driver glue offset the deletions — lines can
+fall while surface stays flat. These two items are the first on this branch to
+take surface *away*, and one of them collapsed a capability rather than moving
+it: `host_blob_read` and `host_fetch_archive` were one capability split across
+two id namespaces that genuinely overlap, since inode 1 and archive id 1 both
+exist.
+
+The open `host_debug_log` question shifted with it and is **still not settled**:
+now *72-or-73, pinned at 73*, caller intact.
+
+### B29 — a stale kernel artifact fails as "the kernel is broken"
+
+After rebasing onto a new base, `local-binaries/source-only-v1/kernel.wasm` can
+predate it. `cargo test -p host-native` then fails — an agent saw **41 failures**
+— with:
+
+    failed to find function export kernel_set_process_pointer_width
+
+**That message names the symptom and hides the cause.** It reads as "the kernel
+is broken", not "your kernel predates your base". The agent only established the
+truth by running `wasm-objdump -j Export` on both artifacts side by side and
+finding the export present in the fresh one and absent in the staged one.
+
+The staleness is **invisible in both directions**: the suite does not know its
+kernel is old, and the agent does not know either. `verify-fresh` and the
+build-key machinery exist precisely for this class, so a gap here is worth
+closing — and the fix is mostly in the *message*.
+
+Re-staging also took ~60 minutes, because a large rebase invalidates package
+cache keys broadly. Worth knowing when serialising work.
+
+### The unproven half of the image-body window, stated by its author
+
+`host/test/rootfs-image-body-window.test.ts` proves that a host mutation after
+boot — materializing a URL-backed lazy file — does not disturb an image-backed
+read. It does **not** prove that no mutation can *interleave* with a read. That
+half is argued structurally in the code: a synchronous kernel entry cannot
+interleave with a same-thread `MemoryFileSystem` call.
+
+**If a later change ever makes that SFFS buffer reachable from a second thread,
+that argument is the thing that stops holding.** Recorded by the author rather
+than left implicit, which is the point.
+
 ### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
 
 Stated on its own because it has now worked four times and is not what a census
