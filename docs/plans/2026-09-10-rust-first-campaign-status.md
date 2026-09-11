@@ -3789,6 +3789,83 @@ separated.
 pattern on a shared machine; ask before starting a full host Vitest; and treat
 an exit 144 as carrying no test information.
 
+## CONFORMANCE IS UNBLOCKED (2026-09-11) — 1,352 timeouts to 5
+
+| Sortix, 5,114 tests | before | after |
+|---|---|---|
+| PASS | 3,686 | **4,987** |
+| FAIL | 0 | 46 |
+| TIMEOUT | **1,352** | **5** |
+
+### The coordinator's hypothesis was wrong, and arithmetic killed it
+
+The brief said the hangs "cluster on time-related syscalls" and blamed the
+hand-maintained link contract. The numbers disproved it before any code was
+read: the runtime suites total **1,373** tests and timeouts were **1,352**. The
+3,686 "passes" were *the entire `include` suite*, which is **compile-only and
+never runs a guest**.
+
+So it was never a cluster. It was **every guest-executing test failing, and
+none of the others**. `difftime` was the tell — it makes no syscall at all. The
+`clock`/`ctime`/`fsync` pattern was **alphabetical ordering**.
+
+Two further parts of the lead were also wrong: `__abi_version` **is** exported
+(the glue emits it; the body is `i32.const 44`), and `--allow-undefined` is in
+the SDK's own flag list, so it was never a divergence.
+
+**The actual cause: `KANDELO_RUNNER_BUILTINS`.** Every conformance test resolved
+the full builtin-program closure — dash, coreutils, the SQLite testfixture,
+mysqltest — before starting its guest, **once per test**.
+`examples/run-example-builtins.ts` already had an `explicit` mode for exactly
+this, already covered by `host/test/run-example-resolver.test.ts`, and **no
+runner used it**. A POSIX `asctime` test was failing inside
+`binary-resolver.ts` because an unrelated program set would not resolve.
+
+### The duplication lead *was* right, and what it found is worse than a hang
+
+Six scripts hand-maintained the SDK link contract. Linking one test both ways:
+
+| | SDK | the suite's copy |
+|---|---|---|
+| memory minimum | 146 pages | **2 pages** |
+| `__stack_pointer` | 9,546,112 | **109,968** |
+| `__heap_base` export | yes | **no** |
+
+**The conformance suite was certifying POSIX behaviour against a ~64 KiB shadow
+stack instead of the platform's 8 MiB.** There is no wasm guard page, so a deep
+call chain overruns `.bss` rather than faulting — the suite could have been
+reporting corruption as conformance. The copies also dropped `cxxrt.c`, the
+pinned `-fuse-ld`, the LLD-22 `--no-stack-first` compensation, and the
+thread-slot declaration. All three runners now drive `wasm32posix-cc`, at
+**+180 ms per link**.
+
+That is the **eleventh** instance of duplicated authority this campaign has
+found, and the one with the widest blast radius: it sat under the instrument
+that certifies the platform's north star.
+
+### A regression introduced, caught, and fixed — silently, behind `|| true`
+
+Routing executables through the SDK left `SO_CFLAGS`/`SO_LINK_FLAGS` handing
+raw-clang flags to the SDK driver, so **every `.so` failed to build behind a
+`|| true`**, and `dlopen`/`dlsym`/`dlclose` reported FAIL as though platform
+dlopen were broken. Found and fixed in the same item.
+
+### What remains is real conformance data, visible for the first time
+
+- **5 timeouts**, all blocking-wait: `basic/poll/poll`,
+  `signal/ppoll-block-raise`, `signal/ppoll-block-sleep-raise` (stable), plus
+  `sys_select/select` and `sys_time/select` (load-dependent). These are
+  **wait-queue semantics**, owned by that item, not harness artefacts.
+- **46 failures**: ~17 controlling-terminal (termios, `ttyname`,
+  `ptsname`/`unlockpt`, `tcgetpgrp` — the runner gives the guest no TTY), 20 UDP
+  `SO_REUSEADDR` bind-conflict, 4 `net_if`, 3 `nl_types`, 2 socket.
+
+**The browser runners carry the same three duplicate copies** and should get the
+same treatment. And one loose thread: every test logs `artifact lacks an
+__abi_version export` while the export is demonstrably present — harmless today,
+but `policy.rs` turns that same condition into a **hard failure** when a fork
+surface is present, so it is a latent trap rather than noise.
+
 ### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
 
 Stated on its own because it has now worked four times and is not what a census
