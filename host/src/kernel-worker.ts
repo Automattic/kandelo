@@ -2271,12 +2271,7 @@ export interface CentralizedKernelCallbacks {
    *
    * Required if `onSpawn` is set; together they form the spawn surface.
    */
-  onResolveSpawn?: (
-    path: string,
-    argv: string[],
-    ownerPid: number,
-    callerTid: number,
-  ) => Promise<SpawnProgramResolution | null>;
+  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnProgramResolution | null>;
 
   /**
    * Launch a worker for the spawned child with bytes and module derived from
@@ -21209,9 +21204,7 @@ export class CentralizedKernelWorker {
     // side-effect-free preflight first; only call the kernel if the
     // program actually exists and compiles.
     const resolveSpawnProgram = async (): Promise<SpawnProgramResolution | null> => {
-      const resolved = await this.callbacks.onResolveSpawn!(
-        path, argv, parentPid, callerTid,
-      );
+      const resolved = await this.callbacks.onResolveSpawn!(path, argv);
       let selected = resolved;
       if (
         !selected
@@ -21224,9 +21217,7 @@ export class CentralizedKernelWorker {
         // the host execPrograms map, not in the kernel VFS at CWD/name.
         // Keep the CWD-resolved path as the primary POSIX exec target, but
         // fall back to the original token for host-side program maps.
-        selected = await this.callbacks.onResolveSpawn!(
-          rawPath, argv, parentPid, callerTid,
-        );
+        selected = await this.callbacks.onResolveSpawn!(rawPath, argv);
       }
       if (!selected || isSpawnResolveError(selected)) return selected;
 

@@ -73,7 +73,6 @@ import {
   isWasmModuleBytes,
 } from "./constants";
 import {
-  AT_FLAGS,
   FILE_MODES,
   PROCESS_FORK_MODE_VFORK,
   type ProcessForkMode,
@@ -1732,24 +1731,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   }
 
   /**
-   * Resolve `path` to a launchable wasm image.
-   *
-   * The kernel decides WHAT would run; this only fetches and compiles it.
-   * `execTargetProbe` applies the same rules a real launch applies —
-   * existence, regular-file-ness, `X_OK`, directories refused with EACCES,
-   * resolution against the caller's CWD, and exactly one `#!` retarget with
-   * ENOEXEC beyond — and returns the absolute path of the image at the end of
-   * that chain, retaining nothing. The host used to re-decide the `#!` part in
-   * TypeScript and never checked executability at all, so it admitted targets
-   * the authoritative resolve then rejected AFTER `kernel_spawn_process` had
-   * built a child and applied its `file_actions`, which POSIX requires to run
-   * exactly once.
-   *
-   * ENOENT is the one answer that is not final. Node's host program maps
-   * (`execPrograms` / `execProgramBytes`, a NodeKernelHost option) serve paths
-   * the kernel VFS does not know, so an unknown path falls through to
-   * `readExecFile`. Those maps carry compiled wasm, never scripts, so nothing
-   * follows `#!` on that fallback — and nothing needs to.
+   * Resolve `path` to a launchable wasm image, following `#!` chains.
    *
    * Returns null when nothing is there, `{ errno }` when the bytes exist but
    * cannot be executed, and the compiled program otherwise.
@@ -1757,55 +1739,59 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   async function resolveExecutableForLaunch(
     path: string,
     argv: string[],
-    ownerPid: number,
-    callerTid: number,
+    depth = 0,
   ): Promise<ResolvedSpawnProgram | { errno: number } | null> {
-    // The gate rejects this before touching kernel state when another export
-    // owns it, and the probe retains nothing, so retrying it on a later host
-    // turn is safe and idempotent.
-    const probed = await retryKernelEntryResult(() =>
-      host.kernel().execTargetProbe(ownerPid, callerTid, AT_FDCWD, path, 0),
-    );
-    let targetPath = path;
-    if ("resolvedPath" in probed) {
-      targetPath = probed.resolvedPath;
-    } else if (probed.errno !== EXEC_OVERLAY_ENOENT_ERRNO) {
-      return { errno: probed.errno };
-    }
-
-    const bytes = await readExecFile(targetPath);
+    const bytes = await readExecFile(path);
     if (!bytes) return null;
 
-    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
-    const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
-      expectedAbi: host.kernel().getKernelAbiVersion(),
-    });
-    if (artifactFailures.length > 0) return { errno: ENOEXEC };
-    let programModule: WebAssembly.Module;
-    try {
-      programModule = await WebAssembly.compile(bytes);
-    } catch (error) {
-      if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
-      throw error;
+    const shebang = parseShebang(bytes);
+    if (!shebang) {
+      if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+      const artifactFailures = describeWasmArtifactPolicyFailures(bytes, {
+        expectedAbi: host.kernel().getKernelAbiVersion(),
+      });
+      if (artifactFailures.length > 0) return { errno: ENOEXEC };
+      let programModule: WebAssembly.Module;
+      try {
+        programModule = await WebAssembly.compile(bytes);
+      } catch (error) {
+        if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
+        throw error;
+      }
+      const declaredAbi = extractAbiVersion(bytes);
+      if (
+        declaredAbi !== null &&
+        declaredAbi !== host.kernel().getKernelAbiVersion()
+      ) {
+        return { errno: ENOEXEC };
+      }
+      return { programBytes: bytes, programModule, argv };
     }
-    const declaredAbi = extractAbiVersion(bytes);
-    if (
-      declaredAbi !== null &&
-      declaredAbi !== host.kernel().getKernelAbiVersion()
-    ) {
-      return { errno: ENOEXEC };
-    }
-    return { programBytes: bytes, programModule, argv };
+
+    // A `#!` interpreter that is itself a `#!` script is a nested chain. The
+    // kernel refuses it with ENOEXEC (`resolve_shebang`,
+    // crates/runtime-core/src/exec_target.rs), so the preflight must refuse it
+    // with the same errno at the same depth. Admitting it here would let
+    // `kernel_spawn_process` build the child and apply `file_actions` before
+    // the authoritative resolve reached the same ENOEXEC — the exact
+    // create-a-doomed-child outcome this preflight exists to prevent.
+    if (depth >= MAX_SHEBANG_DEPTH) return { errno: ENOEXEC };
+
+    const scriptArgv = [
+      shebang.interpreter,
+      ...(shebang.arg ? [shebang.arg] : []),
+      path,
+      ...argv.slice(1),
+    ];
+    return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
   }
 
   /** The kernel's guest-initiated spawn resolver. */
   function handlePosixSpawnResolve(
     path: string,
     argv: string[],
-    ownerPid: number,
-    callerTid: number,
   ): Promise<SpawnProgramResolution | null> {
-    return resolveExecutableForLaunch(path, argv, ownerPid, callerTid);
+    return resolveExecutableForLaunch(path, argv);
   }
 
   /**
@@ -4779,7 +4765,6 @@ export function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 const ENOEXEC = 8;
-const AT_FDCWD = AT_FLAGS.AT_FDCWD;
 
 // A `/`-tree path whose backing archive has not been fetched
 // (rootfs-lazy-archives.ts) surfaces as EAGAIN from the kernel; the fetch runs
@@ -4809,9 +4794,43 @@ export class ExecOverlayReadTimeoutError extends Error {
   }
 }
 
-// The host no longer parses `#!`. `parseShebang` and `MAX_SHEBANG_DEPTH`
-// lived here so the spawn preflight could guess which image a script would
-// reach; `execTargetProbe` now asks the kernel, which is the authority every
-// real launch already went through (`launchPreparedExecTarget` ->
-// `kernel_exec_target_shebang`). Two parsers for one format could disagree,
-// and they did: the host followed four levels where the kernel follows one.
+/**
+ * How many `#!` interpreter retargets exec performs before refusing the chain.
+ *
+ * This is not a host policy: it mirrors the kernel's limit exactly.
+ * `resolve_shebang` (crates/runtime-core/src/exec_target.rs) resolves exactly
+ * one level and fails `ENOEXEC` when the decoded interpreter is itself a
+ * script, and `launchPreparedExecTarget` (host/src/exec-target.ts) is the
+ * authority every real launch goes through. The preflight must not admit a
+ * chain the authority will reject.
+ *
+ * GAP (Linux divergence, deliberate and inherited): Linux allows ~4 binfmt
+ * rewrites before failing `ELOOP` (`fs/exec.c`, `exec_binprm`). Kandelo
+ * resolves one level and reports `ENOEXEC`, a scope decision recorded in
+ * docs/superpowers/plans/2026-09-04-n1-i3d-native-execveat-shebang.md and
+ * pinned by `resolve_shebang_rejects_a_nested_interpreter_chain_without_leaking_tokens`.
+ * Raising the limit is a kernel change, not a host one.
+ */
+export const MAX_SHEBANG_DEPTH = 1;
+
+/**
+ * The interpreter line of a `#!` script, or null when `bytes` is not a script.
+ *
+ * POSIX leaves the optional single argument implementation-defined; this
+ * follows Linux in taking everything after the first whitespace run as one
+ * argument.
+ */
+export function parseShebang(
+  bytes: ArrayBuffer,
+): { interpreter: string; arg?: string } | null {
+  const view = new Uint8Array(bytes);
+  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
+  let end = 2;
+  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
+  const line = new TextDecoder().decode(view.subarray(2, end))
+    .replace(/\r$/, "").trim();
+  if (!line) return null;
+  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
+  if (!match) return null;
+  return { interpreter: match[1], arg: match[2] };
+}
