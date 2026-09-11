@@ -3300,6 +3300,50 @@ failures — that kernel exports `kernel_set_process_pointer_width` and no longe
 stamps slot 5 — and produces a confident, wrong attribution. That is the step
 most likely to be skipped by whoever applies the method next.
 
+### B19's fix, proven end to end — and a vacuous suite found on the way
+
+**Proof, in a freshly built worktree under the default policy:**
+
+    OK  programs/wasm32/dash.wasm         -> [source-only-v1]
+    OK  programs/wasm32/shell.vfs.zst     -> [source-only-v1]
+    OK  programs/wasm32/lamp.vfs.zst      -> [source-only-v1]
+    OK  programs/wasm32/php/php.wasm      -> [source-only-v1]   (9-member closure)
+    OK  programs/wasm32/wordpress.vfs.zst -> [source-only-v1]
+    OK  kernel.wasm                       -> [source-only-v1]
+
+Before the change, **0 of 70** packages could satisfy the check. The `php`
+closure is the multi-package product the whole defect was hiding behind — nine
+members (`php.wasm`, `php-fpm.wasm`, `opcache.so`, `curl.so`, `phar.so`,
+`zend_test.so`, `zip.so`, `intl.so`, `icu.dat`). And `./run.sh setup` produced
+all **eight** VFS images, which the image builder can only do by resolving those
+closures.
+
+Invariant on the real build: `recorded selection == regenerated index` **70/70**,
+and `tier(SourceOnlyV1) cacheKeys != index` **70/70** — the two stay
+deliberately non-comparable, so a future swap fails at that assertion rather
+than in a conformance run.
+
+**The scare that validated the design.** A first check showed 7 of 70
+disagreeing — `shell`, `lamp`, `wordpress` and everything depending on `shell`.
+The cause was self-inflicted: `shell`'s declared build inputs include
+`host/src/binary-resolver.ts`, which had been briefly reverted to demonstrate a
+pre-existing test failure, and the on-disk index was written during that window
+while the authority was published after it. Regenerating the index took it to
+70/70. **That is the drift detector working on a real input change** — and,
+unlike the check it replaced, it was *satisfiable*.
+
+### A suite that ran zero tests and reported success
+
+Found while clearing the way to conformance: in a fresh worktree the `os-test`
+submodule is uninitialized, so the Sortix suite reported **`Discovered 0 tests`**
+for `include` and `limits` and passed **vacuously**. After
+`git submodule update --init` it discovers **3,741**.
+
+That is the same failure shape as the defect that agent was sent to fix, and the
+eleventh-plus instance of this campaign's most common finding: *a check that
+cannot run, reporting as a check that passed.* Conformance provisioning must
+verify the submodule is populated, not merely that the runner exited 0.
+
 ### HOW TO ATTRIBUTE A FAILURE IN THIS SUITE — the method, and why totals lie
 
 The host suite carries **~103 failing files at any base**. That single fact
