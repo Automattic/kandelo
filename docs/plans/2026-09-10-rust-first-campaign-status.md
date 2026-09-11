@@ -3344,6 +3344,65 @@ eleventh-plus instance of this campaign's most common finding: *a check that
 cannot run, reporting as a check that passed.* Conformance provisioning must
 verify the submodule is populated, not merely that the runner exited 0.
 
+### B27 — three gaps B24 surfaced, none of them bundled
+
+**B27a — the native host never registers a pointer width.** The TypeScript host
+treats `kernel_set_process_pointer_width` as required; `crates/host-native`
+never calls it. It works today **only because `Process::pointer_width` defaults
+to 4** — *a lucky default, not a registration*. A wasm64 guest on the native
+host would therefore be told it is wasm32 by a default nobody chose. Close it
+alongside the wasm64 arm below.
+
+**B27b — the wasm64 arm of the record-syscall coverage.**
+`crates/host-native/fixtures/build-fixtures.sh` targets
+`wasm32-unknown-unknown` only. The wasm32 fixture catches the regression that
+actually happened (a width read as **0**) but **not** one that only manifests at
+width **8** — which is the likelier future regression, since wasm64 has no
+guests in daily use. `sysroot64` is built and `host/test/wasm64.test.ts` exists,
+so it is reachable. Deliberately not bundled: it is a second, larger piece.
+
+**B27c — `setitimer`/`getitimer` values are uncovered, and honestly so.** The
+fixture exercises their *marshalling* via `ITIMER_VIRTUAL`, but not a value
+round-trip, which needs `ITIMER_REAL` and therefore `host_set_alarm` — an import
+the native host deliberately traps. The agent declined to add a host stub that
+accepted the call and never delivered, on the grounds that it would be the
+dishonest kind of stub. That is the right call under the platform-values
+contract, and the gap is recorded rather than papered over.
+
+### What B24 proved about the hole it was sent to close
+
+The plan was right about the design and wrong about four premises, and the
+corrections are worth more than the fixture:
+
+1. **Thirteen syscalls, not twelve.** Deriving the set from
+   `SYSCALL_ARG_DESCRIPTORS` immediately turned up `waitid` and `mq_notify`,
+   both absent from the hand-list. **The derivation earned its keep on its first
+   run** — which is exactly the argument for requiring it.
+2. **The native host had no `ProcessLayout` case at all.** `marshal_in` in
+   `crates/host-native/src/guest.rs` bailed with `unsupported arg size`, so all
+   thirteen were **unreachable** on the one host that runs the real
+   `kernel.wasm` with real guests. The hole was not "untested"; the path did not
+   work. Fixed in 15 lines mirroring the TS host.
+3. **Only three of the thirteen are RAW.** The other ten ride the opaque-record
+   path where guest glue sizes its own spans and the host is out of the data
+   path — so the agreement protected is host↔kernel for three, and
+   guest-glue↔kernel for ten.
+4. **`waitid` has no Rust dispatch arm** and returns ENOSYS. The fixture asserts
+   that ENOSYS rather than skipping, so when `waitid` moves into the kernel the
+   assertion fails and forces real coverage.
+
+**The guard was proved three ways**, including building a kernel whose
+`current_caller_pointer_width` reports 8 for a wasm32 caller — the actual
+regression class — and watching `statfs` fail at exit code 4.
+
+**And a claim was retracted mid-item.** The first commit said the fixture's
+canaries catch a wrong-width record. They do not: nine of the ten record-path
+syscalls never have a host-sized span copied into guest memory, and the two RAW
+ones are 128 bytes at *both* models. It was caught by forcing the marshaller to
+`wasm64_size` and finding the suite still green — the **content assertions** are
+what catch a width error. The canary remains as an honest guard on RAW copy-back
+extent, with the header corrected to say so.
+
 ### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
 
 Stated on its own because it has now worked four times and is not what a census
