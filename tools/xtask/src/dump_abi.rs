@@ -7845,6 +7845,24 @@ mod tests {
                     "fd_setsize": 1024,
                     "fd_set_bytes": 128,
                 },
+                // The facts a host reports about a socket, from which the
+                // kernel decides readiness. Added when socket readiness moved
+                // out of the four host backends and into the kernel; this
+                // assertion is what makes that metadata's completeness a gate
+                // rather than a hope.
+                "net_readiness": {
+                    "facts": [
+                        { "name": "RECV_READY", "value": 1 },
+                        { "name": "RECV_EOF", "value": 2 },
+                        { "name": "SEND_READY", "value": 4 },
+                        { "name": "SEND_CLOSED", "value": 8 },
+                        { "name": "HANGUP", "value": 16 },
+                        { "name": "ERROR", "value": 32 },
+                        { "name": "UNOBSERVABLE", "value": 64 },
+                    ],
+                    "flag_mask": 65535,
+                    "errno_shift": 16,
+                },
             }),
         );
 
