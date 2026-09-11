@@ -21,7 +21,9 @@ GLUE_DIR="$REPO_ROOT/libc/glue"
 # case-sensitive checkout of the same commit instead.
 OS_TEST="${KANDELO_OS_TEST_DIR:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
-BUILD_DIR="$OS_TEST/build"
+# Build output stays on the repository's own filesystem even when sources come
+# from elsewhere; see scripts/run-sortix-tests.sh for the measured reason.
+BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures (same as Node.js version) ──────────────────────

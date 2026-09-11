@@ -36,7 +36,14 @@ GLUE_DIR="$REPO_ROOT/libc/glue"
 # substitutes a different source tree for the one in the repository.
 OS_TEST="${KANDELO_OS_TEST_DIR:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
-BUILD_DIR="$OS_TEST/build"
+# Build output stays on the repository's own filesystem even when sources come
+# from elsewhere. The case-sensitive checkout lives on an APFS sparse disk
+# image, and that image is far slower for this workload than the local disk:
+# the `include` suite writes a `.wasm` and a `.result` per test across ~3,700
+# tests, and putting that traffic on the image made the suite about an order
+# of magnitude slower. Sources are read once per test; outputs are written
+# many times, so only the outputs need the fast path.
+BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
