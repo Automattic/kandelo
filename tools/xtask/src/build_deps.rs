@@ -13986,7 +13986,15 @@ fn build_into_cache(
                     Some(before) => describe_cache_key_input_drift(
                         before, &refreshed_target, registry, repo_root, policy,
                     ),
-                    None => String::new(),
+                    // Reaching here means the pre-build capture did not run on
+                    // a path that then reached the post-build check. Say so
+                    // rather than degrading silently back to two opaque shas:
+                    // a diagnostic that quietly disappears is indistinguishable
+                    // from one that was never added.
+                    None => "\n  (no pre-build input snapshot was captured, so \
+                             the changed input cannot be named here; that is a \
+                             defect in this refusal path, not in the build)"
+                        .to_string(),
                 }
             ));
         }
