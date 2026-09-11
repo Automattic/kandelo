@@ -4158,6 +4158,88 @@ Every brief issued from here carries this: **state the premise the ordering
 rests on, and instruct the agent to re-derive rather than follow if the premise
 fails.**
 
+## B32 — THE CONFORMANCE SUITE IS SILENTLY CORRUPTED ON macOS
+
+`git submodule update --init` of `tests/sortix/os-test` leaves **17 files
+modified that nobody edited.**
+
+The cause: git tracks both `include/inttypes/PRIX16.c` and
+`include/inttypes/PRIx16.c`, and a **case-insensitive filesystem holds one**.
+So `PRIX16.c` ends up containing `#ifndef PRIx16`.
+
+**All 17 are in `include/`** — the compile-only suite of 3,741 tests that
+supplies most of this campaign's conformance passes. Those tests **pass while
+testing a macro other than their own name**: `PRIX{8,16,32,64}`, the `FAST` and
+`LEAST` variants, `PRIXMAX`, `PRIXPTR`, `math/NAN`, and both `FD_SET`s.
+
+That is a silent success **underneath the number the campaign has been quoting**.
+The 4,987 passes are not wrong about the platform, but 17 of them are not
+testing what their filenames claim, and nothing reports it. Anyone reading
+`include` results on macOS is reading a partly fictional suite.
+
+### B33 — `ppoll` resubmits where Linux returns EINTR, and `pselect6` disagrees
+
+Diagnosed, and **not** the wait-queue item's doing.
+
+Both hanging cases print `SIGUSR1` and then hang: **the mask swap works and the
+handler runs; what never happens is the return.** Two independent lines:
+
+- **Pass/fail shape.** Of seven `ppoll-block-*` cases, exactly the two whose
+  *only* wake is the signal fail. The five with a pipe write or close all pass,
+  because a resubmitted `ppoll` finds something. Suite: 30 pass, 0 fail, 2
+  timeout.
+- **One-variable probe.** The same test with `sigaction(sa_flags=0)` instead of
+  `signal()`'s implicit `SA_RESTART` prints `SIGUSR1` / `ppoll: EINTR` in
+  **2.0 s**.
+
+Linux uses `ERESTARTNOHAND`: a caught handler always yields `EINTR`. Kandelo
+resubmits. **`pselect6` already makes the opposite choice**, so the two
+disagree with each other.
+
+`docs/posix-status.md` corrected from **Full → Partial**. **NEEDS-DEFER-DECISION**
+on the semantic fix: which of the two is the model, given they currently
+contradict.
+
+### The +35% was load-inflated, and the arming was not the cause
+
+Withdrawn and replaced with counterbalanced, quiet, twice-replicated numbers:
+
+| median µs | before | after | |
+|---|---|---|---|
+| `epoll_ready` | 26.57 | 30.08 | **+3.5 (+13%)** |
+| `select_ready` | 27.12 | 32.13 | **+5.0 (+18%)** |
+| `poll_ready` | 31.73 | 31.49 | **none** |
+
+Three corrections by the author, against itself:
+
+- the earlier **+35% / +18%** figures were load-inflated — withdrawn;
+- **`poll_ready` never regressed**, exactly as predicted, since `poll` arms
+  lazily by construction. The earlier "+18% poll_ready" was an artifact;
+- **the arming is not the cost.** Removing it recovers ≈0, in two independent
+  isolations that disagree in sign. The lazy-arm fix is **inconclusive**, and
+  ~3.5 µs comes from somewhere else in that change that is **not yet located**.
+
+**So the `select`/`pselect6` fold-in was deliberately not done.** The instruction
+was to measure rather than assume it mirrors epoll; epoll was measured, it did
+not behave as assumed, and extending it would have been assumption-driven. The
+`select_ready` metric is committed for whoever finds the real cause.
+
+### B31 confirmed — and repetition is the reason
+
+| `SIGNAL_SAFE_POLL_WAKE_DELAY_MS` | result |
+|---|---|
+| 0 ms | **11/12 PASS, 1 FAIL** |
+| 50 ms | 12/12 PASS |
+
+**The first sweep — 50/5/1/0, one run each — passed at every value**, and would
+have supported reporting the constant as unnecessary. Twelve repetitions found
+the race. The 50 ms does real work; the evidence bounds 0 as insufficient and 50
+as sufficient, and does **not** show 50 is minimal.
+
+A single run of a racy test is not evidence about a race. That is the same
+family as this campaign's other measurement failures, and the cheapest guard
+against it is repetition.
+
 ### B31 — tuning constants whose evidence predates the link-contract fix
 
 `SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50` (`host/src/kernel-worker.ts:847`) is
@@ -4212,10 +4294,17 @@ A timeout there is a **lost signal wake** — the silent-hang class the K3
 grounding names as the reason shadow mode exists. Decisive test is base-vs-tip,
 which is cheap.
 
-**A coordinator label to distrust:** "`basic/poll/poll` stable, the two selects
-load-dependent" was relayed here from another agent's report without being
-checked against the programs — which are structurally identical. Treat it as
-unverified until measured.
+**That coordinator label was noise, and is struck.** "`basic/poll/poll` stable,
+the two selects load-dependent" was relayed here without being checked against
+the programs. Measured quiet, all three behave identically:
+
+    basic/poll/poll           9.4s  PASS
+    basic/sys_select/select   8.9s  PASS
+    basic/sys_time/select     9.0s  PASS
+
+~9 s against a 30 s budget is **34 µs per round-trip across 262,000** —
+independently matching the benchmark's 31–46 µs. Under load-89 inflation the
+same work takes 80–120 s. The prediction made in advance held.
 
 ### B30 — a reaped build publishes an authority for a build that never finished
 
