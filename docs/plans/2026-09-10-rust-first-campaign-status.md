@@ -5682,6 +5682,22 @@ Two consequences follow, and neither is optional:
 - **The import-entry trap has now caught four agents.** 72 host *functions*
   reads as 73 *entries*, because `env.memory` is an entry. Measure the built
   artifact and say which you are counting.
+- **Read the first line of a failure, never the tally.** Two traps in one
+  afternoon shared this shape. A conformance suite reporting **0 PASS / 32
+  FAIL** twelve times is not a regression in the code under test -- it is
+  evidence that nothing ran, and the first line said so: the artifact reader
+  had been tree-shaken out of the process worker. Then the same suite read
+  **29 PASS / 3 FAIL**, and the three were exactly the `ppoll-block-sleep-*`
+  cases -- *the precise shape a genuine race would take*, and the shape the
+  agent was hunting. They were a deleted `dylink_module32.wasm`; those three
+  cases `fork()`, and the first failure line was `fork: ENOMEM`. A tally that
+  matches your hypothesis is the most dangerous number on the screen.
+- **`"sideEffects": false` deletes a side-effect-only import.** It is a promise
+  to the bundler that no module in the package does anything on import, which
+  is exactly a licence to drop `import "#thing";`. Vitest stayed green because
+  it does not bundle, so the suite that proved the change could not see the
+  realm the change broke. Assert such properties **in the bundle**, not in the
+  config field that currently produces them.
 - **Seven agents have been handed the campaign merge-base**, ~1,000 commits
   behind, by the worktree tooling. Every brief must open by verifying the base.
 
