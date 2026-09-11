@@ -141,8 +141,10 @@ WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 # and wasm-EH lowering choices, and `-fno-trapping-math`.
 CFLAGS_BASE=(
     -O2
-    -D__sortix__
 )
+# `-D__sortix__` is a per-suite capability claim, not a base flag:
+# suite_capability_cflags in scripts/sortix-expectations.sh says which suites
+# get it and why.
 
 # The SDK driver contributes the whole executable link line: syscall
 # glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
@@ -276,7 +278,9 @@ build_runtime_test() {
     mkdir -p "$(dirname "$wasm")"
     rm -f "$wasm"
 
-    local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
+    # shellcheck disable=SC2046
+    local -a cflags=("${CFLAGS_BASE[@]}" $(suite_capability_cflags "$suite") \
+        -D_GNU_SOURCE -I"$OS_TEST")
 
     "$WASM32_CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \

@@ -131,10 +131,17 @@ WASM32_CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 CFLAGS_BASE=(
     -O2
-    # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
-    # so they use race-based timing or skip those features instead.
-    -D__sortix__
 )
+
+# `-D__sortix__` is a per-suite capability claim, not a base flag:
+# suite_capability_cflags in scripts/sortix-expectations.sh says which suites
+# get it and why.
+#
+# The parallel build path runs `_build_runtime_wrapper` through `bash -c`, so
+# this must cross that boundary. Unexported it would not merely be missing: the
+# command substitution would expand to nothing and `udp` would silently lose a
+# suppression it genuinely needs, which looks like a getifaddrs regression.
+export -f suite_capability_cflags
 
 # The SDK driver contributes the whole executable link line: syscall
 # glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
@@ -366,7 +373,9 @@ build_runtime_test() {
     mkdir -p "$(dirname "$wasm")"
     rm -f "$wasm"
 
-    local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
+    # shellcheck disable=SC2046
+    local -a cflags=("${CFLAGS_BASE[@]}" $(suite_capability_cflags "$suite") \
+        -D_GNU_SOURCE -I"$OS_TEST")
     case "$suite/$test_name" in
         process/waitpid-pgid-empty-on-setpgid|\
         process/waitpid-pgid-empty-on-setpgid-rejoin|\
@@ -971,8 +980,9 @@ run_suite() {
             local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
             mkdir -p "$(dirname "$wasm")"
             rm -f "$wasm"
-            # shellcheck disable=SC2206
-            local -a cflags=($CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST")
+            # shellcheck disable=SC2206,SC2046
+            local -a cflags=($CFLAGS_BASE_STR $(suite_capability_cflags "$suite") \
+                -D_GNU_SOURCE -I"$OS_TEST")
             case "$suite/$test_name" in
                 process/waitpid-pgid-empty-on-setpgid|\
                 process/waitpid-pgid-empty-on-setpgid-rejoin|\
