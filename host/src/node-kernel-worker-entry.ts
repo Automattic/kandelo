@@ -372,34 +372,6 @@ const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
 type ProcessInfo = ProcessLifecycleInfo<
   ReturnType<NodeWorkerAdapter["createWorker"]>
 >;
-let nextProcessGeneration = 1;
-
-/**
- * Allocate the next execution-generation number for this realm.
- *
- * Monotonic and never reused, so a message naming a generation can always be
- * rejected as stale rather than misapplied to a successor image.
- */
-function allocateProcessGeneration(): number {
-  const generation = nextProcessGeneration++;
-  if (!Number.isSafeInteger(generation)) {
-    throw new Error("process execution generation space exhausted");
-  }
-  return generation;
-}
-
-const processes = new Map<number, ProcessInfo>();
-const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
-const externrefProcessOwner = new ForkExternrefProcessOwner();
-const forkHostImportOwnerRuntime =
-  new ForkHostImportOwnerRuntime(externrefProcessOwner);
-const forkHostImportsByWorker =
-  new WeakMap<object, ForkHostImportOwnerWorker>();
-const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
-const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
-  (pid) => processes.get(pid),
-);
-const processMemoryCreators = new ProcessMemoryCreatorGate();
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
 
 /**
@@ -550,22 +522,6 @@ function reportProcessExit(pid: number, status: number): void {
   post({ type: "exit", pid, status });
 }
 
-// PTY index per-PID
-const ptyByPid = new Map<number, number>();
-
-const processGenerationDetaches =
-  new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
-    (pid) => processes.get(pid),
-    (pid, exactGeneration) => {
-      const current = processes.get(pid);
-      if (current !== exactGeneration) return;
-      vmInterruptTimers.clear(pid, current);
-      processes.delete(pid);
-      threadModuleCache.delete(pid);
-      ptyByPid.delete(pid);
-    },
-  );
-
 /**
  * The shared lifecycle implementation both host entries call.
  *
@@ -578,26 +534,16 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   post: (message, transfer) => post(message, transfer),
   terminationProvesQuiescence: true,
   isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
-  vforkLifetimes,
-  vmInterruptTimers,
   kernel: () => kernelWorker,
   diagnosticPrefix: "[node-kernel-worker]",
-  forkHostImportsByWorker,
-  processGenerationDetaches,
-  ptyByPid,
   execMountIO: () => vfsExecIO,
-  processes,
-  processTeardowns,
   isInitReady: () => initReady,
   rootfsBaseImage: () => rootfsMemfs,
-  externrefProcessOwner,
   // Node's worker-'exit' handler and vfork containment path synthesize the
   // crash reap themselves before entering the shared teardown.
   defaultExitCrashSignum: () => undefined,
   threadWorkerSettleMs: 0,
   reportProcessExit: (pid, _info, status) => reportProcessExit(pid, status),
-  allocateProcessGeneration,
-  forkHostImportOwnerRuntime,
   createProcessWorker: (init) => workerAdapter.createWorker(init),
   createThreadWorker: (init) =>
     new DeferredWorkerHandle(() => workerAdapter.createWorker(init)),
@@ -635,8 +581,19 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   resolveExecFile: (path) => resolveExec(path),
 });
 const {
+  allocateProcessGeneration,
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  externrefProcessOwner,
+  forkHostImportOwnerRuntime,
+  forkHostImportsByWorker,
+  processes,
+  processGenerationDetaches,
+  processMemoryCreators,
+  processTeardowns,
+  ptyByPid,
+  vforkLifetimes,
+  vmInterruptTimers,
   handleSpawn,
   handlePosixSpawn,
   handleOrdinaryFork,

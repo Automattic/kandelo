@@ -226,7 +226,6 @@ let initReady = false;
 let initFailure: string | null = null;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
-const processMemoryCreators = new ProcessMemoryCreatorGate();
 let vforkMechanismTraceEnabled = false;
 let injectVforkWorkerStartFailure = false;
 let injectedVforkWorkerStartFailure = false;
@@ -247,18 +246,6 @@ let injectedExecWorkerConstructionFailure = false;
 type ProcessInfo = ProcessLifecycleInfo<
   ReturnType<BrowserWorkerAdapter["createWorker"]>
 >;
-const processes = new Map<number, ProcessInfo>();
-const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
-const externrefProcessOwner = new ForkExternrefProcessOwner();
-const forkHostImportOwnerRuntime =
-  new ForkHostImportOwnerRuntime(externrefProcessOwner);
-const forkHostImportsByWorker =
-  new WeakMap<object, ForkHostImportOwnerWorker>();
-const processTeardowns = new Map<ProcessInfo["worker"], Promise<void>>();
-const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
-  (pid) => processes.get(pid),
-);
-let nextProcessGeneration = 1;
 let nextFramebufferReleaseRequestId = 1;
 const pendingFramebufferReleaseAcks = new Map<
   number,
@@ -343,22 +330,6 @@ async function waitForProcessTeardowns(): Promise<void> {
 
 
 
-const ptyByPid = new Map<number, number>();
-
-const processGenerationDetaches =
-  new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
-    (pid) => processes.get(pid),
-    (pid, exactGeneration) => {
-      const current = processes.get(pid);
-      if (current !== exactGeneration) return;
-      vmInterruptTimers.clear(pid, current);
-      processes.delete(pid);
-      threadModuleCache.delete(pid);
-      threadedProcessPids.delete(pid);
-      ptyByPid.delete(pid);
-    },
-  );
-
 /**
  * The shared lifecycle implementation both host entries call.
  *
@@ -374,19 +345,11 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   post: (message, transfer) => post(message, transfer),
   terminationProvesQuiescence: false,
   isVforkMechanismTraceEnabled: () => vforkMechanismTraceEnabled,
-  vforkLifetimes,
-  vmInterruptTimers,
   kernel: () => kernelWorker,
   diagnosticPrefix: "[browser-kernel-worker]",
-  forkHostImportsByWorker,
-  processGenerationDetaches,
-  ptyByPid,
   execMountIO: () => io,
-  processes,
-  processTeardowns,
   isInitReady: () => initReady,
   rootfsBaseImage: () => memfs,
-  externrefProcessOwner,
   defaultExitCrashSignum: (exitStatus) =>
     signalFromExitStatus(exitStatus) ?? SIGSEGV,
   threadWorkerSettleMs: THREADED_WORKER_TERMINATION_SETTLE_MS,
@@ -398,8 +361,6 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
     processWorkerTerminationSettleMs(info.argv),
   releaseGenerationAliases: (pid, info) =>
     releaseMainFramebufferGeneration(pid, info),
-  allocateProcessGeneration,
-  forkHostImportOwnerRuntime,
   createProcessWorker: (init) => workerAdapter.createWorker(init),
   createThreadWorker: (init) =>
     new DeferredWorkerHandle(() => workerAdapter.createWorker(init)),
@@ -443,8 +404,19 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   // source of exec bytes.
 });
 const {
+  allocateProcessGeneration,
   bindForkHostImports,
   completeVforkGenerationTeardown,
+  externrefProcessOwner,
+  forkHostImportOwnerRuntime,
+  forkHostImportsByWorker,
+  processes,
+  processGenerationDetaches,
+  processMemoryCreators,
+  processTeardowns,
+  ptyByPid,
+  vforkLifetimes,
+  vmInterruptTimers,
   handleSpawn,
   handlePosixSpawn,
   handleOrdinaryFork,
@@ -506,14 +478,6 @@ const activeBridgeRequests = new Set<number>();
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
-}
-
-function allocateProcessGeneration(): number {
-  const generation = nextProcessGeneration++;
-  if (!Number.isSafeInteger(generation)) {
-    throw new Error("browser process execution generation space exhausted");
-  }
-  return generation;
 }
 
 /**
