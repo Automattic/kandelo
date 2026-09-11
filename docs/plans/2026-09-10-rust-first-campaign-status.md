@@ -2630,6 +2630,75 @@ generation now. The measurement was real. The gate is still blind.
 **Ledger after this wave: production TypeScript −3,129** (from −2,460), host
 imports **75**, typecheck **0**, Rust 1,944 + 54 + 6 passing.
 
+## K7's Rust has never run — the dead-floor pattern, mirrored
+
+Found by the B3 attempt, verified two independent ways and worth more than the
+item it came from.
+
+1. **Call-site census across `crates/`:** 15 `SharedMappingTable` methods have
+   **zero callers** outside `memory.rs` — 874 lines of bodies.
+   `inherit_process_mappings` (162 lines) *is* reached in production via
+   `inherit_sysv_attachments`, but only ever over an empty map. `FileBacking`'s
+   page cache adds ~283 more.
+2. **The built artifact:** all nine `kernel_shared_mapping_*` exports are
+   `_sysv_`. There is **no entry point into the other half at all**.
+
+**Roughly 1,300 lines of Rust that has never run outside a test.**
+
+This campaign has found four dead-floor instances in *host* surface — code kept
+as "the irreducible floor" that no live path reached. This is the same pattern
+**mirrored onto a migration target**: Rust written to receive a cutover that
+never came. It is the mirror image of the dormant `wait_queue.rs` /
+`wait_shadow.rs` pair, and it changes how K7's ledger row should be read: K7
+counts as **+21k Rust with 0 TypeScript removed**, and against V4 it has so far
+moved nothing.
+
+The `wasm_api.rs` comment already said the table is empty in production, and it
+is accurate — the agent checked it line by line and nearly filed a false defect
+against it when an earlier grep excluded `memory.rs`. What was missing was any
+record of the *consequence* where the work is tracked.
+
+### B3 is atomic with B2 — the re-cut should have been two items, not three
+
+The benchmark was never the binding gate; the maintainer's ruling removed a gate
+that was not the one holding this shut.
+
+**The anon half is not separable the way SysV was.** SysV was separable because
+it owned its own containers. Anon and file mappings share one `sharedMappings`
+container and are distinguished only by a `backingKind` field tested at
+**15 interleaved sites** across the shared inherit/cleanup/remap/release/flush
+paths. An anon-only cutover leaves every branch in TypeScript, adds a kernel
+call inside each `anonymous` arm, and creates **two authorities over one address
+space** — deleting ~100 lines while adding more in glue. On the campaign's own
+surface-aware ranking that scores *below doing nothing*, so it was not done.
+
+**B2 is cheaper than its estimate.** About 300 of its ~1,068 lines are host code
+re-deriving facts the kernel already owns. The exhibit:
+`getFdStatForSharedMapping` is 93 lines that hand-assemble a synthetic `fstat`
+channel, re-enter through `kernel_handle_channel`, and then recover the host
+handle by **snooping the kernel's own `host_fstat` call** through a
+`beginFstatHandleCapture`/`finishFstatHandleCapture` side-channel in
+`kernel.ts`. `getFdAccessModeForSharedMapping` is 60 more doing the same for one
+`F_GETFL`.
+
+**Recommendation, adopted:** merge B2 and B3 into **one** item, sized as B2's
+estimate plus the cutover, dispatched with the fd-facts kernel export as its
+first commit. **Do not dispatch B3 alone again — it will fail the same way a
+third time.**
+
+**Blocked on file locality, not on judgement:** that first commit needs
+`crates/runtime-core/src/syscalls.rs`, which B8 (the wait-queue cutover) now
+holds. Dispatch when B8 lands.
+
+### A hazard recorded before it becomes a defect
+
+pthread slots now reserve from the same first-fit allocator that answers
+`mmap_anonymous`, and `release_host_region` unmaps nothing. Once the shared
+mapping table is non-empty, teardown ordering between address-space release and
+mapping release becomes load-bearing. **Not a defect today** — the table is
+empty — which is exactly why it is written down now rather than discovered
+later.
+
 ## OVERNIGHT STATE (2026-09-10, late) — read this first after a crash
 
 **Maintainer directives in force:** push the ship line aggressively, including
