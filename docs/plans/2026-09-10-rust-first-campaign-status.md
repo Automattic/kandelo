@@ -3634,7 +3634,7 @@ them.**
 | B8 | K3 wait-queue cutover | **IN FLIGHT.** Maintainer: "done in Rust unless there is a good reason not to — wiring that still needs doing". Fixes wall-clock deadlines; may close `epoll_pwait`'s ignored signal mask |
 | B9 | Per-process pointer width | **CLOSED.** Frees the `preadv2`/`pwritev2` `flags` slot before ABI 44 finalises. Found twelve dispatch arms reading a bare `args[5]` |
 | B10 | Kernel-owned shebang parsing | Open. Needs a prepared-target token the side-effect-free spawn preflight cannot obtain |
-| B11 | `report_writeback_loss` wiring | Open. Maintainer said keep; better home is kernel-visible state readable through an existing export |
+| B11 | `report_writeback_loss` wiring | **Decided + dispatched** 2026-09-11. The "better home" **removes** `host_debug_log` (73 → 72): record the loss as kernel state read through an existing export. My earlier option label contradicted its own body; corrected above |
 | B12 | `privileged-projection.ts` | **CLOSED.** Deleted, −1,418, on the finding that it duplicated a live route |
 | B13 | `dylink-planner.ts` | **CLOSED.** Production, not deletion debt |
 | B14 | SysV IPC conformance coverage | **Explicit future work**, per the maintainer. None exists anywhere in `tests/` |
@@ -4173,6 +4173,32 @@ exist.
 The open `host_debug_log` question shifted with it and is **still not settled**:
 now *72-or-73, pinned at 73*, caller intact.
 
+**The option label I put to the maintainer was self-contradictory, and they
+caught it:** the title said keep the import while the body described removing it.
+The traced facts, so the next reader does not have to re-derive them:
+
+- the import is declared **once**, at `crates/runtime-core/src/lib.rs:81`;
+- it is wrapped by `debug_log()`, cfg-gated to wasm and a no-op natively;
+- it has **exactly one real call site** — `report_writeback_loss` at
+  `crates/kernel/src/wasm_api.rs:1285`, formatting
+  `"shared-mapping writeback lost: pid=… addr=… reason=…"`.
+
+So the "better home" **removes the import** (73 → 72): record the writeback loss
+as kernel state readable through an export that already exists, rather than
+pushing a formatted string across the host boundary to be logged. That is
+strictly better for V4 — one less host capability — and strictly better for the
+platform-values contract, because a lost writeback becomes queryable state
+instead of a line in someone's console.
+
+**DECIDED (maintainer, 2026-09-11): move it. Host imports 73 → 72.** Their
+words: the earlier "keep for now" was answered before anyone had traced the
+caller, and one call site formatting one string makes the case for moving it
+much stronger. **Dispatched**, with two constraints on the implementation:
+prefer an **existing** kernel export (adding an export to remove an import is a
+wash for V4, and exports are ABI surface), and if the record has bounded
+capacity, a dropped record must itself be visible as a counter — a lost
+writeback is data corruption and must become *more* observable, not less.
+
 ### THE WAIT-QUEUE CUTOVER SHIPPED A 35% HOT-PATH REGRESSION, AND MEASUREMENT CAUGHT IT
 
 The item's own author expected "roughly neutral" and wrote so. An isolated A/B
@@ -4291,6 +4317,24 @@ The 4,987 passes are not wrong about the platform, but 17 of them are not
 testing what their filenames claim, and nothing reports it. Anyone reading
 `include` results on macOS is reading a partly fictional suite.
 
+**DECIDED (maintainer, 2026-09-11): build the case-sensitive volume automation
+and report the measured cost.** Dispatched, in this order:
+
+1. **Detection first.** The runner refuses, loudly and by name, when the
+   checkout is case-collapsed. That protects every future measurement even
+   where the image is not used, and it is the actual defect — a suite reporting
+   fictional passes.
+2. **Then the volume, automated.** Precedent exists but no script:
+   `~/.cache/kandelo/KandeloCaseBuild.sparseimage` (47 MB) is present and
+   nothing under `scripts/` references it, so it was made by hand. Creation and
+   mounting go into provisioning — idempotent, a no-op on Linux, and it must not
+   break a checkout that already works.
+3. **Then measure.** Wall-clock for the `include` suite on the normal checkout
+   versus the case-sensitive volume, plus confirmation that all 17 files then
+   differ correctly. The maintainer asked specifically whether this makes
+   testing slow; **"negligible" is not an acceptable answer without a
+   measurement behind it.**
+
 ### B33 — `ppoll` resubmits where Linux returns EINTR, and `pselect6` disagrees
 
 Diagnosed, and **not** the wait-queue item's doing.
@@ -4310,9 +4354,17 @@ Linux uses `ERESTARTNOHAND`: a caught handler always yields `EINTR`. Kandelo
 resubmits. **`pselect6` already makes the opposite choice**, so the two
 disagree with each other.
 
-`docs/posix-status.md` corrected from **Full → Partial**. **NEEDS-DEFER-DECISION**
-on the semantic fix: which of the two is the model, given they currently
-contradict.
+`docs/posix-status.md` corrected from **Full → Partial**.
+
+**DECIDED (maintainer, 2026-09-11): adopt the Linux/POSIX answer — `ppoll`
+returns `EINTR`, matching `pselect6`.** The maintainer asked whether Linux
+semantics are also POSIX-compliant here. They are, and the suite settles it by
+its own convention: `signal.expect/ppoll-block-raise.posix` contains exactly
+`SIGUSR1` then `ppoll: EINTR`, and the suite carries **185 `.posix` expectation
+files and no `.linux` variants at all**. There is no separate POSIX expectation
+to contradict the Linux one. **Dispatched.** The fix must also report, for each
+of `poll`, `select` and `epoll_wait`, whether it already agrees — a family where
+three agree and one does not is how this started.
 
 ### The +35% was load-inflated, and the arming was not the cause
 
