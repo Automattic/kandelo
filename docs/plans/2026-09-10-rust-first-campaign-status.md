@@ -3001,7 +3001,7 @@ keep their row so they are not re-opened.
 | B18 | **CLOSED** | `xtask bootstrap` gained a `root-npm` step |
 | B19 | **RE-OPENED, and now measured exactly** | The *install* defect closed. A **different** defect wears the same ID: the resolver refuses the entire `source-only-v1` tier the moment a program closure needs a multi-member package, because a locally built tier holds **regular files** where `host/src/binary-resolver.ts` requires **symlinks** into `.kandelo-local-generations`. It reports `programs/wasm32/dash.wasm (missing)` while `dash.wasm` is present among 108 built programs, so "build it and continue" cannot clear it. Re-measured against a near-complete package tree (only `gzip`/`xz` failing, `dash`/`coreutils`/`login`/`perl`/`node`/`rootfs` all green): **identical tier-identity error.** This is what blocks every Sortix, libc and POSIX suite in any locally built worktree. See "B19, measured" |
 | B20 | **Tier-end browser pass** | Split: **needs the app booted** — K8's MITM CA-write ordering, K4's D17 interrupt timer and D2 exit-dedup, browser lifecycle paths. **Needed only an engine** — three items already closed that way |
-| B21 | **CLOSED — never `gzip`, never `xz`** | Both build green on a fresh sysroot; the report was a broken sysroot wearing a package's clothes, exactly B17's shape. The VFS images were missing because this campaign's own deletion of the TypeScript WebAssembly reader left two Node entry points without it: a VFS image builder, and a process worker running as a temp-dir esbuild bundle (which stops `coreutils-docs`, a direct `shell` dependency). Both fixed; `shell`, `nginx-vfs`, `node-vfs`, `kandelo-sdk` and `mariadb-test` images now build. See "B21, measured" |
+| B21 | **CLOSED — never `gzip`, never `xz`** | Both build green on a fresh sysroot; the report was a broken sysroot wearing a package's clothes, exactly B17's shape. The VFS images were missing because this campaign's own deletion of the TypeScript WebAssembly reader left two Node entry points without it: a VFS image builder, and a process worker running as a temp-dir esbuild bundle (which stops `coreutils-docs`, a direct `shell` dependency). Both fixed; `./run.sh setup` now exits 0 with all eight VFS images built. The tier is still refused after that green build, for a reason B21 measured but did not fix: the identity check compares a `SourceOnlyV1` cache key against a `Default`-policy one. See "B21, measured" |
 | B22 | **libc-test cannot be fetched in the dev shell** | Its submodule URL is `git@github.com:` and ssh is unavailable there. A second, independent reason no conformance suite has run in this campaign — B19 is not the only one |
 
 ### B12 / D-K8-4 — `privileged-projection.ts` is superseded, not merely unused
@@ -3190,12 +3190,62 @@ Two further findings from the same measurement, both still open:
   in `docs/package-management.md`; the code fix is deferred because `sdk/src`
   is in `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS` and repairing it rebuilds the whole
   tree.
-* **`ncurses` is not reproducible under concurrent rebuild.** On a cold cache
-  `vim`'s nested `ncurses` resolve raced the top-level `ncurses` node and
-  failed with `concurrent cache winner differs from staged build`, writing a
-  `.kandelo-rebuild-mismatch` record. Both `vim` and `php` built green on the
-  second, warm run. The shared cache carries older mismatch records for
-  `ncurses` too, so this is not new.
+* **`ncurses` is not reproducible under concurrent rebuild.** `vim`'s nested
+  `ncurses` resolve raced the top-level `ncurses` node and failed with
+  `concurrent cache winner differs from staged build`, writing a
+  `.kandelo-rebuild-mismatch` record. The *race* is closed: `vim` declared
+  `depends_on = []` while linking `-lncursesw`, and declaring the dependency
+  gives the engine the edge that orders them. The underlying
+  non-reproducibility is not — the shared cache carries older `ncurses`
+  mismatch records, so it predates this.
+* **A package that configures in-tree goes stale silently.** `vim`, `wget`,
+  `less` and `tar` build under `packages/registry/<pkg>/<pkg>-src/` and reuse
+  the configured tree across runs. Change a dependency prefix — a different
+  `KANDELO_SOURCE_CACHE_ROOT`, say — and the baked `-I`/`-L` paths are gone,
+  while the cache key says nothing changed. It surfaces as
+  `fatal error: 'zlib.h' file not found` or `wasm-ld: unable to find library
+  -lncursesw`, naming a header instead of a stale tree. `rm -rf` on the
+  `-src/` directory is the whole fix; nothing detects it.
+
+### After B21: `./run.sh setup` is green, and the tier is still refused
+
+With the above landed, `./run.sh setup` exits **0** with zero failed or
+blocked nodes and all eight VFS images present. The `source-only-v1` tier is
+still refused for every package closure, immediately after that green build:
+
+```
+whole tier refused: the materialized source-only generation for "shell" was
+built from a different package identity than the source tree now selects;
+rebuild it with ./run.sh setup
+```
+
+Rebuilding does not clear it, and the reason is not staleness. The check at
+`binary-resolver.ts:~3330` compares two identities that are computed under
+**different resolve policies**:
+
+| side | file | policy | `shell` wasm32 cache key |
+|---|---|---|---|
+| authority | `local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json` | `ResolvePolicy::SourceOnlyV1` | `902b90ed…` |
+| comparand | `packages/registry/program-packages.json` | `ResolvePolicy::Default` | `d6ed5b85…` |
+
+Their `manifestSha256` halves agree — same manifest, same tree, same moment.
+The `cacheKeys` halves are drawn from different key domains
+(`package_context_cache_keys` hardcodes `ResolvePolicy::Default`;
+`source_only_program_package_index_for_nodes` uses `SourceOnlyV1`), so the
+equality can never hold and the tier is refused unconditionally.
+
+That is why `dash` and `coreutils` resolve at all: they come from
+`~/.cache/kandelo/programs`, a second cache `scripts/build-rootfs.sh`
+populates through the legacy `build-deps` path. Anything only the
+source-only tier has — `shell.vfs.zst`, `php`, `lamp.vfs.zst` — resolves
+nowhere.
+
+**Not fixed here.** The comparand is the resolver's, the file is being
+actively changed by the resolver work, and choosing which side is
+authoritative is that design's call: bind the tier to its own SourceOnlyV1
+identity, or give the resolver a SourceOnlyV1 index to compare against.
+Recorded with the measurement so whoever owns it does not have to re-derive
+it.
 
 ### NDD-BOOT-1 — `boot-descriptor.ts` (507), not started
 
