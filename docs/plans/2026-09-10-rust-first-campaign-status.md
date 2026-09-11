@@ -749,6 +749,120 @@ This increment removes one kernel re-entry from `mmap` preflight and one from
 each file-mapping access-mode check; that was not measured either, and is not
 claimed.
 
+## B2+B3 policy layer landed, and the cutover is blocked behind it (2026-09-11)
+
+**The coherence layer now exists in Rust, and the deletion still cannot be
+performed.** The blocker is not the policy and not the benchmark. It is that
+the kernel's `SharedMappingIo` deliberately refuses four of the capabilities
+the file-backed halves need, so neither half can be made live no matter how
+complete the policy is.
+
+### The premise was re-verified before the work, and it held
+
+The ordering for this item rested on the Rust never having executed. All three
+claims were re-checked on this branch rather than inherited:
+
+- The eight named `SharedMappingTable` methods have **zero** callers outside
+  `memory.rs`. Confirmed by census: `track_anonymous_mapping`,
+  `sync_anonymous_from_process`, `get_or_create_file_backing`,
+  `synchronize_for_boundary`, `flush_mappings`, `cleanup_mappings`,
+  `remap_mapping`, `release_all_for_process` — all zero.
+- Every `kernel_shared_mapping_*` export is `_sysv_` apart from the opening
+  move's `fd_facts`. Ten exports, confirmed in source.
+- `inherit_process_mappings` **is** reached in production, over an empty map.
+  A first grep said otherwise and was wrong: the call is indirect, from
+  `kernel_shared_mapping_sysv_inherit` through `inherit_sysv_attachments`. The
+  comment at `wasm_api.rs:7707` describes it as a direct call, which is what
+  made the census hard; the claim it supports is correct.
+
+### What the first execution over a non-empty table found
+
+Driving fork, boundary sync, flush, mremap, partial unmap and teardown over one
+process holding an anonymous **and** a file mapping exposed a reference-counting
+invariant that no single-method test could see. `FileBacking` is created with
+`ref_count: 0` and `get_or_create_file_backing` never counts the mapping that
+caused it, while `track_anonymous_mapping` creates its backing and registers its
+mapping together and so stays consistent. Creation counts nothing,
+`inherit_process_mappings` counts each inherited mapping, `release_mapping`
+discounts every mapping it drops — so the count runs one short for the life of
+the mapping and **the first process to exit takes the backing to zero,
+flushing and closing the host handle while a live peer still has the file
+mapped.** Uncounted it is quieter still: two real peers both sit in the
+sole-observer deferral and never see each other's writes, which is a silent
+`MAP_SHARED` coherence failure. The host takes that reference in
+`prepareSharedMmapFromFile`; the Rust registration path that would take it did
+not exist, and now does.
+
+### The blocker — four refusals in `WasmSharedMappingIo`
+
+`crates/kernel/src/wasm_api.rs:1153` is the **only** production
+`SharedMappingIo`. Four of its methods refuse by design:
+
+| Method | Behavior | What it blocks |
+|---|---|---|
+| `retain_handle` | `ENOSYS` | **every** host-file-backed mapping |
+| `fd_stat` | `ENOSYS` | the kernel-owned fd-writeback bridge |
+| `fd_pwrite` | `ENOSYS` | fd-writeback flush |
+| `close_fd` | no-op | the writeback dup's close |
+
+`get_or_create_file_backing` calls `io.retain_handle(source_handle)?` on both
+its creation and its writable-upgrade path (`memory.rs:2664`, `2677`) and
+propagates the error, so **the first `MAP_SHARED` of a host-owned regular file
+through the kernel returns `ENOSYS`.** The refusal is honest and its comment
+says why: a retained handle must outlive the guest descriptor that opened it,
+which requires deferring the kernel's own `host_close` until the last mapping
+reference drops, and handing out a handle the kernel may close underneath the
+caller would be worse than refusing.
+
+**This was recorded once and never reached the step list.** The K7 re-cut note
+says `retain_handle`/fd-writeback "were described as existing and did not, and
+now refuse with `ENOSYS`". It was written as a correction to that note's own
+claims, not as a prerequisite on the B2/B3 row, so the item was scoped as
+policy → exports → deletion with this step missing from the middle. It is the
+same failure mode the K7 mis-scope is filed under: **silence in a work contract
+reads as completeness.**
+
+### Consequently the remaining order is not what the item assumed
+
+Handle retention is a prerequisite, not a follow-up. It touches host-handle
+lifetime across `close`, OFD release and process teardown — `process_table.rs`
+already refcounts OFDs so that "only the last process queues the underlying
+`host_close`", and what is missing is a mapping-held reference layered on top
+of that. Until it lands, adding the ~10 kernel exports would grow the ABI
+surface with entry points that cannot succeed, which is the opposite of what
+this campaign is for.
+
+### Numbers for this increment
+
+- Production TypeScript: **0**. Nothing was deleted, because the deletion is
+  gated on the blocker above. The item exists to make this number strongly
+  negative and it has not yet moved.
+- Host imports: **73 functions plus `env.memory`**, before and after, read from
+  the built kernel (74 import *entries*).
+- Driver glue: **0**.
+- Rust: **+1,729** lines — `shared_mapping_policy.rs` is new at 1,108 (501
+  production, 607 tests) and `memory.rs` gains 620 (the reload family and the
+  keyed wrappers, the rest tests). Roughly 700 production to 1,030 test, which
+  is the ratio this item wanted: the Rust it hands the subsystem to had never
+  run.
+
+### ABI
+
+**No delta at all.** `xtask dump-abi` over the freshly built kernel left
+`abi/snapshot.json` and every generated file byte-identical — the working tree
+was clean after regeneration. No `ABI_VERSION` bump, and the gate was run
+rather than reasoned about.
+
+### Performance was not measured
+
+Unchanged and still named precisely: **the cost of the Rust shared-mapping path
+relative to the host implementation it would replace**, for a process holding a
+large writable `MAP_SHARED` with at least one live peer and crossing syscall
+boundaries often. No benchmark was run and none should be cited. A general
+syscall benchmark reaches only `synchronize_for_boundary`'s early-out — a true
+result about the wrong code. Nothing added here has a production caller yet, so
+there is also nothing here that could have been measured in place.
+
 ## In-scope test failures — coordinator owns these
 
 | Failure | State |
