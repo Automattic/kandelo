@@ -27,7 +27,11 @@
 # workflow context, not tools: `./run.sh local-build` re-enters this
 # shell, so without these keeps an isolated-cache or no-auto-GC
 # request would be silently dropped and the build would run against
-# the machine-wide shared cache. `KANDELO_PLAYWRIGHT_PORT` is kept for
+# the machine-wide shared cache. `WASM_POSIX_BINARY_CACHE_ROOT` is the
+# other half of the same cache override: `run.sh` reads it outside this
+# shell and xtask reads it inside, so stripping it does not disable the
+# override, it makes it silently ineffective while the caller believes
+# its package cache is isolated. `KANDELO_PLAYWRIGHT_PORT` is kept for
 # the same reason and with a sharper failure mode: dropping it sends
 # Playwright to the shared default port, and on a machine running more
 # than one checkout that port already belongs to somebody else's dev
@@ -133,6 +137,7 @@ nix_develop=(
     --keep GITHUB_EVENT_PATH \
     --keep KANDELO_NIX_BIN \
     --keep KANDELO_SOURCE_CACHE_ROOT \
+    --keep WASM_POSIX_BINARY_CACHE_ROOT \
     --keep KANDELO_CACHE_GC_AUTO \
     --keep KANDELO_PLAYWRIGHT_PORT \
     --keep WASM_POSIX_RESOLUTION_POLICY \
