@@ -1891,6 +1891,38 @@ mod wait_tests {
     }
 
     #[test]
+    fn fork_and_vfork_children_inherit_the_parent_pointer_width() {
+        use wasm_posix_shared::fork_contract::Mode;
+
+        // A child inherits its parent's address space, so it inherits the data
+        // model of that address space. Nothing re-registers the width for a
+        // forked child -- if it did not ride the fork state record, a wasm64
+        // parent would produce a child the kernel read as wasm32, and every
+        // caller-native structure that child passed would be mis-parsed.
+        for mode in [Mode::Fork, Mode::Vfork] {
+            let mut table = ProcessTable::new();
+            let parent_pid = table.create_process().unwrap();
+            table.get_mut(parent_pid).unwrap().pointer_width = 8;
+
+            let child_pid = table
+                .fork_process_for_caller_with_mode(parent_pid, parent_pid, mode)
+                .unwrap();
+
+            assert_eq!(table.get(child_pid).unwrap().pointer_width, 8);
+            // The parent keeps its own width across the transition.
+            assert_eq!(table.get(parent_pid).unwrap().pointer_width, 8);
+        }
+
+        // A wasm32 parent is inherited just as exactly, rather than landing on
+        // the same answer by way of the struct default.
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        assert_eq!(table.get(parent_pid).unwrap().pointer_width, 4);
+        let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        assert_eq!(table.get(child_pid).unwrap().pointer_width, 4);
+    }
+
+    #[test]
     fn vfork_child_rejects_nested_process_owners() {
         use crate::process::test_host::NoopHost;
         use crate::spawn::SpawnAttrs;

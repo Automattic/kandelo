@@ -47895,6 +47895,121 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(host.closed_handles, vec![100]);
     }
 
+    /// The smallest module that declares a 64-bit memory: the wasm preamble
+    /// plus a memory section whose single entry sets the memory64 limits bit
+    /// (0x04). `detect_pointer_width` answers from the first memory, so this
+    /// is a wasm64 image as far as the artifact reader is concerned.
+    const WASM64_IMAGE: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, // \0asm
+        0x01, 0x00, 0x00, 0x00, // version 1
+        0x05, 0x03, 0x01, 0x04, 0x00, // memory section: 1 memory, memory64, min 0
+    ];
+
+    /// The same module with an ordinary 32-bit memory (limits flags 0x00).
+    const WASM32_IMAGE: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, //
+        0x01, 0x00, 0x00, 0x00, //
+        0x05, 0x03, 0x01, 0x00, 0x00, //
+    ];
+
+    /// Prepare `bytes` as an exec target and observe all of them, which is
+    /// what the host does before it may commit: the artifact-policy gate
+    /// already refuses to judge a target that is not fully read.
+    fn prepare_and_observe(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        let pid = proc.pid;
+        let token = prepare_test_exec_with_bytes(proc, locks, host, path, bytes);
+        let mut image = alloc::vec![0u8; bytes.len()];
+        crate::exec_target::read(proc, host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(image.as_slice(), bytes);
+        token
+    }
+
+    #[test]
+    fn exec_replaces_the_registered_pointer_width_when_the_image_changes_it() {
+        // An exec replaces the address space, and the replacement may have a
+        // different data model than the image that called it. The width must
+        // be replaced at the commit and nowhere else: before it, the outgoing
+        // image is still the one running; after it, the guest may already be
+        // executing under the new one.
+        let mut proc = Process::new(77);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        assert_eq!(proc.pointer_width, 4);
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/wide",
+            WASM64_IMAGE,
+        );
+        // Preparing and reading the target does not touch the running image's
+        // width. Only the commit does.
+        assert_eq!(proc.pointer_width, 4);
+
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, token,
+        )
+        .unwrap();
+
+        assert_eq!(proc.exec_generation, 1);
+        assert_eq!(proc.pointer_width, 8);
+
+        // And back again: a wasm64 image exec'ing a wasm32 one is the same
+        // transition in the other direction, not a one-way widening.
+        let narrow = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        assert_eq!(proc.pointer_width, 8);
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, narrow,
+        )
+        .unwrap();
+        assert_eq!(proc.pointer_width, 4);
+    }
+
+    #[test]
+    fn a_failed_exec_leaves_the_running_image_pointer_width_alone() {
+        // A commit that is refused must not have moved the width: the image
+        // that is still running is the one whose data model applies.
+        let mut proc = Process::new(78);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        proc.pointer_width = 8;
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        // A stale generation is exactly the race the owner check exists for.
+        proc.exec_generation += 1;
+
+        assert!(
+            crate::exec_target::commit_process(
+                &mut proc, &mut locks, &mut host, pid, pid, token,
+            )
+            .is_err()
+        );
+        assert_eq!(proc.pointer_width, 8);
+    }
+
     #[test]
     fn exec_target_pathname_execveat_resolves_relative_to_live_dirfd() {
         let mut proc = Process::new(101);

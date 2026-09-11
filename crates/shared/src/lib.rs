@@ -1070,6 +1070,72 @@ pub mod rwf_flags {
     /// suppresses the blocking retry a would-block transfer would otherwise
     /// park on, which is exactly what the flag promises.
     pub const RWF_SUPPORTED: u32 = RWF_NOWAIT;
+
+    /// Accept a `preadv2`/`pwritev2` `flags` word, or refuse it.
+    ///
+    /// An unimplemented flag is an error, not a no-op. Every bit outside
+    /// [`RWF_SUPPORTED`] names behaviour the caller asked for and would not
+    /// get -- a write that was not synchronized for `RWF_DSYNC`, an offset
+    /// that was not taken from the end of the file for `RWF_APPEND` -- and
+    /// reporting success for it would be a lie the caller cannot detect.
+    /// Linux answers the same way, with `EOPNOTSUPP`.
+    pub fn check_rwf_flags(flags: u32) -> Result<u32, crate::Errno> {
+        if flags & !RWF_SUPPORTED != 0 {
+            return Err(crate::Errno::EOPNOTSUPP);
+        }
+        Ok(flags)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Errno;
+
+        #[test]
+        fn no_flags_and_rwf_nowait_are_accepted() {
+            assert_eq!(check_rwf_flags(0), Ok(0));
+            assert_eq!(check_rwf_flags(RWF_NOWAIT), Ok(RWF_NOWAIT));
+        }
+
+        #[test]
+        fn every_unimplemented_flag_is_refused_rather_than_ignored() {
+            for flag in [
+                RWF_HIPRI,
+                RWF_DSYNC,
+                RWF_SYNC,
+                RWF_APPEND,
+                RWF_NOAPPEND,
+                RWF_ATOMIC,
+                RWF_DONTCACHE,
+            ] {
+                assert_eq!(
+                    check_rwf_flags(flag),
+                    Err(Errno::EOPNOTSUPP),
+                    "flag {flag:#x} must be refused, not silently dropped",
+                );
+                // Pairing an unimplemented flag with the implemented one does
+                // not launder it.
+                assert_eq!(
+                    check_rwf_flags(flag | RWF_NOWAIT),
+                    Err(Errno::EOPNOTSUPP),
+                );
+            }
+        }
+
+        #[test]
+        fn undefined_high_bits_are_refused_too() {
+            // A bit this kernel has never heard of is not a bit it implements.
+            assert_eq!(check_rwf_flags(0x8000_0000), Err(Errno::EOPNOTSUPP));
+            assert_eq!(check_rwf_flags(u32::MAX), Err(Errno::EOPNOTSUPP));
+        }
+
+        #[test]
+        fn the_supported_set_stays_narrow() {
+            // Widening this set is a claim that the kernel implements another
+            // flag. It must be made deliberately, with the behaviour.
+            assert_eq!(RWF_SUPPORTED, RWF_NOWAIT);
+        }
+    }
 }
 
 /// File descriptor flags (FD_*).

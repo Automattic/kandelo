@@ -12455,11 +12455,9 @@ fn channel_readv(fd: i32, iov_addr: u64, iovcnt: u32, pointer_width: u32) -> i32
 /// a caller that asked for `RWF_DSYNC` and received an unsynchronized write
 /// would have been told a lie. Only `RWF_NOWAIT` has behaviour behind it here.
 fn checked_rwf_flags(syscall_nr: u32, args: &[i64; 6]) -> Result<u32, Errno> {
-    let flags = channel_scalar::u32_argument(syscall_nr, args, 5);
-    if flags & !wasm_posix_shared::rwf_flags::RWF_SUPPORTED != 0 {
-        return Err(Errno::EOPNOTSUPP);
-    }
-    Ok(flags)
+    wasm_posix_shared::rwf_flags::check_rwf_flags(channel_scalar::u32_argument(
+        syscall_nr, args, 5,
+    ))
 }
 
 /// preadv/preadv2 -- positioned scatter read. The offset arrives split.
