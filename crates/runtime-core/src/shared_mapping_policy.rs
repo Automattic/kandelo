@@ -35,11 +35,14 @@
 
 use alloc::string::String;
 
-use wasm_posix_shared::flags::{AT_FDCWD, O_TRUNC};
+use wasm_posix_shared::flags::{AT_FDCWD, O_ACCMODE, O_RDWR, O_TRUNC, O_WRONLY};
 use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_SHARED};
-use wasm_posix_shared::Syscall;
+use wasm_posix_shared::mode::{S_IFMT, S_IFREG};
+use wasm_posix_shared::{Errno, KernelSharedMappingFdFacts, Syscall};
 
-use crate::memory::{SharedMappingIo, SharedMappingTable};
+use crate::memory::{
+    SharedMappingIo, SharedMappingStat, SharedMappingTable, FILE_PAGE_SIZE,
+};
 
 use wasm_posix_shared::abi::extended_syscalls as ext;
 
@@ -326,6 +329,174 @@ fn reload_fd(
         return;
     };
     table.reload_backing(&key, exact_size, io);
+}
+
+// -- registering a new file mapping ---------------------------------------
+
+/// How a `MAP_SHARED` mapping of a regular file must be backed.
+///
+/// Deciding this is entirely a question about the descriptor, so it is a pure
+/// function of the facts the kernel already holds. Keeping it separate from
+/// the table mutation is what lets the POSIX access rules — the part with the
+/// most ways to be subtly wrong — be tested without any I/O at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MappingPreparation {
+    /// A host-owned regular file: the mapping joins a shared byte store keyed
+    /// by file identity, and writeback goes through the host handle.
+    Backed {
+        file_offset: u64,
+        host_handle: i64,
+        size: u64,
+        /// The mapping is being created writable now.
+        writable: bool,
+        /// The description permits a later `PROT_WRITE` upgrade.
+        write_allowed: bool,
+    },
+    /// A kernel-owned regular file — tmpfs, memfd, the rootfs overlay, procfs,
+    /// a synthetic regular. There is no host handle to anchor a byte store on,
+    /// so writeback rides the guest's own descriptor.
+    FdWriteback {
+        file_offset: u64,
+        file_size: u64,
+        dev: u64,
+        ino: u64,
+    },
+    /// Not a shared-mapping case. The caller populates the range the way a
+    /// `MAP_PRIVATE` file mapping is populated.
+    Unsupported,
+    Refused(Errno),
+}
+
+/// Classify a `MAP_SHARED` mapping of a file.
+///
+/// `supports_writeback` is the kernel's `fd_supports_mmap_writeback`: whether
+/// a host `pwrite` through this descriptor reaches persistent host storage.
+/// It is deliberately not consulted for a kernel-owned file, where it is false
+/// by construction — that path does not write to host storage at all, it
+/// writes back to the kernel-owned file through the guest's own descriptor, so
+/// the file itself is the backing store.
+pub fn classify_file_mapping(
+    prot_write: bool,
+    page_offset: u64,
+    facts: &KernelSharedMappingFdFacts,
+    supports_writeback: bool,
+) -> MappingPreparation {
+    let Some(file_offset) = page_offset.checked_mul(FILE_PAGE_SIZE as u64) else {
+        return MappingPreparation::Refused(Errno::EINVAL);
+    };
+    if facts.mode & S_IFMT != S_IFREG {
+        return MappingPreparation::Unsupported;
+    }
+    let access_mode = facts.access_mode & O_ACCMODE;
+
+    if facts.has_host_handle == 0 {
+        // A read-only request needs no writeback bridge: nothing can write
+        // through it, so it wants the same one-time content snapshot a
+        // `MAP_PRIVATE` mapping gets. Treating it as unsupported is what stops
+        // every read-only `MAP_SHARED` of a tmpfs file — musl's `__map_file`,
+        // used for locale, timezone and message-catalog loading — failing with
+        // ENOTSUP purely because the file is kernel-owned. A file mapping
+        // still requires a readable descriptor, so an O_WRONLY fd is EACCES
+        // rather than a silently zero-filled success.
+        if !prot_write {
+            if access_mode == O_WRONLY {
+                return MappingPreparation::Refused(Errno::EACCES);
+            }
+            return MappingPreparation::Unsupported;
+        }
+        // POSIX requires a shared writable file mapping to be backed by a
+        // readable and writable description.
+        if access_mode != O_RDWR {
+            return MappingPreparation::Refused(Errno::EACCES);
+        }
+        return MappingPreparation::FdWriteback {
+            file_offset,
+            file_size: facts.size,
+            dev: facts.dev,
+            ino: facts.ino,
+        };
+    }
+
+    if access_mode == O_WRONLY {
+        return MappingPreparation::Refused(Errno::EACCES);
+    }
+    // Preserve the description's lifetime capability, not merely the initial
+    // protection: an O_RDWR fd mapped PROT_READ may be upgraded after the fd
+    // and the pathname are gone, so the stable handle must already support
+    // writes.
+    let write_allowed = access_mode == O_RDWR && supports_writeback;
+    if prot_write && !write_allowed {
+        return MappingPreparation::Refused(Errno::EACCES);
+    }
+    MappingPreparation::Backed {
+        file_offset,
+        host_handle: facts.host_handle,
+        size: facts.size,
+        writable: prot_write,
+        write_allowed,
+    }
+}
+
+/// Take the backing a new `Backed` mapping will name, ready for the kernel to
+/// install the mapping itself.
+///
+/// This is the step whose absence left the reference accounting one short for
+/// the life of every file mapping. Creation counts nothing,
+/// `inherit_process_mappings` counts each inherited mapping and
+/// `release_mapping` discounts every mapping it drops, so the mapping that
+/// *causes* a backing must take its own reference here. Without it the first
+/// process to exit takes the backing to zero and closes the host handle while
+/// a live peer still has the file mapped, and — more quietly — two real peers
+/// both sit in the sole-observer deferral and never see each other's writes.
+///
+/// Returns the backing key the caller must record on the mapping.
+pub fn acquire_file_backing(
+    table: &mut SharedMappingTable,
+    io: &mut dyn SharedMappingIo,
+    dev: u64,
+    ino: u64,
+    host_handle: i64,
+    size: u64,
+    mode: u32,
+    write_allowed: bool,
+    file_offset: u64,
+    len: usize,
+) -> Result<String, Errno> {
+    let key = io
+        .handle_identity(host_handle, dev, ino)
+        .ok_or(Errno::ENOTSUP)?;
+    let stat = SharedMappingStat {
+        dev,
+        ino,
+        size,
+        mode,
+        host_handle: Some(host_handle),
+    };
+    table.get_or_create_file_backing(&key, &stat, write_allowed, io)?;
+
+    // A sole existing observer defers publication to avoid scanning its
+    // mapping at every boundary. Before another mapping joins, force every
+    // existing observer to publish, so the newcomer starts from the latest
+    // shared state rather than from the last persisted snapshot.
+    if let Err(err) = table.publish_file_backing_observers(&key, io) {
+        table.discard_unreferenced_file_backing(&key, io);
+        return Err(err);
+    }
+    {
+        let backing = table.file_backing_mut(&key).ok_or(Errno::EIO)?;
+        if let Err(err) = backing.ensure_range_loaded(file_offset, len, io) {
+            table.discard_unreferenced_file_backing(&key, io);
+            return Err(err);
+        }
+    }
+    // Reserve the backing across the kernel call. A `MAP_FIXED` cleanup may
+    // drop the last old mapping of this same file before the new mapping is
+    // installed.
+    table
+        .file_backing_mut(&key)
+        .ok_or(Errno::EIO)?
+        .ref_count += 1;
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -720,6 +891,194 @@ mod tests {
             io.file,
             b"DIRTY...".to_vec(),
             "the private snapshot must not start stale"
+        );
+    }
+
+    // -- classifying a new file mapping ---------------------------------
+
+    const S_IFCHR: u32 = 0o020000;
+    const O_RDONLY: u32 = 0;
+
+    fn facts(mode: u32, access_mode: u32, host_owned: bool) -> KernelSharedMappingFdFacts {
+        KernelSharedMappingFdFacts {
+            dev: 1,
+            ino: 2,
+            size: 8,
+            host_handle: if host_owned { 10 } else { -1 },
+            mode,
+            access_mode,
+            has_host_handle: u32::from(host_owned),
+            _pad: 0,
+        }
+    }
+
+    #[test]
+    fn a_writable_mapping_of_a_host_file_is_backed_and_upgradable() {
+        let got = classify_file_mapping(true, 0, &facts(S_IFREG | 0o644, O_RDWR, true), true);
+        assert_eq!(
+            got,
+            MappingPreparation::Backed {
+                file_offset: 0,
+                host_handle: 10,
+                size: 8,
+                writable: true,
+                write_allowed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_read_only_mapping_of_a_writable_description_stays_upgradable() {
+        // The fd may be closed and the pathname unlinked before a later
+        // `mprotect(PROT_WRITE)`, so the capability is recorded now.
+        let got = classify_file_mapping(false, 0, &facts(S_IFREG | 0o644, O_RDWR, true), true);
+        assert_eq!(
+            got,
+            MappingPreparation::Backed {
+                file_offset: 0,
+                host_handle: 10,
+                size: 8,
+                writable: false,
+                write_allowed: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_write_only_descriptor_cannot_be_mapped_at_all() {
+        // POSIX requires a readable description for any file mapping.
+        assert_eq!(
+            classify_file_mapping(false, 0, &facts(S_IFREG | 0o644, O_WRONLY, true), true),
+            MappingPreparation::Refused(Errno::EACCES)
+        );
+        assert_eq!(
+            classify_file_mapping(false, 0, &facts(S_IFREG | 0o644, O_WRONLY, false), true),
+            MappingPreparation::Refused(Errno::EACCES)
+        );
+    }
+
+    #[test]
+    fn a_writable_mapping_needs_writeback_to_reach_persistent_storage() {
+        assert_eq!(
+            classify_file_mapping(true, 0, &facts(S_IFREG | 0o644, O_RDWR, true), false),
+            MappingPreparation::Refused(Errno::EACCES),
+            "a writable mapping whose stores could not be persisted is refused"
+        );
+        assert_eq!(
+            classify_file_mapping(false, 0, &facts(S_IFREG | 0o644, O_RDWR, true), false),
+            MappingPreparation::Backed {
+                file_offset: 0,
+                host_handle: 10,
+                size: 8,
+                writable: false,
+                write_allowed: false,
+            },
+            "but a read-only mapping of it is fine, and is not upgradable"
+        );
+    }
+
+    #[test]
+    fn only_regular_files_take_this_path() {
+        assert_eq!(
+            classify_file_mapping(true, 0, &facts(S_IFCHR | 0o644, O_RDWR, true), true),
+            MappingPreparation::Unsupported
+        );
+    }
+
+    #[test]
+    fn a_read_only_mapping_of_a_kernel_owned_file_is_populated_like_a_private_one() {
+        // musl's `__map_file` — locale, timezone and message-catalog loading —
+        // maps read-only `MAP_SHARED`. Refusing it because the file happens to
+        // live on tmpfs would break all three.
+        assert_eq!(
+            classify_file_mapping(false, 0, &facts(S_IFREG | 0o644, O_RDONLY, false), false),
+            MappingPreparation::Unsupported
+        );
+    }
+
+    #[test]
+    fn a_writable_mapping_of_a_kernel_owned_file_writes_back_through_its_own_fd() {
+        assert_eq!(
+            classify_file_mapping(true, 0, &facts(S_IFREG | 0o644, O_RDWR, false), false),
+            MappingPreparation::FdWriteback {
+                file_offset: 0,
+                file_size: 8,
+                dev: 1,
+                ino: 2,
+            },
+            "the kernel's host-writeback capability is false here by \
+             construction and must not be consulted"
+        );
+        assert_eq!(
+            classify_file_mapping(true, 0, &facts(S_IFREG | 0o644, O_RDONLY, false), false),
+            MappingPreparation::Refused(Errno::EACCES),
+            "a shared writable mapping still needs O_RDWR"
+        );
+    }
+
+    #[test]
+    fn a_page_offset_that_cannot_be_a_byte_offset_is_refused() {
+        assert_eq!(
+            classify_file_mapping(
+                false,
+                u64::MAX / 2,
+                &facts(S_IFREG | 0o644, O_RDWR, true),
+                true
+            ),
+            MappingPreparation::Refused(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn the_page_offset_becomes_a_byte_offset() {
+        let got = classify_file_mapping(false, 3, &facts(S_IFREG | 0o644, O_RDWR, true), true);
+        let MappingPreparation::Backed { file_offset, .. } = got else {
+            panic!("expected a backed mapping");
+        };
+        assert_eq!(file_offset, 3 * FILE_PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn acquiring_a_backing_counts_the_mapping_that_caused_it() {
+        // The invariant the whole cutover rests on: creation counts nothing,
+        // so the registration path must take the reference.
+        let mut io = Io::new(b"ABCDEFGH");
+        let mut table = SharedMappingTable::new();
+
+        let key = acquire_file_backing(
+            &mut table,
+            &mut io,
+            1,
+            2,
+            10,
+            8,
+            S_IFREG | 0o644,
+            true,
+            0,
+            8,
+        )
+        .unwrap();
+        assert_eq!(table.file_backing(&key).unwrap().ref_count, 1);
+
+        // A second mapping of the same file joins the same backing.
+        let again = acquire_file_backing(
+            &mut table,
+            &mut io,
+            1,
+            2,
+            10,
+            8,
+            S_IFREG | 0o644,
+            true,
+            0,
+            8,
+        )
+        .unwrap();
+        assert_eq!(again, key, "same file identity, same backing");
+        assert_eq!(
+            table.file_backing(&key).unwrap().ref_count,
+            2,
+            "each mapping holds its own reference"
         );
     }
 
