@@ -64,9 +64,16 @@ HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 # union really does cover the full graph.
 DYLINK_MODULE_CLOSURE_CRATES="dylink-module,dylink"
 
+# The recipe below is part of the key, and `xtask` computes the fold so the
+# build scripts and the Rust consumers (the projection finalizer and the
+# `verify-fresh` gate) cannot disagree about what the key is. Folding it here
+# instead is what once produced a key with two implementations: the script
+# stamped one value, the finalizer compared another, and no rebuild could ever
+# satisfy both. See `side_module_build_key` in tools/xtask/src/cargo_closure.rs.
 closure_sha() {
   cargo run -q -p xtask --target "$HOST_TRIPLE" -- workspace-closure-sha \
-    --crates "$DYLINK_MODULE_CLOSURE_CRATES"
+    --crates "$DYLINK_MODULE_CLOSURE_CRATES" \
+    --recipe crates/dylink-module/build-wasm.sh
 }
 
 build_key_path() {

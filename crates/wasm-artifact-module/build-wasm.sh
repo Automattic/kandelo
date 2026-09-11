@@ -75,21 +75,28 @@ HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 # test asserting the union really does cover the full graph.
 WASM_ARTIFACT_MODULE_CLOSURE_CRATES="wasm-artifact-module,wasm-artifact"
 
-# WHY THIS SCRIPT'S OWN HASH IS IN THE KEY: `workspace-closure-sha` walks the
-# crate graph, which is the right answer for source changes and the wrong one
-# for RECIPE changes. The flags below -- `opt-level`, the wasm-opt pass, the
-# target features -- decide the artifact's bytes just as surely as the Rust
-# does, and none of them appear in the crate closure. Without this, editing
-# this file leaves every staged copy stale while `--verify-fresh` reports it
-# current: a freshness gate that passes because it looked in only one of the
-# two places the output comes from. That is the same shape as the stale-kernel
-# defects this repository has already paid for twice.
+# WHY THIS SCRIPT'S OWN HASH IS IN THE KEY: `workspace-closure-sha --crates`
+# walks the crate graph, which is the right answer for source changes and the
+# wrong one for RECIPE changes. The flags below -- `opt-level`, the wasm-opt
+# pass, the target features -- decide the artifact's bytes just as surely as the
+# Rust does, and none of them appear in the crate closure. Without the recipe,
+# editing this file leaves every staged copy stale while `--verify-fresh`
+# reports it current: a freshness gate that passes because it looked in only one
+# of the two places the output comes from. That is the same shape as the
+# stale-kernel defects this repository has already paid for twice.
+#
+# The argument is general, so every side-module script passes `--recipe` now,
+# not just this one.
+# The recipe below is part of the key, and `xtask` computes the fold so the
+# build scripts and the Rust consumers (the projection finalizer and the
+# `verify-fresh` gate) cannot disagree about what the key is. Folding it here
+# instead is what once produced a key with two implementations: the script
+# stamped one value, the finalizer compared another, and no rebuild could ever
+# satisfy both. See `side_module_build_key` in tools/xtask/src/cargo_closure.rs.
 closure_sha() {
-  local crates_sha recipe_sha
-  crates_sha="$(cargo run -q -p xtask --target "$HOST_TRIPLE" -- \
-    workspace-closure-sha --crates "$WASM_ARTIFACT_MODULE_CLOSURE_CRATES")"
-  recipe_sha="$(shasum -a 256 "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
-  printf '%s\n' "$crates_sha-$recipe_sha" | shasum -a 256 | cut -d' ' -f1
+  cargo run -q -p xtask --target "$HOST_TRIPLE" -- workspace-closure-sha \
+    --crates "$WASM_ARTIFACT_MODULE_CLOSURE_CRATES" \
+    --recipe crates/wasm-artifact-module/build-wasm.sh
 }
 
 build_key_path() {

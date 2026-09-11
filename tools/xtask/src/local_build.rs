@@ -1073,9 +1073,11 @@ fn verify_fresh_coresident_side_modules(repo: &Path) -> Result<(), String> {
             .iter()
             .map(|name| (*name).to_string())
             .collect();
-        let current_closure = crate::util::hex(
-            &crate::cargo_closure::workspace_crates_closure_sha(repo, &crates)?,
-        );
+        let current_closure = crate::util::hex(&crate::cargo_closure::side_module_build_key(
+            repo,
+            &crates,
+            module.script,
+        )?);
         check_projected_side_module_freshness(
             module.node_name,
             module.closure_description,
@@ -2583,12 +2585,12 @@ const WASM_ARTIFACT_MODULE_NODE_NAME: &str = "wasm-artifact-module";
 /// memory. Do not infer PIC build flags or guest-memory placement from
 /// membership in this table; that is per-module, and each module's
 /// `build-wasm.sh` owns it.
-struct CoresidentSideModule {
+pub(crate) struct CoresidentSideModule {
     /// Projection node name; also the identity the consumer's root-level
     /// member rule admits.
     node_name: &'static str,
     /// Build script, repo-relative. Owns the build and the freshness stamp.
-    script: &'static str,
+    pub(crate) script: &'static str,
     /// Crates whose contents define this artifact's closure digest. Derived
     /// from the real build closure, never a hand-list of files.
     closure_crates: &'static [&'static str],
@@ -2602,7 +2604,7 @@ struct CoresidentSideModule {
     closure_description: &'static str,
 }
 
-const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
+pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
     CoresidentSideModule {
         node_name: CORESIDENT_FORK_MODULE_NODE_NAME,
         script: "crates/fork-module/build-wasm.sh",
@@ -2691,9 +2693,12 @@ fn coresident_side_module_projection(
         .iter()
         .map(|name| (*name).to_string())
         .collect();
-    let closure = crate::cargo_closure::workspace_crates_closure_sha(repo, &crates)?;
-    let closure_sha = crate::util::hex(&closure);
     let script = module.script;
+    // The module's declared recipe is part of its key, computed by the one
+    // function the build scripts also reach through
+    // `xtask workspace-closure-sha --recipe`. See `side_module_build_key`.
+    let closure = crate::cargo_closure::side_module_build_key(repo, &crates, script)?;
+    let closure_sha = crate::util::hex(&closure);
     let mut members = Vec::new();
     for (name, _arch, required) in module.artifacts {
         let name = (*name).to_string();

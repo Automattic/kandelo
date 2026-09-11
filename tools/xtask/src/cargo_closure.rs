@@ -145,13 +145,68 @@ pub(crate) fn workspace_crates_closure_sha(
     Ok(h.finalize().into())
 }
 
+/// The full build key for a side module: its crate closure, folded together
+/// with the recipe that turns that closure into bytes.
+///
+/// WHY THE RECIPE IS IN THE KEY. `workspace_crates_closure_sha` walks the crate
+/// graph, which is the right answer for source changes and the wrong one for
+/// RECIPE changes. A build script's `opt-level`, its wasm-opt pass and its
+/// target features decide the artifact's bytes just as surely as the Rust does,
+/// and none of them appear in the crate closure. Without the fold, editing a
+/// build script leaves every staged copy stale while the freshness check reports
+/// it current -- a gate that passes because it looked in only one of the two
+/// places the output comes from.
+///
+/// WHY IT LIVES HERE AND NOT IN THE SHELL. It did live in the shell, in exactly
+/// one of the four build scripts, and that is how this function came to exist.
+/// `crates/wasm-artifact-module/build-wasm.sh` folded its own recipe hash into
+/// the key it stamped, while the three Rust consumers -- the projection
+/// finalizer, the `verify-fresh` gate, and the no-op fast path -- kept comparing
+/// against the crate closure alone. The two could never agree, so once that
+/// module was rebuilt EVERY `local-build run` finalization failed with
+///
+///     co-resident side module wasm_artifact_module32.wasm is stale
+///     (build-key 581aadba..., current closure e96e6b2a...)
+///
+/// and no rebuild could fix it: rebuilding re-stamped the same disagreeing
+/// value. The script's own `--verify-fresh` passed, because it used its own
+/// formula, so nothing upstream of the finalizer noticed. A freshness key with
+/// two implementations is not a freshness key.
+///
+/// So there is one implementation, and both realms reach it: the shell through
+/// `xtask workspace-closure-sha --recipe`, and the Rust consumers through the
+/// `script` field each `CORESIDENT_SIDE_MODULE` already declares. `recipe` is
+/// repository-relative, so the digest does not depend on where the worktree is.
+pub(crate) fn side_module_build_key(
+    repo_root: &Path,
+    crate_names: &[String],
+    recipe: &str,
+) -> Result<[u8; 32], String> {
+    let crates = workspace_crates_closure_sha(repo_root, crate_names)?;
+    let recipe_digest = crate::build_deps::hash_build_input(&repo_root.join(recipe))?;
+    let mut h = Sha256::new();
+    h.update(b"kandelo-side-module-build-key-v1\0");
+    h.update(crates);
+    h.update((recipe.len() as u64).to_le_bytes());
+    h.update(recipe.as_bytes());
+    h.update(recipe_digest);
+    Ok(h.finalize().into())
+}
+
 /// CLI entry point: `xtask workspace-closure-sha --crates <comma,separated>`.
 /// Prints the 64-lowercase-hex digest from [`workspace_crates_closure_sha`]
 /// to stdout. A non-resolver build script (one with no `build.toml` to carry
 /// `cargo:<crate>` inputs) shells out to this to get the same drift-proof,
 /// cargo-metadata-derived closure coverage a resolver package gets for free.
+///
+/// With `--recipe <repo-relative build script>` it prints the full side-module
+/// build key from [`side_module_build_key`] instead -- the same value the Rust
+/// consumers compute from each module's declared `script`. A build script that
+/// stamps a key MUST pass its own path here; folding the recipe in the shell
+/// instead is what produced a key with two disagreeing implementations.
 pub(crate) fn run_workspace_closure_sha(args: Vec<String>) -> Result<(), String> {
     let mut crates: Option<String> = None;
+    let mut recipe: Option<String> = None;
     let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         if let Some(value) = arg.strip_prefix("--crates=") {
@@ -167,6 +222,19 @@ pub(crate) fn run_workspace_closure_sha(args: Vec<String>) -> Result<(), String>
                 it.next()
                     .ok_or_else(|| "--crates requires a comma-separated value".to_string())?,
             );
+        } else if let Some(value) = arg.strip_prefix("--recipe=") {
+            if recipe.is_some() {
+                return Err("--recipe given more than once".to_string());
+            }
+            recipe = Some(value.to_string());
+        } else if arg == "--recipe" {
+            if recipe.is_some() {
+                return Err("--recipe given more than once".to_string());
+            }
+            recipe = Some(
+                it.next()
+                    .ok_or_else(|| "--recipe requires a repository-relative path".to_string())?,
+            );
         } else {
             return Err(format!("unexpected argument {arg:?}"));
         }
@@ -178,7 +246,18 @@ pub(crate) fn run_workspace_closure_sha(args: Vec<String>) -> Result<(), String>
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
     let repo = crate::repo_root();
-    let digest = workspace_crates_closure_sha(&repo, &names)?;
+    let digest = match &recipe {
+        Some(recipe) => {
+            if Path::new(recipe).is_absolute() {
+                return Err(format!(
+                    "--recipe must be repository-relative so the digest does not \
+                     depend on where the worktree lives; got {recipe:?}"
+                ));
+            }
+            side_module_build_key(&repo, &names, recipe)?
+        }
+        None => workspace_crates_closure_sha(&repo, &names)?,
+    };
     println!("{}", crate::util::hex(&digest));
     Ok(())
 }
@@ -265,6 +344,47 @@ mod tests {
     // digest MUST cover, so a dependency edge removed by refactoring shows up
     // here as a named path rather than only as a digest that quietly stopped
     // moving.
+    /// Every side-module build script must key itself through the ONE
+    /// implementation, naming the same recipe the Rust table declares.
+    ///
+    /// This is the guard for a defect that shipped. One of the four scripts
+    /// folded its own recipe hash into the key locally, while the Rust
+    /// consumers -- the projection finalizer and the `verify-fresh` gate --
+    /// compared against the crate closure alone. The script's own
+    /// `--verify-fresh` passed, because it used its own formula, so the build
+    /// ran every node to success and then died at finalization with "is stale",
+    /// and no rebuild could fix it: rebuilding re-stamped the same disagreeing
+    /// value. `./run.sh setup` could not complete at all.
+    ///
+    /// So the check is textual on purpose: it reads each script named by
+    /// `CORESIDENT_SIDE_MODULES` and asserts the script asks xtask for the key
+    /// with the recipe the table declares, and computes none of its own. A
+    /// digest-level test cannot see this -- both sides were internally
+    /// consistent; what disagreed was WHICH formula each realm used.
+    ///
+    /// Confirmed to fail: restoring the local fold to
+    /// `crates/wasm-artifact-module/build-wasm.sh` trips the second assertion,
+    /// and dropping a `--recipe` argument trips the first.
+    #[test]
+    fn every_side_module_script_keys_itself_through_the_shared_implementation() {
+        let repo = crate::repo_root();
+        for module in crate::local_build::CORESIDENT_SIDE_MODULES {
+            let script = module.script;
+            let text = std::fs::read_to_string(repo.join(script))
+                .unwrap_or_else(|error| panic!("read {script}: {error}"));
+            assert!(
+                text.contains(&format!("--recipe {script}")),
+                "{script} must ask xtask for its key with `--recipe {script}`, \
+                 the same recipe CORESIDENT_SIDE_MODULES declares for it",
+            );
+            assert!(
+                !text.contains(r#"shasum -a 256 "${BASH_SOURCE[0]}""#),
+                "{script} must not compute any part of its build key itself: \
+                 that is how the key acquired two disagreeing implementations",
+            );
+        }
+    }
+
     #[test]
     fn wasi_module_closure_covers_its_full_build_graph() {
         let repo = crate::repo_root();
