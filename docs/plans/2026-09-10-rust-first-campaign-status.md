@@ -3070,6 +3070,49 @@ so it survives the move to a kernel writer rather than being replaced by it. The
 existing save/restore/save gate would **not** have caught this — it used a
 URL-backed lazy file, whose linkage the JSON carries directly.
 
+### W-1 — DONE, 2026-09-11. Gap 1 is closed and the import floor is 74.
+
+A base regular file now records WHERE its bytes are. `BaseSource::Image` means
+"in the `/` image, at SFFS inode N", and the kernel reads them through the same
+cursor `load_image` walked the tree with. `load_image` remembers the image's
+SFFS span and the geometry `Sffs::mount` validated, so a later read
+re-addresses the filesystem without re-parsing the container header. Host side,
+the image window stays open past boot — re-pointed at the SFFS body the
+restored `MemoryFileSystem` already holds, so no second copy of a 16-256 MiB
+body is pinned.
+
+**One correction to the split's own framing, found by doing it.** Serving
+image-backed bytes from the image does NOT on its own empty `host_blob_read`.
+Two callers survive it: a URL-backed lazy file is a base file the image
+genuinely does not carry (`KLZY`, `archive_id == 0`, size only), and
+`rootfs::load_manifest` — which `crates/host-native` still uses — places a base
+tree the kernel never saw an image of. The brief expected one gap and there
+were two.
+
+What emptied the import was noticing its remaining meaning had become
+`host_fetch_archive`'s: fetch a resource the image does not carry from a host
+transport, serve positioned bytes, report `EAGAIN` while in flight. One
+capability, two id namespaces, two imports. They are now
+`env.host_fetch_deferred(kind, id, ...)` with `kind` an explicit argument, not
+a reserved id range. **75 → 74**, verified against the built artifact's import
+section.
+
+`rootfs-blob-store.ts` is deleted (157 lines), and most of what went with it
+was a boot-time walk of the ENTIRE `/` tree to build an inode-to-path map. The
+surviving map covers only URL-backed lazy files (65 in the base image, 79 in a
+derived one) and is read straight off the lazy table.
+
+**The mutation window widened, and is now proven rather than inferred.** The
+kernel used to read image bytes only during the boot walk; it now reads the
+live `MemoryFileSystem` body for the session, and `sffs.rs` implements none of
+`SharedFS`'s `Atomics` discipline (SD-B3). One half of the safety is structural
+— a synchronous kernel entry cannot interleave with a same-thread host call.
+The other half is tested: `host/test/rootfs-image-body-window.test.ts` pins
+that materializing a URL-backed lazy file leaves every other file's bytes
+byte-identical, read back through an INDEPENDENT mount of the mutated body.
+
+**W-2 and W-3 are unblocked and unchanged.**
+
 ## OVERNIGHT STATE (2026-09-10, late) — read this first after a crash
 
 **Maintainer directives in force:** push the ship line aggressively, including

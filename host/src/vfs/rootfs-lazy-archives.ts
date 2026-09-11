@@ -81,6 +81,7 @@ export interface RootfsLazyInput {
 const EAGAIN = -11;
 const EIO = -5;
 const ENOENT = -2;
+const ENOSYS = -38;
 const O_RDONLY = 0;
 
 /**
@@ -264,13 +265,13 @@ export function buildRootfsLazyWiring(
     }
     if (kind === HOST_DEFERRED_KIND_FILE) {
       if (deferredFileReader === undefined) {
-        return -38; // ENOSYS: no URL-backed lazy files were wired
+        return ENOSYS; // no URL-backed lazy files were wired
       }
       return deferredFileReader(Number(id), offset, dest);
     }
     // A kind this host does not implement. Truthfully unsupported rather than
     // silently served as one of the kinds it does.
-    return -38; // ENOSYS
+    return ENOSYS;
   };
 
   return { lazyInput: { files, archives }, deferredProvider };

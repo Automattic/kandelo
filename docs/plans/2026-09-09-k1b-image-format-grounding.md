@@ -995,6 +995,14 @@ recommendation (B) does not resolve it.
     import floor from 75 to 74. `docs/abi-versioning.md` already names this as
     "the work item that collects" that import. It is the prerequisite for
     everything below, and is worth doing whatever is decided about the rest.
+    **DONE 2026-09-11**, with one correction to this framing: serving
+    image-backed bytes from the image does not on its own empty
+    `host_blob_read`, because a URL-backed lazy file and a
+    `load_manifest`-placed base tree both still need host bytes. The import went
+    by merging with `host_fetch_archive` into one kind-discriminated
+    `host_fetch_deferred`, which is the same capability those two always
+    described. See the V3 section of
+    `2026-09-10-rust-first-campaign-status.md`.
   - **W-2 — a Rust SFFS writer**, with a committed cross-language fixture in
     both directions, the way `klzy-v1.bin` already works. The largest piece.
   - **W-3 — streaming container emission.** `rootfs::export_tree_read(offset,
