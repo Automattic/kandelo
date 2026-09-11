@@ -3646,6 +3646,39 @@ branch.
 Two of the four dominant causes are **gone**, which is the four-realm reader fix
 showing up in measurement rather than in argument.
 
+### A HAZARD THE BASH WORKTREE GUARD DOES NOT COVER
+
+**Serena's project root is the repository, not the agent's worktree.** An agent
+working in `.claude/worktrees/agent-*` made nine edits through Serena's MCP
+tools and they landed in the **main checkout** — while every tool call reported
+success.
+
+It was caught by a `git diff` in its own worktree returning **empty** after an
+edit it had just made. It reverted from pristine copies and verified with
+`diff -rq` over `host/src`; the coordinator independently confirmed the main
+checkout clean before merging.
+
+**Every agent brief in this campaign carries a bash-level worktree instruction,
+and that instruction does not reach MCP tools.** The cheap defence is one
+`git diff --stat` immediately after the first edit of a session: if it is empty,
+the edit went somewhere else.
+
+Recorded because the failure is silent in both directions — the agent believes
+it edited its worktree, and the coordinator's tree changes with no commit to
+explain it.
+
+### NDD-K4-4 — `retireCurrentGenerations`, the last worker-entry duplicate
+
+~45 lines per entry, and genuinely undecided. Node awaits
+`waitForWorkerQuiescence` plus `terminateThreadWorkers` and releases **exactly**;
+the browser never awaits that fence, releases the framebuffer alias, and
+**always** force-retires. Sharing it means making the browser await a fence it
+does not await today — a teardown-timing change **no Node suite can prove**.
+
+Cost later is now *smaller* than when it was first raised: 45 lines, adjacent,
+sitting between three already-shared helpers. D15 remains un-adjudicated.
+**Recommendation: take it with the browser teardown pass.** Maintainer's call.
+
 ### THE TECHNIQUE THAT FOUND WHAT CENSUSES MISS
 
 Stated on its own because it has now worked four times and is not what a census
