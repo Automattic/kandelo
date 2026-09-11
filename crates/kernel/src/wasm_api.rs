@@ -1225,10 +1225,23 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         // The owed close is performed here and only here, on the last mapping
         // reference. Best-effort: this runs while a mapping teardown is already
         // in progress and a failed close leaves nothing the kernel can do.
-        if runtime_core::ofd::release_mapping_host_handle(handle)
-            == runtime_core::ofd::MappingHandleRelease::CloseNow
-        {
-            unsafe { host_close(handle) };
+        match runtime_core::ofd::release_mapping_host_handle(handle) {
+            runtime_core::ofd::MappingHandleRelease::CloseNow => {
+                unsafe { host_close(handle) };
+            }
+            runtime_core::ofd::MappingHandleRelease::NotHeld => {
+                // Every production release is paired with a retain taken in
+                // `get_or_create_file_backing`, so reaching here means a
+                // backing released a handle it never took — and the handle is
+                // now unreachable for the deferred close. Say so rather than
+                // leaking it quietly. The trait cannot return an error here,
+                // which is exactly why the loss has to be reported.
+                runtime_core::debug_log(&alloc::format!(
+                    "shared-mapping released an unheld host handle: {handle}"
+                ));
+            }
+            runtime_core::ofd::MappingHandleRelease::StillHeld
+            | runtime_core::ofd::MappingHandleRelease::Released => {}
         }
     }
 
