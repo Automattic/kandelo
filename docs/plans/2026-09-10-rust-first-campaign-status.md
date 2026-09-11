@@ -5395,6 +5395,33 @@ still carried the dead-code reading when B1 was dispatched
 (`2026-09-09-k1b-image-format-grounding.md` §7.4, now corrected in §7.5, and
 `2026-09-09-k1-sffs-wiring-grounding.md:552`, still uncorrected).
 
+## OWED MEASUREMENT — the select round's same-build control (2026-09-11)
+
+The select/pselect6 lazy-arm result is measured and landed: four metrics,
+same sign on both statistics, **2.3-2.8 µs recovered**, 24 runs at 12 per arm,
+load 2.79-3.37 logged per run, one working tree and one kernel wasm with only
+`kernel-worker.ts` swapped between invocations.
+
+**One control was not run, and the claim is bounded accordingly.** The six
+untouched metrics scattered −0.00 to +1.94, two of them above the ±0.7 µs floor
+established earlier in the day. So the honest statement about `epoll_ready` and
+`poll_ready` is *not regressed beyond this round's own scatter* -- not *not
+regressed*. The measuring agent named the plausible mechanism rather than
+hiding it: `kernel-worker.ts` is a single ~25,000-line file, and moving code
+inside it can shift V8 parse and compile for unrelated functions.
+
+**What would close it:** a same-build noise floor for THIS round -- identical
+arms, same replication count, same quiet machine -- which separates "moving
+code in a large file perturbs V8" from a real effect on the untouched paths.
+The apparatus is committed (`benchmarks/wait-ab-host-source.sh` plus its
+aggregator) and its refusal guard is already exercised: given identical arms it
+declines to measure noise rather than reporting a number.
+
+This is recorded rather than quietly carried because a bounded claim that
+nobody writes down becomes an unbounded claim within a day. Run it in the next
+quiet window; it is cheap, and it is the only thing standing between this
+result and an unqualified one.
+
 ## Open decisions collected — the ones needing the maintainer, in one place
 
 1. **The 76th host import.** `host_debug_log` is now live and linked, because
