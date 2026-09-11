@@ -1897,6 +1897,39 @@ fn compute_skip_receipts(
     BTreeMap::new()
 }
 
+/// Whether this run can still materialize members into the projection tier,
+/// decided from the UP-FRONT skip result rather than from the build's results.
+///
+/// This is the pre-build half of the fully-clean no-op fast path's predicate in
+/// `run_aggregate`, and it must stay the same question asked earlier. Every
+/// compiled-package and product node that is not already skippable launches a
+/// child, and a child materializes its members into the tier as it finishes
+/// (`materialize_source_only_program_target_with_cache_root`). If every one of
+/// them is skippable, no child runs that can write into the tier, so the
+/// published authority still describes exactly the bytes on disk and is left
+/// alone -- which is what keeps the no-op fast path reachable.
+///
+/// Source-kind package nodes are deliberately NOT counted. They always run a
+/// child, and a run of a fully-cached tree normally contains several, so
+/// counting them would retract on every no-op build and cost a whole-graph
+/// re-derivation each time. They populate the source cache and never the
+/// projection tier: `install_local_artifact` refuses any manifest whose kind is
+/// not `Program`, and only a program's declared outputs are projected.
+fn run_can_materialize_into_tier(
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    skip_receipts: &BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>>,
+) -> bool {
+    let every_compiled_package_is_skippable = expected_receipt_nodes
+        .iter()
+        .all(|node| matches!(skip_receipts.get(node), Some(Some(_))));
+    let every_product_is_skippable = selected
+        .keys()
+        .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
+        .all(|node| skip_receipts.contains_key(node));
+    !(every_compiled_package_is_skippable && every_product_is_skippable)
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     generate_vfs_product_catalog(&repo)?;
@@ -2007,14 +2040,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // evaluated from the up-front skip decision rather than from the results,
     // so the no-op path stays reachable. Source-kind package nodes still run a
     // child; they populate the source cache and never the projection tier.
-    let run_mutates_the_tier = !(expected_receipt_nodes
-        .iter()
-        .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
-        && selected
-            .keys()
-            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
-            .all(|node| skip_receipts.contains_key(node)));
-    if run_mutates_the_tier {
+    if run_can_materialize_into_tier(&selected, &expected_receipt_nodes, &skip_receipts) {
         match retract_source_only_program_projection(&output_root) {
             Ok(false) => {}
             Ok(true) => eprintln!(
@@ -2163,14 +2189,14 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // authority, the finalizer would reproduce precisely what is already on
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
+    // The two node clauses here are `run_can_materialize_into_tier` negated:
+    // they ask the same question the pre-build retraction asked, and calling
+    // the one function is what stops the two from drifting. If this path ever
+    // decided a run was a no-op that the retraction had decided could mutate
+    // the tier, the authority would already be gone and this would leave it
+    // gone -- a silent regression that only shows up as a refused tier.
     let projection_up_to_date = package_projection_is_eligible(&selected, &results)
-        && expected_receipt_nodes
-            .iter()
-            .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
-        && selected
-            .keys()
-            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
-            .all(|node| skip_receipts.contains_key(node))
+        && !run_can_materialize_into_tier(&selected, &expected_receipt_nodes, &skip_receipts)
         && source_only_program_projection_is_current(&output_root, &graph.authority_sha256)
         && coresident_side_module_projection_is_current(&output_root, &repo);
     let projection_finalization_error = if projection_up_to_date {
@@ -7824,6 +7850,96 @@ materialization = "lazy"
         )
         .unwrap_err();
         assert!(error.contains("cache key"), "{error}");
+    }
+
+    /// B30: the pre-build retraction decision.
+    ///
+    /// The retraction exists because a killed build must not leave a published
+    /// authority describing bytes it replaced, and nothing in-process runs on
+    /// SIGKILL -- so the authority is withdrawn BEFORE the first child can
+    /// materialize into the tier. This predicate is what decides that a run can
+    /// mutate the tier at all, and it is also what keeps the fully-clean no-op
+    /// fast path reachable, so it is wrong in two different expensive ways: too
+    /// eager and every no-op build pays a whole-graph re-derivation; too shy and
+    /// a killed build leaves the lie in place.
+    ///
+    /// Every case below was checked by mutating the predicate and confirming
+    /// this test fails, each at a DIFFERENT assertion: dropping the
+    /// compiled-package clause trips case 2, dropping the product clause trips
+    /// case 3, counting source-kind nodes trips case 1 (it makes an all-cached
+    /// run look dirty and retract), and relaxing the `Some(Some(_))` receipt
+    /// match trips case 4. The unmutated predicate passes.
+    #[test]
+    fn tier_mutation_predicate_matches_the_nodes_that_can_write_into_the_tier() {
+        fn receipt() -> PackageNodeReceiptV1 {
+            PackageNodeReceiptV1 {
+                manifest_sha256: "0".repeat(64),
+                cache_key_sha256: "1".repeat(64),
+                cache_receipt_sha256: "2".repeat(64),
+                materialized_members: Vec::new(),
+            }
+        }
+
+        let compiled = PlanNodeV1::package("app", "wasm32");
+        let source_kind = PlanNodeV1::package("app-source", "wasm32");
+        let product = PlanNodeV1::product("browser-app");
+        let selected = BTreeMap::from([
+            (compiled.clone(), BTreeSet::new()),
+            (source_kind.clone(), BTreeSet::new()),
+            (product.clone(), BTreeSet::from([compiled.clone()])),
+        ]);
+        // Source-kind packages are never in `expected_receipt_nodes`: only a
+        // compiled package carries a receipt the finalizer validates.
+        let expected_receipts = BTreeSet::from([compiled.clone()]);
+
+        // 1. Everything that can write to the tier is already skippable: the
+        //    run mutates nothing and keeps its published authority.
+        //
+        //    The fixture's source-kind node is deliberately absent from the skip
+        //    map, because a source node always runs a child and a fully-cached
+        //    tree normally contains several. Counting them would retract on
+        //    every no-op build and cost a whole-graph re-derivation each time;
+        //    they populate the source cache and never the projection tier.
+        let all_clean =
+            BTreeMap::from([(compiled.clone(), Some(receipt())), (product.clone(), None)]);
+        assert!(
+            !all_clean.contains_key(&source_kind),
+            "the fixture must exercise an unskippable source node",
+        );
+        assert!(
+            !run_can_materialize_into_tier(&selected, &expected_receipts, &all_clean),
+            "an all-cached run launches no child that can write into the tier",
+        );
+
+        // 2. One compiled package must rebuild.
+        let package_dirty = BTreeMap::from([(product.clone(), None)]);
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &package_dirty),
+            "a compiled package that must rebuild materializes into the tier",
+        );
+
+        // 3. One product must re-run. A product builds no image, but its child
+        //    resolves and validates its mapped package against the tier.
+        let product_dirty = BTreeMap::from([(compiled.clone(), Some(receipt()))]);
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &product_dirty),
+            "a product that must re-run is not a no-op for the tier",
+        );
+
+        // 4. A compiled node recorded as skippable but WITHOUT its receipt is
+        //    not skippable: the finalizer needs the receipt, so the node will
+        //    run a child.
+        let receiptless = BTreeMap::from([(compiled.clone(), None), (product.clone(), None)]);
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &receiptless),
+            "a compiled package with no retained receipt still runs its child",
+        );
+
+        // 5. `--rebuild`/`--verify-cache` clear the skip map entirely.
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &BTreeMap::new()),
+            "a forced rebuild always mutates the tier",
+        );
     }
 
     #[test]
