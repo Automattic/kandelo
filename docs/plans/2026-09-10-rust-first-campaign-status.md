@@ -5491,14 +5491,33 @@ lane's files without saying so in its report.
 
 ### The scheduling rules, in the order they matter
 
-1. **Lane C starts first and never idles.** It is the longest chain -- W-2 alone
-   is a block-filesystem *writer* (superblock, inode and block bitmaps, inode
-   table, indirect pointers, directory index) against a 770-line reader -- and
-   it contends with nothing currently running. Every hour lane C is not running
-   is an hour added to the end of the whole campaign. This is the single
-   highest-throughput decision on the page, and it is not the
-   highest-*value* item, which is exactly the point.
-2. **Lane A is the second-longest chain** and is already running.
+1. **CORRECTED 2026-09-11, same day: lane A is the critical path, not lane C.**
+   The original rule here named lane C on the strength of this document's own
+   figures for lane A, and those figures were wrong. Measured at the tip rather
+   than inherited:
+
+   - the host side is **2,776 lines across 71 methods** with ~50 call sites,
+     not ~2,500 across 57;
+   - `shared_mapping_policy.rs` is **1,108 lines with zero production
+     callers** -- the only references outside the file are a doc comment in
+     `memory.rs` and its own `pub mod` line;
+   - `SharedMappingResolver`'s only `impl` is the test double at line 615 of
+     the same file. **There is no production resolver;**
+   - the per-syscall *range* policy is unported: only `pwrite` is
+     range-precise, everything else reloads a whole backing;
+   - of the kernel exports touching the mapping table, eleven are `_sysv_` /
+     `_ipc_shm_`. **Nothing drives the anon/file table.**
+
+   So B2+B3 is not "a cutover, partly done". It is a **dead floor** -- a
+   well-shaped layer that has never executed -- and it is nearer 15% done than
+   half. It also ends in the one link that cannot parallelise, because the host
+   deletion lives in `kernel-worker.ts`, which lane B owns.
+
+2. **Lane C still starts early and never idles.** It is the second-longest
+   chain, it contends with nothing, and the reasoning that put it first still
+   holds against everything except lane A: every hour it is not running is an
+   hour added to the end. It is not the highest-*value* item, which was always
+   the point of scheduling by throughput.
 3. **Lanes D, E, F and G are short and contention-free.** They fill agent slots.
    Do not hold them back for a tidy "wave" -- a wave is a synchronisation
    barrier, and barriers are how parallel work becomes serial work wearing a
@@ -5517,6 +5536,34 @@ lane's files without saying so in its report.
 6. **Lane H is the tail and cannot be compressed.** Its contents depend on A and
    C being done, so the total is roughly `max(A, C) + H`. That is the whole
    argument for rule 1.
+
+### Lane A, decomposed (2026-09-11) — because the risky part must be last
+
+Splitting this does not make it smaller. It makes the part that can silently
+corrupt data small, late and reviewable on its own.
+
+| | what | collides with | risk |
+|---|---|---|---|
+| **A1** | production `SharedMappingResolver` (fd→key, path→key) | nothing | low, additive, unit-testable |
+| **A2** | the ~15 kernel exports that drive the anon/file table | nothing | low, additive; grows ABI *export* surface, permitted under ABI 44 as one unreleased epoch but must be reported, never silenced |
+| **A3** | port the per-syscall range policy | nothing | low; this is what makes the layer *correct* rather than merely present |
+| **A4** | give `shared_mapping_policy.rs` its first production caller | — | **high.** The moment the dead floor stops being dead, and the first real behaviour change |
+| **A5** | delete and rewire the 2,776 host lines | **lane B**, in `kernel-worker.ts` | **highest.** Where the −2,776 TypeScript actually lives |
+
+**The risk argument is the decisive one, and it is already evidenced.** This is
+`MAP_SHARED` coherence, where the failure mode is silent corruption -- and the
+current suite demonstrably does not cover the paths the cutover turns on: the
+writable-upgrade path of `get_or_create_file_backing` was reached by **zero of
+2,037 tests**, a `panic!` at its head failing nothing, and it is the only place
+a live backing's host handle changes. A suite that cannot see that path today
+cannot be trusted to catch what A4 switches on. Build the coverage before A4,
+not after it.
+
+**Natural PR boundary:** A1–A3 leave the kernel genuinely capable rather than
+notionally so, and are safe to ship. A4+A5 are a coherent second act. Whether
+they ship inside #1350 is the maintainer's call, and the honest cost is that A5
+is simultaneously the largest TypeScript deletion left, the riskiest change on
+the board, and the only item blocked behind another lane.
 
 ### What would make this slower
 
