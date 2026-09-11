@@ -40,6 +40,17 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
+    // Exit commit is selected by SCOPE: `exit_group` commits the whole group,
+    // `exit` commits one process. This table synthesizes the module every
+    // worker test double instantiates, so an export missing HERE cannot be
+    // supplied by any caller's stub -- which is why a test driving `ExitGroup`
+    // failed with "Kernel missing required kernel_commit_process_group_exit
+    // export" no matter what it passed. The table had never learned about the
+    // split.
+    kernel_commit_process_group_exit: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_clear_fork_child: {
       parameters: [i32],
       result: i32,
