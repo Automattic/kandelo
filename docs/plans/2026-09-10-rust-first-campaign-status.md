@@ -3991,6 +3991,65 @@ look, because the first measurement was taken with a biased harness. Honest
 non-measurement and careless measurement are not equally safe: the first leaves
 a known gap, the second fills it with a wrong number.
 
+### B31 — tuning constants whose evidence predates the link-contract fix
+
+`SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50` (`host/src/kernel-worker.ts:847`) is
+justified in-comment by `tests/sortix/os-test/signal/ppoll-block-sleep-write-raise`,
+with timing reasoning about a 1–5 ms `Atomics.notify` → `uv_async` round-trip.
+
+**That evidence was gathered against binaries linked with a ~64 KiB shadow stack
+and a 2-page memory minimum**, before the conformance runners were moved onto
+`wasm32posix-cc`. The binaries under test genuinely changed.
+
+This is not a claim that 50 ms is wrong. It is a claim that **its empirical
+basis no longer exists**, and a constant defended by a measurement nobody can
+reproduce is a guess with a citation. Cheap to re-check now that the suite runs
+against correctly-linked binaries.
+
+**The general form is worth a sweep:** any constant, threshold or timing
+justified by a conformance observation predates a real change in what those
+binaries are. `SIGNAL_SAFE_POLL_WAKE_DELAY_MS` is the one found so far because
+an agent happened to be reading that file.
+
+### The five conformance timeouts collapse to two problems
+
+Before running anything, the wait-queue agent checked the shape of the numbers —
+and the set collapsed.
+
+**`sys_time/select` is `sys_select/select`.** Literally:
+
+    /*[XSI]*/
+    #include "../sys_select/select.c"
+
+One program compiled twice. `basic/poll/poll.c` is a different file with the
+same program shape. All three do this: fill a 64 KiB pipe **one byte at a time**,
+then drain it one byte at a time, with an infinite-timeout `poll`/`select`
+before **every** operation.
+
+`DEFAULT_PIPE_CAPACITY` is 65,536, so that is ~131,000 wait calls plus ~131,000
+reads/writes ≈ **262,000 syscall round-trips** against `TEST_TIMEOUT=30` — a
+budget of **114 µs per round-trip**. Measured ready round-trip is **31–46 µs
+quiet** (3× headroom) and **419 µs at load 89**, which puts the same work at
+~110 s. **A throughput race against a wall-clock budget, not a lost wakeup.**
+
+**And they are not the wait-queue item's.** `timeoutMs <= 0` returns
+`WAIT_REMAINING_INFINITE` before the kernel is called, so those paths arm no
+deadline and cross no extra boundary — the lazy-arm fix cannot help them either.
+The agent said so rather than accepting credit for a fix that cannot apply.
+
+**The two `ppoll` cases are the real question.** Both end in
+`ppoll(&pfd, 1, NULL, &empty)` on a pipe nothing writes to; the only exit is a
+signal. One relies on ppoll's mask swap making an *already-pending* SIGUSR1
+deliverable, the other on cross-process delivery into a parked ppoll 100 ms in.
+A timeout there is a **lost signal wake** — the silent-hang class the K3
+grounding names as the reason shadow mode exists. Decisive test is base-vs-tip,
+which is cheap.
+
+**A coordinator label to distrust:** "`basic/poll/poll` stable, the two selects
+load-dependent" was relayed here from another agent's report without being
+checked against the programs — which are structurally identical. Treat it as
+unverified until measured.
+
 ### B30 — a reaped build publishes an authority for a build that never finished
 
 `local_build.rs` gained a retraction: an **incomplete** build now withdraws the
