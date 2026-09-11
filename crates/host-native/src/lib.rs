@@ -140,8 +140,9 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// already the only host treating the filesystem as optional (its imports are
 /// wired only when `GuestOptions::mounts` is non-empty); K9 makes that the
 /// contract rather than one host's local choice.
-/// **74 or 75 is an open maintainer decision, and this pin is deliberately at
-/// 75 rather than 74 while it is open.**
+/// **73 or 74 is an open maintainer decision, and this pin is deliberately at
+/// 74 rather than 73 while it is open.** (It read "74 or 75 ... pinned at 75"
+/// until `host_nanosleep` went; the decision below is unchanged, one lower.)
 ///
 /// The extra import is `host_debug_log`. It has always been *declared*; until
 /// today it had no caller and the linker dropped it, so K9 removed the dead
@@ -160,7 +161,7 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// thing to spend one on.
 ///
 /// Pinned at the measured value so the branch states what is true. Moving it to
-/// 74 is a one-line change once the caller goes.
+/// 73 is a one-line change once the caller goes.
 ///
 /// **2026-09-10: 76 → 75.** `host_call_signal_handler` was removed. It had no
 /// production caller — the kernel never asked a host to invoke a user-space
@@ -170,8 +171,25 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// §2.2 "Wasm cannot do this" KEEP list to prove dead, after `host_futex_wait`
 /// and `host_sigsuspend_wait`; the ledger entry is corrected there. This shifts
 /// the `host_debug_log` arithmetic above by one without settling it: the open
-/// decision is now 74-or-75, on the same reasoning.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 75;
+/// decision is now 73-or-74, on the same reasoning.
+///
+/// **2026-09-11: 75 -> 74.** `host_nanosleep` was removed. Its two callers
+/// were `sys_usleep` and `sys_epoll_pwait`'s empty-interest branch, and both
+/// asked the host to block the single kernel thread that multiplexes every
+/// process in the machine -- the `usleep` one live, and doing the caller's
+/// sleep a second time on top of the runtime's own park. With no caller left
+/// the import goes, which makes the hazard unrepresentable rather than merely
+/// unused.
+///
+/// Measured, not inferred: `wasm-objdump -j Import -x` on the installed
+/// `local-binaries/source-only-v1/kernel.wasm` -- the first tier
+/// `ARTIFACT_TIERS` searches, so the same bytes this test loads -- reports 74
+/// `env.host_*` function imports, 74 function imports in total (no
+/// `other_imports`), and one `env.memory`. `env.memory` is counted separately
+/// by `KernelImportSurface` and is not part of this number; a raw count of
+/// import *entries* reads 75 for the same artifact, which is the off-by-one to
+/// avoid when re-measuring.
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 74;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
