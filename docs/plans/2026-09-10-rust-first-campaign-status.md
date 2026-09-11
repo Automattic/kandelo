@@ -3540,20 +3540,21 @@ verify the submodule is populated, not merely that the runner exited 0.
 
 ### B27 — three gaps B24 surfaced, none of them bundled
 
-**B27a — the native host never registers a pointer width.** The TypeScript host
-treats `kernel_set_process_pointer_width` as required; `crates/host-native`
-never calls it. It works today **only because `Process::pointer_width` defaults
-to 4** — *a lucky default, not a registration*. A wasm64 guest on the native
-host would therefore be told it is wasm32 by a default nobody chose. Close it
-alongside the wasm64 arm below.
+**B27a — the native host never registers a pointer width. DONE 2026-09-11.**
+The TypeScript host treats `kernel_set_process_pointer_width` as required;
+`crates/host-native` never called it. It worked **only because
+`Process::pointer_width` defaults to 4** — *a lucky default, not a
+registration*. A wasm64 guest on the native host would therefore be told it is
+wasm32 by a default nobody chose. Closed alongside the wasm64 arm below; see
+the combined section under B24.
 
-**B27b — the wasm64 arm of the record-syscall coverage.**
-`crates/host-native/fixtures/build-fixtures.sh` targets
+**B27b — the wasm64 arm of the record-syscall coverage. DONE 2026-09-11.**
+`crates/host-native/fixtures/build-fixtures.sh` targeted
 `wasm32-unknown-unknown` only. The wasm32 fixture catches the regression that
 actually happened (a width read as **0**) but **not** one that only manifests at
-width **8** — which is the likelier future regression, since wasm64 has no
-guests in daily use. `sysroot64` is built and `host/test/wasm64.test.ts` exists,
-so it is reachable. Deliberately not bundled: it is a second, larger piece.
+width **8** — the likelier future regression, since wasm64 has no guests in
+daily use. Both process-layout tests now run at widths 4 and 8; see the
+combined section under B24.
 
 **B27c — `setitimer`/`getitimer` values are uncovered, and honestly so.** The
 fixture exercises their *marshalling* via `ITIMER_VIRTUAL`, but not a value
@@ -3562,6 +3563,72 @@ the native host deliberately traps. The agent declined to add a host stub that
 accepted the call and never delivered, on the grounds that it would be the
 dishonest kind of stub. That is the right call under the platform-values
 contract, and the gap is recorded rather than papered over.
+
+### B27a + B27b — DONE 2026-09-11. The registration and the arm that sees it
+
+Split out of B24 deliberately, and done together because **neither is
+observable without the other**. Registering a width on a host that only runs
+wasm32 guests writes the value the default already held; running a wasm64 guest
+on a host that registers nothing gets the default. Each is the other's only
+witness.
+
+**B27a.** `ProcessLayout` now carries `pointer_width`, derived where the rest
+of the layout is derived, through `wasm_artifact::detect_pointer_width` — the
+one authority, the same function `detectPtrWidth` is on the TypeScript hosts
+and the same one `exec_target::finish_commit` calls. `launch_process` and
+`launch_vfork_borrowed_child` register it beside the brk/mmap/max-addr
+sequence; the export is bound with `get_typed_func`, so a kernel lacking it
+fails the run rather than falling back. An exec re-launch deliberately does
+**not** re-register, mirroring the TypeScript host's `replacingExecImage`
+guard for the reason stated there; a fork child does, because it is a fresh
+address space this host just created from bytes it just read.
+
+**B27b.** `build-fixtures.sh` builds a declared `WASM64_FIXTURES` list at
+wasm64 as well, from one compile/link helper parameterised only by target and
+sysroot. Both process-layout tests loop over widths 4 and 8, and the
+descriptor-derived coverage requirement now holds **at each width
+independently** — a descriptor covered only at wasm32 is one whose wasm64 size
+nothing has exercised.
+
+**The expected output block is identical at both widths, and that is the
+point.** Every value in it is a kernel constant or a value the guest supplied
+earlier in the same run, so none depends on pointer size. What depends on
+pointer size is how many bytes each record occupies, so a disagreement about
+that surfaces as a changed *value*, never as a changed expectation.
+
+**Five wasm32 assumptions the type system was not checking.** Making the native
+host able to instantiate a wasm64 guest at all needed: `Config::wasm_memory64`;
+`new_shared` building the memory in the importing module's index type (and a
+fork child's copy inheriting the parent's); `env.__channel_base` supplied as
+`i64`; and `kernel_argv_read`/`kernel_environ_get`/`kernel_execve` declared
+with an `i64` pointer parameter. Wasmtime matches import types exactly, so each
+was an instantiation error rather than a silent coercion — which is why they
+surfaced one at a time rather than as wrong behaviour.
+
+**The guard was seen to fail.** Building a host that registers width 4 for
+every process — this host's state before B27a — makes the wasm64 arm stop at
+**exit code 4 on `statfs`**, the first record, because the kernel then parses an
+LP64 record at ILP32 offsets; the descriptor-derived test additionally names all
+twelve syscalls left uncovered at width 8. **The wasm32 arm stays green
+throughout**, which is the entire argument for the second arm.
+
+**What it does NOT cover, measured rather than assumed.** Forcing `marshal_in`
+to pick `wasm32_size` for every caller leaves **both** arms green. Only three of
+the thirteen keep RAW arguments, and all three share `rt_sigqueueinfo`'s
+`siginfo_t`, which is **128 bytes at both data models**; the other ten ride the
+opaque-record path where the guest glue sizes its own spans. So the host
+marshaller's width selection is correct by construction here, not covered — the
+same shape as B24's retracted canary claim. The wasm64 widening of guest
+pointer arguments is likewise unexercised: this host caps guest memory below
+4 GiB, so no address it stages differs between the two masks.
+
+**One incidental finding, not acted on.** Re-running `build-fixtures.sh` today
+regenerates **22 of the 23** wasm32 fixtures with different bytes than the
+committed ones (`native_hello.wasm` 17493 → 15657). `native_process_layout.wasm`
+reproduces byte-for-byte, which is consistent with it being the only one built
+since the current libc. The committed fixtures still pass their ABI marker check
+and their tests, so this is staleness relative to today's libc rather than a
+defect; the 22 rebuilds were reverted as out of scope.
 
 ### What B24 proved about the hole it was sent to close
 
