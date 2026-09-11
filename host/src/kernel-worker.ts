@@ -2672,25 +2672,23 @@ export class CentralizedKernelWorker {
   #kernelMemory: WebAssembly.Memory | null = null;
   #kernelPointerWidth: 4 | 8 = 4;
   /**
-   * Rootfs base-file byte provider. The worker entry (which holds the
-   * `MemoryFileSystem` restored from the `/` image) hands this in via
-   * {@link configureRootfsOverlay} before `init()`; `#maybeLoadKernelRootfs`
-   * installs it once the kernel instance exists. It resolves a `blob_id` — the
-   * file's inode number, which the kernel takes from the image — to bytes. Null
-   * until configured.
+   * Deferred-resource byte provider. The worker entry (which holds the
+   * `MemoryFileSystem` restored from the `/` image, and the lazy transports)
+   * hands this in via {@link configureRootfsOverlay} before `init()`;
+   * `#maybeLoadKernelRootfs` installs it once the kernel instance exists.
+   *
+   * It answers for what the `/` image does not carry: a URL-backed lazy file
+   * and a lazy archive. An image-backed file is not deferred and never reaches
+   * it — the kernel reads those bytes out of the image itself. Null until
+   * configured.
    */
-  #rootfsBlobProvider:
-    | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
-    | null = null;
-  /**
-   * Rootfs raw-archive byte-store provider (Phase 5 Increment 3b). Mirrors
-   * `#rootfsBlobProvider`: the worker entry hands this in via
-   * {@link configureRootfsOverlay} before `init()`; `#maybeLoadKernelRootfs`
-   * installs it on the kernel once the manifest has loaded. Null when no
-   * lazy-archive provider was supplied (the default, unaffected path).
-   */
-  #rootfsArchiveProvider:
-    | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
+  #rootfsDeferredProvider:
+    | ((
+      kind: number,
+      id: bigint,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number)
     | null = null;
   /**
    * Canonical mount points of the sibling filesystems still mounted under `/`
@@ -2717,8 +2715,8 @@ export class CentralizedKernelWorker {
    * asks the kernel to parse the image itself (`kernel_rootfs_load_image`). The
    * host resolves no names: the kernel mounts the image's own filesystem, walks
    * it, and reads the image's own kernel-lazy (`KLZY`) section. What the host
-   * still supplies is bytes — a base file's contents through
-   * `#rootfsBlobProvider`, a lazy archive's through `#rootfsArchiveProvider`.
+   * still supplies is bytes the image does not carry — a URL-backed lazy file's
+   * and a lazy archive's — through `#rootfsDeferredProvider`.
    *
    * An image built before the `KLZY` section is refused by the kernel, which
    * cannot tell "no lazy files" from "lazy files recorded only in the host-side
@@ -2751,7 +2749,7 @@ export class CentralizedKernelWorker {
    *    one. The only post-boot mutation that remains is materializing a
    *    URL-backed lazy file, and the kernel never reads THOSE inodes through
    *    this window — the image records them as stubs, and their bytes come from
-   *    the host byte store (`host_blob_read`) precisely because the image does
+   *    the host byte store (`host_fetch_deferred`) precisely because the image does
    *    not carry them.
    */
   #rootfsImageBody: (() => Uint8Array) | null = null;
@@ -5045,19 +5043,18 @@ export class CentralizedKernelWorker {
    * The kernel parses `image` itself. The host supplies bytes, not a tree.
    */
   configureRootfsOverlay(
-    blobProvider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
-    archiveProvider: ((
-      archiveId: number,
+    deferredProvider: (
+      kind: number,
+      id: bigint,
       offset: bigint,
       dest: Uint8Array,
-    ) => number) | undefined,
+    ) => number,
     foreignMountPrefixes: string[] | undefined,
     rootNosuid: boolean | undefined,
     image: Uint8Array,
     imageBody: () => Uint8Array,
   ): void {
-    this.#rootfsBlobProvider = blobProvider;
-    this.#rootfsArchiveProvider = archiveProvider ?? null;
+    this.#rootfsDeferredProvider = deferredProvider;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     this.#rootfsImage = image;
@@ -5077,7 +5074,7 @@ export class CentralizedKernelWorker {
    */
   #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
     const image = this.#rootfsImage;
-    const provider = this.#rootfsBlobProvider;
+    const provider = this.#rootfsDeferredProvider;
     if (image === null || provider === null) return;
     const memory = this.#kernelMemory;
     if (memory === null) return;
@@ -5139,10 +5136,7 @@ export class CentralizedKernelWorker {
         + "an image built before the kernel-lazy section must be rebuilt",
       );
     }
-    this.#kernel.setRootfsBlobProvider(provider);
-    if (this.#rootfsArchiveProvider) {
-      this.#kernel.setRootfsArchiveProvider(this.#rootfsArchiveProvider);
-    }
+    this.#kernel.setRootfsDeferredProvider(provider);
     // Tell the overlay which sibling mounts still live under `/` so it does not
     // greedily claim their paths (which would shadow `/dev/shm` shmfs,
     // `/run/kandelo-run` session-seed host mounts, and extra HostFileSystem

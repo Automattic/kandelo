@@ -1,6 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { buildRootfsLazyWiring } from "../src/vfs/rootfs-lazy-archives";
-import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
+import {
+  buildRootfsLazyWiring,
+  createDeferredFileReader,
+  HOST_DEFERRED_KIND_ARCHIVE,
+  HOST_DEFERRED_KIND_FILE,
+} from "../src/vfs/rootfs-lazy-archives";
+import type {
+  LazyFileEntry,
+  SerializedLazyArchiveEntry,
+} from "../src/vfs/memory-fs";
+import type { FileSystemBackend } from "../src/vfs/types";
 
 /** Let an in-flight async archive fetch (and its chained `.then`s) settle
  * before making assertions. A macrotask tick is used rather than a fixed
@@ -8,6 +17,28 @@ import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
  * microtask-queueing changes around thenable resolution. */
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+type DeferredProvider = (
+  kind: number,
+  id: bigint,
+  offset: bigint,
+  dest: Uint8Array,
+) => number;
+
+/** Narrow the one deferred provider to its archive half, so the archive
+ * assertions below read as archive assertions. The kind is what selects it;
+ * the id is the image-assigned archive id. */
+function archiveReaderOf(
+  wiring: { deferredProvider: DeferredProvider },
+): (archiveId: number, offset: bigint, dest: Uint8Array) => number {
+  return (archiveId, offset, dest) =>
+    wiring.deferredProvider(
+      HOST_DEFERRED_KIND_ARCHIVE,
+      BigInt(archiveId),
+      offset,
+      dest,
+    );
 }
 
 /** Minimal fake `SerializedLazyArchiveEntry` group. Only the fields the
@@ -159,7 +190,7 @@ describe("buildRootfsLazyWiring", () => {
 
   it("(c) first provider call returns EAGAIN and invokes the fetcher", () => {
     const { fetcher, calls } = makeFetcher();
-    const { archiveProvider } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const archiveProvider = archiveReaderOf(buildRootfsLazyWiring(buildEntries(), fetcher));
 
     const dest = new Uint8Array(8);
     const result = archiveProvider(1, 0n, dest);
@@ -170,7 +201,7 @@ describe("buildRootfsLazyWiring", () => {
 
   it("(d) after the fetch settles, offset 0 fills dest with the archive prefix", async () => {
     const { fetcher, settle } = makeFetcher();
-    const { archiveProvider } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const archiveProvider = archiveReaderOf(buildRootfsLazyWiring(buildEntries(), fetcher));
 
     const dest0 = new Uint8Array(8);
     expect(archiveProvider(1, 0n, dest0)).toBe(-11);
@@ -186,7 +217,7 @@ describe("buildRootfsLazyWiring", () => {
 
   it("(e) a nonzero offset returns the correct mid-archive slice", async () => {
     const { fetcher, settle } = makeFetcher();
-    const { archiveProvider } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const archiveProvider = archiveReaderOf(buildRootfsLazyWiring(buildEntries(), fetcher));
 
     archiveProvider(1, 0n, new Uint8Array(1));
     settle();
@@ -200,7 +231,7 @@ describe("buildRootfsLazyWiring", () => {
 
   it("(f) a call past the end returns 0", async () => {
     const { fetcher, settle } = makeFetcher();
-    const { archiveProvider } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const archiveProvider = archiveReaderOf(buildRootfsLazyWiring(buildEntries(), fetcher));
 
     archiveProvider(1, 0n, new Uint8Array(1));
     settle();
@@ -213,7 +244,7 @@ describe("buildRootfsLazyWiring", () => {
 
   it("returns EIO for an archive id never minted (contract violation)", () => {
     const { fetcher } = makeFetcher();
-    const { archiveProvider } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const archiveProvider = archiveReaderOf(buildRootfsLazyWiring(buildEntries(), fetcher));
 
     const dest = new Uint8Array(4);
     expect(archiveProvider(999, 0n, dest)).toBe(-5);
@@ -243,10 +274,9 @@ describe("buildRootfsLazyWiring", () => {
       ],
     });
 
-    const { lazyInput, archiveProvider } = buildRootfsLazyWiring(
-      [group],
-      fetcher,
-    );
+    const wiring = buildRootfsLazyWiring([group], fetcher);
+    const { lazyInput } = wiring;
+    const archiveProvider = archiveReaderOf(wiring);
     expect(lazyInput.archives).toEqual([{ archiveId: 1, size: ARCHIVE_SIZE }]);
 
     archiveProvider(1, 0n, new Uint8Array(1));
@@ -285,7 +315,7 @@ describe("buildRootfsLazyWiring", () => {
       ],
     });
 
-    const { archiveProvider } = buildRootfsLazyWiring([group], fetcher);
+    const archiveProvider = archiveReaderOf(buildRootfsLazyWiring([group], fetcher));
 
     expect(archiveProvider(1, 0n, new Uint8Array(1))).toBe(-11);
     // Let the bad-url fetch settle and the good-url fetch settle in turn.
@@ -297,5 +327,92 @@ describe("buildRootfsLazyWiring", () => {
     const n = archiveProvider(1, 0n, dest);
     expect(n).toBe(4);
     expect(dest).toEqual(archiveBytes.subarray(0, 4));
+  });
+});
+
+describe("the deferred provider routes by kind, not by id range", () => {
+  const archiveBytes = new Uint8Array(8).fill(0xab);
+
+  function wiringWithBothKinds(): {
+    deferredProvider: DeferredProvider;
+    fileReads: Array<{ ino: number; offset: bigint }>;
+  } {
+    const fileReads: Array<{ ino: number; offset: bigint }> = [];
+    const backend = {
+      open: () => 1,
+      read: (_h: number, dest: Uint8Array) => {
+        dest.set([0x01, 0x02]);
+        return 2;
+      },
+      close: () => 0,
+    } as unknown as FileSystemBackend;
+    const lazyEntries: LazyFileEntry[] = [
+      {
+        ino: 1,
+        generation: 1,
+        dataSequence: 1,
+        // Deliberately inode 1, which is ALSO the first archive id: the two id
+        // spaces overlap, and only the kind tells them apart.
+        path: "/usr/bin/node",
+        paths: ["/usr/bin/node"],
+        url: "https://example.invalid/node",
+        size: 2,
+      },
+    ];
+    const reader = createDeferredFileReader(backend, lazyEntries, (p) => p);
+    const { deferredProvider } = buildRootfsLazyWiring(
+      [
+        makeGroup({
+          kind: "kandelo-legacy-zip-v1",
+          url: "u1",
+          mountPrefix: "/a",
+          integrity: { sha256: "x", bytes: archiveBytes.length },
+          entries: [
+            {
+              vfsPath: "/a/f",
+              ino: 42,
+              size: 2,
+              isSymlink: false,
+              deleted: false,
+              type: "file",
+              sourcePath: "bin/f",
+            },
+          ],
+        }),
+      ],
+      async () => archiveBytes,
+      (ino, offset, dest) => {
+        fileReads.push({ ino, offset });
+        return reader(ino, offset, dest);
+      },
+    );
+    return { deferredProvider, fileReads };
+  }
+
+  it("serves id 1 as a lazy FILE and id 1 as an ARCHIVE, differently", () => {
+    const { deferredProvider, fileReads } = wiringWithBothKinds();
+
+    const fileDest = new Uint8Array(4);
+    expect(deferredProvider(HOST_DEFERRED_KIND_FILE, 1n, 0n, fileDest)).toBe(2);
+    expect(fileDest.subarray(0, 2)).toEqual(new Uint8Array([0x01, 0x02]));
+    expect(fileReads).toEqual([{ ino: 1, offset: 0n }]);
+
+    // Same id, other kind: the archive fetch, which starts out in flight.
+    expect(deferredProvider(HOST_DEFERRED_KIND_ARCHIVE, 1n, 0n, new Uint8Array(4)))
+      .toBe(-11); // EAGAIN
+    expect(fileReads).toHaveLength(1);
+  });
+
+  it("reports ENOSYS for a lazy FILE read when no file reader was wired", () => {
+    const { deferredProvider } = buildRootfsLazyWiring([], async () => archiveBytes);
+
+    expect(deferredProvider(HOST_DEFERRED_KIND_FILE, 1n, 0n, new Uint8Array(4)))
+      .toBe(-38);
+  });
+
+  it("reports ENOSYS for a kind this host does not implement", () => {
+    const { deferredProvider } = wiringWithBothKinds();
+
+    expect(deferredProvider(99, 1n, 0n, new Uint8Array(4))).toBe(-38);
   });
 });

@@ -3,7 +3,8 @@ import {
   emitRootfsManifest,
   RTFS_VERSION,
 } from "./support/rootfs-manifest-oracle";
-import { createRootfsBlobProvider } from "../src/vfs/rootfs-blob-store";
+import { createDeferredFileReader } from "../src/vfs/rootfs-lazy-archives";
+import type { LazyFileEntry } from "../src/vfs/memory-fs";
 import type { FileSystemBackend } from "../src/vfs/types";
 import type { RootfsLazyInput } from "../src/vfs/rootfs-lazy-archives";
 import {
@@ -15,6 +16,20 @@ const S_IFDIR = 0x4000;
 const S_IFREG = 0x8000;
 const S_IFLNK = 0xa000;
 const S_IFSOCK = 0xc000;
+
+/** One URL-backed lazy file, the shape the lazy table records and the shape
+ * `createDeferredFileReader` builds its inode-to-path map from. */
+function lazyEntry(ino: number, path: string, size: number): LazyFileEntry {
+  return {
+    ino,
+    generation: 1,
+    dataSequence: 1,
+    path,
+    paths: [path],
+    url: `https://example.invalid${path}`,
+    size,
+  };
+}
 
 interface FakeNode {
   ino: number;
@@ -171,24 +186,27 @@ describe("rootfs manifest emitter", () => {
     expect(blobPaths.get(4)).toBe("/usr/bin/hello");
   });
 
-  it("provider reads bytes by blob id and reports ENOENT for unknown ids", () => {
+  it("deferred-file reader reads bytes by inode and reports ENOENT for unknown ones", () => {
     const backend = makeFakeBackend(tree);
-    const { blobPaths } = emitRootfsManifest(backend, (p) => p);
-    const provider = createRootfsBlobProvider(backend, blobPaths);
+    const provider = createDeferredFileReader(
+      backend,
+      [lazyEntry(4, "/usr/bin/hello", 11)],
+      (p) => p,
+    );
 
     const dest = new Uint8Array(11);
-    expect(provider(4n, 0n, dest)).toBe(11);
+    expect(provider(4, 0n, dest)).toBe(11);
     expect(new TextDecoder().decode(dest)).toBe("hello world");
 
     const tail = new Uint8Array(5);
-    expect(provider(4n, 6n, tail)).toBe(5);
+    expect(provider(4, 6n, tail)).toBe(5);
     expect(new TextDecoder().decode(tail)).toBe("world");
 
     // Past EOF -> 0.
-    expect(provider(4n, 11n, dest)).toBe(0);
+    expect(provider(4, 11n, dest)).toBe(0);
 
-    // Unknown blob id -> ENOENT.
-    expect(provider(999n, 0n, dest)).toBe(-2);
+    // An inode the lazy table does not name -> ENOENT.
+    expect(provider(999, 0n, dest)).toBe(-2);
   });
 
   it("provider maps a lazy leaf's EAGAIN to -EAGAIN and other faults to -EIO", () => {
@@ -208,11 +226,12 @@ describe("rootfs manifest emitter", () => {
       read: () => 0,
       close: () => 0,
     } as unknown as FileSystemBackend;
-    const lazyProvider = createRootfsBlobProvider(
+    const lazyProvider = createDeferredFileReader(
       lazyBackend,
-      new Map([[4, "/usr/bin/vim"]]),
+      [lazyEntry(4, "/usr/bin/vim", 8)],
+      (p) => p,
     );
-    expect(lazyProvider(4n, 0n, new Uint8Array(8))).toBe(-11); // EAGAIN
+    expect(lazyProvider(4, 0n, new Uint8Array(8))).toBe(-11); // EAGAIN
 
     // EAGAIN can also surface at read time (open succeeded, backing raced).
     const lazyAtRead = {
@@ -221,11 +240,11 @@ describe("rootfs manifest emitter", () => {
       close: () => 0,
     } as unknown as FileSystemBackend;
     expect(
-      createRootfsBlobProvider(lazyAtRead, new Map([[4, "/usr/bin/vim"]]))(
-        4n,
-        0n,
-        new Uint8Array(8),
-      ),
+      createDeferredFileReader(
+        lazyAtRead,
+        [lazyEntry(4, "/usr/bin/vim", 8)],
+        (p) => p,
+      )(4, 0n, new Uint8Array(8)),
     ).toBe(-11);
 
     // A non-EAGAIN failure is a real fault -> EIO, not a spurious retry.
@@ -237,11 +256,11 @@ describe("rootfs manifest emitter", () => {
       close: () => 0,
     } as unknown as FileSystemBackend;
     expect(
-      createRootfsBlobProvider(brokenBackend, new Map([[4, "/x"]]))(
-        4n,
-        0n,
-        new Uint8Array(8),
-      ),
+      createDeferredFileReader(
+        brokenBackend,
+        [lazyEntry(4, "/x", 8)],
+        (p) => p,
+      )(4, 0n, new Uint8Array(8)),
     ).toBe(-5); // EIO
   });
 

@@ -852,29 +852,30 @@ export class WasmPosixKernel {
     | "initialized" = "uninitialized";
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   /**
-   * Rootfs overlay content byte-leaf provider (Phase 5 Increment 2). The Rust
-   * kernel owns the `/` tree and asks the host only for a base file's immutable
-   * bytes, addressed by a manifest-assigned blob id. The provider fills `dest`
-   * from the leaf at `offset` and returns the count (or a negative errno). Wired
-   * by the worker from the boot manifest; until set, `host_blob_read` reports
+   * Deferred-resource byte provider: the host's one remaining job for the
+   * kernel-owned `/`.
+   *
+   * The kernel owns the `/` tree and, since the image-backed byte route, reads
+   * an image-backed file's CONTENT out of the image itself. What the host still
+   * answers for is what the image does not carry: a URL-backed lazy file
+   * (`kind === HOST_DEFERRED_KIND_FILE`, `id` its inode number) and a lazy
+   * archive (`kind === HOST_DEFERRED_KIND_ARCHIVE`, `id` the image-assigned
+   * archive id, whose raw bytes the kernel decodes itself — the host is purely
+   * a transport). Both are the same capability: fetch a resource from a host
+   * transport and serve positioned bytes of it, reporting `-EAGAIN` while the
+   * fetch is in flight, so they are one provider behind one import.
+   *
+   * Fills `dest` from `offset` and returns the count, or a negative errno.
+   * Wired by the worker at boot; until set, `host_fetch_deferred` reports
    * ENOSYS so the seam is truthfully unbacked.
    */
-  #rootfsBlobProvider:
-    | ((blobId: bigint, offset: bigint, dest: Uint8Array) => number)
-    | undefined = undefined;
-  /**
-   * Rootfs raw-archive byte-store provider (Phase 5 Increment 3b). The Rust
-   * kernel owns `LazyMember` decode: it asks the host only for whole-archive
-   * bytes at `offset`, addressed by a manifest-assigned `archive_id` (a plain
-   * `u32`, unsplit at the Wasm boundary). The kernel decodes the zip central
-   * directory and extracts members itself; the host is purely a byte
-   * transport. The provider fills `dest` from the archive at `offset` and
-   * returns the count (or a negative errno). Wired by the worker from the
-   * boot manifest; until set, `host_fetch_archive` reports ENOSYS so the
-   * seam is truthfully unbacked.
-   */
-  #rootfsArchiveProvider:
-    | ((archiveId: number, offset: bigint, dest: Uint8Array) => number)
+  #rootfsDeferredProvider:
+    | ((
+      kind: number,
+      id: bigint,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number)
     | undefined = undefined;
   /**
    * Raw VFS image byte window (K8 increment 1). The Rust kernel parses the `/`
@@ -972,23 +973,18 @@ export class WasmPosixKernel {
   }
 
   /**
-   * Install the rootfs overlay content byte-leaf provider (Phase 5 Increment 2).
-   * See {@link WasmPosixKernel.prototype} `#rootfsBlobProvider`.
+   * Install the deferred-resource byte provider.
+   * See {@link WasmPosixKernel.prototype} `#rootfsDeferredProvider`.
    */
-  setRootfsBlobProvider(
-    provider: (blobId: bigint, offset: bigint, dest: Uint8Array) => number,
+  setRootfsDeferredProvider(
+    provider: (
+      kind: number,
+      id: bigint,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number,
   ): void {
-    this.#rootfsBlobProvider = provider;
-  }
-
-  /**
-   * Install the rootfs raw-archive byte-store provider (Phase 5 Increment 3b).
-   * See {@link WasmPosixKernel.prototype} `#rootfsArchiveProvider`.
-   */
-  setRootfsArchiveProvider(
-    provider: (archiveId: number, offset: bigint, dest: Uint8Array) => number,
-  ): void {
-    this.#rootfsArchiveProvider = provider;
+    this.#rootfsDeferredProvider = provider;
   }
 
   /**
@@ -1678,43 +1674,24 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_blob_read: (
-          blobIdLo: number,
-          blobIdHi: number,
+        host_fetch_deferred: (
+          kind: number,
+          idLo: number,
+          idHi: number,
           bufPtr: KernelPointer,
           bufLen: number,
           offsetLo: number,
           offsetHi: number,
         ): number => {
           try {
-            return this.#hostBlobRead(
-              u64FromWords(blobIdLo, blobIdHi),
+            return this.#hostFetchDeferred(
+              kind,
+              u64FromWords(idLo, idHi),
               u64FromWords(offsetLo, offsetHi),
               this.#rustLentKernelDestination(
                 bufPtr,
                 bufLen,
-                "host_blob_read destination",
-              ),
-            );
-          } catch {
-            return -14; // EFAULT
-          }
-        },
-        host_fetch_archive: (
-          archiveId: number,
-          bufPtr: KernelPointer,
-          bufLen: number,
-          offsetLo: number,
-          offsetHi: number,
-        ): number => {
-          try {
-            return this.#hostFetchArchive(
-              archiveId,
-              u64FromWords(offsetLo, offsetHi),
-              this.#rustLentKernelDestination(
-                bufPtr,
-                bufLen,
-                "host_fetch_archive destination",
+                "host_fetch_deferred destination",
               ),
             );
           } catch {
@@ -2813,20 +2790,22 @@ export class WasmPosixKernel {
   }
 
   /**
-   * host_blob_read(blob_id, buf_ptr, buf_len, offset) -> i32
+   * host_fetch_deferred(kind, id, buf_ptr, buf_len, offset) -> i32
    *
-   * Serve a rootfs base file's immutable bytes from the installed blob provider.
-   * Bytes are staged outside kernel memory and published once (never lend a live
-   * view of Rust-owned memory to the provider), mirroring `#hostReadAt`. Reports
-   * ENOSYS when no provider is installed (the seam is truthfully unbacked until
-   * the boot manifest wires it).
+   * Serve positioned bytes of a deferred resource — a URL-backed lazy file or
+   * a lazy archive — from the installed provider. Bytes are staged outside
+   * kernel memory and published once (never lend a live view of Rust-owned
+   * memory to the provider), mirroring `#hostReadAt`. Reports ENOSYS when no
+   * provider is installed, so the seam is truthfully unbacked until the worker
+   * wires it.
    */
-  #hostBlobRead(
-    blobId: bigint,
+  #hostFetchDeferred(
+    kind: number,
+    id: bigint,
     offset: bigint,
     destination: RustLentKernelDestination,
   ): number {
-    const provider = this.#rootfsBlobProvider;
+    const provider = this.#rootfsDeferredProvider;
     if (provider === undefined) {
       return -38; // ENOSYS
     }
@@ -2839,60 +2818,7 @@ export class WasmPosixKernel {
     }
     let result: number;
     try {
-      result = provider(blobId, offset, staged);
-    } catch {
-      return -5; // EIO: the provider violated its byte-source contract.
-    }
-    if (!Number.isSafeInteger(result) || result > destinationCapacity) {
-      return -5; // EIO
-    }
-    if (result < 0) {
-      return result; // provider-reported negative errno
-    }
-    if (result > 0) {
-      try {
-        this.#writeKernelBytes(
-          destination,
-          subarrayUint8Array(staged, 0, result),
-        );
-      } catch {
-        return -14; // EFAULT
-      }
-    }
-    return result;
-  }
-
-  /**
-   * host_fetch_archive(archive_id, buf_ptr, buf_len, offset) -> i32
-   *
-   * Serve raw whole-archive bytes from the installed archive provider. The
-   * host is a byte transport only: the Rust kernel decodes the zip central
-   * directory and extracts `LazyMember` bytes itself. `archiveId` is a plain
-   * `u32` (unsplit at the Wasm boundary, unlike `blobId`'s lo/hi split).
-   * Bytes are staged outside kernel memory and published once (never lend a
-   * live view of Rust-owned memory to the provider), mirroring
-   * `#hostBlobRead`. Reports ENOSYS when no provider is installed (the seam
-   * is truthfully unbacked until the boot manifest wires it).
-   */
-  #hostFetchArchive(
-    archiveId: number,
-    offset: bigint,
-    destination: RustLentKernelDestination,
-  ): number {
-    const provider = this.#rootfsArchiveProvider;
-    if (provider === undefined) {
-      return -38; // ENOSYS
-    }
-    const destinationCapacity = destination.capacity;
-    let staged: Uint8Array;
-    try {
-      staged = new IntrinsicUint8Array(destinationCapacity);
-    } catch {
-      return -12; // ENOMEM
-    }
-    let result: number;
-    try {
-      result = provider(archiveId, offset, staged);
+      result = provider(kind, id, offset, staged);
     } catch {
       return -5; // EIO: the provider violated its byte-source contract.
     }
@@ -2922,8 +2848,8 @@ export class WasmPosixKernel {
    * that image itself, so the host resolves no names and carries no id: there is
    * one image, and this is a positioned window onto it. Bytes are staged outside
    * kernel memory and published once (never lend a live view of Rust-owned
-   * memory to the provider), mirroring `#hostBlobRead`. Reports ENOSYS when no
-   * image source is installed, which is what keeps the kernel's image-parsing
+   * memory to the provider), mirroring `#hostFetchDeferred`. Reports ENOSYS
+   * when no image source is installed, which is what keeps the kernel's image-parsing
    * path dormant while the boot manifest is still authoritative.
    */
   #hostImageRead(

@@ -2500,6 +2500,25 @@ pub mod abi {
     /// `HAS_TYPED_LAZY_ARCHIVES` (see `host/src/vfs/memory-fs.ts`).
     pub const VFS_IMAGE_FLAG_HAS_KERNEL_LAZY: u32 = 1 << 4;
 
+    /// Which deferred resource `env.host_fetch_deferred(kind, id, ...)` is a
+    /// positioned read of.
+    ///
+    /// The kernel owns `/` and reads an image-backed file's bytes out of the
+    /// image itself. What is left for the host is one capability: fetch a
+    /// resource the image does NOT carry, and serve positioned bytes of it,
+    /// reporting `EAGAIN` while the fetch is in flight. Two id namespaces use
+    /// it, so the kind travels as its own argument rather than as a reserved
+    /// range of one opaque id — an id that means two things is a semantic
+    /// surface increase wearing a no-change disguise.
+    ///
+    /// `FILE` is a URL-backed lazy file, addressed by its inode number: the
+    /// image records only its real size (`KLZY`, `archive_id == 0`) and the
+    /// host owns its transport. `ARCHIVE` is a lazy archive, addressed by the
+    /// image-assigned `archive_id`; the host serves raw archive bytes and the
+    /// kernel extracts the member.
+    pub const HOST_DEFERRED_KIND_FILE: u32 = 0;
+    pub const HOST_DEFERRED_KIND_ARCHIVE: u32 = 1;
+
     /// ABI 43 structural Wasm GC reconstruction catalog.
     ///
     /// GC object identities cannot cross Store or worker boundaries. The

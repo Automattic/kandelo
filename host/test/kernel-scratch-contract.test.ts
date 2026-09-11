@@ -1525,14 +1525,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The host_pread Wasm import binds the untouched Rust pointer and capacity formals before invoking any positioned producer.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_blob_read destination", )',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_fetch_deferred destination", )',
     disposition: "rust-lent",
-    why: "The host_blob_read Wasm import binds the untouched Rust pointer and capacity formals before invoking the rootfs base-file byte producer.",
-  },
-  {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_fetch_archive destination", )',
-    disposition: "rust-lent",
-    why: "The host_fetch_archive Wasm import binds the untouched Rust pointer and capacity formals before invoking the rootfs lazy-archive byte producer.",
+    why: "The host_fetch_deferred Wasm import binds the untouched Rust pointer and capacity formals before invoking the deferred-resource byte producer.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_fstat destination", )',

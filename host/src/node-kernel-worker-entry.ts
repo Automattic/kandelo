@@ -51,11 +51,6 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
-import {
-  collectRootfsBlobPaths,
-  createRootfsBlobProvider,
-} from "./vfs/rootfs-blob-store";
-import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
@@ -334,7 +329,7 @@ let rootfsMemfs: MemoryFileSystem | null = null;
  *  (closed-asset bundle, closed-asset-source, or the dev fallback below).
  *  Captured here — rather than only as a local in `buildVirtualPlatformIO`
  *  — so the rootfs overlay wiring in `handleInit` can reuse the SAME
- *  transport for `host_fetch_archive` (Phase 5 3b-wiring.3). */
+ *  transport for `host_fetch_deferred` (Phase 5 3b-wiring.3). */
 let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
 /** Canonical mount points of the sibling filesystems still mounted under `/`
  *  after the host `/` mount is dropped (e.g. `/dev/shm`, `/run/kandelo-run`

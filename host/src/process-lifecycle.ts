@@ -126,10 +126,9 @@ import type {
   PreparedExecLaunchRequest,
 } from "./exec-target";
 import {
-  collectRootfsBlobPaths,
-  createRootfsBlobProvider,
-} from "./vfs/rootfs-blob-store";
-import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
+  buildRootfsLazyWiring,
+  createDeferredFileReader,
+} from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
@@ -4370,8 +4369,17 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * rather than changing `setLazyFetcher`'s contract. With no fetcher
    * installed, a lazy read genuinely cannot succeed, so the provider reports
    * that truthfully rather than hanging or guessing a transport. The kernel
-   * learns which files are lazy from the image's own `KLZY` section, so only
-   * the archive half of the wiring is needed here.
+   * learns which files are lazy from the image's own `KLZY` section, so the
+   * host builds no linkage of its own.
+   *
+   * One provider answers both deferred kinds, because they are one capability:
+   * fetch a resource the `/` image does not carry from a host transport, serve
+   * positioned bytes of it, and report `EAGAIN` while the fetch is in flight.
+   * A lazy ARCHIVE is addressed by its image-assigned id; a URL-backed lazy
+   * FILE by its inode number, and its inode-to-path map is read straight off
+   * the lazy table rather than by walking the tree — after the kernel began
+   * serving image-backed bytes from the image, those files are the only ones
+   * a path-keyed byte store can still be asked about.
    *
    * The last argument is the image-body window. The kernel reads an
    * image-backed file's CONTENT out of the `/` image, through its own SFFS
@@ -4396,16 +4404,17 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         : async () => {
           throw new Error("no lazy transport configured");
         };
-    const { archiveProvider } = buildRootfsLazyWiring(
+    const { deferredProvider } = buildRootfsLazyWiring(
       options.baseImage.exportLazyArchiveEntries(),
       lazyArchiveFetcher,
+      createDeferredFileReader(
+        options.baseImage,
+        options.baseImage.exportLazyEntries(),
+        (p) => p,
+      ),
     );
     host.kernel().configureRootfsOverlay(
-      createRootfsBlobProvider(
-        options.baseImage,
-        collectRootfsBlobPaths(options.baseImage, (p) => p),
-      ),
-      archiveProvider,
+      deferredProvider,
       options.foreignPrefixes,
       options.nosuid,
       options.imageBytes,

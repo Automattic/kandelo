@@ -1603,7 +1603,7 @@ pub struct GuestOptions {
     /// An in-memory base VFS image (N1-I2) to load into the rootfs overlay's
     /// `/` before rootfs authority is enabled. `None` (the default) keeps
     /// N1-I1a's behavior exactly: the overlay's `/` starts and stays empty,
-    /// with no manifest loaded and the `host_blob_read` import unreachable.
+    /// with no manifest loaded and the `host_fetch_deferred` import unreachable.
     pub base_image: Option<BaseImage>,
     /// N1-I4 Task 2: instantiate a co-resident fork-module
     /// (`crates/fork-module`) alongside EVERY process this run launches (the
@@ -1630,7 +1630,7 @@ pub struct GuestOptions {
 /// the host filesystem. With `options.base_image == Some(..)` (N1-I2), that
 /// image's RTFS manifest is loaded into the overlay before rootfs authority
 /// is enabled, so `/` starts with real base-file content instead, served
-/// through `host_blob_read` from the image's blob map. `host_fetch_archive`
+/// through `host_fetch_deferred` from the image's blob map. Lazy archives
 /// and the host-FS `host_openat` family are never called for any path the
 /// overlay still owns (see `define_kernel_host_imports`). `options.mounts`
 /// (N1-I1b, empty by default) opts specific top-level subtrees back into the
@@ -1660,7 +1660,7 @@ pub fn run_guest(
     // `options.mounts` names (empty by default — T1's sandboxed path).
     let fs = Arc::new(HostFs::new(&options.mounts));
 
-    // N1-I2: the base-image blob map `host_blob_read` serves reads from,
+    // N1-I2: the base-image blob map `host_fetch_deferred` serves reads from,
     // populated from `options.base_image` when the caller supplies one.
     // Empty (the default, `options.base_image == None`) keeps the import
     // live but unreachable, exactly like N1-I1a: with no manifest loaded, the
@@ -1904,11 +1904,11 @@ pub fn run_guest(
     // `options.base_image` (the default), no manifest is loaded and no blob
     // provider is reachable, so the overlay's `/` starts empty and every
     // overlay-created file is stored inline (`rootfs::Entry::Regular(Vec<u8>)`)
-    // — `host_blob_read`/`host_fetch_archive` are never called and
+    // — `host_fetch_deferred` is never called and
     // `host_openat` is never reached for any path the overlay still owns. When
     // `options.base_image` IS supplied (N1-I2, see the call site below), its
     // manifest is loaded before rootfs authority is enabled, so `/` starts
-    // with that real base tree instead, and `host_blob_read` serves its
+    // with that real base tree instead, and `host_fetch_deferred` serves its
     // `BaseRegular` entries' bytes from the blob map already wired above.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let now_sec = now.as_secs();
@@ -2148,7 +2148,7 @@ pub fn run_trivial_guest(kernel_wasm: &Path, guest_wasm: &[u8]) -> anyhow::Resul
 // small in-memory tree, emits it as an RTFS-v3 manifest (the exact wire format
 // `crates/runtime-core/src/rootfs.rs`'s `load_manifest` parses, mirroring the
 // host-side encoder `host/src/vfs/rootfs-manifest.ts`'s `emitRootfsManifest`),
-// and wires the `host_blob_read` import (below) to serve file bytes from an
+// and wires the `host_fetch_deferred` import (below) to serve file bytes from an
 // in-memory `blob_id -> Vec<u8>` map, where `blob_id == ino` for a file (the
 // same convention `rootfs-manifest.ts` documents). Task 1 built the
 // manifest/map and wired the import; Task 2 threads a `BaseImage` through
@@ -2220,7 +2220,7 @@ impl BaseEntrySpec {
 pub struct BaseImage {
     /// The RTFS-v3 buffer, ready for `kernel_rootfs_load_manifest`.
     pub manifest: Vec<u8>,
-    /// `blob_id (== ino for a file) -> file content`, the map `host_blob_read`
+    /// `blob_id (== ino for a file) -> file content`, the map `host_fetch_deferred`
     /// (below) serves reads from.
     pub blobs: BTreeMap<u64, Vec<u8>>,
 }
@@ -3607,28 +3607,35 @@ fn define_kernel_host_imports(
             )?;
         }
     }
-    // host_blob_read(blob_id_lo, blob_id_hi, buf_ptr, buf_len, offset_lo,
-    // offset_hi) -> i32 (N1-I2): the rootfs overlay's content byte-leaf read
-    // for a `BaseRegular` entry loaded from a `BaseImage` manifest (see the
-    // "in-memory base VFS image" section above). blob_id/offset are 64-bit
-    // values split into lo/hi 32-bit words for the (JS-shaped) ABI, matching
-    // `host_pread`'s offset convention — mirrors `wasm_api.rs:79-86` exactly.
-    // Returns bytes written into `buf_ptr` (0 at EOF), or a negated errno:
-    // ENOENT for a blob_id with no entry in the map (never expected once a
-    // manifest has been loaded correctly, since every `BaseRegular` entry's
-    // blob_id came from this same map — but a real, truthful boundary if it
-    // ever happens). With no `BaseImage` loaded (`base_blobs` empty, T1's and
-    // N1-I1's default), this import is simply never reached: the overlay has
-    // no `BaseRegular` entries to read.
+    // host_fetch_deferred(kind, id_lo, id_hi, buf_ptr, buf_len, offset_lo,
+    // offset_hi) -> i32 (N1-I2): a positioned read of a resource the `/` image
+    // does not carry. `kind` is `abi::HOST_DEFERRED_KIND_*`; `id` and `offset`
+    // are 64-bit values split into lo/hi 32-bit words for the (JS-shaped) ABI,
+    // matching `host_pread`'s offset convention — mirrors `wasm_api.rs`'s
+    // declaration exactly.
+    //
+    // This host serves only `KIND_FILE`, and its id space is the blob map a
+    // `BaseImage` manifest was built with (see the "in-memory base VFS image"
+    // section above): every `BaseRegular` entry the manifest loader placed is
+    // host-backed, because this host hands the kernel a manifest rather than a
+    // real VFS image. Returns bytes written into `buf_ptr` (0 at EOF), or a
+    // negated errno: ENOENT for an id with no entry in the map (never expected
+    // once a manifest has been loaded correctly, since every `BaseRegular`
+    // entry's blob_id came from this same map — but a real, truthful boundary
+    // if it ever happens), and ENOSYS for `KIND_ARCHIVE`, which this host has
+    // no lazy-archive transport for. With no `BaseImage` loaded (`base_blobs`
+    // empty, T1's and N1-I1's default), this import is simply never reached:
+    // the overlay has no `BaseRegular` entries to read.
     {
         let mem = kernel_mem.clone();
         let blobs = base_blobs.clone();
         linker.func_wrap(
             "env",
-            "host_blob_read",
+            "host_fetch_deferred",
             move |_c: Caller<'_, ()>,
-                  blob_id_lo: u32,
-                  blob_id_hi: u32,
+                  kind: u32,
+                  id_lo: u32,
+                  id_hi: u32,
                   buf_ptr: i32,
                   buf_len: i32,
                   offset_lo: u32,
@@ -3637,7 +3644,10 @@ fn define_kernel_host_imports(
                 if buf_len < 0 {
                     return -libc_errno::EINVAL;
                 }
-                let blob_id = ((blob_id_hi as u64) << 32) | (blob_id_lo as u64);
+                if kind != wasm_posix_shared::abi::HOST_DEFERRED_KIND_FILE {
+                    return -libc_errno::ENOSYS;
+                }
+                let blob_id = ((id_hi as u64) << 32) | (id_lo as u64);
                 let Some(bytes) = blobs.get(&blob_id) else {
                     return -libc_errno::ENOENT;
                 };

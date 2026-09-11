@@ -41,7 +41,7 @@
  */
 
 import type { FileSystemBackend } from "../../src/vfs/types";
-import type { ToBackendPath } from "../../src/vfs/rootfs-blob-store";
+import type { ToBackendPath } from "../../src/vfs/rootfs-lazy-archives";
 import type {
   RootfsLazyFile,
   RootfsLazyInput,

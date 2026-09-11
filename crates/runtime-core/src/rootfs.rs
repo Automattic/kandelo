@@ -4816,7 +4816,8 @@ mod tests {
     /// does not carry: its inode is a stub and only its real size is in the
     /// `KLZY` section. Those bytes must keep coming from the host byte store,
     /// so this asserts the request the kernel makes is `ByteReq::Base` with the
-    /// file's inode number — the contract `host_blob_read` answers.
+    /// file's inode number — the contract `host_fetch_deferred` answers for the
+    /// `HOST_DEFERRED_KIND_FILE` kind.
     #[test]
     fn url_backed_lazy_file_still_reads_through_the_host_byte_store() {
         let _guard = TestGuard::acquire();

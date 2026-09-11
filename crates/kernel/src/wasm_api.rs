@@ -21,6 +21,7 @@ use core::mem::size_of;
 use core::slice;
 
 use wasm_posix_shared::{
+    abi,
     abi::extended_syscalls as syscall_numbers,
     channel_scalar::{self, ChannelResultKind},
     process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
@@ -81,23 +82,24 @@ unsafe extern "C" {
         offset_lo: u32,
         offset_hi: i32,
     ) -> i32;
-    // Rootfs overlay content byte-leaf read (Phase 5 Increment 2). blob_id and
-    // offset are 64-bit values split into 32-bit words for the JS boundary,
-    // matching the host_pread offset convention.
-    fn host_blob_read(
-        blob_id_lo: u32,
-        blob_id_hi: u32,
-        buf_ptr: *mut u8,
-        buf_len: u32,
-        offset_lo: u32,
-        offset_hi: u32,
-    ) -> i32;
-    // Whole-archive raw-byte transport for a `LazyMember`'s backing archive
-    // (Phase 5 Increment 3b-wiring.2). Mirrors `host_blob_read`; `archive_id`
-    // is already a 32-bit manifest id (no lo/hi split), only `offset` splits
-    // into 32-bit words for the JS boundary.
-    fn host_fetch_archive(
-        archive_id: u32,
+    // Positioned read of a DEFERRED resource: something the `/` image does not
+    // carry, which the host fetches from its own transport and serves bytes of,
+    // reporting `-EAGAIN` while the fetch is in flight.
+    //
+    // `kind` is `abi::HOST_DEFERRED_KIND_*`: a URL-backed lazy FILE addressed by
+    // its inode number, or a lazy ARCHIVE addressed by its image-assigned id.
+    // One import, because it is one capability — the kind travels as its own
+    // argument rather than as a reserved range of one opaque id.
+    //
+    // An image-backed file is NOT deferred and never reaches here: the kernel
+    // reads its bytes out of the image through its own SFFS reader.
+    //
+    // `id` and `offset` are 64-bit values split into 32-bit words for the JS
+    // boundary, matching the host_pread offset convention.
+    fn host_fetch_deferred(
+        kind: u32,
+        id_lo: u32,
+        id_hi: u32,
         buf_ptr: *mut u8,
         buf_len: u32,
         offset_lo: u32,
@@ -342,6 +344,26 @@ fn checked_host_transfer_result(result: i32, capacity: usize) -> Result<usize, E
     Ok(transferred)
 }
 
+/// One positioned read of a deferred resource, for both
+/// [`HostIO::blob_read`] and [`HostIO::fetch_archive`]: same staging, same
+/// result checking, only the `abi::HOST_DEFERRED_KIND_*` discriminator and the
+/// id namespace differ.
+fn fetch_deferred(kind: u32, id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+    let capacity = checked_host_buffer_len(buf.len())?;
+    let result = unsafe {
+        host_fetch_deferred(
+            kind,
+            id as u32,
+            (id >> 32) as u32,
+            buf.as_mut_ptr(),
+            capacity,
+            offset as u32,
+            (offset >> 32) as u32,
+        )
+    };
+    checked_host_transfer_result(result, buf.len())
+}
+
 fn checked_host_i64_result(result: i64) -> Result<i64, Errno> {
     if result >= 0 {
         return Ok(result);
@@ -432,32 +454,16 @@ impl HostIO for WasmHostIO {
     }
 
     fn blob_read(&mut self, blob_id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-        let capacity = checked_host_buffer_len(buf.len())?;
-        let result = unsafe {
-            host_blob_read(
-                blob_id as u32,
-                (blob_id >> 32) as u32,
-                buf.as_mut_ptr(),
-                capacity,
-                offset as u32,
-                (offset >> 32) as u32,
-            )
-        };
-        checked_host_transfer_result(result, buf.len())
+        fetch_deferred(abi::HOST_DEFERRED_KIND_FILE, blob_id, buf, offset)
     }
 
     fn fetch_archive(&mut self, archive_id: u32, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
-        let capacity = checked_host_buffer_len(buf.len())?;
-        let result = unsafe {
-            host_fetch_archive(
-                archive_id,
-                buf.as_mut_ptr(),
-                capacity,
-                offset as u32,
-                (offset >> 32) as u32,
-            )
-        };
-        checked_host_transfer_result(result, buf.len())
+        fetch_deferred(
+            abi::HOST_DEFERRED_KIND_ARCHIVE,
+            u64::from(archive_id),
+            buf,
+            offset,
+        )
     }
 
     fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {

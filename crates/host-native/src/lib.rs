@@ -1075,7 +1075,7 @@ mod tests {
     /// guest reads a real base file through it. Unlike `smoke_runs_inmemory_vfs`
     /// (which only ever exercises overlay-CREATED files with no manifest
     /// loaded), this proves the boot-time `kernel_rootfs_load_manifest` call
-    /// and the `host_blob_read` import (wired in Task 1, unreachable until
+    /// and the `host_fetch_deferred` import (wired in Task 1, unreachable until
     /// this load) both work end-to-end on a non-JS engine: `open("/etc/hello")`
     /// resolves against a `BaseRegular` entry the manifest describes, and its
     /// content comes back byte-for-byte from the image's blob map.
@@ -1103,7 +1103,7 @@ mod tests {
         );
         assert_eq!(
             outcome.stdout, b"hi from base\n".as_slice(),
-            "expected the base file's real content, served via host_blob_read"
+            "expected the base file's real content, served via host_fetch_deferred"
         );
         Ok(())
     }

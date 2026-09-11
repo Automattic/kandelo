@@ -78,7 +78,7 @@ function sameOriginFixtureUrl(baseURL: string, name: string): string {
 // its lazy-archive decoder is ZIP-only (tar-gzip System-A registration was
 // dropped). Every lazy group is registered through the overlay's ZIP path
 // (`registerLazyArchiveFromEntries` -> `buildRootfsLazyWiring` ->
-// `host_fetch_archive`), the only format the kernel decodes.
+// `host_fetch_deferred`), the only format the kernel decodes.
 async function lazyImage(groups: Array<{
   url: string;
   archive: Uint8Array;

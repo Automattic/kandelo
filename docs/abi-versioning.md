@@ -1449,6 +1449,55 @@ serve an image-backed file's bytes from the image through the SFFS reader
 `load_image` already mounts; that is the work item that collects it.
 The count is 83 today (K3's increment 0b removed two dead imports).
 
+**Collected 2026-09-11.** That work item landed, and it did retire the
+import — with one correction to the shape the paragraph above predicted.
+
+The kernel now reads an image-backed file's bytes out of the `/` image,
+through the SFFS reader `load_image` already mounts: a base regular file
+records whether its bytes are in the image (`BaseSource::Image`, read
+in-kernel) or in a host byte store (`BaseSource::Host`). The host's image
+window therefore stays open past boot instead of being replaced by an
+`ENOSYS` stub, but it is re-pointed at the SFFS body the restored
+`MemoryFileSystem` already holds, so no second copy of a 16-256 MiB body
+is pinned.
+
+The correction: that alone does NOT empty `host_blob_read`, because two
+callers survive an image-backed byte route. A URL-backed lazy file is a
+base file the image genuinely does not carry — it records only the real
+size, in `KLZY` with `archive_id == 0` — and `rootfs::load_manifest`,
+which `crates/host-native` still uses, places a base tree the kernel never
+saw an image of. Both need host bytes.
+
+What emptied the import was noticing that its remaining meaning had become
+`host_fetch_archive`'s: fetch a resource the image does not carry from a
+host transport, serve positioned bytes of it, report `EAGAIN` while the
+fetch is in flight. One capability over two id namespaces. So the two are
+now one import, `env.host_fetch_deferred(kind, id_lo, id_hi, buf_ptr,
+buf_len, offset_lo, offset_hi)`, with `kind` an explicit argument
+(`abi::HOST_DEFERRED_KIND_FILE` / `_ARCHIVE`) rather than a reserved range
+of one opaque id — an id that means two things is a semantic-surface
+increase wearing a no-change disguise.
+
+**Removed (2):** `host_blob_read`, `host_fetch_archive`.
+**Added (1):** `host_fetch_deferred`.
+`EXPECTED_HOST_IMPORT_COUNT`: **75 → 74**, verified against the built
+artifact's import section (`wasm-objdump -j Import -x`), not against the
+constant.
+
+Import polarity again: removing two is compatible for an older host, but
+`host_fetch_deferred` is an addition, so a host built before this change
+cannot instantiate a kernel built after it. That fails loudly as a
+missing-import link error, which is the truthful failure; kernel and hosts
+ship together from this repository and `verify-fresh` catches a stale
+pairing. No `ABI_VERSION` bump: 44 is unreleased.
+
+The host side collapsed with it. `host/src/vfs/rootfs-blob-store.ts` is
+deleted, including the boot-time walk of the entire `/` tree it did to
+build an inode-to-path map. The surviving map covers only URL-backed lazy
+files and is read straight off the lazy table
+(`MemoryFileSystem.exportLazyEntries`), because those are now the only
+inodes the kernel can ask a path-keyed byte store about.
+
 #### `kernel_rootfs_mkdir_parents` (ABI 44 epoch)
 
 Additive, and recorded for the same auditability.

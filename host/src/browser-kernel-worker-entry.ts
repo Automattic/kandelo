@@ -40,11 +40,6 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
-import {
-  collectRootfsBlobPaths,
-  createRootfsBlobProvider,
-} from "./vfs/rootfs-blob-store";
-import { buildRootfsLazyWiring } from "./vfs/rootfs-lazy-archives";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";

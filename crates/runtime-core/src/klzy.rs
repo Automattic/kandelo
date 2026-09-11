@@ -37,7 +37,7 @@ const FILE_HEADER_SIZE: u16 = abi::VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE;
 const GROUP_KNOWN_FLAGS: u16 = abi::VFS_IMAGE_KERNEL_LAZY_GROUP_KNOWN_FLAGS;
 
 /// One lazy archive the image declares: an image-assigned id, the archive's
-/// total byte length (what the kernel needs to bound a `host_fetch_archive`
+/// total byte length (what the kernel needs to bound a `host_fetch_deferred`
 /// read), and the VFS prefix its members were mounted under.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelLazyArchive {

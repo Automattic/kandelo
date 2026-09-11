@@ -51,7 +51,7 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
   // migrates the pre-cutover System-A `registerLazyTree` (tar-gzip) coverage of
   // closed-source binding + fetch-once dedup onto the overlay's ZIP archive
   // path (`registerLazyArchiveFromEntries` -> `buildRootfsLazyWiring` ->
-  // `host_fetch_archive`), the only lazy-archive format the kernel decodes.
+  // `host_fetch_deferred`), the only lazy-archive format the kernel decodes.
   it("fetches a closed source only once and fails closed for an unbound archive", async () => {
     const probeBytes = new Uint8Array(readFileSync(mountProbe));
     const boundFile = new TextEncoder().encode("bound lazy archive\n");
