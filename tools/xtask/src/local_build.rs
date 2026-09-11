@@ -1974,6 +1974,66 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
     };
     let skip_receipts = Arc::new(skip_receipts);
+
+    // B30: publication of the projection authority is contingent on the build
+    // completing, and that contingency is established BEFORE the build can be
+    // killed rather than after it fails.
+    //
+    // WHY NOT A HANDLER. Every node materializes its members into the tier as
+    // it finishes (`materialize_source_only_program_target_with_cache_root` in
+    // `build_deps.rs`), so from the first child onward a previously published
+    // authority may describe bytes that are already gone. The retraction below
+    // the scheduler covers a build that FAILS. It cannot cover a build that is
+    // KILLED, and on this machine builds are killed routinely: harness reaps
+    // (exit 144), timeout SIGTERM (exit 143), and deliberate SIGKILL when a
+    // build is taking the machine. No in-process trap, atexit hook or drop
+    // guard runs on SIGKILL, so no post-hoc mechanism can make this safe. The
+    // only shape that survives an uncatchable signal is one whose guarantee is
+    // already on disk before the signal can arrive: unlink first, publish last.
+    // A killed build then leaves a tier with NO authority -- which is already a
+    // named refusal every reader implements, and which the next build
+    // republishes from the receipts without rebuilding -- instead of one
+    // describing a build that never finished.
+    //
+    // WHY NOT A COMPLETION MARKER. A marker checked by readers survives SIGKILL
+    // equally well, but it needs every reader to learn a second mechanism (the
+    // TypeScript resolver included) to reach the same refusal the absent
+    // authority already produces. Retraction reuses the refusal that exists.
+    //
+    // WHAT IS DELIBERATELY NOT RETRACTED. A run whose compiled-package and
+    // product nodes are all already skippable launches no child that can
+    // materialize into the tier, so it mutates nothing and keeps its authority.
+    // That is the same predicate the fully-clean no-op fast path below tests,
+    // evaluated from the up-front skip decision rather than from the results,
+    // so the no-op path stays reachable. Source-kind package nodes still run a
+    // child; they populate the source cache and never the projection tier.
+    let run_mutates_the_tier = !(expected_receipt_nodes
+        .iter()
+        .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
+        && selected
+            .keys()
+            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
+            .all(|node| skip_receipts.contains_key(node)));
+    if run_mutates_the_tier {
+        match retract_source_only_program_projection(&output_root) {
+            Ok(false) => {}
+            Ok(true) => eprintln!(
+                "source-only program authority retracted before building: this \
+                 build replaces bytes the published authority describes. It is \
+                 republished when the build completes. If this build is killed \
+                 or fails, the tier reports that it has no authority rather \
+                 than describing a build that did not finish."
+            ),
+            Err(error) => {
+                return Err(format!(
+                    "source-only program authority could not be retracted before \
+                     the build, so a killed build would leave the tier claiming \
+                     bytes this build replaces: {error}"
+                ));
+            }
+        }
+    }
+
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -2138,6 +2198,13 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         // Retract it. Leaving it is the illusion the platform-values contract
         // warns against: artifacts served under the provenance of a build that
         // did not produce them.
+        //
+        // B30 made this a BACKSTOP rather than the guarantee. Any run that can
+        // materialize into the tier already retracted before its first child,
+        // so on that path this reports `Ok(false)` and says nothing. It still
+        // runs because it is the correct answer whenever the pre-build
+        // retraction did not apply, and because a guarantee that depends on
+        // exactly one call site is one refactor away from being no guarantee.
         match retract_source_only_program_projection(&output_root) {
             Ok(false) => None,
             Ok(true) => {
