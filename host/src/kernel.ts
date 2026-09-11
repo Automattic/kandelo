@@ -1948,9 +1948,6 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_nanosleep: (sec: bigint, nsec: bigint): number => {
-          return this.#hostNanosleep(sec, nsec);
-        },
         host_ftruncate: (handle: bigint, length: bigint): number => {
           return this.#hostFtruncate(handle, length);
         },
@@ -3864,21 +3861,6 @@ export class WasmPosixKernel {
       return 0;
     } catch (error) {
       return negErrno(error);
-    }
-  }
-
-  /**
-   * host_nanosleep(sec: i64, nsec: i64) -> i32
-   *
-   * Sleep for the specified duration. The i64 parameters appear as
-   * BigInt in JavaScript.
-   */
-  #hostNanosleep(sec: bigint, nsec: bigint): number {
-    try {
-      this.io.nanosleep(Number(sec), Number(nsec));
-      return 0;
-    } catch {
-      return -1;
     }
   }
 

@@ -647,15 +647,6 @@ export class NodePlatformIO implements PlatformIO {
     const realNs = ns + this._epochOffsetNs;
     return { sec: Number(realNs / 1000000000n), nsec: Number(realNs % 1000000000n) };
   }
-
-  nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-    if (ms > 0) {
-      const sab = new SharedArrayBuffer(4);
-      const arr = new Int32Array(sab);
-      Atomics.wait(arr, 0, 0, ms);
-    }
-  }
 }
 
 /**

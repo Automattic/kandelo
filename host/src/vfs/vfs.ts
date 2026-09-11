@@ -735,10 +735,6 @@ export class VirtualPlatformIO implements PlatformIO {
   clockGettime(clockId: number): { sec: number; nsec: number } {
     return this.time.clockGettime(clockId);
   }
-
-  nanosleep(sec: number, nsec: number): void {
-    this.time.nanosleep(sec, nsec);
-  }
 }
 
 export interface PreparedPlatformFile {

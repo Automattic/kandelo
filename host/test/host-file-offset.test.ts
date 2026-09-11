@@ -115,7 +115,6 @@ describe("HostFileOffset VFS contract", () => {
       [{ mountPoint: "/", backend }],
       {
         clockGettime: () => ({ sec: 0, nsec: 0 }),
-        nanosleep: () => {},
       },
     );
     const handle = io.open("/file", O_RDWR, 0);

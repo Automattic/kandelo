@@ -14839,10 +14839,14 @@ pub fn sys_gettimeofday(_proc: &mut Process, host: &mut dyn HostIO) -> Result<(i
 }
 
 /// Sleep for a specified number of microseconds.
-pub fn sys_usleep(_proc: &mut Process, host: &mut dyn HostIO, usec: u32) -> Result<(), Errno> {
-    let sec = (usec / 1_000_000) as i64;
-    let nsec = ((usec % 1_000_000) * 1000) as i64;
-    host.host_nanosleep(sec, nsec)
+///
+/// Like [`sys_nanosleep`], this validates and returns; it does not sleep. The
+/// duration is the caller's `usec` argument, which the runtime reads from the
+/// channel and parks on. Sleeping here would block the single kernel thread
+/// that multiplexes every process in the machine, so a `usleep(500000)` in one
+/// process would stall all of them for half a second.
+pub fn sys_usleep(_proc: &mut Process, _host: &mut dyn HostIO, _usec: u32) -> Result<(), Errno> {
+    Ok(())
 }
 
 /// Resolve a path relative to a directory fd through the global namespace.
@@ -16780,17 +16784,19 @@ pub fn sys_epoll_pwait(
     let interests = epoll_resolved_interests(proc, epfd)?;
 
     if interests.is_empty() {
-        // No interests — just handle timeout/sigmask
-        if let Some(new_mask) = sigmask {
-            let old = sys_sigprocmask(proc, SIG_SETMASK, new_mask)?;
-            if timeout_ms != 0 {
-                // Brief sleep if timeout specified
-                if timeout_ms > 0 {
-                    let _ = host.host_nanosleep(0, (timeout_ms as i64) * 1_000_000);
-                }
-            }
-            let _ = sys_sigprocmask(proc, SIG_SETMASK, old);
-        }
+        // No interests: there is nothing that can ever become ready, so this
+        // evaluation is complete with zero events. The caller owns the wait,
+        // and reports the timeout when it expires.
+        //
+        // This deliberately does not sleep. It used to apply `sigmask`, sleep
+        // for `timeout_ms`, and restore the mask -- but the sleep ran on the
+        // single kernel thread that multiplexes every process in the machine,
+        // so one process's `epoll_pwait(timeout=5000)` on an empty epoll set
+        // stalled all of them for five seconds. With the sleep gone the mask
+        // swap is observably a no-op (nothing between set and restore can
+        // observe it), so both are removed together rather than leaving a
+        // swap that looks like it does something.
+        let _ = (&sigmask, timeout_ms);
         return Ok((0, Vec::new()));
     }
 
@@ -20846,9 +20852,6 @@ mod tests {
             Ok(self.clock_time)
         }
 
-        fn host_nanosleep(&mut self, _seconds: i64, _nanoseconds: i64) -> Result<(), Errno> {
-            Ok(())
-        }
 
         fn host_ftruncate(&mut self, _handle: i64, length: i64) -> Result<(), Errno> {
             self.stat_size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
@@ -35903,9 +35906,6 @@ impl HostIO for TrackingHostIO {
         fn host_clock_gettime(&mut self, _clock_id: u32) -> Result<(i64, i64), Errno> {
             Ok((0, 0))
         }
-        fn host_nanosleep(&mut self, _seconds: i64, _nanoseconds: i64) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_ftruncate(&mut self, _handle: i64, _length: i64) -> Result<(), Errno> {
             Ok(())
         }
@@ -37124,9 +37124,6 @@ impl HostIO for NetMock {
             }
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
-            }
-            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
                 Ok(())
@@ -41831,9 +41828,6 @@ impl HostIO for SymlinkMock {
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
             }
-            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
                 Ok(())
             }
@@ -42045,9 +42039,6 @@ impl HostIO for LoopMock {
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
             }
-            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-                Ok(())
-            }
             fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
                 Ok(())
             }
@@ -42255,9 +42246,6 @@ impl HostIO for RelSymlinkMock {
             }
             fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
                 Ok((0, 0))
-            }
-            fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-                Ok(())
             }
             fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
                 Ok(())

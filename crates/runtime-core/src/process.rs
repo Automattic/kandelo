@@ -229,7 +229,6 @@ pub trait HostIO {
         name_buf: &mut [u8],
     ) -> Result<Option<(u64, u32, usize)>, Errno>;
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
-    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno>;
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
@@ -2606,9 +2605,6 @@ pub mod test_host {
         fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
             Ok((0, 0))
         }
-        fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
             Ok(())
         }
@@ -2790,9 +2786,6 @@ pub mod test_host {
         }
         fn host_clock_gettime(&mut self, c: u32) -> Result<(i64, i64), Errno> {
             NoopHost.host_clock_gettime(c)
-        }
-        fn host_nanosleep(&mut self, s: i64, n: i64) -> Result<(), Errno> {
-            NoopHost.host_nanosleep(s, n)
         }
         fn host_ftruncate(&mut self, h: i64, l: i64) -> Result<(), Errno> {
             NoopHost.host_ftruncate(h, l)

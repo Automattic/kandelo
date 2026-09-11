@@ -173,7 +173,6 @@ unsafe extern "C" {
     fn host_fpathconf(handle: i64, name: i32, value_ptr: *mut i64) -> i32;
     fn host_readdir(dir_handle: i64, dirent_ptr: *mut u8, name_ptr: *mut u8, name_len: u32) -> i32;
     fn host_clock_gettime(clock_id: u32, sec_ptr: *mut i64, nsec_ptr: *mut i64) -> i32;
-    fn host_nanosleep(sec: i64, nsec: i64) -> i32;
     fn host_ftruncate(handle: i64, length: i64) -> i32;
     fn host_fsync(handle: i64) -> i32;
     fn host_fchmod(handle: i64, mode: u32) -> i32;
@@ -719,12 +718,6 @@ impl HostIO for WasmHostIO {
         Ok((sec, nsec))
     }
 
-    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno> {
-        gkl_release();
-        let result = unsafe { host_nanosleep(seconds, nanoseconds) };
-        gkl_acquire();
-        i32_to_result(result)
-    }
 
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno> {
         let result = unsafe { host_ftruncate(handle, length) };

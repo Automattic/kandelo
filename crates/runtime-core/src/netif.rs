@@ -217,9 +217,6 @@ mod tests {
         fn host_clock_gettime(&mut self, _: u32) -> Result<(i64, i64), wasm_posix_shared::Errno> {
             unimplemented!()
         }
-        fn host_nanosleep(&mut self, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_ftruncate(&mut self, _: i64, _: i64) -> Result<(), wasm_posix_shared::Errno> {
             unimplemented!()
         }

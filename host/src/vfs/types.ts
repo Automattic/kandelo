@@ -90,7 +90,6 @@ export interface FileSystemBackend {
 
 export interface TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number };
-  nanosleep(sec: number, nsec: number): void;
 }
 
 export interface MountConfig {
