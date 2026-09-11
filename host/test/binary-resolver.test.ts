@@ -340,6 +340,29 @@ function fixtureCacheKey(packageName: string, arch = "wasm32"): string {
     .digest("hex");
 }
 
+/**
+ * The key the `source-only-v1` tier addresses its own cache entries by. It is
+ * deliberately NOT `fixtureCacheKey`: in a real tree the two are computed under
+ * different resolve policies, and `ResolvePolicy::SourceOnlyV1` prefixes the
+ * hash with a domain separator, so they differ for every package by
+ * construction.
+ *
+ * This fixture used to reuse `fixtureCacheKey` on both sides. That one
+ * shortcut is why this suite stayed green through the entire life of a bug
+ * that refused every package closure in every locally built worktree: the test
+ * compared a value against itself, so the comparison it was covering could not
+ * fail here and could not succeed anywhere else. Keep the two namespaces
+ * distinct so the fixture can tell them apart the way production must.
+ */
+function fixtureSourceOnlyCacheKey(
+  packageName: string,
+  arch = "wasm32",
+): string {
+  return createHash("sha256")
+    .update(`binary-resolver fixture source-only-v1:${packageName}:${arch}`)
+    .digest("hex");
+}
+
 function writeFixtureRegistryIndex(): void {
   writeFileSync(
     join(fixtureRegistryRoot, "program-packages.json"),
@@ -1129,6 +1152,11 @@ function writeSourceOnlyProjectionWithKernel(root: string): string {
           ],
         },
       ],
+      selectionProjection: {
+        format: "kandelo-program-packages-v2",
+        identities: {},
+        packages: {},
+      },
       projection: {
         format: "kandelo-program-packages-v2",
         identities: {},
@@ -1210,7 +1238,7 @@ function materializeSourceOnlyPackage(
   const manifestSha256 = createHash("sha256")
     .update(readFileSync(manifestPath))
     .digest("hex");
-  const cacheKey = fixtureCacheKey(packageName, arch);
+  const cacheKey = fixtureSourceOnlyCacheKey(packageName, arch);
 
   const nodeMembers = [...members]
     .map((member) => {
@@ -1258,14 +1286,15 @@ function materializeSourceOnlyPackage(
           members: nodeMembers,
         },
       ],
+      // The tier's own identity, in the `source-only-v1` cache namespace.
       projection: {
         format: "kandelo-program-packages-v2",
         identities: {
           [packageName]: {
             manifestSha256,
             cacheKeys: {
-              wasm32: fixtureCacheKey(packageName, "wasm32"),
-              wasm64: fixtureCacheKey(packageName, "wasm64"),
+              wasm32: fixtureSourceOnlyCacheKey(packageName, "wasm32"),
+              wasm64: fixtureSourceOnlyCacheKey(packageName, "wasm64"),
             },
           },
         },
@@ -1278,6 +1307,14 @@ function materializeSourceOnlyPackage(
             members,
           },
         },
+      },
+      // The selection state the build recorded: a verbatim copy of the
+      // registry index, which is what a real build writes and what the
+      // resolver regenerates and compares against.
+      selectionProjection: {
+        format: "kandelo-program-packages-v2",
+        identities: fixtureRegistryIdentities,
+        packages: fixtureRegistryPackages,
       },
     }, null, 2)}\n`,
     { mode: 0o644 },

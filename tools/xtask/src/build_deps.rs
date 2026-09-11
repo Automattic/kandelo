@@ -6469,6 +6469,59 @@ fn check_program_package_indexes_in_context(
 /// validates. Writes only when the freshly serialized projection differs from
 /// what is on disk, so an already-current index is left untouched (no mtime
 /// churn that would disturb source-build content caches).
+/// The program package index a resolver treats as its selection authority: the
+/// one generated for the highest-priority *existing* registry root against the
+/// complete ordered registry path beginning at that root.
+/// `ensure_program_package_indexes_in_context` writes exactly this value to
+/// that root's `program-packages.json`, and the TypeScript resolver reads
+/// exactly that file and takes its `identities`/`packages` as authoritative.
+///
+/// WHY THIS IS A SHARED ENTRY POINT AND NOT AN INLINE CALL. The source-only
+/// program projection authority records this same value so that a later
+/// resolver can ask "was `local-binaries/source-only-v1/` materialized from
+/// the package identity the source tree now selects?" and compare like with
+/// like. Both sides must come from this one function.
+///
+/// The alternative shipped, and it is why this comment is long. The authority
+/// embedded an index generated under `ResolvePolicy::SourceOnlyV1` (correct
+/// for the tier, whose cache entries live in the source-only cache namespace)
+/// while `program-packages.json` was generated under `ResolvePolicy::Default`.
+/// `ResolvePolicy::SourceOnlyV1` prefixes every cache key with a domain
+/// separator, so the two keys for one unchanged package differ by
+/// construction: `shell/wasm32` was `902b90ed…` in the authority and
+/// `d6ed5b85…` in the index, and all 70 projected packages disagreed. The
+/// resolver compared them, found them unequal, and refused every package
+/// closure in the tier with a staleness message. No rebuild could satisfy it,
+/// because nothing about the source tree was stale. A refusal no action can
+/// clear is worse than a crash: it sends readers to rebuild forever.
+pub(crate) fn authoritative_program_package_index(
+    registry: &Registry,
+) -> Result<ProgramPackageIndex, String> {
+    for (root_index, root) in registry.roots.iter().enumerate() {
+        let metadata = match std::fs::metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect configured package registry root {}: {error}",
+                    root.display()
+                ));
+            }
+        };
+        if !metadata.is_dir() {
+            return Err(format!(
+                "configured package registry root is not a directory: {}",
+                root.display()
+            ));
+        }
+        let suffix_registry = Registry {
+            roots: registry.roots[root_index..].to_vec(),
+        };
+        return program_package_index_for_root(root, &suffix_registry);
+    }
+    Err("no configured package registry root exists".to_string())
+}
+
 pub(crate) fn ensure_program_package_indexes_in_context(
     registry: &Registry,
 ) -> Result<(), String> {
@@ -21413,6 +21466,87 @@ revision = {revision}
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec!["guest-command"],
+        );
+    }
+
+    /// The source-only tier carries the selection index it was built from so a
+    /// resolver can compare it against the index it regenerates. That
+    /// comparison is only meaningful while both halves come from
+    /// `authoritative_program_package_index`, and this test is what keeps them
+    /// from drifting apart again.
+    ///
+    /// They did drift, and the cost was every conformance suite. The recorded
+    /// half came from `source_only_program_package_index_for_nodes`, which
+    /// keys every package under `ResolvePolicy::SourceOnlyV1`; the regenerated
+    /// half came from `program_package_index_for_root` under
+    /// `ResolvePolicy::Default`. SourceOnlyV1 prefixes the hash with a domain
+    /// separator, so the two keys for one *unchanged* package differ by
+    /// construction — the equality could not hold for any package, in any
+    /// tree, after any build. The resolver reported that as staleness and told
+    /// readers to rebuild, which could never clear it.
+    ///
+    /// So the assertions come in pairs: the two comparable halves must agree
+    /// for an unchanged registry, and the SourceOnlyV1 view — the half that
+    /// used to be compared — must be visibly *not* comparable, so a future
+    /// change that quietly swaps one back in fails here instead of in a
+    /// conformance run.
+    #[test]
+    fn recorded_selection_index_is_the_one_a_resolver_regenerates() {
+        let root = tempdir("selection-index-one-generator");
+        write(&root, "libdep", "1.0.0", &[]);
+        write_program(
+            &root,
+            "app",
+            "1.0.0",
+            &["libdep@1.0.0"],
+            ":",
+            &[("app", "app.wasm")],
+        );
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+
+        // What `ensure_program_package_indexes_in_context` writes to
+        // `packages/registry/program-packages.json`, and what a resolver reads
+        // back as its selection authority.
+        let written = program_package_index_for_root(&root, &registry).unwrap();
+        // What a build records in the source-only projection authority.
+        let recorded = authoritative_program_package_index(&registry).unwrap();
+        assert_eq!(
+            recorded, written,
+            "the tier must record the same selection index a resolver regenerates, from the same generator",
+        );
+
+        // Regenerating it must reproduce it: the comparison at resolve time is
+        // an equality between two runs of this function over the same registry.
+        let regenerated = authoritative_program_package_index(&registry).unwrap();
+        assert_eq!(
+            regenerated, recorded,
+            "an unchanged registry must regenerate a byte-identical selection index",
+        );
+
+        // The tier's own SourceOnlyV1 identity addresses the source-only cache
+        // namespace and is not a selection identity. Keep it un-comparable and
+        // keep that fact asserted.
+        let source_only = source_only_program_package_index_for_nodes(
+            &root,
+            &registry,
+            &BTreeSet::from([ResolvedDependencyNode {
+                package_name: "app".to_string(),
+                target_arch: TargetArch::Wasm32,
+            }]),
+            current_abi_version(),
+        )
+        .unwrap();
+        assert_ne!(
+            source_only.packages["app"].cache_keys["wasm32"],
+            written.packages["app"].cache_keys["wasm32"],
+            "SourceOnlyV1 keys are domain-separated from Default keys; comparing them can never hold",
+        );
+        assert_eq!(
+            source_only.packages["app"].manifest_sha256,
+            written.packages["app"].manifest_sha256,
+            "the policy-independent half agrees, which is why the mismatch read as staleness",
         );
     }
 

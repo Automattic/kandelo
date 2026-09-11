@@ -205,7 +205,19 @@ pub(crate) struct NodeExecutionResultV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SourceOnlyProgramProjectionV1 {
     format: &'static str,
+    /// The tier's own identity, under `ResolvePolicy::SourceOnlyV1`: the
+    /// namespace its cache entries and receipts live in. Never comparable to
+    /// `packages/registry/program-packages.json`, whose keys are computed
+    /// under `ResolvePolicy::Default`.
     projection: ProgramPackageIndex,
+    /// The selection state this tier was materialized from, as
+    /// `authoritative_program_package_index` computed it — byte-for-byte the
+    /// value that same build wrote to `program-packages.json`. This is the
+    /// half a resolver may compare against the index it regenerates at resolve
+    /// time, because both come from that one function under one policy. See
+    /// `authoritative_program_package_index` for why the tier cannot be
+    /// checked against `projection` instead.
+    selection_projection: ProgramPackageIndex,
     graph_authority_sha256: String,
     nodes: Vec<SourceOnlyProgramNodeV1>,
 }
@@ -1767,6 +1779,15 @@ fn source_only_program_projection_is_current(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };
+    // An authority published before the tier recorded the selection state it
+    // was built from cannot answer the resolver's identity question, so it is
+    // never "current" no matter which graph it names: re-publish it.
+    if !value
+        .get("selectionProjection")
+        .is_some_and(|recorded| recorded.is_object())
+    {
+        return false;
+    }
     value
         .get("graphAuthoritySha256")
         .and_then(|recorded| recorded.as_str())
@@ -2783,8 +2804,15 @@ fn refreshed_source_only_program_projection(
         .into_iter()
         .flatten()
         .collect::<BTreeSet<_>>();
+    // The selection half comes from the same function that writes
+    // `packages/registry/program-packages.json`, so the resolver compares the
+    // tier against a value produced by one generator under one policy rather
+    // than across two policy namespaces that can never agree.
+    let selection_projection =
+        crate::build_deps::authoritative_program_package_index(registry)?;
     let mut authority = source_only_program_projection_candidate(
         projection,
+        selection_projection,
         expected_graph_authority_sha256,
         receipts,
         &root_mirror_nodes,
@@ -4776,6 +4804,7 @@ fn graph_authority_bytes(authority: &GraphAuthorityV1) -> Result<Vec<u8>, String
 
 fn source_only_program_projection_candidate(
     projection: ProgramPackageIndex,
+    selection_projection: ProgramPackageIndex,
     graph_authority_sha256: &str,
     receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
     root_mirror_nodes: &BTreeSet<PlanNodeV1>,
@@ -4786,6 +4815,23 @@ fn source_only_program_projection_candidate(
             "source-only program projection has unexpected v2 format {:?}",
             projection.format
         ));
+    }
+    if selection_projection.format != "kandelo-program-packages-v2" {
+        return Err(format!(
+            "source-only selection projection has unexpected v2 format {:?}",
+            selection_projection.format
+        ));
+    }
+    // Every package this tier projects must carry a selection identity, or the
+    // resolver has nothing comparable to check it against and would have to
+    // either refuse it or accept it unchecked. Both are worse than failing the
+    // build that would have published it.
+    for name in projection.packages.keys() {
+        if !selection_projection.packages.contains_key(name) {
+            return Err(format!(
+                "source-only program projection projects {name:?}, but the selection projection the tier was built from does not; the package registry changed during the build"
+            ));
+        }
     }
     let mut required_identities = projection.packages.keys().cloned().collect::<BTreeSet<_>>();
     for package in projection.packages.values() {
@@ -5040,6 +5086,7 @@ fn source_only_program_projection_candidate(
     Ok(SourceOnlyProgramProjectionV1 {
         format: SOURCE_ONLY_PROGRAM_PROJECTION_FORMAT,
         projection,
+        selection_projection,
         graph_authority_sha256: graph_authority_sha256.to_string(),
         nodes,
     })
@@ -7422,6 +7469,28 @@ materialization = "lazy"
                 },
             )]),
         };
+        // The selection half a real build records: the same packages keyed
+        // under the Default resolve policy, so every cache key differs from
+        // the tier's SourceOnlyV1 key exactly as it does on disk. A registry
+        // index also carries packages this build did not project, so add one.
+        let selection = {
+            let mut selection = projection.clone();
+            let rekey = |key: &mut String| *key = format!("d{}", &key[1..]);
+            for identity in selection.identities.values_mut() {
+                identity.cache_keys.values_mut().for_each(rekey);
+            }
+            for package in selection.packages.values_mut() {
+                package.cache_keys.values_mut().for_each(rekey);
+                for closure in package.dependency_closures.values_mut() {
+                    for dependency in closure.iter_mut() {
+                        rekey(&mut dependency.cache_key);
+                    }
+                }
+            }
+            let unprojected = selection.packages["app"].clone();
+            selection.packages.insert("kernel".to_string(), unprojected);
+            selection
+        };
         let node = PlanNodeV1::package("app", "wasm32");
         let kernel_node = PlanNodeV1::package("kernel", "wasm32");
         let receipt = PackageNodeReceiptV1 {
@@ -7454,6 +7523,7 @@ materialization = "lazy"
         ]);
         let authority = source_only_program_projection_candidate(
             projection,
+            selection.clone(),
             &"66".repeat(32),
             &receipts,
             &BTreeSet::from([kernel_node.clone()]),
@@ -7466,6 +7536,11 @@ materialization = "lazy"
             parsed,
             serde_json::json!({
                 "format": "kandelo-source-only-program-projection-v1",
+                // The authority records the selection index verbatim: that
+                // exact identity, not a re-derivation of it, is what a later
+                // resolver compares its freshly regenerated
+                // `program-packages.json` against.
+                "selectionProjection": serde_json::to_value(&selection).unwrap(),
                 "projection": {
                     "format": "kandelo-program-packages-v2",
                     "identities": {
@@ -7551,6 +7626,7 @@ materialization = "lazy"
         let rogue_node = PlanNodeV1::package("rogue", "wasm32");
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([
                 (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
@@ -7572,6 +7648,7 @@ materialization = "lazy"
             .insert("kernel".to_string(), kernel_identity);
         let error = source_only_program_projection_candidate(
             kernel_in_v2,
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([(kernel_node.clone(), receipt.clone())]),
             &BTreeSet::from([kernel_node.clone()]),
@@ -7591,6 +7668,7 @@ materialization = "lazy"
             });
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([
                 (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
@@ -7606,6 +7684,7 @@ materialization = "lazy"
             SOURCE_ONLY_PROGRAM_MEMBER_LIMIT + 1;
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([(
                 PlanNodeV1::package("app", "wasm32"),
@@ -7621,6 +7700,7 @@ materialization = "lazy"
             SOURCE_ONLY_PROGRAM_MEMBER_LIMIT + 1;
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([
                 (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
@@ -7644,6 +7724,7 @@ materialization = "lazy"
         );
         let error = source_only_program_projection_candidate(
             extra_identity_projection,
+            selection.clone(),
             &"66".repeat(32),
             &receipts,
             &BTreeSet::from([kernel_node]),
@@ -7655,6 +7736,7 @@ materialization = "lazy"
         wrong_receipt.cache_key_sha256 = "77".repeat(32);
         let error = source_only_program_projection_candidate(
             authority.projection,
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([(PlanNodeV1::package("app", "wasm32"), wrong_receipt)]),
             &BTreeSet::new(),

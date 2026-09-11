@@ -209,6 +209,10 @@ function writeSourceOnlyFixture(root: string): {
   const authority = {
     format: "kandelo-source-only-program-projection-v1",
     projection,
+    // This case runs under the `source-only-v1` policy, which never reaches
+    // the tier-identity comparison in `pinSourceOnlyTierClosure`. The field is
+    // required by the parser, so record the same package set.
+    selectionProjection: projection,
     graphAuthoritySha256: "4".repeat(64),
     nodes: [
       {

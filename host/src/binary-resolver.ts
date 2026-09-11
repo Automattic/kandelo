@@ -1240,7 +1240,19 @@ interface SourceOnlyProjectionNode {
 interface LoadedSourceOnlyProjection {
   root: string;
   projectionPath: string;
+  /**
+   * The tier's own identity, under the `source-only-v1` resolve policy: the
+   * namespace its cache entries and receipts live in. Its cache keys are
+   * domain-separated from the ones in `program-packages.json` and are never
+   * comparable to them.
+   */
   projection: LoadedProgramPackageProjection;
+  /**
+   * The selection state this tier was materialized from — the same value the
+   * build that published it wrote to `program-packages.json`. This is the half
+   * that may be compared against the index this process regenerates.
+   */
+  selectionProjection: LoadedProgramPackageProjection;
   nodes: SourceOnlyProjectionNode[];
   ownerByMirrorPath: Map<string, SourceOnlyProjectionNode>;
 }
@@ -1531,6 +1543,24 @@ function readSourceOnlyProjectionAtRoot(
       error instanceof Error ? error.message : String(error),
     );
   }
+  // An authority published before the tier recorded its selection state
+  // cannot answer "was this built from the identity the source tree now
+  // selects?", and "expected exact fields" would send the reader looking for a
+  // corrupt file. Say what it actually is and what clears it.
+  if (
+    typeof raw === "object"
+    && raw !== null
+    && !Array.isArray(raw)
+    && (raw as { format?: unknown }).format === SOURCE_ONLY_PROJECTION_FORMAT
+    && !("selectionProjection" in raw)
+  ) {
+    throw sourceOnlyProjectionError(
+      projectionPath,
+      "the tier was published before the build recorded the package selection "
+        + "it was built from, so its identity cannot be checked; rebuild it "
+        + "with ./run.sh setup",
+    );
+  }
   if (
     typeof raw !== "object"
     || raw === null
@@ -1538,6 +1568,7 @@ function readSourceOnlyProjectionAtRoot(
     || !hasExactObjectKeys(raw, [
       "format",
       "projection",
+      "selectionProjection",
       "graphAuthoritySha256",
       "nodes",
     ])
@@ -1570,6 +1601,23 @@ function readSourceOnlyProjectionAtRoot(
       throw sourceOnlyProjectionError(
         projectionPath,
         `program projection ${JSON.stringify(packageName)} architectures are not canonically sorted`,
+      );
+    }
+  }
+  // Parsed exactly as `program-packages.json` is parsed, because it is a copy
+  // of that file's value: the comparison at the bottom of
+  // `pinSourceOnlyTierClosure` is only sound while both sides went through
+  // this one parser with these one set of options.
+  const selectionProjection = parseProgramPackageProjection(
+    (raw as { selectionProjection: unknown }).selectionProjection,
+    `${projectionPath}#selectionProjection`,
+  );
+  for (const packageName of projection.packages.keys()) {
+    if (!selectionProjection.packages.has(packageName)) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `program projection ${JSON.stringify(packageName)} has no recorded `
+          + "selection identity; rebuild the tier with ./run.sh setup",
       );
     }
   }
@@ -1833,7 +1881,14 @@ function readSourceOnlyProjectionAtRoot(
     }
   }
 
-  return { root, projectionPath, projection, nodes, ownerByMirrorPath };
+  return {
+    root,
+    projectionPath,
+    projection,
+    selectionProjection,
+    nodes,
+    ownerByMirrorPath,
+  };
 }
 
 function validateSourceOnlyMember(
@@ -2076,6 +2131,53 @@ function programPackageProjectionIdentity(
         }
     ),
   });
+}
+
+/**
+ * Name what actually changed between the identity a tier was built from and
+ * the one the source tree now selects.
+ *
+ * WHY THIS IS NOT COSMETIC. "was built from a different package identity" is
+ * equally true of an edited `package.toml`, an edited build script, a moved
+ * dependency, a bumped ABI version and a renamed output, and the reader's next
+ * action differs for each. It is also what an *unsatisfiable* comparison says,
+ * which is how one hid here: the check compared a `source-only-v1` cache key
+ * against a default-policy one, could never hold, and read as ordinary
+ * staleness — so readers rebuilt, repeatedly, and the message agreed with them
+ * every time. A refusal has to be able to name its own reason for a reader to
+ * notice when the reason is nonsense.
+ */
+function describeProgramPackageIdentityDrift(
+  recorded: ProgramPackageProjection,
+  selectedIdentity: string,
+): string {
+  const fields: Array<[string, string]> = [
+    ["manifestSha256", "its package.toml changed"],
+    ["arches", "its declared architectures changed"],
+    ["cacheKeys", "its build inputs or toolchain changed"],
+    ["dependencyClosures", "a dependency changed"],
+    ["members", "its declared outputs changed"],
+  ];
+  let selected: Record<string, unknown>;
+  let recordedFields: Record<string, unknown>;
+  try {
+    selected = JSON.parse(selectedIdentity) as Record<string, unknown>;
+    recordedFields = JSON.parse(
+      programPackageProjectionIdentity(recorded),
+    ) as Record<string, unknown>;
+  } catch {
+    return "the recorded and selected identities are not comparable";
+  }
+  const drifted = fields.filter(([field]) =>
+    JSON.stringify(recordedFields[field]) !== JSON.stringify(selected[field])
+  );
+  if (drifted.length === 0) {
+    // Every named field agrees, so the two encodings themselves diverged —
+    // which is a defect in this resolver, not in the reader's tree.
+    return "no identity field differs, so the two encodings disagree; this is "
+      + "a resolver defect, not a stale build";
+  }
+  return drifted.map(([, reason]) => reason).join("; ");
 }
 
 function bundledProgramPackageProjection(): LoadedProgramPackageProjection | null {
@@ -3328,18 +3430,44 @@ function pinSourceOnlyTierClosure(
   // without it a tier left over from an earlier source state would resolve as
   // if it were fresh. `verify-fresh` only inspects `kernel.wasm`, so nothing
   // else was catching a stale program here.
-  const projected = loaded.projection.packages.get(owner.packageName);
+  //
+  // WHICH IDENTITY. `loaded.projection` is the tier's own identity under the
+  // `source-only-v1` resolve policy, and `members[0].projectionIdentity` comes
+  // from `program-packages.json`, computed under the default policy. Those two
+  // are not two views of one fact: `source-only-v1` prefixes every cache key
+  // with a domain separator, so the keys for one *unchanged* package differ by
+  // construction. Comparing them — which this check used to do — could not
+  // hold for any package after any build, so the tier was refused
+  // unconditionally with a staleness message no rebuild could clear. The
+  // comparable half is `loaded.selectionProjection`: the selection index the
+  // build recorded, produced by the same generator under the same policy as
+  // the one this process regenerates.
+  const recordedSelection = loaded.selectionProjection.packages.get(
+    owner.packageName,
+  );
+  if (!recordedSelection) {
+    return {
+      failure:
+        `the source-only tier records no selection identity for `
+        + `${JSON.stringify(owner.packageName)}; it was published by a build `
+        + "that did not select that package, so it cannot be checked; rebuild "
+        + "it with ./run.sh setup",
+    };
+  }
   if (
-    !projected
-    || programPackageProjectionIdentity(projected)
+    programPackageProjectionIdentity(recordedSelection)
       !== members[0]!.projectionIdentity
   ) {
     return {
       failure:
         `the materialized source-only generation for `
         + `${JSON.stringify(owner.packageName)} was built from a different `
-        + "package identity than the source tree now selects; rebuild it with "
-        + "./run.sh setup",
+        + "package identity than the source tree now selects ("
+        + describeProgramPackageIdentityDrift(
+          recordedSelection,
+          members[0]!.projectionIdentity,
+        )
+        + "); rebuild it with ./run.sh setup",
     };
   }
 
