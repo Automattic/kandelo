@@ -448,7 +448,8 @@ branch — not just that a docs commit describing it does.
 | ~~K10 I6~~ | ~~`wasi-shim.ts`~~ | **PAID 2026-09-10** |
 | K8 i2 | `vfs/rootfs-manifest.ts` | 354 |
 | ~~K7 re-cut (1)~~ | ~~SysV half of `kernel-worker.ts`~~ | **PAID: 638 removed** |
-| K7 re-cut (2,3) | rest of the mapping subsystem — **one atomic item, not two** | 2,630 method lines censused 2026-09-10 (~3,300 with types and call sites) |
+| B2 opening move | `getFdStatForSharedMapping` + `getFdAccessModeForSharedMapping` + the `host_fstat` capture side-channel | **PAID 2026-09-11: 207 removed, 113 added (net −94)** |
+| K7 re-cut (2,3) = B2+B3 | rest of the mapping subsystem — **one atomic item, not two** | ~2,500 method lines recensused 2026-09-11 across 57 methods (was 2,630/64 before the opening move) |
 | ~~K3-7.7~~ | ~~epoll mirror in `kernel-worker.ts`~~ | **PAID: 423 removed, 112 added (net -311)** |
 
 ## K7 cutover — mis-scoped, and the finding is worth more than the item
@@ -631,6 +632,122 @@ live peer and crossing syscall boundaries often. A general syscall benchmark
 reaches only `synchronize_for_boundary`'s early-out and would be a true result
 about the wrong code. Nothing in this change touches a hot path, so there is
 nothing here to measure either.
+
+## B2 opening move executed — the fd-facts export (2026-09-11)
+
+**B2's opening move is landed.** `kernel_shared_mapping_fd_facts(pid, fd,
+out_ptr, out_capacity)` writes one `KernelSharedMappingFdFacts` record — dev,
+ino, size, host handle, mode, access mode, and whether the host handle is
+meaningful — and the host stops re-deriving any of it.
+
+Deleted with its callers:
+
+- `getFdStatForSharedMapping` (93 lines): a hand-assembled synthetic `fstat`
+  channel, a scratch lease, and a re-entry through `kernel_handle_channel`.
+- `getFdAccessModeForSharedMapping` (60 lines): the same shape again for one
+  `F_GETFL`.
+- `beginFstatHandleCapture` / `finishFstatHandleCapture` in `host/src/kernel.ts`,
+  the `fstatHandleCapture` field, and the write in `#hostFstat` that fed it —
+  **the snooping side-channel is gone**, and with it a coupling that depended
+  on exactly one `host_fstat` call happening inside exactly one synthetic
+  dispatch, which nothing in the type system stated.
+
+### The classification question, answered without duplicating `sys_fstat`
+
+The B2 scope note said the export needed `crates/runtime-core/src/syscalls.rs`
+taught "to report which branch answered" `sys_fstat`, and flagged that file as
+under active edit. It does not need that, and the reason is worth recording:
+**"which branch answered" is not the question the mapping layer is asking.**
+
+What it needs to know is who owns the file's bytes. A `FileType::Regular`
+descriptor carries a non-negative `host_handle` exactly when the host owns
+them: every kernel-owned regular file is encoded in a negative handle band —
+synthetic regulars, tmpfs, the rootfs overlay, procfs buffers, memfd — and
+those are precisely the descriptors with no persistent host handle to anchor a
+byte-store backing on. That is answerable from the OFD in three lines, and it
+is the same predicate `fd_supports_mmap_writeback` already uses minus the
+access check. `sys_fstat` was left untouched; the only change to `syscalls.rs`
+is one additive `pub fn shared_mapping_fd_facts` immediately after
+`fd_supports_mmap_writeback`, plus one additive unit test in the test module.
+
+### Two behavior changes, both deliberate
+
+1. **No signal-termination check.** The synthetic-channel form had one because
+   it re-entered the channel dispatcher, which can complete a pending signal
+   termination. A metadata query the host makes on its own behalf is not a
+   syscall the guest issued and has no interruption point, so the `EINTR` the
+   old path could return was an artifact of the mechanism, not POSIX `mmap`
+   behavior.
+2. **`prepareSharedMmapFromFile` makes fewer kernel round trips.** It used to
+   make one for the identity and a second for the access mode, on every branch.
+   It now makes one, because the facts record carries both.
+
+### The recount — 21 sites, not 15, and the direction matters
+
+The B3 atomicity finding rested on `backingKind` being tested at "15
+interleaved sites". Recounted on this branch: **21 code sites** (23
+occurrences, two of them type declarations). The recount moves the finding the
+same way it already pointed, only further: an anon-only cutover would have to
+leave more branches in TypeScript, not fewer.
+
+Independently re-verified at the same time, because both claims gate the item:
+
+- `track_anonymous_mapping`, `sync_anonymous_from_process`,
+  `get_or_create_file_backing`, `synchronize_for_boundary`, `flush_mappings`,
+  `cleanup_mappings`, `remap_mapping` and `release_all_for_process` each have
+  **zero callers outside `memory.rs`**. The dead-floor mirror is real.
+- `release_host_region` still frees only bookkeeping, and the range it frees is
+  immediately reusable by `find_gap` — the same allocator `mmap_anonymous`
+  uses. The teardown-ordering hazard recorded for B2/B3 is accurate as written.
+
+### What remains, measured
+
+The rest of the subsystem is **57 methods, ~2,500 lines** of method bodies in
+`host/src/kernel-worker.ts`, plus type declarations and call sites. It is one
+atomic item: `sharedMappings` is a single container holding both kinds, and
+the lifecycle paths (inherit, cleanup, remap, release, flush, protection
+update, exec preflight) branch on `backingKind` inside shared loops rather
+than dispatching to separable halves.
+
+Two candidates for a further separable slice were examined and **rejected**:
+
+- `handleSharedMappingsAfterFileSyscall` (172 lines) is pure policy, but it
+  opens by reading `sharedMmapBackings`, `sharedMmapFdCache` and the path
+  index. It cannot move before the containers do.
+- `sharedMmapFdCache` looked like dead weight once one cheap export replaced
+  two kernel re-entries. It is not: it still saves a kernel call per file
+  syscall for any process holding a file backing. Removing it is an unmeasured
+  change to the syscall hot path, which this campaign does not do on judgment.
+
+### Numbers for this increment
+
+- Production TypeScript: **−94** hand-written lines in `host/src`
+  (`kernel-worker.ts` +110/−171, `kernel.ts` −36, `kernel-scratch.ts` +3);
+  `host/src/generated/abi.ts` adds 9 generated lines.
+- Host imports: **73 functions plus `env.memory`**, before and after, read
+  from the built kernel (74 import *entries* — the count that reads as an
+  off-by-one).
+- Driver glue: the new marshalling method is 83 lines including its doc
+  comment, plus 3 lines of scratch-export registry and 8 import lines — about
+  **+94 added, −153 removed**, so driver glue net **−59**.
+
+### ABI
+
+Additive: one export, `kernel_shared_mapping_fd_facts (i32,i32,i32,i32) ->
+(i32)`. That is the entire `abi/snapshot.json` delta. No `ABI_VERSION` bump —
+ABI 44 is unreleased and the change is purely additive to it.
+
+### Performance still not measured
+
+Unchanged and still named precisely: **the cost of the Rust shared-mapping
+path relative to the host implementation it would replace**, for a process
+holding a large writable `MAP_SHARED` with at least one live peer and crossing
+syscall boundaries often. No benchmark was run for this increment and none
+should be cited for it. A general syscall benchmark reaches only
+`synchronize_for_boundary`'s early-out — a true result about the wrong code.
+This increment removes one kernel re-entry from `mmap` preflight and one from
+each file-mapping access-mode check; that was not measured either, and is not
+claimed.
 
 ## In-scope test failures — coordinator owns these
 
