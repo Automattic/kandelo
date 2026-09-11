@@ -160,6 +160,16 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// smallest-host-surface goal counts every import, and a diagnostic is a weak
 /// thing to spend one on.
 ///
+/// **2026-09-11: 74 -> 73.** `host_blob_read` and `host_fetch_archive` were
+/// collapsed into one `host_fetch_deferred(kind, …)`. They were one capability
+/// -- fetch a resource the image does not carry, serve positioned bytes, report
+/// `EAGAIN` while the fetch is in flight -- split across two id namespaces that
+/// genuinely overlap, since inode 1 and archive id 1 both exist. `kind` is now
+/// an explicit argument rather than a reserved range of one opaque id, and a
+/// test pins it as load-bearing. This and the `host_nanosleep` removal below
+/// landed independently and compose: 75 -> 74 -> 73, measured on the built
+/// kernel each time, never inferred from the constant.
+///
 /// Pinned at the measured value so the branch states what is true. Moving it to
 /// 73 is a one-line change once the caller goes.
 ///
@@ -189,7 +199,7 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// by `KernelImportSurface` and is not part of this number; a raw count of
 /// import *entries* reads 75 for the same artifact, which is the off-by-one to
 /// avoid when re-measuring.
-pub const EXPECTED_HOST_IMPORT_COUNT: usize = 74;
+pub const EXPECTED_HOST_IMPORT_COUNT: usize = 73;
 
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
