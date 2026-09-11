@@ -16789,13 +16789,23 @@ pub fn sys_epoll_pwait(
         // and reports the timeout when it expires.
         //
         // This deliberately does not sleep. It used to apply `sigmask`, sleep
-        // for `timeout_ms`, and restore the mask -- but the sleep ran on the
-        // single kernel thread that multiplexes every process in the machine,
-        // so one process's `epoll_pwait(timeout=5000)` on an empty epoll set
-        // stalled all of them for five seconds. With the sleep gone the mask
-        // swap is observably a no-op (nothing between set and restore can
-        // observe it), so both are removed together rather than leaving a
-        // swap that looks like it does something.
+        // for `timeout_ms` through `host_nanosleep`, and restore the mask.
+        // That sleep ran on the single kernel thread that multiplexes every
+        // process in the machine, so it would have stalled all of them for
+        // the caller's whole timeout.
+        //
+        // "would have" and not "did": the branch is reached only when a
+        // `sigmask` is supplied, and no host supplies one. The runtime
+        // validates the caller's `sigset_t` pointer and then zeroes the
+        // channel argument, so this function has always seen `sigmask: None`
+        // -- which is also why `epoll_pwait`'s mask swap does not work (see
+        // docs/posix-status.md). It was a trap armed for whoever wires the
+        // mask up rather than a stall anyone was hitting.
+        //
+        // With the sleep gone the mask swap is observably a no-op (nothing
+        // between set and restore can observe it), so both are removed
+        // together rather than leaving a swap that looks like it does
+        // something.
         let _ = (&sigmask, timeout_ms);
         return Ok((0, Vec::new()));
     }

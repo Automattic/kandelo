@@ -594,6 +594,18 @@ impl WaitQueue {
     /// minted when a blocking call parks and retired when it completes, so a
     /// second park on a live generation would mean the same call blocked
     /// twice without finishing.
+    ///
+    /// # Cost
+    ///
+    /// A linear walk, and [`WaitQueue::remaining_ns`] runs it on every retry
+    /// of every blocked call. That is deliberate while the map holds only
+    /// *deadline-armed* waits -- one per process currently blocked with a
+    /// finite timeout, so tens on a busy machine, where a secondary index
+    /// would buy nothing measurable and would add a fifth invariant for every
+    /// removal path to maintain. When the parks move into this queue the map
+    /// will also hold untimed waits and the population changes character; add
+    /// a `ChannelGeneration -> WaiterId` index then, behind a single private
+    /// removal helper so the index cannot drift from `sleepers`.
     pub fn sleeper_for_channel(&self, channel: ChannelGeneration) -> Option<&Sleeper> {
         self.sleepers.values().find(|s| s.channel == channel)
     }

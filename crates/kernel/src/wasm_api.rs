@@ -1716,6 +1716,7 @@ fn wait_kind_from_u32(kind: u32) -> Result<crate::wait_queue::WaitKind, Errno> {
         5 => WaitKind::SigTimedWait { mask: 0 },
         6 => WaitKind::ChildWait { options: 0 },
         7 => WaitKind::AdvisoryLock,
+        8 => WaitKind::Futex,
         _ => return Err(Errno::EINVAL),
     })
 }

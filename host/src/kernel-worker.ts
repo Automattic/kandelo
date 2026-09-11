@@ -1038,6 +1038,7 @@ const WAIT_KIND_POLL = 1;
 const WAIT_KIND_SELECT = 2;
 const WAIT_KIND_EPOLL = 3;
 const WAIT_KIND_SIGTIMEDWAIT = 5;
+const WAIT_KIND_FUTEX = 8;
 
 /**
  * `kernel_wait_deadline_remaining_ns` sentinel for "this wait is live and has
@@ -24483,7 +24484,6 @@ export class CentralizedKernelWorker {
     let addr: number;
     let timeoutPtr = 0;
     let timeoutMs: number | undefined;
-    let timeoutDeadline: number | undefined;
     let uaddr2 = 0;
     try {
       addr = this.checkedProcessRange(
@@ -24528,7 +24528,6 @@ export class CentralizedKernelWorker {
               ? 2_147_483_647n
               : requestedMs;
           timeoutMs = Number(cappedMs);
-          timeoutDeadline = Date.now() + timeoutMs;
         }
       }
       if (
@@ -24591,11 +24590,25 @@ export class CentralizedKernelWorker {
       if (waitResult.async) {
         let settled = false;
         let timer: ReturnType<typeof setTimeout> | undefined;
+        // Arm here, while the kernel entry is open: the deferred effect below
+        // runs after this entry's scope is revoked, and the non-async branch
+        // completes without ever parking, so arming earlier would leave a
+        // deadline behind for a wait that never happened.
+        const futexTimeoutMs = timeoutMs;
+        const futexRemainingMs = futexTimeoutMs === undefined
+          ? -1
+          : this.waitRemainingMs(
+              channel,
+              futexTimeoutMs,
+              WAIT_KIND_FUTEX,
+              entry,
+            );
 
         const settle = (): boolean => {
           if (settled) return false;
           settled = true;
           if (timer !== undefined) this.#cancelRegisteredTimeout(timer);
+          this.closeWaitDeadline(channel);
           this.pendingFutexWaits.delete(channel);
           return true;
         };
@@ -24643,7 +24656,7 @@ export class CentralizedKernelWorker {
           this.pendingFutexWaits.set(channel, {
             ...this.#cancellationPointIdentity(channel),
             futexIndex: index,
-            hasTimeout: timeoutDeadline !== undefined,
+            hasTimeout: timeoutMs !== undefined,
             interrupt,
             retire,
           });
@@ -24652,19 +24665,29 @@ export class CentralizedKernelWorker {
             complete(0, 0);
           });
 
-          if (timeoutDeadline !== undefined) {
-            const armTimeoutChunk = (): void => {
+          if (futexTimeoutMs !== undefined) {
+            // The deadline is the kernel's, on CLOCK_MONOTONIC. It used to be
+            // `Date.now() + timeoutMs` re-read on each chunk, so a system
+            // clock step could make a timed `FUTEX_WAIT` return ETIMEDOUT
+            // early or hold a thread past its timeout.
+            //
+            // Each chunk re-reads it rather than trusting its own arithmetic,
+            // and every re-read after the first happens inside a host timer
+            // callback, outside any kernel entry.
+            const armTimeoutChunk = (remainingMs: number): void => {
               if (settled) return;
-              const remainingMs = timeoutDeadline - Date.now();
               if (remainingMs <= 0) {
                 interrupt(-ETIMEDOUT, ETIMEDOUT);
                 return;
               }
               timer = this.#registerTimeout(() => {
-                armTimeoutChunk();
+                if (settled) return;
+                armTimeoutChunk(
+                  this.waitRemainingMs(channel, futexTimeoutMs, WAIT_KIND_FUTEX),
+                );
               }, Math.max(Math.ceil(remainingMs), 1));
             };
-            armTimeoutChunk();
+            armTimeoutChunk(futexRemainingMs);
           }
           return undefined;
         });
