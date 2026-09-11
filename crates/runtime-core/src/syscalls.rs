@@ -2739,13 +2739,25 @@ fn open_prepared_exec_target_rootfs(
         } else {
             0
         };
-    let host_handle = crate::rootfs::open(
+    let host_handle = match crate::rootfs::open(
         resolved,
         open_flags,
         0,
         proc.effective_uid(),
         proc.effective_gid(),
-    )?;
+    ) {
+        Ok(handle) => handle,
+        // A directory is never an executable, and POSIX and Linux both report
+        // EACCES for one. `rootfs::open` reports EISDIR, which is the right
+        // answer for ordinary `open(2)` and the wrong one for exec, and it
+        // fires before the `!S_IFREG` guard below can be reached — so for a
+        // rootfs-claimed path that guard was unreachable and EISDIR escaped to
+        // the guest. Both EISDIR sites inside `rootfs::open` are exactly
+        // `inode.is_dir()`, so this maps the one errno it can mean here
+        // without weakening `open(2)` itself.
+        Err(Errno::EISDIR) => return Err(Errno::EACCES),
+        Err(error) => return Err(error),
+    };
     let stat = match crate::rootfs::fstat(host_handle) {
         Ok(stat) => stat,
         Err(error) => {
@@ -48849,8 +48861,16 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(host.closed_handles, vec![100]);
     }
 
+    /// NOTE: this covers the HOST-MOUNT branch of `open_prepared_exec_target`
+    /// only. `MockHostIO` opens a directory successfully, so `/bin/directory`
+    /// reaches the `!S_IFREG` guard and yields EACCES. The in-kernel overlay —
+    /// which owns the whole `/` tree in production — refuses the open first,
+    /// so a rootfs-claimed directory never reaches that guard. The overlay
+    /// case is pinned separately by
+    /// `exec_target_prepare_rejects_an_overlay_directory_with_eacces`; do not
+    /// read this test as covering directories in general.
     #[test]
-    fn exec_target_prepare_rejects_missing_directory_and_non_executable_files() {
+    fn exec_target_prepare_rejects_missing_directory_and_non_executable_files_on_a_host_mount() {
         let mut proc = Process::new(93);
         let mut locks = AdvisoryLockManager::new();
         let mut host = MockHostIO::new();
@@ -48902,6 +48922,50 @@ impl HostIO for RelSymlinkMock {
         );
         assert!(proc.prepared_exec_targets.is_empty());
         assert_eq!(host.closed_handles, vec![100, 101]);
+    }
+
+    /// A directory is never an executable: POSIX and Linux both report EACCES
+    /// for `execve` on one. This pins the OVERLAY path, which is the path
+    /// production takes for the entire `/` tree once the in-kernel rootfs owns
+    /// `/`.
+    ///
+    /// The sibling test above asserts EACCES for `/bin/directory`, but reaches
+    /// it only through the host-mount branch, because `MockHostIO` opens a
+    /// directory successfully and the `!S_IFREG` guard then fires. The real
+    /// overlay refuses the open first, so that guard is unreachable for a
+    /// rootfs-claimed path and the errno escaping to the guest was EISDIR.
+    #[test]
+    fn exec_target_prepare_rejects_an_overlay_directory_with_eacces() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
+
+        let mut proc = Process::new(94);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let owner = crate::exec_target::PreparedExecOwner::Process {
+            pid: proc.pid,
+            caller_tid: proc.pid,
+            generation: 0,
+        };
+        assert!(
+            crate::rootfs::claims_path(b"/bin"),
+            "the overlay must own /bin or this test pins the host branch again",
+        );
+        assert_eq!(
+            crate::exec_target::prepare(
+                &mut proc,
+                &mut locks,
+                &mut host,
+                owner,
+                AT_FDCWD,
+                b"/bin",
+                0,
+            ),
+            Err(Errno::EACCES),
+        );
+        assert!(proc.prepared_exec_targets.is_empty());
     }
 
     #[test]
