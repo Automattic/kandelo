@@ -124,45 +124,40 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix
+# target triple, the guest syscall glue, crt1/libc ordering, the pinned
+# wasm-ld, and the process memory layout (8 MiB main-thread shadow
+# stack, `--global-base`, `__heap_base`/`__abi_version` exports).
+#
+# This runner used to hand-maintain its own copy of that contract. The
+# copy drifted: its binaries reserved wasm-ld's ~64 KiB default shadow
+# stack instead of the SDK's 8 MiB and exported no `__heap_base`, so the
+# suite measured a memory layout no real Kandelo program runs under.
+# Driving `wasm32posix-cc` keeps one authority. See docs/sdk-guide.md.
+CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ──
+#
+# Only test-specific flags belong here. The SDK supplies the target,
+# sysroot, `-nostdlib`, atomics/bulk-memory/exception-handling, the SjLj
+# and wasm-EH lowering choices, and `-fno-trapping-math`.
 
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
     # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
     # so they use race-based timing or skip those features instead.
     -D__sortix__
 )
 
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
+# selects the dlopen glue the suite's dlopen tests need.
 LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$GLUE_DIR/dlopen.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
+    -ldl
 )
 
 # Flags for building shared libraries (.so) for dlopen tests
