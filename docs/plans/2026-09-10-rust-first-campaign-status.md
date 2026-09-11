@@ -3472,6 +3472,55 @@ likely future regression, since wasm64 is the path with no guests in daily use.
 `sysroot64` is built and `host/test/wasm64.test.ts` exists, so a wasm64 arm is
 reachable; scope it separately rather than bundling it.
 
+**DONE 2026-09-11.** `crates/host-native/fixtures/native_process_layout.c`
+plus two tests in `crates/host-native/src/lib.rs`. Four things the item found
+that this section did not predict:
+
+1. **The set is thirteen, not twelve.** Deriving it from
+   `SYSCALL_ARG_DESCRIPTORS` immediately turned up `waitid` and `mq_notify`,
+   both missing from the hand-list above — which is the case for deriving it,
+   made by the derivation itself on its first run.
+
+2. **The native host had no `ProcessLayout` case at all.** `marshal_in` in
+   `crates/host-native/src/guest.rs` bailed with "unsupported arg size", so
+   all thirteen were unreachable on the one host that runs the real
+   `kernel.wasm` with real guests. The coverage could not be written until
+   that was implemented (15 lines, mirroring
+   `host/src/kernel-worker.ts`'s `pointerWidth === 8 ? wasm64Size :
+   wasm32Size`).
+
+3. **Only three of the thirteen are RAW** (`rt_sigqueueinfo`,
+   `rt_sigtimedwait`, `waitid` — `crates/shared/src/host_raw_syscalls.rs`).
+   The other ten ride the Phase 2 opaque record path, where the guest glue
+   sizes its own spans and the host is out of the data path entirely. So the
+   size agreement this item protects is host↔kernel for three of them and
+   guest-glue↔kernel for ten — worth knowing before anyone reasons about
+   where a width bug could hide.
+
+4. **`waitid` is still TypeScript-host-owned.** The Rust kernel has no
+   dispatch arm for it; child matching lives in `host/src/kernel-worker.ts`.
+   On the native host it returns ENOSYS. The fixture asserts that ENOSYS
+   rather than skipping the call, so the day `waitid` moves into the kernel
+   that assertion fails and forces real coverage in its place.
+
+The guard was demonstrated failing three ways before being trusted: adding an
+uncovered `ProcessLayout` descriptor (names syscall 9), deleting a syscall
+from the fixture (names syscall 335), and building a kernel whose
+`current_caller_pointer_width` reports 8 for a wasm32 caller — the actual
+regression class, which fails at exit code 4 on `statfs`.
+
+One claim was made and then retracted: the fixture's canaries do NOT catch a
+width error, because nine of the ten record-path syscalls never have a
+host-sized span copied into guest memory, and the two RAW records that do are
+128 bytes at both data models. The content assertions are what catch it. See
+the second commit.
+
+**Still owed here:** the wasm64 arm, unchanged from the scoping above; and
+`setitimer`/`getitimer` value round-tripping, which needs `ITIMER_REAL` and so
+needs `host_set_alarm`, an import the native host deliberately leaves to
+`define_unknown_imports_as_traps`. The fixture uses `ITIMER_VIRTUAL`, which
+exercises the marshalling but not the values.
+
 ### Still owed, in dispatch order
 
 1. **B2** (with B3) — the largest remaining TypeScript deletion, ~2,700 lines. Blocked only on `syscalls.rs` locality.
