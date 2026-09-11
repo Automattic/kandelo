@@ -1996,41 +1996,6 @@ export function decodeForkJournalImage(
   return { ptr, len };
 }
 
-/**
- * Recover the single `JournalImage` record from an inherited child arena
- * (Option B). Mirrors `activationContinuationsForChild` — exactly one record,
- * activation 0, the journal-image owner — and validates the pointer/length fit
- * the guest pointer width so the child seeds its replay from a real offset.
- */
-export function journalImageForChild(
-  records: readonly ForkModuleStateRecordView[],
-  ptrWidth: 4 | 8,
-): ForkJournalImage {
-  const matches = records.filter(
-    (record) => record.kind === ForkModuleStateRecordKind.JournalImage,
-  );
-  if (matches.length !== 1) {
-    throw new Error(
-      `module-state arena has ${matches.length} journal-image records; expected one`,
-    );
-  }
-  const record = matches[0]!;
-  if (
-    record.activationId !== 0
-    || record.ownerId !== WPK_FORK_JOURNAL_IMAGE_OWNER
-  ) {
-    throw new Error("module-state journal image has invalid ownership");
-  }
-  const image = decodeForkJournalImage(record.payload);
-  const maxAddr = ptrWidth === 4 ? 0xffff_ffffn : 0xffff_ffff_ffff_ffffn;
-  if (image.ptr > maxAddr || image.len > maxAddr) {
-    throw new RangeError(
-      `module-state journal image does not fit wasm${ptrWidth * 8}`,
-    );
-  }
-  return image;
-}
-
 const IMPORTED_GLOBAL_BINDING_KINDS = new Set<number>(
   Object.values(ForkImportedGlobalBindingKind),
 );

@@ -184,18 +184,6 @@ export class ForkExternrefProcessOwner {
     );
   }
 
-  /** Permanently close a host resource and invalidate all fork aliases. */
-  tombstoneForWire(
-    pid: number,
-    generationId: number,
-    handle: number,
-  ): void {
-    this.broker.tombstone(
-      this.requireWireGeneration(pid, generationId),
-      handle,
-    );
-  }
-
   private requireCurrent(
     generation: ForkExternrefGeneration,
   ): ForkExternrefGeneration {

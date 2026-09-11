@@ -1099,18 +1099,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "This browser epoll reproduction creates its test process memory, not the kernel's linear memory.",
   },
   {
-    key: "apps/browser-demos/test/fixtures/borrowed-active-side-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(mainModule, { env: { memory, ...mainEnv }, kernel: { kernel_fork: finishBorrowedFork }, })",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "This isolated browser worker instantiates the user process's main fork-replay module against the request-owned process memory and wrapped continuation imports.",
-  },
-  {
-    key: "apps/browser-demos/test/fixtures/borrowed-active-side-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(sideModule, { env: { memory, ...sideEnv }, })",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "This isolated browser worker instantiates the user process's side module against the same request-owned process memory and activation-specific replay imports.",
-  },
-  {
     key: "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
     disposition: "kernel-control",
     authorityOwner: "kernel",

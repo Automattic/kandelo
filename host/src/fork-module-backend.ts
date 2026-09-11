@@ -414,41 +414,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Build the topological typed-GC drive plan for this fork's reference graph and
-   * execute it through the module (Phase 6 item 3c). Requires
-   * `beginReferenceReplay` to have seeded the driver and every participating GC
-   * activation's `setActivationGcCodec` to have seeded its layout catalog. The
-   * injected `fm_drive_execute` shim `call_indirect`s the guest's
-   * `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports (host-bound into
-   * the drive table) in the plan order, and traps on a post-allocate integrity
-   * violation rather than reconstructing a wrong object. Returns the executed
-   * step count (0 when the graph has no typed-GC nodes). A failed plan build is a
-   * truthful throw, never a silent wrong drive.
-   */
-  driveTypedGraph(): number {
-    this.requireSetup("drive typed graph");
-    const planPtr = this.toNum(this.exports.fm_build_gc_plan(this.pid));
-    this.requireOk("fm_build_gc_plan");
-    const count = Number(this.exports.fm_gc_plan_count() as number | bigint);
-    if (!Number.isSafeInteger(count) || count < 0) {
-      throw new Error(
-        `${this.label}: fm_gc_plan_count returned invalid count ${count}`,
-      );
-    }
-    if (count === 0) return 0;
-    if (!Number.isSafeInteger(planPtr) || planPtr <= 0) {
-      throw new Error(
-        `${this.label}: fm_build_gc_plan returned invalid plan ptr ${planPtr}`,
-      );
-    }
-    // The injected shim owns its own truthful failure (a post-allocate integrity
-    // violation traps with `unreachable`); it sets no errno, so there is nothing
-    // to `requireOk` after it — completion IS success.
-    this.exports.fm_drive_execute(this.wptr(planPtr), count);
-    return count;
-  }
-
-  /**
    * Reconstruction-orchestration ENTRY (Phase 6). Seed the reference replay
    * driver/feed from the inherited KFMS arena rooted at `moduleStateRoot` AND
    * build the whole topological drive plan in ONE module call
@@ -629,20 +594,6 @@ export class ForkModuleContinuationBackend {
     // success.
     this.exports.fm_drive_execute(this.wptr(planPtr), count);
     return count;
-  }
-
-  /**
-   * Seed the module's funcref/null reference graph for this fork from the KFMS
-   * module-state arena rooted at `moduleStateRoot` (Phase 6 D6.1). The caller
-   * gates this on the funcref-only reference predicate; the module re-checks and
-   * fails loudly (`EOPNOTSUPP`) if the graph is not funcref/null, so an
-   * unsupported reference can never be driven through the flipped funcref import.
-   * Must run before the guest rewind that reconstructs references.
-   */
-  beginReferenceReplay(moduleStateRoot: number): void {
-    this.requireSetup("begin reference replay");
-    this.exports.fm_begin_reference_replay(this.wptr(moduleStateRoot), this.pid);
-    this.requireOk("fm_begin_reference_replay");
   }
 
   /**
@@ -1215,74 +1166,6 @@ export class ForkModuleContinuationBackend {
     this.requireSetup("set activation static-root base");
     this.exports.fm_set_activation_static_root_base(activationId, base);
     this.requireOk("fm_set_activation_static_root_base");
-  }
-
-  /**
-   * Child: add a dlopen fork's SIDE activation to the replay begun by
-   * `beginChildReplay`. `root` is the activation's inherited continuation anchor
-   * (its parent module buffer at the same guest offset), `fixedPrefix` its own
-   * module-buffer fixed runtime prefix. The process-wide journal is not reseeded:
-   * this attaches the activation's replay-only frame state against the SAME
-   * journal + table `beginChildReplay` created.
-   */
-  addActivationChildReplay(
-    activationId: number,
-    root: number,
-    fixedPrefix: number,
-  ): void {
-    this.requireSetup("add activation child replay");
-    if (!Number.isSafeInteger(root) || root <= 0) {
-      throw new Error(
-        `${this.label}: activation ${activationId} inherited continuation root `
-          + `${root} is invalid`,
-      );
-    }
-    this.exports.fm_add_activation_child_replay(
-      this.wptr(activationId),
-      this.wptr(root),
-      this.wptr(fixedPrefix),
-    );
-    this.requireOk("fm_add_activation_child_replay");
-  }
-
-  /**
-   * vfork BORROWED child: add a dlopen-vfork ("mode-1") SIDE activation to the
-   * replay begun by `beginBorrowedChildReplay`. Like `addActivationChildReplay`,
-   * but reads the parent's borrowed continuation read-only and copies this side's
-   * fixed prefix into its own child-private `privatePrefix`. Owns no chunks.
-   */
-  addActivationBorrowedChildReplay(
-    activationId: number,
-    root: number,
-    fixedPrefix: number,
-    privatePrefix: number,
-  ): void {
-    this.requireSetup("add activation borrowed child replay");
-    if (!Number.isSafeInteger(root) || root <= 0) {
-      throw new Error(
-        `${this.label}: borrowed activation ${activationId} continuation root `
-          + `${root} is invalid`,
-      );
-    }
-    if (!Number.isSafeInteger(privatePrefix) || privatePrefix <= 0) {
-      throw new Error(
-        `${this.label}: borrowed activation ${activationId} private prefix `
-          + `${privatePrefix} is invalid`,
-      );
-    }
-    if (privatePrefix + fixedPrefix > this.memory.buffer.byteLength) {
-      throw new Error(
-        `${this.label}: borrowed activation ${activationId} private prefix escapes `
-          + "guest memory",
-      );
-    }
-    this.exports.fm_add_activation_borrowed_child_replay(
-      this.wptr(activationId),
-      this.wptr(root),
-      this.wptr(fixedPrefix),
-      this.wptr(privatePrefix),
-    );
-    this.requireOk("fm_add_activation_borrowed_child_replay");
   }
 
   /**

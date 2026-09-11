@@ -2919,43 +2919,6 @@ function buildImportObject(
 /** Legacy control-page geometry retained as the per-channel anchor location. */
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
-/**
- * Detect a legacy contiguous fork-save-buffer overrun after unwind.
- *
- * Linked continuations do not use this check. It remains exported for
- * stale-buffer regression coverage. Legacy instrumentation keeps
- * `current_pos` — the pointer-width integer at the
- * base of the save buffer (`forkBufAddr + 0`) — seeded to the absolute address
- * `forkBufAddr + frames_start_offset` and advanced by every saved frame. After
- * unwind it is therefore the high-water linear-memory address written (see
- * crates/fork-instrument/src/runtime.rs, `emit_unwind_begin`). Main-process and
- * pthread buffers sit below their syscall channels; fork-capable side modules
- * use independent allocations. The explicit `forkBufSize` keeps the same
- * bounds check truthful for either placement. Frames grow upward, away from
- * the header, so the base word holding `current_pos` stays readable here.
- *
- * The instrumented unwind carries no bounds check of its own — runtime.rs
- * documents the requirement `frames_start_offset + Σframe ≤ buffer_size` but
- * never enforces it. Without this host check the overrun is silent: it
- * corrupts the channel and only surfaces later as an unexplained trap or a
- * fork child that never makes progress. Returns the overrun in bytes, or 0
- * when the save fit within the buffer.
- */
-export function forkSaveBufferOverrun(
-  memory: WebAssembly.Memory,
-  forkBufAddr: number,
-  ptrWidth: 4 | 8,
-  forkBufSize: number,
-): number {
-  const view = new DataView(memory.buffer);
-  const currentPos =
-    ptrWidth === 8
-      ? Number(view.getBigUint64(forkBufAddr, true))
-      : view.getUint32(forkBufAddr, true);
-  const bufferEnd = forkBufAddr + forkBufSize;
-  return currentPos > bufferEnd ? currentPos - bufferEnd : 0;
-}
-
 // Host-private control slots below the process main channel's fork buffer.
 // Fork's memcpy carries the parent's dlopen archive into the child intact;
 // the child walks it to replay each module before wpk_fork rewind. These are
