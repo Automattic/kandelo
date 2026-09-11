@@ -568,6 +568,19 @@ mod tests {
     /// not been built. This keeps a fresh checkout without built binaries from
     /// failing with an obscure file-not-found panic; it is not a substitute for
     /// building the kernel in CI.
+    /// Resolve the kernel artifact, or **fail the test**.
+    ///
+    /// WHY this panics rather than skipping: it used to return `None`, and
+    /// every caller then returned `Ok(())`. `cargo test -p host-native`
+    /// reported "54 passed, 0 failed" in a worktree with no `kernel.wasm` in
+    /// any tier -- a tree that cannot load a kernel at all was indistinguishable
+    /// from a working one. This suite is the only executable check that the
+    /// kernel loads, and it is cited as release evidence, so a skip scored as
+    /// a pass is the worst available outcome. A tree without a kernel cannot
+    /// prove anything, and now says so.
+    ///
+    /// Building the artifact is provisioning, not a boundary: the message
+    /// below names the exact commands.
     fn kernel_path_or_skip() -> Option<PathBuf> {
         let path = kernel_wasm_path();
         if path.exists() {
@@ -591,7 +604,11 @@ mod tests {
                  install_local_binary kernel \
                  target/wasm32-unknown-unknown/release/kandelo_kernel.wasm kandelo-kernel.wasm",
             );
-            None
+            panic!(
+                "kernel.wasm not found in any resolver tier; this suite cannot \
+                 prove the kernel loads. See the search paths and build commands \
+                 printed above."
+            );
         }
     }
 
