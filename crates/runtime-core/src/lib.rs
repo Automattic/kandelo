@@ -34,6 +34,7 @@ pub mod memory;
 pub mod mouse;
 pub mod mqueue;
 pub mod msghdr;
+pub mod net_readiness;
 pub mod netif;
 pub mod ofd;
 pub mod path;

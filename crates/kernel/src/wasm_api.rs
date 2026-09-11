@@ -203,7 +203,7 @@ unsafe extern "C" {
     fn host_net_connect_status(handle: i32) -> i32;
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
-    fn host_net_poll(handle: i32, events: u32) -> i32;
+    fn host_net_readiness(handle: i32) -> i32;
     fn host_net_close(handle: i32) -> i32;
     fn host_net_listen(
         fd: i32,
@@ -839,15 +839,15 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
-        let result = unsafe { host_net_poll(handle, events as u32) };
+    fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
+        let result = unsafe { host_net_readiness(handle) };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
                 Some(e) => Err(e),
                 None => Err(Errno::EIO),
             }
         } else {
-            Ok(result as i16)
+            Ok(result as u32)
         }
     }
 

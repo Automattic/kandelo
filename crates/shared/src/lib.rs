@@ -1209,6 +1209,68 @@ pub mod poll {
     pub const POLLNVAL: i16 = 0x0020;
 }
 
+/// Host-observable readiness facts for a host-delegated network connection.
+///
+/// Workstream H4 (host-surface minimization), the same shape as
+/// `runtime_core::netif`. The POSIX readiness *decision* for a socket — which
+/// of `POLLIN`/`POLLOUT`/`POLLERR`/`POLLHUP` belongs in `revents` — is a
+/// kernel decision, and the kernel now makes it in exactly one place
+/// (`runtime_core::net_readiness::stream_revents`).
+///
+/// What a host engine alone can observe is *facts*: whether its buffer holds
+/// bytes, whether the peer's FIN arrived, whether the engine will accept a
+/// write. Those facts, and only those, cross the `host_net_readiness` import.
+/// The host reports; the kernel decides.
+///
+/// The low 16 bits are the fact flags below. Bits 16.. carry a POSIX errno
+/// when [`net_readiness::ERROR`] is set, so a sticky asynchronous socket error
+/// reaches `SO_ERROR` as the errno the host engine actually observed rather
+/// than one the transport invented on its behalf.
+pub mod net_readiness {
+    /// Bytes are buffered for this connection: `recv` returns >0 without
+    /// blocking.
+    pub const RECV_READY: u32 = 1 << 0;
+    /// End of stream was observed (peer FIN, or a complete response body):
+    /// `recv` returns 0 without blocking. Independent of [`RECV_READY`] — an
+    /// engine may hold buffered bytes *and* know the stream has ended.
+    pub const RECV_EOF: u32 = 1 << 1;
+    /// The engine accepts a `send` now without blocking.
+    pub const SEND_READY: u32 = 1 << 2;
+    /// The writable half is gone: `send` can no longer make progress.
+    pub const SEND_CLOSED: u32 = 1 << 3;
+    /// The connection is torn down in both directions.
+    pub const HANGUP: u32 = 1 << 4;
+    /// A sticky asynchronous error is pending. The errno is in bits 16.. ;
+    /// see [`errno_of`].
+    pub const ERROR: u32 = 1 << 5;
+    /// The engine cannot observe readiness for this connection at all.
+    ///
+    /// This is the honest encoding of a backend with no readiness source. The
+    /// kernel's documented response is wake-every-round: report the requested
+    /// `POLLIN`/`POLLOUT` so userspace runs, and let `recv`/`send` return
+    /// `EAGAIN` when the data is not actually there yet. It is a named fact
+    /// rather than an implicit default precisely because "assume everything
+    /// the caller asked for is ready" used to be an unnamed fallback in three
+    /// separate places.
+    pub const UNOBSERVABLE: u32 = 1 << 6;
+
+    /// Mask covering the fact flags; bits above this carry the errno.
+    pub const FLAG_MASK: u32 = 0x0000_ffff;
+    /// Shift for the POSIX errno carried alongside [`ERROR`].
+    pub const ERRNO_SHIFT: u32 = 16;
+
+    /// Extract the POSIX errno a host engine attached to [`ERROR`].
+    /// Returns 0 when the engine reported an error without classifying it.
+    pub const fn errno_of(facts: u32) -> u32 {
+        facts >> ERRNO_SHIFT
+    }
+
+    /// Encode `facts` together with a POSIX `errno`.
+    pub const fn with_errno(facts: u32, errno: u32) -> u32 {
+        (facts & FLAG_MASK) | (errno << ERRNO_SHIFT)
+    }
+}
+
 /// Epoll event constants.
 pub mod epoll {
     pub const EPOLLIN: u32 = 0x0001;

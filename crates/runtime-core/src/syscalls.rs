@@ -14694,9 +14694,14 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         }
                     }
                     // Host-delegated external socket (no pipe buffers).
-                    // Connected: always report ready — the kernel can't see
-                    // async host state, so we wake userspace each round and
-                    // host_net_recv returns EAGAIN if no data is buffered yet.
+                    //
+                    // The host engine reports *facts* about the connection —
+                    // bytes buffered, peer FIN seen, write half alive — and
+                    // `crate::net_readiness::stream_revents` makes the POSIX
+                    // readiness decision here, once, for every backend on
+                    // every host. It used to be made five more times in host
+                    // TypeScript, and the copies disagreed; see that module.
+                    //
                     // Connecting: query host_net_connect_status; only report
                     // POLLOUT once the TCP handshake actually completes
                     // (success → Connected, failure → Closed + cache errno
@@ -14708,9 +14713,22 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         match sock.state {
                             SocketState::Connected => {
                                 let net_handle = sock.host_net_handle.unwrap();
-                                match host.host_net_poll(net_handle, pollfd.events) {
-                                    Ok(host_revents) => {
-                                        revents |= host_revents;
+                                match host.host_net_readiness(net_handle) {
+                                    Ok(host_facts) => {
+                                        // A sticky asynchronous error reaches
+                                        // SO_ERROR as the errno the engine
+                                        // observed, not one invented for it.
+                                        if let Some(errno) =
+                                            crate::net_readiness::reported_errno(host_facts)
+                                        {
+                                            if let Some(s) = proc.sockets.get_mut(sock_idx) {
+                                                s.connect_error = errno;
+                                            }
+                                        }
+                                        revents |= crate::net_readiness::stream_revents(
+                                            host_facts,
+                                            pollfd.events,
+                                        );
                                     }
                                     Err(e) => {
                                         if let Some(s) = proc.sockets.get_mut(sock_idx) {
@@ -14727,9 +14745,20 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                                         if let Some(s) = proc.sockets.get_mut(sock_idx) {
                                             s.state = SocketState::Connected;
                                         }
-                                        match host.host_net_poll(net_handle, pollfd.events) {
-                                            Ok(host_revents) => {
-                                                revents |= host_revents;
+                                        match host.host_net_readiness(net_handle) {
+                                            Ok(host_facts) => {
+                                                if let Some(errno) =
+                                                    crate::net_readiness::reported_errno(host_facts)
+                                                {
+                                                    if let Some(s) = proc.sockets.get_mut(sock_idx)
+                                                    {
+                                                        s.connect_error = errno;
+                                                    }
+                                                }
+                                                revents |= crate::net_readiness::stream_revents(
+                                                    host_facts,
+                                                    pollfd.events,
+                                                );
                                             }
                                             Err(e) => {
                                                 if let Some(s) = proc.sockets.get_mut(sock_idx) {
@@ -14757,6 +14786,17 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         }
                     }
                     if stream_write_shutdown {
+                        revents &= !POLLOUT;
+                    }
+                    // POSIX XSH poll(): "POLLHUP and POLLOUT are mutually
+                    // exclusive: a stream can never be writable if a hangup
+                    // has occurred." The `PcmPlayback` arm of this same
+                    // function already states the rule; the socket arm could
+                    // reach here with both bits set, because the recv-pipe
+                    // hangup check above and the send-pipe writability check
+                    // below it are independent. Apply it once, last, so it
+                    // holds for every path through this arm.
+                    if revents & POLLHUP != 0 {
                         revents &= !POLLOUT;
                     }
                 }

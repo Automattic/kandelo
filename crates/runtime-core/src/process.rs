@@ -282,9 +282,22 @@ pub trait HostIO {
         flags: u32,
         buf: &mut [u8],
     ) -> Result<usize, Errno>;
-    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
+    /// Report what the host engine can observe about a delegated connection.
+    ///
+    /// The return value is a `wasm_posix_shared::net_readiness` fact word, not
+    /// `poll` `revents`: the host reports facts, the kernel decides readiness
+    /// in `crate::net_readiness::stream_revents`. See that module for why the
+    /// decision was pulled back here.
+    ///
+    /// The default is [`UNOBSERVABLE`] — the honest answer for a host with no
+    /// readiness source, and a *named* fallback rather than the old default,
+    /// which returned the caller's own `events` and so told every caller that
+    /// everything it asked about was ready.
+    ///
+    /// [`UNOBSERVABLE`]: wasm_posix_shared::net_readiness::UNOBSERVABLE
+    fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
         let _ = handle;
-        Ok(events)
+        Ok(wasm_posix_shared::net_readiness::UNOBSERVABLE)
     }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
