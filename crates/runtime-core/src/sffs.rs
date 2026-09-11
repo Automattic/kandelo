@@ -203,30 +203,30 @@ pub fn kernel_lazy_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
     image.get(start..end).map(Some).ok_or(Errno::EINVAL)
 }
 
-const SFFS_MAGIC: u32 = 0x5346_4653; // "SFFS"
-const SFFS_VERSION: u32 = 1;
+pub(crate) const SFFS_MAGIC: u32 = 0x5346_4653; // "SFFS"
+pub(crate) const SFFS_VERSION: u32 = 1;
 pub(crate) const BLOCK_SIZE: usize = 4096;
-const SB_INODE_TABLE_START: u64 = 36;
+pub(crate) const SB_INODE_TABLE_START: u64 = 36;
 
 pub const ROOT_INO: u32 = 1;
-const INODES_PER_BLOCK: u32 = 32;
-const INODE_SIZE: usize = 128;
-const INO_MODE: usize = 8;
-const INO_LINK_COUNT: usize = 12;
-const INO_SIZE: usize = 16;
-const INO_MTIME: usize = 24;
-const INO_CTIME: usize = 32;
-const INO_ATIME: usize = 40;
-const INO_UID: usize = 96;
-const INO_GID: usize = 100;
-const INO_GENERATION: usize = 104;
+pub(crate) const INODES_PER_BLOCK: u32 = 32;
+pub(crate) const INODE_SIZE: usize = 128;
+pub(crate) const INO_MODE: usize = 8;
+pub(crate) const INO_LINK_COUNT: usize = 12;
+pub(crate) const INO_SIZE: usize = 16;
+pub(crate) const INO_MTIME: usize = 24;
+pub(crate) const INO_CTIME: usize = 32;
+pub(crate) const INO_ATIME: usize = 40;
+pub(crate) const INO_UID: usize = 96;
+pub(crate) const INO_GID: usize = 100;
+pub(crate) const INO_GENERATION: usize = 104;
 
-const DIRECT_BLOCKS: u32 = 10;
-const PTRS_PER_BLOCK: u32 = 1024;
-const INO_DIRECT: usize = 48;
-const INO_INDIRECT: usize = 88;
-const INO_DOUBLE_INDIRECT: usize = 92;
-const INLINE_SYMLINK_SIZE: u64 = 40;
+pub(crate) const DIRECT_BLOCKS: u32 = 10;
+pub(crate) const PTRS_PER_BLOCK: u32 = 1024;
+pub(crate) const INO_DIRECT: usize = 48;
+pub(crate) const INO_INDIRECT: usize = 88;
+pub(crate) const INO_DOUBLE_INDIRECT: usize = 92;
+pub(crate) const INLINE_SYMLINK_SIZE: u64 = 40;
 
 /// One inode's raw 128 bytes, read in a single positioned fetch. Every field
 /// accessor below indexes this buffer rather than the image, so a `stat` costs
@@ -272,7 +272,7 @@ pub struct SffsGeometry {
     pub total_inodes: u32,
 }
 
-const SB_TOTAL_INODES: u64 = 16;
+pub(crate) const SB_TOTAL_INODES: u64 = 16;
 
 impl<S: BlockSource> Sffs<S> {
     pub fn mount(source: S) -> Result<Sffs<S>, Errno> {
@@ -560,7 +560,7 @@ impl<S: BlockSource> Sffs<S> {
 
 const MAX_SYMLINK_HOPS: u32 = 8;
 
-const DIRENT_HEADER: usize = 8;
+pub(crate) const DIRENT_HEADER: usize = 8;
 
 pub struct SffsDirent {
     pub ino: u32,

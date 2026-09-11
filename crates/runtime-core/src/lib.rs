@@ -50,6 +50,7 @@ pub mod pty;
 pub mod rootfs;
 pub mod scratch_alloc;
 pub mod sffs;
+pub mod sffs_write;
 pub mod shared_mapping_policy;
 pub mod signal;
 pub mod socket;
