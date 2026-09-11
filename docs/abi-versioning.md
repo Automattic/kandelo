@@ -812,40 +812,83 @@ MSGHDR span, but preparation now refuses one with `EINVAL`: honouring it would
 replace the caller's guest address with a kernel-scratch offset the guest never
 named.
 
-**One collision is recorded rather than hidden.** The caller's pointer width
-lands in `host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX`, channel slot 5. For
-`preadv2`/`pwritev2` — Linux extensions, not POSIX interfaces — slot 5 is the
-guest's `flags`, so no `RWF_*` value reaches the kernel. None was implemented
-before this change either, and the host discarded the word too; the one flag
-with host-visible meaning, `RWF_NOWAIT`, is still read from the host's
-pre-overwrite view of the guest arguments so it continues to suppress the
-EAGAIN park. Implementing real `RWF_*` semantics requires freeing that slot
-first — for example by giving the kernel a per-process pointer width at
-registration instead of per-dispatch. A guard test in `crates/shared` pins the
-set of kernel-dereferenced syscalls so the next addition has to answer the same
-question.
+**That collision is now closed: the pointer width is registered per process,
+and channel slot 5 belongs to the caller again.** It was recorded here rather
+than hidden — the caller's pointer width used to land in
+`host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX`, channel slot 5, which for
+`preadv2`/`pwritev2` is the guest's `flags`, so no `RWF_*` value reached the
+kernel. The fix is the one this document named: give the kernel a per-process
+pointer width at registration instead of per dispatch.
+
+`Process` carries `pointer_width`, established at each point where an address
+space comes into being and read by the kernel as a lookup:
+
+- **creation** — the host calls the new `kernel_set_process_pointer_width(pid,
+  width)` export during `registerProcess`, beside the brk base, mmap base and
+  thread-slot quota. The host is what read the program's bytes and
+  instantiated its `Memory`, so it is what knows;
+- **`fork`** — the child inherits it with the address space it describes,
+  through the fork state record. That record's version moves **15 → 16**;
+- **`exec`** — the kernel replaces it itself, inside
+  `exec_target::finish_commit`, from the artifact bytes the incoming image
+  committed to (`wasm_artifact::detect_pointer_width`). This is the only
+  instant at which it may change: after the outgoing image has stopped being
+  the one that runs, and before the host launches the incoming one. The read
+  happens before the point of no return, so an unreadable or drifted target
+  fails the exec rather than committing an image under the outgoing image's
+  data model.
+
+**This changes the meaning of an existing argument slot, not only the
+structural snapshot.** Slot 5 of `preadv2` (297) and `pwritev2` (298) is newly
+declared `ChannelScalarKind::U32` and carries the caller's `flags`; every other
+kernel-dereferenced and process-layout syscall simply stops having slot 5
+overwritten. Seven writers of the slot are gone — three in
+`host/src/kernel-worker.ts` (`setsockopt`, `ioctl`, and the descriptor-driven
+path), one in `crates/host-native`, and three in the guest's own
+`libc/glue/channel_syscall.c`, which forced slot 5 to `sizeof(void *)` in every
+opaque channel record it emitted. **musl and everything linked against it must
+be rebuilt**, because the guest side of this contract changed.
+
+`preadv2`/`pwritev2` then get honest flag handling.
+`wasm_posix_shared::rwf_flags::check_rwf_flags` implements `RWF_NOWAIT`, which
+suppresses the blocking retry a would-block transfer parks on, and refuses
+every other `RWF_*` bit with `EOPNOTSUPP` rather than ignoring it — as Linux
+does. A stub that accepted `RWF_DSYNC` and returned success without
+synchronizing would be telling the caller something untrue.
+
+It stays under ABI 44 with no `ABI_VERSION` bump for the same reason the export
+removals above do: the epoch is unreleased, so its surface — including an
+existing export's argument *semantics* — may still move. The snapshot delta is
+exactly three entries: slot 5 of `preadv2` and of `pwritev2`, and the
+`kernel_set_process_pointer_width` export. The kernel's host import count is
+unchanged at 75. A guard test in `crates/shared` still pins the set of
+kernel-dereferenced syscalls so the next addition has to review its argument
+meanings.
 
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
 (16/32), `mq_attr` (32/64), `sigevent` (64/64), `statfs` (88/120), and
 `sysinfo` (312/368), and `siginfo_t` for `rt_sigqueueinfo` (128/128). The host
-stages exactly the selected record and carries the process width in its
-private sixth dispatch slot. Rust rejects any other width and parses or
+stages exactly the selected record; the kernel selects the width from the
+process's registered pointer width. Rust rejects any other width and parses or
 serializes the exact bounded slice; padding and reserved output bytes are
 initialized. This prevents the kernel Wasm's own wasm32 data model from
 truncating a wasm64 process record. Fixed generated descriptors separately
 carry `stat` (112 bytes) and `sched_param` (48 bytes); those records do not use
-width selection or the private process-width slot.
+width selection at all.
 
-The channel `setsockopt` path uses the otherwise private sixth dispatch slot
-for the same independently known caller width. The generated native
+The channel `setsockopt` path needs the same independently known caller width,
+because `optlen` is only a byte extent and cannot say whether an embedded
+`sockaddr_storage` uses wasm32 or wasm64 alignment. It reads it from the
+registered width; it used to be handed the value in the private sixth dispatch
+slot. The generated native
 `group_req` layout is 132 bytes with its group at offset 4 on wasm32 and 136
 bytes with its group at offset 8 on wasm64; `group_source_req` is 260/264
 bytes with its source at offset 132/136. Rust accepts only widths 4 and 8.
 Neither `optlen` nor padding bytes may select a data model. The public
 five-argument `kernel_setsockopt` export is structurally unchanged and uses
-the kernel's native width for direct calls; only channel dispatch consumes the
-host-private width. Adding the generated layout constants and correcting this
+the kernel's native width for direct calls; only channel dispatch consults the
+caller's registered width. Adding the generated layout constants and correcting this
 interpretation remain part of unpublished ABI 43 and do not create ABI 44.
 
 Signal and timer transport also change incompatibly in ABI 43. The
@@ -1006,6 +1049,17 @@ Export removal is not bookkeeping for generated constants: it changes what a
 host or guest may link against. It is recorded here so that a later reader can
 tell which names ceased to exist in this epoch rather than inferring it from a
 snapshot diff.
+
+- **Per-process pointer width.** A process's data model is registered once,
+  via the new `kernel_set_process_pointer_width` export, inherited across
+  `fork` and replaced by the kernel at exec commit, instead of being written
+  into channel argument slot 5 on every call that needed it. That returns the
+  slot to `preadv2`/`pwritev2`, whose `flags` argument lives there, so
+  `RWF_NOWAIT` is implemented and every other `RWF_*` bit is refused with
+  `EOPNOTSUPP` rather than silently ignored. This changes an existing
+  argument's meaning, not only the structural snapshot, and the guest's own
+  libc glue stopped writing the slot too, so musl must be rebuilt. Host import
+  count unchanged at 75. Details above.
 
 - **The handle-only host filesystem contract.** The kernel stopped asking the
   host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
