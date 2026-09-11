@@ -95,10 +95,11 @@ describe.each([
 
   it("grants the exact copied externref graph before launch and retires rollback", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
-    // `host.` prefixed: the shared module reaches the owner registry through
-    // the declared host record rather than a module-level binding.
+    // Unprefixed: the owner registry is the shared module's own state now.
+    // It used to be constructed identically in both entries and handed back
+    // through `ProcessLifecycleHost`, which is why this once read `host.`.
     const grant = handler.indexOf(
-      "host.externrefProcessOwner\n        .forkGenerationFromContinuation(",
+      "externrefProcessOwner\n        .forkGenerationFromContinuation(",
     );
     const childInit = handler.indexOf(
       "const childInitData: CentralizedWorkerInitMessage",
@@ -111,7 +112,7 @@ describe.each([
       rollback,
     );
     const release = handler.indexOf(
-      "host.externrefProcessOwner.releaseGeneration(childExternrefGeneration)",
+      "externrefProcessOwner.releaseGeneration(childExternrefGeneration)",
       rollback,
     );
 

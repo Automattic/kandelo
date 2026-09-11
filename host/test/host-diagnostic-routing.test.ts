@@ -43,12 +43,7 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     // once in `host/src/process-lifecycle.ts` on behalf of both entries, so
     // it is asserted there — and the entry must still bind the reporter, so
     // deleting the wire keeps failing this test.
-    for (const diagnosticSource of [
-      "worker-main error message",
-      "exec post-commit transition",
-    ]) {
-      expect(source).toContain(`source: "${diagnosticSource}"`);
-    }
+    expect(source).toContain('source: "worker-main error message"');
     // `clone allocation` and `thread worker failure` join `worker protocol`
     // in `host/src/process-lifecycle.ts`: `handleClone` is now one
     // implementation serving both hosts, so each is raised once. That is
@@ -56,14 +51,19 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
     // reported on one host and swallowed on the other — and the entry must
     // still bind the reporter and the handler, so deleting either wire keeps
     // failing this test.
+    // `exec post-commit transition` joined them when `handleExec` became one
+    // implementation: an exec that fails after the commit point can no longer
+    // be reported on one host and swallowed on the other.
     for (const diagnosticSource of [
       "worker protocol",
       "clone allocation",
       "thread worker failure",
+      "exec post-commit transition",
     ]) {
       expect(sharedLifecycleSource).toContain(`source: "${diagnosticSource}"`);
     }
     expect(source).toContain("handleClone");
+    expect(source).toContain("handleExec");
     expect(source).toContain("reportWorkerProtocolError");
     expect(source).toContain("reportHostDiagnostic");
   });
@@ -87,9 +87,12 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
       /post\(\{\s*type:\s*"kernel_fatal",\s*error:\s*detail\s*\}\)/,
     );
     expect(sharedLifecycleSource).toContain("host.stopKernelRealm()");
-    expect(source).toMatch(
+    // The kernel callback record is shared now, so the wire is asserted
+    // there; the entry must still take that record.
+    expect(sharedLifecycleSource).toMatch(
       /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
     );
+    expect(source).toContain("...processLifecycleKernelCallbacks(),");
     expect(source).toContain("terminatePoisonedKernelWorker,");
     expect(source).toMatch(/\bstopKernelRealm:\s*\(\)\s*=>/);
   });

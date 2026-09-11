@@ -96,12 +96,8 @@ function ordinaryForkHandlerSource(): string {
   return sharedFunctionSource("handleOrdinaryFork");
 }
 
-function execHandlerSource(src: string): string {
-  const start = src.indexOf("async function handleExec(");
-  const end = src.indexOf("\n/**\n * Pre-flight resolver", start);
-  expect(start).toBeGreaterThanOrEqual(0);
-  expect(end).toBeGreaterThan(start);
-  return src.slice(start, end);
+function execHandlerSource(): string {
+  return sharedFunctionSource("handleExec");
 }
 
 function cloneHandlerSource(): string {
@@ -140,7 +136,8 @@ function centralizedInitMessageSource(handler: string): string {
   return handler.slice(start, end);
 }
 
-function spawnCallbackSource(src: string): string {
+function spawnCallbackSource(): string {
+  const src = readFileSync(sharedLifecycle, "utf8");
   const start = src.indexOf("onResolveSpawn:");
   const end = src.indexOf("\n      onClone:", start);
   expect(start, "onResolveSpawn callback must exist").toBeGreaterThanOrEqual(0);
@@ -148,8 +145,20 @@ function spawnCallbackSource(src: string): string {
   return src.slice(start, end);
 }
 
+/**
+ * Assert the shared callback record wires spawn, and that `entry` takes it.
+ *
+ * The record moved into `host/src/process-lifecycle.ts`, so the wiring is
+ * checked once — an invariant can no longer hold in one host's copy and be
+ * missing from the other's — while each entry is still required to spread it,
+ * so sharing the record cannot read as unwiring a host.
+ */
 function expectSpawnCallbacks(src: string, entry: string): void {
-  const callbacks = spawnCallbackSource(src);
+  expect(
+    src,
+    `${entry} must spread the shared process-lifecycle callback record`,
+  ).toContain("...processLifecycleKernelCallbacks(),");
+  const callbacks = spawnCallbackSource();
   expect(
     callbacks,
     `${entry} must wire onResolveSpawn to handlePosixSpawnResolve`,
@@ -185,18 +194,23 @@ describe("spawn host parity", () => {
       /onExec\?:\s*\(\s*pid:\s*number,\s*path:\s*string,/s,
     );
 
+    const sharedCallbacks = readFileSync(sharedLifecycle, "utf8");
+    expect(
+      sharedCallbacks,
+      "the shared callback record must accept a target-shaped request",
+    ).toMatch(
+      /onExec:\s*async\s*\(request\)\s*=>[\s\S]*handleExec\(request\)/,
+    );
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
-      expect(source, `${entry} must accept a target-shaped request`).toMatch(
-        /onExec:\s*async\s*\(request\)\s*=>[\s\S]*handleExec\(request\)/,
-      );
+      expectEntryProvides(source, entry, "handleExec");
       expect(source, `${entry} must remove the Task 10 staging gate`).not.toContain(
         "preparedExecTargetReaderPending",
       );
       expect(source, `${entry} must not carry credential path authority`).not.toContain(
         "credentialPath",
       );
-      const handler = execHandlerSource(source);
+      const handler = execHandlerSource();
       expect(handler, `${entry} must source replacement bytes from the target request`)
         .toMatch(/targetBytes:\s*(?:programBytes|bytes)/);
       expect(handler, `${entry} must send only target-derived bytes to the Worker`)
@@ -273,7 +287,8 @@ describe("spawn host parity", () => {
 
   it("both exec adapters consume the complete commit-captured transition", () => {
     for (const entry of [nodeEntry, browserEntry]) {
-      const handler = execHandlerSource(readFileSync(entry, "utf8"));
+      expectEntryProvides(readFileSync(entry, "utf8"), entry, "handleExec");
+      const handler = execHandlerSource();
       const postCommit = handler.slice(handler.indexOf("const startAfterCommit"));
       expect(
         postCommit,
@@ -291,7 +306,8 @@ describe("spawn host parity", () => {
   it("both hosts recheck process generations inside delayed kernel retries", () => {
     for (const entry of [nodeEntry, browserEntry]) {
       const source = readFileSync(entry, "utf8");
-      const exec = execHandlerSource(source);
+      expectEntryProvides(source, entry, "handleExec");
+      const exec = execHandlerSource();
       expect(
         exec,
         `${entry} must guard exec liveness and address-space preparation`,

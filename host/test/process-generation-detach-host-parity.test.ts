@@ -157,19 +157,42 @@ describe("process generation detach host parity", () => {
       }
 
       // Every callback that can expose a process Memory to a new process or
-      // pthread Worker must enter the same destroy admission gate.
+      // pthread Worker must enter the same destroy admission gate. The
+      // callback record is one implementation in
+      // `host/src/process-lifecycle.ts` now, so this is checked once: a gate
+      // can no longer be present on one host's callbacks and absent from the
+      // other's. The entry is still required to take that record.
+      expect(
+        source,
+        `${host} entry must spread the shared callback record`,
+      ).toContain("...processLifecycleKernelCallbacks(),");
+      // Four of the five reach the kernel through that record.
       for (const operation of [
-        "a host-spawned process Worker",
         "a fork process Worker",
         "an exec process Worker",
         "a posix_spawn process Worker",
         "a pthread Worker",
       ]) {
-        expect(source).toContain(`"${operation}"`);
+        expect(sharedLifecycle).toContain(`"${operation}"`);
       }
+      // Four admissions through the gate's scoped form — fork takes two, one
+      // per mode — plus exec, which holds the admission across its two-phase
+      // launch plan and so acquires it explicitly.
+      expect(
+        sharedLifecycle.match(
+          /processMemoryCreators\s*\.run(?:UntilCommitted)?\(/g,
+        ),
+      ).toHaveLength(4);
+      expect(
+        sharedLifecycle.match(/processMemoryCreators\s*\.acquire\(/g),
+      ).toHaveLength(1);
+      // The fifth is a `spawn` message from main, which arrives at the entry
+      // rather than through a kernel callback, so it stays the entry's to
+      // admit — and each entry must still admit it.
+      expect(source).toContain('"a host-spawned process Worker"');
       expect(
         source.match(/processMemoryCreators\s*\.run(?:UntilCommitted)?\(/g),
-      ).toHaveLength(5);
+      ).toHaveLength(1);
     });
 
     it(`${host} keeps exact kernel detach calls inside the shared wrapper`, () => {

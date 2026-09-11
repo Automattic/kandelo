@@ -61,11 +61,17 @@ describe.each([
   const entry = source(relativePath);
 
   it("replaces PID-stable authority only in the committed exec transition", () => {
-    // Bounded structurally, not by naming whichever declaration follows:
-    // `handlePosixSpawnResolve` moved into `host/src/process-lifecycle.ts`,
-    // which would have turned this slice into `-1` and failed a test whose
-    // subject — the exec transition — did not change.
-    const exec = functionSource(entry, "async function handleExec(");
+    // `handleExec` is one implementation in `host/src/process-lifecycle.ts`
+    // serving both hosts, so it is sliced from there. That makes this
+    // assertion stronger, not weaker: the authority replacement can no longer
+    // sit inside one host's committed transition and outside the other's.
+    // Both entries are still required to bind it, so sharing the function
+    // cannot read as deleting it.
+    expect(
+      entry.includes("  handleExec,\n") && entry.includes("} = lifecycle;"),
+      `${relativePath} must bind handleExec from ./process-lifecycle`,
+    ).toBe(true);
+    const exec = functionSource(sharedLifecycle, "  async function handleExec(");
     const commit = exec.indexOf(
       "kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)",
     );
