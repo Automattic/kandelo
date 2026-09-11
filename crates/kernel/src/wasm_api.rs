@@ -5354,14 +5354,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // word is always the 0 musl pads with -- never a pointer width. Passing
         // it to the width-checked entry made EVERY setsockopt fail EINVAL at
         // the width guard, before any fd, level or optname was examined.
-        // `kernel_setsockopt` is the one authority for this process's pointer
-        // width; route through it rather than re-deriving the value here.
-        59 => kernel_setsockopt(
+        59 => kernel_setsockopt_for_process_width(
             a1,
             a2 as u32,
             a3 as u32,
             channel_const_ptr!(3, u8),
             channel_scalar::u32_argument(59, args, 4),
+            caller_pointer_width!(),
         ), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, channel_mut_ptr!(1, u8), channel_mut_ptr!(2, u32)), // SYS_GETPEERNAME
@@ -5473,7 +5472,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 // would misclassify a negative scalar as an address.
                 _ => channel_u32_scalar_usize(a3) as *mut u8,
             };
-            kernel_ioctl(a1, request, argument, a4 as u32, a6 as u32)
+            // WHY NOT `a6`: ioctl takes three arguments, so the sixth
+            // channel word is always 0, never a pointer width. Passing it to
+            // the width-checked entry failed EVERY ioctl whose request is in
+            // the contract table with EINVAL, before the fd was examined --
+            // while requests absent from the table skipped the guard and
+            // answered ENOTTY correctly, which is what made the failure look
+            // interface-specific. `caller_pointer_width` is the process's own
+            // recorded width and is already the authority this dispatch uses
+            // for scratch sizing.
+            kernel_ioctl(a1, request, argument, a4 as u32, caller_pointer_width!())
         } // SYS_IOCTL
 
         // File system
