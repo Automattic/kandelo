@@ -3213,11 +3213,16 @@ mod tests {
     /// 54 host-native smoke tests and 1,952 runtime-core tests green.
     ///
     /// The fixture checks a plausible RECORD for each, not merely a non-error
-    /// return, and guards the EXTENT of every output record with a trailing
-    /// canary -- so a wasm32 caller served the (doubled) wasm64 size for
-    /// `stack_t`, `struct itimerval` or `struct mq_attr` is caught here too,
-    /// not only by a wasm64 guest. See `fixtures/native_process_layout.c` for
-    /// what each exit code means.
+    /// return: field values are compared against the kernel's own compiled-in
+    /// constants or against values the guest supplied earlier in the same run,
+    /// and each output record carries a trailing canary that catches a write
+    /// running past it.
+    ///
+    /// This was verified to FAIL on a kernel built with
+    /// `current_caller_pointer_width` reporting 8 for a wasm32 caller -- the
+    /// width-misread regression this test exists for. It stops at exit code 4,
+    /// the first record (`statfs`), whose fields then parse at wasm64 offsets.
+    /// See `fixtures/native_process_layout.c` for what each exit code means.
     #[test]
     fn smoke_process_layout_records_through_channel() -> anyhow::Result<()> {
         let Some(path) = kernel_path_or_skip() else {

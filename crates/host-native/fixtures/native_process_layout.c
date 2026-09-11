@@ -27,15 +27,22 @@
  *      bytes have to have made the whole round trip.
  *
  *   2. EXTENT, via a CANARY. Each output record is embedded in a struct with a
- *      known byte pattern immediately after it. The kernel writes exactly the
- *      caller-native size; if the host ever staged -- or the kernel ever wrote
- *      -- the OTHER data model's size, the larger write would run past the
- *      record and destroy the canary. That matters because the three records
- *      below whose size actually differs by data model (sigaltstack 12/24,
- *      itimerval 16/32, mq_attr 32/64) all DOUBLE at wasm64, so a wasm32
- *      caller served a wasm64 size overruns by exactly the record length.
- *      Without the canary this wasm32 fixture would catch a width read as
- *      ZERO but not one read as EIGHT; with it, it catches both.
+ *      known byte pattern immediately after it, so any write that runs past
+ *      the record into the caller's memory is caught rather than silently
+ *      accepted. Note what this does and does not reach: only three of these
+ *      syscalls keep RAW arguments (`rt_sigqueueinfo`, `rt_sigtimedwait`,
+ *      `waitid` -- see `crates/shared/src/host_raw_syscalls.rs`), and only for
+ *      those does the HOST copy a descriptor-sized span back into guest
+ *      memory. The other ten ride the opaque record path, where the guest glue
+ *      sizes its own spans and the host is out of the data path entirely; a
+ *      kernel-side size error there corrupts the channel record rather than
+ *      overrunning this struct. The canary is a cheap standing guard on the
+ *      host copy-back extent, not the thing that catches a width error.
+ *
+ *      WHAT CATCHES A WIDTH ERROR IS THE CONTENT CHECKS. Verified by building
+ *      a kernel whose `current_caller_pointer_width` reports 8 for a wasm32
+ *      caller: this fixture fails at exit code 4 on the very first record,
+ *      `statfs`, because the fields parse at the wrong offsets.
  *
  * Every check that fails returns a distinct exit code so a red run names the
  * syscall and the property, and each success prints one line. The Rust test
