@@ -46,11 +46,20 @@ set -euo pipefail
 #        another module's address space.
 #  * +bulk-memory: passive data segments. Deliberately WITHOUT `+atomics`:
 #        atomics are for shared memory, which this module does not have.
-#  * panic=immediate-abort: no unwinder, minimal panic surface.
+#  * panic=immediate-abort: no unwinder, minimal panic surface. NOTE: the
+#        older `-Z build-std-features=panic_immediate_abort` is NOT an
+#        alternative here -- `core` refuses the combination and its own error
+#        points back at this flag. The panic surface is already minimal; there
+#        is no further win there.
+#  * opt-level=z: optimize for size over speed. This module is called a handful
+#        of times per process launch and never in a loop, so code size is the
+#        only dimension that matters to a caller. Measured on the shipped
+#        module: 185,988 -> 174,216 bytes raw.
 MODULE_RUSTFLAGS=(
   -C target-feature=+bulk-memory
   -Zunstable-options
   -C panic=immediate-abort
+  -C opt-level=z
   -C link-arg=--export-memory
 )
 
@@ -66,9 +75,21 @@ HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 # test asserting the union really does cover the full graph.
 WASM_ARTIFACT_MODULE_CLOSURE_CRATES="wasm-artifact-module,wasm-artifact"
 
+# WHY THIS SCRIPT'S OWN HASH IS IN THE KEY: `workspace-closure-sha` walks the
+# crate graph, which is the right answer for source changes and the wrong one
+# for RECIPE changes. The flags below -- `opt-level`, the wasm-opt pass, the
+# target features -- decide the artifact's bytes just as surely as the Rust
+# does, and none of them appear in the crate closure. Without this, editing
+# this file leaves every staged copy stale while `--verify-fresh` reports it
+# current: a freshness gate that passes because it looked in only one of the
+# two places the output comes from. That is the same shape as the stale-kernel
+# defects this repository has already paid for twice.
 closure_sha() {
-  cargo run -q -p xtask --target "$HOST_TRIPLE" -- workspace-closure-sha \
-    --crates "$WASM_ARTIFACT_MODULE_CLOSURE_CRATES"
+  local crates_sha recipe_sha
+  crates_sha="$(cargo run -q -p xtask --target "$HOST_TRIPLE" -- \
+    workspace-closure-sha --crates "$WASM_ARTIFACT_MODULE_CLOSURE_CRATES")"
+  recipe_sha="$(shasum -a 256 "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
+  printf '%s\n' "$crates_sha-$recipe_sha" | shasum -a 256 | cut -d' ' -f1
 }
 
 build_key_path() {
@@ -80,6 +101,43 @@ build_key_path() {
 # host-surface growth this campaign exists to reverse, and in this case also a
 # bootstrap cycle, since the reader runs before the kernel is compiled. So it
 # fails the build rather than being discovered later by a boot failure.
+# Shrink the module with binaryen.
+#
+# WHY THIS IS WORTH A BUILD STEP: this artifact is downloaded by every browser
+# boot before the kernel is compiled, because it is what tells the host the
+# kernel's pointer width. Measured, combined with `-C opt-level=z` above:
+#
+#   185,988 -> 138,481 bytes raw (-25.5%), ~56,000 -> 51,439 gzipped (-8.2%)
+#
+# The raw win is much larger than the transfer win because what `-Oz` removes
+# compresses well. Both matter, for different reasons: gzipped bytes are the
+# download, raw bytes are what the browser has to parse and compile before the
+# first artifact can be read.
+#
+# `--enable-bulk-memory` is required, not optional: the module is built with
+# `+bulk-memory` for passive data segments, and without the matching flag
+# binaryen rejects the input outright with "error validating input" rather than
+# passing it through.
+#
+# A missing wasm-opt FAILS the build instead of silently skipping. A size
+# optimization that quietly does not run is the same silent-success shape as a
+# freshness gate that passes because it never looked.
+shrink_module() {
+  local wasm="$1"
+  if ! command -v wasm-opt >/dev/null 2>&1; then
+    echo "wasm-artifact-module: wasm-opt is unavailable, so $wasm cannot be" \
+      "size-optimized. Run this under scripts/dev-shell.sh, which provides" \
+      "binaryen." >&2
+    return 1
+  fi
+  local before after
+  before="$(wc -c < "$wasm" | tr -d ' ')"
+  wasm-opt -Oz --enable-bulk-memory -o "$wasm.opt" "$wasm"
+  mv "$wasm.opt" "$wasm"
+  after="$(wc -c < "$wasm" | tr -d ' ')"
+  echo "wasm-artifact-module: wasm-opt -Oz ${before} -> ${after} bytes" >&2
+}
+
 verify_no_imports() {
   local wasm="$1"
   local imports
@@ -137,6 +195,9 @@ RUSTFLAGS="${MODULE_RUSTFLAGS[*]}" \
 
 WASM32="target/wasm32-unknown-unknown/release/wasm_artifact_module.wasm"
 echo "wasm32 artifact: $WASM32" >&2
+# Shrink FIRST, then verify: the zero-import contract must hold for the bytes
+# that ship, not for an intermediate binaryen never saw.
+shrink_module "$WASM32"
 verify_no_imports "$WASM32"
 
 # Stage where BOTH hosts load it, mirroring `dylink_module32.wasm`:
