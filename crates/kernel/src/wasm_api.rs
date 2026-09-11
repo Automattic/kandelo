@@ -1171,7 +1171,43 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
     }
 
     fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
-        self.memory_lens.get(&pid).copied()
+        // `None` is the right answer for a process that is gone, and the table
+        // reads it as "skip this process". An entry point that failed to seed a
+        // *live* process produces the same answer, and the skip is then a
+        // silent `MAP_SHARED` coherence failure rather than a correct elision:
+        // one new mapping runs `publish_file_backing_observers`, which walks
+        // every *peer* process observing the same backing, so seeding only the
+        // caller skips them all and two processes sharing a file each keep
+        // their own view.
+        //
+        // The kernel cannot repair it — the value belongs to a
+        // `WebAssembly.Memory` it holds no handle to, and inventing a length
+        // would corrupt memory rather than merely diverge — so it records the
+        // loss instead. The decision itself lives in `runtime_core` because
+        // this file has no unit-test seam.
+        //
+        // CONTRACT (see `fd_stat`): this borrows the global process table for
+        // the length of the call, so it joins the fd-writeback trio in
+        // requiring that no entry point driving `SharedMappingTable` holds a
+        // `&mut Process` across a `SharedMappingIo` call.
+        let seeded = self.memory_lens.get(&pid).copied();
+        if seeded.is_some() {
+            return seeded;
+        }
+        let process_is_live = {
+            let table = unsafe { &*PROCESS_TABLE.0.get() };
+            table.get(pid).is_some()
+        };
+        let log = unsafe {
+            &mut *runtime_core::writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG
+                .0
+                .get()
+        };
+        runtime_core::writeback_loss::resolve_process_memory_len(
+            log,
+            seeded,
+            process_is_live,
+        )
     }
 
     fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {

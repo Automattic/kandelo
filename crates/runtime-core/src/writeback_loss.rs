@@ -47,9 +47,10 @@ pub const WRITEBACK_LOSS_REASON_MAX: usize = 64;
 
 /// What kind of shared-mapping state was lost.
 ///
-/// Two things can go missing in the mapping layer and neither may go quietly:
-/// a writeback that could not be published, and a host handle released by a
-/// backing that never took it. They are different losses with different
+/// Three things can go missing in the mapping layer and none may go quietly:
+/// a writeback that could not be published, a host handle released by a
+/// backing that never took it, and a live process whose mappings a
+/// publication pass skipped. They are different losses with different
 /// operands, so the record names which one it is rather than forcing a handle
 /// into a field labelled `addr` -- a field label that lied would be exactly the
 /// "appearance of correctness" the platform-values contract forbids.
@@ -61,6 +62,11 @@ pub enum MappingLossKind {
     /// A backing released a host handle it never retained, so the handle is now
     /// unreachable for its deferred close. Operand: the handle.
     UnheldHandle,
+    /// A publication pass reached a live process whose committed linear-memory
+    /// length the entry point never supplied, so every mapping that process
+    /// holds was skipped. The pid in the record is the whole operand; this
+    /// kind has no second one.
+    UnseededProcess,
 }
 
 impl MappingLossKind {
@@ -69,6 +75,7 @@ impl MappingLossKind {
         match self {
             Self::Writeback => "writeback",
             Self::UnheldHandle => "unheld-handle",
+            Self::UnseededProcess => "unseeded-process",
         }
     }
 
@@ -77,6 +84,8 @@ impl MappingLossKind {
         match self {
             Self::Writeback => "addr",
             Self::UnheldHandle => "handle",
+            // No operand: the pid is the loss.
+            Self::UnseededProcess => "",
         }
     }
 }
@@ -200,6 +209,14 @@ impl WritebackLossLog {
                     )
                     .as_bytes(),
                 ),
+                MappingLossKind::UnseededProcess => out.extend_from_slice(
+                    format!(
+                        "loss kind={} pid={} reason=",
+                        record.kind.label(),
+                        record.pid,
+                    )
+                    .as_bytes(),
+                ),
             }
             out.extend_from_slice(&record.reason);
             out.push(b'\n');
@@ -241,6 +258,44 @@ pub fn record_unheld_handle_loss(handle: i64) {
     }
 }
 
+/// Decide what `SharedMappingIo::process_memory_len` answers, recording the
+/// loss when the answer is a skip that should not have happened.
+///
+/// `seeded` is the length the entry point supplied, if any. `process_is_live`
+/// is whether the kernel's process table still holds the pid.
+///
+/// The three cases are deliberately separated because two of them produce the
+/// same answer for opposite reasons:
+///
+/// - seeded: answer the length;
+/// - not seeded, process gone: answer `None`, which correctly means "skip a
+///   process that no longer exists";
+/// - not seeded, process live: answer `None` because there is nothing else to
+///   answer, and record the loss, because this skip is a silent `MAP_SHARED`
+///   coherence failure rather than a correct elision.
+///
+/// This is a free function taking the log rather than a method on the kernel's
+/// `SharedMappingIo` so the decision can be tested at all: the kernel's impl
+/// lives in `crates/kernel/src/wasm_api.rs`, which has no unit-test seam.
+pub fn resolve_process_memory_len(
+    log: &mut WritebackLossLog,
+    seeded: Option<u64>,
+    process_is_live: bool,
+) -> Option<u64> {
+    if let Some(len) = seeded {
+        return Some(len);
+    }
+    if process_is_live {
+        log.record_kind(
+            MappingLossKind::UnseededProcess,
+            0,
+            0,
+            "live process not seeded with its memory length",
+        );
+    }
+    None
+}
+
 /// Render the kernel-wide log as the `/proc/kandelo/writeback_losses` content.
 pub fn render_writeback_losses() -> Vec<u8> {
     unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).render() }
@@ -250,6 +305,63 @@ pub fn render_writeback_losses() -> Vec<u8> {
 mod tests {
     use super::*;
     use alloc::string::String;
+
+    /// A seeded length is answered unchanged and records nothing. This is the
+    /// overwhelmingly common case and must stay free of diagnostics.
+    #[test]
+    fn a_seeded_process_answers_its_length_and_records_nothing() {
+        let mut log = WritebackLossLog::new();
+        assert_eq!(resolve_process_memory_len(&mut log, Some(4096), true), Some(4096));
+        assert_eq!(log.total(), 0);
+    }
+
+    /// A process that is genuinely gone must be skipped silently. Recording it
+    /// would make every ordinary exit look like a loss, which would bury the
+    /// real ones.
+    #[test]
+    fn a_dead_process_is_skipped_without_a_loss() {
+        let mut log = WritebackLossLog::new();
+        assert_eq!(resolve_process_memory_len(&mut log, None, false), None);
+        assert_eq!(log.total(), 0);
+    }
+
+    /// The case the whole mechanism exists for: an entry point reached a live
+    /// process without supplying its length, so every mapping that process
+    /// holds is about to be skipped. The answer is still `None` — nothing else
+    /// can be answered — but it must not be silent.
+    #[test]
+    fn a_live_unseeded_process_answers_none_and_records_the_loss() {
+        let mut log = WritebackLossLog::new();
+        assert_eq!(resolve_process_memory_len(&mut log, None, true), None);
+        assert_eq!(log.total(), 1);
+        assert_eq!(log.records().len(), 1);
+        assert_eq!(log.records()[0].kind, MappingLossKind::UnseededProcess);
+    }
+
+    /// The new kind has no second operand — the pid is the whole loss — so it
+    /// must not render an `addr=` or `handle=` field carrying a placeholder.
+    #[test]
+    fn the_unseeded_process_report_names_the_pid_and_no_operand() {
+        let mut log = WritebackLossLog::new();
+        log.record_kind(
+            MappingLossKind::UnseededProcess,
+            41,
+            0,
+            "live process not seeded with its memory length",
+        );
+        let text = String::from_utf8(log.render()).expect("ASCII report");
+        assert!(
+            text.contains(
+                concat!(
+                    "loss kind=unseeded-process pid=41 ",
+                    "reason=live process not seeded with its memory length\n",
+                )
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("addr="), "{text}");
+        assert!(!text.contains("handle="), "{text}");
+    }
 
     #[test]
     fn a_loss_is_recorded_with_its_structured_fields() {
