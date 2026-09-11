@@ -2207,6 +2207,48 @@ back to explicit paths otherwise.
 
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
 
+### Readiness is a kernel decision; backends report facts
+
+A `NetworkIO` backend never decides whether a socket is readable or
+writable. It answers `readiness(handle)` with a
+`wasm_posix_shared::net_readiness` fact word — bytes buffered, end of
+stream observed, the engine will accept a write, the write half is gone,
+the connection is torn down, a sticky error and the errno the engine
+observed. `runtime_core::net_readiness::stream_revents` turns those facts
+plus the caller's `events` into `poll` `revents`, in one place, for every
+backend on both hosts.
+
+The split is deliberate: what an engine alone can see (a socket's
+OS-level state, a `fetch` promise's settlement) is a fact; which POLL
+bits follow from it is POSIX policy. The rule previously lived in eight
+places — the kernel, the `HostIO` default method, four backends, and two
+"no `poll` implementation" fallbacks — and the copies disagreed with
+POSIX and each other about whether `POLLHUP` is gated by `events`,
+whether it may accompany `POLLOUT`, and whether end-of-file is
+`POLLIN`.
+
+A backend that cannot observe readiness reports
+`NET_READINESS.UNOBSERVABLE` rather than a readiness claim. The kernel's
+response is wake-every-round: report the requested `POLLIN`/`POLLOUT` and
+let `recv`/`send` answer `EAGAIN`.
+
+The fact vocabulary is generated into `host/src/generated/abi.ts` by
+`cargo xtask dump-abi`, so the two sides share one definition.
+
+Backend failures on `send` and `recv` reach the guest as the errno the
+backend determined — a Node socket error's `code`, or an explicit POSIX
+`errno` — via `negErrno`, with `EIO` for a failure nothing classified.
+The transport does not choose an errno on a backend's behalf.
+
+Known divergence, not yet closed: the kernel's own pipe-backed socket
+path (AF_UNIX and loopback AF_INET) still raises `POLLHUP` when a peer
+closes its write end and never reports end-of-file as `POLLIN`, so
+`POLLHUP` doubles as the reader's EOF wakeup and can accompany
+`POLLOUT`. Linux treats that state as `RCV_SHUTDOWN` —
+`EPOLLIN | EPOLLRDHUP` with `EPOLLOUT` intact — and reserves `EPOLLHUP`
+for both directions down. Correcting it changes wakeups for every
+AF_UNIX and loopback socket and needs conformance-suite validation.
+
 AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram
 is dropped and the already-queued datagrams retain their order. `SO_RCVBUF`
