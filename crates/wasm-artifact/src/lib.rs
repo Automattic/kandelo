@@ -52,6 +52,22 @@ pub use policy::{describe_artifact_policy_failures, ArtifactPolicy};
 /// against a different snapshot is caught even when the ABI *number* matches.
 pub const ABI_CONTRACT_SECTION: &str = "kandelo.abi.contract";
 
+/// The custom section carrying the 32-byte content-addressed build key a
+/// locally-built artifact was produced under.
+///
+/// Sibling of [`ABI_CONTRACT_SECTION`]: the local-build engine appends both at
+/// cache-store time (`tools/xtask/src/build_stamp.rs`), and
+/// `cargo xtask verify-fresh` compares this one against the key the current
+/// source tree resolves to, so a stale mirror fails loud independently of the
+/// ABI version.
+///
+/// It is declared HERE, beside its sibling, because three realms read it and a
+/// section name spelled separately in each of them is the drift this crate
+/// exists to stop. An artifact that carries NEITHER stamp was staged by hand
+/// rather than built by the engine -- a different fact from being stale, and
+/// one a reader has to be told apart from it.
+pub const BUILD_KEY_SECTION: &str = "kandelo.build.key";
+
 /// Read an artifact's declared ABI epoch, or `None` when it predates the
 /// `__abi_version` marker rollout.
 pub fn read_abi_version(bytes: &[u8]) -> Option<i32> {

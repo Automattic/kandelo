@@ -24,6 +24,12 @@ path = "src/main.rs"
 [dependencies]
 wasm-posix-shared = { path = "../../crates/shared" }
 wasi-abi = { path = "../../crates/wasi-abi" }
+# The section names the build stamper writes and `verify-fresh` reads. They are
+# declared once, in the artifact reader every realm shares, rather than spelled
+# separately in the writer and each reader -- a section name that drifts between
+# the stamper and a reader makes a stamped artifact look unstamped, which is
+# indistinguishable from a stale one.
+wasm-artifact = { path = "../../crates/wasm-artifact" }
 fork-instrument = { path = "../../crates/fork-instrument" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

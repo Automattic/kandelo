@@ -1642,6 +1642,36 @@ pub fn run_guest(
     guest_wasm: &[u8],
     options: &GuestOptions,
 ) -> anyhow::Result<RunOutcome> {
+    // B29: a failure that implicates the kernel ARTIFACT gets the artifact's
+    // own provenance attached, here, where the path is known.
+    //
+    // Without this the whole diagnosis a reader receives is
+    // `failed to find function export kernel_set_process_pointer_width`,
+    // repeated once per test -- a message that reads as "the kernel is broken"
+    // when the cause is "your kernel predates your base". A reproduction of
+    // exactly that (one export removed from an otherwise current kernel) turns
+    // 57 passing tests into 30 failures, every one of them that bare line, with
+    // nothing naming the artifact, its tier, or its age.
+    //
+    // The wrapper is here rather than around the forty `get_typed_func`
+    // bindings because this is the outermost point that still knows which
+    // artifact was loaded, and `implicates_kernel_artifact` keeps the note off
+    // failures that are about the guest or the run.
+    run_guest_inner(kernel_wasm, guest_wasm, options).map_err(|error| {
+        if crate::implicates_kernel_artifact(&error) {
+            let provenance = crate::kernel_artifact_provenance(kernel_wasm);
+            error.context(provenance)
+        } else {
+            error
+        }
+    })
+}
+
+fn run_guest_inner(
+    kernel_wasm: &Path,
+    guest_wasm: &[u8],
+    options: &GuestOptions,
+) -> anyhow::Result<RunOutcome> {
     let engine = crate::kernel_engine()?;
 
     // --- Guest module, layout, and memory (created first so kernel host imports

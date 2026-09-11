@@ -477,6 +477,162 @@ pub fn kernel_wasm_path() -> PathBuf {
     artifact_path("kernel.wasm")
 }
 
+/// The substrings that identify a wasmtime failure as being about the KERNEL
+/// ARTIFACT rather than about the guest or the run.
+///
+/// WHY A LIST AND NOT A REGION. Attaching provenance to every `run_guest`
+/// error would put build metadata on a guest's own assertion failure, where it
+/// is noise. Attaching it to a lexical region would mean threading a result
+/// type through the forty `get_typed_func` bindings the pump takes. These are
+/// the phrasings wasmtime actually produces when the module it loaded does not
+/// match the host that is binding it, each one observed against a real
+/// artifact rather than guessed: a missing export, an import the kernel
+/// declares that the host does not define, and an import whose type moved.
+const KERNEL_ARTIFACT_ERROR_MARKERS: &[&str] = &[
+    "failed to find function export",
+    "unknown import",
+    "incompatible import type",
+    "kernel __abi_version",
+];
+
+/// Whether `error`'s chain implicates the kernel artifact's identity.
+pub(crate) fn implicates_kernel_artifact(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let text = cause.to_string();
+        KERNEL_ARTIFACT_ERROR_MARKERS
+            .iter()
+            .any(|marker| text.contains(marker))
+    })
+}
+
+/// What the kernel artifact at `path` says about its own provenance, rendered
+/// for a human reading a failure.
+///
+/// WHY THIS EXISTS. `cargo test -p host-native` against a kernel that predates
+/// the source tree fails with `failed to find function export <name>`, repeated
+/// once per test. That message names the symptom and hides the cause: it reads
+/// as "the kernel is broken" when the truth is "your kernel is older than your
+/// base", and the two have completely different fixes. One agent established
+/// the difference only by running `wasm-objdump -j Export` on two artifacts
+/// side by side. The staleness is invisible in both directions -- the suite
+/// does not know its kernel is old and neither does the reader -- so the
+/// artifact is made to say what it knows at the point where it disappoints.
+///
+/// This adds NO second freshness mechanism. It reads the two stamps the
+/// local-build engine already appends at cache-store time, through
+/// `wasm_artifact::read_custom_section`, the same artifact reader every other
+/// realm uses, and it points at `cargo xtask verify-fresh`, which owns the
+/// verdict. What was missing was never the information; it was the information
+/// reaching the reader at the moment of failure.
+pub fn kernel_artifact_provenance(path: &Path) -> String {
+    let mut lines = vec![format!("kernel artifact: {}", path.display())];
+
+    // Which tier answered, and whether another tier also holds a kernel. This
+    // is the tenth silent-success defect's exact shape:
+    // `local-binaries/source-only-v1/` is searched BEFORE ambient
+    // `local-binaries/`, so a stale source-only tier wins over a kernel that
+    // was just installed, and nothing says so.
+    let searched = artifact_search_paths("kernel.wasm");
+    match searched.iter().position(|candidate| candidate == path) {
+        Some(index) => {
+            lines.push(format!(
+                "  resolved from tier `{}` ({} of {} searched, in resolver order)",
+                ARTIFACT_TIERS[index],
+                index + 1,
+                ARTIFACT_TIERS.len(),
+            ));
+            let also: Vec<&str> = searched
+                .iter()
+                .enumerate()
+                .filter(|(other, candidate)| *other != index && candidate.exists())
+                .map(|(other, _)| ARTIFACT_TIERS[other])
+                .collect();
+            if !also.is_empty() {
+                lines.push(format!(
+                    "  a kernel.wasm ALSO exists in: {}. Only the tier above is \
+                     loaded, so refreshing one of the others changes nothing here.",
+                    also.join(", "),
+                ));
+            }
+        }
+        None => {
+            lines.push("  this path is not one of the tiers the resolver searches".to_string())
+        }
+    }
+
+    let Ok(bytes) = std::fs::read(path) else {
+        lines.push("  could not be re-read to report its provenance".to_string());
+        return lines.join("\n");
+    };
+
+    match wasm_artifact::read_abi_version(&bytes) {
+        Some(declared) if declared == EXPECTED_ABI_VERSION => {
+            lines.push(format!("  declares ABI {declared}, which this host expects"))
+        }
+        Some(declared) => lines.push(format!(
+            "  declares ABI {declared}, but this host expects ABI {EXPECTED_ABI_VERSION} \
+             -- the artifact is from a different ABI epoch",
+        )),
+        None => lines
+            .push("  declares no __abi_version at all, so it predates the ABI marker".to_string()),
+    }
+
+    let build_key = wasm_artifact::read_custom_section(&bytes, wasm_artifact::BUILD_KEY_SECTION);
+    let abi_contract =
+        wasm_artifact::read_custom_section(&bytes, wasm_artifact::ABI_CONTRACT_SECTION);
+    lines.push(format!(
+        "  {}: {}",
+        wasm_artifact::BUILD_KEY_SECTION,
+        describe_stamp(build_key),
+    ));
+    lines.push(format!(
+        "  {}: {}",
+        wasm_artifact::ABI_CONTRACT_SECTION,
+        describe_stamp(abi_contract),
+    ));
+
+    lines.push(
+        "A missing kernel export, an unknown import, or an import-type mismatch \
+         here usually means this artifact predates the source tree it is being \
+         tested against -- NOT that the kernel is broken."
+            .to_string(),
+    );
+    if build_key.is_some() {
+        lines.push(
+            "  Get the verdict:  cargo xtask verify-fresh\n  \
+             (it compares the build key above against the key this source tree \
+             now resolves to)"
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "  This artifact carries NO build key, so its age cannot be checked at \
+             all: only the local-build engine stamps one, and a kernel staged by \
+             `scripts/install-local-binary.sh` is not stamped. `cargo xtask \
+             verify-fresh` refuses it for that reason rather than judging it."
+                .to_string(),
+        );
+    }
+    lines.push("  Rebuild the tier the engine owns:  cargo xtask bootstrap kernel".to_string());
+    lines.join("\n")
+}
+
+/// One stamp line: present with enough of the digest to compare two artifacts
+/// by eye, or absent.
+fn describe_stamp(section: Option<&[u8]>) -> String {
+    match section {
+        Some(bytes) if bytes.len() == 32 => {
+            let head = bytes[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("{head}... (present)")
+        }
+        Some(bytes) => format!("present but {} bytes, not the expected 32", bytes.len()),
+        None => "absent".to_string(),
+    }
+}
+
 /// Path to the locally-built fork-module artifact (N1-I4): the co-resident
 /// PIC wasm side module (`crates/fork-module`, built via `crates/fork-
 /// module/build-wasm.sh`) that owns the fork replay algorithm the native host
