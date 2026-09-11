@@ -766,6 +766,73 @@ surface is roughly 4,900 lines in `memory-fs.ts` but only ~170 in
 path and stay. The original estimate was wrong in both magnitude and
 distribution.
 
+### 7.6 SECOND PASS 2026-09-10 — who actually reads `entries[]`, and what landed
+
+§7.5 established that `entries[]` cannot simply be deleted. This pass asked
+the next question — *which production code reads the per-member state a
+restore reconstructs from it* — and the answer narrows the problem
+considerably.
+
+**VERIFIED: at runtime, after boot, the host never consults `entries[]` to
+fetch anything.** The kernel-owned rootfs asks the host for archive bytes
+through `host_fetch_archive(archive_id, offset, dest)`, and the provider that
+answers is built by `buildRootfsLazyWiring`
+(`host/src/vfs/rootfs-lazy-archives.ts`). That provider's record is
+`{ transports, size, state }` — GROUP-level fields only. Per-member data goes
+into the same function's `lazyInput`, and both worker entries destructure only
+`{ archiveProvider }` from it (`host/src/node-kernel-worker-entry.ts:1196`,
+`host/src/browser-kernel-worker-entry.ts:1028`); the module header already
+states that `lazyInput` has no production consumer left and survives for the
+differential test oracle. The kernel extracts the member itself
+(`crates/runtime-core/src/zip.rs`).
+
+So the host's *fetch authority* — the thing §7.2 step 5 was really about —
+already needs nothing per-member. What still needs `entries[]` is narrower and
+more specific than "the host-side materialization subsystem":
+
+- **the restore → mutate → save round trip**, which re-derives `KLZY` from the
+  JSON on every save. This is the single load-bearing reader.
+
+**VERIFIED: the host-side lazy materialization subsystem is LIVE in
+production, and is not the deletable 4,900 lines.** Three reachable callers,
+none of them a test:
+
+- `host/src/vfs/rootfs-blob-store.ts` answers `host_blob_read` by opening the
+  path in the `MemoryFileSystem`. A URL-backed lazy file IS a base file to the
+  kernel, so its `open` hits `guardSynchronousLazyAccess`, which starts the
+  fetch and throws `EAGAIN` for the kernel to park on.
+- `host/src/kernel-worker.ts:21959` and `:22021` pass
+  `materializePath: (path) => this.io.preparePath?.(path)` into
+  `launchPreparedExecTarget`, so exec/spawn materializes a deferred target.
+- `apps/browser-demos/pages/benchmark/main.ts:94` calls `ensureMaterialized`.
+
+Archive-member materialization is dead for the rootfs boot path (the kernel
+extracts), but it shares `preparePath`/`ensureMaterialized` with the live
+URL-backed path, so it is not separable by deletion today. Retiring it is
+gated on the same work item that retires `host_blob_read`.
+
+**The typed deferred-tree schema is production-unimported but NOT ownerless.**
+`host/src/vfs/package-deferred-tree.ts` (861 lines) and
+`package-deferred-tree-contract.ts` (250) have no importer outside tests and
+fixtures; `materialization-plan.ts` (577) is imported by `memory-fs.ts` and
+`vfs/index.ts`. Deleting them would decide **D-B2**, which is the maintainer's
+open call, so this pass did not.
+
+**What landed instead: the corruption is now loud.** `restoreParsedImage`
+re-encodes `KLZY` from the two JSON sections it just validated and requires
+byte equality with the section the image carries. `saveImage` derives `KLZY`
+from exactly the arrays it stringifies, so equality holds for every image this
+writer produces; a restore that has silently lost archive members now fails
+with a specific error instead of producing a `MemoryFileSystem` whose next
+save writes an empty file table. The check is writer-agnostic: when the kernel
+becomes the image writer, the same equality still has to hold. The existing
+save/restore/save gate would NOT have caught this — it used a URL-backed lazy
+file, whose linkage the JSON lazy section carries directly — so the cycle is
+now also covered over archive-backed state, in both the lost-a-member and
+gained-a-member directions.
+
+**The remaining work is a program, not an item.** See D-B6.
+
 ---
 
 ## 8. STRONG DOUBT
@@ -897,6 +964,56 @@ between restore and manifest emission. A kernel parsing the raw image sees none
 of them. **This pass found nothing new and changes no part of the prior
 grounding's D3.** Restated here so it is not lost: it is still undecided, and
 recommendation (B) does not resolve it.
+
+### D-B6 — "The kernel writes the VFS image" is a program, not an item
+
+- **What.** The end state the maintainer named on 2026-09-10: the kernel holds
+  both the authoritative `/` tree and the lazy table, so it writes the image
+  directly and the host supplies bytes and storage.
+  `host/src/vfs/rootfs-overlay-export.ts` (318 lines) is then deleted rather
+  than designed around — its own header says the only reason it clones the
+  frozen base image is that the lazy descriptors "live only in the base
+  image", and moving the lazy table into the kernel removes that reason.
+- **Why it does not fit in one item, measured.** Three independent gaps, each
+  substantial:
+  1. **The kernel does not hold the bytes.** It holds the tree and, since
+     `KLZY`, the lazy table — but a base file's bytes live in the host's
+     `MemoryFileSystem` and reach the kernel only through `host_blob_read`
+     (`host/src/vfs/rootfs-blob-store.ts`). A writer cannot write bytes it
+     cannot read.
+  2. **There is no SFFS writer in Rust.** `crates/runtime-core/src/sffs.rs` is
+     770 lines of reader. The image body is produced by
+     `SharedFS.snapshotState()`, and SFFS is a real block filesystem —
+     superblock, inode and block bitmaps, an inode table, direct / indirect /
+     double-indirect block pointers, and a directory index (see the layout
+     constants at `host/src/vfs/sharedfs-vendor.ts:103-156`).
+  3. **Emission has to stream.** `lamp.vfs` is 249 MiB; the kernel cannot
+     buffer an image in linear memory.
+- **Proposed split**, each piece landable and green on its own:
+  - **W-1 — the kernel serves image-backed bytes from the image.** Retires
+    `host_blob_read` and `rootfs-blob-store.ts` (157 lines) and takes the host
+    import floor from 75 to 74. `docs/abi-versioning.md` already names this as
+    "the work item that collects" that import. It is the prerequisite for
+    everything below, and is worth doing whatever is decided about the rest.
+  - **W-2 — a Rust SFFS writer**, with a committed cross-language fixture in
+    both directions, the way `klzy-v1.bin` already works. The largest piece.
+  - **W-3 — streaming container emission.** `rootfs::export_tree_read(offset,
+    out)` is already exactly this cursor shape, so reusing that idiom is the
+    no-new-import path. Adding an import instead is a cost that needs its own
+    justification.
+  - **W-4 — cut over and delete.** `exportRootfsImageFromOverlay` goes; the
+    host appends only its own fetch-authority JSON; `entries[]` leaves the
+    image. The restore-time equality gate added in §7.6 keeps holding the
+    invariant across the change rather than being replaced by it.
+- **A boundary the move must preserve.** `rootfs-overlay-export.ts` documents
+  that runtime-created AF_UNIX sockets and FIFOs have no representation in a
+  `/` image and are reported as `skippedSpecial` rather than fabricated. A
+  Rust writer must report them the same way and must not invent them.
+- **Cost of deferring.** Every derived image keeps ~2.3 MB of redundant JSON,
+  and the campaign keeps two writers for one product artifact.
+- **Recommendation.** I am deciding none of it. W-1 is the natural next item:
+  independently valuable, already named in the ABI record, and it reduces the
+  import floor rather than growing it.
 
 ---
 
