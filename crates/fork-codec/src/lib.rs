@@ -85,6 +85,7 @@ pub use linked_frames::{
     LinkedFrames,
 };
 pub use linked_frames_writer::{ChunkAllocator, LinkedFrameWriter};
+pub use module_state_writer::ModuleStateWriter;
 pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };

@@ -152,8 +152,8 @@ mod wasm {
         drive_plan, encode_replay_events, AggregateKind, ChunkAllocator, GcProvenance,
         LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
-        ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent, ReplayEventJournal,
-        ResumeSlotTable, RewindDriver, SegmentedReferenceTransaction,
+        ModuleStateWriter, ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent,
+        ReplayEventJournal, ResumeSlotTable, RewindDriver, SegmentedReferenceTransaction,
     };
     use wasm_posix_shared::{abi, channel, mmap, ChannelStatus, Errno, Syscall};
 
@@ -1992,6 +1992,12 @@ mod wasm {
         /// `JournalImage` KFMS record so the child can find the inherited image.
         journal_image_ptr: u64,
         journal_image_len: u64,
+        /// Process-wide KFMS chunk list: the module-state records the guest
+        /// writes during `wpk_fork_module_state_save`, and the chunks they live
+        /// in. The host owned this until 2026-09-12; the module owns it now, so
+        /// the format has one implementation rather than two.
+        module_state: ModuleStateWriter,
+        module_state_chunks: ForkChunkList,
         /// Process-wide replay-event journal (records `(activation_id, ordinal)`
         /// commits across every activation; replays the global reverse order).
         journal: ReplayEventJournal,
@@ -2127,6 +2133,8 @@ mod wasm {
             extra_chunks: Vec::new(),
             journal_image_ptr: 0,
             journal_image_len: 0,
+            module_state: ModuleStateWriter::new(module_state_format()?),
+            module_state_chunks: ForkChunkList::new_channel(channel_base),
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
             replay_events: Vec::new(),
@@ -2677,6 +2685,12 @@ mod wasm {
             extra_chunks: Vec::new(),
             journal_image_ptr: 0,
             journal_image_len: 0,
+            // A replay-only child never writes module state: it DECODES the
+            // list it inherited. The writer is present but its chunk list
+            // allocates nothing (`channel_base == 0`), so a stray guest reserve
+            // here fails truthfully instead of writing into an unowned region.
+            module_state: ModuleStateWriter::new(module_state_format()?),
+            module_state_chunks: ForkChunkList::new_channel(0),
             journal,
             table,
             replay_events: decoded.events,
@@ -5010,6 +5024,136 @@ mod wasm {
     /// the live capture builder directly, so the parent never re-decodes its own
     /// graph and never reconstructs (its live references keep their identity by
     /// construction). Requires an active capture session.
+    /// The KFMS geometry for this guest's pointer width. Derived, never
+    /// host-supplied: the chunk header size is a pure function of the width.
+    fn module_state_format() -> Result<ModuleStateFormat, Errno> {
+        let pointer_width = core::mem::size_of::<usize>() as u8;
+        let chunk_header_size = abi::wpk_fork_module_state_chunk_header_size(pointer_width)
+            .ok_or(Errno::EINVAL)?;
+        Ok(ModuleStateFormat { pointer_width, chunk_header_size })
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_record_reserve(kind,
+    /// activation, owner, payload_size) -> payload_ptr`.
+    ///
+    /// Carves a KFMS record and hands back the address the guest writes its
+    /// payload into. The record is invisible to any decoder until
+    /// `__wpk_fork_module_state_record_commit`, so a guest that traps midway
+    /// leaves a chunk list a child can still read.
+    ///
+    /// Returns 0 with `fm_last_errno` set on failure, matching every other
+    /// pointer-returning entry in this module.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_record_reserve(
+        kind: u32,
+        activation_id: u32,
+        owner_id: u32,
+        payload_size: usize,
+    ) -> usize {
+        let Ok(kind) = u16::try_from(kind) else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let Some(module) = state().as_mut() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let mem = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = module;
+        match module_state.reserve(
+            module_state_chunks,
+            mem,
+            kind,
+            activation_id,
+            owner_id,
+            payload_size as u64,
+        ) {
+            Ok(payload) => {
+                set_ok();
+                payload as usize
+            }
+            Err(e) => {
+                set_err(e);
+                0
+            }
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_record_commit(payload_ptr)`.
+    ///
+    /// Publishes the reserved record. Returns nothing — the guest ABI has no
+    /// error channel here — so a failure is latched in `fm_last_errno`, the
+    /// same shape `__wpk_fork_ref_vector_append` uses.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_record_commit(payload: usize) {
+        let Some(module) = state().as_mut() else {
+            set_err(Errno::EINVAL);
+            return;
+        };
+        let mem = unsafe { mem_mut() };
+        match module.module_state.commit(mem, payload as u64) {
+            Ok(()) => set_ok(),
+            Err(e) => set_err(e),
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_record_find(kind, activation,
+    /// owner, ordinal) -> payload_ptr`, or 0 when there is no such record.
+    ///
+    /// **`ordinal` is a design decision, not a recovered fact.** The guest
+    /// declares this import and NEVER calls it — `fork-instrument` stores the
+    /// `FunctionId` in `ModuleStateImports` and emits no `call` to it — so the
+    /// meaning of the fourth argument could not be derived from a call site.
+    /// It is taken as "the Nth record matching the first three", which is the
+    /// only reading that makes the triple useful when a kind repeats per
+    /// activation (table pages do). A guest that starts calling this should be
+    /// checked against that choice rather than assumed to agree with it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_record_find(
+        kind: u32,
+        activation_id: u32,
+        owner_id: u32,
+        ordinal: u32,
+    ) -> usize {
+        let Ok(kind) = u16::try_from(kind) else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let Some(module) = state().as_ref() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let root = module.module_state.root();
+        if root == 0 {
+            set_ok();
+            return 0;
+        }
+        let Ok(format) = module_state_format() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let mem = unsafe { mem_ref() };
+        let Ok(decoded) = decode_module_state(mem, root, &format) else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let mut seen = 0u32;
+        for record in &decoded.records {
+            if record.kind == kind
+                && record.activation_id == activation_id
+                && record.owner_id == owner_id
+            {
+                if seen == ordinal {
+                    set_ok();
+                    return record.payload_offset as usize;
+                }
+                seen += 1;
+            }
+        }
+        set_ok();
+        0
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_scratch_reserve(len) -> ptr`.
     ///
     /// Hands back `len` bytes of transient exchange storage, 16-byte aligned.

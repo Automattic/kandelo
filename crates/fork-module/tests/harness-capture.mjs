@@ -101,6 +101,9 @@ for (const name of [
   "__wpk_fork_ref_gc_lookup",
   "__wpk_fork_unwind",
   "__wpk_fork_ref_scratch_reserve",
+  "__wpk_fork_module_state_record_reserve",
+  "__wpk_fork_module_state_record_commit",
+  "__wpk_fork_module_state_record_find",
   "__wpk_fork_ref_scratch_release",
   "__wpk_fork_ref_gc_transit",
 ]) {
@@ -598,6 +601,41 @@ function i31Minter() {
     () => x.__wpk_fork_ref_scratch_reserve(1 << 20),
     /unreachable/i,
     "a reserve larger than the scratch stack traps rather than returning 0",
+  );
+}
+
+// The KFMS record entries. The chunk list itself is round-tripped against its
+// decoder in `cargo test -p fork-codec`; what is checked HERE is the export
+// layer's behaviour when there is no fork in flight, which is the state this
+// harness runs in and the state a stray guest call would hit.
+{
+  assert.equal(
+    x.__wpk_fork_module_state_record_reserve(
+      1 /* kind */, 0 /* activation */, 0 /* owner */, 16,
+    ),
+    0,
+    "reserving with no fork in flight returns 0 rather than writing somewhere",
+  );
+  assert.equal(lastErrno(), EINVAL, "and reports EINVAL");
+
+  // `find` answers "no such record" rather than failing, so a guest probing an
+  // empty list gets a usable answer instead of an error it has no channel for.
+  assert.equal(
+    x.__wpk_fork_module_state_record_find(1, 0, 0, 0),
+    0,
+    "finding in an empty list returns 0",
+  );
+
+  // Commit has no error channel in the guest ABI -- it returns nothing -- so a
+  // failure must latch the errno rather than corrupting silently. With no fork
+  // in flight this exercises the no-state branch specifically; the
+  // nothing-reserved branch is covered by the writer's own
+  // `committing_the_wrong_address_is_refused` round-trip test.
+  x.__wpk_fork_module_state_record_commit(0x1000);
+  assert.equal(
+    lastErrno(),
+    EINVAL,
+    "committing with no fork in flight latches EINVAL",
   );
 }
 
