@@ -128,13 +128,6 @@
       "target": 3600,
       "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
     },
-    "webLibsSessionTypeScript": {
-      "measure": "line count of web-libs/kandelo-session/src/*.ts",
-      "ceiling": 5360,
-      "slack": 150,
-      "target": 2500,
-      "why": "Lane W. KernelHost, boot descriptors, demo config and snapshots \u2014 the contracts a new host consumes. kernel-host.ts is 2,776 of the 5,360 and touches the host boundary 6 times. Target is not 0 because boot descriptors and sharing are browser-facing product surface that has no kernel meaning. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
     "buildAutomationShell": {
       "measure": "line count of scripts/*.sh and scripts/**/*.sh",
       "ceiling": 25658,
@@ -169,6 +162,20 @@
       "slack": 0,
       "target": 1,
       "why": "Lane R, set by the R1 census. Replaces a line-count surface that would be satisfied by deleting policy that is not duplicated and untouched by fixing the duplication that is. host-native's equivalent of the 4,020-line TypeScript resolver is ten lines; what duplicates is the tier list and its order, spelled 8 times across the writer (xtask local-build, 7) and both readers. The drift already cost 39 of 53 host-native tests against a tree where the build had just succeeded."
+    },
+    "sessionHandMaintainedSyscallNames": {
+      "measure": "entries in SYSCALL_NAMES_LOCAL in web-libs/kandelo-session/src/kernel-host.ts",
+      "ceiling": 137,
+      "slack": 0,
+      "target": 0,
+      "why": "Lane W, set by the W1 census. A hand-maintained syscall-name table sitting beside a generated one: ABI_SYSCALL_NAMES has 233 entries, this copy has 137. 96 syscalls render in the UI as syscall_NNN, and 2 names actively disagree (129 statfs vs statfs64, 130 fstatfs vs fstatfs64). The comment justifying the copy cites avoiding a heavyweight kernel-worker import, but the generated table lives in host/src/generated/abi.ts, a leaf module with no Node-only imports."
+    },
+    "sessionKernelFormatParsers": {
+      "measure": "hand-written parsers of kernel-emitted text formats in web-libs/kandelo-session",
+      "ceiling": 5,
+      "slack": 0,
+      "target": 0,
+      "why": "Lane W. parseMaps, parseMounts, parseProcEntry, parseStatusBytes and parseRangeSize parse /proc/<pid>/maps, /proc/mounts and /proc/<pid>/status with hand-written regexes. The kernel holds this data structured, serialises it to text, and the UI re-derives it with nothing binding the two. Lane G's failure mode in the UI layer."
     }
   },
   "lanes": {
@@ -395,11 +402,15 @@
       "status": "open",
       "closure": [
         {
-          "surface": "webLibsSessionTypeScript",
-          "atMost": 2500
+          "surface": "sessionHandMaintainedSyscallNames",
+          "atMost": 0
+        },
+        {
+          "surface": "sessionKernelFormatParsers",
+          "atMost": 0
         }
       ],
-      "why": "Goals V1 and V4. KernelHost, boot descriptors and snapshots are the contracts a host implements against; they are barely coupled to the browser and are not shared with a native host today."
+      "why": "Goals V1 and V2. The W1 census found three populations, not two: the host contract, the browser product surface that stays, and a third the lane missed \u2014 hand-written parsers of kernel-emitted /proc formats plus a hand-maintained syscall table that is 96 entries short of the generated one and disagrees with it on two names."
     },
     "U": {
       "title": "Build automation in shell and MJS",

@@ -217,8 +217,31 @@ const MEASURED: Record<string, () => number> = {
       ).trim(),
       10,
     ),
-  webLibsSessionTypeScript: () =>
-    lineCount(["web-libs/kandelo-session/src/*.ts"]),
+  sessionHandMaintainedSyscallNames: () => {
+    const text = readFileSync(
+      join(repoRoot, "web-libs/kandelo-session/src/kernel-host.ts"),
+      "utf8",
+    );
+    const start = text.indexOf("SYSCALL_NAMES_LOCAL: Record<number, string> = {");
+    if (start < 0) return 0;
+    const body = text.slice(start, text.indexOf("};", start));
+    return [...body.matchAll(/\d+\s*:\s*"/g)].length;
+  },
+  sessionKernelFormatParsers: () => {
+    const text = readFileSync(
+      join(repoRoot, "web-libs/kandelo-session/src/kernel-host.ts"),
+      "utf8",
+    );
+    // Parsers of kernel-emitted /proc text. The kernel holds this data
+    // structured and serialises it; nothing binds these back to it.
+    return [
+      "parseMaps",
+      "parseMounts",
+      "parseProcEntry",
+      "parseStatusBytes",
+      "parseRangeSize",
+    ].filter((name) => new RegExp(`function ${name}\\b`).test(text)).length;
+  },
   buildAutomationShell: () =>
     lineCount(["scripts/*.sh", "scripts/**/*.sh"]),
   buildAutomationScript: () => lineCount(["scripts/*.ts", "scripts/*.mjs"]),

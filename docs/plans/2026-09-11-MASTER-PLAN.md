@@ -82,7 +82,7 @@ lands — those are marked.
 | **E** Node/browser peers | **4–8 d** | medium *(E1 done)* | The consolidation already happened for the pair that mattered: 72 shared lifecycle members via a factory. What is left is unifying 43 duplicated message types and a 21-item audit. |
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **15–30 d** | low | 25,658 lines of shell plus 10,921 of TS/MJS. Ranked last: none of it is host API surface. |
-| **W** `web-libs` contracts | **4–8 d** | medium | Small and mostly a split: the host contract leaves, the browser product surface stays. |
+| **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **2–4 d** | medium-high *(R1 done)* | One shared constant and four consumers, not a resolver migration. The 4,020-line file is policy nobody duplicates. |
 | **G** ABI binding drift | **3–6 d** | medium | Nine layout modules to cover plus the bare literals behind `statx`. The generator is ours end to end. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
@@ -1518,60 +1518,90 @@ removed — the corpus lane C already used for the lazy-identity gate.
 
 # LANE W — `web-libs` session contracts
 
-**Status: characterized. Small, and it is the contract layer a second host
-consumes.**
+**Status: W1 census COMPLETE — `docs/plans/2026-09-11-lane-w1-census.md`.
+Found a third population the lane missed, and one measured defect.**
 
-`web-libs/kandelo-session/src/*.ts` — **5,360 lines**, of which
-`kernel-host.ts` is 2,776.
+## What this lane is — as corrected by the census
 
-## What this lane is
+`kernel-host.ts` (2,776 of 5,360 lines) holds **three** populations, not two:
 
-`KernelHost`, boot descriptors, demo configuration, snapshots and gallery
-metadata: the reusable contracts between a host and the things that drive it.
-`kernel-host.ts` touches the host boundary **6 times in 2,776 lines**.
+1. **The host contract** — `KernelHost`, `KernelLike`, `FileSystemLike`,
+   `PtyHandle`, `KmsDisplayHandle`, `AudioOutputHandle`, `Snapshot`. What a
+   native host would want and cannot use today.
+2. **Browser product surface** — gallery, boot descriptors, sharing, terminal
+   policy. **Stays**, and descriptor validation is a security boundary.
+3. **Hand-written parsers of kernel-emitted formats** — the population the lane
+   missed, and the interesting one.
+
+## The finding: the kernel writes `/proc`, the UI parses it back
+
+`parseMaps`, `parseMounts`, `parseProcEntry`, `parseStatusBytes` and
+`parseRangeSize` re-derive structured data from text the kernel serialised,
+using hand-written regexes — `"00400000-005c2000 r-xp 00000000 fe:00 14222
+/bin/bash"`, `/proc/mounts format: source target fs opts dump pass`, `/(\d+)\s*kB/`.
+
+**Nothing binds them to what the kernel writes.** A kernel change produces
+silently wrong rows rather than a failure. Lane G's failure mode in the UI
+layer.
+
+## W-D1 — a hand-maintained syscall table beside a generated one
+
+`SYSCALL_NAMES_LOCAL` exists because, per its comment, importing
+`kernel-worker.ts` would drag in Node-only transitive imports. **But
+`kernel-worker.ts:SYSCALL_NAMES` is just `= ABI_SYSCALL_NAMES`** — an alias of
+the generated table, which lives in `host/src/generated/abi.ts`, **a leaf module
+with no Node-only imports**. The stated blocker does not apply to the table that
+should have been imported.
+
+And the copy is measurably wrong: generated **233** entries against **137**
+local. **96 syscalls render in the UI as `syscall_NNN`**, and **2 names actively
+disagree** — 129 is `statfs` locally and `statfs64` generated; 130 is `fstatfs`
+versus `fstatfs64`. **The cheapest fix found in any census so far.**
 
 ## End state
 
 The contracts a host implements are defined once, in a form both the browser
-host and a native host can consume, so "what a host must provide" is a typed
-artifact rather than a TypeScript interface only one host can read.
+host and a native host can consume. The UI reads structured data from the
+kernel rather than re-parsing text. The product surface stays and is named as
+such.
 
 ## The floor
 
-Boot descriptors, sharing and gallery metadata are **browser product surface**
-with no kernel meaning, and they stay in TypeScript. The browser-and-user
-contract also makes descriptors and shared URLs untrusted input needing
-versioning, size caps and path validation — that validation is product
-behavior, not kernel behavior.
-
-The part that is not floor is the `KernelHost` contract itself.
+Boot descriptors, sharing, gallery metadata and terminal policy are browser
+product surface with no kernel meaning. Their untrusted-input validation —
+versioning, size caps, path validation — is a security boundary and must not be
+migrated into something weaker.
 
 ## Increments
 
-- **W1 — separate the host contract from the product surface** inside
-  `kandelo-session`. They are one package today and only the first half is
-  shared with a native host.
-- **W2 — express the host contract where both hosts can consume it**, which
-  means generated from Rust in the way `host/src/generated/abi.ts` already is.
-- **W3 — leave the product surface alone** and say so.
+- **W1 — census.** Done.
+- **W2 — delete `SYSCALL_NAMES_LOCAL`, import `ABI_SYSCALL_NAMES`.** Hours, not
+  days; the stated blocker does not exist.
+- **W3 — the kernel serves structured process/mount/map data** instead of the
+  UI parsing `/proc` text. Most of the lane, and a kernel change rather than a
+  `web-libs` one.
+- **W4 — separate the host contract from the product surface.**
+- **W5 — express the host contract where both hosts can consume it**, generated
+  from Rust the way `generated/abi.ts` already is.
 
 ## Acceptance evidence
 
-`webLibsSessionTypeScript` reaches **2,500** — roughly the product-surface half.
-Provisional; W1 sets the real number and W1 is the deliverable that makes the
-split defensible.
+`sessionHandMaintainedSyscallNames` reaches **0** and
+`sessionKernelFormatParsers` reaches **0**.
 
-The real evidence is that `crates/host-native` can satisfy the `KernelHost`
-contract without a TypeScript shim.
+For W3 the decisive evidence is that the UI's process, mount and map views are
+driven by a structured kernel response, demonstrated by changing what the kernel
+writes to `/proc` and showing the UI is unaffected.
 
 ## Known hazards
 
-- **The 6-reference coupling score understates the browser coupling**, because
-  boot descriptors and sharing are browser *product* concepts rather than
-  browser *API* calls. A low score here means "does not call browser APIs", not
-  "is host-neutral" (H-8).
-- **Untrusted-input validation must not be migrated into something weaker.**
-  Descriptor validation is a security boundary.
+- **The `/proc` parsers were read, not tested against live kernel output.** The
+  finding is that nothing binds them, not that they are wrong today.
+- **Untrusted-input validation must not be weakened.** Descriptors and shared
+  URLs are a security boundary.
+- **The coupling score understates browser coupling** — boot descriptors and
+  sharing are browser *product* concepts, not browser *API* calls (H-8).
+- **The other 2,584 lines of `kandelo-session` were not classified.**
 
 ---
 
