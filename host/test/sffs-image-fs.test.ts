@@ -32,7 +32,7 @@ describe("SffsImageFs", () => {
       "root:x:0:0::/root:/bin/sh\n",
     );
     expect(fs.readlink("/etc/pw-link")).toBe("passwd");
-    expect(fs.readdir("/etc").sort()).toEqual(["passwd", "pw-link"]);
+    expect(fs.readDirNames("/etc").sort()).toEqual(["passwd", "pw-link"]);
   });
 
   it("reports metadata changes through chmod and chown", () => {
@@ -72,6 +72,56 @@ describe("SffsImageFs", () => {
     // The name comes from the GENERATED errno table, not a hand-written map.
     expect((caught as Error).message).toContain("ENOENT");
     expect((caught as Error).message).toContain("/absent");
+  });
+
+  it("reads through POSIX-shaped handles, as the helpers do", () => {
+    const fs = SffsImageFs.create();
+    fs.writeFile("/data", new TextEncoder().encode("hello world"), 0o644);
+
+    // The read loop `vfs-image-helpers.ts` actually uses: open, read with a
+    // null position so the cursor advances, close.
+    const fd = fs.open("/data", 0, 0);
+    const buf = new Uint8Array(11);
+    let offset = 0;
+    while (offset < buf.length) {
+      const n = fs.read(fd, buf.subarray(offset), null, buf.length - offset);
+      expect(n).toBeGreaterThan(0);
+      offset += n;
+    }
+    fs.close(fd);
+    expect(new TextDecoder().decode(buf)).toBe("hello world");
+
+    // An explicit position does NOT advance the cursor.
+    const fd2 = fs.open("/data");
+    const two = new Uint8Array(2);
+    expect(fs.read(fd2, two, 6, 2)).toBe(2);
+    expect(new TextDecoder().decode(two)).toBe("wo");
+    expect(fs.read(fd2, two, null, 2)).toBe(2);
+    expect(new TextDecoder().decode(two)).toBe("he");
+    fs.close(fd2);
+  });
+
+  it("iterates directories through opendir/readdir/closedir", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/d", 0o755);
+    for (const name of ["a", "b", "c"]) {
+      fs.writeFile(`/d/${name}`, new Uint8Array(0), 0o644);
+    }
+    const dh = fs.opendir("/d");
+    const seen: string[] = [];
+    for (;;) {
+      const entry = fs.readdir(dh);
+      if (!entry) break;
+      seen.push(entry.name);
+    }
+    fs.closedir(dh);
+    expect(seen.sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("rejects a handle it did not issue", () => {
+    const fs = SffsImageFs.create();
+    expect(() => fs.close(999)).toThrow(/bad file handle/);
+    expect(() => fs.readdir(999)).toThrow(/bad directory handle/);
   });
 
   it("registers a lazy file whose metadata is readable before any fetch", () => {

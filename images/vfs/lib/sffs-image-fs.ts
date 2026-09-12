@@ -248,13 +248,16 @@ export class SffsImageFs {
   }
 
   /**
-   * Directory entry names.
+   * Directory entry names for a path.
    *
    * Two calls: the module reports the bytes required, then fills them. Safe
    * here because nothing mutates the tree between them — a build is
    * single-threaded and this is not a general-purpose filesystem API.
+   *
+   * The builders do not call this directly; they use the POSIX-shaped
+   * `opendir`/`readdir`/`closedir` below, which this backs.
    */
-  readdir(path: string): string[] {
+  readDirNames(path: string): string[] {
     const required = this.withPath(path, (p, pl) =>
       this.check(this.exports.sm_read_dir(p, pl, 0, 0), "readdir", path));
     if (required === 0) return [];
@@ -277,6 +280,105 @@ export class SffsImageFs {
     } finally {
       this.exports.sm_free(out, required);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // POSIX-shaped handle APIs.
+  //
+  // The builders and their helpers call open/read/close and
+  // opendir/readdir/closedir, so the bridge presents exactly that. Lane Y's
+  // premise is that the RECIPES are not touched, which means the seam adapts
+  // to them rather than the other way round.
+  //
+  // The handles live HERE, in TypeScript, over the module's path-addressed
+  // entry points — no iterator or descriptor lifetime crosses the wasm
+  // boundary, so a builder that throws mid-loop cannot leak one inside the
+  // module. It is the same choice `sm_read_dir` made by returning a snapshot.
+  // ---------------------------------------------------------------------
+
+  private readonly openFiles = new Map<number, { path: string; offset: number }>();
+  private readonly openDirs = new Map<number, { names: string[]; index: number }>();
+  private nextHandle = 1;
+
+  /** Open for reading. `flags` and `mode` are accepted and ignored: the
+   * builders only ever open to read back what they wrote, and silently
+   * accepting a write flag while not honouring it would be worse than the
+   * narrow surface. */
+  open(path: string, _flags = 0, _mode = 0): number {
+    this.lstat(path); // Throws ENOENT before a handle is issued.
+    const handle = this.nextHandle++;
+    this.openFiles.set(handle, { path, offset: 0 });
+    return handle;
+  }
+
+  /**
+   * Read into `buf`. `position` of `null` means "from the handle's cursor",
+   * matching the callers in `vfs-image-helpers.ts`.
+   */
+  read(handle: number, buf: Uint8Array, position: number | null, length: number): number {
+    const open = this.openFiles.get(handle);
+    if (!open) throw new Error(`sffs-module: bad file handle ${handle}`);
+    const at = position ?? open.offset;
+    const want = Math.min(length, buf.byteLength);
+    if (want === 0) return 0;
+
+    const out = this.exports.sm_alloc(want);
+    if (out === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      const n = this.check(
+        this.exports.sm_read_file(
+          ...this.pathArgs(open.path), BigInt(at), out, want,
+        ) as number,
+        "read",
+        open.path,
+      );
+      buf.set(this.mem.subarray(out, out + n), 0);
+      if (position === null) open.offset += n;
+      return n;
+    } finally {
+      this.exports.sm_free(out, want);
+    }
+  }
+
+  close(handle: number): void {
+    if (!this.openFiles.delete(handle)) {
+      throw new Error(`sffs-module: bad file handle ${handle}`);
+    }
+  }
+
+  opendir(path: string): number {
+    const names = this.readDirNames(path);
+    const handle = this.nextHandle++;
+    this.openDirs.set(handle, { names, index: 0 });
+    return handle;
+  }
+
+  /** One entry, or `null` at the end — the shape the helpers' loops expect. */
+  readdir(handle: number): { name: string } | null {
+    const dir = this.openDirs.get(handle);
+    if (!dir) throw new Error(`sffs-module: bad directory handle ${handle}`);
+    if (dir.index >= dir.names.length) return null;
+    return { name: dir.names[dir.index++] };
+  }
+
+  closedir(handle: number): void {
+    if (!this.openDirs.delete(handle)) {
+      throw new Error(`sffs-module: bad directory handle ${handle}`);
+    }
+  }
+
+  /**
+   * Copy a path into module memory and return its (ptr, len).
+   *
+   * Callers must free it. Used where a path and another buffer are live at
+   * once and the nested `withPath` shape would read badly.
+   */
+  private pathArgs(path: string): [number, number] {
+    const bytes = encoder.encode(path);
+    const ptr = this.exports.sm_alloc(bytes.byteLength);
+    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    this.mem.set(bytes, ptr);
+    return [ptr, bytes.byteLength];
   }
 
   registerLazyFile(args: {
