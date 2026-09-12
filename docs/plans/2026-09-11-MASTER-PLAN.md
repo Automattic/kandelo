@@ -79,7 +79,7 @@ lands — those are marked.
 | **H** browser + curation | **3–6 d** | medium | The browser pass is short if provisioning holds; curation of ~370 commits into ~14 is a day or two with `commit-tree`. |
 | **K** `kernel-worker.ts` | **30–60 d** | **unknown until K1** | The largest single file in the repo, 32,718 lines with 515 `SYS_` references. Plausibly the largest lane in the campaign, and no census has run. |
 | **L** host↔kernel plumbing (V4) | **10–20 d** | **unknown until L1** | 5,853 lines holding two real invariants. `crates/host-native` is the existence proof for what the floor actually is, and nobody has compared against it. |
-| **E** Node/browser peers | **10–20 d** | **unknown until E1** | ~70% divergence across three pairs. The classification *is* the work; `process-lifecycle.ts` proves the mechanism. |
+| **E** Node/browser peers | **4–8 d** | medium *(E1 done)* | The consolidation already happened for the pair that mattered: 72 shared lifecycle members via a factory. What is left is unifying 43 duplicated message types and a 21-item audit. |
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **15–30 d** | low | 25,658 lines of shell plus 10,921 of TS/MJS. Ranked last: none of it is host API surface. |
 | **W** `web-libs` contracts | **4–8 d** | medium | Small and mostly a split: the host contract leaves, the browser product surface stays. |
@@ -1274,79 +1274,75 @@ table must reproduce the current hand-written one exactly before it replaces it.
 
 # LANE E — Node and browser peers that drifted
 
-**Status: characterized. The fix is already started, which changes what this
-lane is: finishing a consolidation, not opening one.**
+**Status: E1 census COMPLETE — `docs/plans/2026-09-11-lane-e1-census.md`.
+Much smaller than the lane claimed. Gate replaced.**
 
-`browser-kernel-host.ts` / `node-kernel-host.ts` (1,785 / 1,371),
-`browser-kernel-worker-entry.ts` / `node-kernel-worker-entry.ts` (1,805 /
-1,401), `browser-kernel-protocol.ts` / `node-kernel-protocol.ts` (680 / 471) —
-**7,513 lines**.
+## What this lane is — as corrected by the census
 
-## What this lane is
+The lane said "three pairs, 7,513 lines, ~70% divergent, 10–20 days". **The 70%
+came from line-diffing, which conflates two different things**: the same job
+written twice and drifted, versus two different jobs that were never the same.
+Symbol comparison separates them.
 
-Three pairs of files doing the same three jobs once for Node and once for the
-browser. The host-runtime contract says the two hosts are peers and a change is
-incomplete until both have the same platform-observable behavior — this lane is
-about making that structurally true instead of a rule people must follow.
-
-**The cost is measured, not asserted.** `process-lifecycle.ts`'s header records
-it: of 105 commits since 2026-06-01 that touched an entry file, **73 (70%) had
-to touch both**, and the copies drifted anyway — as far as a VM interrupt timer
-left armed across a lease release.
+- **`*-kernel-host.ts` (3,156 lines) is not drift.** The two files share exactly
+  one name, `DESTROY_REQUEST_TIMEOUT_MS`. One loads artifacts from disk and
+  spawns a worker thread; the other fetches over HTTP and starts a Web Worker.
+  Different jobs. **Essentially all floor.**
+- **`*-kernel-worker-entry.ts` (3,208 lines) is already consolidated.** The
+  survey's "10 symbols each" was wrong — it counted the import statement. The
+  real mechanism is `createProcessLifecycle<T>()`, a generic factory: the
+  browser destructures **73** members and Node **72**, sharing 72. The whole
+  fork/vfork/clone/exec/spawn/exit/thread lifecycle is already one
+  implementation.
+- **`*-kernel-protocol.ts` (1,153 lines) is the real duplication**: **43
+  identically-named message types declared twice**, structural types with no
+  platform content.
 
 ## End state
 
-One implementation of each job, with per-host adapters holding only what is
-genuinely a platform difference. A change to lifecycle, protocol or host
-behavior is impossible to make for one host alone.
+One declaration of every shared message type and of every genuinely shared
+worker-entry helper. The per-host files keep what is genuinely per-host, and
+`*-kernel-host.ts` is left alone with a note saying why.
 
 ## The floor
 
-**Real, and larger than in most lanes.** Worker spawn, `SharedArrayBuffer`
-availability, OPFS versus Node `fs`, service-worker mediation and transferable
-semantics are genuine platform differences, not drift. The browser file is the
-larger of the pair in all three cases, which is consistent with the browser
-carrying real extra platform work.
-
-**These are peers that diverged, not copies to delete.** After normalising away
-the host names the pairs still differ on **2,154 / 2,120 / 515 lines — roughly
-70%**. Any increment that assumes duplication will produce a merged file full
-of `if (isBrowser)`, which is worse than two honest files.
+**`*-kernel-host.ts` in its entirety.** Also the 57 browser-only worker-entry
+declarations (framebuffer release/rebind, service-worker bridge, mouse
+injection, audio drain, lazy registration) and the 30 Node-only ones (session
+directories, crash safety net, local exec resolution), plus 18 browser-only and
+2 Node-only message types.
 
 ## Increments
 
-- **E1 — classify every divergence.** For each differing hunk: genuine platform
-  boundary, accidental drift, or a bug in one host the other fixed. **The third
-  category is the one that justifies the lane** — it is a defect the structure
-  is generating.
-- **E2 — extend `process-lifecycle.ts`'s pattern to the rest.** It already
-  holds the shared fork/vfork/clone/exec/spawn/exit/thread implementation and
-  both entries import **10 symbols each** from it. The mechanism is proven; the
-  work is widening it.
-- **E3 — collapse the protocol pair**, the smallest and most mechanical of the
-  three (515 differing lines).
-- **E4 — leave per-host adapters explicitly named as such**, so the remaining
-  divergence is a documented boundary rather than residue.
+- **E1 — census.** Done.
+- **E2 — unify the 43 protocol message types.** Type-level and mechanical, so
+  it cannot change runtime behaviour. Start here.
+- **E3 — audit the 21 same-named worker-entry declarations** one at a time:
+  shared concept, or genuinely per-host?
+- **E4 — leave `*-kernel-host.ts` alone and record why**, so a later pass does
+  not "discover" the divergence and try to merge it.
 
 ## Acceptance evidence
 
-`hostEntryPairTypeScript` reaches **2,000**. Provisional; E1 sets the real
-number, and E1's classification is the deliverable that makes it honest.
-
-The lane's real evidence is behavioral, not a line count: a test that asserts
-the two hosts agree on the lifecycle transitions this lane consolidates, and
-which fails if one host is changed alone.
+`hostPeerDuplicateDeclarations` reaches **12** — declaration names appearing in
+both halves of a pair, excluding members destructured from the shared lifecycle
+factory. Ceiling 65 (43 protocol + 21 worker-entry + 1 kernel-host). **Not 0**,
+because `kernelWorker`, `port`, `maxPages` and `lifecycle` are legitimately
+per-host instances of a shared concept.
 
 ## Known hazards
 
-- **Merging peers into one file with host conditionals**, which converts
-  visible divergence into invisible divergence. The 70% figure is the guard
-  against anyone attempting this in one step.
-- **Deleting a divergence that was a fix.** E1's third category exists because
-  one host having different code is sometimes the only record that a bug was
-  found there.
-- **Browser behavior cannot be validated from Node** (lane H). This lane
-  changes browser-facing code, so Node-green is not evidence for it.
+- **Merging peers into one file with host conditionals**, which converts visible
+  divergence into invisible divergence. E4 exists to prevent this being applied
+  to `*-kernel-host.ts`.
+- **E1 found no category-three divergence** — no bug one host fixed and the
+  other did not. That was the finding that would have justified the lane most
+  strongly, and its absence lowers the lane's urgency. Do not re-argue the lane
+  on a premise the census disproved.
+- **Browser behavior cannot be validated from Node** (lane H). E2 is type-level
+  and safe; E3 is not.
+- **The 21 shared worker-entry names are only known to share names**, not to
+  have drifted. Reading them is E3's job, not E1's.
 
 ---
 

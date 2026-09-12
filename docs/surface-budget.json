@@ -128,13 +128,6 @@
       "target": 3600,
       "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
     },
-    "hostEntryPairTypeScript": {
-      "measure": "line count of the six browser-/node- kernel host, worker-entry and protocol files",
-      "ceiling": 7513,
-      "slack": 200,
-      "target": 2000,
-      "why": "Lane E. The Node and browser peers of the same three jobs. Measured divergence after normalising host names: 2,154 / 2,120 / 515 lines, about 70% \u2014 these are peers that drifted, not copies to delete. process-lifecycle.ts already exists to fix this and both entries import 10 symbols from it, so the lane is finishing a consolidation, not starting one. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
     "binaryResolverTypeScript": {
       "measure": "line count of host/src/binary-resolver.ts",
       "ceiling": 4020,
@@ -169,6 +162,13 @@
       "slack": 0,
       "target": 0,
       "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes \u2014 which packages go in the LAMP image, how WordPress is preinstalled \u2014 and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done."
+    },
+    "hostPeerDuplicateDeclarations": {
+      "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
+      "ceiling": 65,
+      "slack": 0,
+      "target": 12,
+      "why": "Lane E, set by the E1 census. Replaces a line-count surface that was unreachable: the kernel-host pair shares exactly one name and is two different jobs, not a drifted copy, so it will never shrink. This counts actual duplication \u2014 43 protocol message types declared twice, 21 same-named worker-entry declarations, 1 in kernel-host. Target is 12, not 0, because a few (kernelWorker, port, maxPages, lifecycle) are legitimately per-host instances of a shared concept."
     }
   },
   "lanes": {
@@ -362,11 +362,11 @@
       "status": "open",
       "closure": [
         {
-          "surface": "hostEntryPairTypeScript",
-          "atMost": 2000
+          "surface": "hostPeerDuplicateDeclarations",
+          "atMost": 12
         }
       ],
-      "why": "Goal V1. Three pairs of files doing the same three jobs, ~70% divergent. 73 of 105 entry-touching commits had to touch both and they drifted anyway. process-lifecycle.ts is the started fix; this lane finishes it."
+      "why": "Goal V1. The E1 census found the consolidation already largely done: the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory, not the '10 symbols' previously reported. What remains is 43 duplicated protocol message types and a 21-item audit. No category-three findings \u2014 no bug one host fixed and the other did not \u2014 which lowers the lane's urgency."
     },
     "R": {
       "title": "Binary and artifact resolution in the host",

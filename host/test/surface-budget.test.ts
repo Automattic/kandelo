@@ -153,15 +153,39 @@ const MEASURED: Record<string, () => number> = {
       "host/src/process-memory.ts",
       "host/src/worker-protocol.ts",
     ]),
-  hostEntryPairTypeScript: () =>
-    lineCount([
-      "host/src/browser-kernel-host.ts",
-      "host/src/node-kernel-host.ts",
-      "host/src/browser-kernel-worker-entry.ts",
-      "host/src/node-kernel-worker-entry.ts",
-      "host/src/browser-kernel-protocol.ts",
-      "host/src/node-kernel-protocol.ts",
-    ]),
+  // Declaration names present in BOTH halves of a browser-/node- pair.
+  // Members destructured from the shared createProcessLifecycle factory are
+  // excluded: those are the consolidation working, not duplication.
+  hostPeerDuplicateDeclarations: () => {
+    const declPattern =
+      /^(?:export\s+)?(?:async\s+)?(?:function|const|let|class|interface|type)\s+([A-Za-z_$][\w$]*)/gm;
+    const declarations = (relPath: string): Set<string> => {
+      const text = readFileSync(join(repoRoot, relPath), "utf8");
+      const found = new Set(
+        [...text.matchAll(declPattern)].map((m) => m[1]!),
+      );
+      const destructured = /const\s*\{([^}]*)\}\s*=\s*lifecycle/s.exec(text);
+      if (destructured) {
+        for (const raw of destructured[1]!.split(",")) {
+          const name = raw.trim().split(":")[0]?.trim();
+          if (name) found.delete(name);
+        }
+      }
+      return found;
+    };
+    let total = 0;
+    for (const base of [
+      "kernel-host",
+      "kernel-worker-entry",
+      "kernel-protocol",
+    ]) {
+      const browser = declarations(`host/src/browser-${base}.ts`);
+      for (const name of declarations(`host/src/node-${base}.ts`)) {
+        if (browser.has(name)) total += 1;
+      }
+    }
+    return total;
+  },
   binaryResolverTypeScript: () => lineCount(["host/src/binary-resolver.ts"]),
   imageBuilderFilesystemImporters: () =>
     Number.parseInt(
