@@ -57,6 +57,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+mod perturb;
 mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;
@@ -87,7 +88,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, verify-fresh"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, vfs-image, perturb, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -97,6 +98,7 @@ fn main() -> ExitCode {
         return vfs_products::run(rest);
     }
     let result = match sub.as_str() {
+        "perturb" => perturb::run(&rest),
         "vfs-image" => vfs_image_describe::run(&rest),
         "dump-abi" => dump_abi::run(rest),
         "dump-wasi-translation" => dump_wasi_translation::run(rest),
