@@ -137,7 +137,7 @@
     },
     "artifactTierPathSpellings": {
       "measure": "independent production spellings of the local-binaries/source-only-v1 tier path",
-      "ceiling": 8,
+      "ceiling": 6,
       "slack": 0,
       "target": 1,
       "why": "Lane R, set by the R1 census. Replaces a line-count surface that would be satisfied by deleting policy that is not duplicated and untouched by fixing the duplication that is. host-native's equivalent of the 4,020-line TypeScript resolver is ten lines; what duplicates is the tier list and its order, spelled 8 times across the writer (xtask local-build, 7) and both readers. The drift already cost 39 of 53 host-native tests against a tree where the build had just succeeded."

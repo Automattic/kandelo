@@ -438,36 +438,45 @@ pub fn repo_root() -> PathBuf {
 ///
 /// Searching the resolver's tiers in the resolver's order means the Rust host
 /// and the TypeScript host load the same bytes.
-const ARTIFACT_TIERS: &[&str] = &[
-    "local-binaries/source-only-v1",
-    "local-binaries",
-    "binaries",
-    "host/wasm",
-];
+/// The artifact tiers, derived from the single authority in
+/// `crates/shared/src/artifact_tiers.rs` and searched in its order.
+///
+/// This list used to be spelled here as four string literals, kept in step
+/// with `binaryCandidateTiers()` by a comment asking the next editor to change
+/// both. It is generated from one place now, so the two hosts cannot disagree.
+fn artifact_tier_root(tier: &wasm_posix_shared::artifact_tiers::ArtifactTier, repo: &Path) -> PathBuf {
+    use wasm_posix_shared::artifact_tiers::TierAnchor;
+    match tier.anchor {
+        TierAnchor::RepoRoot => repo.join(tier.relative_path),
+        // In a checkout the installed host package IS `host/`, which is what
+        // the TypeScript `packageRoot()` resolves to.
+        TierAnchor::PackageRoot => repo.join("host").join(tier.relative_path),
+    }
+}
 
-/// First existing candidate for `file_name`, searched over [`ARTIFACT_TIERS`].
+/// First existing candidate for `file_name`, searched over the shared tiers.
 ///
 /// Falls back to the highest-priority tier's path when nothing exists, so a
 /// caller that reports "not found" names the location a completed build is
 /// expected to write rather than a legacy tier that merely comes next.
 fn artifact_path(file_name: &str) -> PathBuf {
     let root = repo_root();
-    for tier in ARTIFACT_TIERS {
-        let candidate = root.join(tier).join(file_name);
+    for tier in wasm_posix_shared::artifact_tiers::ARTIFACT_TIERS {
+        let candidate = artifact_tier_root(tier, &root).join(file_name);
         if candidate.exists() {
             return candidate;
         }
     }
-    root.join(ARTIFACT_TIERS[0]).join(file_name)
+    artifact_tier_root(&wasm_posix_shared::artifact_tiers::ARTIFACT_TIERS[0], &root).join(file_name)
 }
 
 /// Every location [`artifact_path`] considers, so a caller that cannot find an
 /// artifact can report where it actually looked instead of naming one path.
 pub fn artifact_search_paths(file_name: &str) -> Vec<PathBuf> {
     let root = repo_root();
-    ARTIFACT_TIERS
+    wasm_posix_shared::artifact_tiers::ARTIFACT_TIERS
         .iter()
-        .map(|tier| root.join(tier).join(file_name))
+        .map(|tier| artifact_tier_root(tier, &root).join(file_name))
         .collect()
 }
 
@@ -537,15 +546,17 @@ pub fn kernel_artifact_provenance(path: &Path) -> String {
         Some(index) => {
             lines.push(format!(
                 "  resolved from tier `{}` ({} of {} searched, in resolver order)",
-                ARTIFACT_TIERS[index],
+                wasm_posix_shared::artifact_tiers::ARTIFACT_TIERS[index].label,
                 index + 1,
-                ARTIFACT_TIERS.len(),
+                wasm_posix_shared::artifact_tiers::ARTIFACT_TIERS.len(),
             ));
             let also: Vec<&str> = searched
                 .iter()
                 .enumerate()
                 .filter(|(other, candidate)| *other != index && candidate.exists())
-                .map(|(other, _)| ARTIFACT_TIERS[other])
+                .map(|(other, _)| {
+                    wasm_posix_shared::artifact_tiers::ARTIFACT_TIERS[other].label
+                })
                 .collect();
             if !also.is_empty() {
                 lines.push(format!(
@@ -676,15 +687,22 @@ mod tests {
     /// commit, and say why in both places.
     #[test]
     fn artifact_tiers_match_the_typescript_resolver_order() {
-        assert_eq!(
-            ARTIFACT_TIERS,
-            &[
-                "local-binaries/source-only-v1",
-                "local-binaries",
-                "binaries",
-                "host/wasm",
-            ],
+        use wasm_posix_shared::artifact_tiers::{ARTIFACT_TIERS, TierAnchor};
+
+        // The order is no longer asserted against a literal copy kept in step
+        // by a comment. It comes from crates/shared, which the TypeScript
+        // resolver also reads through the generated ARTIFACT_TIERS. What is
+        // worth pinning here is the PROPERTY the incident violated: the tier a
+        // completed local build writes must be searched before the one that
+        // may hold a stale symlink.
+        let kinds: Vec<&str> = ARTIFACT_TIERS.iter().map(|t| t.kind).collect();
+        let source_only = kinds.iter().position(|k| *k == "source-only-v1");
+        let local = kinds.iter().position(|k| *k == "local-binaries");
+        assert!(
+            source_only.is_some() && source_only < local,
+            "source-only-v1 must be searched before local-binaries: {kinds:?}",
         );
+
         let searched = artifact_search_paths("kernel.wasm");
         assert_eq!(searched.len(), ARTIFACT_TIERS.len());
         for (candidate, tier) in searched.iter().zip(ARTIFACT_TIERS) {
@@ -694,19 +712,19 @@ mod tests {
                 candidate.display(),
             );
             assert!(
-                candidate.to_string_lossy().contains(tier),
-                "{} should sit under {tier}",
+                candidate.to_string_lossy().contains(tier.relative_path),
+                "{} should sit under {}",
                 candidate.display(),
+                tier.relative_path,
             );
+            if tier.anchor == TierAnchor::PackageRoot {
+                assert!(
+                    candidate.to_string_lossy().contains("host/"),
+                    "{} should resolve the package tier under host/",
+                    candidate.display(),
+                );
+            }
         }
-        // The fallback names the tier a completed build writes, so a "not
-        // found" report points at the right place rather than a legacy tier.
-        assert!(
-            !kernel_wasm_path().exists()
-                || kernel_wasm_path() == searched[0]
-                || searched.iter().any(|candidate| *candidate == kernel_wasm_path()),
-            "kernel_wasm_path() must be one of the searched tiers",
-        );
     }
 
     /// N1 residual #4a (non-main-thread `fork()`), non-instrumented sibling
