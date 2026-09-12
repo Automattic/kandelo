@@ -955,6 +955,35 @@ mutation proved were otherwise dead, and they reach them by construction.
   `export_image_read` without the identity contract: 65 files in the base
   image, 79 in a derived one, each surviving as a zero-byte regular file with
   no URL. Measured, not reasoned — both images were built.
+
+  **REPRODUCED 2026-09-12, from lane Y, with a second failure mode the hazard
+  did not name.** Lane Y's builder module drove `export_image_read` the way a
+  builder would and hit this exactly. Two distinct cases, one cause:
+
+  * a **base** file (inherited from a loaded image) exports as a zero-length
+    regular file with no deferred record — the hazard as written;
+  * a **registered lazy member** exports as an EMPTY FILE too.
+    `build_export_image` maps `InodeKind::LazyMember` to
+    `ExportNode::LazyStub` and writes `create_file(.., Content::Bytes(b""))`.
+    Deferred records are emitted only for entries created through
+    `create_deferred_file`, which the export never calls, so no SDEF section is
+    produced at all.
+
+  **The second case matters more than the first**, because it is not
+  derived-build-only. Fresh builds REGISTER lazy files — the shipped shell
+  image carries 7,546 deferred entries — so `export_image_read` cannot publish
+  any production image, not merely a derived one.
+
+  **The fix is local and the machinery exists:** where the export stubs a
+  `LazyMember`, call `create_deferred_file`, which already pushes the record
+  `emit_deferred_section` writes. Lane Y has tests pinning both failures
+  (`crates/sffs-module/src/lib.rs`), so V4 has a measured definition of done
+  rather than a hazard to reason about.
+
+  **Ownership is open.** Lane Y is blocked on it and holds the tests; the
+  mechanism is V4's and the record format is V5's SDEF, which is in progress.
+  Writing the contract before V5 settles risks building against a format
+  mid-change.
 - **The existing `KLZY`-versus-JSON gate cannot catch it**, because it compares
   the image's two *descriptions* of itself against each other; both can agree
   perfectly and both disagree with the body. Under V5 that gate becomes
@@ -2305,6 +2334,32 @@ under `images/` imports `sharedfs-vendor` at all. Commit `c39d9d150` repointed
 the last two at the `vfs-errors.ts` leaf and generated `FILE_MODES`, which
 closes Y6 before the lane started. Every one of the 36 the gate counts is a
 `memory-fs` import.
+
+## Y4 status — the bridge exists and is blocked on V4, 2026-09-12
+
+**Built and landed on `brandonpayton/lane-y-image-writer`:** a standalone
+`crates/sffs-module`, **93,326 bytes with ZERO imports** — no import section at
+all, not even `env.memory`. It links the real substrate (`rootfs.rs`,
+`SffsWriter`, `sffs_container`) and exposes 17 `sm_*` entry points covering the
+tree-construction and read-back halves of the builders' vocabulary, plus a
+build script that verifies the zero-import contract and stamps a
+closure-derived freshness key.
+
+**A V4 clarification worth keeping:** that export surface is wide — the
+builders make 175 direct filesystem calls across 25 methods, so the bridge
+meets the recipes where they are — and it costs the host floor NOTHING. Goal V4
+counts what a new host must IMPLEMENT; this module implements zero and imports
+zero. A wide surface no host ever sees is not host API surface.
+
+**Blocked on:** lane V's V4 identity contract, above. The module can build a
+tree and export a mountable image, but any image containing deferred content —
+which is every production image — loses it at serialization. Tests pin both
+failure modes.
+
+**Unblocked meanwhile:** the TypeScript bridge can be written and tested
+against the non-export entry points. It cannot produce a real image until the
+serialization question is answered, so that is the pacing constraint rather
+than effort.
 
 ## Increments
 
