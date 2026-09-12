@@ -547,3 +547,106 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod corpus_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// The shipped image corpus, if this worktree has been provisioned.
+    ///
+    /// Skipped rather than failed when absent: a fresh checkout has no built
+    /// images, and a test that fails there would be reporting provisioning
+    /// rather than a defect.
+    fn corpus() -> Vec<PathBuf> {
+        let dir = Path::new("../../local-binaries/source-only-v1/programs/wasm32");
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut out: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.to_string_lossy().ends_with(".vfs.zst"))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Every shipped image describes IDENTICALLY twice, and differently from
+    /// its neighbour.
+    ///
+    /// # Why run this against the real corpus
+    ///
+    /// The differ's own tests build four-entry trees. Y5's acceptance bar runs
+    /// it against images of 9,000 to 13,800 entries carrying thousands of
+    /// deferred files, and a describer that is merely self-consistent on a toy
+    /// tree tells you nothing about that. This is the instrument being
+    /// exercised at the size it will actually be used.
+    ///
+    /// Reflexivity is not a trivial property here: the description walks a
+    /// directory tree, hashes resident content, groups hardlinks by inode and
+    /// decodes a deferred section. Any ordering that depended on hash-map
+    /// iteration rather than a sort would show up as two different
+    /// descriptions of one file.
+    #[test]
+    fn every_shipped_image_describes_deterministically() {
+        let images = corpus();
+        if images.is_empty() {
+            eprintln!("skip: no built images in local-binaries");
+            return;
+        }
+        let mut descriptions = Vec::new();
+        for path in &images {
+            let a = describe(path).expect("describe");
+            let b = describe(path).expect("describe again");
+            assert_eq!(
+                serde_json::to_value(&a).unwrap(),
+                serde_json::to_value(&b).unwrap(),
+                "{} must describe identically twice",
+                path.display(),
+            );
+            assert!(!a.entries.is_empty(), "{} has entries", path.display());
+            descriptions.push((path.clone(), serde_json::to_value(&a).unwrap()));
+        }
+
+        // And distinct images must not compare equal, or the bar would pass
+        // anything.
+        for window in descriptions.windows(2) {
+            let (pa, a) = &window[0];
+            let (pb, b) = &window[1];
+            assert_ne!(a, b, "{} and {} must not describe alike", pa.display(), pb.display());
+        }
+        eprintln!("described {} shipped images deterministically", images.len());
+    }
+
+    /// The deferred set is decoded, not skipped, on images that carry
+    /// thousands of entries.
+    ///
+    /// A describer that silently reported zero deferred files would compare
+    /// equal across images whose deferred content differed — the exact failure
+    /// the equivalence bar replaced byte-identity to catch.
+    #[test]
+    fn the_corpus_deferred_sets_are_read() {
+        let images = corpus();
+        if images.is_empty() {
+            eprintln!("skip: no built images in local-binaries");
+            return;
+        }
+        let mut with_deferred = 0;
+        for path in &images {
+            let d = describe(path).expect("describe");
+            if !d.deferred.is_empty() {
+                with_deferred += 1;
+                assert!(
+                    d.deferred.iter().all(|e| !e.path.starts_with("<unreachable")),
+                    "{}: every deferred record must resolve to a path in the tree",
+                    path.display(),
+                );
+            }
+        }
+        assert!(
+            with_deferred > 0,
+            "the shipped corpus carries deferred content; reading none means the decoder is not running",
+        );
+        eprintln!("{with_deferred} of {} images carry deferred entries", images.len());
+    }
+}
