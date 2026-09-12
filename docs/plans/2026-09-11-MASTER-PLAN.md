@@ -1327,68 +1327,21 @@ anticipate — see `itimerval` below.
 - **G6 — `sched_param`'s six `__reserved2` offsets**, which no portable member
   name can reach; needs either a Kandelo-side struct to take `offsetof` against
   or a documented exemption.
-- **G7 — BLOCKED on an ABI-policy decision. Attempted and reverted 2026-09-12.**
+- **G7 — DONE 2026-09-12**, after the maintainer chose to classify additive
+  keys as compatible. The snapshot now records **all fifteen** layout modules.
 
-  `process_native_layouts()` records six of the fifteen layout modules, so the
-  committed snapshot — the campaign's drift-detection artifact — has the same
-  hole the generated C header had. `statx` is among the nine missing, and its
-  unrecorded offsets are how `stx_dev_minor` came to be never written.
+  The fix turned out not to be a new relaxation at all: the classifier already
+  had an additive-object mode used by `marshalled_structs`,
+  `syscall_arg_descriptors` and `vfs_metadata`. `process_native_layouts` is
+  keyed by struct name exactly like those three and was simply falling through
+  to the catch-all. It now dispatches to the same helper.
 
-  Extending it to all fifteen works and is **purely additive**: 8 new top-level
-  keys, **0 removed, 0 changed**, verified by diffing the regenerated snapshot
-  against the old one.
-
-  **But `xtask dump-abi --classify-compat` rejects it:**
-
-  ```
-  abi: breaking/incompatible snapshot change: changed top-level section
-       "process_native_layouts"
-  xtask dump-abi: snapshot changes require ABI_VERSION bump
-  ```
-
-  The classifier treats *any* change to a top-level section as breaking,
-  including adding coverage. That collides with the standing constraint that
-  **there are no further `ABI_VERSION` bumps — everything stays under ABI 44**.
-
-  The change was reverted rather than left failing the check. Three ways
-  forward, all maintainer decisions:
-
-  1. **Teach the classifier that additive keys are compatible.** Correct in
-     principle — adding a field nobody read cannot break a consumer — but it
-     relaxes the ABI gate, and that gate is deliberately strict.
-  2. **Bump `ABI_VERSION`.** Forbidden by the standing constraint.
-  3. **Leave the snapshot at six modules** and accept that the drift artifact
-     covers under half of what it names.
-
-  **Option 3 is the status quo and it is the one with a real cost:** the header
-  now guards 14 of 15 modules, but the snapshot still records 6, so the two
-  ABI artifacts disagree about what the ABI includes.
-
-## Acceptance evidence
-
-`unguardedLayoutModules` reaches **1**, not 0 — see below.
-
-Every batch was shown to fail before being trusted (H-2), including on the
-field that motivated the lane: changing `statx::DEV_MINOR_OFFSET` produces
-`static assertion failed … stx_dev_minor … drifted from
-crates/shared/src/process_layout.rs`.
-
-## BLOCKED — a decision for the maintainer
-
-**`itimerval` cannot be anchored the way the others were, by design.** Its doc:
-wasm32 musl "deliberately translates its public 32-byte time64 `struct
-itimerval` to the kernel's historical four-`long` time32 record". Its constants
-are `*_INDEX` wire slots, not struct offsets, so
-`sizeof(struct itimerval) == ..._WASM32_SIZE` is **false on purpose**.
-
-Driving the gate to 0 by writing an assert that happens to pass would be worse
-than leaving it at 1. Two honest options:
-
-1. **A different guard** — assert the wire record's shape at the site that
-   performs the translation, rather than against musl's public struct.
-2. **A recorded exemption** with the reason, and the lane's target becomes 1.
-
-## Known hazards
+  **The guard is not weakened.** `classify_additive_object_by_key` reports
+  changed and removed entries as breaking and forgives only additions.
+  Verified: adding modules reports `snapshot changes are backward-compatible
+  additions`, while perturbing `iovec`'s recorded size still reports
+  `breaking/incompatible snapshot change: changed process_native_layouts entry
+  "iovec"` and demands a bump.
 
 - **Three measurement errors in this lane were found by exercising guards, not
   reading them**: the gate counted delivery; a retracted claim that no asserts

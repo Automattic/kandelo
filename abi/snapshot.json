@@ -4951,6 +4951,34 @@
         "size": 16
       }
     },
+    "itimerval": {
+      "interval_sec_index": 0,
+      "interval_usec_index": 1,
+      "value_sec_index": 2,
+      "value_usec_index": 3,
+      "wasm32": {
+        "size": 16
+      },
+      "wasm64": {
+        "size": 32
+      }
+    },
+    "mq_attr": {
+      "wasm32": {
+        "curmsgs_offset": 12,
+        "flags_offset": 0,
+        "maxmsg_offset": 4,
+        "msgsize_offset": 8,
+        "size": 32
+      },
+      "wasm64": {
+        "curmsgs_offset": 24,
+        "flags_offset": 0,
+        "maxmsg_offset": 8,
+        "msgsize_offset": 16,
+        "size": 64
+      }
+    },
     "msghdr": {
       "wasm32": {
         "control_offset": 16,
@@ -4987,10 +5015,34 @@
         "source_offset": 136
       }
     },
+    "sched_param": {
+      "priority_offset": 0,
+      "size": 48,
+      "ss_init_budget_nsec_offset": 32,
+      "ss_init_budget_sec_offset": 24,
+      "ss_low_priority_offset": 40,
+      "ss_max_repl_offset": 4,
+      "ss_repl_period_nsec_offset": 16,
+      "ss_repl_period_sec_offset": 8
+    },
     "scm_rights": {
       "fd_bytes": 4,
       "level": 1,
       "type": 1
+    },
+    "sigaltstack": {
+      "wasm32": {
+        "flags_offset": 4,
+        "size": 12,
+        "sp_offset": 0,
+        "stack_size_offset": 8
+      },
+      "wasm64": {
+        "flags_offset": 8,
+        "size": 24,
+        "sp_offset": 0,
+        "stack_size_offset": 16
+      }
     },
     "sigevent": {
       "wasm32": {
@@ -5031,6 +5083,117 @@
     },
     "socket_message_flags": {
       "trunc": 32
+    },
+    "stat": {
+      "atime_nsec_offset": 48,
+      "atime_sec_offset": 40,
+      "blksize_offset": 96,
+      "blocks_offset": 104,
+      "ctime_nsec_offset": 80,
+      "ctime_sec_offset": 72,
+      "dev_offset": 0,
+      "gid_offset": 28,
+      "ino_offset": 8,
+      "mode_offset": 16,
+      "mtime_nsec_offset": 64,
+      "mtime_sec_offset": 56,
+      "nlink_offset": 20,
+      "rdev_offset": 88,
+      "size": 112,
+      "size_offset": 32,
+      "uid_offset": 24
+    },
+    "statfs": {
+      "wasm32": {
+        "bavail_offset": 24,
+        "bfree_offset": 16,
+        "blocks_offset": 8,
+        "bsize_offset": 4,
+        "ffree_offset": 40,
+        "files_offset": 32,
+        "flags_offset": 64,
+        "frsize_offset": 60,
+        "fsid_offset": 48,
+        "namelen_offset": 56,
+        "size": 88,
+        "spare_offset": 68,
+        "type_offset": 0
+      },
+      "wasm64": {
+        "bavail_offset": 32,
+        "bfree_offset": 24,
+        "blocks_offset": 16,
+        "bsize_offset": 8,
+        "ffree_offset": 48,
+        "files_offset": 40,
+        "flags_offset": 80,
+        "frsize_offset": 72,
+        "fsid_offset": 56,
+        "namelen_offset": 64,
+        "size": 120,
+        "spare_offset": 88,
+        "type_offset": 0
+      }
+    },
+    "statx": {
+      "atime_nsec_offset": 72,
+      "atime_sec_offset": 64,
+      "attributes_mask_offset": 56,
+      "attributes_offset": 8,
+      "basic_stats_mask": 2047,
+      "blksize_offset": 4,
+      "blocks_offset": 48,
+      "btime_sec_offset": 80,
+      "ctime_nsec_offset": 104,
+      "ctime_sec_offset": 96,
+      "dev_major_offset": 136,
+      "dev_minor_offset": 140,
+      "gid_offset": 24,
+      "ino_offset": 32,
+      "mask_offset": 0,
+      "mode_offset": 28,
+      "mtime_nsec_offset": 120,
+      "mtime_sec_offset": 112,
+      "nlink_offset": 16,
+      "rdev_major_offset": 128,
+      "rdev_minor_offset": 132,
+      "size": 256,
+      "size_field_offset": 40,
+      "uid_offset": 20
+    },
+    "sysinfo": {
+      "wasm32": {
+        "bufferram_offset": 28,
+        "freehigh_offset": 48,
+        "freeram_offset": 20,
+        "freeswap_offset": 36,
+        "loads_offset": 4,
+        "mem_unit_offset": 52,
+        "procs_offset": 40,
+        "reserved_offset": 56,
+        "sharedram_offset": 24,
+        "size": 312,
+        "totalhigh_offset": 44,
+        "totalram_offset": 16,
+        "totalswap_offset": 32,
+        "uptime_offset": 0
+      },
+      "wasm64": {
+        "bufferram_offset": 56,
+        "freehigh_offset": 96,
+        "freeram_offset": 40,
+        "freeswap_offset": 72,
+        "loads_offset": 8,
+        "mem_unit_offset": 104,
+        "procs_offset": 80,
+        "reserved_offset": 108,
+        "sharedram_offset": 48,
+        "size": 368,
+        "totalhigh_offset": 88,
+        "totalram_offset": 32,
+        "totalswap_offset": 64,
+        "uptime_offset": 0
+      }
     }
   },
   "process_snapshot_wire": {

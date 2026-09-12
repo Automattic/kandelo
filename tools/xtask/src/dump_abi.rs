@@ -5035,11 +5035,180 @@ fn channel_scalar_contract() -> Value {
 }
 
 fn process_native_layouts() -> Value {
+    // All fifteen modules. This recorded six until 2026-09-12, so the
+    // committed snapshot — the campaign's drift-detection artifact — covered
+    // less than half of what it named. `statx` was among the missing, and its
+    // unrecorded offsets are how `stx_dev_minor` came to be never written.
     use shared::process_layout::{
-        cmsghdr, iovec, msghdr, multicast_group_request, rt_sigqueueinfo, sigevent,
+        cmsghdr, iovec, itimerval, mq_attr, msghdr, multicast_group_request,
+        rt_sigqueueinfo, sched_param, sigaltstack, sigevent, stat, statfs, statx,
+        sysinfo,
     };
 
     json!({
+        "sigaltstack": {
+            "wasm32": {
+                "flags_offset": sigaltstack::WASM32_FLAGS_OFFSET,
+                "size": sigaltstack::WASM32_SIZE,
+                "sp_offset": sigaltstack::WASM32_SP_OFFSET,
+                "stack_size_offset": sigaltstack::WASM32_STACK_SIZE_OFFSET,
+            },
+            "wasm64": {
+                "flags_offset": sigaltstack::WASM64_FLAGS_OFFSET,
+                "size": sigaltstack::WASM64_SIZE,
+                "sp_offset": sigaltstack::WASM64_SP_OFFSET,
+                "stack_size_offset": sigaltstack::WASM64_STACK_SIZE_OFFSET,
+            },
+        },
+        "itimerval": {
+            "wasm32": {
+                "size": itimerval::WASM32_SIZE,
+            },
+            "wasm64": {
+                "size": itimerval::WASM64_SIZE,
+            },
+            "interval_sec_index": itimerval::INTERVAL_SEC_INDEX,
+            "interval_usec_index": itimerval::INTERVAL_USEC_INDEX,
+            "value_sec_index": itimerval::VALUE_SEC_INDEX,
+            "value_usec_index": itimerval::VALUE_USEC_INDEX,
+        },
+        "mq_attr": {
+            "wasm32": {
+                "curmsgs_offset": mq_attr::WASM32_CURMSGS_OFFSET,
+                "flags_offset": mq_attr::WASM32_FLAGS_OFFSET,
+                "maxmsg_offset": mq_attr::WASM32_MAXMSG_OFFSET,
+                "msgsize_offset": mq_attr::WASM32_MSGSIZE_OFFSET,
+                "size": mq_attr::WASM32_SIZE,
+            },
+            "wasm64": {
+                "curmsgs_offset": mq_attr::WASM64_CURMSGS_OFFSET,
+                "flags_offset": mq_attr::WASM64_FLAGS_OFFSET,
+                "maxmsg_offset": mq_attr::WASM64_MAXMSG_OFFSET,
+                "msgsize_offset": mq_attr::WASM64_MSGSIZE_OFFSET,
+                "size": mq_attr::WASM64_SIZE,
+            },
+        },
+        "statfs": {
+            "wasm32": {
+                "bavail_offset": statfs::WASM32_BAVAIL_OFFSET,
+                "bfree_offset": statfs::WASM32_BFREE_OFFSET,
+                "blocks_offset": statfs::WASM32_BLOCKS_OFFSET,
+                "bsize_offset": statfs::WASM32_BSIZE_OFFSET,
+                "ffree_offset": statfs::WASM32_FFREE_OFFSET,
+                "files_offset": statfs::WASM32_FILES_OFFSET,
+                "flags_offset": statfs::WASM32_FLAGS_OFFSET,
+                "frsize_offset": statfs::WASM32_FRSIZE_OFFSET,
+                "fsid_offset": statfs::WASM32_FSID_OFFSET,
+                "namelen_offset": statfs::WASM32_NAMELEN_OFFSET,
+                "size": statfs::WASM32_SIZE,
+                "spare_offset": statfs::WASM32_SPARE_OFFSET,
+                "type_offset": statfs::WASM32_TYPE_OFFSET,
+            },
+            "wasm64": {
+                "bavail_offset": statfs::WASM64_BAVAIL_OFFSET,
+                "bfree_offset": statfs::WASM64_BFREE_OFFSET,
+                "blocks_offset": statfs::WASM64_BLOCKS_OFFSET,
+                "bsize_offset": statfs::WASM64_BSIZE_OFFSET,
+                "ffree_offset": statfs::WASM64_FFREE_OFFSET,
+                "files_offset": statfs::WASM64_FILES_OFFSET,
+                "flags_offset": statfs::WASM64_FLAGS_OFFSET,
+                "frsize_offset": statfs::WASM64_FRSIZE_OFFSET,
+                "fsid_offset": statfs::WASM64_FSID_OFFSET,
+                "namelen_offset": statfs::WASM64_NAMELEN_OFFSET,
+                "size": statfs::WASM64_SIZE,
+                "spare_offset": statfs::WASM64_SPARE_OFFSET,
+                "type_offset": statfs::WASM64_TYPE_OFFSET,
+            },
+        },
+        "sysinfo": {
+            "wasm32": {
+                "bufferram_offset": sysinfo::WASM32_BUFFERRAM_OFFSET,
+                "freehigh_offset": sysinfo::WASM32_FREEHIGH_OFFSET,
+                "freeram_offset": sysinfo::WASM32_FREERAM_OFFSET,
+                "freeswap_offset": sysinfo::WASM32_FREESWAP_OFFSET,
+                "loads_offset": sysinfo::WASM32_LOADS_OFFSET,
+                "mem_unit_offset": sysinfo::WASM32_MEM_UNIT_OFFSET,
+                "procs_offset": sysinfo::WASM32_PROCS_OFFSET,
+                "reserved_offset": sysinfo::WASM32_RESERVED_OFFSET,
+                "sharedram_offset": sysinfo::WASM32_SHAREDRAM_OFFSET,
+                "size": sysinfo::WASM32_SIZE,
+                "totalhigh_offset": sysinfo::WASM32_TOTALHIGH_OFFSET,
+                "totalram_offset": sysinfo::WASM32_TOTALRAM_OFFSET,
+                "totalswap_offset": sysinfo::WASM32_TOTALSWAP_OFFSET,
+                "uptime_offset": sysinfo::WASM32_UPTIME_OFFSET,
+            },
+            "wasm64": {
+                "bufferram_offset": sysinfo::WASM64_BUFFERRAM_OFFSET,
+                "freehigh_offset": sysinfo::WASM64_FREEHIGH_OFFSET,
+                "freeram_offset": sysinfo::WASM64_FREERAM_OFFSET,
+                "freeswap_offset": sysinfo::WASM64_FREESWAP_OFFSET,
+                "loads_offset": sysinfo::WASM64_LOADS_OFFSET,
+                "mem_unit_offset": sysinfo::WASM64_MEM_UNIT_OFFSET,
+                "procs_offset": sysinfo::WASM64_PROCS_OFFSET,
+                "reserved_offset": sysinfo::WASM64_RESERVED_OFFSET,
+                "sharedram_offset": sysinfo::WASM64_SHAREDRAM_OFFSET,
+                "size": sysinfo::WASM64_SIZE,
+                "totalhigh_offset": sysinfo::WASM64_TOTALHIGH_OFFSET,
+                "totalram_offset": sysinfo::WASM64_TOTALRAM_OFFSET,
+                "totalswap_offset": sysinfo::WASM64_TOTALSWAP_OFFSET,
+                "uptime_offset": sysinfo::WASM64_UPTIME_OFFSET,
+            },
+        },
+        "stat": {
+            "atime_nsec_offset": stat::ATIME_NSEC_OFFSET,
+            "atime_sec_offset": stat::ATIME_SEC_OFFSET,
+            "blksize_offset": stat::BLKSIZE_OFFSET,
+            "blocks_offset": stat::BLOCKS_OFFSET,
+            "ctime_nsec_offset": stat::CTIME_NSEC_OFFSET,
+            "ctime_sec_offset": stat::CTIME_SEC_OFFSET,
+            "dev_offset": stat::DEV_OFFSET,
+            "gid_offset": stat::GID_OFFSET,
+            "ino_offset": stat::INO_OFFSET,
+            "mode_offset": stat::MODE_OFFSET,
+            "mtime_nsec_offset": stat::MTIME_NSEC_OFFSET,
+            "mtime_sec_offset": stat::MTIME_SEC_OFFSET,
+            "nlink_offset": stat::NLINK_OFFSET,
+            "rdev_offset": stat::RDEV_OFFSET,
+            "size": stat::SIZE,
+            "size_offset": stat::SIZE_OFFSET,
+            "uid_offset": stat::UID_OFFSET,
+        },
+        "statx": {
+            "atime_nsec_offset": statx::ATIME_NSEC_OFFSET,
+            "atime_sec_offset": statx::ATIME_SEC_OFFSET,
+            "attributes_mask_offset": statx::ATTRIBUTES_MASK_OFFSET,
+            "attributes_offset": statx::ATTRIBUTES_OFFSET,
+            "basic_stats_mask": statx::BASIC_STATS_MASK,
+            "blksize_offset": statx::BLKSIZE_OFFSET,
+            "blocks_offset": statx::BLOCKS_OFFSET,
+            "btime_sec_offset": statx::BTIME_SEC_OFFSET,
+            "ctime_nsec_offset": statx::CTIME_NSEC_OFFSET,
+            "ctime_sec_offset": statx::CTIME_SEC_OFFSET,
+            "dev_major_offset": statx::DEV_MAJOR_OFFSET,
+            "dev_minor_offset": statx::DEV_MINOR_OFFSET,
+            "gid_offset": statx::GID_OFFSET,
+            "ino_offset": statx::INO_OFFSET,
+            "mask_offset": statx::MASK_OFFSET,
+            "mode_offset": statx::MODE_OFFSET,
+            "mtime_nsec_offset": statx::MTIME_NSEC_OFFSET,
+            "mtime_sec_offset": statx::MTIME_SEC_OFFSET,
+            "nlink_offset": statx::NLINK_OFFSET,
+            "rdev_major_offset": statx::RDEV_MAJOR_OFFSET,
+            "rdev_minor_offset": statx::RDEV_MINOR_OFFSET,
+            "size": statx::SIZE,
+            "size_field_offset": statx::SIZE_FIELD_OFFSET,
+            "uid_offset": statx::UID_OFFSET,
+        },
+        "sched_param": {
+            "priority_offset": sched_param::PRIORITY_OFFSET,
+            "size": sched_param::SIZE,
+            "ss_init_budget_nsec_offset": sched_param::SS_INIT_BUDGET_NSEC_OFFSET,
+            "ss_init_budget_sec_offset": sched_param::SS_INIT_BUDGET_SEC_OFFSET,
+            "ss_low_priority_offset": sched_param::SS_LOW_PRIORITY_OFFSET,
+            "ss_max_repl_offset": sched_param::SS_MAX_REPL_OFFSET,
+            "ss_repl_period_nsec_offset": sched_param::SS_REPL_PERIOD_NSEC_OFFSET,
+            "ss_repl_period_sec_offset": sched_param::SS_REPL_PERIOD_SEC_OFFSET,
+        },
         "cmsghdr": {
             "wasm32": {
                 "align": cmsghdr::WASM32_ALIGN,
@@ -7759,6 +7928,22 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
             "vfs_metadata" => {
+                classify_additive_object_by_key(key, old_value, new_value, &mut report)?
+            }
+            // Layout modules are keyed by struct name, exactly like the three
+            // sections above. Recording a module nobody recorded before cannot
+            // break a consumer that never read it, while CHANGING an existing
+            // module's offsets stays breaking -- `classify_additive_object_by_key`
+            // reports changed and removed entries, and only additions are
+            // forgiven.
+            //
+            // Until 2026-09-12 this section fell through to the catch-all, so
+            // extending coverage from 6 of 15 modules to all 15 was classified
+            // as an incompatible change and demanded an ABI_VERSION bump. The
+            // effect was that the snapshot could not gain coverage at all, and
+            // the generated C header ended up guarding 14 modules while the
+            // snapshot recorded 6.
+            "process_native_layouts" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
             _ if old_value != new_value => {
