@@ -934,6 +934,59 @@ mod tests {
         assert_eq!(&back, b"hi", "the exported image carries the content written through the ABI");
     }
 
+    /// **Driving the export over base files DESTROYS them, and this test pins
+    /// that so nobody wires derived builds through it by accident.**
+    ///
+    /// Reached by trying to assert three different things and being wrong each
+    /// time: first that exporting unreachable base content would FAIL (it
+    /// completes), then that the exported file would carry its real size (the
+    /// body inode is a stub), then that a deferred record would carry the size
+    /// instead (there is no deferred section at all).
+    ///
+    /// What actually happens is lane V's V4 hazard, quoted in the master plan:
+    /// "V4 would silently destroy every lazy file if routed through
+    /// `export_image_read` without the identity contract: 65 files in the base
+    /// image, 79 in a derived one, each surviving as a zero-byte regular file
+    /// with no URL."
+    ///
+    /// So this module is correct for FRESH builds, which have no base files,
+    /// and is NOT yet usable for DERIVED builds. The identity contract has to
+    /// be supplied before it is, and a test asserting the damage is the only
+    /// honest way to hold that boundary: the failure is invisible otherwise,
+    /// because the image builds, mounts, and boots.
+    #[test]
+    fn exporting_a_base_file_silently_empties_it_todo_derived_builds() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        rootfs::insert_base_file(b"/base.bin", 42, 4096, 0o644, 0, 0, 9).expect("insert base");
+
+        let chunk = 64 * 1024;
+        let buf = sm_alloc(chunk);
+        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
+            assert!(n >= 0, "the export completes; it does not consult the base bytes. got {n}");
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            image.extend_from_slice(got);
+            offset += n as i64;
+        }
+        unsafe { sm_free(buf, chunk) };
+
+        let fs = runtime_core::sffs::Sffs::mount(image).expect("mount the exported image");
+        let ino = fs.resolve(b"/base.bin", false).expect("the path survives");
+        let st = fs.stat_ino(ino).expect("stat");
+
+        assert_eq!(st.size, 0, "THE DAMAGE: a 4096-byte file exports as zero-length");
+        assert!(
+            fs.deferred_section().expect("decodes").is_none(),
+            "THE DAMAGE: and with no deferred record, so nothing records where its bytes were",
+        );
+    }
+
     #[test]
     fn failures_come_back_as_negative_errno() {
         sm_reset();
