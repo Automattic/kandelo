@@ -669,7 +669,7 @@ fn render_marshal_header() -> String {
 
 fn render_process_layouts_header() -> String {
     use shared::process_layout::{
-        cmsghdr, iovec, msghdr, multicast_group_request, rt_sigqueueinfo, sigevent,
+        cmsghdr, iovec, msghdr, multicast_group_request, rt_sigqueueinfo, sigevent, stat,
     };
 
     format!(
@@ -765,6 +765,21 @@ fn render_process_layouts_header() -> String {
          #define KANDELO_KERNEL_POLLFD_EVENTS_OFFSET {pollfd_events}u\n\
          #define KANDELO_KERNEL_POLLFD_REVENTS_OFFSET {pollfd_revents}u\n\
          \n\
+         #define KANDELO_PROCESS_STAT_SIZE {stat_size}u\n\
+         #define KANDELO_PROCESS_STAT_DEV_OFFSET {stat_dev}u\n\
+         #define KANDELO_PROCESS_STAT_INO_OFFSET {stat_ino}u\n\
+         #define KANDELO_PROCESS_STAT_MODE_OFFSET {stat_mode}u\n\
+         #define KANDELO_PROCESS_STAT_NLINK_OFFSET {stat_nlink}u\n\
+         #define KANDELO_PROCESS_STAT_UID_OFFSET {stat_uid}u\n\
+         #define KANDELO_PROCESS_STAT_GID_OFFSET {stat_gid}u\n\
+         #define KANDELO_PROCESS_STAT_SIZE_OFFSET {stat_size_off}u\n\
+         #define KANDELO_PROCESS_STAT_ATIME_SEC_OFFSET {stat_atime}u\n\
+         #define KANDELO_PROCESS_STAT_MTIME_SEC_OFFSET {stat_mtime}u\n\
+         #define KANDELO_PROCESS_STAT_CTIME_SEC_OFFSET {stat_ctime}u\n\
+         #define KANDELO_PROCESS_STAT_RDEV_OFFSET {stat_rdev}u\n\
+         #define KANDELO_PROCESS_STAT_BLKSIZE_OFFSET {stat_blksize}u\n\
+         #define KANDELO_PROCESS_STAT_BLOCKS_OFFSET {stat_blocks}u\n\
+         \n\
          #define KANDELO_SELECT_FD_SETSIZE {fd_setsize}u\n\
          #define KANDELO_SELECT_FD_SET_BYTES {fd_set_bytes}u\n\
          \n\
@@ -851,6 +866,20 @@ fn render_process_layouts_header() -> String {
         pollfd_fd = offset_of!(shared::WasmPollFd, fd),
         pollfd_events = offset_of!(shared::WasmPollFd, events),
         pollfd_revents = offset_of!(shared::WasmPollFd, revents),
+        stat_size = stat::SIZE,
+        stat_dev = stat::DEV_OFFSET,
+        stat_ino = stat::INO_OFFSET,
+        stat_mode = stat::MODE_OFFSET,
+        stat_nlink = stat::NLINK_OFFSET,
+        stat_uid = stat::UID_OFFSET,
+        stat_gid = stat::GID_OFFSET,
+        stat_size_off = stat::SIZE_OFFSET,
+        stat_atime = stat::ATIME_SEC_OFFSET,
+        stat_mtime = stat::MTIME_SEC_OFFSET,
+        stat_ctime = stat::CTIME_SEC_OFFSET,
+        stat_rdev = stat::RDEV_OFFSET,
+        stat_blksize = stat::BLKSIZE_OFFSET,
+        stat_blocks = stat::BLOCKS_OFFSET,
         fd_setsize = shared::select::FD_SETSIZE,
         fd_set_bytes = shared::select::FD_SET_BYTES,
     )
