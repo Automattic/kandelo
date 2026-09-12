@@ -1,0 +1,63 @@
+{
+  "file": "crates/runtime-core/src/sffs_deferred.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" sffs_deferred >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "encoder accepts a half-specified archive linkage",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        if (record.archive_id == 0) != record.source_path.is_empty() {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "decoder accepts a half-specified archive linkage",
+      "scope": "pub fn decode(",
+      "scope_end": "\n}\n",
+      "find": "        if (archive_id == 0) != (source_path_len == 0) {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "encoder drops the source-path cap",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        if record.source_path.len() > MAX_SOURCE_PATH_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "decoder drops the source-path cap",
+      "scope": "pub fn decode(",
+      "scope_end": "\n}\n",
+      "find": "        if source_path_len > MAX_SOURCE_PATH_LEN {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "version is not bumped, so a stale reader misreads v2 as v1",
+      "scope": "pub const VERSION",
+      "scope_end": "\n",
+      "find": "pub const VERSION: u16 = 2;",
+      "replace": "pub const VERSION: u16 = 1;"
+    },
+    {
+      "name": "encoder writes the payload before the member path",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        out.extend_from_slice(&record.source_path);\n        out.extend_from_slice(&record.payload);",
+      "replace": "        out.extend_from_slice(&record.payload);\n        out.extend_from_slice(&record.source_path);"
+    },
+    {
+      "name": "decoder reads the archive id from the size field",
+      "scope": "pub fn decode(",
+      "scope_end": "\n}\n",
+      "find": "        let archive_id = r_u32(bytes, offset + 16)?;",
+      "replace": "        let archive_id = r_u32(bytes, offset + 8)?;"
+    },
+    {
+      "name": "record length ignores the member path it carries",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        let unpadded = RECORD_HEADER_SIZE\n            .checked_add(source_path_len)\n            .and_then(|n| n.checked_add(payload_len))\n            .ok_or(Errno::EINVAL)?;",
+      "replace": "        let unpadded = RECORD_HEADER_SIZE\n            .checked_add(payload_len)\n            .ok_or(Errno::EINVAL)?;"
+    }
+  ]
+}

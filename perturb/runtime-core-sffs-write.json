@@ -1,0 +1,28 @@
+{
+  "file": "crates/runtime-core/src/sffs_write.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" sffs_write >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the writer accepts a half-specified archive linkage",
+      "scope": "pub fn create_deferred_file(",
+      "scope_end": "\n    }\n",
+      "find": "        if (archive_id == 0) != source_path.is_empty() {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "the writer drops the member-path cap",
+      "scope": "pub fn create_deferred_file(",
+      "scope_end": "\n    }\n",
+      "find": "        if source_path.len() > crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "the record forgets which archive backs the file",
+      "scope": "pub fn create_deferred_file(",
+      "scope_end": "\n    }\n",
+      "find": "            archive_id,\n            source_path: source_path.to_vec(),",
+      "replace": "            archive_id: 0,\n            source_path: Vec::new(),"
+    }
+  ]
+}

@@ -225,6 +225,16 @@ fn fs_root<S: sffs::BlockSource>(_fs: &Sffs<S>) -> u32 {
     1
 }
 
+/// A member path for display and comparison. SDEF carries bytes; KLZY carries a
+/// validated UTF-8 string. Non-UTF-8 bytes are spelled in hex under a prefix no
+/// real path can produce, so two different paths never compare equal here.
+fn spell_source_path(bytes: &[u8]) -> String {
+    match core::str::from_utf8(bytes) {
+        Ok(text) => text.to_string(),
+        Err(_) => format!("\0hex:{}", hex(bytes)),
+    }
+}
+
 /// Read the deferred set from whichever carrier the image uses.
 ///
 /// SDEF is preferred when present because it is the authority under V5; KLZY
@@ -245,8 +255,12 @@ fn read_deferred<S: sffs::BlockSource>(
                     path: String::new(),
                     real_size: record.size,
                     payload_sha256: hex(&Sha256::digest(&record.payload)),
-                    archive_id: None,
-                    source_path: None,
+                    // Since SDEF v2 the linkage is a field on both carriers,
+                    // which is what makes this comparison carrier-blind: the
+                    // same archive member compares equal whether the image
+                    // describes it in KLZY or in SDEF.
+                    archive_id: Some(record.archive_id),
+                    source_path: Some(spell_source_path(&record.source_path)),
                 },
             );
         }
