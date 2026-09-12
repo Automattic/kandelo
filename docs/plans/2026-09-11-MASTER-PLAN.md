@@ -137,6 +137,89 @@ instruction, so `ForkFunctionCatalog.encode` may be as irreducible as
 `CLAUDE.md`'s floor list, because an unnamed floor item is one a future agent
 must re-derive, and re-derivation is how this lane regrew.
 
+## The floor audit — several claimed floors are not floors
+
+`2026-09-08-fork-controlflow-inversion-scope.md` §2 lists eight floor items.
+Audited against what Wasm can actually express, **three are genuine capability
+limits, one is a real limit the list does not name, and four are something
+else.** This matters because a false floor is a permanent excuse: nobody
+re-examines a line that says "Wasm cannot do this".
+
+**Genuine capability limits — keep:**
+
+- **Worker spawn and instantiate.** No Wasm API creates a worker or an
+  instance. Note the *primitive* is floor; the *decision* of when and what
+  could still move, with the host as executor.
+- **PIC placement globals.** The module cannot place itself before it exists.
+- **Worker-message bridge.** Host transport with no Wasm equivalent.
+
+**A real limit the list omits, and should name:** Wasm has **no funcref
+equality instruction** — `ref.eq` operates on `eqref`, not `funcref`. So
+mapping a live funcref to an ordinal (`ForkFunctionCatalog.encode`) genuinely
+cannot happen inside the module. The §2 catalogs row justifies the host-built
+*table* and names externref provenance, but not the funcref value→ordinal
+direction, whose reason is different and stronger. **An unnamed floor item is
+one a future agent must re-derive, and re-derivation is how this surface
+regrew.**
+
+**Not floors:**
+
+- **The guest entry and unwind-catch loop — this one is self-inflicted, and it
+  is the linchpin.** The claim is that discriminating "ended via tagged throw"
+  from "ended via trap" needs JS, because Wasm-EH catches exceptions and not
+  traps. The second half is true. But the trap exists because **we chose it**:
+  `worker-main.ts` carries `// Normal exit via kernel_exit -> unreachable
+  trap`. The fork-unwind tag is a real `WebAssembly.Tag` and is importable. If
+  `kernel_exit` threw a tagged exception instead of trapping, both paths become
+  catchable inside Wasm and the floor dissolves. §3 says this item *"bounds the
+  inversion: the module owns everything AFTER the catch and BEFORE the next
+  entry, never the entry/catch itself."* **The bound is ours, not Wasm's.**
+- **`resolve_externref` is overstated.** Wasm *can* hold an externref — it is a
+  value type and `(table externref)` is shipped everywhere. What cannot express
+  it is **Rust/LLVM**, a toolchain limit, and this module already uses
+  hand-written shims. The true floor is "**the host must insert into the
+  table**", not "the host owns the identity cache and materializes per lookup"
+  — which converts a per-lookup crossing into a bulk seed.
+- **Anyref-transit `Table.grow` sizing** — same shape. `table.grow` is a real
+  instruction; Rust will not emit it for an imported table, a wat shim will.
+- **The `fork()` syscall** — §2 itself says it *could* be an import the module
+  calls, and declines on entanglement grounds. That is a judgement, not a
+  limit, and should be labelled as one.
+
+Two further candidates are unnamed in §2 and need a ruling:
+`fork-module-trampoline.ts` (per-activation `WebAssembly.Module` minting), and
+`fork-replay-gate.ts` — **the latter is challengeable**, since Wasm has
+`memory.atomic.wait`.
+
+## Why the target is ~2,500 and deletion cannot reach it
+
+Deleting everything callerless is worth roughly 1,400 lines, which is what F0
+delivered. The order of magnitude is elsewhere.
+
+**TRANSPORT is ~7,000 lines, and that is the anomaly.** Marshalling for a
+module contract should be thin. It is seven thousand because there are ~69
+fine-grained `fm_*` entry points, each needing argument marshalling, buffer
+alloc/read/free and error decoding on the TypeScript side — **multiplied by
+per-type variants** (`..._externref` / `..._funcref`). Collapse 69 entries to 4
+and transport collapses with them. **That is the mechanism, and it is why
+inversion is not a tidier migration but the only thing that touches transport
+at all.**
+
+**And the FLOOR figure is suspect.** ~3,700 lines were classified floor, but
+the floor is eight primitives: spawn a worker, send a syscall, catch an
+exception, resolve a handle, grow a table, pass placement globals, build a
+ref-typed table, post a message. That is hundreds of lines of work. A number
+that large says the classification is generous — floor-adjacent orchestration
+wearing floor clothes. The sharpest evidence: **`fork-module-state.ts` is 3,825
+lines and its Rust twin `module_state_records.rs` is 483 lines that have never
+executed.** One TypeScript file is larger than the entire claimed floor, and
+its replacement already exists.
+
+**A correction to this file's own earlier figure:** the `fm_*` surface is
+**69 Rust-declared plus one injected**, down from 71 — it has been *shrinking*.
+The "95" reported earlier counted TypeScript tokens including 13 tombstone
+comments that document their own deletion. The direction was reported backwards.
+
 ## Increments
 
 - **F0 — delete what has no caller. ~4,400 lines, free.** `fork-reference-recipes.ts`
