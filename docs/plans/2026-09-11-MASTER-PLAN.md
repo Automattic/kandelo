@@ -2189,6 +2189,47 @@ from `Sffs::geometry`), image metadata get/set, lazy-archive import/export,
 operations and three assertions**, against a lane scoped as though the whole
 filesystem needed rebuilding.
 
+**STATUS 2026-09-12: all six census gaps are closed or retired, and four of
+them were retired rather than built.** That is the headline result of working
+them, and it is worth stating before the list, because the lane was scoped as
+six operations to implement:
+
+| Gap | Outcome |
+|---|---|
+| `statfs` | **CLOSED** — `Sffs::statfs` reads the free counts from the superblock, which `geometry` deliberately does not carry (`b8d6c1c74`). |
+| image metadata get/set | **CLOSED** — read as opaque bytes (`3b8bfc9f9`); the write side was already in the container writer. |
+| `unlink` | **ALREADY PRESENT** in `rootfs.rs`; the census looked at `SffsWriter`, which is the serializer. |
+| deferred inspection | **ALREADY PRESENT** — `Sffs::deferred_section`. |
+| `rebaseToNewFileSystem` | **RETIRED** — a workaround for `SharedArrayBuffer`'s fixed `maxByteLength`; the Rust path picks capacity at serialization time (`fc88dec82`). |
+| lazy-archive import/export | **RETIRED** — see immediately below. |
+
+**Lazy-archive import/export is not a port, and lane S says why.** The archive
+JSON is host-side PRODUCER metadata: the kernel reads the kernel-facing subset
+from KLZY (and, under V5, from SDEF), never this section. Three facts settle
+the ownership:
+
+* **Integrity already exists here.** Lane S states it directly — "`LazyFileEntry`
+  carries no integrity field. **The lazy archive types do**" — and
+  `assertLazyIntegrity` is already called in three places. Lane S's defect is
+  about lazy *files*, not archives.
+* **Verification ownership is lane S's, not lane Y's.** Lane S's floor is
+  explicit: the host performs the fetch because the network is its own, and
+  "verification is not the host's".
+* **S1 says the digest "belongs in lane V's SDEF record, not in JSON we are
+  about to delete."** Porting `exportLazyArchiveEntries` and
+  `registerLazyArchiveFromEntries` into Rust would be building on a section the
+  campaign is removing.
+
+So the Rust path carries the archive JSON **opaquely**, which the container
+writer already does, exactly as it treats image metadata. The producer-side
+manipulation of those entries is recipe logic and stays in TypeScript — which
+is lane Y's whole premise about recipes.
+
+**What this does NOT claim.** "Retired" means the Rust path does not need the
+operation, not that the TypeScript is deletable today. The opaque-carry design
+has to hold through Y5, and a builder that turns out to need to READ archive
+entries through the bridge would reopen this.
+
 **Two further gaps, found by Y2a on 2026-09-12 and NOT in the census's six**
 (`docs/plans/2026-09-12-lane-y2a-grounding.md`):
 
