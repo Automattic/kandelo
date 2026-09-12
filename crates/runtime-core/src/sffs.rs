@@ -301,6 +301,18 @@ pub struct SffsGeometry {
 }
 
 pub(crate) const SB_TOTAL_INODES: u64 = 16;
+/// `f_type` for a mounted SFFS image: "SFFS" in ASCII.
+///
+/// The value is the one `host/src/statfs.ts` already reports, so a program
+/// cannot tell from `statfs` whether the TypeScript or the Rust reader
+/// answered it. Divergence here would be a platform-visible difference
+/// between two implementations of one filesystem, which is the defect lane V
+/// is closing.
+pub const SFFS_SUPER_MAGIC: u32 = 0x5346_4653;
+
+pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
+pub(crate) const SB_FREE_BLOCKS: u64 = 20;
+pub(crate) const SB_FREE_INODES: u64 = 24;
 /// Inode holding the deferred-file section, or 0. See
 /// [`crate::sffs_deferred`] for the section, and the writer's own
 /// `SB_DEFERRED_INODE` for why a consistency checker must read this field
@@ -380,6 +392,49 @@ impl<S: BlockSource> Sffs<S> {
         let mut raw = [0u8; INODE_SIZE];
         self.source.read_exact_at(self.inode_offset(ino), &mut raw)?;
         Ok(raw)
+    }
+
+    /// `statfs` for a mounted image, read from its own superblock.
+    ///
+    /// Lane Y's census listed this as derivable "from `Sffs::geometry`". It is
+    /// not, quite: geometry carries the inode-table start, the inode count and
+    /// the deferred inode, and deliberately not the FREE counts, which change
+    /// as a writer fills the image. They come from the superblock, which
+    /// `SffsWriter` already maintains at `SB_FREE_BLOCKS`/`SB_FREE_INODES`.
+    ///
+    /// The caller that needs this is the image builder's headroom assertion:
+    /// "this product image must still have N free bytes and M free inodes when
+    /// it ships". That is a question about the artifact on disk, so answering
+    /// it from the artifact's own superblock is the only answer that cannot
+    /// drift from what was written.
+    ///
+    /// `f_bavail` equals `f_bfree`: SFFS reserves no blocks for a privileged
+    /// user, so there is no second number to report and inventing a reserve
+    /// here would understate the headroom a builder actually has.
+    pub fn statfs(&self) -> Result<wasm_posix_shared::WasmStatfs, Errno> {
+        let total_blocks = source_u32(&self.source, SB_TOTAL_BLOCKS).map_err(container_errno)?;
+        let total_inodes = source_u32(&self.source, SB_TOTAL_INODES).map_err(container_errno)?;
+        let free_blocks = source_u32(&self.source, SB_FREE_BLOCKS).map_err(container_errno)?;
+        let free_inodes = source_u32(&self.source, SB_FREE_INODES).map_err(container_errno)?;
+        if free_blocks > total_blocks || free_inodes > total_inodes {
+            // A superblock claiming more free than it has is corruption, not a
+            // filesystem that happens to be empty.
+            return Err(Errno::EINVAL);
+        }
+        Ok(wasm_posix_shared::WasmStatfs {
+            f_type: SFFS_SUPER_MAGIC,
+            f_bsize: BLOCK_SIZE as u32,
+            f_blocks: total_blocks as u64,
+            f_bfree: free_blocks as u64,
+            f_bavail: free_blocks as u64,
+            f_files: total_inodes as u64,
+            f_ffree: free_inodes as u64,
+            f_fsid: 0,
+            f_namelen: 255,
+            f_frsize: BLOCK_SIZE as u32,
+            f_flags: 0,
+            _pad: 0,
+        })
     }
 
     pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno> {
@@ -637,6 +692,50 @@ pub struct SffsDirent {
 mod tests {
     use super::*;
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+
+    /// `statfs` answers from the real fixture's superblock, and the numbers
+    /// are internally consistent with the tree it describes.
+    ///
+    /// Asserted as relationships rather than hardcoded totals: pinning
+    /// "f_blocks == 32" would break the moment the fixture is regenerated at a
+    /// different size and would be testing the fixture, not the reader.
+    #[test]
+    fn statfs_reports_the_images_own_geometry() {
+        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let fs = Sffs::mount(sffs).expect("mount");
+        let st = fs.statfs().expect("statfs");
+
+        assert_eq!(st.f_type, SFFS_SUPER_MAGIC, "reports itself as SFFS");
+        assert_eq!(st.f_bsize, BLOCK_SIZE as u32);
+        assert_eq!(st.f_frsize, st.f_bsize, "SFFS has no fragment size distinct from its block size");
+        assert_eq!(st.f_bavail, st.f_bfree, "SFFS reserves no blocks, so available == free");
+
+        assert!(st.f_blocks > 0 && st.f_files > 0, "a mounted image has blocks and inodes");
+        assert!(st.f_bfree <= st.f_blocks, "free blocks cannot exceed the total");
+        assert!(st.f_ffree <= st.f_files, "free inodes cannot exceed the total");
+        assert!(
+            st.f_ffree < st.f_files,
+            "the fixture holds a tree, so some inodes are in use",
+        );
+        assert_eq!(
+            st.f_blocks * st.f_bsize as u64,
+            fs.source.len() as u64,
+            "the block count must describe the whole filesystem body",
+        );
+    }
+
+    /// A superblock claiming more free than it has is corruption, not an empty
+    /// filesystem. Without this the headroom assertion a builder runs would
+    /// read a wildly generous free count off a damaged image and pass.
+    #[test]
+    fn statfs_refuses_a_superblock_claiming_impossible_free_counts() {
+        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let mut owned = sffs.to_vec();
+        let total_blocks = u32::from_le_bytes(owned[12..16].try_into().unwrap());
+        owned[20..24].copy_from_slice(&(total_blocks + 1).to_le_bytes());
+        let fs = Sffs::mount(owned).expect("mount");
+        assert_eq!(fs.statfs().unwrap_err(), Errno::EINVAL);
+    }
 
     #[test]
     fn unwrap_vfsi_returns_sffs_with_valid_magic() {
