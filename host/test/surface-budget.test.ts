@@ -242,9 +242,26 @@ const MEASURED: Record<string, () => number> = {
       "parseRangeSize",
     ].filter((name) => new RegExp(`function ${name}\\b`).test(text)).length;
   },
-  buildAutomationShell: () =>
-    lineCount(["scripts/*.sh", "scripts/**/*.sh"]),
-  buildAutomationScript: () => lineCount(["scripts/*.ts", "scripts/*.mjs"]),
+  // Non-test scripts computing a build-freshness digest: the tier that can
+  // silently produce a wrong artifact. Loud tier-2 checks are counted too and
+  // the target leaves room for them.
+  buildFreshnessDigestsOutsideRust: () =>
+    Number.parseInt(
+      execFileSync(
+        "/bin/sh",
+        [
+          "-c",
+          "grep -rl -E 'git hash-object|shasum|sha256sum|createHash' "
+            + "--include='*.sh' --include='*.mjs' --include='*.ts' scripts/ "
+            + "| grep -vE '(^|/)test-|\\.test\\.' "
+            + "| while read f; do grep -qiE "
+            + "'input-hash|input_hash|cache|freshness|stamp|digest|manifest' "
+            + "\"$f\" && echo \"$f\"; done | wc -l",
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      ).trim(),
+      10,
+    ),
   parseShebangReferences: () =>
     lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
       ? Number.parseInt(

@@ -81,7 +81,7 @@ lands — those are marked.
 | **L** host↔kernel plumbing (V4) | **10–20 d** | **unknown until L1** | 5,853 lines holding two real invariants. `crates/host-native` is the existence proof for what the floor actually is, and nobody has compared against it. |
 | **E** Node/browser peers | **4–8 d** | medium *(E1 done)* | The consolidation already happened for the pair that mattered: 72 shared lifecycle members via a factory. What is left is unifying 43 duplicated message types and a 21-item audit. |
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
-| **U** build automation | **15–30 d** | low | 25,658 lines of shell plus 10,921 of TS/MJS. Ranked last: none of it is host API surface. |
+| **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **2–4 d** | medium-high *(R1 done)* | One shared constant and four consumers, not a resolver migration. The 4,020-line file is policy nobody duplicates. |
 | **G** ABI binding drift | **3–6 d** | medium | Nine layout modules to cover plus the bare literals behind `statx`. The generator is ours end to end. |
@@ -1607,62 +1607,88 @@ writes to `/proc` and showing the UI is unaffected.
 
 # LANE U — build automation in shell and MJS
 
-**Status: characterized. Ranked last of the new lanes, deliberately, and the
-reason is stated rather than left to be inferred.**
+**Status: U1 census COMPLETE — `docs/plans/2026-09-11-lane-u1-census.md`.
+Ranked by blast radius. Gates replaced. Still ranked last.**
 
-`scripts/*.sh` and `scripts/**/*.sh` — **25,658 lines**. `scripts/*.ts` and
-`scripts/*.mjs` — **10,921 lines**.
+## What this lane is — as corrected by the census
 
-## What this lane is
+The lane's own rule was rank by blast radius, not size. U1 applies it.
+**14 non-Rust scripts compute a build-freshness digest**; the tier that can
+silently produce a wrong artifact is:
 
-Build, test, package and release automation, in a language where nothing type
-checks it, for a repo whose standing preference is that new tools default to a
-Rust `xtask` verb.
+`build-step-input-hash.sh` (108), `fork-instrument-tool-input-hash.sh` (29),
+`generate-rootfs-package-manifest.mjs` (689), `package-build-roots.sh` (870),
+`browser-binary-package-roots.mjs` (770), `build-local-vfs-asset-group.ts`
+(764), `vfs-product-deployment.ts` (764), `install-local-binary.sh` (618),
+`vfs-product-catalog.mjs` (327).
+
+The rest — release verification, CI deployment checks, workspace packing —
+**fail loudly** and are tier 2.
+
+## The finding: a cache-key primitive in shell that Rust consumes
+
+`build-step-input-hash.sh` is a **content-identity digest primitive**, folding
+each input's `git hash-object` blob hash into one value precisely so mtimes
+cannot make a stale tree look fresh. It is consumed by `build-host.sh`,
+`build-rootfs.sh` **and `tools/xtask/src/local_build.rs`**.
+
+The build's freshness decision is computed by a shell script nothing
+type-checks, and a Rust program depends on its output. **This repo has already
+served a stale kernel from a cache key that omitted an input**, and the fix that
+came out of it — closure-derived keys, `cargo_closure_paths` in
+`build_deps.rs` — already exists in Rust beside the shell that does not use it.
+
+And there are **two** shell copies: `build-step-input-hash.sh`'s own comment
+says it "mirrors `fork-instrument-tool-input-hash.sh`'s content-identity
+approach … but generalizes it".
 
 ## End state
 
-Automation that participates in the build's correctness — cache keys, package
-manifests, artifact staging, release publishing — is Rust with tests. Thin shell
-wrappers that invoke it remain, because a shell entry point is a convenience,
-not a place decisions live.
+Automation that participates in the build's correctness is Rust with tests.
+Thin shell wrappers that invoke it remain, because a shell entry point is a
+convenience, not a place decisions live.
 
 ## The floor
 
-Shell is genuinely right for process orchestration: invoking a compiler, wiring
-stdio, setting up the dev shell. **The floor is the wrapper, not the logic.**
+Shell is genuinely right for process orchestration — invoking a compiler,
+wiring stdio, setting up the dev shell. **The floor is the wrapper, not the
+logic.** Release verification and CI deployment checks also stay: they compute
+digests, but they fail loudly when wrong.
 
 ## Increments
 
-- **U1 — rank by blast radius, not size.** A script that computes a cache key
-  or emits a manifest can produce a wrong artifact silently; a script that runs
-  a test suite fails loudly. **Only the first kind earns migration.**
-- **U2 — `generate-rootfs-package-manifest.mjs` first.** Lane S already
-  indicted it: it emits `sudo` and `sudo-lite` setuid-root as lazy refs with
-  **no integrity digest**. It is the proof that manifest emission in an
-  untested language has a security consequence.
-- **U3 — cache-key and artifact-staging scripts next**, on the closure-derived
-  cache-key pattern already established.
-- **U4 — leave test runners and dev conveniences in shell** and say so.
+- **U1 — census.** Done.
+- **U2 — one content-identity digest implementation in Rust**, replacing both
+  shell copies, on the `cargo_closure` pattern that already exists.
+- **U3 — `generate-rootfs-package-manifest.mjs`.** Tier 1 on its own merits and
+  lane S needs it for the setuid integrity digest. **Land these together.**
+- **U4 — the package-root and asset-group emitters.**
+- **U5 — leave test runners, CI checks and dev conveniences in shell**, and say
+  so, so a later pass does not migrate them for tidiness.
 
 ## Acceptance evidence
 
-`buildAutomationShell` reaches **8,000** and `buildAutomationScript` reaches
-**4,000**. Both provisional; U1's ranking sets the real numbers.
+`buildFreshnessDigestsOutsideRust` reaches **6**. Not 0, because tier-2 scripts
+legitimately compute digests in shell.
 
 Per increment, a migrated script must have a test that fails when the logic is
 wrong — which is the entire point, since the current failure mode is silence.
+For U2 specifically: the digest must be shown to change when an input changes
+that the old shell folding missed.
 
 ## Known hazards
 
-- **This lane does not serve goal V4 at all.** No part of build automation is
-  host API surface. It is listed so the roster is complete and ranked last so
-  it does not compete with lanes L, I and V for attention. **Working this lane
-  while V4 is the stated primary goal would be motion, not progress.**
-- **Line-count targets are a poor fit for shell**, where a 400-line script may
-  be a thin wrapper and a 40-line one may compute a cache key. U1's blast-radius
-  ranking exists because the surface numbers here are the weakest in the budget.
+- **This lane does not serve goal V4 at all**, and the census does not change
+  that. No part of build automation is host API surface. **Working it while V4
+  is the stated primary goal would be motion, not progress.** U2 and U3 are the
+  exception worth arguing about: they are cheap and their failure mode has
+  already been realised.
 - **Rewriting working automation is how build systems break.** Every migration
   must be provable against the existing script's output before it replaces it.
+- **The 25,658 lines of shell were not read**, only classified by pattern.
+  Tier 2 was assumed loud rather than demonstrated loud.
+- **The 14 scripts' digests were not audited for correctness**, only classified
+  by what they compute.
 
 ---
 

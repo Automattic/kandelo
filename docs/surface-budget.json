@@ -128,20 +128,6 @@
       "target": 3600,
       "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
     },
-    "buildAutomationShell": {
-      "measure": "line count of scripts/*.sh and scripts/**/*.sh",
-      "ceiling": 25658,
-      "slack": 500,
-      "target": 8000,
-      "why": "Lane U. Build, test, package and release automation in shell, where nothing type-checks it. Serves V2 and the standing repo preference that new tools default to a Rust xtask verb. It does NOT serve V4 \u2014 no part of this is host API surface \u2014 and the lane is ranked accordingly. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
-    "buildAutomationScript": {
-      "measure": "line count of scripts/*.ts and scripts/*.mjs",
-      "ceiling": 10921,
-      "slack": 300,
-      "target": 4000,
-      "why": "Lane U's TypeScript and MJS half. Includes generate-rootfs-package-manifest.mjs, the emitter lane S already indicted for shipping sudo setuid-root as a lazy ref with no integrity digest. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
     "imageBuilderFilesystemImporters": {
       "measure": "files under images/ importing host/src/vfs/memory-fs or sharedfs-vendor",
       "ceiling": 36,
@@ -176,6 +162,13 @@
       "slack": 0,
       "target": 0,
       "why": "Lane W. parseMaps, parseMounts, parseProcEntry, parseStatusBytes and parseRangeSize parse /proc/<pid>/maps, /proc/mounts and /proc/<pid>/status with hand-written regexes. The kernel holds this data structured, serialises it to text, and the UI re-derives it with nothing binding the two. Lane G's failure mode in the UI layer."
+    },
+    "buildFreshnessDigestsOutsideRust": {
+      "measure": "non-test scripts under scripts/ computing a build-freshness digest",
+      "ceiling": 14,
+      "slack": 0,
+      "target": 6,
+      "why": "Lane U, set by the U1 census. Replaces two line-count surfaces that measured size \u2014 the axis the lane's own text says is wrong \u2014 and would have been satisfied by rewriting loud, harmless test runners. This counts the tier that can silently produce a wrong artifact. The archetype is build-step-input-hash.sh: a content-identity cache-key primitive written in shell, consumed by build-host.sh, build-rootfs.sh AND tools/xtask/src/local_build.rs, and mirroring a second shell script that folds the same logic. The repo has already served a stale kernel from a cache key that omitted an input. Target is 6, not 0: release verification and CI deployment checks legitimately compute digests in shell and fail loudly."
     }
   },
   "lanes": {
@@ -417,15 +410,11 @@
       "status": "open",
       "closure": [
         {
-          "surface": "buildAutomationShell",
-          "atMost": 8000
-        },
-        {
-          "surface": "buildAutomationScript",
-          "atMost": 4000
+          "surface": "buildFreshnessDigestsOutsideRust",
+          "atMost": 6
         }
       ],
-      "why": "Goal V2 and the repo's Rust-tools preference. Explicitly does NOT serve V4 and is ranked last of the new lanes for that reason; it is listed so the roster is complete, not because it competes for priority."
+      "why": "Goal V2 and the repo's Rust-tools preference. Still does NOT serve V4 and stays ranked last. But the U1 census separates a cheap tier-1 subset (one Rust digest primitive replacing two shell copies, plus the manifest emitter lane S already needs) with already-realised failure modes, from the tier-2 bulk the census recommends not migrating."
     }
   }
 }
