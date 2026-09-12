@@ -114,6 +114,12 @@ impl ContainerSections<'_> {
     }
 }
 
+/// Every length in the container is a `u32`, so a section or body that does not
+/// fit is a real limit rather than an overflow to wrap silently. Named so a
+/// caller can refuse an oversized section at the point it is handed one, rather
+/// than at the point the container is written.
+pub const MAX_SECTION_LEN: u32 = u32::MAX;
+
 /// Every length in the container is a `u32`, so a section or body that does
 /// not fit is a real limit and not an overflow to wrap silently.
 fn len_u32(len: usize, _what: &'static str) -> Result<u32, Errno> {

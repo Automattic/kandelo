@@ -549,10 +549,36 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     // not consulted; a derived build must supply a real source before it can
     // export base-backed content.
     let mut source = |_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO);
-    match rootfs::export_image_read(offset, out, &mut source) {
+    // The whole VFSI CONTAINER, not the bare SFFS body. A body is not an image:
+    // nothing can find the filesystem inside it or the sections beside it. The
+    // builder saving these bytes should be saving something the kernel can load
+    // back, and assembling the container host-side would make the host a second
+    // author of the format this lane exists to give one.
+    match rootfs::export_container_read(offset, out, &mut source) {
         Ok(n) => n as i32,
         Err(e) => err(e),
     }
+}
+
+/// Set the image-metadata section the exported container will carry.
+///
+/// Opaque bytes: the builder's statements about its own artifact (`version`,
+/// `kernelAbi`, `createdBy`). The kernel stores and emits them without reading
+/// them. Passing an empty range clears it.
+///
+/// # Safety
+/// `ptr`/`len` must describe a readable range, or `len` must be 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_set_image_metadata(ptr: usize, len: usize) -> i32 {
+    let bytes: &[u8] = if len == 0 {
+        b""
+    } else {
+        if ptr == 0 {
+            return err(Errno::EINVAL);
+        }
+        unsafe { slice(ptr, len) }
+    };
+    ok_or_errno(rootfs::set_image_metadata(bytes))
 }
 
 /// Register a file whose bytes live in a lazy archive rather than the image.
@@ -967,11 +993,20 @@ mod tests {
         assert!(rc < 0, "a missing directory must be an error, not an empty listing, got {rc}");
     }
 
-    /// What does the export actually emit -- the raw SFFS body, or the whole
-    /// VFSI container? Measured rather than assumed, because the answer decides
-    /// whether the bridge must wrap the bytes before writing a .vfs file.
+    /// What does the export emit -- the raw SFFS body, or the whole VFSI
+    /// container?
+    ///
+    /// It emitted a BODY, and this test pinned that, because the answer decided
+    /// whether the bridge had to wrap the bytes before writing a `.vfs` file.
+    /// The answer was "yes", which meant the host would have been assembling
+    /// the container: a second author for the format this lane exists to give
+    /// one, and the same shape of defect as the two descriptions V4 spent its
+    /// increments collapsing.
+    ///
+    /// It emits a container now. The assertions are inverted rather than
+    /// deleted, so the question this test was written to answer stays answered.
     #[test]
-    fn the_export_emits_a_mountable_sffs_body() {
+    fn the_export_emits_a_whole_container_not_a_bare_body() {
         sm_reset();
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
@@ -999,10 +1034,16 @@ mod tests {
         unsafe { sm_free(buf, chunk) };
         assert!(!image.is_empty(), "the export must produce bytes");
 
-        // The decisive check: mount what came out. If this is a container the
-        // mount fails, and the bridge would need to unwrap first.
-        let fs = runtime_core::sffs::Sffs::mount(image.clone())
-            .expect("the export emits a mountable SFFS body, not a wrapped container");
+        // The decisive check: these bytes are a container, so a bare mount
+        // fails and unwrapping succeeds. Both directions, because "it mounts"
+        // alone would also pass for a body.
+        assert!(
+            runtime_core::sffs::Sffs::mount(image.clone()).is_err(),
+            "a container is not a bare body",
+        );
+        let body = runtime_core::sffs::unwrap_vfsi(&image)
+            .expect("the export emits a whole VFSI container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount the body inside it");
 
         // And the tree that comes back is the tree that was built.
         let ino = fs.resolve(b"/usr/hello", true).expect("resolve /usr/hello");
@@ -1012,6 +1053,66 @@ mod tests {
         let mut back = [0u8; 2];
         fs.read_at(ino, 0, &mut back).expect("read");
         assert_eq!(&back, b"hi", "the exported image carries the content written through the ABI");
+
+        // No metadata was set, so the container declares none rather than
+        // carrying an empty section nothing claims.
+        assert!(
+            runtime_core::sffs::metadata_section(&image).expect("walk") .is_none(),
+            "no metadata in, no metadata section out",
+        );
+    }
+
+    #[test]
+    fn image_metadata_set_through_the_abi_reaches_the_exported_container() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        let metadata = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
+        assert_eq!(
+            with_path(metadata, |p, l| unsafe { sm_set_image_metadata(p, l) }),
+            0
+        );
+
+        let chunk = 64 * 1024;
+        let buf = sm_alloc(chunk);
+        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
+            assert!(n >= 0, "export failed at offset {offset}: {n}");
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            image.extend_from_slice(got);
+            offset += n as i64;
+        }
+        unsafe { sm_free(buf, chunk) };
+
+        assert_eq!(
+            runtime_core::sffs::metadata_section(&image)
+                .expect("walk")
+                .expect("the container declares a metadata section"),
+            metadata,
+            "carried through byte for byte, never parsed",
+        );
+
+        // Clearing it removes the section rather than leaving an empty one.
+        assert_eq!(unsafe { sm_set_image_metadata(0, 0) }, 0);
+        let buf = sm_alloc(chunk);
+        let mut cleared: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
+            assert!(n >= 0);
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            cleared.extend_from_slice(got);
+            offset += n as i64;
+        }
+        unsafe { sm_free(buf, chunk) };
+        assert!(runtime_core::sffs::metadata_section(&cleared).expect("walk").is_none());
     }
 
     /// **Driving the export over base files DESTROYS them, and this test pins
@@ -1056,7 +1157,8 @@ mod tests {
         }
         unsafe { sm_free(buf, chunk) };
 
-        let fs = runtime_core::sffs::Sffs::mount(image).expect("mount the exported image");
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount the exported image");
         let ino = fs.resolve(b"/base.bin", false).expect("the path survives");
         let st = fs.stat_ino(ino).expect("stat");
 
@@ -1117,7 +1219,8 @@ mod tests {
         }
         unsafe { sm_free(buf, chunk) };
 
-        let fs = runtime_core::sffs::Sffs::mount(image).expect("mount");
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
         let ino = fs.resolve(b"/usr/big", false).expect("the path survives");
         assert_eq!(
             fs.stat_ino(ino).expect("stat").size,

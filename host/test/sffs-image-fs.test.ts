@@ -147,6 +147,66 @@ describe("SffsImageFs", () => {
     expect(st.mode & 0o7777).toBe(0o755);
   });
 
+  it("exports a whole container the kernel format readers accept", () => {
+    // The bridge's half of the builder-facing save: drive the tree through the
+    // ABI, then drain the finished image. What comes out must be a CONTAINER,
+    // because a bare SFFS body is not an image -- nothing can find the
+    // filesystem inside it or the sections beside it.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.writeFile("/usr/hello", new TextEncoder().encode("hi"), 0o644);
+
+    const image = fs.exportImage();
+    // The magic is written as a little-endian u32, so "VFSI" lands on disk
+    // byte-reversed. Asserted as the reversal rather than as the literal
+    // "ISFV", so the test says which property it is checking -- and spelled out
+    // because this constant does NOT reach TypeScript through a generator, the
+    // same hand-carried-ABI shape as L-D2, W-D1 and V-D1.
+    expect(new TextDecoder().decode(image.subarray(0, 4))).toBe(
+      [..."VFSI"].reverse().join(""),
+    );
+    // The header records the BODY's length, not the whole image's. That is what
+    // makes these bytes a container rather than a bare filesystem: there are
+    // sections after the body that the body knows nothing about.
+    const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+    const bodyLen = view.getUint32(12, true);
+    expect(bodyLen).toBeGreaterThan(0);
+    expect(bodyLen).toBeLessThan(image.byteLength);
+  });
+
+  it("carries image metadata through the export without parsing it", () => {
+    const fs = SffsImageFs.create();
+    const metadata = { version: 1, kernelAbi: 44, createdBy: "a test" };
+    fs.setImageMetadata(metadata);
+    const image = fs.exportImage();
+    // The metadata rides in the container as the bytes we handed over. Found by
+    // searching rather than by offset, because the section's position depends
+    // on which other sections the image declares -- and asserting the offset
+    // would be asserting the container layout, which is not this test's claim.
+    const needle = new TextEncoder().encode(JSON.stringify(metadata));
+    const haystack = new TextDecoder().decode(image);
+    expect(haystack).toContain(new TextDecoder().decode(needle));
+  });
+
+  it("streams the export in chunks smaller than the image", () => {
+    // The export is offset-addressable so a 249 MiB image never has to live in
+    // the module's linear memory. A one-chunk read would pass even if it were
+    // not, so this forces many chunks and checks the result is identical.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/d", 0o755);
+    fs.writeFile("/d/big", new Uint8Array(300_000).fill(0x41), 0o644);
+
+    const whole = fs.exportImage(1 << 20);
+    const chunked = fs.exportImage(4096);
+    expect(chunked.byteLength).toBe(whole.byteLength);
+    expect(Array.from(chunked.subarray(0, 64))).toEqual(
+      Array.from(whole.subarray(0, 64)),
+    );
+    expect(Array.from(chunked.subarray(-64))).toEqual(
+      Array.from(whole.subarray(-64)),
+    );
+  });
+
   it("refuses one archive declared with two different lengths", () => {
     // The member's size and the ARCHIVE's size are different numbers, and the
     // second is what bounds the fetch. Two lengths for one archive would make

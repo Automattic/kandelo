@@ -291,6 +291,11 @@ struct RootfsState {
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
     archives: BTreeMap<u32, ArchiveEntry>,
+    /// Image metadata for the next export, as opaque bytes. The kernel neither
+    /// writes nor reads what is in here — `version`, `kernelAbi`, `createdBy`
+    /// are the builder's statements about its own artifact — but the section
+    /// has to be in the container, and the container is the kernel's to write.
+    image_metadata: Option<Vec<u8>>,
     /// Where the `/` VFS image's SFFS filesystem lives inside the container,
     /// and the superblock geometry [`load_image`] already validated. `None`
     /// until an image is loaded, and cleared by `reset()` with the rest of the
@@ -343,6 +348,7 @@ impl RootfsState {
             next_ino: 1,
             archives: BTreeMap::new(),
             image: None,
+            image_metadata: None,
         }
     }
 
@@ -3943,6 +3949,109 @@ where
     })
 }
 
+/// Set the image-metadata section the next exported container will carry, as
+/// opaque bytes.
+///
+/// The kernel does not read them and has no opinion about their shape — they
+/// are the builder's statements about its own artifact (`version`, `kernelAbi`,
+/// `createdBy`). It stores them because the CONTAINER is the kernel's to write,
+/// and a container the host assembles is a second author for the format the
+/// campaign has spent this lane reducing to one.
+///
+/// Empty clears it, so a builder can unset without a second entry point.
+pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
+    let len = crate::sffs_container::MAX_SECTION_LEN as usize;
+    if metadata.len() > len {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| {
+        state.image_metadata = if metadata.is_empty() {
+            None
+        } else {
+            Some(metadata.to_vec())
+        };
+    });
+    Ok(())
+}
+
+/// The exported image as a whole VFSI **container** — header, body, trailer —
+/// offset-addressable and streamed, exactly like [`export_image_read`].
+///
+/// This is what a builder saves. `export_image_read` yields the SFFS body
+/// alone, which is not an image: it has no container header, so nothing can
+/// find the filesystem inside it or the sections beside it.
+///
+/// The container declares **no `KLZY` section**. The body's own `SDEF` section
+/// is the description of its deferred files, which is what
+/// [`load_image_inner`] now reads — so emitting `KLZY` as well would put two
+/// descriptions of one thing back into an artifact this lane exists to give
+/// one.
+pub fn export_container_read<F>(
+    offset: i64,
+    out: &mut [u8],
+    byte_source: &mut F,
+) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let offset = offset as u64;
+
+    // The trailer is small and its length has to be known before the header can
+    // be written, so it is built up front rather than streamed. The BODY is
+    // what can be 249 MiB, and that is still never held.
+    let metadata = ROOTFS.with(|state| state.image_metadata.clone());
+    let sections = crate::sffs_container::ContainerSections {
+        lazy_json: b"",
+        archive_json: None,
+        metadata_json: metadata.as_deref(),
+        kernel_lazy: None,
+    };
+    let trailer = crate::sffs_container::trailer(&sections)?;
+
+    // Building the plan is what `export_image_read(0, ..)` does; asking for the
+    // body length has to happen first, and that is the call that does it.
+    let body_len = IMAGE_EXPORT_CACHE.with(|slot| -> Result<u64, Errno> {
+        if offset == 0 || slot.is_none() {
+            *slot = Some(build_export_image()?);
+        }
+        Ok(slot.as_ref().map(|plan| plan.len()).unwrap_or(0))
+    })?;
+
+    let head = crate::sffs_container::header(
+        usize::try_from(body_len).map_err(|_| Errno::EINVAL)?,
+        sections.flags(),
+    )?;
+    let head_len = head.len() as u64;
+    let total = head_len
+        .checked_add(body_len)
+        .and_then(|n| n.checked_add(trailer.len() as u64))
+        .ok_or(Errno::EINVAL)?;
+    if offset >= total {
+        reset_image_export();
+        return Ok(0);
+    }
+
+    // One chunk may span two regions; copy what this offset reaches and let the
+    // caller come back for the rest. Returning a short count is how every
+    // streaming reader here already behaves.
+    if offset < head_len {
+        let from = offset as usize;
+        let n = core::cmp::min(out.len(), head.len() - from);
+        out[..n].copy_from_slice(&head[from..from + n]);
+        return Ok(n);
+    }
+    if offset < head_len + body_len {
+        return export_image_read((offset - head_len) as i64, out, byte_source);
+    }
+    let from = (offset - head_len - body_len) as usize;
+    let n = core::cmp::min(out.len(), trailer.len() - from);
+    out[..n].copy_from_slice(&trailer[from..from + n]);
+    Ok(n)
+}
+
 /// Discard any in-progress export. Called by [`reset`] so a fresh store never
 /// serves a chunk of the previous store's image.
 pub fn reset_image_export() {
@@ -5817,6 +5926,26 @@ mod tests {
         out
     }
 
+    /// Drain the whole exported CONTAINER, the way a builder saves one.
+    fn drain_container<F>(chunk: usize, byte_source: &mut F) -> Vec<u8>
+    where
+        F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+    {
+        let mut out = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let mut buf = alloc::vec![0u8; chunk];
+            let n =
+                export_container_read(offset, &mut buf, byte_source).expect("container chunk");
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            offset += n as i64;
+        }
+        out
+    }
+
     fn build_small_overlay() {
         mkdir(b"/etc", 0o755, 0, 0).expect("mkdir /etc");
         write_file_at(b"/etc/passwd", 0, b"root:x:0:0\n", 0o644, true, no_bytes())
@@ -5920,19 +6049,10 @@ mod tests {
         write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
             .expect("an ordinary file, so the tree is not all deferred");
 
-        let body = drain_export(8192, &mut no_bytes());
-        // The container carries no KLZY: the body describes its own deferred
-        // files, which is what this export writes.
-        let image = crate::sffs_container::wrap(
-            &body,
-            &crate::sffs_container::ContainerSections {
-                lazy_json: b"",
-                archive_json: None,
-                metadata_json: None,
-                kernel_lazy: None,
-            },
-        )
-        .expect("wrap");
+        // Through the call a builder actually makes, not a container this test
+        // assembles: if the kernel emits the container, a test that assembles
+        // its own is checking a path nothing ships.
+        let image = drain_container(8192, &mut no_bytes());
 
         let count = load_image(image.len() as u64, image_host(&image)).expect("load it back");
         assert_eq!(count, 4, "root, /usr, /usr/php, /etc-ish");

@@ -114,6 +114,48 @@
       "scope_end": "\n            }\n",
       "find": "                        size: record.size,",
       "replace": "                        size: 0,"
+    },
+    {
+      "name": "the container export emits a bare body with no header",
+      "scope": "pub fn export_container_read",
+      "scope_end": "\n}\n",
+      "find": "    if offset < head_len {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "the header records the whole image length instead of the body's",
+      "scope": "pub fn export_container_read",
+      "scope_end": "\n}\n",
+      "find": "        usize::try_from(body_len).map_err(|_| Errno::EINVAL)?,",
+      "replace": "        usize::try_from(body_len + trailer.len() as u64).map_err(|_| Errno::EINVAL)?,"
+    },
+    {
+      "name": "the container drops its trailer",
+      "scope": "pub fn export_container_read",
+      "scope_end": "\n}\n",
+      "find": "    let total = head_len\n        .checked_add(body_len)\n        .and_then(|n| n.checked_add(trailer.len() as u64))\n        .ok_or(Errno::EINVAL)?;",
+      "replace": "    let total = head_len.checked_add(body_len).ok_or(Errno::EINVAL)?;"
+    },
+    {
+      "name": "the container declares a KLZY section it does not carry",
+      "scope": "    let sections = crate::sffs_container::ContainerSections {\n        lazy_json: b\"\",",
+      "scope_end": "\n    };\n",
+      "find": "        kernel_lazy: None,",
+      "replace": "        kernel_lazy: Some(b\"\"),"
+    },
+    {
+      "name": "image metadata is dropped on the way to the container",
+      "scope": "    let metadata = ROOTFS.with(|state| state.image_metadata.clone());",
+      "scope_end": "\n",
+      "find": "    let metadata = ROOTFS.with(|state| state.image_metadata.clone());",
+      "replace": "    let metadata: Option<Vec<u8>> = None;"
+    },
+    {
+      "name": "setting empty metadata stores an empty section instead of clearing",
+      "scope": "pub fn set_image_metadata",
+      "scope_end": "\n}\n",
+      "find": "        state.image_metadata = if metadata.is_empty() {\n            None\n        } else {\n            Some(metadata.to_vec())\n        };",
+      "replace": "        state.image_metadata = Some(metadata.to_vec());"
     }
   ]
 }

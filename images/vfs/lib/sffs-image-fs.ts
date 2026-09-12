@@ -57,6 +57,8 @@ interface ModuleExports {
     size: bigint, mode: number, uid: number, gid: number, ino: bigint,
     archiveBytes: bigint,
   ): number;
+  sm_set_image_metadata(p: number, pl: number): number;
+  sm_export_image_read(offset: bigint, o: number, ol: number): number;
 }
 
 /**
@@ -412,6 +414,65 @@ export class SffsImageFs {
           "registerLazyFile",
           args.path,
         )));
+  }
+
+  /**
+   * Metadata the exported image will declare: the builder's statements about
+   * its own artifact (`version`, `kernelAbi`, `createdBy`).
+   *
+   * Passed as bytes and never parsed by the kernel. Pass `null` to clear.
+   */
+  setImageMetadata(metadata: unknown | null): void {
+    const bytes = metadata === null
+      ? new Uint8Array(0)
+      : encoder.encode(JSON.stringify(metadata));
+    this.withBytes(bytes, (p, pl) =>
+      this.check(
+        this.exports.sm_set_image_metadata(bytes.byteLength === 0 ? 0 : p, pl),
+        "setImageMetadata",
+        "",
+      ));
+  }
+
+  /**
+   * The finished image: a whole VFSI container, ready to compress and write.
+   *
+   * Streamed out of the module a chunk at a time rather than materialised
+   * inside it, because the module's linear memory is not where a 249 MiB image
+   * should live — and because the export is offset-addressable for exactly
+   * this. Compression and the file write stay here: those are host facilities,
+   * and the floor this lane is reducing toward is host facilities only.
+   */
+  exportImage(chunkBytes = 1 << 20): Uint8Array {
+    const ptr = this.exports.sm_alloc(chunkBytes);
+    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      const parts: Uint8Array[] = [];
+      let total = 0;
+      let offset = 0n;
+      for (;;) {
+        const n = this.check(
+          this.exports.sm_export_image_read(offset, ptr, chunkBytes),
+          "exportImage",
+          "",
+        );
+        if (n === 0) break;
+        // A fresh view per chunk: the module may have grown its memory while
+        // building the image, which detaches any view taken before.
+        parts.push(this.mem.slice(ptr, ptr + n));
+        total += n;
+        offset += BigInt(n);
+      }
+      const out = new Uint8Array(total);
+      let at = 0;
+      for (const part of parts) {
+        out.set(part, at);
+        at += part.byteLength;
+      }
+      return out;
+    } finally {
+      this.exports.sm_free(ptr, chunkBytes);
+    }
   }
 }
 
