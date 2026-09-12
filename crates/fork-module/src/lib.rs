@@ -4962,6 +4962,29 @@ mod wasm {
     /// the live capture builder directly, so the parent never re-decodes its own
     /// graph and never reconstructs (its live references keep their identity by
     /// construction). Requires an active capture session.
+    /// Guest-facing `env.__wpk_fork_ref_gc_i31(payload) -> recipe`.
+    ///
+    /// The ONE member of the GC capture family that carries no reference at
+    /// all: `fork-instrument` emits `ref.cast i31` then `i31.get_s` BEFORE the
+    /// call (`module_gc_codec.rs`), so the module receives the signed 31-bit
+    /// payload as a plain scalar and interns it in the same recipe space as
+    /// every other leaf.
+    ///
+    /// The guest then publishes i31 identity into the transit table itself, at
+    /// `recipe + 1` — the generator's comment gives the reason: "JavaScript
+    /// receives only its scalar payload and cannot manufacture an `i31ref`".
+    /// That is this module's job now, and it needs no host at all.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_i31(payload: i32) -> i32 {
+        match capture_builder() {
+            Ok(g) => capture_ok_id(g.intern_i31(payload)),
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_vector_begin(count) -> handle`.
     ///
     /// Opens a reference vector for one call site's live references. `count` is

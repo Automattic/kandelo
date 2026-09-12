@@ -95,6 +95,7 @@ for (const name of [
   "__wpk_fork_ref_vector_begin",
   "__wpk_fork_ref_vector_append",
   "__wpk_fork_ref_vector_finish",
+  "__wpk_fork_ref_gc_i31",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
@@ -397,6 +398,20 @@ x.fm_capture_begin();
     x.__wpk_fork_ref_vector_finish(h),
     -1,
     "finishing a handle that is not open is rejected",
+  );
+}
+
+// The guest-facing i31 leaf. `fork-instrument` converts to a scalar before the
+// call, so this is the one GC capture entry with no reference in it.
+{
+  const a = x.__wpk_fork_ref_gc_i31(-7);
+  assert.ok(a >= 1, "gc_i31 interns and returns a recipe id");
+  assert.equal(x.__wpk_fork_ref_gc_i31(-7), a, "gc_i31 dedups by payload");
+  assert.notEqual(x.__wpk_fork_ref_gc_i31(-8), a, "a different payload is a different recipe");
+  assert.equal(
+    x.__wpk_fork_ref_gc_i31(-7),
+    x.fm_capture_intern(K_I31, -7, 0),
+    "gc_i31 shares the recipe space with the host-facing intern entry",
   );
 }
 

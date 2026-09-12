@@ -245,3 +245,48 @@ with no host involvement at all.
 **What I have NOT established:** that the 44 scalar entries are *correct* as
 specified — only that their signatures admit a Rust implementation. And the
 two-worker span means the parent/child join stays host-sequenced regardless.
+
+
+---
+
+## 5. Implementation finding — the GC capture family is gated on table primitives
+
+Added 2026-09-12 while implementing, and it changes the order of the work
+without changing the host import list.
+
+Reading `crates/fork-instrument/src/module_gc_codec.rs` at each emitted call
+site shows how a GC reference reaches the module: **the guest publishes it into
+the module-owned anyref transit table and passes the SLOT**, never the value.
+
+```
+table.set(transit, 0, value) ; i32.const 0 ; call lookup   -> existing recipe or 0
+i32.const 0                  ; call claim                  -> fresh recipe
+                             ; table.set(transit, recipe+1, value)
+```
+
+That is why the signatures are honestly scalar. But it means the module has to
+operate on that table, and **Rust/LLVM emits none of the table instructions**:
+
+| guest import | needs | plain Rust? |
+|---|---|---|
+| `__wpk_fork_ref_gc_i31` | nothing — the guest does `i31.get_s` first | **yes, landed** |
+| `__wpk_fork_ref_gc_lookup` | `table.get` + `ref.eq` to find an existing recipe | no — shim |
+| `__wpk_fork_ref_gc_claim` | `table.grow` ("claim grows the process-owned transit table through recipe+1 before returning") | no — shim |
+| `__wpk_fork_ref_gc_broker_encode` | `table.grow`, same shape | no — shim |
+| `__wpk_fork_ref_gc_capture_layout` | unclear — called while the value sits in transit slot 0, so it may inspect it | **undetermined** |
+| `__wpk_fork_ref_gc_define`, `provenance_*` | scalar args over the builder | likely yes |
+
+**This is injector work, not host work.** The shims run inside the module, so
+none of it adds a host import and the approved list is unchanged. But it means
+the GC block cannot be finished by writing Rust alone: `fork-module-inject`
+needs a small set of anyref-table primitives (`get`, `set`, `grow`) exposed to
+the Rust side, in the same way it already injects `__wpk_fork_ref_decode_funcref`
+and `fm_drive_execute`.
+
+Note this also settles the transit `table.grow` item from §3.5 as *required*
+rather than *optional*: `claim` cannot be implemented without it.
+
+**`capture_layout` is marked undetermined rather than guessed.** The guest
+`ref.cast`s the value itself and clears transit slot 0 immediately after the
+call, so whether the module must read the slot is not decidable from the call
+site alone. It is not implemented on a guess.
