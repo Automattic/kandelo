@@ -55,8 +55,8 @@
       "name": "stat size reports the wrong field count",
       "scope": "pub extern \"C\" fn sm_stat_size",
       "scope_end": "\n}\n",
-      "find": "    6 * 8",
-      "replace": "    5 * 8"
+      "find": "    8 * 8",
+      "replace": "    7 * 8"
     },
     {
       "name": "read_file ignores the offset",
@@ -111,8 +111,29 @@
       "name": "export ignores the offset and always restarts",
       "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
       "scope_end": "\n}\n",
-      "find": "rootfs::export_image_read(offset, out, &mut source)",
-      "replace": "rootfs::export_image_read(0, out, &mut source)"
+      "find": "rootfs::export_container_read(offset, out, &mut source)",
+      "replace": "rootfs::export_container_read(0, out, &mut source)"
+    },
+    {
+      "name": "the stat record forgets whether the bytes are present",
+      "scope": "    let fields: [u64; 8] = [",
+      "scope_end": "\n    ];\n",
+      "find": "        u64::from(deferred),",
+      "replace": "        0,"
+    },
+    {
+      "name": "the stat record forgets which archive backs the file",
+      "scope": "    let fields: [u64; 8] = [",
+      "scope_end": "\n    ];\n",
+      "find": "        u64::from(archive_id),",
+      "replace": "        0,"
+    },
+    {
+      "name": "deferred and archive_id are written in the wrong order",
+      "scope": "    let fields: [u64; 8] = [",
+      "scope_end": "\n    ];\n",
+      "find": "        u64::from(deferred),\n        u64::from(archive_id),",
+      "replace": "        u64::from(archive_id),\n        u64::from(deferred),"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
