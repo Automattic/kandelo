@@ -92,6 +92,13 @@
       "target": 40,
       "why": "V4, the primary goal: how many functions a new host must implement. Already asserted against the built artifact in crates/host-native; restated here so one file carries every surface. A raw import-ENTRY count reads 73 because env.memory is an entry -- say which you counted."
     },
+    "sffsModuleEntryPoints": {
+      "measure": "pub extern \"C\" fn sm_* declared in crates/sffs-module/src/lib.rs",
+      "ceiling": 19,
+      "slack": 0,
+      "target": 19,
+      "why": "Banked at its measured value the moment it reached 19, not left to grow unwatched. This is the image builders' ABI, and every entry point is a call a builder makes and a shape the module must keep. The target is NOT 0: unlike forkModuleEntryPoints, these are not fine-grained steps of one operation that a coarse entry could replace -- they are distinct filesystem operations a builder genuinely performs, and the census measured 24 MemoryFileSystem methods that 19 already cover. The target is 'does not grow without an argument'. Two entries were deliberately NOT added while building this: the archive length rides in sm_register_lazy_file rather than an sm_declare_archive of its own, because a member is useless without it; and the container is emitted by sm_export_image_read rather than an sm_save_image, because a bare body is not an image."
+    },
     "forkModuleHostImports": {
       "measure": "fork-module imports a host must satisfy (functions + reference-typed tables, excluding PIC linking); see EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT",
       "ceiling": 5,
@@ -122,7 +129,7 @@
     },
     "unguardedLayoutModules": {
       "measure": "process_layout modules whose C-side _Static_asserts are not anchored to a generated KANDELO_ macro",
-      "ceiling": 1,
+      "ceiling": 0,
       "slack": 0,
       "target": 0,
       "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' — WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it — two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
@@ -377,8 +384,8 @@
       "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service — worker creation, Atomics.wait blocking, shared memory — and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
     },
     "G": {
-      "title": "ABI binding drift — 14/15 layout modules anchored to generated constants",
-      "status": "open",
+      "title": "ABI binding drift \u2014 all 15 layout modules anchored to generated constants",
+      "status": "closed",
       "closure": [
         {
           "surface": "unguardedLayoutModules",

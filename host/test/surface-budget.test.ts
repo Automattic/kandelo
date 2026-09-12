@@ -584,6 +584,11 @@ const MEASURED: Record<string, () => number> = {
   forkModuleInjectorHelpers: () => forkModuleEntries().injectorOnly,
   forkModuleEntriesWithoutProductionCaller: () =>
     forkModuleEntries().noProductionCaller,
+  sffsModuleEntryPoints: () =>
+    countMatches(
+      "crates/sffs-module/src/lib.rs",
+      /^\s*pub (unsafe )?extern "C" fn sm_/,
+    ),
 };
 
 /**

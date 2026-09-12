@@ -217,6 +217,21 @@
 #define KANDELO_PROCESS_DEV_VECTOR_MINOR 4294967295u
 #define KANDELO_PROCESS_DEV_VECTOR_MAKEDEV 4503599627370495ull
 
+/* `itimerval` is NOT a mirror of musl's public `struct itimerval`, and
+* asserting it against one would be wrong. This is the kernel-facing
+* record, and upstream musl's own setitimer.c builds it: when
+* `sizeof(time_t) > sizeof(long)` it sends `(long[]){is, ius, vs, vus}`
+* rather than the public struct. That is musl's standard time32/time64
+* path for any target whose `long` is narrower than its `time_t`, which
+* wasm32 is. So the fact worth guarding is that the record is four
+* native `long`s, and the *_INDEX constants are positions in it. */
+#define KANDELO_PROCESS_ITIMERVAL_WASM32_SIZE 16u
+#define KANDELO_PROCESS_ITIMERVAL_WASM64_SIZE 32u
+#define KANDELO_PROCESS_ITIMERVAL_INTERVAL_SEC_INDEX 0u
+#define KANDELO_PROCESS_ITIMERVAL_INTERVAL_USEC_INDEX 1u
+#define KANDELO_PROCESS_ITIMERVAL_VALUE_SEC_INDEX 2u
+#define KANDELO_PROCESS_ITIMERVAL_VALUE_USEC_INDEX 3u
+
 #define KANDELO_SELECT_FD_SETSIZE 1024u
 #define KANDELO_SELECT_FD_SET_BYTES 128u
 

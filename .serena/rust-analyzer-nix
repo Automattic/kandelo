@@ -1,0 +1,16 @@
+#!/bin/sh
+# Launch rust-analyzer with the repo's PINNED toolchain (rust-toolchain.toml:
+# nightly-2026-04-27, targets wasm32-unknown-unknown, components rust-src) on
+# PATH, instead of whatever `cargo`/`rustc` the ambient environment supplies.
+#
+# Why: rustup is not installed on this machine, so rust-analyzer would resolve
+# the Homebrew STABLE toolchain, which has no wasm32-unknown-unknown std. The
+# workspace sets [build] target = "wasm32-unknown-unknown" in .cargo/config.toml,
+# so sysroot resolution fails and every semantic query degrades. The exact
+# toolchain the flake pins is already realized in the nix store; point at it.
+#
+# Wired via .serena/project.yml -> ls_specific_settings.rust.ls_path.
+NIX_RUST="/nix/store/fj4v6h6yczzsgahpyflvzwmkm635fhg2-rust-default-1.97.0-nightly-2026-04-27"
+PATH="$NIX_RUST/bin:$PATH"
+export PATH
+exec /opt/homebrew/bin/rust-analyzer "$@"

@@ -1,0 +1,48 @@
+{
+  // Type-check the VFS image builders. There was no config covering `images/`
+  // at all, so every recipe under it was unchecked: a broken import or a
+  // signature drift surfaced only when a builder was RUN, which needs a full
+  // sysroot and a kernel and takes hours.
+  //
+  // Built before the change it is meant to check, deliberately. Lane V's own
+  // hazard list says a gate written afterwards gets shaped to pass, and lane Y
+  // is about to repoint thirteen of these files onto a new interface.
+  //
+  // NOT YET WIRED AS A BLOCKING GATE. Its first run found four type errors
+  // under `images/`: one introduced by this lane and fixed, and three that
+  // predate it —
+  //
+  //   images/vfs/scripts/build-source-rootfs-shell-image.ts:389
+  //     a StatResult passed where `{ ino, generation? }` is expected
+  //   images/vfs/scripts/staged-product-inputs.ts:1402
+  //     `keyof typeof STAGING_FLAGS` is a Map's METHOD names, not its keys
+  //   images/vfs/scripts/staged-product-inputs.ts:1570
+  //     `kind` stays `unknown`; the ternary chain narrows it for a reader but
+  //     not for the compiler
+  //
+  // Each is a real defect in a production build script, and fixing them means
+  // behaviour judgement in code this lane did not otherwise touch — a scope
+  // question for the maintainer, not a coding one. A gate with a baseline of
+  // three cannot detect the fourth, which is why this is recorded as unwired
+  // rather than wired with an allowance.
+  //
+  // It is useful as it stands: run it and require that the errors under
+  // `images/` are exactly those three.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "ignoreDeprecations": "6.0",
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": ["ES2024", "ES2024.SharedMemory", "DOM"],
+    // Resolved from host/, which is where this repository installs its
+    // TypeScript toolchain; there is no node_modules under images/.
+    "typeRoots": ["../host/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["vfs/**/*.ts", "rootfs/**/*.ts"]
+}

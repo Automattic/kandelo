@@ -23,6 +23,10 @@ path = "src/main.rs"
 
 [dependencies]
 wasm-posix-shared = { path = "../../crates/shared" }
+# The SFFS reader the kernel itself uses. `vfs-image describe` decodes an
+# image through it rather than reimplementing the format a third time --
+# which is the defect lane V is closing.
+runtime-core = { path = "../../crates/runtime-core" }
 wasi-abi = { path = "../../crates/wasi-abi" }
 # The section names the build stamper writes and `verify-fresh` reads. They are
 # declared once, in the artifact reader every realm shares, rather than spelled

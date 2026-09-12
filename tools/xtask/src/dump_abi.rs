@@ -679,8 +679,9 @@ fn render_marshal_header() -> String {
 
 fn render_process_layouts_header() -> String {
     use shared::process_layout::{
-        cmsghdr, dev, iovec, mq_attr, msghdr, multicast_group_request, rt_sigqueueinfo,
-        sched_param, sigaltstack, sigevent, stat, statfs, statx, sysinfo,
+        cmsghdr, dev, iovec, itimerval, mq_attr, msghdr, multicast_group_request,
+        rt_sigqueueinfo, sched_param, sigaltstack, sigevent, stat, statfs, statx,
+        sysinfo,
     };
 
     format!(
@@ -903,6 +904,21 @@ fn render_process_layouts_header() -> String {
          #define KANDELO_PROCESS_DEV_VECTOR_MINOR {dev_vec_minor}u\n\
          #define KANDELO_PROCESS_DEV_VECTOR_MAKEDEV {dev_vec_makedev}ull\n\
          \n\
+         /* `itimerval` is NOT a mirror of musl's public `struct itimerval`, and\n\
+          * asserting it against one would be wrong. This is the kernel-facing\n\
+          * record, and upstream musl's own setitimer.c builds it: when\n\
+          * `sizeof(time_t) > sizeof(long)` it sends `(long[]){{is, ius, vs, vus}}`\n\
+          * rather than the public struct. That is musl's standard time32/time64\n\
+          * path for any target whose `long` is narrower than its `time_t`, which\n\
+          * wasm32 is. So the fact worth guarding is that the record is four\n\
+          * native `long`s, and the *_INDEX constants are positions in it. */\n\
+         #define KANDELO_PROCESS_ITIMERVAL_WASM32_SIZE {itimerval_w32_size}u\n\
+         #define KANDELO_PROCESS_ITIMERVAL_WASM64_SIZE {itimerval_w64_size}u\n\
+         #define KANDELO_PROCESS_ITIMERVAL_INTERVAL_SEC_INDEX {itimerval_isec}u\n\
+         #define KANDELO_PROCESS_ITIMERVAL_INTERVAL_USEC_INDEX {itimerval_iusec}u\n\
+         #define KANDELO_PROCESS_ITIMERVAL_VALUE_SEC_INDEX {itimerval_vsec}u\n\
+         #define KANDELO_PROCESS_ITIMERVAL_VALUE_USEC_INDEX {itimerval_vusec}u\n\
+         \n\
          #define KANDELO_SELECT_FD_SETSIZE {fd_setsize}u\n\
          #define KANDELO_SELECT_FD_SET_BYTES {fd_set_bytes}u\n\
          \n\
@@ -1113,6 +1129,12 @@ fn render_process_layouts_header() -> String {
         dev_vec_major = 0x000f_ffffu32,
         dev_vec_minor = 0xffff_ffffu32,
         dev_vec_makedev = dev::makedev(0x000f_ffff, 0xffff_ffff),
+        itimerval_w32_size = itimerval::WASM32_SIZE,
+        itimerval_w64_size = itimerval::WASM64_SIZE,
+        itimerval_isec = itimerval::INTERVAL_SEC_INDEX,
+        itimerval_iusec = itimerval::INTERVAL_USEC_INDEX,
+        itimerval_vsec = itimerval::VALUE_SEC_INDEX,
+        itimerval_vusec = itimerval::VALUE_USEC_INDEX,
         fd_setsize = shared::select::FD_SETSIZE,
         fd_set_bytes = shared::select::FD_SET_BYTES,
     )

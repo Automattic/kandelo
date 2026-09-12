@@ -140,8 +140,91 @@ pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
     image.get(start..end).ok_or(Errno::EINVAL)
 }
 
-const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES: u32 = 1 << 1;
-const VFS_IMAGE_FLAG_HAS_METADATA: u32 = 1 << 2;
+/// Container flag bits.
+///
+/// These are ABI: they are written by `host/src/vfs/memory-fs.ts` and read
+/// here, and a reader that disagrees about a bit walks the trailer to the
+/// wrong offset. They live together so the writer in
+/// [`crate::sffs_container`] and the readers below cannot drift; two of them
+/// were previously private to this file and two existed only in TypeScript.
+///
+/// `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY` is deliberately NOT redefined here -- it
+/// already has a home in `wasm_posix_shared::abi`, and a second definition is
+/// the drift this grouping exists to prevent.
+pub const VFS_IMAGE_FLAG_HAS_LAZY: u32 = 1 << 0;
+pub const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES: u32 = 1 << 1;
+pub const VFS_IMAGE_FLAG_HAS_METADATA: u32 = 1 << 2;
+pub const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES: u32 = 1 << 3;
+
+/// Container header: magic(4) | version(4) | flags(4) | body length(4).
+pub const VFSI_HEADER_SIZE: usize = VFSI_HEADER;
+
+/// The container magic, for the writer.
+pub const VFSI_CONTAINER_MAGIC: u32 = VFSI_MAGIC;
+
+/// The container version this repository writes and reads.
+pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
+
+/// Byte span of the image's metadata section, or `None` when it declares none.
+///
+/// # Why the bytes stay opaque
+///
+/// The metadata is JSON with an open shape: `version`, an optional
+/// `kernelAbi`, an optional `createdBy`, and -- explicitly -- any further key,
+/// "to preserve forwards compatibility for future signed/provenance fields".
+///
+/// A Rust reader that parsed it into a struct and re-serialized would silently
+/// drop every field it did not know about, which is the opposite of what an
+/// open shape is for. And teaching the kernel crate to parse JSON to read
+/// three fields it does not act on would buy a parser's attack surface for
+/// nothing. So this hands back the bytes and lets whoever cares interpret
+/// them, exactly as the deferred section hands back an opaque payload.
+pub fn metadata_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
+    let (sab_offset, sab_len) = sffs_span(source)?;
+    let flags = source_u32(source, 8).map_err(container_errno)?;
+    if flags & VFS_IMAGE_FLAG_HAS_METADATA == 0 {
+        return Ok(None);
+    }
+
+    let mut offset = sab_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
+    let skip_section = |offset: &mut u64| -> Result<(), Errno> {
+        let len = source_u32(source, *offset).map_err(container_errno)? as u64;
+        *offset = offset
+            .checked_add(4)
+            .and_then(|value| value.checked_add(len))
+            .ok_or(Errno::EINVAL)?;
+        if *offset > source.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    };
+    // The lazy-file JSON section is unconditional; the archive section is
+    // flagged and precedes metadata.
+    skip_section(&mut offset)?;
+    if flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0 {
+        skip_section(&mut offset)?;
+    }
+
+    let len = source_u32(source, offset).map_err(container_errno)? as u64;
+    let start = offset.checked_add(4).ok_or(Errno::EINVAL)?;
+    let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+    if end > source.len() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(Some((start, len)))
+}
+
+/// Slice form of [`metadata_span`] for a resident image.
+pub fn metadata_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
+    let Some((offset, len)) = metadata_span(&image)? else {
+        return Ok(None);
+    };
+    let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+    let end = start
+        .checked_add(usize::try_from(len).map_err(|_| Errno::EINVAL)?)
+        .ok_or(Errno::EINVAL)?;
+    image.get(start..end).map(Some).ok_or(Errno::EINVAL)
+}
 
 /// Byte span of the image's kernel-facing lazy-linkage section ("KLZY"), or
 /// `None` when the image does not declare one.
@@ -279,6 +362,19 @@ pub struct SffsGeometry {
 }
 
 pub(crate) const SB_TOTAL_INODES: u64 = 16;
+/// `f_type` for a mounted SFFS image: "SFFS" in ASCII.
+///
+/// The value is the one `host/src/statfs.ts` already reports, so a program
+/// cannot tell from `statfs` whether the TypeScript or the Rust reader
+/// answered it. Divergence here would be a platform-visible difference
+/// between two implementations of one filesystem, which is the defect lane V
+/// is closing.
+pub const SFFS_SUPER_MAGIC: u32 = 0x5346_4653;
+
+pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
+pub(crate) const SB_FREE_BLOCKS: u64 = 20;
+pub(crate) const SB_FREE_INODES: u64 = 24;
+pub(crate) const SB_MAX_SIZE_BLOCKS: u64 = 68;
 /// Inode holding the deferred-file section, or 0. See
 /// [`crate::sffs_deferred`] for the section, and the writer's own
 /// `SB_DEFERRED_INODE` for why a consistency checker must read this field
@@ -358,6 +454,70 @@ impl<S: BlockSource> Sffs<S> {
         let mut raw = [0u8; INODE_SIZE];
         self.source.read_exact_at(self.inode_offset(ino), &mut raw)?;
         Ok(raw)
+    }
+
+    /// The image's encoded GROWTH CEILING in bytes -- how large this
+    /// filesystem was built to be allowed to become, which is not how large it
+    /// currently is.
+    ///
+    /// Product images are published against a profile ("this demo's VFS may
+    /// grow to 512 MiB"), and the ceiling is baked into the superblock at
+    /// build time. A published image carrying the wrong ceiling boots and runs
+    /// and then fails later, when something tries to grow it past a limit
+    /// nobody meant to set -- which is why it is checked at publication.
+    ///
+    /// Clamped up to the body's own length, exactly as
+    /// `SharedFS.inspectImageCapacity` does. An image whose recorded ceiling is
+    /// SMALLER than the bytes it already occupies has a ceiling that is not
+    /// merely wrong but unusable, and both readers agree to report the real
+    /// floor rather than a number the filesystem has already exceeded.
+    pub fn growth_ceiling_bytes(&self) -> Result<u64, Errno> {
+        let max_blocks = source_u32(&self.source, SB_MAX_SIZE_BLOCKS).map_err(container_errno)?;
+        let configured = (max_blocks as u64).saturating_mul(BLOCK_SIZE as u64);
+        Ok(configured.max(self.source.len()))
+    }
+
+    /// `statfs` for a mounted image, read from its own superblock.
+    ///
+    /// Lane Y's census listed this as derivable "from `Sffs::geometry`". It is
+    /// not, quite: geometry carries the inode-table start, the inode count and
+    /// the deferred inode, and deliberately not the FREE counts, which change
+    /// as a writer fills the image. They come from the superblock, which
+    /// `SffsWriter` already maintains at `SB_FREE_BLOCKS`/`SB_FREE_INODES`.
+    ///
+    /// The caller that needs this is the image builder's headroom assertion:
+    /// "this product image must still have N free bytes and M free inodes when
+    /// it ships". That is a question about the artifact on disk, so answering
+    /// it from the artifact's own superblock is the only answer that cannot
+    /// drift from what was written.
+    ///
+    /// `f_bavail` equals `f_bfree`: SFFS reserves no blocks for a privileged
+    /// user, so there is no second number to report and inventing a reserve
+    /// here would understate the headroom a builder actually has.
+    pub fn statfs(&self) -> Result<wasm_posix_shared::WasmStatfs, Errno> {
+        let total_blocks = source_u32(&self.source, SB_TOTAL_BLOCKS).map_err(container_errno)?;
+        let total_inodes = source_u32(&self.source, SB_TOTAL_INODES).map_err(container_errno)?;
+        let free_blocks = source_u32(&self.source, SB_FREE_BLOCKS).map_err(container_errno)?;
+        let free_inodes = source_u32(&self.source, SB_FREE_INODES).map_err(container_errno)?;
+        if free_blocks > total_blocks || free_inodes > total_inodes {
+            // A superblock claiming more free than it has is corruption, not a
+            // filesystem that happens to be empty.
+            return Err(Errno::EINVAL);
+        }
+        Ok(wasm_posix_shared::WasmStatfs {
+            f_type: SFFS_SUPER_MAGIC,
+            f_bsize: BLOCK_SIZE as u32,
+            f_blocks: total_blocks as u64,
+            f_bfree: free_blocks as u64,
+            f_bavail: free_blocks as u64,
+            f_files: total_inodes as u64,
+            f_ffree: free_inodes as u64,
+            f_fsid: 0,
+            f_namelen: 255,
+            f_frsize: BLOCK_SIZE as u32,
+            f_flags: 0,
+            _pad: 0,
+        })
     }
 
     pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno> {
@@ -615,6 +775,162 @@ pub struct SffsDirent {
 mod tests {
     use super::*;
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+
+    /// The metadata section round-trips through the container writer, at every
+    /// combination of the OPTIONAL sections that precede it.
+    ///
+    /// That matters more than a single happy path: the section is found by
+    /// walking past the lazy JSON and, conditionally, the archive JSON. A walk
+    /// that forgets one conditional still works whenever that section is
+    /// absent, so only the combinations expose it.
+    #[test]
+    fn metadata_section_round_trips_behind_every_optional_section() {
+        use crate::sffs_container::{wrap, ContainerSections};
+        let meta: &[u8] = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
+        let body: &[u8] = b"body bytes, not a real filesystem";
+        for archive in [None, Some(&b"[archive json]"[..])] {
+            for lazy in [&b""[..], &b"{\"lazy\":1}"[..]] {
+                let image = wrap(
+                    body,
+                    &ContainerSections {
+                        lazy_json: lazy,
+                        archive_json: archive,
+                        metadata_json: Some(meta),
+                        kernel_lazy: Some(b"KLZY"),
+                    },
+                )
+                .expect("wrap");
+                assert_eq!(
+                    metadata_section(&image).expect("metadata"),
+                    Some(meta),
+                    "metadata must be found with lazy={lazy:?} archive={archive:?}",
+                );
+                // And the KLZY walk must still land correctly alongside it.
+                assert_eq!(kernel_lazy_section(&image).expect("klzy"), Some(&b"KLZY"[..]));
+            }
+        }
+    }
+
+    /// An image that declares no metadata reports none, rather than reading
+    /// whichever bytes happen to follow.
+    #[test]
+    fn metadata_section_is_absent_when_the_flag_is_clear() {
+        use crate::sffs_container::{wrap, ContainerSections};
+        let image = wrap(
+            b"body",
+            &ContainerSections {
+                lazy_json: b"{}",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(b"KLZY"),
+            },
+        )
+        .expect("wrap");
+        assert_eq!(metadata_section(&image).expect("metadata"), None);
+    }
+
+    /// The ceiling is the CONFIGURED maximum, asserted against a literal.
+    ///
+    /// Written after mutation testing killed the original version of these
+    /// tests -- which derived the expected value by calling the function under
+    /// test, so dropping the block-size multiply and dropping the clamp both
+    /// survived. A test whose expectation comes from the implementation
+    /// verifies only that the implementation equals itself.
+    #[test]
+    fn growth_ceiling_reports_the_configured_maximum() {
+        use crate::sffs_write::{NoContent, SffsConfig, SffsWriter};
+        // The initial size must hold the metadata that max_size_bytes sizes:
+        // a larger ceiling means more inodes, a bigger block bitmap and a
+        // bigger inode table, and mkfs answers ENOSPC when those do not fit.
+        let w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 2 * 1024 * 1024,
+            max_size_bytes: Some(8 * 1024 * 1024),
+            growable_to_bytes: 2 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
+        let fs = Sffs::mount(body).expect("mount");
+        assert_eq!(
+            fs.growth_ceiling_bytes().expect("ceiling"),
+            8 * 1024 * 1024,
+            "the ceiling is max_size_blocks * block size, and 8 MiB is what was configured",
+        );
+    }
+
+    /// A configured maximum SMALLER than the body reports the body instead.
+    ///
+    /// The clamp has no effect on an ordinary image, which is why dropping it
+    /// went unnoticed: only an image whose recorded ceiling it has already
+    /// outgrown can tell the difference.
+    #[test]
+    fn growth_ceiling_clamps_up_when_the_configured_maximum_is_already_exceeded() {
+        use crate::sffs_write::{NoContent, SffsConfig, SffsWriter};
+        let w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 2 * 1024 * 1024,
+            // 64 KiB: far below the 2 MiB body this image occupies.
+            max_size_bytes: Some(64 * 1024),
+            growable_to_bytes: 2 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
+        let body_len = body.len() as u64;
+        let fs = Sffs::mount(body).expect("mount");
+        assert_eq!(
+            fs.growth_ceiling_bytes().expect("ceiling"),
+            body_len,
+            "a ceiling below the current size is a limit already exceeded; report the real floor",
+        );
+        assert!(
+            body_len > 64 * 1024,
+            "the fixture must actually exceed its configured max, or the clamp is untested",
+        );
+    }
+
+    /// `statfs` answers from the real fixture's superblock, and the numbers
+    /// are internally consistent with the tree it describes.
+    ///
+    /// Asserted as relationships rather than hardcoded totals: pinning
+    /// "f_blocks == 32" would break the moment the fixture is regenerated at a
+    /// different size and would be testing the fixture, not the reader.
+    #[test]
+    fn statfs_reports_the_images_own_geometry() {
+        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let fs = Sffs::mount(sffs).expect("mount");
+        let st = fs.statfs().expect("statfs");
+
+        assert_eq!(st.f_type, SFFS_SUPER_MAGIC, "reports itself as SFFS");
+        assert_eq!(st.f_bsize, BLOCK_SIZE as u32);
+        assert_eq!(st.f_frsize, st.f_bsize, "SFFS has no fragment size distinct from its block size");
+        assert_eq!(st.f_bavail, st.f_bfree, "SFFS reserves no blocks, so available == free");
+
+        assert!(st.f_blocks > 0 && st.f_files > 0, "a mounted image has blocks and inodes");
+        assert!(st.f_bfree <= st.f_blocks, "free blocks cannot exceed the total");
+        assert!(st.f_ffree <= st.f_files, "free inodes cannot exceed the total");
+        assert!(
+            st.f_ffree < st.f_files,
+            "the fixture holds a tree, so some inodes are in use",
+        );
+        assert_eq!(
+            st.f_blocks * st.f_bsize as u64,
+            fs.source.len() as u64,
+            "the block count must describe the whole filesystem body",
+        );
+    }
+
+    /// A superblock claiming more free than it has is corruption, not an empty
+    /// filesystem. Without this the headroom assertion a builder runs would
+    /// read a wildly generous free count off a damaged image and pass.
+    #[test]
+    fn statfs_refuses_a_superblock_claiming_impossible_free_counts() {
+        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let mut owned = sffs.to_vec();
+        let total_blocks = u32::from_le_bytes(owned[12..16].try_into().unwrap());
+        owned[20..24].copy_from_slice(&(total_blocks + 1).to_le_bytes());
+        let fs = Sffs::mount(owned).expect("mount");
+        assert_eq!(fs.statfs().unwrap_err(), Errno::EINVAL);
+    }
 
     #[test]
     fn unwrap_vfsi_returns_sffs_with_valid_magic() {

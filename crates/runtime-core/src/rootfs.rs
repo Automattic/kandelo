@@ -148,6 +148,21 @@ pub enum BaseSource {
 
 struct Inode {
     kind: InodeKind,
+    /// The opaque deferred description the loaded image carried for this file,
+    /// or empty when it carried none.
+    ///
+    /// This is RETAINED rather than reconstructed, because the kernel cannot
+    /// reconstruct it: for a URL-backed base file the fetch descriptor (URL,
+    /// transport, digest) lives entirely in the payload, and the only other
+    /// thing identifying such a file is its inode number in the image it came
+    /// from — which an export renumbers. Carrying the bytes through is what
+    /// lets an exported image say where a deferred file's content is without
+    /// the kernel ever parsing what it says. See [`crate::sffs_deferred`].
+    ///
+    /// It lives on the inode rather than in a side table keyed by index so it
+    /// dies with the inode; a freed index cannot hand a stale payload to
+    /// whatever is allocated there next.
+    deferred_payload: Vec<u8>,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
     uid: u32,
@@ -170,6 +185,7 @@ impl Inode {
         let (sec, nsec) = now();
         Inode {
             kind,
+            deferred_payload: Vec::new(),
             mode,
             uid,
             gid,
@@ -275,6 +291,11 @@ struct RootfsState {
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
     archives: BTreeMap<u32, ArchiveEntry>,
+    /// Image metadata for the next export, as opaque bytes. The kernel neither
+    /// writes nor reads what is in here — `version`, `kernelAbi`, `createdBy`
+    /// are the builder's statements about its own artifact — but the section
+    /// has to be in the container, and the container is the kernel's to write.
+    image_metadata: Option<Vec<u8>>,
     /// Where the `/` VFS image's SFFS filesystem lives inside the container,
     /// and the superblock geometry [`load_image`] already validated. `None`
     /// until an image is loaded, and cleared by `reset()` with the rest of the
@@ -310,6 +331,11 @@ struct ImageGeometry {
 /// archive), `directory` holds the parsed central directory, and `members`
 /// caches each member's inflated bytes on first read of that member.
 struct ArchiveEntry {
+    /// The archive's own fetch description, retained from the image that
+    /// declared it so an export can re-emit it. Empty when the image carried
+    /// none — `KLZY` has no field for one, so an image described that way
+    /// always yields empty here.
+    payload: Vec<u8>,
     size: u64,
     raw: Option<Vec<u8>>,
     directory: Option<Vec<crate::zip::ZipEntry>>,
@@ -327,6 +353,7 @@ impl RootfsState {
             next_ino: 1,
             archives: BTreeMap::new(),
             image: None,
+            image_metadata: None,
         }
     }
 
@@ -1074,6 +1101,30 @@ pub fn insert_base_file(
     insert_base_file_from(path, blob_id, size, mode, uid, gid, ino, BaseSource::Host)
 }
 
+/// Attach the deferred description `path`'s bytes came with, so an export can
+/// re-emit it under whatever inode number it assigns.
+///
+/// Separate from [`insert_base_file`] because only SOME base files have one: a
+/// URL-backed lazy file does, a base tree the host walked does not. Calling it
+/// with an empty payload is a no-op rather than an error, so a loader need not
+/// branch on whether the image declared a section.
+pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        return Err(Errno::EINVAL);
+    }
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.deferred_payload = payload.to_vec();
+        Ok(())
+    })
+}
+
 /// Insert a base regular file whose bytes are served by the kernel from the `/`
 /// image itself, at SFFS inode `ino`. The image-authoritative counterpart to
 /// [`insert_base_file`]: same node, no host byte store behind it.
@@ -1212,6 +1263,53 @@ pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
                 ..
             } => Ok((*archive_id, source_path.clone())),
             _ => Err(Errno::EINVAL),
+        }
+    })
+}
+
+/// Declare a lazy archive's total byte length, so the kernel can bound the
+/// whole-archive fetch a member of it will need.
+///
+/// Idempotent when the length agrees, and `EINVAL` when it does not: one
+/// archive with two lengths has no correct reading, and silently keeping either
+/// one would decide a fetch bound by declaration order. An already-populated
+/// entry keeps its fetched bytes — this declares a length, it does not reset an
+/// archive.
+pub fn declare_archive(archive_id: u32, bytes: u64, payload: &[u8]) -> Result<(), Errno> {
+    if archive_id == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
+        Some(existing) if existing.size == bytes => {
+            // The length agrees, so this is a re-declaration. A payload that
+            // arrives with it is kept, so a caller that declares the archive
+            // once per member need not carry the descriptor on every call —
+            // but a DIFFERENT non-empty payload is a conflict for the same
+            // reason a different length is.
+            if !payload.is_empty() {
+                if !existing.payload.is_empty() && existing.payload != payload {
+                    return Err(Errno::EINVAL);
+                }
+                existing.payload = payload.to_vec();
+            }
+            Ok(())
+        }
+        Some(_) => Err(Errno::EINVAL),
+        None => {
+            state.archives.insert(
+                archive_id,
+                ArchiveEntry {
+                    payload: payload.to_vec(),
+                    size: bytes,
+                    raw: None,
+                    directory: None,
+                    members: BTreeMap::new(),
+                },
+            );
+            Ok(())
         }
     })
 }
@@ -1361,6 +1459,8 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
                 state.archives.insert(
                     archive_id,
                     ArchiveEntry {
+                        // The v3 manifest has no field for one.
+                        payload: Vec::new(),
                         size: archive_size,
                         raw: None,
                         directory: None,
@@ -1577,6 +1677,23 @@ where
     result
 }
 
+/// One deferred file as the loader needs it, normalised across the two carriers
+/// that can describe one.
+///
+/// `KLZY` and `SDEF` disagree about almost nothing that matters here: both say
+/// which inode is deferred, how big it really is, and — for an archive member —
+/// which archive and which member. Normalising at the read means the walk below
+/// has one shape to handle rather than a branch per carrier repeated at every
+/// use, which is where a difference between the two would hide.
+struct DeferredEntry {
+    size: u64,
+    /// `0` for a file fetched standalone, whose transport the host owns.
+    archive_id: u32,
+    /// Empty exactly when `archive_id == 0`. Owned rather than borrowed because
+    /// the two carriers store it differently and neither buffer outlives this.
+    source_path: Vec<u8>,
+}
+
 fn load_image_inner<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
@@ -1592,36 +1709,7 @@ where
     // filesystem is mounted, because both spans come from the same container
     // header and a missing section must stay distinguishable from a corrupt one
     // (`kernel_lazy_span` returns `None` vs `EINVAL`).
-    let linkage = match crate::sffs::kernel_lazy_span(&source)? {
-        // A `/` image that declares no `KLZY` section predates the kernel's
-        // ability to parse an image, and the kernel has no way to tell "this
-        // image has no lazy files" from "this image records its lazy files only
-        // in the host-side JSON the kernel cannot read". Accepting it would
-        // silently build a tree where every deferred file reports size 0 — a
-        // wrong tree that looks like a right one. An image with genuinely no
-        // lazy files still carries the section, empty, in 20 bytes. So a missing
-        // section is a stale artifact, and `docs/agent-guidance/abi.md` is
-        // explicit that a stale artifact fails loudly and is rebuilt through the
-        // normal path rather than shimmed.
-        None => return Err(Errno::EINVAL),
-        Some((offset, len)) => {
-            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
-            bytes.resize(len, 0u8);
-            source.read_exact_at(offset, &mut bytes)?;
-            crate::klzy::decode_kernel_lazy_linkage(&bytes)?
-        }
-    };
-
-    // `ino -> record`. A `KLZY` file record with `archive_id == 0` is a
-    // URL-backed single lazy file whose transport the host owns; the kernel
-    // still needs its real size, because the image's inode holds a zero-length
-    // stub. `decode_kernel_lazy_linkage` already rejects duplicate inodes.
-    let mut lazy_files: BTreeMap<u32, &crate::klzy::KernelLazyFile> = BTreeMap::new();
-    for file in &linkage.files {
-        lazy_files.insert(file.ino, file);
-    }
+    let klzy_span = crate::sffs::kernel_lazy_span(&source)?;
 
     let (sffs_offset, sffs_len) = crate::sffs::sffs_span(&source)?;
     let filesystem = Sffs::mount(SubSource {
@@ -1643,6 +1731,91 @@ where
         sffs: filesystem.geometry(),
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));
+
+    // The image's own deferred section, when it carries one. It is BOTH a
+    // linkage source (below) and the place the opaque fetch descriptions live,
+    // which is why it is read once and used twice.
+    let deferred = filesystem.deferred_section()?;
+
+    // Which carrier describes this image's deferred files.
+    //
+    // `KLZY` when the image declares one, because that is what every image
+    // shipped today carries and its meaning is unchanged. `SDEF` when the image
+    // declares no `KLZY` but its BODY describes its deferred files — which is
+    // what the Rust export writes, and what V5 makes the only description.
+    //
+    // NEITHER is still refused, and for the reason it always was: an image that
+    // declares no `KLZY` section and whose body says nothing either predates
+    // the kernel's ability to parse an image, and the kernel cannot tell "this
+    // image has no lazy files" from "this image records its lazy files only in
+    // the host-side JSON the kernel cannot read". Accepting it would silently
+    // build a tree where every deferred file reports size 0 — a wrong tree that
+    // looks like a right one. An image with genuinely no lazy files still
+    // carries a section, empty, in 20 bytes. So a missing description is a
+    // stale artifact, and `docs/agent-guidance/abi.md` is explicit that a stale
+    // artifact fails loudly and is rebuilt rather than shimmed.
+    //
+    // What CHANGED is only which sections count as a description. An image
+    // carrying both is read from `KLZY`; nothing emits both today, and choosing
+    // the older one keeps this change from altering how any existing image
+    // loads.
+    let mut lazy_files: BTreeMap<u32, DeferredEntry> = BTreeMap::new();
+    let mut lazy_archives: Vec<(u32, u64, Vec<u8>)> = Vec::new();
+    match klzy_span {
+        Some((offset, len)) => {
+            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(len, 0u8);
+            source.read_exact_at(offset, &mut bytes)?;
+            let linkage = crate::klzy::decode_kernel_lazy_linkage(&bytes)?;
+            // A `KLZY` file record with `archive_id == 0` is a URL-backed single
+            // lazy file whose transport the host owns; the kernel still needs
+            // its real size, because the image's inode holds a zero-length
+            // stub. `decode_kernel_lazy_linkage` already rejects duplicate
+            // inodes.
+            for file in &linkage.files {
+                lazy_files.insert(
+                    file.ino,
+                    DeferredEntry {
+                        size: file.size,
+                        archive_id: file.archive_id,
+                        source_path: file.source_path.as_bytes().to_vec(),
+                    },
+                );
+            }
+            for archive in &linkage.archives {
+                // KLZY has no field for an archive's fetch description, so an
+                // image described that way carries none. Exporting it would
+                // therefore emit an archive with no descriptor -- honest, and
+                // visible, rather than invented.
+                lazy_archives.push((archive.archive_id, archive.archive_bytes, Vec::new()));
+            }
+        }
+        None => {
+            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;
+            // `decode` already rejects duplicate inodes, a record naming an
+            // undeclared archive, and a half-specified linkage, so this loop
+            // inherits every rule the `KLZY` branch gets from its own decoder.
+            for record in &section.records {
+                lazy_files.insert(
+                    record.ino,
+                    DeferredEntry {
+                        size: record.size,
+                        archive_id: record.archive_id,
+                        source_path: record.source_path.clone(),
+                    },
+                );
+            }
+            for archive in &section.archives {
+                lazy_archives.push((
+                    archive.archive_id,
+                    archive.bytes,
+                    archive.payload.clone(),
+                ));
+            }
+        }
+    }
 
     let root_stat = filesystem.stat_ino(ROOT_INO)?;
     if file_type(root_stat.mode) != S_IFDIR {
@@ -1720,7 +1893,7 @@ where
                             insert_lazy_file(
                                 &abs,
                                 lazy.archive_id,
-                                lazy.source_path.as_bytes(),
+                                &lazy.source_path,
                                 lazy.size,
                                 stat.mode,
                                 stat.uid,
@@ -1735,6 +1908,16 @@ where
                             insert_base_file(
                                 &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
+                            // Retain the fetch description verbatim. Without
+                            // it, exporting this file loses the only thing that
+                            // says where its bytes are: its inode number here
+                            // does not survive an export's renumbering, and the
+                            // kernel has no URL of its own.
+                            if let Some(section) = &deferred {
+                                if let Some(record) = section.get(entry.ino) {
+                                    set_deferred_payload(&abs, &record.payload)?;
+                                }
+                            }
                         }
                         // Not deferred at all: the bytes are IN this image, at
                         // this inode, and the kernel reads them itself.
@@ -1768,11 +1951,12 @@ where
     // Archive table: every lazy archive the image declares, with the total byte
     // length `ensure_archive_member` needs to bound its whole-archive fetch.
     ROOTFS.with(|state| {
-        for archive in &linkage.archives {
+        for (archive_id, archive_bytes, payload) in lazy_archives.drain(..) {
             state.archives.insert(
-                archive.archive_id,
+                archive_id,
                 ArchiveEntry {
-                    size: archive.archive_bytes,
+                    payload,
+                    size: archive_bytes,
                     raw: None,
                     directory: None,
                     members: BTreeMap::new(),
@@ -3347,6 +3531,29 @@ enum ExportNode {
     Dir,
     ImageFile(u32, u64),
     OverlayFile(u32, u64),
+    /// A deferred file the export can DESCRIBE: an archive member, whose real
+    /// size, backing archive and member path the overlay already holds. Written
+    /// as a zero-length body inode plus a record in the image's deferred
+    /// section, which is what preserves laziness -- materializing the bytes
+    /// here is what makes a 249 MiB image impossible.
+    LazyMember {
+        archive_id: u32,
+        source_path: Vec<u8>,
+        size: u64,
+    },
+    /// A host-backed base file the loaded image DID describe: the description
+    /// was retained verbatim at load, and is re-emitted here under the inode
+    /// this export assigns. The kernel never parses it -- it is a courier.
+    LazyBase {
+        size: u64,
+        payload: Vec<u8>,
+    },
+    /// A host-backed base file with no retained description. The kernel has
+    /// nothing that says where its bytes are: the blob id is the SOURCE image's
+    /// inode number and this export assigns new ones. Today that is a base tree
+    /// the host walked ([`load_manifest`]), whose bytes are ordinary host files
+    /// rather than a deferred fetch -- so it is not a missing payload, it is a
+    /// file this export cannot serialize at all. It still writes an empty file.
     LazyStub,
     Symlink(Vec<u8>),
     Special,
@@ -3533,6 +3740,10 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     // Overlay arena index -> the SFFS inode it became, so the second and later
     // names for a hard-linked inode become a `link` rather than a second copy.
     let mut emitted: BTreeMap<u32, u32> = BTreeMap::new();
+    // Archives already declared to the writer, so one is declared once however
+    // many of its members the tree holds.
+    let mut declared_archives: alloc::collections::BTreeSet<u32> =
+        alloc::collections::BTreeSet::new();
 
     let root_idx = ROOTFS.with(|state| state.root).ok_or(Errno::EIO)?;
     let root_sffs = writer.root();
@@ -3559,14 +3770,31 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     // The image does not carry these bytes; the host owns the
                     // transport. Keep the file lazy rather than force-fetching
                     // it, which is the behaviour the host reconciler documents.
-                    BaseSource::Host => ExportNode::LazyStub,
+                    BaseSource::Host => {
+                        if inode.deferred_payload.is_empty() {
+                            ExportNode::LazyStub
+                        } else {
+                            ExportNode::LazyBase {
+                                size: *size,
+                                payload: inode.deferred_payload.clone(),
+                            }
+                        }
+                    }
                 },
                 InodeKind::Regular(data) => {
                     ExportNode::OverlayFile(item.overlay, data.len() as u64)
                 }
                 InodeKind::Symlink(target) => ExportNode::Symlink(target.clone()),
                 InodeKind::Special(_) => ExportNode::Special,
-                InodeKind::LazyMember { .. } => ExportNode::LazyStub,
+                InodeKind::LazyMember {
+                    archive_id,
+                    source_path,
+                    size,
+                } => ExportNode::LazyMember {
+                    archive_id: *archive_id,
+                    source_path: source_path.clone(),
+                    size: *size,
+                },
             };
             Ok::<_, Errno>((node, inode.mode, emitted.get(&item.overlay).copied()))
         })?;
@@ -3589,6 +3817,58 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             }
             ExportNode::Symlink(target) => {
                 writer.symlink(item.parent_sffs, &item.name, &target)?
+            }
+            ExportNode::LazyMember {
+                archive_id,
+                source_path,
+                size,
+            } => {
+                // Declare the archive before the first record that points into
+                // it. The length comes from the archive table this kernel
+                // loaded; without it the record would be a dangling reference
+                // and `encode` would refuse the whole section — which is the
+                // behaviour we want, but the export should not have built an
+                // image it cannot finish.
+                if !declared_archives.contains(&archive_id) {
+                    let (bytes, payload) = ROOTFS
+                        .with(|state| {
+                            state
+                                .archives
+                                .get(&archive_id)
+                                .map(|entry| (entry.size, entry.payload.clone()))
+                        })
+                        .ok_or(Errno::EIO)?;
+                    writer.declare_lazy_archive(archive_id, bytes, &payload)?;
+                    declared_archives.insert(archive_id);
+                }
+                // The payload is empty on purpose. It is the HOST's fetch
+                // description, and an archive member has none of its own: the
+                // archive carries the transport, and the two fields beside this
+                // one are the whole of what locates the member inside it.
+                writer.create_deferred_file(
+                    item.parent_sffs,
+                    &item.name,
+                    mode,
+                    size,
+                    archive_id,
+                    &source_path,
+                    b"",
+                )?
+            }
+            ExportNode::LazyBase { size, payload } => {
+                // No archive linkage: these bytes are fetched standalone, which
+                // is exactly what `archive_id == 0` with an empty member path
+                // means. The payload is the whole of the identity, and it is
+                // passed through without being read.
+                writer.create_deferred_file(
+                    item.parent_sffs,
+                    &item.name,
+                    mode,
+                    size,
+                    0,
+                    b"",
+                    &payload,
+                )?
             }
             ExportNode::LazyStub => {
                 // `SharedFS.createLazyStub` is `open(O_CREAT)` plus an explicit
@@ -3705,6 +3985,109 @@ where
         };
         plan.image.read_at(&source, offset, out)
     })
+}
+
+/// Set the image-metadata section the next exported container will carry, as
+/// opaque bytes.
+///
+/// The kernel does not read them and has no opinion about their shape — they
+/// are the builder's statements about its own artifact (`version`, `kernelAbi`,
+/// `createdBy`). It stores them because the CONTAINER is the kernel's to write,
+/// and a container the host assembles is a second author for the format the
+/// campaign has spent this lane reducing to one.
+///
+/// Empty clears it, so a builder can unset without a second entry point.
+pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
+    let len = crate::sffs_container::MAX_SECTION_LEN as usize;
+    if metadata.len() > len {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| {
+        state.image_metadata = if metadata.is_empty() {
+            None
+        } else {
+            Some(metadata.to_vec())
+        };
+    });
+    Ok(())
+}
+
+/// The exported image as a whole VFSI **container** — header, body, trailer —
+/// offset-addressable and streamed, exactly like [`export_image_read`].
+///
+/// This is what a builder saves. `export_image_read` yields the SFFS body
+/// alone, which is not an image: it has no container header, so nothing can
+/// find the filesystem inside it or the sections beside it.
+///
+/// The container declares **no `KLZY` section**. The body's own `SDEF` section
+/// is the description of its deferred files, which is what
+/// [`load_image_inner`] now reads — so emitting `KLZY` as well would put two
+/// descriptions of one thing back into an artifact this lane exists to give
+/// one.
+pub fn export_container_read<F>(
+    offset: i64,
+    out: &mut [u8],
+    byte_source: &mut F,
+) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
+    let offset = offset as u64;
+
+    // The trailer is small and its length has to be known before the header can
+    // be written, so it is built up front rather than streamed. The BODY is
+    // what can be 249 MiB, and that is still never held.
+    let metadata = ROOTFS.with(|state| state.image_metadata.clone());
+    let sections = crate::sffs_container::ContainerSections {
+        lazy_json: b"",
+        archive_json: None,
+        metadata_json: metadata.as_deref(),
+        kernel_lazy: None,
+    };
+    let trailer = crate::sffs_container::trailer(&sections)?;
+
+    // Building the plan is what `export_image_read(0, ..)` does; asking for the
+    // body length has to happen first, and that is the call that does it.
+    let body_len = IMAGE_EXPORT_CACHE.with(|slot| -> Result<u64, Errno> {
+        if offset == 0 || slot.is_none() {
+            *slot = Some(build_export_image()?);
+        }
+        Ok(slot.as_ref().map(|plan| plan.len()).unwrap_or(0))
+    })?;
+
+    let head = crate::sffs_container::header(
+        usize::try_from(body_len).map_err(|_| Errno::EINVAL)?,
+        sections.flags(),
+    )?;
+    let head_len = head.len() as u64;
+    let total = head_len
+        .checked_add(body_len)
+        .and_then(|n| n.checked_add(trailer.len() as u64))
+        .ok_or(Errno::EINVAL)?;
+    if offset >= total {
+        reset_image_export();
+        return Ok(0);
+    }
+
+    // One chunk may span two regions; copy what this offset reaches and let the
+    // caller come back for the rest. Returning a short count is how every
+    // streaming reader here already behaves.
+    if offset < head_len {
+        let from = offset as usize;
+        let n = core::cmp::min(out.len(), head.len() - from);
+        out[..n].copy_from_slice(&head[from..from + n]);
+        return Ok(n);
+    }
+    if offset < head_len + body_len {
+        return export_image_read((offset - head_len) as i64, out, byte_source);
+    }
+    let from = (offset - head_len - body_len) as usize;
+    let n = core::cmp::min(out.len(), trailer.len() - from);
+    out[..n].copy_from_slice(&trailer[from..from + n]);
+    Ok(n)
 }
 
 /// Discard any in-progress export. Called by [`reset`] so a fresh store never
@@ -3825,6 +4208,7 @@ mod tests {
             state.archives.insert(
                 archive_id,
                 ArchiveEntry {
+                    payload: Vec::new(),
                     size,
                     raw: None,
                     directory: None,
@@ -4268,10 +4652,23 @@ mod tests {
         chown(b"/usr/bin/hello", 1, 1, true).unwrap();
         assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777, 0o0755);
 
-        symlink(b"../lib/x", b"/usr/bin/newlink", 0, 0).unwrap();
+        symlink(b"../lib/x", b"/usr/bin/newlink", 7, 8).unwrap();
         let mut buf = [0u8; 32];
         let n = readlink(b"/usr/bin/newlink", &mut buf).unwrap();
         assert_eq!(&buf[..n], b"../lib/x");
+        // A symlink's OWN metadata, which nothing asserted before: mutation
+        // testing showed `symlink` could hand out any mode and the whole suite
+        // stayed green. Modes were checked for directories and files and never
+        // for a symlink. It matters beyond tidiness -- VFS image builders
+        // create symlinks in bulk (the shipped shell image carries thousands),
+        // so an unasserted mode is a silent difference in a published image.
+        let st = lstat(b"/usr/bin/newlink").unwrap();
+        assert_eq!(
+            st.st_mode & 0o7777,
+            0o777,
+            "a symlink is lrwxrwxrwx; its mode is not the creator's umask business",
+        );
+        assert_eq!((st.st_uid, st.st_gid), (7, 8), "symlink ownership comes from the caller");
         assert_eq!(symlink(b"y", b"/usr/bin/newlink", 0, 0).unwrap_err(), Errno::EEXIST);
     }
 
@@ -5342,6 +5739,50 @@ mod tests {
     /// must drop it. A `BaseSource::Image` node cannot outlive it — `reset()`
     /// drops both together — and this pins that they are cleared as one.
     #[test]
+    /// Release-and-recreate: a second build after `reset` must be
+    /// indistinguishable from the first.
+    ///
+    /// This is the property lane Y's builder substrate actually needs, and it
+    /// was an open question rather than a fact. The measured finding is that
+    /// no production builder path holds two live filesystems -- the one
+    /// apparent case builds sequentially and `rebaseToNewFileSystem` has only
+    /// test callers -- so the requirement is one live instance at a time with
+    /// an explicit teardown, NOT an instance handle threaded through every
+    /// call site.
+    ///
+    /// The tree is built with ALLOCATING operations on purpose. The existing
+    /// sample tree passes explicit inode numbers, so it would sail through a
+    /// `next_ino` counter that survived the reset; `mkdir` and `symlink` call
+    /// `alloc_ino`, so a leaked counter shows up immediately as different
+    /// inode numbers on the second pass.
+    #[test]
+    fn reset_gives_a_second_build_a_clean_slate() {
+        let _guard = TestGuard::acquire();
+        fn build() -> alloc::vec::Vec<(u64, u32, u32, u32)> {
+            insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+            mkdir(b"/a", 0o755, 1, 2).unwrap();
+            mkdir(b"/a/b", 0o700, 3, 4).unwrap();
+            symlink(b"../x", b"/a/link", 5, 6).unwrap();
+            [b"/a".as_ref(), b"/a/b".as_ref(), b"/a/link".as_ref()]
+                .iter()
+                .map(|p| {
+                    let st = lstat(p).unwrap();
+                    (st.st_ino, st.st_mode & 0o7777, st.st_uid, st.st_gid)
+                })
+                .collect()
+        }
+        let first = build();
+        reset();
+        let second = build();
+        assert_eq!(
+            first, second,
+            "a build after reset must not inherit inode numbers or metadata \
+             from the previous one -- sequential image builds in one process \
+             would otherwise differ for no reason the recipe explains",
+        );
+    }
+
+    #[test]
     fn reset_drops_the_image_geometry_with_the_tree() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
@@ -5524,6 +5965,26 @@ mod tests {
         out
     }
 
+    /// Drain the whole exported CONTAINER, the way a builder saves one.
+    fn drain_container<F>(chunk: usize, byte_source: &mut F) -> Vec<u8>
+    where
+        F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+    {
+        let mut out = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let mut buf = alloc::vec![0u8; chunk];
+            let n =
+                export_container_read(offset, &mut buf, byte_source).expect("container chunk");
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n]);
+            offset += n as i64;
+        }
+        out
+    }
+
     fn build_small_overlay() {
         mkdir(b"/etc", 0o755, 0, 0).expect("mkdir /etc");
         write_file_at(b"/etc/passwd", 0, b"root:x:0:0\n", 0o644, true, no_bytes())
@@ -5541,6 +6002,350 @@ mod tests {
             0,
         )
         .expect("long symlink");
+    }
+
+    /// A whole image with a URL-backed deferred file in it: an SFFS body whose
+    /// deferred section names one inode, a `KLZY` section declaring that inode
+    /// deferred with no archive, and a real VFSI container around both.
+    ///
+    /// Built rather than committed as a fixture because the point is that BOTH
+    /// descriptions come from one writer; a hand-assembled one could disagree
+    /// with itself in a way no production image can.
+    fn url_backed_image(url: &[u8], real_size: u64) -> Vec<u8> {
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        let ino = w
+            .create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", url)
+            .expect("deferred");
+        // No file in this body carries content, so the content source is never
+        // consulted -- a deferred file is described, not stored.
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize the body");
+
+        let klzy = klzy_section(&[], &[(ino, real_size, 0, "")]);
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: Some(&klzy),
+        };
+        let mut image = crate::sffs_container::header(body.len(), sections.flags())
+            .expect("header")
+            .to_vec();
+        image.extend_from_slice(&body);
+        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
+        image
+    }
+
+    /// The same image as [`url_backed_image`] but described ONLY by its body:
+    /// no `KLZY` section, and the container flag clear.
+    fn sdef_only_image(url: &[u8], real_size: u64) -> Vec<u8> {
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        w.declare_lazy_archive(3, 8_000_000, b"sha256:feed")
+            .expect("declare");
+        w.create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", url)
+            .expect("url-backed");
+        w.create_deferred_file(root, b"php", 0o755, 4_242, 3, b"usr/bin/php", b"")
+            .expect("archive member");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        crate::sffs_container::wrap(&body, &sections).expect("wrap")
+    }
+
+    #[test]
+    fn an_image_the_kernel_exported_is_one_the_kernel_can_load() {
+        let _guard = TestGuard::acquire();
+        // The round trip V4 exists to make possible, and the one thing none of
+        // the increments before it could assert on its own. Each closed a hole
+        // -- the archive member exported as an empty file, the URL-backed file
+        // lost its description, the section could not name an archive, the
+        // loader refused a body-described image -- and any one still open
+        // breaks this.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
+        declare_archive(3, 8_000_000, b"sha256:abc").expect("declare archive");
+        insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2)
+            .expect("archive member");
+        write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
+            .expect("an ordinary file, so the tree is not all deferred");
+
+        // Through the call a builder actually makes, not a container this test
+        // assembles: if the kernel emits the container, a test that assembles
+        // its own is checking a path nothing ships.
+        let image = drain_container(8192, &mut no_bytes());
+
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load it back");
+        assert_eq!(count, 4, "root, /usr, /usr/php, /etc-ish");
+
+        // The lazy member survived the whole round trip: real size, linkage,
+        // and an archive length to bound its fetch.
+        assert_eq!(lstat(b"/usr/php").expect("stat").st_size, 4_242);
+        assert_eq!(lstat(b"/usr/php").expect("stat").st_mode & 0o7777, 0o755);
+        assert_eq!(
+            lazy_member_source(b"/usr/php").expect("linkage"),
+            (3, b"usr/bin/php".to_vec()),
+        );
+        assert_eq!(archive_size(3), Some(8_000_000));
+
+        // Gap 10: the archive's own fetch description survives too. Without it
+        // the round trip would preserve everything EXCEPT the integrity data
+        // every production image's archives carry -- a loss that shows up only
+        // when something is fetched.
+        let carried = ROOTFS.with(|state| {
+            state.archives.get(&3).map(|entry| entry.payload.clone())
+        });
+        assert_eq!(carried.as_deref(), Some(&b"sha256:abc"[..]));
+
+        // And the ordinary file is still ordinary -- not swept up as deferred.
+        assert_eq!(lstat(b"/etc-ish").expect("stat").st_size, 14);
+    }
+
+    #[test]
+    fn an_image_described_only_by_its_body_loads() {
+        let _guard = TestGuard::acquire();
+        // V4 item 3. The image declares no `KLZY`; its body's SDEF section is
+        // the whole description, which is what the Rust export writes and what
+        // V5 makes the only description. Before this the loader refused it, so
+        // an image the kernel wrote was one the kernel could not read.
+        let url: &[u8] = b"https://example.invalid/big.bin";
+        let image = sdef_only_image(url, 45_000);
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert_eq!(count, 3, "root + two deferred files");
+
+        // Both kinds of deferred file get their REAL size from the body, not
+        // the zero-length stub the body inode holds. That is the whole failure
+        // this refusal was protecting against, now checked rather than avoided.
+        assert_eq!(lstat(b"/big.bin").expect("stat").st_size, 45_000);
+        assert_eq!(lstat(b"/php").expect("stat").st_size, 4_242);
+
+        // The archive member's linkage came through too, and the archive's
+        // length with it -- so the fetch it will need is bounded.
+        assert_eq!(
+            lazy_member_source(b"/php").expect("linkage"),
+            (3, b"usr/bin/php".to_vec()),
+        );
+        assert_eq!(archive_size(3), Some(8_000_000));
+        // And its descriptor, which KLZY has no field for and SDEF does.
+        assert_eq!(
+            ROOTFS.with(|state| state.archives.get(&3).map(|e| e.payload.clone())),
+            Some(b"sha256:feed".to_vec()),
+        );
+    }
+
+    #[test]
+    fn an_image_that_describes_its_deferred_files_nowhere_is_still_refused() {
+        let _guard = TestGuard::acquire();
+        // The refusal this change was careful NOT to weaken. No `KLZY`, and a
+        // body with no SDEF section either: the kernel cannot tell "no lazy
+        // files" from "lazy files recorded only in host-side JSON I cannot
+        // read", and loading it would build a tree where every deferred file
+        // reports size 0 -- a wrong tree that looks like a right one.
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            128 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"plain", 0o644, crate::sffs_write::Content::Bytes(b"hi"))
+            .expect("a file with no deferred anything");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        let image = crate::sffs_container::wrap(&body, &sections).expect("wrap");
+
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // And the same body WITH an empty KLZY section loads, so the refusal
+        // above is the missing description rather than anything else about
+        // this image.
+        let empty_klzy = klzy_section(&[], &[]);
+        let with_klzy = crate::sffs_container::wrap(
+            &body,
+            &crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(&empty_klzy),
+            },
+        )
+        .expect("wrap");
+        assert_eq!(
+            load_image(with_klzy.len() as u64, image_host(&with_klzy)).expect("loads"),
+            2,
+        );
+    }
+
+    #[test]
+    fn an_image_carrying_both_descriptions_is_read_from_the_older_one() {
+        let _guard = TestGuard::acquire();
+        // Nothing emits both today. The rule is written down and tested anyway,
+        // because "whichever we happen to read first" is how two descriptions
+        // of one thing start disagreeing -- and reading the OLDER one is what
+        // keeps this change from altering how any existing image loads.
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        let ino = w
+            .create_deferred_file(root, b"big.bin", 0o644, 45_000, 0, b"", b"url")
+            .expect("deferred");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+
+        // The KLZY section disagrees with the body on purpose: a different size
+        // for the same inode. Whichever number the tree reports names the
+        // carrier that was read.
+        let klzy = klzy_section(&[], &[(ino, 999, 0, "")]);
+        let image = crate::sffs_container::wrap(
+            &body,
+            &crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(&klzy),
+            },
+        )
+        .expect("wrap");
+
+        load_image(image.len() as u64, image_host(&image)).expect("load");
+        assert_eq!(
+            lstat(b"/big.bin").expect("stat").st_size,
+            999,
+            "KLZY wins while it is present",
+        );
+    }
+
+    #[test]
+    fn a_url_backed_files_description_survives_load_and_export() {
+        let _guard = TestGuard::acquire();
+        // The property V4 item 2 exists for. The kernel cannot RECONSTRUCT this
+        // description -- it holds no URL, and the file's inode number in the
+        // source image does not survive an export's renumbering -- so the only
+        // way an exported image can say where these bytes are is if the loader
+        // kept what it was given.
+        let url: &[u8] = b"https://example.invalid/big.bin#sha256:deadbeef";
+        let image = url_backed_image(url, 45_000);
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+
+        // Before the export: the size is authoritative from the linkage, and
+        // nothing has been fetched.
+        assert_eq!(lstat(b"/big.bin").expect("stat").st_size, 45_000);
+
+        let exported = drain_export(8192, &mut image_host(&image));
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
+
+        let ino = fs.resolve(b"/big.bin", true).expect("the path survives");
+        assert_eq!(
+            fs.stat_ino(ino).expect("stat").size,
+            0,
+            "the body inode is a stub; the image describes bytes it does not carry",
+        );
+
+        let record = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the export emits a deferred section")
+            .get(ino)
+            .cloned()
+            .expect("a record keyed by the inode THIS export assigned");
+        assert_eq!(record.payload, url, "carried through byte for byte");
+        assert_eq!(record.size, 45_000, "the real size, not the stub's");
+        assert_eq!(record.archive_id, 0, "fetched standalone, not from an archive");
+        assert!(record.source_path.is_empty(), "and so with no member path");
+    }
+
+    #[test]
+    fn exporting_a_member_of_an_archive_with_no_known_length_fails_loudly() {
+        let _guard = TestGuard::acquire();
+        // `insert_lazy_file` places a member; nothing here declares how long
+        // archive 3 is. The export must refuse rather than declare it as zero
+        // bytes — a consumer would then know which archive to fetch and be told
+        // to read none of it, which is a silently empty file wearing the shape
+        // of a correct one.
+        //
+        // Not reachable through the module bridge, which takes the archive's
+        // length alongside the member for exactly this reason. It is reachable
+        // here, and this is the layer that has to refuse.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        insert_lazy_file(b"/big", 3, b"members/big.bin", 99_999, 0o644, 0, 0, 2)
+            .expect("the member itself is well-formed");
+
+        let mut buf = alloc::vec![0u8; 8192];
+        assert_eq!(
+            export_image_read(0, &mut buf, &mut no_bytes()).unwrap_err(),
+            Errno::EIO,
+        );
+
+        // Declaring the length makes the same tree exportable, so the refusal
+        // above is the missing length and not something else about the tree.
+        reset_image_export();
+        declare_archive(3, 8_000_000, b"").expect("declare");
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        assert_eq!(
+            fs.deferred_section()
+                .expect("decodes")
+                .expect("section")
+                .archive_bytes(3),
+            Some(8_000_000),
+        );
+    }
+
+    #[test]
+    fn a_base_file_with_no_description_still_exports_as_a_stub() {
+        let _guard = TestGuard::acquire();
+        // The honest other half. A base tree the host walked ([`load_manifest`])
+        // carries no deferred description at all -- its bytes are ordinary host
+        // files, not a deferred fetch -- so there is nothing to retain and
+        // nothing to re-emit. This is not "the payload went missing"; it is a
+        // file this export cannot serialize, and it must not be dressed up as a
+        // deferred file pointing nowhere.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        insert_base_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 2).expect("base file");
+
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
+        let ino = fs.resolve(b"/walked.bin", true).expect("the path survives");
+        assert_eq!(fs.stat_ino(ino).expect("stat").size, 0);
+        assert!(
+            fs.deferred_section().expect("decodes").is_none(),
+            "no description in, no record out -- an empty payload must not become \
+             a deferred record that says nothing",
+        );
     }
 
     #[test]
