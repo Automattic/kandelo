@@ -1318,6 +1318,29 @@ came from a KLZY image cannot re-emit what it never received. That is honest
 rather than invented, and it is another reason the producer side (V5/Y5) has to
 land before any mandatory-digest rule would be satisfiable.
 
+**Gap 11 — the VFSI container header is hand-carried into TypeScript.** Found
+2026-09-12 while testing the container export. `VFSI_CONTAINER_MAGIC`,
+`VFSI_CONTAINER_VERSION`, `VFSI_HEADER_SIZE` and the flag words are Rust
+constants that `host/src/generated/abi.ts` does not carry, so a TypeScript
+reader of a `.vfs` container spells them by hand. **Same class as L-D2 (the
+scratch pointer table), W-D1 (syscall names) and V-D1 (the errno table)** — ABI
+knowledge reaching TypeScript by hand while a generator exists for its
+neighbours. Recorded rather than fixed because fixing it means regenerating the
+ABI, which no lane in this campaign may do concurrently.
+
+Cost of leaving it: the bridge's own test asserted the magic reads `"VFSI"` and
+it reads `"ISFV"` — the magic is a little-endian `u32`, so it lands
+byte-reversed. That was caught by running the test, which is luck rather than a
+gate.
+
+**Gap 12 — a production build script imports a test helper.** Found the same
+way. `images/vfs/scripts/generate-coreutils-man.ts` imports
+`runCentralizedProgram` from `host/test/centralized-test-helper`. It is why the
+new `images/tsconfig.typecheck.json` pulls `host/test/` into its graph and
+inherits four errors the host's own gate deliberately excludes — which is the
+concrete reason the images gate cannot simply require zero. Small, and it is
+the kind of coupling that becomes load-bearing if left.
+
 ## What is left in lane V
 
 * **V5 — the producer side.** The format is done; the TypeScript writers must
