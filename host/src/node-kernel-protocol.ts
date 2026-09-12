@@ -1,3 +1,44 @@
+// Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
+// for which types are NOT shared and why.
+export type {
+  SignalProcessMessage,
+  GetForkCountRequestMessage,
+  GetKernelMemoryPagesRequestMessage,
+  GetSpawnScratchCapacityRequestMessage,
+  EnumProcsRequestMessage,
+  ReadProcMapsRequestMessage,
+  SetSyscallTraceMessage,
+  DrainSyscallTraceMessage,
+  KmsAttachCanvasMessage,
+  KmsAttachStatsMessage,
+  InitErrorMessage,
+  KernelFatalMessage,
+  ResponseMessage,
+  StdoutMessage,
+  StderrMessage,
+  PtyOutputMessage,
+  LazyDownloadMessage,
+} from "./kernel-protocol-shared";
+import type {
+  SignalProcessMessage,
+  GetForkCountRequestMessage,
+  GetKernelMemoryPagesRequestMessage,
+  GetSpawnScratchCapacityRequestMessage,
+  EnumProcsRequestMessage,
+  ReadProcMapsRequestMessage,
+  SetSyscallTraceMessage,
+  DrainSyscallTraceMessage,
+  KmsAttachCanvasMessage,
+  KmsAttachStatsMessage,
+  InitErrorMessage,
+  KernelFatalMessage,
+  ResponseMessage,
+  StdoutMessage,
+  StderrMessage,
+  PtyOutputMessage,
+  LazyDownloadMessage,
+} from "./kernel-protocol-shared";
+
 /**
  * Message protocol for Node.js main thread ↔ kernel worker_thread communication.
  *
@@ -252,68 +293,10 @@ export interface WriteVfsFileMessage {
   mode: number;
 }
 
-/** Request the kernel's per-process fork counter. The kernel-worker entry
- * forwards this to `kernel_get_fork_count` and posts a `response` message
- * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
- * regression tests to assert SYS_SPAWN doesn't bump the counter. */
-export interface GetForkCountRequestMessage {
-  type: "get_fork_count";
-  requestId: number;
-  pid: number;
-}
-
-/** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
-export interface GetKernelMemoryPagesRequestMessage {
-  type: "get_kernel_memory_pages";
-  requestId: number;
-}
-
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
-  requestId: number;
-}
-
-/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
-export interface SignalProcessMessage {
-  type: "signal_process";
-  requestId: number;
-  pid: number;
-  signum: number;
-}
-
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
   programBytes: ArrayBuffer | null;
-}
-
-/** Snapshot the kernel's process table. Mirrors the browser host's
- * enum_procs request in browser-kernel-protocol.ts.
- * Response carries `ProcessSnapshot[]`. */
-export interface EnumProcsRequestMessage {
-  type: "enum_procs";
-  requestId: number;
-}
-
-/** Read `/proc/[pid]/maps` for a foreign process via the host. Response
- * carries a string (Linux maps text) or `null` if the pid is gone. */
-export interface ReadProcMapsRequestMessage {
-  type: "read_proc_maps";
-  requestId: number;
-  pid: number;
-}
-
-/** Enable / disable the syscall trace ring. Mirrors the browser host. */
-export interface SetSyscallTraceMessage {
-  type: "set_syscall_trace";
-  enabled: boolean;
-}
-
-/** Drain pending syscall trace events. Response carries SyscallTraceEvent[]. */
-export interface DrainSyscallTraceMessage {
-  type: "drain_syscall_trace";
-  requestId: number;
 }
 
 /** Send an HTTP request to a server running in the kernel and wait for the
@@ -329,25 +312,6 @@ export interface HttpRequestMessage {
   timeoutMs?: number;
   /** Optional raw response byte ceiling. */
   maxResponseBytes?: number;
-}
-
-/** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.
- *  Mirrors the Browser-side handler. Under Node, OffscreenCanvas is only
- *  available when the host wires a polyfill; without one the worker
- *  ignores the canvas and only `attachKmsStats` is meaningful. */
-export interface KmsAttachCanvasMessage {
-  type: "kms_attach_canvas";
-  crtcId: number;
-  canvas: OffscreenCanvas;
-  stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
-}
-
-/** Register a stats SAB for a CRTC without binding a scanout canvas. */
-export interface KmsAttachStatsMessage {
-  type: "kms_attach_stats";
-  crtcId: number;
-  stats: SharedArrayBuffer;
 }
 
 export type MainToKernelMessage =
@@ -390,59 +354,16 @@ export interface ReadyMessage {
   type: "ready";
 }
 
-/** Initialization failed before the worker could publish a usable kernel. */
-export interface InitErrorMessage {
-  type: "init_error";
-  error: string;
-}
-
-/** The dedicated kernel instance is poisoned and has stopped permanently. */
-export interface KernelFatalMessage {
-  type: "kernel_fatal";
-  error: string;
-}
-
-export interface ResponseMessage {
-  type: "response";
-  requestId: number;
-  result: unknown;
-  error?: string;
-}
-
 export interface ExitMessage {
   type: "exit";
   pid: number;
   status: number;
 }
 
-export interface StdoutMessage {
-  type: "stdout";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface StderrMessage {
-  type: "stderr";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyOutputMessage {
-  type: "pty_output";
-  pid: number;
-  data: Uint8Array;
-}
-
 export interface ResolveExecRequestMessage {
   type: "resolve_exec";
   requestId: number;
   path: string;
-}
-
-/** Lazy VFS transport progress forwarded by the worker-owned root filesystem. */
-export interface LazyDownloadMessage {
-  type: "lazy_download";
-  event: LazyDownloadEvent;
 }
 
 /**

@@ -130,7 +130,7 @@
     },
     "hostPeerDuplicateDeclarations": {
       "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
-      "ceiling": 65,
+      "ceiling": 48,
       "slack": 0,
       "target": 12,
       "why": "Lane E, set by the E1 census. Replaces a line-count surface that was unreachable: the kernel-host pair shares exactly one name and is two different jobs, not a drifted copy, so it will never shrink. This counts actual duplication \u2014 43 protocol message types declared twice, 21 same-named worker-entry declarations, 1 in kernel-host. Target is 12, not 0, because a few (kernelWorker, port, maxPages, lifecycle) are legitimately per-host instances of a shared concept."
