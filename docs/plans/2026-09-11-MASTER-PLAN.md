@@ -2673,8 +2673,17 @@ one that may hold a stale symlink.
 
 # LANE Y — VFS image builders write the image format in TypeScript
 
-**Status: Y1 census COMPLETE — `docs/plans/2026-09-11-lane-y1-census.md`.
+**Status 2026-09-12: Y1, Y2, Y3 and Y6 DONE. Y4 BUILT and no longer blocked —
+the bridge serializes a whole image. Y5 is the lane's remaining work and is
+one connected component, not the file-at-a-time pass this file first described.
 The gate was measuring the wrong thing and has been replaced.**
+
+The Y1 census is `docs/plans/2026-09-11-lane-y1-census.md`; the merge handoff
+for what has landed is `docs/plans/2026-09-12-lane-y-merge-handoff.md`. **Two
+of this lane's premises have since been corrected by measurement** — that the
+builders are overwhelmingly recipes, and that the type-only importers repoint
+one line each. Both corrections are below, and both matter more than the
+increments they sit next to.
 
 `images/vfs/scripts/*.ts` — 13,502 lines, and **36 files under `images/`
 import the TypeScript filesystem**.
@@ -2995,11 +3004,24 @@ load-bearing for the funnel.
   with the writer in `crates/runtime-core/src/image_policy.rs`, each perturbed
   until it failed. `check_capacity` is cross-verified against the TypeScript
   reader on three shipped images.
-- **Y4 — one bridge. BUILT, blocked at serialization.** A zero-import
+- **Y4 — one bridge. BUILT, and no longer blocked. 2026-09-12.** A zero-import
   `crates/sffs-module` plus `images/vfs/lib/sffs-image-fs.ts`. Note the
   measured correction: the funnel needs **three** methods, not the 24 the
-  census counted — see above. `saveImage` is the only one missing, and it waits
-  on V4.
+  census counted — see above.
+
+  ~~`saveImage` is the only one missing, and it waits on V4.~~ **V4 closed and
+  `saveImage`'s missing piece landed the same day**: `SffsImageFs.exportImage()`
+  drains a whole VFSI container from the module, and
+  `setImageMetadata`/`isDeferred` answer the other two things recipes ask. The
+  module exports 19 entry points, banked as `sffsModuleEntryPoints`.
+
+  **Two entry points were declined while building this, and the reasoning is
+  the lane's, not incidental:** the archive's length rides in
+  `sm_register_lazy_file` beside the member because a member is useless without
+  it, and deferred-ness went into the `sm_lstat` record because whether a
+  file's bytes are present is metadata about the file. The second mattered
+  twice over — adding `sm_lazy_info` would have raised a ceiling banked one
+  increment earlier, which is the shape the budget exists to catch.
 - **Y5 — repoint the 36 files. NOT mechanical, and not a like-for-like
   repoint** — see "Y5 is V5's production cutover" below.
 - **Y6 — replace the four `sharedfs-vendor` constants. ALREADY DONE**, by
