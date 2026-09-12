@@ -370,6 +370,86 @@ _Static_assert(sizeof(union sigval) == KANDELO_NATIVE_SIGINFO_VALUE_SIZE,
 _Static_assert(offsetof(siginfo_t, si_timerid)
                    == KANDELO_NATIVE_SIGINFO_PID_OFFSET,
                "generated siginfo_t timer ID offset must match musl");
+
+/* Lane G: anchor the remaining layout modules whose constants the generator
+ * already emits. Each asserts musl's own struct against the GENERATED macro,
+ * never a literal -- a literal lets C and crates/shared/src/process_layout.rs
+ * drift apart while both look checked. Width is selected the way the rest of
+ * this file does it, with __SIZEOF_POINTER__. */
+#if __SIZEOF_POINTER__ == 8
+#define KANDELO_NATIVE_IOVEC_SIZE   KANDELO_PROCESS_IOVEC_WASM64_SIZE
+#define KANDELO_NATIVE_IOVEC_BASE   KANDELO_PROCESS_IOVEC_WASM64_BASE_OFFSET
+#define KANDELO_NATIVE_IOVEC_LEN    KANDELO_PROCESS_IOVEC_WASM64_LEN_OFFSET
+#define KANDELO_NATIVE_MSGHDR_SIZE  KANDELO_PROCESS_MSGHDR_WASM64_SIZE
+#define KANDELO_NATIVE_MSGHDR_NAME  KANDELO_PROCESS_MSGHDR_WASM64_NAME_OFFSET
+#define KANDELO_NATIVE_MSGHDR_NAMELEN KANDELO_PROCESS_MSGHDR_WASM64_NAMELEN_OFFSET
+#define KANDELO_NATIVE_MSGHDR_IOV   KANDELO_PROCESS_MSGHDR_WASM64_IOV_OFFSET
+#define KANDELO_NATIVE_MSGHDR_CONTROL KANDELO_PROCESS_MSGHDR_WASM64_CONTROL_OFFSET
+#define KANDELO_NATIVE_MSGHDR_FLAGS KANDELO_PROCESS_MSGHDR_WASM64_FLAGS_OFFSET
+#define KANDELO_NATIVE_CMSGHDR_SIZE KANDELO_PROCESS_CMSGHDR_WASM64_SIZE
+#define KANDELO_NATIVE_CMSGHDR_LEN  KANDELO_PROCESS_CMSGHDR_WASM64_LEN_OFFSET
+#define KANDELO_NATIVE_CMSGHDR_LEVEL KANDELO_PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET
+#define KANDELO_NATIVE_CMSGHDR_TYPE KANDELO_PROCESS_CMSGHDR_WASM64_TYPE_OFFSET
+#define KANDELO_NATIVE_SIGEVENT_SIGNO KANDELO_PROCESS_SIGEVENT_WASM64_SIGNO_OFFSET
+#define KANDELO_NATIVE_SIGEVENT_NOTIFY KANDELO_PROCESS_SIGEVENT_WASM64_NOTIFY_OFFSET
+#else
+#define KANDELO_NATIVE_IOVEC_SIZE   KANDELO_PROCESS_IOVEC_WASM32_SIZE
+#define KANDELO_NATIVE_IOVEC_BASE   KANDELO_PROCESS_IOVEC_WASM32_BASE_OFFSET
+#define KANDELO_NATIVE_IOVEC_LEN    KANDELO_PROCESS_IOVEC_WASM32_LEN_OFFSET
+#define KANDELO_NATIVE_MSGHDR_SIZE  KANDELO_PROCESS_MSGHDR_WASM32_SIZE
+#define KANDELO_NATIVE_MSGHDR_NAME  KANDELO_PROCESS_MSGHDR_WASM32_NAME_OFFSET
+#define KANDELO_NATIVE_MSGHDR_NAMELEN KANDELO_PROCESS_MSGHDR_WASM32_NAMELEN_OFFSET
+#define KANDELO_NATIVE_MSGHDR_IOV   KANDELO_PROCESS_MSGHDR_WASM32_IOV_OFFSET
+#define KANDELO_NATIVE_MSGHDR_CONTROL KANDELO_PROCESS_MSGHDR_WASM32_CONTROL_OFFSET
+#define KANDELO_NATIVE_MSGHDR_FLAGS KANDELO_PROCESS_MSGHDR_WASM32_FLAGS_OFFSET
+#define KANDELO_NATIVE_CMSGHDR_SIZE KANDELO_PROCESS_CMSGHDR_WASM32_SIZE
+#define KANDELO_NATIVE_CMSGHDR_LEN  KANDELO_PROCESS_CMSGHDR_WASM32_LEN_OFFSET
+#define KANDELO_NATIVE_CMSGHDR_LEVEL KANDELO_PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET
+#define KANDELO_NATIVE_CMSGHDR_TYPE KANDELO_PROCESS_CMSGHDR_WASM32_TYPE_OFFSET
+#define KANDELO_NATIVE_SIGEVENT_SIGNO KANDELO_PROCESS_SIGEVENT_WASM32_SIGNO_OFFSET
+#define KANDELO_NATIVE_SIGEVENT_NOTIFY KANDELO_PROCESS_SIGEVENT_WASM32_NOTIFY_OFFSET
+#endif
+
+_Static_assert(sizeof(struct iovec) == KANDELO_NATIVE_IOVEC_SIZE,
+               "generated iovec size must match musl");
+_Static_assert(offsetof(struct iovec, iov_base) == KANDELO_NATIVE_IOVEC_BASE,
+               "generated iovec base offset must match musl");
+_Static_assert(offsetof(struct iovec, iov_len) == KANDELO_NATIVE_IOVEC_LEN,
+               "generated iovec len offset must match musl");
+
+_Static_assert(sizeof(struct msghdr) == KANDELO_NATIVE_MSGHDR_SIZE,
+               "generated msghdr size must match musl");
+_Static_assert(offsetof(struct msghdr, msg_name) == KANDELO_NATIVE_MSGHDR_NAME,
+               "generated msghdr name offset must match musl");
+_Static_assert(offsetof(struct msghdr, msg_namelen)
+                   == KANDELO_NATIVE_MSGHDR_NAMELEN,
+               "generated msghdr namelen offset must match musl");
+_Static_assert(offsetof(struct msghdr, msg_iov) == KANDELO_NATIVE_MSGHDR_IOV,
+               "generated msghdr iov offset must match musl");
+_Static_assert(offsetof(struct msghdr, msg_control)
+                   == KANDELO_NATIVE_MSGHDR_CONTROL,
+               "generated msghdr control offset must match musl");
+_Static_assert(offsetof(struct msghdr, msg_flags)
+                   == KANDELO_NATIVE_MSGHDR_FLAGS,
+               "generated msghdr flags offset must match musl");
+
+_Static_assert(sizeof(struct cmsghdr) == KANDELO_NATIVE_CMSGHDR_SIZE,
+               "generated cmsghdr size must match musl");
+_Static_assert(offsetof(struct cmsghdr, cmsg_len) == KANDELO_NATIVE_CMSGHDR_LEN,
+               "generated cmsghdr len offset must match musl");
+_Static_assert(offsetof(struct cmsghdr, cmsg_level)
+                   == KANDELO_NATIVE_CMSGHDR_LEVEL,
+               "generated cmsghdr level offset must match musl");
+_Static_assert(offsetof(struct cmsghdr, cmsg_type)
+                   == KANDELO_NATIVE_CMSGHDR_TYPE,
+               "generated cmsghdr type offset must match musl");
+
+_Static_assert(offsetof(struct sigevent, sigev_signo)
+                   == KANDELO_NATIVE_SIGEVENT_SIGNO,
+               "generated sigevent signo offset must match musl");
+_Static_assert(offsetof(struct sigevent, sigev_notify)
+                   == KANDELO_NATIVE_SIGEVENT_NOTIFY,
+               "generated sigevent notify offset must match musl");
 _Static_assert(offsetof(siginfo_t, si_overrun)
                    == KANDELO_NATIVE_SIGINFO_UID_OFFSET,
                "generated siginfo_t timer overrun offset must match musl");

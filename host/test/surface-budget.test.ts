@@ -178,22 +178,38 @@ const MEASURED: Record<string, () => number> = {
         );
       }
     }
-    // Every _Static_assert body across the libc sources, generated header
-    // excluded: its own #defines are delivery, not guarding.
-    const bodies = execFileSync(
+    // Every libc source, generated header excluded: its own #defines are
+    // delivery, not guarding.
+    const sources = execFileSync(
       "/bin/sh",
       [
         "-c",
-        "find libc/musl-overlay libc/glue -name '*.c' -o -name '*.h' 2>/dev/null "
-          + "| grep -v kandelo_process_layouts.h | xargs cat 2>/dev/null "
-          + "| tr '\n' ' '",
+        "find libc/musl-overlay libc/glue \\( -name '*.c' -o -name '*.h' \\) "
+          + "2>/dev/null | grep -v kandelo_process_layouts.h "
+          + "| xargs cat 2>/dev/null",
       ],
       { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
     );
+    // Asserts commonly go through one width-selecting alias, e.g.
+    //   #define KANDELO_NATIVE_IOVEC_SIZE KANDELO_PROCESS_IOVEC_WASM32_SIZE
+    // so resolve a single level of #define indirection before matching.
+    const alias = new Map<string, string>();
+    for (const m of sources.matchAll(
+      /^[ \t]*#define[ \t]+(\w+)[ \t]+(?:\\[ \t]*\n[ \t]*)?(KANDELO_PROCESS_\w+)/gm,
+    )) {
+      alias.set(m[1]!, m[2]!);
+    }
     const asserted = new Set<string>();
-    for (const m of bodies.matchAll(/_Static_assert\s*\((.*?)\)\s*;/g)) {
+    for (const m of sources
+      .replace(/\n/g, " ")
+      .matchAll(/_Static_assert\s*\((.*?)\)\s*;/g)) {
+      const resolved = [...m[1]!.matchAll(/KANDELO_\w+/g)].map(
+        (r) => alias.get(r[0]) ?? r[0],
+      );
       for (const [name, prefix] of Object.entries(MACRO_PREFIX)) {
-        if (m[1]!.includes(`KANDELO_PROCESS_${prefix}_`)) asserted.add(name);
+        if (resolved.some((r) => r.startsWith(`KANDELO_PROCESS_${prefix}_`))) {
+          asserted.add(name);
+        }
       }
     }
     return declared.filter((name) => !asserted.has(name)).length;
