@@ -1061,9 +1061,10 @@ not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
-**Status: V1–V3 landed. V4 DECIDED 2026-09-12 and its record shape landed;
-three items remain, listed under "V4 — the identity contract" below. V7 and V8
-are done and V-D1 is closed. V5 designed and building. The 12,000-line finding below is NOT yet
+**Status: V1–V4 landed. V4 was DECIDED AND CLOSED 2026-09-12 — an image the
+Rust export writes is now one the kernel can load back, which is what the lane
+existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
+producer side, then V9 (after lane Y) and V10. The 12,000-line finding below is NOT yet
 characterized and must not be dispatched until it is.**
 
 ## End state
@@ -1244,18 +1245,47 @@ and means different things under each.
   table instead. Recorded because it is the recurring shape — a format change
   silently repoints every test that hardcodes an offset, and they keep passing.
 
-3. **`load_image_inner` accepts SDEF in KLZY's place.** Today it *refuses* an
-   image that declares no KLZY section, and **there is no KLZY encoder in
-   Rust** — `klzy.rs` is a decoder only. So an exported image is not loadable
-   by the kernel that wrote it. The choice is: write a KLZY encoder for a
-   format the campaign is retiring, or let SDEF be the linkage source it was
-   extended to be. **The second**, which is also what makes the KLZY-versus-JSON
-   gate unrepresentable rather than merely unused.
+3. ~~`load_image_inner` accepts SDEF in KLZY's place.~~ **DONE** —
+   `4d0395357`, "An image the kernel exports is one the kernel can load".
 
-**Gap 9, found while doing this: there is no Rust KLZY encoder.** Recorded here
-because it is the fact that decides item 3 above, and because the container
-writer (`sffs_container.rs`) takes `kernel_lazy` as a REQUIRED section — so
-today nothing can fill it from Rust.
+   **The refusal was not weakened.** The loader refused an image with no
+   description of its deferred files for a good reason, and that reason still
+   holds exactly; what changed is that SDEF is now ALSO a description, so
+   "declares no KLZY" and "describes its deferred files nowhere" stopped being
+   the same statement. An image with neither is still refused, proven by
+   loading the same body with an empty KLZY attached.
+
+   An image carrying both is read from **KLZY**. Nothing emits both, but the
+   rule is tested against a deliberately disagreeing pair, because "whichever
+   we read first" is how two descriptions of one thing start diverging — and
+   preferring the older one means this cannot alter how any existing image
+   loads.
+
+   `ContainerSections::kernel_lazy` became an `Option`. It was deliberately not
+   one and the module said why; that justification is now obsolete and the doc
+   records the change rather than quietly dropping it.
+
+**V4 IS CLOSED.** The headline test is
+`an_image_the_kernel_exported_is_one_the_kernel_can_load` — the one thing none
+of the increments could assert alone, because each closed a hole and any one
+still open breaks it.
+
+**Gap 9, found while doing this: there is no Rust KLZY encoder.** `klzy.rs`
+decodes only. **RESOLVED WITHOUT WRITING ONE** — item 3 made SDEF the linkage
+source instead, so no encoder is needed for a format the campaign is retiring.
+
+## What is left in lane V
+
+* **V5 — the producer side.** The format is done; the TypeScript writers must
+  emit SDEF and the JSON sections must retire. This closes the one limit V4
+  left: an image carrying no SDEF still loses its URL-backed files on export,
+  because there is nothing to retain from one.
+* **V9 — `memory-fs.ts` stops using `SharedFS`.** After lane Y, per the
+  maintainer. The lane's only genuine unknown.
+* **V10 — delete `sharedfs-vendor.ts`**, at which point `sffsTypeScript`
+  reaches 0.
+
+V6, V7, V8 and V-D1 are done or closed.
 
 ## Increments
 
