@@ -80,15 +80,21 @@ describe("SffsImageFs", () => {
 
     // The read loop `vfs-image-helpers.ts` actually uses: open, read with a
     // null position so the cursor advances, close.
+    // Read in SMALL CHUNKS on purpose. A single read of the whole file never
+    // reuses the cursor, so a version that failed to advance it passed — a
+    // mutant that survived until this loop chunked.
     const fd = fs.open("/data", 0, 0);
     const buf = new Uint8Array(11);
     let offset = 0;
+    let reads = 0;
     while (offset < buf.length) {
-      const n = fs.read(fd, buf.subarray(offset), null, buf.length - offset);
+      const n = fs.read(fd, buf.subarray(offset), null, Math.min(4, buf.length - offset));
       expect(n).toBeGreaterThan(0);
       offset += n;
+      reads += 1;
     }
     fs.close(fd);
+    expect(reads).toBeGreaterThan(1, "the point of this test is multiple reads");
     expect(new TextDecoder().decode(buf)).toBe("hello world");
 
     // An explicit position does NOT advance the cursor.
