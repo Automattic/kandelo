@@ -88,6 +88,31 @@ That last point is not convenience, it is correctness for this lane: those
 images are lane Y's before-picture, and rebuilding from scratch the baseline you
 are about to compare against is circular.
 
+**A CLONED TIER GOES STALE WHEN THE ABI MOVES, and the platform is right to
+say so. Measured 2026-09-12.** Seeding gives a lane worktree yesterday's
+binaries, faithfully — and a faithful copy of yesterday's binaries is still
+yesterday's. After lane G landed `a745f262c`, a full host-suite run in the
+lane Y worktree reported **56 failing files against the 35-file baseline**, and
+the dominant cause was not a defect:
+
+```
+artifact lacks a kandelo.abi.contract stamp — legacy binary predates the
+ABI-contract-digest rollout. Rebuild it through the local-build engine.   (x20)
+artifact lacks an __abi_version export — legacy binary predates the ABI
+marker rollout.                                                            (x7)
+```
+
+That is the ABI contract working exactly as `docs/agent-guidance/abi.md`
+requires: a stale artifact fails loudly and is rebuilt, rather than being
+shimmed. **It is provisioning, not a regression** — and note that the two
+worktrees' `local-binaries` were byte-identical (311 tier files, 184 programs,
+zero differences), so divergence was ruled out before staleness was blamed.
+
+**Consequence for anyone comparing a lane worktree against the suite baseline:**
+run `./run.sh setup` in the lane worktree first, or the comparison measures
+artifact age rather than the branch. Comparing against another SEEDED worktree
+does not help — it carries the same stale copies.
+
 **Set the cache roots worktree-local in a lane worktree.** Two are
 user-settable and both are on `scripts/dev-shell.sh`'s `--keep` list precisely
 because stripping them once made the override *silently ineffective*:
