@@ -132,30 +132,71 @@ const MEASURED: Record<string, () => number> = {
   // number; it does not check that C's own struct agrees. The original measure
   // counted modules the header DELIVERS, which could be satisfied by emitting
   // more #defines while nothing was guarded (H-2).
+  // Modules whose C-side asserts are anchored to a generated KANDELO_ macro.
+  // Asserting against a hand-written literal (as bits/stat.h does today) lets
+  // C and the Rust authority drift apart while both look checked.
+  // A layout module counts as guarded only when some C source asserts musl's
+  // own struct against the GENERATED macro, the way channel_syscall.c already
+  // does for siginfo_t:
+  //
+  //   _Static_assert(offsetof(siginfo_t, si_signo)
+  //                      == KANDELO_PROCESS_SIGINFO_SIGNO_OFFSET, ...)
+  //
+  // Asserting against a hand-written literal does not count: bits/stat.h has 8
+  // such asserts and they let C and the Rust authority drift apart while both
+  // look checked. Macro prefixes do not follow module names, so the mapping is
+  // explicit and must be extended when a module is added.
   unguardedLayoutModules: () => {
-    const layouts = readFileSync(
-      join(repoRoot, "crates/shared/src/process_layout.rs"),
-      "utf8",
-    );
+    const MACRO_PREFIX: Record<string, string> = {
+      iovec: "IOVEC",
+      msghdr: "MSGHDR",
+      cmsghdr: "CMSGHDR",
+      multicast_group_request: "GROUP_REQ",
+      rt_sigqueueinfo: "SIGINFO",
+      sigevent: "SIGEVENT",
+      sigaltstack: "SIGALTSTACK",
+      itimerval: "ITIMERVAL",
+      mq_attr: "MQ_ATTR",
+      statfs: "STATFS",
+      sysinfo: "SYSINFO",
+      stat: "STAT",
+      dev: "DEV",
+      statx: "STATX",
+      sched_param: "SCHED_PARAM",
+    };
     const declared = [
-      ...layouts.matchAll(/^pub mod ([a-z_]+)/gm),
-    ].map((m) => m[1]!);
-    let asserts = "";
-    try {
-      asserts = readFileSync(
-        join(
-          repoRoot,
-          "libc/musl-overlay/include/bits/kandelo_process_layout_asserts.h",
-        ),
+      ...readFileSync(
+        join(repoRoot, "crates/shared/src/process_layout.rs"),
         "utf8",
-      );
-    } catch {
-      return declared.length; // header absent: nothing is guarded
+      ).matchAll(/^pub mod ([a-z_]+)/gm),
+    ].map((m) => m[1]!);
+    for (const name of declared) {
+      if (!MACRO_PREFIX[name]) {
+        throw new Error(
+          `process_layout module "${name}" has no macro prefix in the `
+            + "unguardedLayoutModules measure; add one so the gate keeps counting it.",
+        );
+      }
     }
-    return declared.filter(
-      (name) =>
-        !new RegExp(`KANDELO_LAYOUT_${name.toUpperCase()}_`).test(asserts),
-    ).length;
+    // Every _Static_assert body across the libc sources, generated header
+    // excluded: its own #defines are delivery, not guarding.
+    const bodies = execFileSync(
+      "/bin/sh",
+      [
+        "-c",
+        "find libc/musl-overlay libc/glue -name '*.c' -o -name '*.h' 2>/dev/null "
+          + "| grep -v kandelo_process_layouts.h | xargs cat 2>/dev/null "
+          + "| tr '\n' ' '",
+      ],
+      { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    const asserted = new Set<string>();
+    for (const m of bodies.matchAll(/_Static_assert\s*\((.*?)\)\s*;/g)) {
+      for (const [name, prefix] of Object.entries(MACRO_PREFIX)) {
+        if (m[1]!.includes(`KANDELO_PROCESS_${prefix}_`)) asserted.add(name);
+      }
+    }
+    return declared.filter((name) => !asserted.has(name)).length;
   },
   kernelHostImportTypeScript: () => lineCount(["host/src/kernel.ts"]),
   hostKernelPlumbingTypeScript: () =>

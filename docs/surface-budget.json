@@ -101,11 +101,11 @@
       "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
     },
     "unguardedLayoutModules": {
-      "measure": "process_layout modules with no _Static_assert against musl in the generated assert header",
-      "ceiling": 15,
+      "measure": "process_layout modules whose C-side _Static_asserts are not anchored to a generated KANDELO_ macro",
+      "ceiling": 14,
       "slack": 0,
       "target": 0,
-      "why": "Lane G. **The measure was corrected on 2026-09-12, while implementing G1, because the original one could be gamed.** It counted modules the generated header DELIVERS to C as #defines, so extending render_process_layouts_header to all 15 would have taken it to 0 while nothing was actually guarded \u2014 hazard H-2 exactly. The generated header carries 96 #defines and **zero _Static_asserts**, and no struct-layout assert exists anywhere in libc, so all 15 modules are unguarded, not 9. A #define hands C a number; it does not check that C's own struct agrees. The established pattern to follow is kandelo_channel_scalars.h, which includes the musl header it validates and emits #error on absence plus _Static_assert on drift. statx is the proven instance: stx_dev_minor was never written and the major was the low 32 bits, and nothing objected."
+      "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' \u2014 WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it \u2014 two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
     },
     "kernelHostImportTypeScript": {
       "measure": "line count of host/src/kernel.ts",
