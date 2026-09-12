@@ -1023,3 +1023,50 @@ that need an injected shim backed by a new `fm_*` helper. That is Rust and
 injector work with no TypeScript and no attic, the mutation group's format
 question is settled (§16), and `forkModuleInjectorHelpers` now carries a
 pre-authorized envelope of 15 against 3 used.
+
+## §20 — Constructor provenance needs durable, lifetime-coupled storage. OPEN.
+
+The `__wpk_fork_ref_gc_provenance_begin` / `_ref` / `_end` trio is the cleanest
+of the ten shim-backed imports: self-contained, no cross-activation dispatch,
+and the same shape as the `gc_claim` / `gc_lookup` pair that already works —
+read the value from the transit slot, get its identity from the host, hand the
+integer to Rust. It also serves the case the N1-F6 grounding calls "the one real
+break": a non-defaultable constructor's seed value cannot be recovered by
+inspecting the object later, only by having been recorded when `struct.new`
+ran.
+
+**It is emitted, not speculative.** `inject_provenance_wrappers` is ungated: any
+module with GC layouts gets a wrapper for every struct with a mutable non-null
+internal reference field, and for every array constructor except
+`ArrayGeneric`.
+
+**Where it stops.** Every other durable thing this module keeps is either a
+fixed saturating region (the table dirty bitmap) or a per-capture map in the
+bump heap (`GC_IDENTITY`). Provenance fits neither:
+
+* It is recorded during ORDINARY execution, at every qualifying allocation, so
+  it must survive `reset_bump_heap`. That rules out the bump heap.
+* It must persist until the object is CAPTURED, which may be any time later, so
+  its lifetime is the object's. That rules out consuming the record at `_end`.
+* There is no bound on how many such objects a program allocates, so a fixed
+  region saturates almost immediately for any real GC program.
+
+And saturation cannot be made safe the way the dirty bitmap's is. There, losing
+precision means over-approximating the overlay: a larger capture, still correct.
+Here, a missing provenance record cannot be over-approximated — provenance
+cannot be invented — so the only truthful response is to fail the capture of
+that object. A fixed region would therefore turn a routine allocation pattern
+into a routine capture failure.
+
+**The shape that would work** is the one the module already uses for its journal
+chunks: a `SYS_MMAP`-backed growable side table, keyed by host reference
+identity. That is durable and unbounded. It also has two costs worth stating
+before anyone commits to it — a host call on every qualifying allocation, which
+is a hot path, and a side table with no reclamation, because the module has no
+way to learn that a GC object died.
+
+**This is a maintainer decision, not an implementation detail**, so it is
+recorded rather than guessed at. The rest of the trio is ready to build the
+moment the storage question is answered: the identity import exists, the
+injector already emits shims of exactly this shape, and
+`forkModuleInjectorHelpers` has an envelope of 15 against 3 used.
