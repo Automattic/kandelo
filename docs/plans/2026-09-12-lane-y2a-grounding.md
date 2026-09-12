@@ -199,3 +199,75 @@ an existing implementation. The campaign's own H-8 says a coupling score
 selects files to open and never classifies one; this is the same error in the
 other direction — an API gap selects a question to ask, and never settles that
 the thing is unbuilt.
+
+---
+
+## CORRECTION 2026-09-12 (second) — the instance-handle cost is smaller and differently shaped
+
+Section 4's accepted cost reads: "both stores are `static` singletons and
+need an instance handle before one process can hold two filesystems,
+**which a derived build does**."
+
+**No production path holds two live `MemoryFileSystem` instances.** That
+claim was asserted, not measured, and it sets the size of a refactor
+across `tmpfs.rs` (30 `TMPFS.with(...)` sites) and `rootfs.rs`.
+
+### What the measurement shows
+
+Every production construction site across `images/` and `host/src` makes
+**one** filesystem, except `build-source-rootfs-shell-image.ts`, which
+has two — and they are **sequential, not concurrent**:
+
+```
+644:  const fs       = MemoryFileSystem.fromImagePreservingCapacity(rootfs);   // compose
+      ... save to `image` bytes ...
+732:  const outputFs = MemoryFileSystem.fromImagePreservingCapacity(image);    // verify
+733:  // WHY: post-save assertions are a separate import boundary and must verify
+734:  // the exact serialized seals rather than inherit trust from the source fs.
+```
+
+**`fs` is referenced zero times after line 732.** Its work finishes before
+`outputFs` exists; the second instance deliberately re-imports the
+serialized bytes rather than trusting the first.
+
+`rebaseToNewFileSystem` — the one API that genuinely takes a source and
+produces a second filesystem — has **only test callers**. V6 listed it as
+unexplained; this is the explanation.
+
+### The cost that IS real, stated precisely
+
+The two instances **overlap in lexical scope** even though they do not
+overlap in use. With a `static` singleton backend, constructing `outputFs`
+while `fs` is still bound would clobber or fail against shared state —
+not because both are read, but because both exist.
+
+So the requirement is **not** general multi-instance support. It is a
+**release-before-create discipline**: one live instance at a time, with an
+explicit teardown between them. That is a much smaller change than
+threading an instance handle through 30 call sites, and it does not need
+handle-disambiguation across instances at all.
+
+**Tests are the exception.** `rebaseToNewFileSystem`'s tests hold two
+genuinely at once. Whether they are rewritten to the sequential shape, or
+kept as the one caller needing real multi-instance, is a decision for
+whoever implements this — and it is a decision about test design, not
+about the production substrate.
+
+### What this correction did NOT establish
+
+Whether `tmpfs.rs`/`rootfs.rs` can even express release-and-recreate
+today — `TmpfsGlobal` holds `UnsafeCell<Option<TmpfsState>>`, so an
+explicit reset looks possible, but nobody has tried it. And whether the
+builders' *other* modes (`create`, `fromImage`, `readImageMetadata`)
+interact with a singleton in ways this read did not follow;
+`readImageMetadata` and `readImageCapacity` are static byte readers and
+construct nothing, which is why they do not appear above.
+
+### Method note
+
+This is the third time in this campaign that an accepted cost turned out
+to rest on an unmeasured claim, and the second in lane Y alone — the
+byte-identity bar was the first. The pattern is the same each time: a
+plausible statement about what the code needs, written into a plan, and
+never checked against the code. **"Which a derived build does" was four
+words that would have sized a multi-day refactor.**
