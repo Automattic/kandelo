@@ -1101,6 +1101,14 @@ does not repeat — including that **the lane's own gate can be driven to 0
 without verifying anything**, so "close lane S" is currently reachable by
 editing the emitter alone.
 
+**The archive path is measured and clean.** Every lazy archive group in all
+nine production images carries a digest, and **not one of their 7,467 members
+is set-ID** — so the defect is confined to URL-backed deferred files and there
+is no second instance of it hiding behind `assertLazyIntegrity`'s early return
+for absent integrity. That early return is still a latent shape the Rust
+filesystem should close by requiring the digest rather than accepting its
+absence, which costs nothing today because every producer already supplies one.
+
 ## The defect, fully verified
 
 `images/rootfs/PACKAGES.toml` sets `default_install = "lazy"`. Three packages

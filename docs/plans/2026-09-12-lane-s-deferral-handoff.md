@@ -152,12 +152,29 @@ emitter: measure that deferred bytes are verified, or that no set-ID deferred
 file exists without a digest in the built images. The current measure is a
 proxy for the fix rather than the fix.
 
-**2. `assertLazyIntegrity` is a no-op when integrity is absent.** Its first
-line is `if (expected === undefined) return;`. Archives and trees therefore
-have the *shape* of an integrity check without necessarily having one. Whether
-any lazy archive member ships set-ID was not measured; the corpus above counts
-only URL-backed deferred files. **This is unexamined surface, not a cleared
-one.**
+**2. `assertLazyIntegrity` is a no-op when integrity is absent — latent, not
+live.** Its first line is `if (expected === undefined) return;`, so a lazy
+archive or tree registered without integrity has the *shape* of an integrity
+check without having one.
+
+**Measured across the nine production images 2026-09-12, and the archive path
+is clean:**
+
+| | archive groups | without integrity | members | set-ID members |
+|---|---|---|---|---|
+| `shell`, `wordpress`, `lamp`, `nginx-php`, `nginx` | 9 each | **0** | 7,467 each | **0** |
+| `node-vfs` | 8 | **0** | 5,307 | **0** |
+| `rootfs`, `kandelo-sdk`, `mariadb-test` | 0 | 0 | 0 | 0 |
+
+So **every archive group in production carries a digest, and not one of the
+7,467 members is set-ID.** The defect is confined to URL-backed deferred files,
+exactly as the lane states — the archive path is not a second instance of it.
+
+What remains is the shape: nothing *makes* a producer supply integrity, and a
+future archive registered without it would skip verification silently rather
+than refuse. **The Rust filesystem should require the digest rather than accept
+its absence**, which costs nothing today precisely because every producer
+already supplies one.
 
 ## What unblocks this
 
