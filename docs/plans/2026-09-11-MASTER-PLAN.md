@@ -359,13 +359,24 @@ No follow-up item: if something calls for xattrs later it gets considered fresh.
 
 **SFFS exists twice.** `sffs_write.rs`'s own doc says it "reproduce[s]
 `host/src/vfs/sharedfs-vendor.ts`" — same superblock geometry, same allocators,
-same magic. **The TypeScript half is 12,198 lines. V4's stated deliverable
+same magic. **The TypeScript half is 12,253 lines: 3,752 in
+`sharedfs-vendor.ts` and 8,501 in `memory-fs.ts`. V4's stated deliverable
 deletes 318 of them.** The Rust writer is already live via
-`kernel_rootfs_export_tree`, and nothing in any register names the other
-11,880.
+`kernel_rootfs_export_tree`.
 
-**This must be characterized before it is dispatched** — end state, floor,
-increments, acceptance — exactly as this file requires. It is plausibly larger
+`memory-fs.ts` is the larger half and was the one no register named. It is not
+a helper: `MemoryFileSystem` backs `/` on every machine, and it implements
+`stat`, `statfs`, `pathconf`, dirents, open flags and `ST_NOSUID` setuid
+handling in TypeScript, against 1,724 lines of `tmpfs.rs` in the kernel. A
+second host reimplements all of it. Both halves are now budgeted
+(`sffsTypeScript`, `memoryFsTypeScript`) and both are in lane V's closure, so
+the lane can no longer reach green with the larger half still standing.
+
+**The increments below are still not characterized to the standard this file
+requires** — V6's census is what turns them from direction into steps, and it
+is also what decides whether any of `memory-fs.ts` is genuine floor. Until that
+census runs, the 0 target on `memoryFsTypeScript` restates this lane's end
+state rather than reporting a measured floor. This lane is plausibly larger
 than the fork lane.
 
 ## The floor — what stays in TypeScript

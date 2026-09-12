@@ -58,6 +58,13 @@
       "target": 0,
       "why": "The SFFS block filesystem is implemented twice: 3,752 lines here against 3,727 in sffs.rs + sffs_write.rs + sffs_deferred.rs, same superblock geometry, same allocators, same magic. Target is zero because one of the two must go and the kernel owns the format."
     },
+    "memoryFsTypeScript": {
+      "measure": "line count of host/src/vfs/memory-fs.ts",
+      "ceiling": 8501,
+      "slack": 200,
+      "target": 0,
+      "why": "The other half of the 12,198-line TypeScript filesystem the lane V text names and no register measured. MemoryFileSystem backs `/` on every machine and implements stat, statfs, pathconf, dirents, open flags and ST_NOSUID setuid handling in the host, against 1,724 lines of tmpfs.rs in the kernel. Target is 0 because lane V's end state says the host supplies nothing inside the image body; the V6 census is the deliverable that would prove any of it is floor, and until that census runs the 0 is an assertion of the plan's end state, not a measured floor. If the census finds real floor here, this target gets revised in the open with that evidence attached."
+    },
     "hostImportFunctions": {
       "measure": "env.host_* function imports of the built kernel; see EXPECTED_HOST_IMPORT_COUNT",
       "ceiling": 72,
@@ -127,6 +134,10 @@
       "closure": [
         {
           "surface": "sffsTypeScript",
+          "atMost": 0
+        },
+        {
+          "surface": "memoryFsTypeScript",
           "atMost": 0
         }
       ],

@@ -101,6 +101,7 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
+  memoryFsTypeScript: () => lineCount(["host/src/vfs/memory-fs.ts"]),
   kernelWorkerTypeScript: () => lineCount(["host/src/kernel-worker.ts"]),
   // Layout modules the C side depends on, minus the ones the generated header
   // gives a static assert. The remainder can drift from musl silently.
