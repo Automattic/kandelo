@@ -50,6 +50,7 @@ pub mod imported_tables;
 pub mod linked_frames;
 pub mod linked_frames_writer;
 pub mod module_state;
+pub mod module_state_writer;
 pub mod module_state_records;
 pub mod reference_feed;
 pub mod reference_graph_builder;
