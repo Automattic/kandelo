@@ -720,7 +720,7 @@ mod wasm {
     //    gate's seeding) ---------------------------------------------------------
     //
     // The module owns the exnref tag-validity ADMISSION gate at the child-install
-    // entry (`fm_attach_child` / `fm_attach_borrowed_child`): before it builds the
+    // entry (`fm_attach_child`, COW and borrowed alike): before it builds the
     // reconstruction drive plan whose `DRIVE_OP_EXN` step `call_indirect`s the
     // guest exception-materialize export, it re-checks that every captured exnref
     // recipe names a tag its OWNING activation's exception codec declared. This
@@ -3368,8 +3368,8 @@ mod wasm {
         Ok(activations)
     }
 
-    /// Child-install ENTRY (the module-owned `fm_attach_child` /
-    /// `fm_attach_borrowed_child`). Seeds the reference replay driver/feed AND
+    /// Child-install ENTRY (the module-owned `fm_attach_child`, which serves the
+    /// COW and the vfork borrowed child alike). Seeds the reference replay driver/feed AND
     /// builds ONE drive plan that first reconstructs the reference graph
     /// (Phase 0/0b/3/4/5, identical to `restore_from_arena_impl`) and THEN — as the
     /// child-install tail — drives every activation's guest
@@ -3381,10 +3381,10 @@ mod wasm {
     /// global/table layout), but the ORDER and DRIVE are now module-owned. Returns
     /// the plan's guest address; the step count is read from `fm_gc_plan_count`.
     ///
-    /// The COW (`fm_attach_child`) and vfork borrowed (`fm_attach_borrowed_child`)
-    /// children share this identical install plan: the only borrowed-specific work
-    /// is the host-side child-private replay-prefix reservation (raw memory floor,
-    /// no reference values), so both entries delegate here.
+    /// The COW and the vfork borrowed child share this identical install plan, which
+    /// is why there is ONE entry rather than two: the only borrowed-specific work is
+    /// the host-side child-private replay-prefix reservation (raw memory floor, no
+    /// reference values), and that never entered this module.
     fn attach_from_arena_impl(module_state_root: u64, pid: u32) -> Result<usize, Errno> {
         begin_reference_replay_impl(module_state_root, pid)?;
         // Exnref tag-validity ADMISSION gate (fail-loud SECURITY boundary). Runs
@@ -4070,7 +4070,7 @@ mod wasm {
     /// exnref tag-validity admission gate): `[ptr, ptr + count*4)` is a
     /// little-endian `u32` array of the tag ordinals that activation's
     /// `kandelo.wpk_fork.exception_codec` section declares. The child-install
-    /// entry (`fm_attach_child` / `fm_attach_borrowed_child`) re-checks every
+    /// entry (`fm_attach_child`, COW and borrowed alike) re-checks every
     /// captured exnref recipe against these before building the reconstruction
     /// drive plan, so a recipe naming an undeclared tag fails loud (`EINVAL`)
     /// rather than being materialized blindly. Called ONCE per activation per
@@ -5218,31 +5218,27 @@ mod wasm {
     /// Supersedes a separate `fm_restore_from_arena` call on the module-on child
     /// attach path: it does the same reconstruction seed + plan build and then
     /// appends the module-owned restore/finish sequencing.
+    ///
+    /// This is ALSO the vfork BORROWED child-install entry. A separate
+    /// `fm_attach_borrowed_child` export existed and its body was identical to
+    /// this one, character for character, because the install plan IS identical:
+    /// the reconstructed reference values and the guest restore/finish
+    /// sequencing do not depend on whether the child is COW or borrowed. Its
+    /// stated reason to exist was to give "any future borrowed-specific install
+    /// divergence a home" — a home for a divergence that has not appeared, paid
+    /// for now in the surface every new host must implement.
+    ///
+    /// The borrowed path is still explicit where its borrowed-specific work
+    /// actually lives: reserving the child-private replay prefix, so the guest's
+    /// rewind never writes the parked parent's storage. That is raw host memory
+    /// management with no reference values in it, it is done by the coordinator,
+    /// and it never entered this module. `ForkModuleBackend.attachBorrowedChild`
+    /// remains a named host entry point for it.
+    ///
+    /// If borrowed-specific install work ever does appear, re-splitting is a
+    /// smaller change than carrying a duplicate export until then.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_attach_child(module_state_root: usize, pid: u32) -> usize {
-        match attach_from_arena_impl(module_state_root as u64, pid) {
-            Ok(ptr) => {
-                set_ok();
-                ptr
-            }
-            Err(e) => {
-                set_err(e);
-                0
-            }
-        }
-    }
-
-    /// Child-install ENTRY for a vfork BORROWED module-backed child. The install
-    /// plan is byte-identical to `fm_attach_child`: the reconstructed reference
-    /// values and the guest restore/finish sequencing are the same for a borrowed
-    /// child as for a COW child. The only borrowed-specific work — reserving the
-    /// child-private replay prefix so the guest's rewind never writes the parked
-    /// parent's storage — is raw host memory management (no reference values), so it
-    /// stays on the host and this entry delegates to the shared install impl. It is
-    /// a distinct export so the host has a named borrowed entry point and any future
-    /// borrowed-specific install divergence has a home.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_attach_borrowed_child(module_state_root: usize, pid: u32) -> usize {
         match attach_from_arena_impl(module_state_root as u64, pid) {
             Ok(ptr) => {
                 set_ok();

@@ -1801,7 +1801,7 @@ export class ForkActivationRegistry {
       this.currentReferences().materializeAllTyped(typedDrive);
     }
     // Child-install SEQUENCING. On the module-on attach path the drive plan the
-    // module built (`fm_attach_child` / `fm_attach_borrowed_child`) already drove
+    // module built (`fm_attach_child`) already drove
     // each activation's `restore` then `finishRestore` as `DRIVE_OP_RESTORE` /
     // `DRIVE_OP_FINISH_RESTORE` steps through the host-bound drive table, so the
     // MODULE owns the two-phase order and this JS loop must not run again (it

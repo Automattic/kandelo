@@ -4524,7 +4524,7 @@ export async function centralizedWorkerMain(
         // tag-validity check the module ALSO now re-checks itself: the host seeds
         // each activation's declared exnref tag ordinals
         // (`fm_set_activation_exception_tags`), and the child-install entry
-        // (`fm_attach_child` / `fm_attach_borrowed_child`) fails loud with `EINVAL`
+        // (`fm_attach_child`, COW and borrowed alike) fails loud with `EINVAL`
         // on an exnref recipe whose tag its owning activation never declared,
         // BEFORE the DRIVE_OP_EXN step materializes it — the fail-loud boundary
         // that formerly lived here as `assertForkModuleExnrefTagsDeclared`. The one
@@ -4559,7 +4559,7 @@ export async function centralizedWorkerMain(
         //
         // The exnref tag-validity ADMISSION gate that formerly walked this graph
         // here MOVED into the co-resident module (its child-install entry
-        // `fm_attach_child` / `fm_attach_borrowed_child` re-checks every captured
+        // `fm_attach_child` (COW and borrowed alike) re-checks every captured
         // exnref recipe against each activation's seeded exception tags before
         // building the reconstruction drive plan, and fails loud with `EINVAL` on
         // an undeclared tag — see `fm_set_activation_exception_tags` +

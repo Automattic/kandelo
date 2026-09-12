@@ -212,7 +212,7 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   "fm_set_host_exception_owner",
   // Exnref tag-validity admission gate (moved into the module): seeds ONE
   // activation's declared exnref tag ordinals, which the child-install entry
-  // (`fm_attach_child` / `fm_attach_borrowed_child`) re-checks every captured
+  // (`fm_attach_child`, for COW and borrowed children alike) re-checks every captured
   // exnref recipe against before building the reconstruction drive plan. A
   // recipe naming an undeclared tag fails loud (`EINVAL`) rather than being
   // materialized blindly — the fail-loud boundary that formerly lived in the
@@ -239,11 +239,13 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // drive table, no transit assert) moves the JS `restoreModuleState` two-phase
   // `for act: restore` / `for act: finishRestore` ORDER into the module; the
   // guest's own layout-specific restore exports still place the reconstructed
-  // identities into the live child. `fm_attach_child` is the COW entry;
-  // `fm_attach_borrowed_child` the byte-identical vfork borrowed entry (its only
-  // borrowed-specific work, the child-private replay prefix, stays host floor).
+  // identities into the live child. `fm_attach_child` serves BOTH the COW and the
+  // vfork borrowed child: the install plan is identical for the two, so the
+  // separate `fm_attach_borrowed_child` export (whose body matched this one
+  // character for character) was deleted. The borrowed path's only
+  // borrowed-specific work, reserving the child-private replay prefix, stays host
+  // floor and never entered the module.
   "fm_attach_child",
-  "fm_attach_borrowed_child",
   // Path-A INC-C (module-owned decoded-graph STRUCTURE readout): make the wire
   // reference graph resident and read its per-node kind + coordinates from the
   // module, so the host no longer walks the JS

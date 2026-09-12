@@ -74,7 +74,7 @@
     },
     "forkModuleEntryPoints": {
       "measure": "pub extern \"C\" fn fm_* declared in crates/fork-module/src/lib.rs",
-      "ceiling": 67,
+      "ceiling": 66,
       "slack": 2,
       "target": 5,
       "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow."

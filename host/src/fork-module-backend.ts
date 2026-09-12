@@ -376,7 +376,7 @@ export class ForkModuleContinuationBackend {
    * Seed ONE activation's declared exnref tag ordinals for this worker (the
    * exnref tag-validity admission gate). `ordinals` are the tag ordinals that
    * activation's `kandelo.wpk_fork.exception_codec` section declares; the module's
-   * child-install entry (`fm_attach_child` / `fm_attach_borrowed_child`) re-checks
+   * child-install entry (`fm_attach_child`, COW and borrowed alike) re-checks
    * every captured exnref recipe against them BEFORE building the reconstruction
    * drive plan, so a recipe naming an undeclared tag fails loud (`EINVAL`) rather
    * than being materialized blindly. This is the module-side successor to the
@@ -461,19 +461,19 @@ export class ForkModuleContinuationBackend {
 
   /**
    * Child-install ENTRY for a vfork BORROWED module-backed child. The install
-   * plan is byte-identical to `attachChild`; the only borrowed-specific work (the
-   * child-private replay-prefix reservation) is raw host memory management handled
-   * by the coordinator, not this module call. Kept as a distinct entry so the
-   * borrowed path is explicit and future borrowed-specific install divergence has
-   * a home.
+   * plan is byte-identical to `attachChild` — the reconstructed reference values
+   * and the guest restore/finish sequencing do not depend on whether the child is
+   * COW or borrowed — so this routes through the SAME module export. The module
+   * used to carry a duplicate `fm_attach_borrowed_child` whose body matched
+   * `fm_attach_child` character for character; it was deleted.
+   *
+   * This stays a named host entry because the borrowed path really is distinct
+   * HERE: the coordinator reserves the child-private replay prefix so the guest's
+   * rewind never writes the parked parent's storage. That work is raw host memory
+   * management with no reference values in it, and it never entered the module.
    */
   attachBorrowedChild(moduleStateRoot: number): number {
-    this.requireSetup("attach borrowed child");
-    const planPtr = this.toNum(
-      this.exports.fm_attach_borrowed_child(this.wptr(moduleStateRoot), this.pid),
-    );
-    this.requireOk("fm_attach_borrowed_child");
-    return planPtr;
+    return this.attachChild(moduleStateRoot);
   }
 
   /**
