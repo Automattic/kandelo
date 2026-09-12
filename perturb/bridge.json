@@ -18,7 +18,7 @@
     },
     {
       "name": "readdir ignores the length prefix",
-      "scope": "  readdir(path: string): string[] {",
+      "scope": "  readDirNames(path: string): string[] {",
       "scope_end": "\n  }\n",
       "find": "        const len = view.getUint32(at, true);",
       "replace": "        const len = 4;"
@@ -29,6 +29,34 @@
       "scope_end": "\n  }\n",
       "find": "clearSetid ? 1 : 0",
       "replace": "0"
+    },
+    {
+      "name": "read ignores an explicit position and always uses the cursor",
+      "scope": "  read(handle: number",
+      "scope_end": "\n  }\n",
+      "find": "    const at = position ?? open.offset;",
+      "replace": "    const at = open.offset;"
+    },
+    {
+      "name": "read never advances the cursor",
+      "scope": "  read(handle: number",
+      "scope_end": "\n  }\n",
+      "find": "      if (position === null) open.offset += n;",
+      "replace": ""
+    },
+    {
+      "name": "close accepts a handle it never issued",
+      "scope": "  close(handle: number): void {",
+      "scope_end": "\n  }\n",
+      "find": "    if (!this.openFiles.delete(handle)) {\n      throw new Error(`sffs-module: bad file handle ${handle}`);\n    }",
+      "replace": "    this.openFiles.delete(handle);"
+    },
+    {
+      "name": "readdir reports an empty directory forever",
+      "scope": "  readdir(handle: number)",
+      "scope_end": "\n  }\n",
+      "find": "    if (dir.index >= dir.names.length) return null;",
+      "replace": "    return null;"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
