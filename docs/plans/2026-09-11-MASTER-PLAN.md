@@ -69,7 +69,7 @@ lands — those are marked.
 | **F** fork inversion | **15–30 d** | low | Four coarse entries, each replacing a host driver. The `ABORT_UNWINDING` discipline has already trapped or hung two attempts, and the `kernel_exit` trap change is a prerequisite nobody has scoped. |
 | **M** shared mapping *(deferred)* | **20–40 d** | low | ~15% done. A production resolver, ~15 exports, the range policy, then 2,776 host lines across ~50 call sites — and `MAP_SHARED` coherence fails silently, so the coverage has to precede the cutover. |
 | **I** host imports (V4) | **15–30 d** | low | I1–I2 are 2–3 d. I3 is the rest: moving POSIX filesystem semantics for host-backed mounts into a kernel that already implements them for its own. |
-| **V** VFS / one SFFS | **10–20 d** | **unknown until V6** | The six-consumer census decides everything. Serving them from the kernel is the bulk; deleting 3,752 lines is the easy end. |
+| **V** VFS / one SFFS | **8–16 d** | medium *(V6 done)* | Five of six consumers need only constants; V7–V8 are 1–3 d. V9 — `memory-fs.ts` dropping `SharedFS` — is the remainder and is genuinely large at 8,501 lines. |
 | **P** platform honesty | **10–15 d** | medium | Five independent instances. `st_rdev` is ABI-adjacent on the stat wire; the UI trio is smaller but one item is a product decision, not an engineering one. |
 | **T** test hygiene | **5–10 d** | **unknown until T5** | One file carries 28% of failures and reproduces in isolation. Until it is diagnosed, "40 timeouts" could be one defect or forty. |
 | **S** setuid integrity | **5–10 d** | medium | S1 is 1–2 d — the verifier already exists and the emitter already imports `createHash`. S2 needs a sha256 in the kernel and should land with the SDEF record. |
@@ -427,16 +427,33 @@ the floor; it is a second implementation of a format the kernel owns.
 
 ## Increments
 
-- **V6 — census the six consumers.** `rootfs-overlay.ts`, `memory-fs.ts`,
-  `image-helpers.ts`, `package-deferred-tree.ts` and two image scripts hold the
-  TypeScript filesystem up. For each: what does it actually need — a mounted
-  tree, a byte range, a directory listing — and can the kernel serve it?
-  **This is the deliverable that decides whether the rest is weeks or days**,
-  and nobody has done it.
-- **V7 — serve those needs from the kernel**, through the export the writer
-  already has (`kernel_rootfs_export_tree`) plus whatever the census shows is
-  missing.
-- **V8 — delete `sharedfs-vendor.ts`.** The lane closes here, not at V7.
+- **V6 — census the six consumers. DONE** —
+  `docs/plans/2026-09-11-lane-v6-census.md`. **Five of the six import only
+  errno/mode constants and `SFSError`; exactly one imports `SharedFS`, and it is
+  `memory-fs.ts`** — the file this lane already deletes. The census that was
+  going to decide "weeks or days" answers days for five of six.
+- **V7 — add a generated `ERRNO` table** (V-D1 below), then repoint the five
+  constant-only consumers at `generated/abi.ts`. Open flags and mode bits are
+  **already** generated (`OPEN_FLAGS`, `FILE_MODES`); only errno is missing.
+  **This removes five of six imports without touching a filesystem.**
+- **V8 — `SFSError` gets a home** outside the implementation being deleted.
+- **V9 — the real work: `memory-fs.ts` stops using `SharedFS`.** The lane's
+  only genuine unknown.
+- **V10 — delete `sharedfs-vendor.ts`.** The lane closes here.
+
+**Ordering the census made visible: lane Y blocks deleting `memory-fs.ts`, but
+it does NOT block deleting `sharedfs-vendor.ts`.** V7–V10 can run in parallel
+with lane Y.
+
+**V-D1 — there is no generated errno table.** `ENOENT`, `ENOSPC`, `EROFS` and
+`EEXIST` are hand-written in `sharedfs-vendor.ts`, and `exec-target.ts` declares
+its own `EAGAIN`, `EFBIG`, `EIO`, `ENOEXEC`. Errno numbers are ABI, and unlike
+their neighbours they have no generator. Same class as L-D2 and W-D1.
+
+**Already-present drift:** `memory-fs.ts` imports `OPEN_FLAGS` from
+`generated/abi` at line 20 **and** `O_CREAT` from `sharedfs-vendor` at line 31,
+then aliases `OPEN_FLAGS.O_CREAT` at line 501. Two sources for one constant in
+one file.
 
 ## Acceptance evidence
 
