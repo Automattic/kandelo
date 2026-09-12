@@ -2358,12 +2358,19 @@ closes Y6 before the lane started. Every one of the 36 the gate counts is a
 ## Y4 status — the bridge exists and is blocked on V4, 2026-09-12
 
 **Built and landed on `brandonpayton/lane-y-image-writer`:** a standalone
-`crates/sffs-module`, **93,326 bytes with ZERO imports** — no import section at
+`crates/sffs-module`, **93,017 bytes with ZERO imports** — no import section at
 all, not even `env.memory`. It links the real substrate (`rootfs.rs`,
-`SffsWriter`, `sffs_container`) and exposes 17 `sm_*` entry points covering the
-tree-construction and read-back halves of the builders' vocabulary, plus a
+`SffsWriter`, `sffs_container`) and exposes **18** `sm_*` entry points covering
+the tree-construction and read-back halves of the builders' vocabulary, plus a
 build script that verifies the zero-import contract and stamps a
-closure-derived freshness key.
+closure-derived freshness key. A TypeScript bridge
+(`images/vfs/lib/sffs-image-fs.ts`) presents them as a filesystem a recipe
+recognises, and each `create()` yields an independent tree because each
+`WebAssembly.Instance` owns its own memory and statics.
+
+*(Counts and sizes above are measured, not estimated: an earlier revision of
+this paragraph said 17 entry points and 93,326 bytes, both written from memory
+rather than read.)*
 
 **A V4 clarification worth keeping:** that export surface is wide — the
 builders make 175 direct filesystem calls across 25 methods, so the bridge
