@@ -111,15 +111,8 @@
       "measure": "line count of host/src/kernel.ts",
       "ceiling": 4774,
       "slack": 150,
-      "target": 1200,
-      "why": "The implementation behind lane I's 72 host imports. Lane I counted the imports and never measured the code implementing them, so the lane could have reached 40 imports with all 4,774 lines standing. kernel.ts's own header enumerates the env.host_* functions it provides: it is the host API surface a wasmtime host must reproduce. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
-    "processExecTypeScript": {
-      "measure": "line count of host/src/process-lifecycle.ts and host/src/exec-target.ts",
-      "ceiling": 5426,
-      "slack": 150,
-      "target": 1500,
-      "why": "Lane X's body. Its only gate was parseShebangReferences (12 -> 0) \u2014 a 12-reference gate on a 5,426-line subject, the same hole lane V had. process-lifecycle.ts is the shared fork/vfork/clone/exec/spawn/exit/thread implementation both worker entries call. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+      "target": 2650,
+      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction \u2014 4,774 x (40/72) \u2014 a consequence of the lane succeeding rather than an independent goal, and it is not a measurement."
     },
     "hostKernelPlumbingTypeScript": {
       "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
@@ -252,13 +245,9 @@
         {
           "surface": "parseShebangReferences",
           "atMost": 0
-        },
-        {
-          "surface": "processExecTypeScript",
-          "atMost": 1500
         }
       ],
-      "why": "Closure is the kernel deciding what a spawn runs. parseShebang reaching zero is the measurable form; the probe traps today, so the panic is the blocker rather than the design."
+      "why": "Closure is the kernel deciding what a spawn runs. parseShebang reaching zero is the measurable form; the probe traps today, so the panic is the blocker rather than the design. The processExecTypeScript surface added on 2026-09-11 was WITHDRAWN by the I/X surface census: it counted process-lifecycle.ts, which is the shared createProcessLifecycle implementation both worker entries call and which the E1 census credits as the consolidation that already happened. Shrinking it is not a goal. The exec-target authority has also already largely moved to the kernel (8 exports)."
     },
     "C": {
       "title": "conformance",

@@ -167,8 +167,6 @@ const MEASURED: Record<string, () => number> = {
     return declared.size - covered.size;
   },
   kernelHostImportTypeScript: () => lineCount(["host/src/kernel.ts"]),
-  processExecTypeScript: () =>
-    lineCount(["host/src/process-lifecycle.ts", "host/src/exec-target.ts"]),
   hostKernelPlumbingTypeScript: () =>
     lineCount([
       "host/src/kernel-scratch.ts",

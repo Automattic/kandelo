@@ -1813,6 +1813,7 @@ strongest argument in this file for censusing before dispatching:
 | **K1** | Framing wrong — not "a second syscall table"; the 85 dispatched syscalls need host services and `host-native` dispatches them too. **But the 12,000 target survived**, validated against `guest.rs`'s 13,577. |
 | **V6** | Five of six consumers need only **constants**; one needs the filesystem. Days, not weeks, for five of six. |
 | **T5** | Not one defect nor forty: a **10 s budget on an 8.5 s job**. All 41 tests pass at 20 s; the lane becomes "why does a fork fixture cost 8.5 s". |
+| **I/X** | Both gates I added without evidence were wrong: lane I's target 1,200 → **2,650**, and lane X's surface **withdrawn** — it counted the shared implementation the campaign wanted. |
 
 **One pattern recurred across three censuses and is now the campaign's most
 common defect shape:** ABI knowledge reaching TypeScript by hand while a
@@ -1836,11 +1837,30 @@ out not to be a lane at all**, which is the survey's most useful result:
 | Build automation | **Lane U** — ranked last; it does not serve V4 |
 | `web-libs` contracts | **Lane W** — 5,360 |
 
-Two existing lanes had the same gate hole lane V had — a small gate on a large
-body — and both are now closed: **lane I** gained
-`kernelHostImportTypeScript` (`kernel.ts`, 4,774 lines implementing the 72
-imports it counted), and **lane X** gained `processExecTypeScript` (5,426 lines
-behind a 12-reference gate).
+Two existing lanes were judged to have the same gate hole lane V had — a small
+gate on a large body — and each gained a line surface. **A follow-up census
+(`docs/plans/2026-09-11-lane-i-x-surface-census.md`) found both guesses wrong,
+in opposite directions:**
+
+- **Lane I** keeps `kernelHostImportTypeScript`, but its target moved from a
+  guessed **1,200 to 2,650**. `host-native` supplies the same import surface
+  through 71 `linker.func_wrap` calls spanning 7,646 lines, so there is no
+  evidence the implementations shrink to 1,200. The new number is arithmetic on
+  the import reduction (72 → 40) the lane is already gated on, and is labelled
+  as a consequence rather than a measurement.
+- **Lane X's `processExecTypeScript` is WITHDRAWN.** It counted
+  `process-lifecycle.ts`, which is the shared `createProcessLifecycle`
+  implementation both worker entries call — the consolidation the E1 census
+  credits. **Shrinking it is not a goal.** The exec-target authority has also
+  already largely moved to the kernel (8 `kernel_exec_target_*` exports), so a
+  12-reference gate on this body is appropriate: the body is what the campaign
+  wants.
+
+**The lesson, recorded because it cost two wrong gates:** "a small gate on a
+large body is a hole" caught lane V correctly and then produced two false
+positives. A large body is only a hole if the body is *wrong*. **Adding a gate
+is a claim about what should shrink and needs the same evidence as any other
+claim.**
 
 **Every target on the new lanes is provisional**, and each lane's first
 increment is the census that sets the real one. That is stated in each lane and
