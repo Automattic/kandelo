@@ -32,6 +32,18 @@ export const FORK_CAPTURE_KIND_ARRAY = 2;
 export const FORK_CAPTURE_KIND_EXNREF = 3;
 
 /**
+ * Leaf-reference discriminants `fm_capture_intern` dispatches on (these mirror
+ * the module's `INTERN_KIND_*`). A SEPARATE numbering from the aggregate kinds
+ * above: these select which `ReferenceGraphBuilder::intern_*` the one entry
+ * runs, those select which `AggregateKind` `defineGc` builds. Module-private,
+ * because unlike the aggregate kinds no caller outside this file sends one.
+ */
+const K_FUNCREF = 1;
+const K_EXTERNREF = 2;
+const K_I31 = 3;
+const K_STATIC_ROOT = 4;
+
+/**
  * Thin, stateful wrapper over the `fm_capture_*` exports of ONE resident
  * fork-module instance. All interning goes through the shared Rust builder; the
  * wrapper only translates the module's `-1`/errno convention into a thrown host
@@ -77,29 +89,36 @@ export class ForkReferenceCaptureModule {
     this.fn.fm_capture_begin();
   }
 
-  internFuncref(activation: number, ordinal: number): number {
-    return this.requireId(
-      this.fn.fm_capture_intern_funcref(activation >>> 0, ordinal >>> 0),
-      "intern funcref",
-    );
+  /**
+   * Intern one leaf reference at a coordinate this host already resolved.
+   *
+   * The four named methods below are the call sites; they all reach the single
+   * kind-discriminated `fm_capture_intern` export, which replaced four per-type
+   * exports and the four marshalling wrappers that went with them. That
+   * multiplication -- one concept, four exports, four wrappers -- is why the
+   * fork transport is as large as it is.
+   *
+   * `internI31`'s `value | 0` keeps the signed 31-bit payload; the `>>> 0`
+   * here bit-casts it to the u32 the module reinterprets back to i32.
+   */
+  private intern(kind: number, a: number, b: number, op: string): number {
+    return this.requireId(this.fn.fm_capture_intern(kind, a >>> 0, b >>> 0), op);
+  }
+
+  internFuncref(act: number, ordinal: number): number {
+    return this.intern(K_FUNCREF, act, ordinal, "intern funcref");
   }
 
   internExternref(handle: number): number {
-    return this.requireId(
-      this.fn.fm_capture_intern_externref(handle >>> 0),
-      "intern externref",
-    );
+    return this.intern(K_EXTERNREF, handle, 0, "intern externref");
   }
 
   internI31(value: number): number {
-    return this.requireId(this.fn.fm_capture_intern_i31(value | 0), "intern i31");
+    return this.intern(K_I31, value | 0, 0, "intern i31");
   }
 
-  internStaticRoot(activation: number, ordinal: number): number {
-    return this.requireId(
-      this.fn.fm_capture_intern_static_root(activation >>> 0, ordinal >>> 0),
-      "intern static root",
-    );
+  internStaticRoot(act: number, ordinal: number): number {
+    return this.intern(K_STATIC_ROOT, act, ordinal, "intern static root");
   }
 
   claimGc(): number {

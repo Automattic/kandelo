@@ -79,10 +79,7 @@ const module = new WebAssembly.Module(bytes);
 const exportNames = new Set(WebAssembly.Module.exports(module).map((e) => e.name));
 for (const name of [
   "fm_capture_begin",
-  "fm_capture_intern_funcref",
-  "fm_capture_intern_externref",
-  "fm_capture_intern_i31",
-  "fm_capture_intern_static_root",
+  "fm_capture_intern",
   "fm_capture_claim_gc",
   "fm_capture_gated_placeholder",
   "fm_capture_define_gc",
@@ -163,24 +160,32 @@ function ascii(bytes) {
 // ============================================================================
 x.fm_capture_begin();
 assert.equal(lastErrno(), 0, "begin sets errno OK");
+// `fm_capture_intern`'s leaf-kind discriminants (mirror the module's
+// INTERN_KIND_*, and host/src/fork-reference-capture-module.ts's
+// FORK_INTERN_KIND_*).
+const K_FUNCREF = 1;
+const K_EXTERNREF = 2;
+const K_I31 = 3;
+const K_STATIC_ROOT = 4;
+
 const before = x.fm_capture_interned();
 
 // Claim the two aggregates first so a field edge can close the cycle.
 const sId = x.fm_capture_claim_gc(); // 1: struct
 const aId = x.fm_capture_claim_gc(); // 2: array
-const fId = x.fm_capture_intern_funcref(10, 20); // 3
-const xId = x.fm_capture_intern_externref(99); // 4
-const iId = x.fm_capture_intern_i31(-5); // 5
-const rId = x.fm_capture_intern_static_root(3, 7); // 6
-const leafId = x.fm_capture_intern_externref(0xffffffff >>> 0); // 7 aliased leaf
+const fId = x.fm_capture_intern(K_FUNCREF, 10, 20); // 3
+const xId = x.fm_capture_intern(K_EXTERNREF, 99, 0); // 4
+const iId = x.fm_capture_intern(K_I31, -5, 0); // 5
+const rId = x.fm_capture_intern(K_STATIC_ROOT, 3, 7); // 6
+const leafId = x.fm_capture_intern(K_EXTERNREF, 0xffffffff >>> 0, 0); // 7 aliased leaf
 assert.deepEqual([sId, aId, fId, xId, iId, rId, leafId], [1, 2, 3, 4, 5, 6, 7]);
 
 // Dedup by coordinate: the same externref handle / funcref coordinate / i31
 // value / static-root coordinate resolve to the SAME recipe id.
-assert.equal(x.fm_capture_intern_externref(99), xId, "externref dedups by handle");
-assert.equal(x.fm_capture_intern_funcref(10, 20), fId, "funcref dedups by coord");
-assert.equal(x.fm_capture_intern_i31(-5), iId, "i31 dedups by value");
-assert.equal(x.fm_capture_intern_static_root(3, 7), rId, "static root dedups");
+assert.equal(x.fm_capture_intern(K_EXTERNREF, 99, 0), xId, "externref dedups by handle");
+assert.equal(x.fm_capture_intern(K_FUNCREF, 10, 20), fId, "funcref dedups by coord");
+assert.equal(x.fm_capture_intern(K_I31, -5, 0), iId, "i31 dedups by value");
+assert.equal(x.fm_capture_intern(K_STATIC_ROOT, 3, 7), rId, "static root dedups");
 
 // Build the field vectors first (the module reads them internally at define).
 function buildVector(ids) {
@@ -256,11 +261,11 @@ assert.ok(
 x.fm_capture_begin();
 x.fm_capture_claim_gc(); // 1
 x.fm_capture_claim_gc(); // 2
-x.fm_capture_intern_funcref(10, 20); // 3
-x.fm_capture_intern_externref(99); // 4
-x.fm_capture_intern_i31(-5); // 5
-x.fm_capture_intern_static_root(3, 7); // 6
-x.fm_capture_intern_externref(0xffffffff >>> 0); // 7
+x.fm_capture_intern(K_FUNCREF, 10, 20); // 3
+x.fm_capture_intern(K_EXTERNREF, 99, 0); // 4
+x.fm_capture_intern(K_I31, -5, 0); // 5
+x.fm_capture_intern(K_STATIC_ROOT, 3, 7); // 6
+x.fm_capture_intern(K_EXTERNREF, 0xffffffff >>> 0, 0); // 7
 const sf2 = buildVector([2, 7]); // ordinal 1
 writeBytes(SCRATCH_BASE, [0x78, 0x56, 0x34, 0x12]);
 x.fm_capture_define_gc(1, 7, 2, 12, KIND_STRUCT, SCRATCH_BASE, 4, sf2, 0, 0, 0);
@@ -312,7 +317,32 @@ assert.equal(lastErrno(), EINVAL, "serialize reports EINVAL for a pending claim"
 //    not a fabricated recipe.
 // ============================================================================
 x.fm_capture_begin();
-assert.equal(x.fm_capture_intern_externref(0), -1, "zero handle is rejected");
+assert.equal(x.fm_capture_intern(K_EXTERNREF, 0, 0), -1, "zero handle is rejected");
+
+// The kind-discriminated entry's own admission checks. `fm_capture_intern`
+// replaced four per-type exports, so the argument-shape errors those four made
+// impossible by construction are now runtime errors, and they have to be loud.
+assert.equal(x.fm_capture_intern(0, 1, 0), -1, "kind 0 is rejected");
+assert.equal(x.fm_capture_intern(5, 1, 0), -1, "kind past the last discriminant is rejected");
+assert.equal(
+  x.fm_capture_intern(0xffffffff >>> 0, 1, 0),
+  -1,
+  "a garbage kind is rejected, not silently treated as a funcref",
+);
+// The `b must be 0` rule for the one-argument kinds. Without it, a caller that
+// passed funcref argument ORDER with an externref kind -- (EXTERNREF,
+// activation, ordinal) -- would silently intern the activation id as a broker
+// handle and capture the wrong reference.
+assert.equal(
+  x.fm_capture_intern(K_EXTERNREF, 99, 7),
+  -1,
+  "externref with a non-zero second argument is rejected",
+);
+assert.equal(
+  x.fm_capture_intern(K_I31, -5, 7),
+  -1,
+  "i31 with a non-zero second argument is rejected",
+);
 assert.equal(lastErrno(), EINVAL, "zero externref handle reports EINVAL");
 
 console.log("fork-module capture harness: all assertions passed");

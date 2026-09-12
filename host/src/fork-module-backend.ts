@@ -794,22 +794,31 @@ export class ForkModuleContinuationBackend {
    * the host loop; a state/plan-build failure is a truthful errno.
    */
   parentReplay(): void {
-    this.requireSetup("parent replay");
-    this.exports.fm_parent_replay();
-    this.requireOk("fm_parent_replay");
+    this.#parentReplayPhase(false, "parent replay");
   }
 
   /**
    * Parent ABORT-replay-begin, coarsened (mirror of `parentReplay`,
-   * abort-tagged). ONE module call runs `fm_begin_abort` (the shared begin plus
-   * the `in_abort` pairing flag `finishAbort` asserts) and drives each
-   * activation's guest `wpk_fork_abort_begin(root)` through the shim. Replaces
-   * the host's `fm_begin_abort` + per-activation `wpk_fork_abort_begin` loop.
+   * abort-tagged). ONE module call runs the shared begin plus the `in_abort`
+   * pairing flag `finishAbort` asserts, and drives each activation's guest
+   * `wpk_fork_abort_begin(root)` through the shim. Replaces the host's former
+   * `fm_begin_abort` + per-activation `wpk_fork_abort_begin` loop.
+   *
+   * Same module export as `parentReplay`, with the phase as an argument: the
+   * module used to carry a separate `fm_parent_abort` whose body was
+   * `parent_replay_impl(true)` against this one's `parent_replay_impl(false)`.
+   * Both remain named host entries because the coordinator's two call sites are
+   * genuinely different moments, and a mismatched flag is caught loudly by
+   * `fm_parent_finish`'s `in_abort` pairing assertion.
    */
   parentAbort(): void {
-    this.requireSetup("parent abort");
-    this.exports.fm_parent_abort();
-    this.requireOk("fm_parent_abort");
+    this.#parentReplayPhase(true, "parent abort");
+  }
+
+  #parentReplayPhase(abort: boolean, label: string): void {
+    this.requireSetup(label);
+    this.exports.fm_parent_replay(abort ? 1 : 0);
+    this.requireOk("fm_parent_replay");
   }
 
   /**
@@ -1179,7 +1188,7 @@ export class ForkModuleContinuationBackend {
    * `wpk_fork_abort_end` loop + `fm_finish_replay`/`fm_finish_abort`. Each
    * participating activation's `bindActivationFinishDrive` must have run first
    * (the ref-typed table bind is a host floor). The abort finish keeps the
-   * `in_abort` pairing assertion `fm_parent_abort` armed, so a stray
+   * `in_abort` pairing assertion `fm_parent_replay(abort=1)` armed, so a stray
    * `parentFinish(true)` is a loud errno.
    */
   parentFinish(abort: boolean): void {

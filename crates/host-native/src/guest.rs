@@ -5007,7 +5007,7 @@ struct ForkCoordState {
     mode: AtomicU32,
     /// Whether the PARENT's pending replay is an ABORT-replay (`1`) rather than
     /// a NORMAL rewind-replay (`0`). Set when the entry loop drives the parent
-    /// through `fm_parent_abort` — an unsupported-reference (gated) fork or a
+    /// through `fm_parent_replay(abort=1)` — an unsupported-reference (gated) fork or a
     /// failed child launch, mirroring TS `beginAbortReplay` — so the
     /// `Replaying`-phase finish drives `fm_parent_finish(1)` (the guest's
     /// `wpk_fork_abort_end` flip) instead of `fm_parent_finish(0)`
@@ -5694,12 +5694,13 @@ pub struct ForkModule {
     /// `fm_parent_abort_seal()` — the mid-unwind seal (no guest drive, no
     /// serialize) for a partial/aborted capture.
     pub fm_parent_abort_seal: wasmtime::TypedFunc<(), ()>,
-    /// `fm_parent_replay()` — begins the parent rewind and drives each guest
-    /// `wpk_fork_rewind_begin(root)`.
-    pub fm_parent_replay: wasmtime::TypedFunc<(), ()>,
-    /// `fm_parent_abort()` — the abort-tagged mirror of `fm_parent_replay`,
-    /// driving each guest `wpk_fork_abort_begin(root)`.
-    pub fm_parent_abort: wasmtime::TypedFunc<(), ()>,
+    /// `fm_parent_replay(abort)` — begins the parent rewind and drives each
+    /// guest `wpk_fork_rewind_begin(root)`, or with `abort != 0` the abort-tagged
+    /// phase driving `wpk_fork_abort_begin(root)`. ONE entry for both: the module
+    /// used to export a separate `fm_parent_abort` that was the same impl with the
+    /// flag flipped, and `fm_parent_finish(abort)` below was already the precedent
+    /// for carrying the phase as an argument.
+    pub fm_parent_replay: wasmtime::TypedFunc<u32, ()>,
     /// `fm_parent_finish(abort)` — drives each guest `wpk_fork_rewind_end()`
     /// (abort==0) or `wpk_fork_abort_end()` (abort!=0), then finishes the
     /// replay/abort.
@@ -6148,8 +6149,7 @@ pub(crate) fn instantiate_fork_module(
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32, u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
         fm_parent_abort_seal: fm_func!("fm_parent_abort_seal": () => ()),
-        fm_parent_replay: fm_func!("fm_parent_replay": () => ()),
-        fm_parent_abort: fm_func!("fm_parent_abort": () => ()),
+        fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
         fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
         fm_child_seed: fm_func!("fm_child_seed": (u32, u32, u32, u32) => ()),
         fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32, u32) => ()),
@@ -9650,18 +9650,20 @@ fn drive_fork_capture_seal_and_launch_child(
         // `Replaying`-phase finish then drives `fm_parent_finish(1)` (the
         // guest's `wpk_fork_abort_end` flip), so `coord` records the abort here.
         coord.set_abort_replay(true);
-        if let Err(e) = fm.fm_parent_abort.call(&mut *store, ()) {
-            eprintln!("fm_parent_abort (gated fork abort) failed: {e:#}");
+        if let Err(e) = fm.fm_parent_replay.call(&mut *store, 1) {
+            eprintln!("fm_parent_replay(abort) (gated fork abort) failed: {e:#}");
             return false;
         }
         match fm.fm_last_errno.call(&mut *store, ()) {
             Ok(0) => {}
             Ok(errno) => {
-                eprintln!("fm_parent_abort (gated fork abort) failed: errno {errno}");
+                eprintln!("fm_parent_replay(abort) (gated fork abort) failed: errno {errno}");
                 return false;
             }
             Err(e) => {
-                eprintln!("fm_last_errno after fm_parent_abort (gated fork abort) failed: {e:#}");
+                eprintln!(
+                    "fm_last_errno after fm_parent_replay(abort) (gated fork abort) failed: {e:#}"
+                );
                 return false;
             }
         }
@@ -9738,19 +9740,23 @@ fn drive_fork_capture_seal_and_launch_child(
     // + direct guest-export call. `root` (== each activation's stored
     // `module_buffer`, smuggled to the child above) is what the module's plan
     // drives from internally. A FAILED child launch (`fork_result < 0`) resumes
-    // the parent at `fork()` with the errno via ABORT-replay (`fm_parent_abort`),
+    // the parent at `fork()` with the errno via ABORT-replay
+    // (`fm_parent_replay(abort=1)`),
     // mirroring TS `beginAbortReplay(-childPid)`; a successful launch resumes via
     // NORMAL rewind-replay (`fm_parent_replay`). `coord` records which, so the
     // paired `Replaying`-phase finish drives the matching `wpk_fork_{rewind,
     // abort}_end` via `fm_parent_finish(abort)`.
     let abort = fork_result < 0;
     coord.set_abort_replay(abort);
-    let (entry, name): (&wasmtime::TypedFunc<(), ()>, &str) = if abort {
-        (&fm.fm_parent_abort, "fm_parent_abort")
+    // ONE module entry, phase as an argument. This used to select between two
+    // exports; the module folded them, because both bodies were the same impl
+    // with this same flag flipped.
+    let name = if abort {
+        "fm_parent_replay(abort)"
     } else {
-        (&fm.fm_parent_replay, "fm_parent_replay")
+        "fm_parent_replay"
     };
-    if let Err(e) = entry.call(&mut *store, ()) {
+    if let Err(e) = fm.fm_parent_replay.call(&mut *store, u32::from(abort)) {
         eprintln!("{name} failed: {e:#}");
         return false;
     }

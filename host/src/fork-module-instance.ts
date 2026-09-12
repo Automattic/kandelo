@@ -87,8 +87,11 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // `wpk_fork_abort_begin` through the injected `fm_drive_execute` shim — the
   // whole begin sequence in ONE module call. The former fine-grained
   // `fm_begin_replay` / `fm_begin_abort` DRIVE exports were deleted.
+  // ONE entry for both parent phases: `fm_parent_replay(abort)`. The separate
+  // `fm_parent_abort` export was `parent_replay_impl(true)` against this one's
+  // `parent_replay_impl(false)`, and `fm_parent_finish(abort)` was already the
+  // precedent for carrying the phase as an argument at this layer.
   "fm_parent_replay",
-  "fm_parent_abort",
   // Control-flow inversion: the coarse CHILD reconstruct rewind-begin entry (the
   // child-worker mirror of `fm_parent_replay`). Builds the per-activation
   // REWIND-begin drive plan from each activation's stored `child_rewind_root`
@@ -118,7 +121,7 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // activation's guest `wpk_fork_rewind_end` (or `wpk_fork_abort_end`) through
   // the injected `fm_drive_execute` shim, then finishes the process replay or
   // abort in ONE module call. The abort finish still asserts the `in_abort`
-  // pairing `fm_parent_abort` set, so a stray `fm_parent_finish(abort=1)` is a
+  // pairing `fm_parent_replay(abort=1)` set, so a stray `fm_parent_finish(abort=1)` is a
   // loud `EINVAL`. The former fine-grained `fm_finish_replay` / `fm_finish_abort`
   // DRIVE exports were deleted.
   "fm_parent_finish",
@@ -291,10 +294,11 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // module-state arena (the child's wire); `fm_capture_vector_get` serves the
   // PARENT's own post-fork replay vector reads from the resident builder.
   "fm_capture_begin",
-  "fm_capture_intern_funcref",
-  "fm_capture_intern_externref",
-  "fm_capture_intern_i31",
-  "fm_capture_intern_static_root",
+  // ONE kind-discriminated leaf-intern entry, replacing the four per-type
+  // exports `fm_capture_intern_{funcref,externref,i31,static_root}`: they
+  // expressed a single concept -- intern a leaf reference at a coordinate the
+  // host already resolved -- as four exports with four marshalling wrappers.
+  "fm_capture_intern",
   "fm_capture_claim_gc",
   "fm_capture_gated_placeholder",
   "fm_capture_define_gc",

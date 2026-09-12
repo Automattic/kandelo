@@ -59,7 +59,7 @@
   "surfaces": {
     "forkTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/fork-*.ts and host/src/vfork-*.ts",
-      "ceiling": 19796,
+      "ceiling": 19791,
       "slack": 200,
       "target": 2000,
       "why": "The Rust-First contract says this shrinks toward the floor and does not grow. It grew 23,246 -> 26,113 across the campaign. The target assumes inversion to 3-5 coarse fm_* entries, which collapses transport rather than only orchestration; deletion alone cannot reach it. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 24726 -> 19796, target 2500 -> 2000. Same code, a measure that counts implementation."
@@ -94,7 +94,7 @@
     },
     "forkModuleEntryPoints": {
       "measure": "pub extern \"C\" fn fm_* declared in crates/fork-module/src/lib.rs",
-      "ceiling": 63,
+      "ceiling": 62,
       "slack": 2,
       "target": 5,
       "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow."

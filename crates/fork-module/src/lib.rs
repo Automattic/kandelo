@@ -169,7 +169,7 @@ mod wasm {
 
     // -- Injector-wired drive placeholder (control-flow inversion) ----------
     //
-    // The coarse per-phase entries (`fm_parent_replay` / `fm_parent_abort`)
+    // The coarse per-phase entries (`fm_parent_replay`, rewind or abort)
     // sequence the fine-grained primitives INTERNALLY in Rust — begin the
     // replay, build the per-activation begin drive plan, then DRIVE it — so the
     // host issues ONE module call per phase instead of an `fm_begin_*` call plus
@@ -982,7 +982,7 @@ mod wasm {
     /// Sequence a parent REPLAY-begin (`abort` false) or ABORT-replay-begin
     /// (`abort` true) phase entirely in the module: begin the (parent) rewind,
     /// build the per-activation begin drive plan, then drive it through the
-    /// injector-wired shim. Shared body of `fm_parent_replay` / `fm_parent_abort`.
+    /// injector-wired shim. Shared body of both `fm_parent_replay` phases.
     ///
     /// Order matches the host loop this replaces: begin FIRST (attach each
     /// driver + register resume slots — abort additionally sets `in_abort`), then
@@ -1134,7 +1134,7 @@ mod wasm {
     /// `fm_finish_replay` / `fm_finish_abort` — into ONE module call. Order is
     /// identical to that host sequence: drive FIRST (every activation to `NORMAL`),
     /// THEN finish. The abort finish still asserts the `in_abort` pairing
-    /// `fm_parent_abort` set (`finish_abort_impl`), so a `fm_parent_finish(abort=1)`
+    /// `fm_parent_replay(abort=1)` set (`finish_abort_impl`), so a `fm_parent_finish(abort=1)`
     /// without a matching abort begin is a loud `EINVAL`, never a silent no-op.
     ///
     /// A guest end flip that traps (e.g. finishing before the rewind consumed
@@ -4360,30 +4360,29 @@ mod wasm {
     /// activation state or a plan-build failure is a truthful errno
     /// (`fm_last_errno`); a guest reconstruction failure traps inside the shim
     /// exactly as it did under the host loop.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_replay() {
-        match parent_replay_impl(false) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Sequence a whole PARENT ABORT-replay-begin phase in the module (mirror of
-    /// [`fm_parent_replay`], abort-tagged). Runs `begin_abort_impl` (the shared
-    /// `begin_replay_impl` plus the `in_abort` pairing flag `fm_finish_abort`
-    /// asserts), builds the per-activation ABORT-begin drive plan
-    /// (`DRIVE_OP_ABORT_BEGIN`), then drives each activation's guest
-    /// `wpk_fork_abort_begin(root)` through the injector-wired shim. Replaces the
-    /// host's `fm_begin_abort` + per-activation `wpk_fork_abort_begin` loop.
     ///
-    /// Abort replay drives the parent's already-committed frames from the SAME
-    /// continuation root parent replay uses (the module's per-activation
-    /// `module_buffer`), so the plan is byte-identical to the rewind plan except
-    /// for the op tag. The host must have bound `wpk_fork_abort_begin` at
-    /// `fm_drive_table_base(activation) + DRIVE_SLOT_ABORT_BEGIN`.
+    /// `abort != 0` selects the ABORT-replay phase instead: `begin_abort_impl`
+    /// rather than `begin_replay_impl`, and `DRIVE_OP_ABORT_BEGIN` steps driving
+    /// the guest's `wpk_fork_abort_begin(root)` (bound at `DRIVE_SLOT_ABORT_BEGIN`)
+    /// rather than `wpk_fork_rewind_begin`. Both phases take the SAME continuation
+    /// root — the module's per-activation `module_buffer` — so the two plans are
+    /// byte-identical except for the op tag.
+    ///
+    /// This replaced a separate `fm_parent_abort()` export. The flag is safe to
+    /// carry at the boundary because `parent_replay_impl` already took it, both
+    /// values drive the guest (they differ only in which drive-table slot), and a
+    /// mismatched flag is caught LOUDLY: `fm_parent_finish` asserts the `in_abort`
+    /// pairing this call armed, so a replay begun here and finished as an abort is
+    /// `EINVAL`, not silent divergence. `fm_parent_finish(abort: u32)` is the
+    /// precedent — the same flag, at the same layer, for the paired finish.
+    ///
+    /// Contrast `fm_parent_abort_seal`, which is deliberately NOT folded into
+    /// `fm_parent_seal_capture`: there the two entries differ in whether they
+    /// drive the guest AT ALL, and a wrong flag would corrupt the guest's unwind
+    /// state machine silently. Two names are the guard there. Here they are not.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_abort() {
-        match parent_replay_impl(true) {
+    pub extern "C" fn fm_parent_replay(abort: u32) {
+        match parent_replay_impl(abort != 0) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -4534,7 +4533,7 @@ mod wasm {
     /// directly. It has NO guest drive and NO serialize to fold, so unlike the other
     /// coarse entries it is a single-step phase entry, parallel to
     /// `fm_parent_seal_capture`. After this the host drives the ordinary module
-    /// abort-replay (`fm_parent_abort`). A failed reserve leaves no pending frame
+    /// abort-replay (`fm_parent_replay(abort=1)`). A failed reserve leaves no pending frame
     /// (`LinkedFrameWriter::reserve_frame` sets `pending` only after a successful
     /// chunk allocation), so the committed chain is complete and seal-able.
     #[unsafe(no_mangle)]
@@ -4563,7 +4562,7 @@ mod wasm {
     /// DRIVE_SLOT_{REWIND,ABORT}_END` before calling this (the ref-typed table bind
     /// is a host floor). Behaviourally identical to the old host sequence: same
     /// guest export, same ascending order, drive FIRST then finish. The abort finish
-    /// still asserts the `in_abort` pairing `fm_parent_abort` set, so a stray
+    /// still asserts the `in_abort` pairing `fm_parent_replay(abort=1)` set, so a stray
     /// `fm_parent_finish(abort=1)` is a loud `EINVAL`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_finish(abort: u32) {
@@ -4602,6 +4601,16 @@ mod wasm {
     const CAPTURE_KIND_STRUCT: u32 = 1;
     const CAPTURE_KIND_ARRAY: u32 = 2;
     const CAPTURE_KIND_EXNREF: u32 = 3;
+
+    /// `fm_capture_intern`'s leaf-reference discriminants. These select which
+    /// `ReferenceGraphBuilder::intern_*` the one entry dispatches to; they are a
+    /// SEPARATE numbering from the `CAPTURE_KIND_*` aggregate kinds above, which
+    /// `fm_capture_define_gc` uses. Mirrored by `FORK_INTERN_KIND_*` in
+    /// `host/src/fork-reference-capture-module.ts`.
+    const INTERN_KIND_FUNCREF: u32 = 1;
+    const INTERN_KIND_EXTERNREF: u32 = 2;
+    const INTERN_KIND_I31: u32 = 3;
+    const INTERN_KIND_STATIC_ROOT: u32 = 4;
 
     /// Fixed header of one record in the `fm_capture_serialize` record stream:
     /// `u16 kind, u16 reserved, u32 activation_id, u32 owner_id, u32 payload_len`.
@@ -4728,56 +4737,57 @@ mod wasm {
         set_ok();
     }
 
-    /// Intern a function reference by its catalog coordinate. Returns its recipe
-    /// id (`>= 1`) or `-1`. The host resolves `(activation, ordinal)` from the
-    /// funcref catalog (floor) before calling.
+    /// Intern one LEAF reference into the capture graph by its already-resolved
+    /// coordinate, dispatched on `kind`. Returns its recipe id (`>= 1`), or `-1`
+    /// with `fm_last_errno` set.
+    ///
+    /// | `kind` | meaning | `a` | `b` |
+    /// |---|---|---|---|
+    /// | `INTERN_KIND_FUNCREF` (1) | function reference | catalog activation | catalog ordinal |
+    /// | `INTERN_KIND_EXTERNREF` (2) | durable host externref | broker handle (`1..=0xffff_ffff`) | must be 0 |
+    /// | `INTERN_KIND_I31` (3) | `i31ref` | signed 31-bit payload, bit-cast to `u32` | must be 0 |
+    /// | `INTERN_KIND_STATIC_ROOT` (4) | statically-rooted reference | catalog activation | catalog ordinal |
+    ///
+    /// This ONE entry replaces the four per-type exports
+    /// `fm_capture_intern_{funcref,externref,i31,static_root}`. They expressed a
+    /// single concept — "intern a leaf reference at a coordinate the host already
+    /// resolved" — as four exports with four host-side marshalling wrappers, which
+    /// is the per-type-variant multiplication the fork transport is large because
+    /// of. The same fold already happened one export over: `fm_decoded_node_field`
+    /// replaced three same-signature accessors.
+    ///
+    /// The host resolves every coordinate with its per-host identity floor (the
+    /// funcref catalog, the externref broker's `WeakMap` provenance) BEFORE
+    /// calling. The module never sees a live reference, only scalars.
+    ///
+    /// An unknown `kind`, or a non-zero `b` where the table says it must be 0, is
+    /// `EINVAL` and `-1`. The `b` check is not pedantry: it is what stops a caller
+    /// that passes `(EXTERNREF, activation, ordinal)` — funcref argument order,
+    /// wrong kind — from silently interning the activation id as a broker handle.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_funcref(activation: u32, ordinal: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_funcref(activation, ordinal)),
+    pub extern "C" fn fm_capture_intern(kind: u32, a: u32, b: u32) -> i32 {
+        let g = match capture_builder() {
+            Ok(g) => g,
             Err(e) => {
                 set_err(e);
-                -1
+                return -1;
             }
-        }
-    }
-
-    /// Intern a durable host externref by broker handle (`1..=0xffff_ffff`). The
-    /// host resolves the handle from its externref identity floor (V8 `WeakMap`
-    /// provenance) before calling; the module never sees the live externref.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_externref(handle: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_externref(handle)),
-            Err(e) => {
-                set_err(e);
-                -1
+        };
+        let id = match kind {
+            INTERN_KIND_FUNCREF => g.intern_funcref(a, b),
+            INTERN_KIND_STATIC_ROOT => g.intern_static_root(a, b),
+            INTERN_KIND_EXTERNREF | INTERN_KIND_I31 if b != 0 => {
+                set_err(Errno::EINVAL);
+                return -1;
             }
-        }
-    }
-
-    /// Intern an `i31ref` by its signed 31-bit payload.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_i31(value: i32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_i31(value)),
-            Err(e) => {
-                set_err(e);
-                -1
+            INTERN_KIND_EXTERNREF => g.intern_externref(a),
+            INTERN_KIND_I31 => g.intern_i31(a as i32),
+            _ => {
+                set_err(Errno::EINVAL);
+                return -1;
             }
-        }
-    }
-
-    /// Intern a statically-rooted reference by its catalog coordinate.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_static_root(activation: u32, ordinal: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_static_root(activation, ordinal)),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
+        };
+        capture_ok_id(id)
     }
 
     /// Claim a fresh graph identity for a GC value before its fields are known,
