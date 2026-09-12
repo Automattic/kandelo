@@ -3235,6 +3235,51 @@ measured across all four call sites — and it lives in the deferred payload the
 kernel carries without reading. Building an accessor for it would be a floor
 nobody stands on (H-1).
 
+### The predicate the recipes need is one, not two — and it cannot live in `memory-fs.ts`
+
+**Measured 2026-09-12, second repoint attempt.** The recipes that ask "are these
+bytes here?" ask it in two halves, because `MemoryFileSystem` answers it in two:
+`getLazyEntry(p) !== null` covers a URL-backed single lazy file (the per-inode
+registry), `isPathDeferred(p)` covers a lazy archive or tree backing. Every
+caller re-joins them by hand. **That is a security-relevant check one edit away
+from being half a check** — the assertions are "dinit must be resident before
+service boot" and "the login program must be eager".
+
+**Collapsing them to `isPathDeferred` alone would silently weaken it**, which is
+why the obvious simplification is wrong: it drops the URL-backed case, which is
+exactly lane S's case.
+
+The kernel already models this as ONE concept — `rootfs::lazy_info` reports
+`deferred` for an archive member and for a host-backed file alike — so the
+bridge answers it with one predicate honestly. Giving `MemoryFileSystem` the
+matching union method made the whole component typecheck: **the blocking set
+fell from 7 files to 4** (`build-kandelo-sdk-vfs-image`, `staged-product-inputs`,
+`mariadb-test-source-copy`, `build-source-rootfs-shell-image`).
+
+**And the surface budget refused it, correctly.** The method plus its doc
+comment grew `memoryFsTypeScript` 8501 → 8522, and that file's target is **0**.
+Raising the ceiling to admit twenty-one lines into a file the campaign is
+deleting is the exact move the gate exists to stop, so the change was reverted
+rather than argued with.
+
+**So the union predicate needs a home that is not `memory-fs.ts`.** The shape
+that works is an ADAPTER at the funnel: `vfs-image-helpers.ts` already
+constructs the filesystem every builder uses, so it can wrap it once into a
+`VfsImageFilesystem`, and the recipes take the interface. That converts N
+importers into one adapter instead of adding lines to the doomed file — which is
+the same trade this lane is making everywhere else.
+
+**Two measurement lessons worth keeping**, both of which cost a cycle here:
+
+* **A syntax error suppresses type errors.** An import inserted inside a
+  multi-line `import { … }` broke four files, and the count read 25 — lower than
+  the 45 it replaced — because unparseable files stop TypeScript analysing
+  everything that imports them. Repairing the syntax revealed 229. A count that
+  falls after a broken edit is not progress.
+* **Repointing more files is not more progress.** A grep-driven pass repointed
+  18 type-only importers rather than the 13 whose measured usage fits the
+  interface, and the extra five use methods it deliberately omits.
+
 ### The repoint is one connected component, not a file-at-a-time pass. ATTEMPTED AND REVERTED 2026-09-12.
 
 The tier table above is right about what each file NEEDS and wrong about what
