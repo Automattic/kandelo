@@ -15,7 +15,20 @@
     "without it, one lane's deletion silently funds the next lane's growth.",
     "",
     "WHAT A CEILING IS NOT. It is not a goal. Every `target` below is far under",
-    "its ceiling, and the gap is the work. See docs/plans/2026-09-11-MASTER-PLAN.md."
+    "its ceiling, and the gap is the work. See docs/plans/2026-09-11-MASTER-PLAN.md.",
+    "",
+    "LANE CLOSURE. `lanes` below binds each lane's status to measurements. A lane",
+    "marked `closed` whose conditions are unmet fails; a lane marked `open` whose",
+    "conditions are all met ALSO fails, saying to close it. Lane status therefore",
+    "cannot be asserted in prose -- which is what every previous attempt did, and",
+    "why drift was only ever caught when a human happened to ask.",
+    "",
+    "A lane whose completion is not a number says so with `manual` and a reason.",
+    "That is honest; silence is not.",
+    "",
+    "CHECKLIST CLOSURE is weaker than a measurement and is labelled as such. A",
+    "tick is self-reported. Its value is that the instances are enumerated, so a",
+    "lane cannot be closed by forgetting one."
   ],
   "surfaces": {
     "forkTypeScript": {
@@ -52,6 +65,128 @@
       "slack": 2,
       "target": 5,
       "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow."
+    },
+    "parseShebangReferences": {
+      "measure": "references to parseShebang in host/src",
+      "ceiling": 12,
+      "slack": 12,
+      "target": 0,
+      "why": "Shebang is a kernel feature on every real Unix: execve(2) substitutes the interpreter. POSIX does not specify it at all and only requires libc's execvp family to fall back to sh on ENOEXEC, so a libc-only implementation is a divergence rather than a simplification. The lane is done when the host no longer parses it."
+    },
+    "setuidLazyWithoutDigest": {
+      "measure": "packages with mode 4755 that ship lazy while the rootfs manifest emitter writes no digest for lazy outputs",
+      "ceiling": 2,
+      "slack": 2,
+      "target": 0,
+      "why": "sudo and sudo-lite ship setuid-root as lazy references fetched by URL with length as the only check. Bytes of the same length from a substituting host, a poisoned cache or a network position execute as root inside the guest."
+    }
+  },
+  "lanes": {
+    "F": {
+      "title": "fork control flow \u2014 invert, do not port",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "forkTypeScript",
+          "atMost": 2500
+        },
+        {
+          "surface": "forkModuleEntryPoints",
+          "atMost": 5
+        },
+        {
+          "surface": "workerMainTypeScript",
+          "atMost": 3000
+        }
+      ],
+      "why": "Inversion is done when the host calls a handful of coarse entries and no longer drives the sequence. Each fine-grained fm_* entry leaves a host-side seeding loop behind, so the entry count and the TypeScript line count fall together or neither has moved."
+    },
+    "V": {
+      "title": "VFS image \u2014 one implementation of SFFS",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "sffsTypeScript",
+          "atMost": 0
+        }
+      ],
+      "why": "The block filesystem is implemented twice at near-identical size. The lane closes when the TypeScript copy is gone, not when the Rust one works."
+    },
+    "I": {
+      "title": "host import surface \u2014 V4",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "hostImportFunctions",
+          "atMost": 40
+        }
+      ],
+      "why": "28 of 72 imports are POSIX filesystem operations the kernel already implements for its own mounts. A host-backed mount needs roughly six calls. 40 is the ceiling to beat, not the goal."
+    },
+    "P": {
+      "title": "platform honesty",
+      "status": "open",
+      "closure": "checklist",
+      "why": "Not reducible to one count: the defect is capability and state presented that do not exist. The checklist is SELF-REPORTED and says so -- it enumerates the instances so none can be waved through in prose, but a tick is a claim, and each must be backed by a test demonstrated failing against the old behaviour first.",
+      "checklist": {
+        "mountSourceKindsOfferedWithoutImplementation": false,
+        "inspectorReadsProcMountsNotTheBootDescriptor": false,
+        "mountConfigReadonlyEitherGatesOrStopsRendering": false,
+        "posixStatusContradictionsReconciled": false,
+        "stRdevWrittenForDeviceNodes": false
+      }
+    },
+    "X": {
+      "title": "process and exec",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "parseShebangReferences",
+          "atMost": 0
+        }
+      ],
+      "why": "Closure is the kernel deciding what a spawn runs. parseShebang reaching zero is the measurable form; the probe traps today, so the panic is the blocker rather than the design."
+    },
+    "C": {
+      "title": "conformance",
+      "status": "open",
+      "closure": "manual",
+      "why": "Closure is a failing-file-set comparison with no campaign-caused regression, not a total. Totals hide compensating changes, and the merge-base cannot produce a comparable set because its runner times out every guest-executing test."
+    },
+    "S": {
+      "title": "setuid lazy references are fetched without integrity",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "setuidLazyWithoutDigest",
+          "atMost": 0
+        }
+      ],
+      "why": "Closure is that no setuid binary is fetched without its bytes being verified. Either the emitter records a digest for lazy outputs, or those packages stop shipping lazy."
+    },
+    "M": {
+      "title": "shared-mapping cutover",
+      "status": "deferred",
+      "closure": "manual",
+      "why": "Deferred by the maintainer out of #1350; resumes as a separate PR targeting its branch. Handoff at docs/plans/2026-09-11-lane-a-state-of-the-lane.md."
+    },
+    "B": {
+      "title": "build and provisioning truthfulness",
+      "status": "open",
+      "closure": "manual",
+      "why": "Closure is that a build which cannot produce a usable artifact says so, and that the documented provisioning path and the documented freshness gate agree. Neither is a count."
+    },
+    "T": {
+      "title": "test hygiene",
+      "status": "open",
+      "closure": "manual",
+      "why": "Closure is every host-suite failure attributed to a named cause. Blocked on a clean suite read rather than on work."
+    },
+    "H": {
+      "title": "browser",
+      "status": "open",
+      "closure": "manual",
+      "why": "Deprioritized by the maintainer. Closure is a browser pass plus curation, both of which are judgement rather than measurement."
     }
   }
 }

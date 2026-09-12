@@ -39,6 +39,19 @@ import { findRepoRoot } from "../src/binary-tiers";
  * every ceiling; the gap between them is the remaining work, not slack.
  */
 
+interface ClosureCondition {
+  surface: string;
+  atMost: number;
+}
+
+interface Lane {
+  title: string;
+  status: "open" | "closed" | "deferred";
+  closure: ClosureCondition[] | "manual" | "checklist";
+  checklist?: Record<string, boolean>;
+  why: string;
+}
+
 interface Surface {
   measure: string;
   ceiling: number;
@@ -49,9 +62,16 @@ interface Surface {
 
 const repoRoot = findRepoRoot();
 
-function budget(): Record<string, Surface> {
+function readBudget(): { surfaces: Record<string, Surface>; lanes: Record<string, Lane> } {
   const raw = readFileSync(join(repoRoot, "docs", "surface-budget.json"), "utf8");
-  return (JSON.parse(raw) as { surfaces: Record<string, Surface> }).surfaces;
+  return JSON.parse(raw) as {
+    surfaces: Record<string, Surface>;
+    lanes: Record<string, Lane>;
+  };
+}
+
+function budget(): Record<string, Surface> {
+  return readBudget().surfaces;
 }
 
 /** Count lines across a shell glob, resolved from the repo root. */
@@ -81,6 +101,34 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
+  parseShebangReferences: () =>
+    lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
+      ? Number.parseInt(
+          execFileSync("/bin/sh", [
+            "-c",
+            "grep -ro 'parseShebang' host/src 2>/dev/null | wc -l",
+          ], { cwd: repoRoot, encoding: "utf8" }).trim(),
+          10,
+        )
+      : 0,
+  setuidLazyWithoutDigest: () => {
+    const emitter = readFileSync(
+      join(repoRoot, "scripts/generate-rootfs-package-manifest.mjs"),
+      "utf8",
+    );
+    // The emitter's lazy branch writes `lazy_url=` and `lazy_size=`. Until it
+    // also writes a digest, every setuid package that ships lazy is fetched
+    // with length as its only check.
+    if (/lazy_sha256=|lazy_digest=/.test(emitter)) return 0;
+    const packages = readFileSync(
+      join(repoRoot, "images/rootfs/PACKAGES.toml"),
+      "utf8",
+    );
+    return packages
+      .split(/\n(?=\[\[packages\]\])/)
+      .filter((b) => /mode = "4755"/.test(b) && !/install = "eager"/.test(b))
+      .length;
+  },
   forkModuleEntryPoints: () =>
     countMatches(
       "crates/fork-module/src/lib.rs",
@@ -125,6 +173,103 @@ describe("campaign surface budget", () => {
           + `progress.\n`
           + `  Target for this surface is ${surface.target}.`,
       ).toBeGreaterThan(surface.ceiling - surface.slack - 1);
+    });
+  }
+});
+
+/**
+ * Lane closure is measured, not asserted.
+ *
+ * # Why this exists separately from the ceilings above
+ *
+ * A ceiling stops a surface growing. It says nothing about whether a lane is
+ * *done* — and every previous attempt in this campaign expressed that in prose,
+ * where it could be typed into a document by anyone and checked by no one. A
+ * lane that claims closure it has not earned is the same failure as a guard
+ * that cannot fail: it looks like evidence and is not.
+ *
+ * So this fails in both directions, for the same reason the ceilings do.
+ * Claiming closure without meeting the conditions fails. Meeting every
+ * condition while still marked open ALSO fails, because an unclaimed
+ * completion is how a finished lane keeps absorbing effort.
+ *
+ * A lane whose completion genuinely is not a number declares `closure:
+ * "manual"` and must say why. That is honest, and it is visible — which is the
+ * difference between a judgement and an omission.
+ */
+describe("campaign lane closure", () => {
+  const { surfaces, lanes } = readBudget();
+
+  it("every lane states a closure condition or says why it cannot", () => {
+    for (const [id, lane] of Object.entries(lanes)) {
+      if (lane.closure === "checklist") {
+        const items = Object.entries(lane.checklist ?? {});
+        expect(items.length, `lane ${id} is checklist-closure with no items`)
+          .toBeGreaterThan(0);
+        const open = items.filter(([, done]) => !done).map(([k]) => k);
+        if (lane.status === "closed") {
+          expect(
+            open,
+            `lane ${id} is marked closed with unticked items: ${open.join(", ")}`,
+          ).toEqual([]);
+        } else {
+          expect(
+            open.length,
+            `lane ${id} has every item ticked but is still marked `
+              + `${lane.status}; close it in this commit`,
+          ).toBeGreaterThan(0);
+        }
+        continue;
+      }
+      if (lane.closure === "manual") {
+        expect(
+          lane.why.length,
+          `lane ${id} is manual-closure and must say why in its own words`,
+        ).toBeGreaterThan(40);
+        continue;
+      }
+      expect(lane.closure.length, `lane ${id} has an empty closure list`)
+        .toBeGreaterThan(0);
+      for (const condition of lane.closure) {
+        expect(
+          surfaces[condition.surface],
+          `lane ${id} closes on surface "${condition.surface}", which the `
+            + `budget does not measure`,
+        ).toBeDefined();
+      }
+    }
+  });
+
+  for (const [id, lane] of Object.entries(lanes)) {
+    if (lane.closure === "manual") continue;
+    if (lane.closure === "checklist") continue;
+
+    it(`lane ${id} (${lane.title}) — status matches its measurements`, () => {
+      const unmet = lane.closure.filter(
+        (c) => MEASURED[c.surface]!() > c.atMost,
+      );
+      const detail = lane.closure
+        .map((c) => `${c.surface}=${MEASURED[c.surface]!()} (needs <= ${c.atMost})`)
+        .join(", ");
+
+      if (lane.status === "closed") {
+        expect(
+          unmet,
+          `lane ${id} is marked closed but has not met its own conditions: `
+            + `${detail}.\n  ${lane.why}\n  A lane is closed when the `
+            + `measurement says so. Marking it closed first is how work that `
+            + `moved an algorithm and left its driver behind got counted as `
+            + `done, ten times over.`,
+        ).toEqual([]);
+      } else {
+        expect(
+          unmet.length,
+          `lane ${id} is marked ${lane.status} but meets every closure `
+            + `condition: ${detail}.\n  Close it in `
+            + `docs/surface-budget.json and in the master plan, in this `
+            + `commit. An unclaimed completion keeps absorbing effort.`,
+        ).toBeGreaterThan(0);
+      }
     });
   }
 });
