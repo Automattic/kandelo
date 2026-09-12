@@ -31,9 +31,12 @@
 //! import it reads.
 
 use anyhow::{anyhow, bail, Context, Result};
-use walrus::ir::{AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, UnaryOp};
+use walrus::ir::{
+    AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, RefCast, RefTest, UnaryOp,
+};
 use walrus::{
-    ExportItem, FunctionBuilder, FunctionId, ImportKind, Module, RefType, ValType,
+    AbstractHeapType, ExportItem, FunctionBuilder, FunctionId, HeapType, ImportKind, Module, RefType,
+    ValType,
 };
 
 // -- GC drive-shim injection (Phase 6 item 3b) --------------------------------
@@ -95,6 +98,9 @@ const TRANSIT_GROW_EXPORT: &str = "fm_transit_grow";
 /// The guest-facing fresh-GC claim, and the Rust helper it wraps.
 const GC_CLAIM_EXPORT: &str = "__wpk_fork_ref_gc_claim";
 const CLAIM_GC_HELPER_EXPORT: &str = "fm_capture_claim_gc";
+
+/// The guest-facing GC identity probe.
+const GC_LOOKUP_EXPORT: &str = "__wpk_fork_ref_gc_lookup";
 
 /// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
 /// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
@@ -921,6 +927,7 @@ fn main() -> Result<()> {
     inject_drive_execute(&mut module).context("injecting fm_drive_execute")?;
     inject_transit_grow(&mut module).context("injecting fm_transit_grow")?;
     inject_gc_claim(&mut module).context("injecting __wpk_fork_ref_gc_claim")?;
+    inject_gc_lookup(&mut module).context("injecting __wpk_fork_ref_gc_lookup")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1131,6 +1138,182 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
     let shim = builder.finish(vec![slot], &mut module.funcs);
     module.exports.add(GC_CLAIM_EXPORT, shim);
     Ok(())
+}
+
+/// Inject `__wpk_fork_ref_gc_lookup(slot) -> recipe`: return the recipe an
+/// equal GC value was already claimed under, or 0 if this value is new.
+///
+/// # Why the module can do this at all
+///
+/// GC values ARE comparable in wasm: `ref.eq` validates on `eqref`, which
+/// covers struct, array and i31. (It does NOT validate on `funcref`,
+/// `externref` or bare `anyref` — measured against V8 with a passing control —
+/// which is exactly why funcref and externref identity stay host imports and
+/// this one does not.) An internalized externref is likewise not comparable,
+/// which the drive shim above already notes.
+///
+/// # Why it is a scan
+///
+/// The transit table IS the record: `claim` hands out recipe R and the guest
+/// publishes the value at `R + 1` on the next instruction, so every previously
+/// claimed value is already in the table at a known slot. Finding a match is
+/// therefore a walk of `[2, table.size)`.
+///
+/// **This is O(n) per lookup and so O(n^2) over a capture with n distinct GC
+/// objects, and wasm offers nothing better**: there is no `ref.hash`, so a
+/// reference cannot key a map inside the module. The alternative is a host
+/// import handing back a stable identity per reference — which is what the
+/// set-aside TypeScript could do, because JavaScript can key a `WeakMap` by
+/// object identity. That would be a THIRD host import on a floor the maintainer
+/// approved at two, so it is not taken unilaterally; correctness first, and the
+/// complexity is recorded rather than hidden. No claim is made here about what
+/// n is in practice, because it has not been measured.
+///
+/// # Why this is correctness, not an optimisation
+///
+/// Without it a cyclic object graph never terminates. The generator publishes
+/// identity before recursing into fields precisely so the walk back finds it —
+/// "publishing the source identity before recursive fields is what makes
+/// aliases and cycles terminate deterministically".
+///
+/// # What is load-bearing here, and what only looks like it
+///
+/// Perturbation found that two things written as guards are early-outs that
+/// change nothing observable, and they are described honestly rather than
+/// removed (each still saves a full scan):
+///
+/// * **starting the scan at slot 2** skips slot 1, which is recipe 0 -- the
+///   canonical null recipe, never published. Starting at 1 instead is
+///   indistinguishable, because the per-candidate null check already skips it.
+///   It is NOT a self-match guard: the candidate is staged at slot 0 and the
+///   scan starts at 1 or above either way.
+/// * **the early null-target return** saves a scan that would find nothing:
+///   a null target is skipped against every candidate by the candidate null
+///   check, so removing it yields the same answer, slower.
+///
+/// The one step that is load-bearing is converting a matched SLOT back to its
+/// RECIPE (`slot - 1`). Returning the slot instead fails immediately.
+fn inject_gc_lookup(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == GC_LOOKUP_EXPORT)
+    {
+        bail!("module already exports {GC_LOOKUP_EXPORT}");
+    }
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+
+    let anyref = ValType::Ref(RefType::ANYREF);
+    // `RefTest`/`RefCast` are not `Copy`, so build one per use site.
+    let eq_test = || RefTest {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Eq),
+    };
+    let eq_cast = || RefCast {
+        nullable: true,
+        heap_type: HeapType::Abstract(AbstractHeapType::Eq),
+    };
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    let slot = module.locals.add(ValType::I32);
+    let target = module.locals.add(anyref);
+    let candidate = module.locals.add(anyref);
+    let index = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(slot)
+            .table_get(transit_table)
+            .local_set(target);
+        // A null or non-eq candidate can never match: report "new" rather than
+        // trapping, so the guest simply claims a fresh recipe.
+        body.local_get(target).ref_is_null().if_else(
+            None,
+            |null| {
+                null.i32_const(0).return_();
+            },
+            |_| {},
+        );
+        body.local_get(target)
+            .instr(eq_test())
+            .unop(UnaryOp::I32Eqz)
+            .if_else(
+                None,
+                |not_eq| {
+                    not_eq.i32_const(0).return_();
+                },
+                |_| {},
+            );
+        body.table_size(transit_table).local_set(size);
+        body.i32_const(2).local_set(index);
+        body.block(None, |done| {
+            let done_id = done.id();
+            done.loop_(None, |lp| {
+                let lp_id = lp.id();
+                lp.local_get(index)
+                    .local_get(size)
+                    .binop(BinaryOp::I32GeU)
+                    .br_if(done_id);
+                lp.local_get(index)
+                    .table_get(transit_table)
+                    .local_set(candidate);
+                lp.local_get(candidate)
+                    .ref_is_null()
+                    .unop(UnaryOp::I32Eqz)
+                    .if_else(
+                        None,
+                        |live| {
+                            live.local_get(candidate).instr(eq_test()).if_else(
+                                None,
+                                |comparable| {
+                                    comparable
+                                        .local_get(candidate)
+                                        .instr(eq_cast())
+                                        .local_get(target)
+                                        .instr(eq_cast())
+                                        .ref_eq()
+                                        .if_else(
+                                            None,
+                                            |hit| {
+                                                // slot = recipe + 1
+                                                hit.local_get(index)
+                                                    .i32_const(1)
+                                                    .binop(BinaryOp::I32Sub)
+                                                    .return_();
+                                            },
+                                            |_| {},
+                                        );
+                                },
+                                |_| {},
+                            );
+                        },
+                        |_| {},
+                    );
+                lp.local_get(index)
+                    .i32_const(1)
+                    .binop(BinaryOp::I32Add)
+                    .local_set(index);
+                lp.br(lp_id);
+            });
+        });
+        body.i32_const(0);
+    }
+    let shim = builder.finish(vec![slot], &mut module.funcs);
+    module.exports.add(GC_LOOKUP_EXPORT, shim);
+    Ok(())
+}
+
+/// Resolve an exported table by name.
+fn exported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
+    let export = module
+        .exports
+        .iter()
+        .find(|export| export.name == name)
+        .ok_or_else(|| anyhow!("module does not export {name}"))?;
+    match export.item {
+        ExportItem::Table(id) => Ok(id),
+        _ => bail!("{name} export is not a table"),
+    }
 }
 
 /// Resolve an exported function by name, failing loud rather than letting a

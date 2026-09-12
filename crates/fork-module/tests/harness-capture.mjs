@@ -98,6 +98,7 @@ for (const name of [
   "__wpk_fork_ref_gc_i31",
   "fm_transit_grow",
   "__wpk_fork_ref_gc_claim",
+  "__wpk_fork_ref_gc_lookup",
   "__wpk_fork_ref_gc_transit",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -466,6 +467,53 @@ x.fm_capture_begin();
     /unreachable/i,
     "gc_claim traps on a slot the generator never emits",
   );
+}
+
+// The guest-facing GC identity probe.
+//
+// Exercised against REAL comparable GC values. JavaScript cannot mint an
+// `i31ref`, so this hand-encodes a two-instruction companion module that can
+// (`local.get 0 ; ref.i31`). i31 is an eq-type, so it is `ref.eq`-comparable --
+// the property the whole scan rests on, and the one funcref and externref lack.
+function i31Minter() {
+  const b = [0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
+  const sec = (id, body) => { b.push(id, body.length, ...body); };
+  sec(1, [1, 0x60, 1, 0x7f, 1, 0x6e]);          // (i32) -> anyref
+  sec(3, [1, 0]);
+  sec(7, [1, 2, 0x6d, 0x6b, 0x00, 0]);          // export "mk"
+  const code = [0, 0x20, 0, 0xfb, 0x1c, 0x0b];  // local.get 0 ; ref.i31 ; end
+  sec(10, [1, code.length, ...code]);
+  return new WebAssembly.Instance(
+    new WebAssembly.Module(new Uint8Array(b)), {},
+  ).exports.mk;
+}
+{
+  const mk = i31Minter();
+  const transit = x.__wpk_fork_ref_gc_transit;
+  const A = mk(41);
+  const B = mk(42);
+
+  // Claim and publish A exactly as the guest does: claim, then table.set at
+  // recipe + 1 on the next instruction.
+  const ra = x.__wpk_fork_ref_gc_claim(0);
+  transit.set(ra + 1, A);
+
+  transit.set(0, A);
+  assert.equal(x.__wpk_fork_ref_gc_lookup(0), ra, "lookup finds an already-claimed value");
+  transit.set(0, B);
+  assert.equal(x.__wpk_fork_ref_gc_lookup(0), 0, "an unseen value is reported new");
+
+  const rb = x.__wpk_fork_ref_gc_claim(0);
+  transit.set(rb + 1, B);
+  transit.set(0, B);
+  assert.equal(x.__wpk_fork_ref_gc_lookup(0), rb, "and is found once claimed");
+  transit.set(0, A);
+  assert.equal(x.__wpk_fork_ref_gc_lookup(0), ra, "without disturbing the earlier one");
+
+  // Termination for cycles depends on this: a null or non-comparable staging
+  // slot must report "new" rather than trapping, so the guest claims instead.
+  transit.set(0, null);
+  assert.equal(x.__wpk_fork_ref_gc_lookup(0), 0, "a null candidate is new, not a trap");
 }
 
 console.log("fork-module capture harness: all assertions passed");
