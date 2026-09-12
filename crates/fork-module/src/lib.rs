@@ -143,7 +143,7 @@ mod wasm {
     use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-    use alloc::collections::{BTreeMap, BTreeSet};
+    use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
 
     use fork_codec::{
@@ -1621,6 +1621,118 @@ mod wasm {
     /// written through as an address, corrupting low guest memory. A trap is the
     /// truthful failure — the same choice the drive shim's post-allocate
     /// integrity guard makes.
+    /// Dirty table pages for THIS worker, keyed by the physical table's OWNER
+    /// id. Worker-level and durable, NOT per-fork.
+    ///
+    /// # Why not in `ForkModule`
+    ///
+    /// It was, and that was wrong. `fork-instrument` wraps EVERY `table.set`,
+    /// `table.copy`, `table.fill`, `table.init` and `table.grow` in the program
+    /// with a mark, gated only on a non-empty range and a last-page cache --
+    /// there is no fork-active condition. Marks therefore happen throughout
+    /// ordinary execution, because the set has to record what changed SINCE
+    /// INSTANTIATION so that whenever a fork does happen the sparse overlay is
+    /// correct. A per-fork home dropped almost every mark, and a `BTreeMap` in
+    /// the bump heap would not have survived `reset_bump_heap` anyway.
+    ///
+    /// # Why a fixed bitmap rather than a map
+    ///
+    /// The bump heap is reclaimed wholesale at each fork, so anything durable
+    /// cannot allocate from it. This is a fixed region with a SATURATION flag:
+    /// if a page or an owner does not fit, the worker records "everything is
+    /// dirty" instead of recording less. Over-approximating the overlay makes a
+    /// capture larger; under-approximating makes it WRONG, so saturation is the
+    /// only safe direction to fail in.
+    const DIRTY_OWNERS: usize = 32;
+    const DIRTY_PAGES_PER_OWNER: usize = 4096;
+    const DIRTY_WORDS_PER_OWNER: usize = DIRTY_PAGES_PER_OWNER / 64;
+
+    struct DirtyCell(UnsafeCell<DirtyState>);
+    // SAFETY: one guest drives these exports per worker, as with every other
+    // module static here.
+    unsafe impl Sync for DirtyCell {}
+
+    struct DirtyState {
+        /// Owner id per slot, `u32::MAX` when the slot is free.
+        owners: [u32; DIRTY_OWNERS],
+        bits: [[u64; DIRTY_WORDS_PER_OWNER]; DIRTY_OWNERS],
+        /// Set when a mark could not be recorded exactly. Every query then
+        /// answers as if all pages of every table are dirty.
+        saturated: bool,
+    }
+
+    static DIRTY: DirtyCell = DirtyCell(UnsafeCell::new(DirtyState {
+        owners: [u32::MAX; DIRTY_OWNERS],
+        bits: [[0u64; DIRTY_WORDS_PER_OWNER]; DIRTY_OWNERS],
+        saturated: false,
+    }));
+
+    #[allow(clippy::mut_from_ref)]
+    fn dirty() -> &'static mut DirtyState {
+        // SAFETY: single-threaded per worker, as `state()` above.
+        unsafe { &mut *DIRTY.0.get() }
+    }
+
+    impl DirtyState {
+        fn slot(&mut self, owner: u32) -> Option<usize> {
+            if let Some(i) = self.owners.iter().position(|o| *o == owner) {
+                return Some(i);
+            }
+            let free = self.owners.iter().position(|o| *o == u32::MAX)?;
+            self.owners[free] = owner;
+            Some(free)
+        }
+
+        fn mark(&mut self, owner: u32, first_page: u64, page_count: u64) {
+            let Some(last) = first_page.checked_add(page_count) else {
+                self.saturated = true;
+                return;
+            };
+            if last > DIRTY_PAGES_PER_OWNER as u64 {
+                self.saturated = true;
+                return;
+            }
+            let Some(slot) = self.slot(owner) else {
+                self.saturated = true;
+                return;
+            };
+            for page in first_page..last {
+                let page = page as usize;
+                self.bits[slot][page / 64] |= 1u64 << (page % 64);
+            }
+        }
+
+        fn count(&self, owner: u32) -> u32 {
+            if self.saturated {
+                return DIRTY_PAGES_PER_OWNER as u32;
+            }
+            match self.owners.iter().position(|o| *o == owner) {
+                Some(slot) => self.bits[slot].iter().map(|w| w.count_ones()).sum(),
+                None => 0,
+            }
+        }
+
+        fn page(&self, owner: u32, ordinal: u32) -> Option<u64> {
+            if self.saturated {
+                return (ordinal < DIRTY_PAGES_PER_OWNER as u32).then_some(u64::from(ordinal));
+            }
+            let slot = self.owners.iter().position(|o| *o == owner)?;
+            let mut seen = 0u32;
+            for (word_index, word) in self.bits[slot].iter().enumerate() {
+                let mut w = *word;
+                while w != 0 {
+                    let bit = w.trailing_zeros() as usize;
+                    if seen == ordinal {
+                        return Some((word_index * 64 + bit) as u64);
+                    }
+                    seen += 1;
+                    w &= w - 1;
+                }
+            }
+            None
+        }
+    }
+
     const SCRATCH_SIZE: usize = 64 * 1024;
 
     #[repr(C, align(16))]
@@ -1998,15 +2110,6 @@ mod wasm {
         /// the format has one implementation rather than two.
         module_state: ModuleStateWriter,
         module_state_chunks: ForkChunkList,
-        /// Dirty table pages, keyed by the physical table's OWNER id (not a
-        /// table index: imported aliases in different activations name one
-        /// physical table, and all of them contribute marks to the same set).
-        ///
-        /// A `BTreeSet` because the guest enumerates by ordinal and expects a
-        /// stable order, and because overlapping marks are normal -- the
-        /// injected marker caches only the LAST page it marked, so a scattered
-        /// write pattern re-marks pages it has already seen.
-        table_dirty: BTreeMap<u32, BTreeSet<u64>>,
         /// Process-wide replay-event journal (records `(activation_id, ordinal)`
         /// commits across every activation; replays the global reverse order).
         journal: ReplayEventJournal,
@@ -2144,7 +2247,6 @@ mod wasm {
             journal_image_len: 0,
             module_state: ModuleStateWriter::new(module_state_format()?),
             module_state_chunks: ForkChunkList::new_channel(channel_base),
-            table_dirty: BTreeMap::new(),
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
             replay_events: Vec::new(),
@@ -2701,7 +2803,6 @@ mod wasm {
             // here fails truthfully instead of writing into an unowned region.
             module_state: ModuleStateWriter::new(module_state_format()?),
             module_state_chunks: ForkChunkList::new_channel(0),
-            table_dirty: BTreeMap::new(),
             journal,
             table,
             replay_events: decoded.events,
@@ -5047,83 +5148,50 @@ mod wasm {
     /// Guest-facing `env.__wpk_fork_module_state_table_dirty_mark(owner,
     /// first_page, page_count)`.
     ///
-    /// Records that `page_count` pages starting at `first_page` of the physical
-    /// table `owner` have been mutated since instantiation. `fork-instrument`
-    /// wraps every `table.set`, `table.copy`, `table.fill`, `table.init` and
-    /// `table.grow` with a call to this, so a fork serialises only the SPARSE
-    /// OVERLAY -- the difference from the baseline the child rebuilds for free
-    /// by instantiating -- instead of every slot of a large table.
+    /// Records that pages `[first_page, first_page + page_count)` of the
+    /// physical table `owner` have been mutated since instantiation.
     ///
-    /// Keyed by owner rather than by table index on purpose: imported aliases
-    /// in different activations name ONE physical table, and every alias
-    /// contributes marks to the same set even though only the canonical
-    /// activation writes the sparse state out.
-    ///
-    /// Returns nothing (the guest ABI has no error channel here), so a failure
-    /// latches in `fm_last_errno`.
+    /// **This runs during ORDINARY execution, not only during a fork.**
+    /// `fork-instrument` wraps every `table.set`, `table.copy`, `table.fill`,
+    /// `table.init` and `table.grow` with a call to it, gated only on a
+    /// non-empty range and a last-page cache. That is the whole point: the set
+    /// has to record what changed since instantiation so that WHENEVER a fork
+    /// happens, the sparse overlay it serialises is correct. So there is no
+    /// fork-state requirement here, and a mark with no fork in flight is the
+    /// normal case rather than an error.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_dirty_mark(
         owner: u32,
         first_page: u64,
         page_count: u64,
     ) {
-        let Some(module) = state().as_mut() else {
-            set_err(Errno::EINVAL);
-            return;
-        };
-        let Some(last) = first_page.checked_add(page_count) else {
-            set_err(Errno::EINVAL);
-            return;
-        };
-        let pages = module.table_dirty.entry(owner).or_default();
-        for page in first_page..last {
-            pages.insert(page);
-        }
+        dirty().mark(owner, first_page, page_count);
         set_ok();
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_table_dirty_count(owner)`.
     ///
-    /// How many DISTINCT pages of this physical table are dirty. The guest
-    /// reserves its table record sized from this, then walks
+    /// How many distinct pages of this physical table are dirty. The guest
+    /// sizes its table record from this, then walks
     /// `__wpk_fork_module_state_table_dirty_page` from 0 to this count.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_dirty_count(owner: u32) -> i32 {
-        let Some(module) = state().as_ref() else {
-            set_err(Errno::EINVAL);
-            return 0;
-        };
         set_ok();
-        module
-            .table_dirty
-            .get(&owner)
-            .map_or(0, |pages| i32::try_from(pages.len()).unwrap_or(i32::MAX))
+        i32::try_from(dirty().count(owner)).unwrap_or(i32::MAX)
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_table_dirty_page(owner,
     /// ordinal) -> page`.
     ///
-    /// The `ordinal`-th dirty page, ascending. The guest shifts the result left
-    /// by the table page shift to get a slot offset, so the ORDER has to be
-    /// stable across the walk and the count has to agree with it -- both come
-    /// from the set being ordered rather than from an insertion sequence.
-    ///
-    /// An out-of-range ordinal is `EINVAL` and 0 rather than a silent 0: page 0
-    /// is a legitimate answer, so the two cannot share a return value.
+    /// The `ordinal`-th dirty page, ascending, so the walk order matches the
+    /// count. An out-of-range ordinal is `EINVAL` rather than 0, because page 0
+    /// is a legitimate answer and the two cannot share a return value.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_dirty_page(owner: u32, ordinal: u32) -> u64 {
-        let Some(module) = state().as_ref() else {
-            set_err(Errno::EINVAL);
-            return 0;
-        };
-        match module
-            .table_dirty
-            .get(&owner)
-            .and_then(|pages| pages.iter().nth(ordinal as usize))
-        {
+        match dirty().page(owner, ordinal) {
             Some(page) => {
                 set_ok();
-                *page
+                page
             }
             None => {
                 set_err(Errno::EINVAL);

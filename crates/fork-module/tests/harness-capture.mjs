@@ -642,42 +642,68 @@ function i31Minter() {
   );
 }
 
-// Dirty table-page tracking. `fork-instrument` wraps every table.set / copy /
-// fill / init / grow with a mark, so a fork serialises only the pages that
-// actually changed instead of every slot of a large table.
+// Dirty table-page tracking.
 //
-// With no fork in flight these answer for an empty set rather than erroring,
-// which is what lets a save run against a table nothing touched.
+// `fork-instrument` wraps every table.set / copy / fill / init / grow with a
+// mark, gated only on a non-empty range -- there is NO fork-active condition.
+// Marks therefore happen throughout ordinary execution, because the set records
+// what changed since instantiation so that whenever a fork happens the sparse
+// overlay is correct. So these work with no fork in flight, which is also what
+// makes them the first entries in this family that can be tested for real
+// rather than only at their front door.
 {
+  const OWNER = 7;
   assert.equal(
-    x.__wpk_fork_module_state_table_dirty_count(7),
+    x.__wpk_fork_module_state_table_dirty_count(OWNER),
     0,
     "an untouched table has no dirty pages",
   );
-  // NOTE ON COVERAGE. This harness runs with NO fork in flight, so for every
-  // entry below the no-state guard fires FIRST and shadows the deeper ones.
-  // These assertions therefore test that guard and nothing past it -- which is
-  // worth testing (a stray guest call must not write into an unowned region)
-  // but is not the same as testing the logic behind it.
-  //
-  // The deeper branches -- an out-of-range ordinal, a page set that actually
-  // has contents -- need a live fork, which needs the syscall channel and the
-  // guest drive table a single-threaded harness cannot stand up. They are
-  // UNCOVERED here and that is why each is named for the guard it reaches.
-  x.__wpk_fork_module_state_table_dirty_page(7, 0);
+
+  x.__wpk_fork_module_state_table_dirty_mark(OWNER, 3n, 2n);
+  assert.equal(lastErrno(), 0, "marking with no fork in flight is the NORMAL case");
   assert.equal(
-    lastErrno(),
-    EINVAL,
-    "asking for a page with no fork in flight is EINVAL, not a silent 0",
+    x.__wpk_fork_module_state_table_dirty_count(OWNER),
+    2,
+    "two pages marked, two pages dirty",
   );
-  // Marking needs a live fork: the set hangs off the fork's own state, so a
-  // mark with nothing in flight must fail rather than accumulate into a set
-  // that will never be serialised.
-  x.__wpk_fork_module_state_table_dirty_mark(7, 0n, 4n);
+  // Page 100 lands in a LATER bitmap word than 3 and 4. Without it the ordering
+  // assertion cannot see a word-iteration bug at all -- every page would live in
+  // word 0, where order is decided by bit position alone.
+  x.__wpk_fork_module_state_table_dirty_mark(OWNER, 100n, 1n);
+  assert.equal(x.__wpk_fork_module_state_table_dirty_page(OWNER, 0), 3n, "pages enumerate ascending");
+  assert.equal(x.__wpk_fork_module_state_table_dirty_page(OWNER, 1), 4n, "and in order");
   assert.equal(
-    lastErrno(),
-    EINVAL,
-    "marking with no fork in flight latches EINVAL",
+    x.__wpk_fork_module_state_table_dirty_page(OWNER, 2),
+    100n,
+    "ordering holds ACROSS bitmap words, not just within one",
+  );
+
+  // Re-marking is normal: the injected marker caches only the LAST page it
+  // touched, so a scattered write pattern re-marks pages it has already seen.
+  x.__wpk_fork_module_state_table_dirty_mark(OWNER, 3n, 2n);
+  assert.equal(
+    x.__wpk_fork_module_state_table_dirty_count(OWNER),
+    3,
+    "re-marking the same pages does not double-count them",
+  );
+
+  // A different physical table keeps its own set.
+  x.__wpk_fork_module_state_table_dirty_mark(9, 0n, 1n);
+  assert.equal(x.__wpk_fork_module_state_table_dirty_count(9), 1, "owners are independent");
+  assert.equal(x.__wpk_fork_module_state_table_dirty_count(OWNER), 3, "and do not disturb each other");
+
+  // Page 0 is a legitimate answer, so out-of-range reports through the errno.
+  x.__wpk_fork_module_state_table_dirty_page(OWNER, 99);
+  assert.equal(lastErrno(), EINVAL, "an ordinal past the count is EINVAL, not a silent 0");
+
+  // Saturation: a mark that cannot be recorded exactly must make every query
+  // answer "everything is dirty". Under-approximating the overlay would make a
+  // capture WRONG; over-approximating only makes it larger.
+  const before = x.__wpk_fork_module_state_table_dirty_count(OWNER);
+  x.__wpk_fork_module_state_table_dirty_mark(OWNER, 0n, 1n << 40n);
+  assert.ok(
+    x.__wpk_fork_module_state_table_dirty_count(OWNER) > before,
+    "a mark too large to record saturates instead of being dropped",
   );
 }
 
