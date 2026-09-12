@@ -3021,13 +3021,33 @@ the Rust side no longer has to keep emitting a section it is trying to retire.
 ### What Y5 actually costs — half of it is one line each
 
 **18 of the 36 importers use `import type` and never call the class.** Measured
-2026-09-12. They include `wordpress-preinstall.ts` — the 921-line recipe this
-lane holds up as product logic — plus `build-wp`, `build-lamp`,
-`build-node-vfs`, `demo-login.ts` and `kandelo-demo-config.ts`. For those the
-coupling is the **interface type**, not the implementation, and each repoints by
-changing one import once the bridge exposes an equivalent type. The other ~18
-carry the real call sites, and `vfs-image-helpers.ts` is the funnel through
-which all of them reach the format.
+2026-09-12. For those the coupling is the **interface type**, not the
+implementation. The other ~18 carry the real call sites, and
+`vfs-image-helpers.ts` is the funnel through which all of them reach the format.
+
+**CORRECTION 2026-09-12, by measuring each file rather than the set.** The claim
+above continued "and each repoints by changing one import once the bridge
+exposes an equivalent type". That is true for most of them and **false for
+five**, which matters because it is the difference between a mechanical pass and
+a blocked one. Measured per file, the type-only importers are three tiers:
+
+| Tier | Files | What they call on the filesystem |
+|---|---|---|
+| **Uses nothing** | 6 | Nothing at all — the type appears in a signature and is never dereferenced. `wordpress-source-layout`, `kandelo-demo-config`, `smtp-capture-helpers`, `main-shell-demo-config`, `derived-vfs-symlink`, `build-node-vfs-image`. |
+| **POSIX subset** | 7 | `chmod`, `chown`, `stat`, `open`, `close`, `read`, `write` — all of which the Rust bridge already has or trivially can. Includes `wordpress-preinstall` (the 921-line recipe) and `build-lamp`, `build-wp`, `build-python`, `shell-runtime-layout`, `mariadb-image-helpers`, `spidermonkey-npm-runtime`. |
+| **Needs surface that does not exist** | 5 | `saveImage` (`opcache-prewarm`), `getLazyEntry`/`isPathDeferred` (`dinit-image-helpers`, `demo-login`), `registerLazyArchiveFromEntries` (`shell-lazy-archives`), `exportLazyArchiveEntries` (`source-rootfs-shell-overlay`). |
+
+**So 13 of the 18 repoint against one narrow interface and 5 do not**, and the
+five are exactly the lazy-archive and save paths — which is the same boundary
+every other measurement in this lane has landed on. That is a better result than
+the original claim, not a worse one: it says which files are blocked and on
+what, instead of promising a uniform pass that would have stalled five files in.
+
+**Watch H-8 here.** Repointing a type-only importer at a neutral interface drops
+the import count, which is what unblocks deleting `memory-fs.ts`. It does NOT
+mean those files work against the Rust writer — the object passed to them is
+still a `MemoryFileSystem` until the value-side call sites move. Low coupling is
+not migratability, and the budget number must not be read as though it were.
 
 ## Acceptance evidence
 
