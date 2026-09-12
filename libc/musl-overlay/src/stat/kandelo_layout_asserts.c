@@ -21,6 +21,8 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/sysinfo.h>
+#include <sys/sysmacros.h>
+#include <netinet/in.h>
 #include <bits/kandelo_process_layouts.h>
 
 /* --- statfs: width-selected, matching the rest of the libc glue --- */
@@ -247,3 +249,47 @@ _Static_assert(offsetof(struct sched_param, sched_priority) == KANDELO_PROCESS_S
  * here. The remaining six offsets are unguarded and lane G should say so
  * rather than imply the module is fully covered.
  */
+
+/* --- multicast_group_request: width-selected --- */
+#if __SIZEOF_POINTER__ == 8
+#define KANDELO_NATIVE_GROUP_REQ_SIZE KANDELO_PROCESS_GROUP_REQ_WASM64_SIZE
+#define KANDELO_NATIVE_GROUP_OFFSET KANDELO_PROCESS_GROUP_REQ_WASM64_GROUP_OFFSET
+#define KANDELO_NATIVE_GROUP_SOURCE_REQ_SIZE \
+	KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM64_SIZE
+#define KANDELO_NATIVE_SOURCE_OFFSET \
+	KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM64_SOURCE_OFFSET
+#else
+#define KANDELO_NATIVE_GROUP_REQ_SIZE KANDELO_PROCESS_GROUP_REQ_WASM32_SIZE
+#define KANDELO_NATIVE_GROUP_OFFSET KANDELO_PROCESS_GROUP_REQ_WASM32_GROUP_OFFSET
+#define KANDELO_NATIVE_GROUP_SOURCE_REQ_SIZE \
+	KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM32_SIZE
+#define KANDELO_NATIVE_SOURCE_OFFSET \
+	KANDELO_PROCESS_GROUP_SOURCE_REQ_WASM32_SOURCE_OFFSET
+#endif
+_Static_assert(sizeof(struct group_req) == KANDELO_NATIVE_GROUP_REQ_SIZE,
+	"multicast_group_request GROUP_REQ_SIZE drifted from crates/shared/src/process_layout.rs");
+_Static_assert(offsetof(struct group_req, gr_group) == KANDELO_NATIVE_GROUP_OFFSET,
+	"multicast_group_request GROUP_OFFSET drifted from crates/shared/src/process_layout.rs");
+_Static_assert(sizeof(struct group_source_req) == KANDELO_NATIVE_GROUP_SOURCE_REQ_SIZE,
+	"multicast_group_request GROUP_SOURCE_REQ_SIZE drifted from crates/shared/src/process_layout.rs");
+_Static_assert(offsetof(struct group_source_req, gsr_source) == KANDELO_NATIVE_SOURCE_OFFSET,
+	"multicast_group_request SOURCE_OFFSET drifted from crates/shared/src/process_layout.rs");
+
+/* --- dev: a round-trip vector, not offsets ---
+ *
+ * `dev` is three const fns implementing the Linux dev_t split, so there is no
+ * struct to take offsetof against. The generator emits a vector computed by
+ * the Rust encoder; these asserts check musl's own macros reproduce it. The
+ * chosen major/minor both have non-zero bits in the high AND low fields of the
+ * split, so an encoder that drops either half fails here.
+ */
+_Static_assert(makedev(KANDELO_PROCESS_DEV_VECTOR_MAJOR,
+		       KANDELO_PROCESS_DEV_VECTOR_MINOR)
+	       == KANDELO_PROCESS_DEV_VECTOR_MAKEDEV,
+	"dev makedev drifted from crates/shared/src/process_layout.rs");
+_Static_assert(major(KANDELO_PROCESS_DEV_VECTOR_MAKEDEV)
+	       == KANDELO_PROCESS_DEV_VECTOR_MAJOR,
+	"dev major drifted from crates/shared/src/process_layout.rs");
+_Static_assert(minor(KANDELO_PROCESS_DEV_VECTOR_MAKEDEV)
+	       == KANDELO_PROCESS_DEV_VECTOR_MINOR,
+	"dev minor drifted from crates/shared/src/process_layout.rs");

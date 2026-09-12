@@ -209,6 +209,14 @@
 #define KANDELO_PROCESS_SCHED_PARAM_SS_INIT_BUDGET_NSEC_OFFSET 32u
 #define KANDELO_PROCESS_SCHED_PARAM_SS_LOW_PRIORITY_OFFSET 40u
 
+/* `dev` carries no offsets. These are a round-trip vector computed by
+* the Rust encoder, chosen so both the high and low bit fields of the
+* Linux dev_t split are non-zero, letting C assert musl's macros
+* against it. */
+#define KANDELO_PROCESS_DEV_VECTOR_MAJOR 1048575u
+#define KANDELO_PROCESS_DEV_VECTOR_MINOR 4294967295u
+#define KANDELO_PROCESS_DEV_VECTOR_MAKEDEV 4503599627370495ull
+
 #define KANDELO_SELECT_FD_SETSIZE 1024u
 #define KANDELO_SELECT_FD_SET_BYTES 128u
 

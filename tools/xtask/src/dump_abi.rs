@@ -669,7 +669,7 @@ fn render_marshal_header() -> String {
 
 fn render_process_layouts_header() -> String {
     use shared::process_layout::{
-        cmsghdr, iovec, mq_attr, msghdr, multicast_group_request, rt_sigqueueinfo,
+        cmsghdr, dev, iovec, mq_attr, msghdr, multicast_group_request, rt_sigqueueinfo,
         sched_param, sigaltstack, sigevent, stat, statfs, statx, sysinfo,
     };
 
@@ -885,6 +885,14 @@ fn render_process_layouts_header() -> String {
          #define KANDELO_PROCESS_SCHED_PARAM_SS_INIT_BUDGET_NSEC_OFFSET {sched_param_ss_init_budget_nsec_offset}u\n\
          #define KANDELO_PROCESS_SCHED_PARAM_SS_LOW_PRIORITY_OFFSET {sched_param_ss_low_priority_offset}u\n\
          \n\
+         /* `dev` carries no offsets. These are a round-trip vector computed by\n\
+          * the Rust encoder, chosen so both the high and low bit fields of the\n\
+          * Linux dev_t split are non-zero, letting C assert musl's macros\n\
+          * against it. */\n\
+         #define KANDELO_PROCESS_DEV_VECTOR_MAJOR {dev_vec_major}u\n\
+         #define KANDELO_PROCESS_DEV_VECTOR_MINOR {dev_vec_minor}u\n\
+         #define KANDELO_PROCESS_DEV_VECTOR_MAKEDEV {dev_vec_makedev}ull\n\
+         \n\
          #define KANDELO_SELECT_FD_SETSIZE {fd_setsize}u\n\
          #define KANDELO_SELECT_FD_SET_BYTES {fd_set_bytes}u\n\
          \n\
@@ -1088,6 +1096,13 @@ fn render_process_layouts_header() -> String {
         sched_param_ss_init_budget_sec_offset = sched_param::SS_INIT_BUDGET_SEC_OFFSET,
         sched_param_ss_init_budget_nsec_offset = sched_param::SS_INIT_BUDGET_NSEC_OFFSET,
         sched_param_ss_low_priority_offset = sched_param::SS_LOW_PRIORITY_OFFSET,
+        // All bits set in both fields. A sparser vector silently under-tests
+        // the encoder: 0x12345 has bit 12 clear, so a mask perturbed from
+        // 0xffff_f000 to 0xffff_e000 produced an IDENTICAL value and the C
+        // assert could not fire. Maximal values make every mask bit matter.
+        dev_vec_major = 0x000f_ffffu32,
+        dev_vec_minor = 0xffff_ffffu32,
+        dev_vec_makedev = dev::makedev(0x000f_ffff, 0xffff_ffff),
         fd_setsize = shared::select::FD_SETSIZE,
         fd_set_bytes = shared::select::FD_SET_BYTES,
     )
