@@ -35,3 +35,17 @@ are documented in the source next to the code rather than as always-red trials:
 Encoding them here would make a committed spec permanently red, which teaches
 people to ignore the gate. Keeping the reason beside the code keeps it where
 the next reader already is.
+
+## Deferred is not accepted
+
+`deferred-until-v4.json` holds two trials that are **not** part of the green
+contract and are **not** accepted survivors either. They cannot be killed today
+because the export turns base files and lazy members into empty stubs without
+consulting its byte source — lane V's V4 hazard, reproduced and pinned in
+`crates/sffs-module/src/lib.rs`. When V4's identity contract lands, that source
+becomes reachable and both trials become killable.
+
+**They are the tests that will prove V4 is finished.** Move them back into
+`sffs-module-abi.json` then. The distinction from an accepted survivor is
+worth keeping: one can never be killed, the other cannot be killed *yet*, and
+collapsing them would lose the fact that someone owes work here.

@@ -1,0 +1,21 @@
+{
+  "_comment": "NOT part of the green contract. These trials cannot be killed until lane V's V4 identity contract makes the export's byte source reachable; today the export turns base files and lazy members into empty stubs without consulting it. Move them back into sffs-module-abi.json when V4 lands -- they are the tests that will prove it.",
+  "file": "crates/sffs-module/src/lib.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "export reports a negative errno as a byte count",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "        Err(e) => err(e),",
+      "replace": "        Err(_e) => 0,"
+    },
+    {
+      "name": "export silently invents base bytes",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO)",
+      "replace": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Ok(_dst.len())"
+    }
+  ]
+}

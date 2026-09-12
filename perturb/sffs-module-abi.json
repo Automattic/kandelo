@@ -120,20 +120,6 @@
       "scope_end": "\n}\n",
       "find": "rootfs::export_image_read(offset, out, &mut source)",
       "replace": "rootfs::export_image_read(0, out, &mut source)"
-    },
-    {
-      "name": "export reports a negative errno as a byte count",
-      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
-      "scope_end": "\n}\n",
-      "find": "        Err(e) => err(e),",
-      "replace": "        Err(_e) => 0,"
-    },
-    {
-      "name": "export silently invents base bytes",
-      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
-      "scope_end": "\n}\n",
-      "find": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO)",
-      "replace": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Ok(_dst.len())"
     }
   ]
 }
