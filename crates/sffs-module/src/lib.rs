@@ -517,6 +517,45 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     }
 }
 
+/// Register a file whose bytes live in a lazy archive rather than the image.
+///
+/// This is the builders' `registerLazyFile`. It is not an edge case: the
+/// shipped shell image carries 7,546 deferred entries against 79 URL-backed
+/// single files, so the overwhelming majority of a production image's files
+/// arrive this way. A bridge without it could build only trivial images.
+///
+/// `size` is the file's REAL length, authoritative from the manifest. The body
+/// inode is a zero-length stub and the size rides in the deferred record --
+/// the SDEF contract -- so a reader knows how much to fetch without having
+/// fetched anything.
+///
+/// # Safety
+/// Both ranges must describe readable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_register_lazy_file(
+    path_ptr: usize,
+    path_len: usize,
+    archive_id: u32,
+    source_ptr: usize,
+    source_len: usize,
+    size: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    ino: u64,
+) -> i32 {
+    ok_or_errno(rootfs::insert_lazy_file(
+        unsafe { slice(path_ptr, path_len) },
+        archive_id,
+        unsafe { slice(source_ptr, source_len) },
+        size,
+        mode,
+        uid,
+        gid,
+        ino,
+    ))
+}
+
 /// # Safety
 /// `path_ptr`/`path_len` must describe a readable range.
 #[unsafe(no_mangle)]
@@ -984,6 +1023,74 @@ mod tests {
         assert!(
             fs.deferred_section().expect("decodes").is_none(),
             "THE DAMAGE: and with no deferred record, so nothing records where its bytes were",
+        );
+    }
+
+    /// **A registered lazy file exports as an EMPTY FILE, losing its
+    /// identity.** Pinned, because it means `export_image_read` cannot
+    /// serialize a production image at all.
+    ///
+    /// The registration itself is correct: before the export, `/usr/big`
+    /// reports its manifest size of 99,999 and its mode, exactly as a builder
+    /// needs pre-fetch.
+    ///
+    /// The export is what loses it. `build_export_image` maps
+    /// `InodeKind::LazyMember` to `ExportNode::LazyStub` and writes
+    /// `create_file(.., Content::Bytes(b""))` -- an empty file. Deferred
+    /// records are only emitted for entries created through
+    /// `create_deferred_file`, which the export never calls, so no SDEF
+    /// section is produced and nothing records where the bytes were.
+    ///
+    /// **This corrects a claim made one commit earlier.** That commit said the
+    /// module "is correct for FRESH builds, which have no base files". Fresh
+    /// builds are not exempt: they REGISTER lazy files, and the shipped shell
+    /// image carries 7,546 deferred entries. So the export path is unusable
+    /// for fresh and derived builds alike, and lane Y needs a serialization
+    /// that calls `create_deferred_file` rather than reusing the kernel's
+    /// rootfs export -- which was built to hand a tree to a consumer that
+    /// re-supplies laziness separately, not to publish an image.
+    #[test]
+    fn a_registered_lazy_file_is_lost_by_the_export_todo_builder_serialization() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+
+        let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40)
+        });
+        assert_eq!(rc, 0);
+
+        // Registration is correct: the metadata is right before any fetch.
+        let st = rootfs::lstat(b"/usr/big").expect("lazy file exists");
+        assert_eq!(st.st_size, 99_999, "the manifest size is authoritative pre-fetch");
+        assert_eq!(st.st_mode & 0o7777, 0o755);
+
+        let chunk = 64 * 1024;
+        let buf = sm_alloc(chunk);
+        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
+            assert!(n >= 0, "the export completes, which is the problem. got {n}");
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            image.extend_from_slice(got);
+            offset += n as i64;
+        }
+        unsafe { sm_free(buf, chunk) };
+
+        let fs = runtime_core::sffs::Sffs::mount(image).expect("mount");
+        let ino = fs.resolve(b"/usr/big", false).expect("the path survives");
+        assert_eq!(
+            fs.stat_ino(ino).expect("stat").size,
+            0,
+            "THE DAMAGE: a 99,999-byte lazy member exports as a zero-length file",
+        );
+        assert!(
+            fs.deferred_section().expect("decodes").is_none(),
+            "THE DAMAGE: and with no deferred record, so its archive and member path are gone",
         );
     }
 
