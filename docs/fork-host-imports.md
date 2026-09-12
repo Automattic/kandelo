@@ -94,3 +94,63 @@ Everything is `__wpk_fork_*` except `env.resolve_externref`, which predates the
 convention. The new identity import takes the prefix. Renaming the old one is a
 contained but wide change (~20 files, most of them TypeScript that does not
 currently build) and is deliberately not bundled here.
+
+---
+
+## Open: the table mutation transaction has no ABI-defined protocol
+
+Found 2026-09-12 while moving the `module_state_*` family into the module.
+**This is unresolved and may add to the list above.**
+
+Four guest imports form a cross-worker transaction around every table
+mutation:
+
+```
+mutation_begin() -> i64            ;; take the writer lock, return the generation
+  ... table.set / copy / fill / init / grow ...
+dirty_mark(owner, first_page, page_count)
+mutation_commit(owner, start, count)   ;; publish the slot range, release the lock
+mutation_abort()                       ;; release without publishing
+reconcile() -> i64                     ;; apply siblings' mutations, return the generation APPLIED
+```
+
+and a guard the instrumenter injects around ordinary table reads:
+
+```wat
+(if (i64.ne (i64.atomic.load (global.get $generation_addr)) (global.get $last))
+  (then (global.set $last (call $reconcile))))
+```
+
+The generator's comment is explicit about why `reconcile` returns a value
+rather than the guard re-reading the fence: *"a writer may publish a newer
+generation after reconcile returns, and caching that unapplied value would skip
+the next guard."*
+
+**What is missing.** `crates/shared` defines the four import NAMES and the
+generation-address global. It defines **no wire format**: no published-mutation
+record layout, no ring or log, no writer-lock representation. `fork-codec` has no
+module for it. The entire mechanism lived in the host.
+
+So the module cannot take this over by inverting a decoder — there is nothing to
+invert. Moving it means **designing a cross-worker publication protocol**, and
+its failure mode is a silently torn table capture when one pthread forks while
+another is mid-mutation. No test in the fork-module harness could catch that: the
+harness is single-threaded by construction.
+
+**Three ways this could go, and it is a decision rather than a derivation:**
+
+1. **Design the shared-memory protocol** (a published-range log plus the lock,
+   both in linear memory, with atomics) and move all four into the module. Most
+   faithful to the lane's goal; the riskiest to get wrong, and untestable with
+   the current harness.
+2. **Leave the four in the host.** Then they belong on the list above as four
+   more host-implemented functions, taking it from 4 functions to 8 — and a
+   complete native host has to implement a concurrency protocol, not just
+   plumbing.
+3. **Establish that the boundary is narrower than it looks** — pthread-shared
+   mutable tables may be rare or absent in shipping guests, exactly as Wasm-GC
+   values turned out to be. That is measurable before anything is designed, and
+   it is the cheapest next step.
+
+Option 3 first is the same move that collapsed the GC-identity question: measure
+whether the path has any production caller before designing for it.
