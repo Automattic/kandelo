@@ -74,23 +74,123 @@ function budget(): Record<string, Surface> {
   return readBudget().surfaces;
 }
 
-/** Count lines across a shell glob, resolved from the repo root. */
+/**
+ * Count CODE lines across a shell glob, resolved from the repo root.
+ *
+ * Blank lines and comment lines do not count. The surfaces below exist to
+ * measure how much host behaviour a second host would have to reproduce, and
+ * a comment is not behaviour — nobody reimplementing `memory-fs.ts` in Rust
+ * has to reproduce its doc comments. Counting them made the budget push in two
+ * directions at once: `CLAUDE.md` says documentation is part of the platform
+ * contract, and a ceiling on raw `wc -l` charges for honouring it, so the
+ * cheapest way to pass was to explain less. That is a bad trade the measure
+ * should not be asking anyone to make.
+ *
+ * Every line-count ceiling was rebaselined against this measure in the commit
+ * that introduced it. The rebaseline is not a relaxation: each ceiling was set
+ * to the code-line count of the file AS IT STOOD then, so the ratchet holds at
+ * exactly the point it held before, in the new unit.
+ */
 function lineCount(globs: string[]): number {
-  // A counted path that no longer exists must FAIL, not contribute zero.
-  // `cat missing 2>/dev/null | wc -l` silently drops the file and reports a
-  // smaller surface — so moving or renaming a counted file reads as a
-  // reduction and passes the ratchet. A glob that matches nothing reaches
-  // this loop as its own literal pattern and fails the same test.
-  const guard = globs
+  let total = 0;
+  for (const file of expandGlobs(globs)) {
+    // Per file, not over a concatenation. It keeps comment state from leaking
+    // between files, and it is what lets the guard below name the file that
+    // confused the scanner rather than the whole surface.
+    try {
+      total += countCodeLines(readFileSync(join(repoRoot, file), "utf8"));
+    } catch (error) {
+      throw new Error(`${file}: ${(error as Error).message}`);
+    }
+  }
+  return total;
+}
+
+/**
+ * Resolve a shell glob to the files it matches, relative to the repo root.
+ *
+ * A counted path that no longer exists must FAIL, not contribute zero.
+ * Dropping a missing file reports a smaller surface — so moving or renaming a
+ * counted file reads as a reduction and passes the ratchet. A glob that
+ * matches nothing reaches this loop as its own literal pattern and fails the
+ * same check.
+ */
+function expandGlobs(globs: string[]): string[] {
+  const script = globs
     .map((g) => `for f in ${g}; do [ -e "$f" ] || { `
-      + `echo "surface-budget: counted path does not exist: $f" >&2; exit 1; }; done`)
+      + `echo "surface-budget: counted path does not exist: $f" >&2; exit 1; }; `
+      + `echo "$f"; done`)
     .join("; ");
-  const script = `${guard}; cat ${globs.join(" ")} | wc -l`;
-  const out = execFileSync("/bin/sh", ["-c", script], {
+  return execFileSync("/bin/sh", ["-c", script], {
     cwd: repoRoot,
     encoding: "utf8",
-  });
-  return Number.parseInt(out.trim(), 10);
+  })
+    .split("\n")
+    .filter((line) => line !== "");
+}
+
+/**
+ * Classify each line as code or not, tracking block comments and string
+ * literals across the whole text.
+ *
+ * The string tracking is what makes this trustworthy rather than
+ * approximately right. A naive scanner reading `const s = "/*";` opens a
+ * block comment that never closes and silently stops counting the rest of the
+ * file — a measurement failure that looks exactly like a reduction. Quotes are
+ * therefore consumed properly, and `countCodeLines` additionally refuses to
+ * return a count for text that ends inside a block comment, because that state
+ * is unreachable for balanced sources and means the scanner lost its place.
+ * Verified silent across every file under `host/src`.
+ *
+ * A line carrying both code and a trailing comment counts. Only lines with no
+ * code at all are dropped.
+ */
+function countCodeLines(text: string): number {
+  let inBlock = false;
+  let quote = "";
+  let count = 0;
+  for (const raw of text.split("\n")) {
+    let code = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i]!;
+      if (quote !== "") {
+        if (ch === "\\") i += 1;
+        else if (ch === quote) quote = "";
+        continue;
+      }
+      if (inBlock) {
+        if (ch === "*" && raw[i + 1] === "/") {
+          inBlock = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (ch === "/" && raw[i + 1] === "/") break;
+      if (ch === "/" && raw[i + 1] === "*") {
+        inBlock = true;
+        i += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+      if (ch !== " " && ch !== "\t" && ch !== "\r") code = true;
+    }
+    // A string ends at end of line. Only template literals genuinely span
+    // lines, and carrying one across meant the CODE inside its `${...}`
+    // interpolations stopped counting — 25 such lines across these surfaces,
+    // `error instanceof Error ? error.message : String(error)` among them.
+    // Resetting per line counts those. The cost is that a multi-line
+    // template's own text lines count, which is right: they are content the
+    // file carries, not commentary about it.
+    quote = "";
+    if (code) count += 1;
+  }
+  if (inBlock) {
+    throw new Error(
+      "surface-budget line counter ended inside a block comment; its "
+        + "measurements are not trustworthy until that is explained",
+    );
+  }
+  return count;
 }
 
 function countMatches(relPath: string, pattern: RegExp): number {
@@ -98,11 +198,32 @@ function countMatches(relPath: string, pattern: RegExp): number {
   return text.split("\n").filter((line) => pattern.test(line)).length;
 }
 
+/**
+ * The glob set behind every line-count surface, named once.
+ *
+ * Declared here rather than inline so the counter's own test can run against
+ * exactly the files production measures. A second copy would let the test pass
+ * on sources the budget does not read.
+ */
+const MEASURED_GLOBS: Record<string, string[]> = {
+  forkTypeScript: ["host/src/fork-*.ts", "host/src/vfork-*.ts"],
+  workerMainTypeScript: ["host/src/worker-main.ts"],
+  sffsTypeScript: ["host/src/vfs/sharedfs-vendor.ts"],
+  memoryFsTypeScript: ["host/src/vfs/memory-fs.ts"],
+  kernelWorkerTypeScript: ["host/src/kernel-worker.ts"],
+  kernelHostImportTypeScript: ["host/src/kernel.ts"],
+  hostKernelPlumbingTypeScript: [
+    "host/src/kernel-scratch.ts",
+    "host/src/kernel-entry-gate.ts",
+    "host/src/process-memory.ts",
+    "host/src/worker-protocol.ts",
+  ],
+};
+
 const MEASURED: Record<string, () => number> = {
-  forkTypeScript: () =>
-    lineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]),
-  workerMainTypeScript: () => lineCount(["host/src/worker-main.ts"]),
-  sffsTypeScript: () => lineCount(["host/src/vfs/sharedfs-vendor.ts"]),
+  forkTypeScript: () => lineCount(MEASURED_GLOBS.forkTypeScript!),
+  workerMainTypeScript: () => lineCount(MEASURED_GLOBS.workerMainTypeScript!),
+  sffsTypeScript: () => lineCount(MEASURED_GLOBS.sffsTypeScript!),
   hostImportFunctions: () =>
     Number.parseInt(
       /EXPECTED_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
@@ -110,8 +231,8 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
-  memoryFsTypeScript: () => lineCount(["host/src/vfs/memory-fs.ts"]),
-  kernelWorkerTypeScript: () => lineCount(["host/src/kernel-worker.ts"]),
+  memoryFsTypeScript: () => lineCount(MEASURED_GLOBS.memoryFsTypeScript!),
+  kernelWorkerTypeScript: () => lineCount(MEASURED_GLOBS.kernelWorkerTypeScript!),
   // 91.6% of kernel-worker.ts is one class. A line gate alone permits
   // shuffling code between methods of the same god class; this does not.
   kernelWorkerClassMethods: () => {
@@ -223,14 +344,10 @@ const MEASURED: Record<string, () => number> = {
     }
     return declared.filter((name) => !asserted.has(name)).length;
   },
-  kernelHostImportTypeScript: () => lineCount(["host/src/kernel.ts"]),
+  kernelHostImportTypeScript: () =>
+    lineCount(MEASURED_GLOBS.kernelHostImportTypeScript!),
   hostKernelPlumbingTypeScript: () =>
-    lineCount([
-      "host/src/kernel-scratch.ts",
-      "host/src/kernel-entry-gate.ts",
-      "host/src/process-memory.ts",
-      "host/src/worker-protocol.ts",
-    ]),
+    lineCount(MEASURED_GLOBS.hostKernelPlumbingTypeScript!),
   // Declaration names present in BOTH halves of a browser-/node- pair.
   // Members destructured from the shared createProcessLifecycle factory are
   // excluded: those are the consolidation working, not duplication.
@@ -415,6 +532,78 @@ const MEASURED: Record<string, () => number> = {
       /^\s*pub (unsafe )?extern "C" fn sm_/,
     ),
 };
+
+/**
+ * The counter is itself a measurement, so it gets checked like one.
+ *
+ * Each case below is a way the naive version of this counter is wrong, and
+ * each was wrong in the direction that reads as progress: a string holding
+ * `/*` opens a block comment the rest of the file never closes, and every
+ * remaining line of a 26,000-line surface stops counting.
+ */
+describe("the budget's code-line counter", () => {
+  const count = (...lines: string[]) => countCodeLines(lines.join("\n"));
+
+  it("counts a line of code", () => {
+    expect(count("const a = 1;")).toBe(1);
+  });
+
+  it("does not count blank lines or lines that are only whitespace", () => {
+    expect(count("const a = 1;", "", "   ", "\t", "const b = 2;")).toBe(2);
+  });
+
+  it("does not count line comments", () => {
+    expect(count("// why this exists", "const a = 1;", "  // and this")).toBe(1);
+  });
+
+  it("counts a line that carries code AND a trailing comment", () => {
+    expect(count("const a = 1; // why")).toBe(1);
+  });
+
+  it("does not count the body of a block comment", () => {
+    expect(count("/**", " * three lines of prose", " */", "const a = 1;")).toBe(1);
+  });
+
+  it("counts the code on a line that opens or closes a block comment", () => {
+    expect(count("const a = 1; /* trailing", " prose", " */")).toBe(1);
+    expect(count("/* prose", "*/ const a = 1;")).toBe(1);
+  });
+
+  it("does not mistake a comment marker inside a string for a comment", () => {
+    // The failure this prevents is total, not marginal: an unclosed block
+    // swallows the rest of the file.
+    expect(count('const s = "/*";', "const a = 1;", "const b = 2;")).toBe(3);
+    expect(count("const s = '//';", "const a = 1;")).toBe(2);
+    expect(count("const u = \"https://example.test/x\";", "const a = 1;")).toBe(2);
+    expect(count("const e = \"a\\\"/*\";", "const a = 1;")).toBe(2);
+  });
+
+  it("counts the code inside a multi-line template literal's interpolations", () => {
+    // Carrying a backtick across lines dropped 25 real lines from these
+    // surfaces, every one of them an expression the host actually evaluates.
+    expect(count(
+      "throw new Error(",
+      "  `failed: ${",
+      "    error instanceof Error ? error.message : String(error)",
+      "  }`,",
+      ");",
+    )).toBe(5);
+  });
+
+  it("refuses to report a count for text that ends inside a block comment", () => {
+    // Reaching end of input mid-comment means the scanner lost its place, and
+    // the number it would return is an undercount that looks like a deletion.
+    expect(() => count("/* opened and never closed", "const a = 1;"))
+      .toThrow(/ended inside a block comment/);
+  });
+
+  it("counts every real source file the budget measures without losing its place", () => {
+    // The throw above is only a guard if it stays silent on real input.
+    for (const [name, globs] of Object.entries(MEASURED_GLOBS)) {
+      expect(() => lineCount(globs), name).not.toThrow();
+    }
+  });
+});
 
 describe("campaign surface budget", () => {
   const surfaces = budget();
