@@ -104,6 +104,9 @@ for (const name of [
   "__wpk_fork_module_state_record_reserve",
   "__wpk_fork_module_state_record_commit",
   "__wpk_fork_module_state_record_find",
+  "__wpk_fork_module_state_table_dirty_mark",
+  "__wpk_fork_module_state_table_dirty_count",
+  "__wpk_fork_module_state_table_dirty_page",
   "__wpk_fork_ref_scratch_release",
   "__wpk_fork_ref_gc_transit",
 ]) {
@@ -636,6 +639,45 @@ function i31Minter() {
     lastErrno(),
     EINVAL,
     "committing with no fork in flight latches EINVAL",
+  );
+}
+
+// Dirty table-page tracking. `fork-instrument` wraps every table.set / copy /
+// fill / init / grow with a mark, so a fork serialises only the pages that
+// actually changed instead of every slot of a large table.
+//
+// With no fork in flight these answer for an empty set rather than erroring,
+// which is what lets a save run against a table nothing touched.
+{
+  assert.equal(
+    x.__wpk_fork_module_state_table_dirty_count(7),
+    0,
+    "an untouched table has no dirty pages",
+  );
+  // NOTE ON COVERAGE. This harness runs with NO fork in flight, so for every
+  // entry below the no-state guard fires FIRST and shadows the deeper ones.
+  // These assertions therefore test that guard and nothing past it -- which is
+  // worth testing (a stray guest call must not write into an unowned region)
+  // but is not the same as testing the logic behind it.
+  //
+  // The deeper branches -- an out-of-range ordinal, a page set that actually
+  // has contents -- need a live fork, which needs the syscall channel and the
+  // guest drive table a single-threaded harness cannot stand up. They are
+  // UNCOVERED here and that is why each is named for the guard it reaches.
+  x.__wpk_fork_module_state_table_dirty_page(7, 0);
+  assert.equal(
+    lastErrno(),
+    EINVAL,
+    "asking for a page with no fork in flight is EINVAL, not a silent 0",
+  );
+  // Marking needs a live fork: the set hangs off the fork's own state, so a
+  // mark with nothing in flight must fail rather than accumulate into a set
+  // that will never be serialised.
+  x.__wpk_fork_module_state_table_dirty_mark(7, 0n, 4n);
+  assert.equal(
+    lastErrno(),
+    EINVAL,
+    "marking with no fork in flight latches EINVAL",
   );
 }
 

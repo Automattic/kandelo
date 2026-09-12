@@ -143,7 +143,7 @@ mod wasm {
     use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-    use alloc::collections::BTreeMap;
+    use alloc::collections::{BTreeMap, BTreeSet};
     use alloc::vec::Vec;
 
     use fork_codec::{
@@ -1998,6 +1998,15 @@ mod wasm {
         /// the format has one implementation rather than two.
         module_state: ModuleStateWriter,
         module_state_chunks: ForkChunkList,
+        /// Dirty table pages, keyed by the physical table's OWNER id (not a
+        /// table index: imported aliases in different activations name one
+        /// physical table, and all of them contribute marks to the same set).
+        ///
+        /// A `BTreeSet` because the guest enumerates by ordinal and expects a
+        /// stable order, and because overlapping marks are normal -- the
+        /// injected marker caches only the LAST page it marked, so a scattered
+        /// write pattern re-marks pages it has already seen.
+        table_dirty: BTreeMap<u32, BTreeSet<u64>>,
         /// Process-wide replay-event journal (records `(activation_id, ordinal)`
         /// commits across every activation; replays the global reverse order).
         journal: ReplayEventJournal,
@@ -2135,6 +2144,7 @@ mod wasm {
             journal_image_len: 0,
             module_state: ModuleStateWriter::new(module_state_format()?),
             module_state_chunks: ForkChunkList::new_channel(channel_base),
+            table_dirty: BTreeMap::new(),
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
             replay_events: Vec::new(),
@@ -2691,6 +2701,7 @@ mod wasm {
             // here fails truthfully instead of writing into an unowned region.
             module_state: ModuleStateWriter::new(module_state_format()?),
             module_state_chunks: ForkChunkList::new_channel(0),
+            table_dirty: BTreeMap::new(),
             journal,
             table,
             replay_events: decoded.events,
@@ -5031,6 +5042,94 @@ mod wasm {
         let chunk_header_size = abi::wpk_fork_module_state_chunk_header_size(pointer_width)
             .ok_or(Errno::EINVAL)?;
         Ok(ModuleStateFormat { pointer_width, chunk_header_size })
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_dirty_mark(owner,
+    /// first_page, page_count)`.
+    ///
+    /// Records that `page_count` pages starting at `first_page` of the physical
+    /// table `owner` have been mutated since instantiation. `fork-instrument`
+    /// wraps every `table.set`, `table.copy`, `table.fill`, `table.init` and
+    /// `table.grow` with a call to this, so a fork serialises only the SPARSE
+    /// OVERLAY -- the difference from the baseline the child rebuilds for free
+    /// by instantiating -- instead of every slot of a large table.
+    ///
+    /// Keyed by owner rather than by table index on purpose: imported aliases
+    /// in different activations name ONE physical table, and every alias
+    /// contributes marks to the same set even though only the canonical
+    /// activation writes the sparse state out.
+    ///
+    /// Returns nothing (the guest ABI has no error channel here), so a failure
+    /// latches in `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_dirty_mark(
+        owner: u32,
+        first_page: u64,
+        page_count: u64,
+    ) {
+        let Some(module) = state().as_mut() else {
+            set_err(Errno::EINVAL);
+            return;
+        };
+        let Some(last) = first_page.checked_add(page_count) else {
+            set_err(Errno::EINVAL);
+            return;
+        };
+        let pages = module.table_dirty.entry(owner).or_default();
+        for page in first_page..last {
+            pages.insert(page);
+        }
+        set_ok();
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_dirty_count(owner)`.
+    ///
+    /// How many DISTINCT pages of this physical table are dirty. The guest
+    /// reserves its table record sized from this, then walks
+    /// `__wpk_fork_module_state_table_dirty_page` from 0 to this count.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_dirty_count(owner: u32) -> i32 {
+        let Some(module) = state().as_ref() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        set_ok();
+        module
+            .table_dirty
+            .get(&owner)
+            .map_or(0, |pages| i32::try_from(pages.len()).unwrap_or(i32::MAX))
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_dirty_page(owner,
+    /// ordinal) -> page`.
+    ///
+    /// The `ordinal`-th dirty page, ascending. The guest shifts the result left
+    /// by the table page shift to get a slot offset, so the ORDER has to be
+    /// stable across the walk and the count has to agree with it -- both come
+    /// from the set being ordered rather than from an insertion sequence.
+    ///
+    /// An out-of-range ordinal is `EINVAL` and 0 rather than a silent 0: page 0
+    /// is a legitimate answer, so the two cannot share a return value.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_dirty_page(owner: u32, ordinal: u32) -> u64 {
+        let Some(module) = state().as_ref() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        match module
+            .table_dirty
+            .get(&owner)
+            .and_then(|pages| pages.iter().nth(ordinal as usize))
+        {
+            Some(page) => {
+                set_ok();
+                *page
+            }
+            None => {
+                set_err(Errno::EINVAL);
+                0
+            }
+        }
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_record_reserve(kind,
