@@ -102,6 +102,9 @@ const CLAIM_GC_HELPER_EXPORT: &str = "fm_capture_claim_gc";
 /// The guest-facing GC identity probe.
 const GC_LOOKUP_EXPORT: &str = "__wpk_fork_ref_gc_lookup";
 
+/// The process-owned fork-unwind transport tag.
+const UNWIND_TAG_EXPORT: &str = "__wpk_fork_unwind";
+
 /// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
 /// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
 /// The guest's own `__wpk_fork_static_root_catalog` is a harvest EXPORT cleared
@@ -928,6 +931,7 @@ fn main() -> Result<()> {
     inject_transit_grow(&mut module).context("injecting fm_transit_grow")?;
     inject_gc_claim(&mut module).context("injecting __wpk_fork_ref_gc_claim")?;
     inject_gc_lookup(&mut module).context("injecting __wpk_fork_ref_gc_lookup")?;
+    inject_unwind_tag(&mut module).context("injecting __wpk_fork_unwind")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1314,6 +1318,47 @@ fn exported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
         ExportItem::Table(id) => Ok(id),
         _ => bail!("{name} export is not a table"),
     }
+}
+
+/// Inject the process-owned fork-unwind TAG and export it as
+/// `__wpk_fork_unwind`.
+///
+/// # Why this stops being a host object
+///
+/// The guest imports `env.__wpk_fork_unwind` as a `tag () -> ()` -- the private
+/// Wasm-EH transport the instrumented capture path throws to escape a nested
+/// call chain. It was minted in JavaScript (`new WebAssembly.Tag({parameters:
+/// []})`), which made every host responsible for creating one and handing it to
+/// the guest.
+///
+/// It does not have to be. A wasm module can DEFINE a tag, export it, throw it
+/// and catch it, and the export arrives in JavaScript as a real
+/// `WebAssembly.Tag` -- verified directly against V8 before writing this:
+///
+/// ```text
+/// exports: __wpk_fork_unwind:tag, boom:function, catches:function
+/// tag is a WebAssembly.Tag: true
+/// module catches its own throw: true
+/// ```
+///
+/// So the module mints it and the host wires guest import <- module export,
+/// exactly as it already does for the transit table. Rust cannot declare a tag,
+/// which is the only reason this lives in the injector rather than in `lib.rs`.
+///
+/// The type is `() -> ()`: the transport carries no payload. Confirmed from the
+/// guest binary's own import section (`tag () -> ()`), not from a comment.
+fn inject_unwind_tag(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == UNWIND_TAG_EXPORT)
+    {
+        bail!("module already exports {UNWIND_TAG_EXPORT}");
+    }
+    let ty = module.types.add(&[], &[]);
+    let tag = module.tags.add(ty);
+    module.exports.add(UNWIND_TAG_EXPORT, tag);
+    Ok(())
 }
 
 /// Resolve an exported function by name, failing loud rather than letting a

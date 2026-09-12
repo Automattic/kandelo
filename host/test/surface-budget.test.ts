@@ -367,6 +367,58 @@ const MEASURED: Record<string, () => number> = {
     }
     return [...canonical].filter((name) => !served.has(name)).length;
   },
+  // The guest's NON-FUNCTION fork imports the fork-module does not yet supply:
+  // tables, globals and the unwind tag.
+  //
+  // `forkGuestImportsUnserved` above cannot see these. The canonical contract is
+  // a table of `ProgramArtifactImport { name, params, results }`, and that shape
+  // can only describe a FUNCTION -- so the five non-function imports a real
+  // guest declares are absent from it by construction, not by drift. Measured
+  // against a fork-instrumented guest binary: it imports 51 `env.__wpk_fork_*`
+  // entries, the canonical table declares the 46 that are functions.
+  //
+  // They are counted separately rather than folded in, because serving one is
+  // different work: a table or a tag is DEFINED and exported by the module
+  // (`__wpk_fork_ref_gc_transit` and `__wpk_fork_unwind` already are), where a
+  // function is implemented.
+  forkGuestObjectImportsUnserved: () => {
+    const shared = readFileSync(
+      join(repoRoot, "crates/shared/src/lib.rs"),
+      "utf8",
+    );
+    const names = new Set<string>();
+    for (const constant of [
+      "WPK_FORK_UNWIND_TAG_IMPORT_NAME",
+      "WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT",
+      "WPK_FORK_RESUME_TABLE_IMPORT_NAME",
+      "WPK_FORK_MODULE_ACTIVATION_IMPORT_NAME",
+      "WPK_FORK_MODULE_STATE_TABLE_GENERATION_ADDR_IMPORT_NAME",
+    ]) {
+      const m = new RegExp(
+        `pub const ${constant}: &str =\\s*"([^"]+)"`,
+      ).exec(shared);
+      if (m) names.add(m[1]);
+    }
+    // Fall back to the literal spellings for any constant this repo names
+    // differently, so a rename cannot silently shrink the surface to zero.
+    for (const literal of [
+      "__wpk_fork_unwind",
+      "__wpk_fork_ref_gc_transit",
+      "__wpk_fork_resume_table",
+      "__wpk_fork_module_activation",
+      "__wpk_fork_module_state_table_generation_addr",
+    ]) {
+      names.add(literal);
+    }
+    const injected = readFileSync(
+      join(repoRoot, "crates/fork-module-inject/src/main.rs"),
+      "utf8",
+    );
+    const served = new Set(
+      [...injected.matchAll(/"(__wpk_fork[a-z_0-9]+)"/g)].map((m) => m[1]),
+    );
+    return [...names].filter((name) => !served.has(name)).length;
+  },
   kernelHostImportTypeScript: () => codeLineCount(["host/src/kernel.ts"]),
   hostKernelPlumbingTypeScript: () =>
     codeLineCount([

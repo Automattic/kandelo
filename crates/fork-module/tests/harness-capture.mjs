@@ -99,6 +99,7 @@ for (const name of [
   "fm_transit_grow",
   "__wpk_fork_ref_gc_claim",
   "__wpk_fork_ref_gc_lookup",
+  "__wpk_fork_unwind",
   "__wpk_fork_ref_gc_transit",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -514,6 +515,34 @@ function i31Minter() {
   // slot must report "new" rather than trapping, so the guest claims instead.
   transit.set(0, null);
   assert.equal(x.__wpk_fork_ref_gc_lookup(0), 0, "a null candidate is new, not a trap");
+}
+
+// The process-owned fork-unwind TAG, now minted by the module rather than by
+// the host. A wasm module can define, export, throw and catch its own tag, so
+// there is no reason for JavaScript to create this object and hand it over.
+{
+  const tag = x.__wpk_fork_unwind;
+  assert.ok(tag instanceof WebAssembly.Tag, "the module exports a real WebAssembly.Tag");
+
+  // What actually matters is that a GUEST can import it. Build a module shaped
+  // like the guest's declaration -- `(import "env" "__wpk_fork_unwind" (tag))`
+  // -- and instantiate it against the module-owned tag.
+  const name = Buffer.from("__wpk_fork_unwind");
+  const b = [0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0];
+  const sec = (id, body) => { b.push(id, body.length, ...body); };
+  sec(1, [1, 0x60, 0, 0]);                                          // type 0: () -> ()
+  sec(2, [1, 3, 0x65, 0x6e, 0x76, name.length, ...name, 0x04, 0x00, 0]);
+  const consumer = new WebAssembly.Module(new Uint8Array(b));
+  new WebAssembly.Instance(consumer, { env: { __wpk_fork_unwind: tag } });
+
+  // The arity is part of the contract, not decoration: the transport carries no
+  // payload, and a tag of the wrong shape must not satisfy the import.
+  assert.throws(
+    () => new WebAssembly.Instance(consumer, {
+      env: { __wpk_fork_unwind: new WebAssembly.Tag({ parameters: ["i32"] }) },
+    }),
+    "a tag of the wrong arity does not satisfy the guest import",
+  );
 }
 
 console.log("fork-module capture harness: all assertions passed");
