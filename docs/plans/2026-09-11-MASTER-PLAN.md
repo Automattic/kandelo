@@ -1138,6 +1138,37 @@ maintainer has held it pending a running web app.
 
 ---
 
+# Unclaimed surface — the survey this plan was missing
+
+**`docs/plans/2026-09-11-repo-survey-unclaimed-surface.md` holds the complete
+repo scan.** Read it before adding or closing a lane.
+
+The short version, because it changes how this plan should be read: of
+`host/src`'s 134,776 production TypeScript lines, lanes K, F and V claim 86,970.
+**47,806 lines across 106 files are claimed by no lane at all — more than the
+fork lane.** Outside `host/src` there are a further 14,091 TypeScript lines of
+VFS image builders, 25,658 lines of shell plus 9,729 of TS/MJS build automation,
+and 5,360 lines of `web-libs` session contracts, none of it claimed either.
+
+The survey names seven clusters with evidence and coupling measurements:
+dynamic linking (3,263), binary resolution (4,020), the host↔kernel plumbing
+that *is* goal V4 (11,481), the Node/browser host pairs (7,513, and ~70%
+divergent rather than duplicated), the process/exec host side (8,359 — behind
+lane X's 12-reference gate), the image builders (14,091 — goal V3), and build
+automation.
+
+**None of those clusters is a lane yet**, because none has the five-section
+characterization this file requires, and for most of them the floor has not
+been established. They are listed so that "is everything covered?" has a
+written answer instead of a remembered one. Two consequences of the survey are
+already applied: lanes K, G and D exist, and `memoryFsTypeScript` closed lane
+V's gate hole.
+
+**This plan is therefore not yet complete, and should not be described as
+complete.** It is complete for the lanes it characterizes.
+
+---
+
 # Filed defects that are not lanes
 
 Real, characterized enough to act on, too small to be lanes — recorded here so
