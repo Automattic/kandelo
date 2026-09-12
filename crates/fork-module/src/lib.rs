@@ -5393,6 +5393,56 @@ mod wasm {
         recipe
     }
 
+    /// Guest-facing `env.__wpk_fork_ref_exn_define(...)`.
+    ///
+    /// Completes a claimed exception placeholder into its final recipe. Unlike
+    /// the GC `define`, this one is SELF-CONTAINED: `fork-instrument`'s
+    /// exception codec stores every payload into one scratch staging span
+    /// before the call -- scalars at their field offsets, and each reference
+    /// payload as the `i32` recipe id its own encoder returned, at
+    /// `references_ptr + index * 4` (`module_exception_codec.rs`). So both
+    /// spans arrive as plain guest linear memory and the module needs no
+    /// transit table, no host import, and no separate transaction to read them.
+    ///
+    /// The guest ABI returns NOTHING, so a failure cannot be reported at the
+    /// call. It is latched in `fm_last_errno`, and the claimed-but-undefined
+    /// placeholder it leaves behind is what `fm_capture_validate` refuses to
+    /// seal ("a claimed GC identity was never defined"). That is the guard
+    /// which makes a void return safe: a dropped `define` cannot reach a child
+    /// as a silently missing exception payload, it stops the seal instead.
+    #[allow(clippy::too_many_arguments)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_define(
+        recipe_id: u32,
+        activation: u32,
+        type_ordinal: u32,
+        layout_id: u32,
+        scalar_ptr: usize,
+        scalar_len: u32,
+        reference_ptr: usize,
+        reference_count: u32,
+    ) {
+        let assembled = (|| -> Result<(), Errno> {
+            let scalars = read_capture_bytes(scalar_ptr, scalar_len as usize)?;
+            // Edge order is the layout's declared payload order, which is what
+            // the child replays; it is NOT an interned vector ordinal, so there
+            // is nothing to look up.
+            let edges = read_capture_u32_array(reference_ptr, reference_count as usize)?;
+            let g = capture_builder()?;
+            g.define_gc(
+                recipe_id,
+                activation,
+                type_ordinal,
+                layout_id,
+                AggregateKind::Exnref,
+                &scalars,
+                &edges,
+                None,
+            )
+        })();
+        capture_ok_void(assembled);
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_gc_i31(payload) -> recipe`.
     ///
     /// The ONE member of the GC capture family that carries no reference at

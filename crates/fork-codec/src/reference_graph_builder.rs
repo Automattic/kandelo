@@ -238,7 +238,16 @@ impl ReferenceGraphBuilder {
         edges: &[u32],
         provenance: Option<GcProvenance>,
     ) -> Result<(), Errno> {
-        if !self.pending_gc.remove(&recipe_id) {
+        // Membership is CHECKED here but cleared only after the node is
+        // actually written. Removing it up front made every rejection below
+        // silently sound: `claim_gc` leaves a zeroed `Struct` in the node
+        // vector, so a define that failed validation dropped the pending
+        // marker and left that empty struct behind -- indistinguishable from a
+        // legitimately empty one. `validate()` then sealed the graph clean and
+        // the child rebuilt an EMPTY object where the parent had a populated
+        // one. A rejected define must keep the placeholder pending so the seal
+        // refuses it.
+        if !self.pending_gc.contains(&recipe_id) {
             return Err(Errno::EINVAL); // not a pending GC placeholder
         }
         if layout_id > MAX_U31 {
@@ -288,6 +297,7 @@ impl ReferenceGraphBuilder {
                 elements: edges,
             },
         };
+        self.pending_gc.remove(&recipe_id);
         Ok(())
     }
 
@@ -396,5 +406,73 @@ pub(crate) fn node_scalars(node: &ReferenceRecipeNode) -> &[u8] {
         ReferenceRecipeNode::Struct { scalars, .. } => scalars,
         ReferenceRecipeNode::Array { scalars, .. } => scalars,
         _ => &[],
+    }
+}
+
+#[cfg(test)]
+mod pending_placeholder_tests {
+    //! A `define_gc` that is REJECTED must leave its placeholder pending, so the
+    //! seal refuses the graph.
+    //!
+    //! `claim_gc` publishes the recipe id early (that is what lets a field edge
+    //! close a cycle) by pushing a zeroed `Struct` into the node table. That
+    //! placeholder is only distinguishable from a real empty struct by its
+    //! entry in `pending_gc`. So if a rejected define drops that entry, the
+    //! graph validates and serializes as though the object were empty, and the
+    //! child rebuilds an EMPTY object where the parent had a populated one --
+    //! no error anywhere on the path.
+    use super::*;
+
+    #[test]
+    fn rejected_define_keeps_the_placeholder_pending() {
+        let mut g = ReferenceGraphBuilder::begin();
+        let id = g.claim_gc().expect("claim");
+
+        // Rejected: the edge names a recipe that does not exist.
+        assert_eq!(
+            g.define_gc(id, 7, 2, 12, AggregateKind::Struct, &[1, 2], &[99], None),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(
+            g.validate(),
+            Err(Errno::EINVAL),
+            "a rejected define must not seal as an empty struct",
+        );
+
+        // Rejected for a different reason: the layout id is not a u31.
+        assert_eq!(
+            g.define_gc(
+                id,
+                7,
+                2,
+                MAX_U31 + 1,
+                AggregateKind::Struct,
+                &[1, 2],
+                &[],
+                None
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(g.validate(), Err(Errno::EINVAL), "still pending");
+
+        // Accepted: now, and only now, the placeholder is cleared.
+        g.define_gc(id, 7, 2, 12, AggregateKind::Struct, &[1, 2], &[], None)
+            .expect("define");
+        assert_eq!(g.validate(), Ok(()), "a completed define seals");
+    }
+
+    #[test]
+    fn a_rejected_define_cannot_be_redefined_by_a_second_caller() {
+        // The pending marker is also what makes define single-shot. Keeping it
+        // on rejection must not make it re-consumable after success.
+        let mut g = ReferenceGraphBuilder::begin();
+        let id = g.claim_gc().expect("claim");
+        g.define_gc(id, 7, 2, 12, AggregateKind::Struct, &[], &[], None)
+            .expect("define");
+        assert_eq!(
+            g.define_gc(id, 7, 2, 12, AggregateKind::Struct, &[], &[], None),
+            Err(Errno::EINVAL),
+            "defining an already-completed recipe stays EINVAL",
+        );
     }
 }

@@ -102,6 +102,7 @@ for (const name of [
   "fm_capture_record_header_size",
   "fm_capture_interned",
   "fm_last_errno",
+  "__wpk_fork_ref_exn_define",
   "__wpk_fork_ref_vector_begin",
   "__wpk_fork_ref_vector_append",
   "__wpk_fork_ref_vector_finish",
@@ -740,6 +741,89 @@ function i31Minter() {
     x.__wpk_fork_module_state_table_dirty_count(OWNER) > before,
     "a mark too large to record saturates instead of being dropped",
   );
+}
+
+// ============================================================================
+// The GUEST-facing exception define (`env.__wpk_fork_ref_exn_define`).
+//
+// This is the one `define` in the family that needs nothing but guest linear
+// memory. fork-instrument's exception codec stages the whole payload into one
+// scratch span before the call -- scalars at their field offsets, and each
+// reference payload as the i32 recipe id its own encoder returned, at
+// `references_ptr + index * 4` -- so there is no transit table to read and no
+// separate transaction to join.
+//
+// The guest ABI returns NOTHING. So the assertions below are as much about the
+// FAILURE path as the success one: a dropped define must not reach a child as a
+// silently missing exception payload.
+// ============================================================================
+{
+  const EINVAL = 22;
+  const ACT = 7;
+  const TYPE_ORDINAL = 4;
+  const LAYOUT = 21;
+  const SCALARS = SCRATCH_BASE + 256;
+  const REFS = SCRATCH_BASE + 320;
+
+  x.fm_capture_begin();
+  const payloadA = x.fm_capture_intern(K_I31, 11, 0); // 1
+  const payloadB = x.fm_capture_intern(K_EXTERNREF, 55, 0); // 2
+  const exn = x.fm_capture_claim_gc(); // 3
+  assert.deepEqual([payloadA, payloadB, exn], [1, 2, 3], "exception fixture ids");
+
+  writeBytes(SCALARS, [0xde, 0xad, 0xbe, 0xef]);
+  writeU32Array(REFS, [payloadA, payloadB]);
+  x.__wpk_fork_ref_exn_define(exn, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, REFS, 2);
+  assert.equal(lastErrno(), 0, "exn_define latched no error");
+  assert.equal(x.fm_capture_validate(), 0, `exn graph validates errno=${lastErrno()}`);
+
+  // Proof it read GUEST MEMORY rather than inventing a payload: the scalar
+  // bytes we wrote must survive into the serialized stream.
+  const stream = Buffer.from(drainRecords().raw);
+  assert.ok(
+    stream.includes(Buffer.from([0xde, 0xad, 0xbe, 0xef])),
+    "exception scalar payload read from guest memory reached the stream",
+  );
+
+  // -- Perturbation: an edge naming a recipe that does not exist -------------
+  x.fm_capture_begin();
+  const orphan = x.fm_capture_claim_gc();
+  writeU32Array(REFS, [99]);
+  x.__wpk_fork_ref_exn_define(orphan, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, REFS, 1);
+  assert.equal(lastErrno(), EINVAL, "an edge naming a missing recipe is EINVAL");
+  assert.notEqual(
+    x.fm_capture_validate(),
+    0,
+    "and the rejected define leaves a placeholder the seal refuses",
+  );
+
+  // -- Perturbation: the define never happens at all -------------------------
+  //
+  // This is the guard that makes the void return safe. Without it a dropped
+  // define would seal cleanly and the child would rebuild an exception whose
+  // payload silently vanished.
+  x.fm_capture_begin();
+  x.fm_capture_claim_gc();
+  assert.notEqual(
+    x.fm_capture_validate(),
+    0,
+    "a claimed exception that is never defined blocks the seal",
+  );
+
+  // -- Perturbation: defining a recipe that was never claimed ----------------
+  x.fm_capture_begin();
+  x.__wpk_fork_ref_exn_define(5, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 0, REFS, 0);
+  assert.equal(lastErrno(), EINVAL, "defining an unclaimed recipe is EINVAL");
+
+  // -- Perturbation: a staging span outside guest memory ---------------------
+  x.fm_capture_begin();
+  const oob = x.fm_capture_claim_gc();
+  x.__wpk_fork_ref_exn_define(oob, ACT, TYPE_ORDINAL, LAYOUT, 0xfffffff0, 4, REFS, 0);
+  assert.equal(lastErrno(), EINVAL, "a scalar span outside guest memory is EINVAL");
+  x.fm_capture_begin();
+  const oob2 = x.fm_capture_claim_gc();
+  x.__wpk_fork_ref_exn_define(oob2, ACT, TYPE_ORDINAL, LAYOUT, SCALARS, 4, 0xfffffff0, 2);
+  assert.equal(lastErrno(), EINVAL, "a reference span outside guest memory is EINVAL");
 }
 
 console.log("fork-module capture harness: all assertions passed");
