@@ -1392,6 +1392,25 @@ mod wasm {
     // reads (no further reset occurs on the parent path).
     static CAPTURE_ARMED: AtomicU32 = AtomicU32::new(0);
 
+    /// In-flight guest reference-vector: `(handle + 1, promised, appended)`.
+    /// Zero in slot 0 means no vector is open.
+    ///
+    /// The guest declares its slot count up front — `fork-instrument` emits
+    /// `i32.const slots.len()` immediately before `__wpk_fork_ref_vector_begin`
+    /// — and then appends exactly that many recipes. Recording the promise is
+    /// what lets `__wpk_fork_ref_vector_finish` reject a vector that did not
+    /// receive the appends it declared, which matters because the guest-facing
+    /// `append` returns NOTHING: without this, a failed append would be visible
+    /// only as a short vector at replay, in the child, long after the cause.
+    ///
+    /// One slot is enough because the emitted sequence is straight-line:
+    /// `begin`, N x (`encoder`, `append`), `finish`, with no guest call between
+    /// them (the encoders re-enter this module, never the guest). A second
+    /// `begin` before a `finish` would mean that shape changed, so it is a loud
+    /// `EINVAL` rather than a silently mis-counted vector.
+    static VECTOR_IN_FLIGHT: [AtomicU32; 3] =
+        [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+
     /// The resident capture builder for the current fork. `fm_capture_begin`
     /// creates it eagerly; this is the accessor the capture exports use. As a
     /// defensive fallback it also creates the builder if a session is armed but
@@ -4943,6 +4962,86 @@ mod wasm {
     /// the live capture builder directly, so the parent never re-decodes its own
     /// graph and never reconstructs (its live references keep their identity by
     /// construction). Requires an active capture session.
+    /// Guest-facing `env.__wpk_fork_ref_vector_begin(count) -> handle`.
+    ///
+    /// Opens a reference vector for one call site's live references. `count` is
+    /// the number of appends the guest promises to make; it is recorded and
+    /// checked by `__wpk_fork_ref_vector_finish`.
+    ///
+    /// Returns `-1` with `fm_last_errno` set on failure, including when a
+    /// vector is already open (see `VECTOR_IN_FLIGHT`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_vector_begin(count: u32) -> i32 {
+        if VECTOR_IN_FLIGHT[0].load(Ordering::Relaxed) != 0 {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        let handle = match capture_builder() {
+            Ok(g) => capture_ok_id(g.begin_vector()),
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        };
+        if handle < 0 {
+            return handle;
+        }
+        VECTOR_IN_FLIGHT[0].store(handle as u32 + 1, Ordering::Relaxed);
+        VECTOR_IN_FLIGHT[1].store(count, Ordering::Relaxed);
+        VECTOR_IN_FLIGHT[2].store(0, Ordering::Relaxed);
+        handle
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_vector_append(handle, recipe_id)`.
+    ///
+    /// Returns NOTHING — that is the guest ABI, not a choice — so a failure is
+    /// latched in `fm_last_errno` and surfaces at
+    /// `__wpk_fork_ref_vector_finish`, which fails loud rather than interning a
+    /// short vector the child would reconstruct with missing references.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_vector_append(handle: u32, recipe_id: u32) {
+        match capture_builder() {
+            Ok(g) => {
+                if capture_ok_void(g.append_vector(handle, recipe_id)) == 0 {
+                    VECTOR_IN_FLIGHT[2].fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Err(e) => set_err(e),
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_vector_finish(handle) -> ordinal`.
+    ///
+    /// Interns the vector and returns the DURABLE canonical ordinal the frame
+    /// stores — never the transaction-local handle, which is why the guest
+    /// overwrites its saved handle with this result.
+    ///
+    /// Fails (`-1`, `EINVAL`) when the appends did not match the count the
+    /// guest declared at `begin`, or when this names a handle that is not the
+    /// open one.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_vector_finish(handle: u32) -> i32 {
+        let open = VECTOR_IN_FLIGHT[0].load(Ordering::Relaxed);
+        if open == 0 || open - 1 != handle {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        let promised = VECTOR_IN_FLIGHT[1].load(Ordering::Relaxed);
+        let appended = VECTOR_IN_FLIGHT[2].load(Ordering::Relaxed);
+        VECTOR_IN_FLIGHT[0].store(0, Ordering::Relaxed);
+        if promised != appended {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        match capture_builder() {
+            Ok(g) => capture_ok_id(g.finish_vector(handle)),
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_capture_vector_get(ordinal: u32, index: u32) -> i32 {
         let Some(g) = capture_state().as_ref() else {

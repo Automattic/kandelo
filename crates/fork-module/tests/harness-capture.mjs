@@ -92,6 +92,9 @@ for (const name of [
   "fm_capture_record_header_size",
   "fm_capture_interned",
   "fm_last_errno",
+  "__wpk_fork_ref_vector_begin",
+  "__wpk_fork_ref_vector_append",
+  "__wpk_fork_ref_vector_finish",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
@@ -344,5 +347,57 @@ assert.equal(
   "i31 with a non-zero second argument is rejected",
 );
 assert.equal(lastErrno(), EINVAL, "zero externref handle reports EINVAL");
+
+// ---------------------------------------------------------------------------
+// The GUEST-facing reference-vector surface (env.__wpk_fork_ref_vector_*).
+//
+// `fork-instrument` emits, per call site with live references:
+//     i32.const <slot count> ; call vector_begin        -> handle
+//     N x (encode ref        ; call vector_append)
+//     call vector_finish                                -> durable ordinal
+//
+// `append` returns NOTHING in the guest ABI, so a failed append is invisible at
+// the call site. The declared count is what turns that into a loud failure at
+// `finish` instead of a short vector the CHILD reconstructs with references
+// missing -- a fault that would otherwise surface in another worker, later.
+x.fm_capture_begin();
+{
+  const h = x.__wpk_fork_ref_vector_begin(2);
+  assert.ok(h >= 0, "vector_begin returns a handle");
+  const a = x.fm_capture_intern(K_I31, 11, 0);
+  const b = x.fm_capture_intern(K_I31, 22, 0);
+  x.__wpk_fork_ref_vector_append(h, a);
+  x.__wpk_fork_ref_vector_append(h, b);
+  const ordinal = x.__wpk_fork_ref_vector_finish(h);
+  assert.ok(ordinal >= 0, "a vector matching its declared count interns");
+  assert.notEqual(ordinal, h, "finish returns the DURABLE ordinal, not the handle");
+}
+{
+  // Declared 2, appended 1: must fail rather than intern a short vector.
+  const h = x.__wpk_fork_ref_vector_begin(2);
+  x.__wpk_fork_ref_vector_append(h, x.fm_capture_intern(K_I31, 33, 0));
+  assert.equal(
+    x.__wpk_fork_ref_vector_finish(h),
+    -1,
+    "a vector short of its declared count is rejected",
+  );
+  assert.equal(lastErrno(), EINVAL, "a short vector reports EINVAL");
+}
+{
+  // A second begin before finish would mean the emitted shape changed.
+  const h = x.__wpk_fork_ref_vector_begin(1);
+  assert.equal(
+    x.__wpk_fork_ref_vector_begin(1),
+    -1,
+    "a nested vector_begin is rejected, not silently mis-counted",
+  );
+  x.__wpk_fork_ref_vector_append(h, x.fm_capture_intern(K_I31, 44, 0));
+  assert.ok(x.__wpk_fork_ref_vector_finish(h) >= 0, "the open vector still finishes");
+  assert.equal(
+    x.__wpk_fork_ref_vector_finish(h),
+    -1,
+    "finishing a handle that is not open is rejected",
+  );
+}
 
 console.log("fork-module capture harness: all assertions passed");
