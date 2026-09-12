@@ -637,3 +637,81 @@ Deciding which is which per module is the next step, and it is the step that
 decides how much TypeScript stage 2 actually is. What can be said now is that
 the contract is **72 symbols**, not 39 files — the surface is far smaller than
 the code that used to sit behind it.
+
+## §13 — Triage of the 27, and a proposed `forkTypeScript` target
+
+Each module sorted by whether the fork-module now does the work (delete the call
+site) or whether it is genuine host floor (write it thin, once, shared by both
+JS hosts).
+
+### A — the module does this now; DELETE the call site (13 modules, 31 symbols)
+
+| module | why |
+|---|---|
+| `fork-gc-codec` | GC capture/replay is `fm_capture_define_gc` + the `__wpk_fork_ref_gc_*` family |
+| `fork-reference-segments` | decoding is `fm_decode_reference_graph` + `fm_decoded_node_*` |
+| `fork-reference-capture-module` | the module IS the capture path since Phase 4 |
+| `fork-anyref-transit` | the injector makes the module OWN and export `__wpk_fork_ref_gc_transit` (M1) |
+| `fork-early-reference-provider` | already found unreachable by the F0 census — dead, not migrated |
+| `fork-activation-registry` | activations live in Rust (`fm_set_activation_*`, `fm_activation_module_buffer`) |
+| `fork-module-state` | KFMS chunk list + `__wpk_fork_module_state_record_*` |
+| `fork-resume-catalog` | `fm_set_activation_resume_catalog` |
+| `fork-imported-globals` | `crates/fork-codec/src/imported_globals.rs` |
+| `fork-continuation` | the module owns the linked chunk list it used to read |
+| `fork-exception-provider` | mostly served; the 6 remaining `exn_*` imports are the gap, not this shim |
+| `fork-reference-wire` | one constant — belongs in the generated ABI, not a fork module |
+| `fork-table-snapshot` | **BLOCKED** on the mutation-journal decision, not on effort |
+
+### B — genuine host floor; write it thin (14 modules, 41 symbols)
+
+| module | why it cannot move |
+|---|---|
+| `fork-module-instance` | builds the import object and instantiates — the 5 obligations plus PIC placement |
+| `fork-module-host-capabilities` | the obligations themselves |
+| `fork-module-backend` | expected to fold into `fork-module-instance` |
+| `fork-reference-broker` | externref identity + handle→externref materialization: the named engine floor |
+| `fork-externref-process-owner` | externref lifetime is per process, which only the host knows |
+| `fork-externref-import-mailbox` | cross-worker wake |
+| `fork-module-trampoline` | host-side call thunks |
+| `fork-unwind-transport` | the module owns the tag; classifying a caught JS exception is still host-side |
+| `fork-host-import-runtime` | host import wiring; 5 consumers, the widest-used of all |
+| `fork-replay-gate` | cross-worker replay commit ordering |
+| `fork-process-continuation` | per-process continuation coordination |
+| `vfork-lifetime` | vfork address-space lifetime — process lifecycle, host-owned |
+| `vfork-workspace` | the borrowed workspace vfork needs |
+| `fork-mechanism-trace` | `sampleProcessMemoryStats` — diagnostics, arguably not fork at all |
+
+### The proposed target
+
+`forkTypeScript` carries **target 2000**, a pre-reversal number. Proposed
+replacement: **700**, derived as two halves.
+
+**Module-facing half — grounded, ~250.** `crates/host-native/src/guest.rs`
+implements the same responsibilities in 125 code lines of import object, PIC
+placement and table sizing, plus 17 for the externref registry and
+`define_resolve_externref`: **142**. JavaScript's `WebAssembly` API is higher
+level than wasmtime's, but this half also carries both-host ergonomics and real
+error paths the native host states differently. 250 is that measurement with
+headroom, not a guess.
+
+**Platform half — estimated, ~450.** `vfork-lifetime`, `vfork-workspace`,
+`fork-replay-gate`, `fork-host-import-runtime`, `fork-process-continuation`:
+worker spawn, vfork address-space lifetime, cross-worker replay ordering. These
+have **no native analogue to measure** — host-native does not spawn workers —
+and the TypeScript that implemented them is in the attic, which is not read.
+The estimate comes from their exported shape: four coordinator classes plus
+error and disposition types.
+
+**So: 250 measured, 450 estimated, target 700.** The estimate should be
+replaced by measurement once stage 2 is written; if it lands materially under
+700, bank it rather than keeping the slack.
+
+Two things this target deliberately excludes. It does not budget for the 21
+guest imports the module does not yet serve (18 functions + 3 objects): those
+have their own surfaces with target 0, and writing TypeScript for them now would
+be writing code whose purpose is to be deleted. And it does not budget for
+Category A — that work is deletion, and it should show up as `worker-main.ts`
+shrinking, not as new fork TypeScript.
+
+**This is a proposal, not a change.** A target is a campaign goal; the number in
+`docs/surface-budget.json` is unchanged pending the maintainer's call.
