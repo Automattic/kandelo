@@ -503,3 +503,65 @@ different reasons: the 27 should fall, the 4 rise with each shim-backed import,
 the 20 fall only when tests are deleted, and the 3 are a question. **Set
 ceilings per population or not at all** — and settle the `fm_abort` question
 before counting it as anything.
+
+## §11 — What the thin TypeScript layer has to do, measured
+
+Stage 2 of the maintainer's ask is "one new, thin TypeScript layer that
+integrates with guest fork for the JS-based hosts, preferably the same code for
+both hosts". `docs/surface-budget.json` carries `forkTypeScript` with a
+**target of 2000** code lines. That number predates the lane's reversal and
+should not be inherited without argument. This section is the evidence for a
+different one.
+
+### The obligation, in a working host
+
+The V8 harnesses are complete hosts for the fork module. The entire import
+object is **28 code lines** (`harness-capture.mjs`): one shared memory, the
+indirect function table, three PIC placement globals, three fork tables,
+`resolve_externref`, and a WeakMap-shaped `__wpk_fork_host_ref_identity`.
+
+That figure is a floor, not an estimate of the real thing: the harness stubs
+`resolve_externref` as `(_handle) => ({})` and leaves all three tables at
+`initial: 0`. A real host must back the handle registry and populate the
+catalogs.
+
+### The same obligation in a real host
+
+`crates/host-native/src/guest.rs` is a non-attic implementation of exactly
+these responsibilities. Measured in code lines (non-blank, non-comment):
+
+| | code lines |
+|---|---|
+| `define_resolve_externref` | 14 |
+| `ExternrefRegistry` | 3 |
+| `instantiate_fork_module` — total | 158 |
+| &nbsp;&nbsp;of which export binding (one `fm_func!` per entry) | 33 |
+| &nbsp;&nbsp;remainder: import object, PIC placement, table sizing | **125** |
+
+**The import side dominates, and the export side is one line per entry.** That
+is the opposite of what the entry-point ceiling's framing suggests, and it
+matters for where effort goes: coarsening the drive API from 27 host-called
+entries to 5 saves about 22 lines. Reducing the import obligation is worth far
+more per unit, which is why `forkModuleHostImports` now exists and why its five
+entries are each argued as a Wasm capability floor rather than a preference.
+
+### What a target should be derived from
+
+`CLAUDE.md` names the irreducible host floor as seven items: worker spawn, the
+`fork()` syscall plus syscall-channel transport, `resolve_externref` identity
+materialization, anyref-transit `Table.grow` sizing, PIC placement globals, the
+resume `WebAssembly.Table`, and the Node/browser platform bridges.
+
+Only some of those are fork-module imports. The module-import half is grounded
+above at roughly **160 code lines** in a real host. The rest — worker spawn,
+syscall transport, the Node/browser bridges — is host platform work this
+census did NOT measure, because the fork TypeScript that implemented it is in
+`attic/fork-typescript-do-not-use/`, which is not a specification and is not
+read.
+
+**So: the module-import half is measured; the platform half is not.** A target
+set today would be the measured 160 plus a guess. The honest sequence is to
+write stage 2 against the floor list, measure it, and set the target from that
+— and to retire 2000 now, because it describes a design the reversal replaced.
+What can be said already is that 2000 is roughly an order of magnitude above
+the half of the work that has been measured.
