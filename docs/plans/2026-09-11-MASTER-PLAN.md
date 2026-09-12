@@ -497,8 +497,16 @@ instance handle before one process can hold two filesystems — and a derived
 build holds two, a base and a target. And lane Y is now coupled to the Phase 5
 cutover's timing.
 
-**2. Lane F — the `forkModuleEntryPoints` ceiling now blocks every remaining
-guest import. OPEN, raised 2026-09-12.**
+**2. Lane F — the `forkModuleEntryPoints` ceiling. DECIDED 2026-09-12: split
+it per population.** Implemented on the lane branch as
+`forkModuleHostDriveEntries` (24, target 5 — lane F's closure condition
+moved here), `forkModuleInjectorHelpers` (3, envelope 15) and
+`forkModuleEntriesWithoutProductionCaller` (27, target 0). Implementing it
+corrected the figures below: they counted MENTIONS, and a doc comment
+naming an entry read as a caller. The measure now strips comments while
+keeping string literals, since host-native binds its drive surface by name
+inside one. Left here rather than moved, because the reasoning is what the
+next person needs.
 
 The measure counts `pub extern "C" fn fm_*` in `crates/fork-module/src/lib.rs`.
 Definitions, not calls. Its own `why` field says it counts **host-called**
@@ -2974,7 +2982,8 @@ container host-side would have made the host a second author of the format,
 which is the defect V4 just spent four increments collapsing, in a new place.
 
 **`sffsModuleEntryPoints` is now a banked surface at 19.** Its target is
-deliberately NOT 0, unlike `forkModuleEntryPoints`: these are distinct
+deliberately NOT 0, unlike `forkModuleHostDriveEntries` (which lane F split
+out of `forkModuleEntryPoints` on 2026-09-12): these are distinct
 filesystem operations a builder performs, not fine-grained steps of one
 operation a coarse entry could replace. The target is "does not grow without an
 argument", and two entries were declined while building this — the archive
