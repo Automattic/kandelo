@@ -1126,3 +1126,70 @@ capturable when the fork happens, which rooting guarantees.
 
 If call-site scoping turns out to be necessary, §20's question returns exactly
 as written. If it does not, provenance stops being a storage problem.
+
+## §22 — A witness pool for provenance: the concrete proposal
+
+§21 proposed replacing per-object provenance records with a per-layout witness
+and marked the call-site-vs-type question as the crux. It is now settled, from
+`crates/fork-instrument` — no attic reading involved.
+
+### The three facts that settle it
+
+**The wrapper is already per TYPE.** `inject_provenance_wrappers` creates one
+wrapper per layout and stores it as `struct_wrappers.insert(layout.type_id,
+wrapper)`. The grounding's phrase "call-site-scoped, not type-scoped" describes
+where the REWRITE happens — `struct.new $T` is redirected at N instruction
+addresses — not the wrapper's identity. There is one wrapper per type, and every
+call site of that type shares it.
+
+**The seed is always overwritten.** Every reference field gets a
+`reference_ordinal`, so every reference field is in the snapshot vector,
+including the mutable non-null internal ones that provenance covers. The edge
+vector is `[ ...provenance refs, ...snapshot refs ]`: replay allocates using the
+provenance refs, then phase two fills from the snapshot refs.
+
+**The problem is narrower than "provenance".** The field-layout comment states
+it: "Mutable internal non-null edges use the separately recorded constructor
+seed; **other hierarchies have generated temporary seeds** and are filled in
+phase two." So the system ALREADY generates seeds wherever it can. A value is
+recorded only for concrete internal GC types, where an instance cannot be
+conjured. That is the entire scope.
+
+### The proposal
+
+A **witness pool**: one `(ref null any)` slot per *(layout, provenance ordinal)*
+pair — per ordinal, not per layout, because a layout may have several mutable
+non-null internal fields of different types. The count is fixed at
+instrumentation time.
+
+* The constructor wrapper already stages each provenance argument in a transit
+  slot. It additionally `table.set`s it into its witness slot. Pure wasm: **no
+  host call, no reference identity, no map.**
+* At capture, each occupied witness is interned once, and its recipe id is used
+  as the provenance edge for every object of that layout.
+* At replay nothing changes. The allocate step consumes a type-correct recipe
+  exactly as before; phase two fills the real edges over it.
+
+**The wire format does not change.** Provenance edges stay recipe ids in the
+same position in the same vector. What changes is WHICH recipes they name —
+a shared witness rather than each object's original seed. The child's algorithm
+is untouched, so this is ABI-compatible.
+
+### What it costs, stated plainly
+
+A bounded set of deliberately rooted objects — one per provenance ordinal — that
+the program can no longer collect. In exchange it removes the unbounded side
+table, the per-allocation host call, and the reclamation problem that §20 could
+not solve. It is also strictly less machinery than the per-object recording the
+set-aside TypeScript did.
+
+### What is still not established
+
+Whether any consumer requires a provenance edge to name the object's ORIGINAL
+seed rather than a type-correct substitute. `define_gc` only validates that
+provenance ids name existing recipes, which a witness satisfies. Nothing else
+was found that inspects them — but "nothing found" is weaker than "nothing
+exists", and this is the assumption the design rests on.
+
+**This is a design change to what capture records, so it is the maintainer's
+call.** It is recorded here as a proposal, not started.
