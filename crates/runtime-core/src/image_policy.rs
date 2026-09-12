@@ -484,6 +484,39 @@ mod tests {
         );
     }
 
+    /// The walk descends. Every fixture above puts its files at the root, and
+    /// mutation testing showed that a version of this check which never
+    /// recursed passed all of them -- while inspecting nothing at all in a
+    /// real image, where every binary lives under /usr/bin or /bin.
+    ///
+    /// So the artifact here is deliberately two levels down, and the assertion
+    /// is on its full path.
+    #[test]
+    fn a_stale_artifact_in_a_subdirectory_is_found() {
+        use crate::sffs_write::{Content, NoContent, SffsConfig, SffsWriter};
+        let mut w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 256 * 1024,
+            max_size_bytes: None,
+            growable_to_bytes: 256 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let root = w.root();
+        let usr = w.mkdir(root, b"usr", 0o755).expect("mkdir /usr");
+        let bin = w.mkdir(usr, b"bin", 0o755).expect("mkdir /usr/bin");
+        w.create_file(bin, b"prog.wasm", 0o755, Content::Bytes(b"\0asm\x01\x00\x00\x00garbage"))
+            .expect("create");
+        let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
+        let fs = Sffs::mount(body).expect("mount");
+
+        let err = check_wasm_artifacts(&fs, 44, &[]).expect_err("a stale nested artifact must fail");
+        assert!(
+            failures_of(&err)[0].starts_with("/usr/bin/prog.wasm:"),
+            "the walk must reach nested paths and name them in full, got {:?}",
+            failures_of(&err)[0]
+        );
+    }
+
     /// Every failing path is reported from ONE run. An image with several
     /// stale binaries should not cost several image builds to diagnose.
     #[test]
