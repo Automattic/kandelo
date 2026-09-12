@@ -510,6 +510,26 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-9 — a mutation that survives is usually a missing test, and occasionally
+  a property the technique cannot reach. Say which.** Lane Y ran ~40 mutation
+  trials through `xtask perturb` and found three genuine categories of
+  survivor: undefined behaviour that produces no observable wrong value; an
+  unreachable branch defending a CONTRACT rather than an input; and a mutation
+  behaviourally identical under the calling convention (JavaScript coerces `-1`
+  to a wasm `u32` as `0xffff_ffff` on its own, so an explicit mapping is
+  provably redundant). **Each was documented beside the code rather than
+  encoded as an always-red trial**, because a permanently failing gate teaches
+  people to ignore the gate, and deleting the trial loses the knowledge. The
+  committed specs in `perturb/` therefore contain only trials that must be
+  killed, and a green run is the contract.
+
+  **The same run repeatedly found the TEST wrong rather than the code** — five
+  times in one lane: a symlink's mode asserted nowhere, ceiling expectations
+  derived from the function under test, an artifact walk whose fixtures were
+  all at the tree root, an ABI claim about a "loud" boundary that was
+  unreachable by construction, and a base-file export believed to fail that
+  silently succeeds. A green suite said nothing about any of them.
+
 - **H-8 — low coupling is not evidence of migratability, and may be evidence of
   the opposite.** The 2026-09-11 survey screened `host/src` for references to
   `WebAssembly.`, `SharedArrayBuffer`/`Atomics.` and `postMessage`, and read the
