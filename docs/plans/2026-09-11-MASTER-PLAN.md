@@ -331,6 +331,38 @@ difference between 46 and 65 has not been attributed. The two runs on
 against this session's changes being the cause — but it is not the same as
 having measured the earlier commit.
 
+## Open decisions — blocked on a judgement, not on effort
+
+**This category came back on 2026-09-12.** The 2026-09-11 restructure replaced
+it with "Authorised but NOT YET BUILT" and "Resolved", which between them cover
+decisions already made. A decision that is neither made nor resolved then had
+nowhere to live, and lane Y immediately produced one. The heading is not
+decoration: an open decision filed under "authorised" reads as permission.
+
+**1. Lane Y — which mutable-filesystem substrate the builders sit on.**
+Raised by Y2a (`docs/plans/2026-09-12-lane-y2a-grounding.md`), which found that
+`SffsWriter` is append-only while the builders read back what they wrote. The
+Rust side has a *builder* where the lane needs a *filesystem*. Three candidates,
+each with a real cost:
+
+1. **Make `crates/runtime-core/src/tmpfs.rs` instantiable** and build on it.
+   Most reuse — it is 1,724 lines of mutable POSIX filesystem that already
+   implements `unlink` and `statfs`, two of the census's six gaps. But it is a
+   global singleton (`static TMPFS_ENABLED`, `static TMPFS_NOW_*`) and is
+   mid-cutover for the kernel, shipping disabled, so this couples lane Y to that
+   work.
+2. **Give `SffsWriter` read-back and `unlink`.** Scoped to the writer and
+   touches nothing else — but it grows a second filesystem beside one that
+   exists, which is the "SFFS exists twice" defect lane V is closing, in a third
+   location.
+3. **Keep a shadow tree in the TypeScript bridge** and have Rust write once at
+   the end. Smallest Rust change — but the bridge then holds filesystem
+   semantics in TypeScript, which is the surface this campaign exists to remove,
+   and V4 measures.
+
+**Lane Y's Y4 cannot start until this is answered**, because all three produce a
+different bridge.
+
 ## Authorised but NOT YET BUILT — do not lose these
 
 **1. Lane G — the `itimerval` guard. AUTHORISED 2026-09-12, not written.**
@@ -1980,6 +2012,27 @@ from `Sffs::geometry`), image metadata get/set, lazy-archive import/export,
 operations and three assertions**, against a lane scoped as though the whole
 filesystem needed rebuilding.
 
+**Two further gaps, found by Y2a on 2026-09-12 and NOT in the census's six**
+(`docs/plans/2026-09-12-lane-y2a-grounding.md`):
+
+* **Gap 7 — Rust can read the VFSI container but cannot write it.**
+  `VFSI_MAGIC` occurs only in the reader (`sffs.rs`); `SffsWriter::finish`
+  yields the raw SFFS body, not what a `.vfs.zst` holds. This sits *upstream*
+  of the other six: no container writer means no production image, however
+  complete the body writer is. Note V5 does not dissolve it — deferred metadata
+  moves in-body as SDEF, but the image-metadata section
+  (`VFS_IMAGE_FLAG_HAS_METADATA`) still needs a home.
+* **Gap 8 — `SffsWriter` is append-only, and the builders read back
+  mid-build.** Its whole mutator set is `mkdir`, `create_file`,
+  `create_deferred_file`, `symlink`, `link`, `set_owner`, `set_mode`,
+  `set_times`, `finish`: no `unlink`, no lookup, no read. But `readVfsBytes`
+  does `stat`/`open`/`read` on the filesystem under construction, and
+  `assertNoStaleWasmArtifacts` — the assertion Y3 must preserve — walks the
+  whole image and reads every `.wasm` back out. **Roughly ten of the census's
+  24 methods are read-back-during-build.** The gap is not six operations; the
+  Rust side has a *builder* where the lane needs a *filesystem*. Which
+  substrate answers that is an **open decision**, above.
+
 **`rebaseToNewFileSystem` was a census open question and is now answered by
 reading it** (`host/src/vfs/memory-fs.ts:4319`): it changes an image's
 **capacity**, by snapshotting to a quiescent source and full-tree-copying into
@@ -2114,11 +2167,17 @@ kandelo-sdk, nginx, nginx-php, mariadb-test, node-vfs, wordpress, lamp. The
 - **A builder that silently produces a different image** is the worst outcome,
   because images are validated by running them and a subtly wrong image fails
   somewhere unrelated. The bar for "different" is the equivalence decode above.
-- **The three policy assertions are the most likely thing to be silently
-  dropped.** They live inside `serializeImage`
-  (`images/vfs/scripts/vfs-image-helpers.ts:444`), and nobody has checked
-  whether a test would notice their absence. Y2's first act is to perturb each
-  one and report what, if anything, goes red.
+- **The three policy assertions are covered. REFUTED 2026-09-12 by
+  measurement**, `docs/plans/2026-09-12-lane-y2a-grounding.md`. Each call site
+  inside `serializeImage` was disabled in turn, against a green baseline of 6
+  files / 126 tests: headroom **1 failed**, `assertNoStaleWasmArtifacts`
+  **23 failed**, capacity **1 failed**. The perturbation targets the CALL SITE,
+  not the function body, because a unit test on the function cannot notice it
+  being unwired — and unwiring is what a migration does. Two residuals:
+  `assertNoStaleWasmArtifacts` has no direct unit test and is not exported, so
+  all 23 detectors are pipeline-level and a symbol-level reading concludes the
+  opposite of the truth; and headroom and capacity have **exactly one detector
+  each**, which Y3 should widen before it moves them, not after.
 - **Do not re-derive the retired byte-equality bar.** It reads like rigour, and
   it is the one bar this lane cannot meet. Anyone reaching for it has not read
   V5.
