@@ -3523,6 +3523,37 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
 
+    // The artifact search tiers and their order. Generated because the order
+    // was spelled independently in eight places -- the TypeScript resolver,
+    // host-native, and seven literals in xtask, which is what WRITES the tiers
+    // -- and the disagreement cost 39 of 53 host-native tests against a tree
+    // where the build had just succeeded.
+    out.push_str(
+        "/**\n\
+         * Every artifact search root, in search order. First match wins.\n\
+         *\n\
+         * `conditional` tiers exist only once a local build has written them,\n\
+         * so a consumer must check for existence before searching.\n\
+         * `anchor` says what `relativePath` is relative to: \"repo\" needs a\n\
+         * source checkout, \"package\" is always present.\n\
+         */\n",
+    );
+    out.push_str("export const ARTIFACT_TIERS = [\n");
+    for tier in shared::artifact_tiers::ARTIFACT_TIERS {
+        out.push_str(&format!(
+            "  {{ kind: {:?}, label: {:?}, relativePath: {:?}, anchor: {:?}, conditional: {} }},\n",
+            tier.kind,
+            tier.label,
+            tier.relative_path,
+            match tier.anchor {
+                shared::artifact_tiers::TierAnchor::RepoRoot => "repo",
+                shared::artifact_tiers::TierAnchor::PackageRoot => "package",
+            },
+            tier.conditional,
+        ));
+    }
+    out.push_str("] as const;\n\n");
+
     out.push_str("export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [\n");
     for export_name in shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
         out.push_str(&format!("  {:?},\n", export_name));

@@ -748,6 +748,21 @@ export const HOST_ADAPTER_WORKER_FEATURES = {
   shared_array_buffer: 1,
 } as const;
 
+/**
+* Every artifact search root, in search order. First match wins.
+*
+* `conditional` tiers exist only once a local build has written them,
+* so a consumer must check for existence before searching.
+* `anchor` says what `relativePath` is relative to: "repo" needs a
+* source checkout, "package" is always present.
+*/
+export const ARTIFACT_TIERS = [
+  { kind: "source-only-v1", label: "source-only-v1", relativePath: "local-binaries/source-only-v1", anchor: "repo", conditional: true },
+  { kind: "local-binaries", label: "local-binaries", relativePath: "local-binaries", anchor: "repo", conditional: false },
+  { kind: "binaries", label: "binaries", relativePath: "binaries", anchor: "repo", conditional: false },
+  { kind: "installed-package", label: "installed package", relativePath: "wasm", anchor: "package", conditional: false },
+] as const;
+
 export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "__abi_version",
   "kernel_alloc_scratch",

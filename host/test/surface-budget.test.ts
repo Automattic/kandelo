@@ -267,7 +267,10 @@ const MEASURED: Record<string, () => number> = {
           "grep -rn -E '\"local-binaries/source-only-v1\"|\"local-binaries\",[[:space:]]*\"source-only-v1\"' "
             + "--include='*.ts' --include='*.rs' --include='*.mjs' "
             + "host/src crates/host-native/src crates/shared/src tools/xtask/src scripts 2>/dev/null "
-            + "| grep -vE '\\b(test|tests)\\b' | wc -l",
+            + "| grep -vE '\\b(test|tests)\\b' "
+            // Generated output is not an independent spelling: it is produced
+            // FROM the authority, so counting it would penalise generating.
+            + "| grep -v 'host/src/generated/' | wc -l",
         ],
         { cwd: repoRoot, encoding: "utf8" },
       ).trim(),

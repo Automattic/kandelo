@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ARTIFACT_TIERS } from "./generated/abi";
 
 /**
  * Where this repository's built artifacts live, in the one order everything
@@ -111,11 +112,7 @@ export function hasSourceCheckout(): boolean {
   }
 }
 
-export type BinaryTierKind =
-  | "source-only-v1"
-  | "local-binaries"
-  | "binaries"
-  | "installed-package";
+export type BinaryTierKind = (typeof ARTIFACT_TIERS)[number]["kind"];
 
 export interface BinaryTierRoot {
   readonly label: string;
@@ -126,41 +123,40 @@ export interface BinaryTierRoot {
 /**
  * Every root that may hold a built artifact, in search order.
  *
- * The source tiers are present only in a checkout, and `source-only-v1` only
- * once a local build has written it -- a completed local build's FIRST tier.
- * The installed-package root is always last and always present, which is the
- * property the reader's old hand-maintained copy lost: without a checkout it
- * is the only tier there is, and it must still be reachable.
+ * The roots and their order come from `ARTIFACT_TIERS` in
+ * `crates/shared/src/artifact_tiers.rs`, generated into
+ * `host/src/generated/abi.ts`. They are NOT written here.
+ *
+ * That matters because this list was spelled independently in eight places --
+ * here, `crates/host-native`, and seven literals in `tools/xtask`, which is the
+ * program that WRITES into the tiers. When the readers and the writer
+ * disagreed, `local-binaries/kernel.wasm` (a seven-hour-old symlink) shadowed
+ * the freshly built `local-binaries/source-only-v1/kernel.wasm`, and
+ * `cargo test -p host-native` failed 39 of 53 against a tree where the build
+ * had just succeeded.
+ *
+ * TypeScript already had this defect once within itself: this module exists
+ * because the artifact reader kept a hand-maintained second copy that "drifted
+ * in both directions". Generating the list carries that fix across the
+ * language boundary instead of stopping at it.
  */
 export function binaryTierRoots(): readonly BinaryTierRoot[] {
   const tiers: BinaryTierRoot[] = [];
+  let repo: string | null = null;
   try {
-    const repo = resolverRepoRoot();
-    const sourceOnlyRoot = join(repo, "local-binaries", "source-only-v1");
-    if (existsSync(sourceOnlyRoot)) {
-      tiers.push({
-        label: "source-only-v1",
-        root: sourceOnlyRoot,
-        kind: "source-only-v1",
-      });
-    }
-    tiers.push({
-      label: "local-binaries",
-      root: join(repo, "local-binaries"),
-      kind: "local-binaries",
-    });
-    tiers.push({
-      label: "binaries",
-      root: join(repo, "binaries"),
-      kind: "binaries",
-    });
+    repo = resolverRepoRoot();
   } catch {
     // Installed npm consumers do not carry a source repo root.
   }
-  tiers.push({
-    label: "installed package",
-    root: join(packageRoot(), "wasm"),
-    kind: "installed-package",
-  });
+  for (const tier of ARTIFACT_TIERS) {
+    const base = tier.anchor === "repo" ? repo : packageRoot();
+    if (base === null) continue;
+    const root = join(base, ...tier.relativePath.split("/"));
+    // A conditional tier is written by a completed local build; searching one
+    // that does not exist yet would make the next tier look authoritative.
+    if (tier.conditional && !existsSync(root)) continue;
+    tiers.push({ label: tier.label, root, kind: tier.kind });
+  }
   return tiers;
 }
+

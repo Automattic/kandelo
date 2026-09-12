@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod artifact_tiers;
 pub mod channel_record;
 pub mod channel_scalar;
 pub mod host_abi;
