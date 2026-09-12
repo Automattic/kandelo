@@ -2,6 +2,68 @@
 
 **Status: DEFERRED by the maintainer, 2026-09-12. Nothing landed.**
 
+> ## UPDATE 2026-09-12 — the thing this lane was waiting for now exists
+>
+> The deferral was *"I only want the problem fixed for the new Rust-based FS
+> which is not completed yet."* The part of that filesystem this lane needs —
+> **somewhere to record integrity for a deferred file** — is built and carried
+> end to end. Lane S can now be designed against a real format instead of a
+> promise. Written here so the next agent does not have to infer it from the
+> lane V section.
+>
+> ### Where a digest goes
+>
+> `crates/runtime-core/src/sffs_deferred.rs` — the image's in-body `SDEF`
+> section. Two places, both opaque to the kernel:
+>
+> * **A deferred FILE record** carries `payload`: the fetch description for one
+>   file — URL, transport, and **digest**. This is where `sudo` and
+>   `sudo-lite`'s integrity belongs, because they are URL-backed single files,
+>   which is exactly the case this lane's defect is scoped to.
+> * **A deferred ARCHIVE declaration** carries its own `payload`, added for the
+>   same reason. Before it, a Rust-written image declared how long its archives
+>   were and nothing else — silently dropping the digest this lane measured as
+>   present on every archive group in all nine production images.
+>
+> The kernel **never parses either**. `sffs_deferred`'s doc states the contract:
+> whoever fetches decides whether a URL may be fetched, validates the digest,
+> and honours the activation mode; carrying the bytes authorises nothing. That
+> is the same division this lane's own floor section argues for — *"the host
+> performs the fetch because the network is its own; verification is not the
+> host's"* — so nothing here contradicts it. The kernel is the courier, and the
+> digest rides with the reference rather than beside it.
+>
+> ### What is verified end to end
+>
+> The payload survives the whole round trip: `load_image_inner` retains it from
+> the image it loaded, and the export re-emits it under the NEW inode number it
+> assigns. That mattered more than it sounds — a deferred file's identity could
+> not be carried by inode number, because an export renumbers, which is why
+> retention rather than reconstruction was the only available design.
+>
+> ### Two things this lane still has to decide, and one it must know
+>
+> 1. **Whether a digest is MANDATORY.** Deliberately left open: an archive or
+>    file with an empty descriptor is a representable state, and a test says so.
+>    Making it required is this lane's call, not lane V's. The format will not
+>    decide it by accident.
+> 2. **Whether the setuid bit is honoured on unverified bytes**, which is the
+>    other half of this lane's end state and is untouched.
+> 3. **A mandatory rule is not satisfiable yet, and the reason is not this
+>    lane's fault.** An image described by the older `KLZY` section yields an
+>    EMPTY descriptor, because KLZY has no field for one. A derived build whose
+>    base came from a KLZY image cannot re-emit what it never received. So the
+>    requirement can be written now but only becomes enforceable once the
+>    producers emit `SDEF` — lane V's V5 / lane Y's Y5. **This lane's policy
+>    depends on that cutover rather than blocking it**, which is a better
+>    position than the deferral left it in.
+>
+> ### What has NOT changed
+>
+> The defect is still unfixed and still real. `generate-rootfs-package-manifest.mjs`
+> still emits no digest, and nothing yet refuses unverified setuid bytes.
+> Everything below this box stands.
+
 **The decision, in the maintainer's words:** *"I only want the problem fixed
 for the new Rust-based FS which is not completed yet."*
 
