@@ -71,7 +71,7 @@ lands — those are marked.
 | **I** host imports (V4) | **15–30 d** | low | I1–I2 are 2–3 d. I3 is the rest: moving POSIX filesystem semantics for host-backed mounts into a kernel that already implements them for its own. |
 | **V** VFS / one SFFS | **8–16 d** | medium *(V6 done)* | Five of six consumers need only constants; V7–V8 are 1–3 d. V9 — `memory-fs.ts` dropping `SharedFS` — is the remainder and is genuinely large at 8,501 lines. |
 | **P** platform honesty | **10–15 d** | medium | Five independent instances. `st_rdev` is ABI-adjacent on the stat wire; the UI trio is smaller but one item is a product decision, not an engineering one. |
-| **T** test hygiene | **5–10 d** | **unknown until T5** | One file carries 28% of failures and reproduces in isolation. Until it is diagnosed, "40 timeouts" could be one defect or forty. |
+| **T** test hygiene | **3–6 d** | medium *(T5 done)* | Neither one defect nor forty: a 10 s budget on an 8.5 s job. All 41 pass at 20 s. The lane is now "why does a fork fixture cost 8.5 s", not "debug 40 tests". |
 | **S** setuid integrity | **5–10 d** | medium | S1 is 1–2 d — the verifier already exists and the emitter already imports `createHash`. S2 needs a sha256 in the kernel and should land with the SDEF record. |
 | **C** conformance | **4–7 d** | medium | C1 is a runner-contract change; C2 is following through on two XFAIL'd gaps. The 8 remaining failures are all harness. |
 | **B** build truthfulness | **4–7 d** | medium | Reconciling the cheap path with the freshness gate is a decision plus a day; stamping the fixtures is the larger half. |
@@ -98,7 +98,7 @@ lane V.** `memoryFsTypeScript` cannot reach 0 while `images/vfs/scripts`
 imports `memory-fs.ts`, so any schedule that runs V to completion before Y is
 wrong on its face.
 
-**The whole campaign now stands at 162–319 agent-days across 20 lanes.** The
+**The whole campaign now stands at 160–315 agent-days across 20 lanes.** The
 nine lanes added on 2026-09-11 were first scoped at 88–177; after their censuses
 they are **71–143**, because five of them shrank and none grew. The censuses
 cost roughly a day in total. That is the honest scale of what the plan
@@ -1161,6 +1161,32 @@ directions and both close the item.
 
 **Status: characterized, blocked on a clean suite read.**
 
+## T5 diagnosis — COMPLETE (`docs/plans/2026-09-11-lane-t5-census.md`)
+
+**41 of 49 suite timeouts live in `fork-instrument-coverage.test.ts`, and the
+answer is neither one defect nor forty: the budget is 15% above the cost.**
+
+At `--testTimeout=20000` on a quiet machine: **41 passed, 2 expected fail, 8
+skipped, exit 0.** Nothing in the file is broken.
+
+Per-test duration across the 34 timed tests: minimum **8,409 ms**, median
+**8,506 ms**, maximum **9,573 ms** — **100% over 8,000 ms**. The harness default
+is **10,000 ms**, commented "fork tests are short".
+
+So every test sits just under the line *together*, because they all run the same
+`runFixture` → `runCentralizedProgram` work. Any load sinks all 41 at once —
+and the plan already records that a package build takes the machine to load 100
+(H-7).
+
+This also corrects an earlier reading: "40 failed, 1 passed, reproduces in
+isolation, therefore not contention." Both halves true, conclusion wrong. **The
+file barely passes on a quiet machine**, so isolation cannot rescue it.
+
+**The real finding is 8.5 seconds per test.** The 14% spread between fastest and
+slowest is the signature of fixed per-test setup dominating — `runCentralizedProgram`
+stands up a kernel per test — not of fixtures doing different work. 371 s of
+test time plus 49.55 s of import, for one file.
+
 ## End state
 
 Every host-suite failure is attributed to a named cause. Not zero failures —
@@ -1173,6 +1199,16 @@ Browser-dependent tests cannot run here and belong to lane H. Everything else
 is expected to run.
 
 ## Increments
+
+- **T5 — diagnosis. Done.**
+- **T6 — raise the budget as an explicit stopgap.** A 10 s guard on an 8.5 s job
+  is a coin flip, not a guard. Say "stopgap" in the commit.
+- **T7 — measure where the 8.5 s goes.** If it is per-test kernel instantiation,
+  amortising it is worth more than the timeout change and cuts ~6 minutes from
+  one file. **This is the lane.**
+- **T8 — the other 8 timeouts** outside this file have never been diagnosed.
+
+## Original increments
 
 - **T5 — `fork-instrument-coverage.test.ts`.** 40 of its 51 cases time out at
   5 s, reproduced **in isolation on a quiet machine**, so it is not contention.
@@ -1760,8 +1796,9 @@ fork lane.** Outside `host/src` there are a further 14,091 TypeScript lines of
 VFS image builders, 25,658 lines of shell plus 9,729 of TS/MJS build automation,
 and 5,360 lines of `web-libs` session contracts, none of it claimed either.
 
-**All seven first-increment censuses have now run** — L1, Y1, E1, R1, W1, U1,
-K1, plus V6 — and their results are folded into the lanes above. Six of the
+**Every outstanding census has now run** — L1, Y1, E1, R1, W1, U1, K1, plus
+V6 and T5 — and their results are folded into the lanes above. **No lane
+estimate now reads "unknown until".** Six of the
 eight **overturned the lane they were meant to confirm**, which is the single
 strongest argument in this file for censusing before dispatching:
 
@@ -1775,6 +1812,7 @@ strongest argument in this file for censusing before dispatching:
 | **U1** | Gate measured size, the axis the lane's own text calls wrong. Tier-1 subset is **3–6 d** of the 12–25. |
 | **K1** | Framing wrong — not "a second syscall table"; the 85 dispatched syscalls need host services and `host-native` dispatches them too. **But the 12,000 target survived**, validated against `guest.rs`'s 13,577. |
 | **V6** | Five of six consumers need only **constants**; one needs the filesystem. Days, not weeks, for five of six. |
+| **T5** | Not one defect nor forty: a **10 s budget on an 8.5 s job**. All 41 tests pass at 20 s; the lane becomes "why does a fork fixture cost 8.5 s". |
 
 **One pattern recurred across three censuses and is now the campaign's most
 common defect shape:** ABI knowledge reaching TypeScript by hand while a
