@@ -229,6 +229,56 @@ pub unsafe extern "C" fn sm_chown(path_ptr: usize, path_len: usize, uid: u32, gi
     ))
 }
 
+/// Write a whole file, creating it and setting its mode -- the builders'
+/// `writeVfsFile` / `writeVfsBinary` in one call.
+///
+/// Returns 0 on success, a negative errno on failure. A short write is
+/// reported as EIO rather than as a byte count: a builder has no partial-write
+/// recovery, and returning "wrote 40 of 900 bytes" to a caller with no way to
+/// resume would turn a clear failure into a corrupt image.
+///
+/// # Why the byte source is unreachable here, which is not the same as loud
+///
+/// `write_file_at` takes a byte source so it can copy-on-write a BASE file --
+/// one whose contents live in a loaded image rather than in the overlay. This
+/// passes one that fails with EIO, and an earlier version of this comment
+/// claimed that made the boundary "deliberately loud".
+///
+/// **That was wrong, and a test written to demonstrate it failed instead.**
+/// This entry point always truncates and always writes from offset 0, so the
+/// prior contents are never needed -- for a base file or any other. The source
+/// is unreachable BY CONSTRUCTION, not a guard that fires.
+///
+/// The distinction matters for what comes next. A partial write (`offset > 0`,
+/// or non-truncating) WOULD consult it, and a derived build that offers one
+/// must wire it to real image bytes. A source that returned zeroes there would
+/// produce an image that builds, boots, and is quietly wrong -- which is the
+/// failure this lane's equivalence bar exists to catch. Keeping EIO means that
+/// if this entry point ever grows a partial-write path, it fails rather than
+/// fabricating.
+///
+/// # Safety
+/// Both ranges must describe readable memory.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_write_file(
+    path_ptr: usize,
+    path_len: usize,
+    mode: u32,
+    content_ptr: usize,
+    content_len: usize,
+) -> i32 {
+    let path = unsafe { slice(path_ptr, path_len) };
+    let content = unsafe { slice(content_ptr, content_len) };
+    let result = rootfs::write_file_at(path, 0, content, mode, true, |_req, _dst| {
+        Err(Errno::EIO)
+    });
+    match result {
+        Ok(written) if written == content.len() => 0,
+        Ok(_) => err(Errno::EIO),
+        Err(e) => err(e),
+    }
+}
+
 /// # Safety
 /// `path_ptr`/`path_len` must describe a readable range.
 #[unsafe(no_mangle)]
@@ -310,6 +360,108 @@ mod tests {
 
     /// A failure arrives as a negative errno through the same return value as
     /// success, so a caller never consults a second channel to find out.
+    fn with_two<R>(a: &[u8], b: &[u8], f: impl FnOnce(usize, usize, usize, usize) -> R) -> R {
+        let (ap, al) = write_path(a);
+        let (bp, bl) = write_path(b);
+        let r = f(ap, al, bp, bl);
+        unsafe { sm_free(ap, al) };
+        unsafe { sm_free(bp, bl) };
+        r
+    }
+
+    #[test]
+    fn files_are_written_with_their_contents_and_mode() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/etc", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+
+        let body = b"root:x:0:0:root:/root:/bin/sh\n";
+        let rc = with_two(b"/etc/passwd", body, |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        });
+        assert_eq!(rc, 0);
+
+        let st = rootfs::lstat(b"/etc/passwd").expect("passwd exists");
+        assert_eq!(st.st_mode & 0o7777, 0o644);
+        assert_eq!(st.st_size as usize, body.len());
+
+        let mut back = alloc::vec![0u8; body.len()];
+        let n = rootfs::read_file_at(b"/etc/passwd", 0, &mut back, |_r, _d| Err(Errno::EIO))
+            .expect("read back");
+        assert_eq!(&back[..n], body, "the bytes written must be the bytes stored");
+    }
+
+    /// A truncating whole-file write over a BASE file succeeds, and does not
+    /// consult the base bytes.
+    ///
+    /// This test was written to prove the opposite -- that the boundary failed
+    /// loudly -- and failed, which is how the module's documentation got
+    /// corrected. A full replace never needs the prior contents, so a base
+    /// file is overwritten exactly like an overlay one. The byte source that
+    /// returns EIO is never called, and the write succeeds.
+    #[test]
+    fn a_full_rewrite_of_a_base_file_needs_no_base_bytes() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        // A base file: metadata in the overlay, contents nominally in a host
+        // blob this module cannot read.
+        rootfs::insert_base_file(b"/base.bin", 42, 16, 0o644, 0, 0, 7).expect("insert base");
+
+        let rc = with_two(b"/base.bin", b"overwrite", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o600, cp, cl)
+        });
+        assert_eq!(
+            rc, 0,
+            "a full replace needs no prior contents, so an unreadable base must not block it",
+        );
+
+        let st = rootfs::lstat(b"/base.bin").expect("still exists");
+        assert_eq!(st.st_size, 9, "the base file's declared size is replaced by the new bytes");
+        assert_eq!(st.st_mode & 0o7777, 0o600);
+
+        let mut back = alloc::vec![0u8; 9];
+        let n = rootfs::read_file_at(b"/base.bin", 0, &mut back, |_r, _d| Err(Errno::EIO))
+            .expect("read back");
+        assert_eq!(&back[..n], b"overwrite", "and the content is the overlay's, not the base's");
+    }
+
+    /// An empty file is a file, not a failure. The builders write them.
+    #[test]
+    fn an_empty_file_round_trips() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        let rc = with_two(b"/empty", b"", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o600, cp, cl)
+        });
+        assert_eq!(rc, 0);
+        let st = rootfs::lstat(b"/empty").expect("empty exists");
+        assert_eq!(st.st_size, 0);
+        assert_eq!(st.st_mode & 0o7777, 0o600);
+    }
+
+    /// A truncating rewrite replaces both the bytes AND the mode, matching
+    /// write_file_at's contract that create and replace behave alike.
+    #[test]
+    fn rewriting_a_file_replaces_its_bytes_and_mode() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(
+            with_two(b"/f", b"a much longer original", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o755, cp, cl)
+            }),
+            0
+        );
+        assert_eq!(
+            with_two(b"/f", b"short", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o600, cp, cl)
+            }),
+            0
+        );
+        let st = rootfs::lstat(b"/f").expect("f exists");
+        assert_eq!(st.st_size, 5, "the longer original must be truncated away");
+        assert_eq!(st.st_mode & 0o7777, 0o600, "a replace sets the mode too");
+    }
+
     #[test]
     fn failures_come_back_as_negative_errno() {
         sm_reset();
