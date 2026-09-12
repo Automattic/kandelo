@@ -68,6 +68,7 @@ exact hazard `run.sh`'s `KANDELO_SOURCE_CACHE_ROOT` documentation describes.
 | Lane | Worktree | Branch | Started |
 |---|---|---|---|
 | **Y** image builders | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
+| **F** fork inversion | `/Users/brandon/kandelo-lane-f` | `brandonpayton/lane-f-fork-inversion` | 2026-09-12, from `052e7e9e6` |
 
 **Provisioning a lane worktree is not the same as rebuilding one.** A fresh
 worktree inherits no sysroots, no `local-binaries/` and no `node_modules` —
@@ -220,7 +221,7 @@ lands — those are marked.
 
 | lane | estimate | confidence | what dominates it |
 |---|---|---|---|
-| **F** fork inversion | **15–30 d** | low | Four coarse entries, each replacing a host driver. The `ABORT_UNWINDING` discipline has already trapped or hung two attempts, and the `kernel_exit` trap change is a prerequisite nobody has scoped. |
+| **F** fork inversion | **12–25 d** | low *(F1 done)* | Revised down after the census, for one reason: the four coarse entries were already built. What dominates is now the 17-entry `fm_capture_*` family — the module owning the capture walk, not just its intern leaves — plus 8 seeding entries. The `ABORT_UNWINDING` discipline still bounds one collapse (it has trapped or hung two attempts), and the `kernel_exit` prerequisite is **now scoped** (census §7) and is small, but it uncovered a correctness defect (F-D2) that has to land with it. |
 | **M** shared mapping *(deferred)* | **20–40 d** | low | ~15% done. A production resolver, ~15 exports, the range policy, then 2,776 host lines across ~50 call sites — and `MAP_SHARED` coherence fails silently, so the coverage has to precede the cutover. |
 | **I** host imports (V4) | **15–30 d** | low | I1–I2 are 2–3 d. I3 is the rest: moving POSIX filesystem semantics for host-backed mounts into a kernel that already implements them for its own. |
 | **V** VFS / one SFFS | **8–16 d** | medium *(V6 done)* | Five of six consumers need only constants; V7–V8 are 1–3 d. V9 — `memory-fs.ts` dropping `SharedFS` — is the remainder and is genuinely large at 8,501 lines. |
@@ -243,16 +244,17 @@ lands — those are marked.
 
 **Serial total is not the useful number** — these run in parallel lanes. The
 **critical path is K, F and M** — K at 30–60 d is now the largest single lane
-in the campaign and has had no census at all, and F and M are 15–40 d apiece at
-low confidence. None of the three is in #1350: M is deferred, F is only as far
-as F0, and K is planned only.
+in the campaign and has had no census at all, and F and M are 12–40 d apiece at
+low confidence. None of the three is in #1350: M is deferred, K is planned
+only, and F is at F1 plus the first three reductions (69 -> 63 module entry
+points), with the capture family and the seeding descriptor still ahead of it.
 
 **One ordering constraint is now explicit and was not before: lane Y blocks
 lane V.** `memoryFsTypeScript` cannot reach 0 while `images/vfs/scripts`
 imports `memory-fs.ts`, so any schedule that runs V to completion before Y is
 wrong on its face.
 
-**The whole campaign stands at 156–307 agent-days across 20 lanes**, with lane R closed and lane G at 14/15. The
+**The whole campaign stands at 153–302 agent-days across 20 lanes**, with lane R closed, lane G at 14/15, and lane F revised down by 3–5 days after its census found the coarse entries already built. The
 nine lanes added on 2026-09-11 were first scoped at 88–177; after their censuses
 they are **71–143**, because five of them shrank and none grew. The censuses
 cost roughly a day in total. That is the honest scale of what the plan
@@ -339,29 +341,52 @@ decisions already made. A decision that is neither made nor resolved then had
 nowhere to live, and lane Y immediately produced one. The heading is not
 decoration: an open decision filed under "authorised" reads as permission.
 
-**1. Lane Y — which mutable-filesystem substrate the builders sit on.**
-Raised by Y2a (`docs/plans/2026-09-12-lane-y2a-grounding.md`), which found that
-`SffsWriter` is append-only while the builders read back what they wrote. The
-Rust side has a *builder* where the lane needs a *filesystem*. Three candidates,
-each with a real cost:
+**1. Lane Y — the builder's filesystem substrate. DECIDED 2026-09-12: reuse
+Phase 5's filesystems.** Left here rather than moved, because the question was
+asked in a wrong shape first and the correction is the useful part.
 
-1. **Make `crates/runtime-core/src/tmpfs.rs` instantiable** and build on it.
-   Most reuse — it is 1,724 lines of mutable POSIX filesystem that already
-   implements `unlink` and `statfs`, two of the census's six gaps. But it is a
-   global singleton (`static TMPFS_ENABLED`, `static TMPFS_NOW_*`) and is
-   mid-cutover for the kernel, shipping disabled, so this couples lane Y to that
-   work.
-2. **Give `SffsWriter` read-back and `unlink`.** Scoped to the writer and
-   touches nothing else — but it grows a second filesystem beside one that
-   exists, which is the "SFFS exists twice" defect lane V is closing, in a third
-   location.
-3. **Keep a shadow tree in the TypeScript bridge** and have Rust write once at
-   the end. Smallest Rust change — but the bridge then holds filesystem
-   semantics in TypeScript, which is the surface this campaign exists to remove,
-   and V4 measures.
+**What the question got wrong.** It offered "give `SffsWriter` read-back and
+`unlink`" as a candidate. **That option is withdrawn: `SffsWriter` is
+append-only for a load-bearing reason.** Its own header states it —
+`lamp.vfs` is 249 MiB and "the kernel cannot hold an image in linear memory",
+so the writer never materializes file content; a data block carrying file bytes
+is recorded as a *reference* into a `ContentSource` and resolved only when
+`SffsImage::read_at` reaches it. It is a streaming one-pass layout emitter, and
+that shape is what lets W-3's streaming emission layer on top without
+redesigning the layout pass. Making it mutable fights the reason it exists.
+**`SffsWriter` is the serializer, not the working tree.**
 
-**Lane Y's Y4 cannot start until this is answered**, because all three produce a
-different bridge.
+**What the question missed: the substrate already exists, and is dormant.**
+Nothing in Rust mutates an SFFS image in place — `sffs.rs` has no write path at
+all. The kernel's model is an immutable SFFS base plus a mutable overlay, and
+**Phase 5 already built both halves**:
+
+* `crates/runtime-core/src/tmpfs.rs` (1,724 lines) — mutable, empty-start.
+* `crates/runtime-core/src/rootfs.rs` (5,813 lines) — "in-kernel overlay for
+  the image-backed root filesystem `/`": immutable base layer, mutable overlay
+  with copy-on-write on first write, whiteouts, POSIX unlink-while-open. Its
+  header still says directory mutation "lands in Increment 2b-ii"; **the header
+  is stale.** Verified present: `unlink`, `rmdir`, `mkdir`, `chmod`, `chown`,
+  `rename`, `symlink`, `link`, `utimensat`, `truncate`, `write`, `statfs`,
+  `readdir`.
+
+**And they map onto the builders' two modes exactly:**
+`MemoryFileSystem.create` (fresh tree) → `tmpfs.rs`;
+`MemoryFileSystem.fromImage` (derive from a base image) → `rootfs.rs`'s
+overlay, which is what `shell-rootfs-restore.ts` and
+`package-shell-vfs-build.ts` do.
+
+**The decision, and what it costs.** Lane Y's bridge sits on those two.
+No fourth filesystem is written — the campaign's stated defect is that SFFS
+exists twice, and a builder-only filesystem would make it four. The bonus is
+that **lane Y becomes Phase 5's first production caller**: 7,537 lines of
+mutable-filesystem Rust currently ship behind `TMPFS_ENABLED` / `ROOTFS_ENABLED`
+defaulting to false, which is hazard H-1's shape at scale.
+
+The costs are real and accepted: both are `static` singletons, so they need an
+instance handle before one process can hold two filesystems — and a derived
+build holds two, a base and a target. And lane Y is now coupled to the Phase 5
+cutover's timing.
 
 ## Authorised but NOT YET BUILT — do not lose these
 
@@ -449,6 +474,19 @@ implied: `classify_additive_object_by_key` already existed and served
   excludes, or your "N repetitions" is a ritual.
 - **H-7 — measure on a quiet machine and say the load.** One performance number
   has already been withdrawn; a real 3.5 µs regression read as zero for a day.
+- **H-9 — a rebuilt wasm module is not the module your tests load.** The
+  resolver serves `local-binaries/source-only-v1/`, the provenance tier, ahead
+  of the `local-binaries/` copy `crates/*/build-wasm.sh` stages. So a side
+  module can be rebuilt, its own harness can pass against the new bytes, and the
+  Vitest suites can still be exercising the **previous** module — silently, with
+  no staleness error, because the resolver is doing exactly its job. Lane F hit
+  this: two commits' fork suites went green against a module that predated the
+  change, and only a *deleted* export made it visible (the stale artifact had a
+  superset of exports, so nothing failed until a newly *added* one was missing).
+  **`./run.sh local-build` re-projects the tier; run it after a side-module
+  rebuild and before believing any suite.** The scope document called this "the
+  `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
+  mode is a green suite.
 - **H-8 — low coupling is not evidence of migratability, and may be evidence of
   the opposite.** The 2026-09-11 survey screened `host/src` for references to
   `WebAssembly.`, `SharedArrayBuffer`/`Atomics.` and `postMessage`, and read the
@@ -469,8 +507,10 @@ implied: `classify_additive_object_by_key` already existed and served
 
 # LANE F — fork control flow: invert it, do not port it
 
-**Status: characterized, dispatchable. The largest lane by line count and the
-one the campaign most lost track of.**
+**Status: IN PROGRESS in `/Users/brandon/kandelo-lane-f`. F1 (census) landed
+2026-09-12, with F0-residual and part of F2. Still the largest lane by line
+count, and the one the campaign most lost track of — §"What the census
+corrected" below replaces three statements this section used to make.**
 
 ## End state
 
@@ -480,13 +520,14 @@ entries** — `fm_parent_seal_capture`, `fm_parent_replay`,
 dispatched entry, giving 3) — and does nothing between them except the floor
 below. **0–1 new host imports.**
 
-Today there are **95 `fm_*` entry points**, several of them per-type variants
-(`fm_capture_intern_externref` / `fm_capture_intern_funcref`,
-`fm_externref_handle` / `fm_funcref_ordinal`). A prior document records a
-**reached floor of 71**. Reconciling 71 against 95 is the first task of this
-lane: either the surface regrew by 24 or the two counts measure different
-things, and if it regrew that is the same species of finding as the TypeScript
-growth below.
+**F1 answered the 71-vs-95 question and neither number was the surface.** The
+module declares **69** `fm_*` exports (**63** after this lane's first three
+commits); the host asserts 76 names at instantiation; 65 of the 69 had a caller.
+The "95" counted TypeScript *tokens*, 38 of which resolve to no export at all —
+they are tombstone comments documenting their own deletion. The surface has been
+shrinking, and was reported as growing twice. Full reconciliation, with the
+command that reproduces each figure, is
+`docs/plans/2026-09-12-lane-f-census.md` §1 (in the lane worktree).
 
 ## Why porting made it worse, measured
 
@@ -611,6 +652,74 @@ its replacement already exists.
 The "95" reported earlier counted TypeScript tokens including 13 tombstone
 comments that document their own deletion. The direction was reported backwards.
 
+## What the census corrected — read this before planning the rest
+
+F1 landed as `docs/plans/2026-09-12-lane-f-census.md` (lane worktree). Three
+statements this section used to make are wrong, and two new defects are filed.
+
+**1. F3 is substantially landed, not future work.** This section lists "the four
+coarse entries" as work to do. **Thirteen coarse entries already exist and are
+the production path**: `fm_parent_begin_capture`, `fm_parent_seal_capture`,
+`fm_parent_abort_seal`, `fm_parent_replay`, `fm_parent_abort`,
+`fm_parent_finish`, `fm_child_seed`, `fm_child_seed_borrowed`,
+`fm_child_reconstruct`, `fm_attach_child`, `fm_restore_from_arena`, `fm_abort`.
+The fine-grained drivers they replaced — `fm_begin_unwind`, `fm_finish_unwind`,
+`fm_serialize_journal_alloc`, `fm_begin_replay`, `fm_begin_abort`,
+`fm_finish_replay`, `fm_finish_abort`, `fm_begin_child_replay` and their
+siblings — are **gone from the module**, and their host driving loops went with
+them.
+
+**2. The remaining count is not remaining host sequencing.** Of the 69: 7 are
+called by the *guest* (the host only binds them at the
+`WPK_FORK_REFERENCE_IMPORT_*` names — collapsing them is a guest-ABI change and
+a re-instrument, so **do not**), 5 are the frozen ABI-44 frame contract, 8 are
+once-per-worker seeding, 2 are diagnostics. The genuinely un-inverted cluster is
+the **17-entry `fm_capture_*` family**, and that is where the rest of the
+reduction is.
+
+**3. F-D1 — there are two hosts and their surfaces diverge.** `crates/host-native`
+drives the same module over wasmtime and uses **33** entries to TypeScript's
+**60**. TypeScript calls the coarse `fm_restore_from_arena`; native still calls
+the two fine-grained entries it folds (`fm_begin_reference_replay`,
+`fm_build_gc_plan`). Neither can be deleted while native drives them, so **the
+un-inverted host pins two entries of the inverted host's surface in place.**
+`forkModuleEntryPoints` counts Rust declarations, so it cannot see this. **Any
+further collapse must land on both hosts in the same commit**, or the surface
+does not fall, it forks. (The capture asymmetry is NOT this defect: native's
+capture bodies call `fork_codec` in-process because native is one address space,
+which is a real capability boundary.)
+
+**4. F-D2 — `kernel_exit` does not trap, and a guest crash can read as a clean
+exit.** This is the prerequisite the estimates table calls unscoped, and scoping
+it found a correctness defect. `kernel_exit` is a **JavaScript host import** that
+throws `new WebAssembly.RuntimeError("unreachable")` (`worker-main.ts:543`) —
+no Wasm `unreachable` executes anywhere. The host separates an orderly exit from
+a genuine guest trap with a **regex over the error message** plus a side-channel
+variable (`isWasmUnreachableTrap(e) && kernelExitStatus !== null`, six sites). A
+guest that really traps after a status was recorded is reported as a clean exit
+with that status. `host-native` does not even share the convention — it returns
+`Err("kernel_exit(N)")`, which the TypeScript predicate would not match.
+
+**The change itself is small**, and is scoped in census §7: mint a process-exit
+`WebAssembly.Tag` the way `fork-unwind-transport.ts` already mints the
+fork-unwind tag, throw a tagged `Exception` carrying the status, convert the six
+sites, delete the `onKernelExit` side channel, mirror it in `guest.rs`. **No
+`ABI_VERSION` bump and no guest re-instrument** provided the tag stays
+host-internal or becomes a fork-module import; it is guest ABI only if the guest
+imports it, which the design does not require. **Expect it to surface guest
+crashes that read as exits today — that is the fix working, not a regression.**
+It buys the inversion the entry/catch half of its floor; it does **not** buy the
+two-worker span, which is a genuine capability limit.
+
+**5. One collapse was declined, with the argument, rather than skipped.**
+`fm_parent_seal_capture` / `fm_parent_abort_seal` look like a per-type pair and
+are not collapsed. Two names make the `ABORT_UNWINDING` discipline
+**structural**: the abort entry contains no guest drive, so a host cannot drive
+`wpk_fork_unwind_end` mid-unwind by mistake. One discriminated entry converts
+that into a runtime bit whose failure mode is silent guest-state corruption —
+the exact landmine that trapped or hung two prior attempts. **Minus one entry is
+not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
+
 ## Increments
 
 - **F0 — delete what has no caller. ~4,400 lines, free.** `fork-reference-recipes.ts`
@@ -620,15 +729,37 @@ comments that document their own deletion. The direction was reported backwards.
   flip, and — maintainer-authorised — the generic owner-import registration path
   (~170) plus the ~850-line typed-signature mailbox layer that exists only to
   serve it. **No dependencies. Start here.**
-- **F1 — reconcile 71 vs 95** and publish the categorized surface. Blocks F2.
+- **F1 — reconcile 71 vs 95** and publish the categorized surface. **DONE
+  2026-09-12** — `docs/plans/2026-09-12-lane-f-census.md`, commit `4a7f02a3d`.
+- **F0-r — delete what no host calls.** **DONE**, commit `2839b1810`:
+  `fm_add_activation_child_replay` and
+  `fm_add_activation_borrowed_child_replay`, both superseded by the coarse
+  `fm_child_seed` pair, both carrying doc comments claiming callers ("the module
+  unit tests + host-native") that do not exist — H-1 exactly. 69 -> 67.
 - **F2 — collapse per-type `fm_*` variants** into kind-discriminated entries,
   the same move that took `host_blob_read` + `host_fetch_archive` to one
-  `host_fetch_deferred`. Not in the same change as F0.
-- **F3 — the four coarse entries**, in the order §3 gives: `fm_abort` first
-  (it is the precondition for the others), then `fm_child_reconstruct`, then
-  the parent pair.
+  `host_fetch_deferred`. **PARTLY DONE:**
+  - `fm_attach_borrowed_child` folded into `fm_attach_child` — their Rust bodies
+    were identical character for character. 67 -> 66, commit `4e7e7e867`.
+  - `fm_capture_intern_{funcref,externref,i31,static_root}` folded into one
+    kind-discriminated `fm_capture_intern(kind, a, b)`. 66 -> 63.
+  - **Remaining:** `fm_parent_abort` into `fm_parent_replay(abort)` (safe — the
+    flag already exists inside `parent_replay_impl`, both paths drive the guest,
+    and `finish_transaction_impl`'s `in_abort` pairing assert makes a mismatched
+    flag a loud `EINVAL`; `fm_parent_finish(abort: u32)` is the shipped
+    precedent). `fm_child_seed` / `fm_child_seed_borrowed` needs a 16-vs-24-byte
+    side-record unification and is a wire change, not a signature change.
+  - **NOT** `fm_parent_seal_capture` / `fm_parent_abort_seal` — see §5 above.
+- **F3 — the coarse entries.** **Substantially landed already** (13 of them, see
+  §1 above). What is left of F3 is the `fm_capture_*` family: the module owning
+  the capture WALK, not just the intern leaves, and one seeding descriptor in
+  place of the 8 `fm_set_*`. That is the bulk of the 15-30 day estimate.
 - **F4 — delete the host-side drivers each coarse entry replaces.** *A coarse
-  entry that does not delete its driver has not landed.*
+  entry that does not delete its driver has not landed.* Largely done alongside
+  F3; the census records which drivers went.
+- **F5 (new) — `kernel_exit` as a tagged exception.** Scoped in census §7,
+  not built. Closes F-D2 and dissolves the entry/catch half of the floor. See
+  the open decision below: it may belong to lane P, not here.
 
 ## Acceptance evidence
 
@@ -640,8 +771,16 @@ comments that document their own deletion. The direction was reported backwards.
   otherwise should measure.
 - For F0: a transitive caller census per deletion. A direct grep produced 13
   false alarms in one afternoon because most call sites reach their target
-  indirectly.
-- `wasm32-unknown-unknown` build in the loop (H-3).
+  indirectly. **Census both hosts** — `host/src` *and*
+  `crates/host-native/src/guest.rs` — or F-D1 will make a deletion look safe
+  that is not.
+- `wasm32-unknown-unknown` build in the loop (H-3). `crates/fork-module/build-wasm.sh --run`
+  does wasm32 **and** wasm64 plus both V8 harnesses in about 25 seconds, so
+  there is no excuse for batching it to the end.
+- **Re-project the tier before believing a Vitest result (H-9).** `build-wasm.sh`
+  stages into `local-binaries/`, but the resolver serves
+  `local-binaries/source-only-v1/`. Two of this lane's commits went green
+  against the previous module before that was noticed.
 
 ## Known hazards
 
@@ -658,6 +797,17 @@ comments that document their own deletion. The direction was reported backwards.
 - `module_state_records.rs` is **483 dead Rust lines whose live twin is 3,860
   TypeScript lines**. The fork TS growing and the fork Rust never running are
   plausibly one phenomenon.
+- **A collapsed entry can delete a guarantee, not just a wrapper.** Two of this
+  lane's per-type pairs were safe to fold because one had an identical body and
+  the other already carried the flag internally behind a pairing assert that
+  fails loud. The seal pair is not, because its two names are what make the
+  `ABORT_UNWINDING` discipline unrepresentable-in-error. **Before folding a
+  pair, ask what the second name was preventing.**
+- **Deleting an export leaves comments behind, and they become the next
+  miscount.** The "95 `fm_*` entry points" this section used to assert was 38
+  tombstone comments plus real exports. Every deletion in this lane must sweep
+  the comments that name it, or the surface becomes unmeasurable again by the
+  same mechanism.
 
 ---
 
@@ -2030,8 +2180,11 @@ filesystem needed rebuilding.
   `assertNoStaleWasmArtifacts` — the assertion Y3 must preserve — walks the
   whole image and reads every `.wasm` back out. **Roughly ten of the census's
   24 methods are read-back-during-build.** The gap is not six operations; the
-  Rust side has a *builder* where the lane needs a *filesystem*. Which
-  substrate answers that is an **open decision**, above.
+  Rust side has a *builder* where the lane needs a *filesystem* — and
+  `SffsWriter` must STAY a builder, because its append-only shape is what lets
+  it emit a 249 MiB image the kernel cannot hold. **Answered 2026-09-12:** the
+  filesystem already exists, dormant, in Phase 5's `tmpfs.rs` and `rootfs.rs`.
+  See the decided entry above.
 
 **`rebaseToNewFileSystem` was a census open question and is now answered by
 reading it** (`host/src/vfs/memory-fs.ts:4319`): it changes an image's
