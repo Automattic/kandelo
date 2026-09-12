@@ -1197,16 +1197,30 @@ and means different things under each.
   reaches it. Do not read "V4 is landing" as "the held-out trials should now
   kill": they become killable at item 2 below, and the spec says so.
 
-**Still open in V4, in order:**
+* **The host-backed base arm** (`88a56b838`, "The loader keeps a deferred
+  file's description, so an export can re-emit it") — `load_image_inner` reads
+  the image's own deferred section alongside KLZY and keeps each payload
+  verbatim ON THE INODE, so it dies with the inode rather than letting a reused
+  index hand a stale fetch descriptor to the next file allocated there. The
+  export re-emits it under the number it assigns. Ten trials, 0 survived.
+
+  **Reconstruction was never available for this arm**, which is why it needed a
+  different shape from the first: the kernel has no URL, and the only other
+  identity is the source image's inode number, which the export renumbers.
+
+  **An empty description does not become a deferred record.** A base tree the
+  host walked (`load_manifest`) carries no deferred description — its bytes are
+  ordinary host files — so it still exports as a stub, left visible as a file
+  this export cannot serialize rather than dressed up as a deferred file
+  pointing nowhere. `ExportNode` states the two cases as separate variants.
+
+**Still open in V4:**
 
 1. ~~The archive-member arm.~~ **DONE**, above.
-2. **The `BaseSource::Host` arm needs the loader to retain payloads.** Measured
-   2026-09-12: **the kernel does not hold a URL for a host-backed base file.**
-   `load_image_inner` reads KLZY, which has no payload field, and records the
-   blob id as the SOURCE image's inode number. Inode numbers are not identity
-   across a rewrite — the export renumbers — so this arm cannot be closed by
-   reconstructing identity. The loader must READ the SDEF section it was given
-   and keep each payload, so the export can re-emit it under the new inode.
+2. ~~The `BaseSource::Host` arm.~~ **DONE**, above — with one limit worth
+   stating: an image that carries NO SDEF section still loses its URL-backed
+   files on export, because there is nothing to retain from one. That closes
+   when the producers emit SDEF, which is V5.
 3. **`load_image_inner` accepts SDEF in KLZY's place.** Today it *refuses* an
    image that declares no KLZY section, and **there is no KLZY encoder in
    Rust** — `klzy.rs` is a decoder only. So an exported image is not loadable
