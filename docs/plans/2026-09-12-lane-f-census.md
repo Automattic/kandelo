@@ -827,3 +827,64 @@ moved all fork TypeScript to the attic. The measure now reads 65. The growth is
 the work the maintainer asked for, but raising a ceiling is the one thing the
 lane brief forbids outright, so the file is written, tested and NOT committed
 pending that call.
+
+## §16 — The table-mutation group needs NO new wire format
+
+This section corrects an earlier claim of mine, recorded as master-plan open
+decision 3: that
+`__wpk_fork_module_state_table_mutation_commit(owner, start, count)` "carries no
+values, yet `reconcile()` must bring pthread table replicas coherent, and the
+ABI defines no journal format." The first half is true. The conclusion was
+wrong.
+
+**Checked in Rust first.** `crates/shared/src/lib.rs` defines only the five
+import names and `__wpk_fork_module_state_table_generation_addr`. No journal
+record format exists anywhere in `crates/`. That much was right.
+
+**Then, narrowly, how it works today.** The maintainer allowed reading the
+attic only if needed, and it was: a format that already exists and gets
+reinvented is the duplicate-wire-format defect this campaign has already found
+once at 9,050 lines. Reading only the interface and the file header — not the
+orchestration, which is the part that kept going wrong — settles it.
+
+`ForkActivationTableReplication` documents `reconcile()` as "apply the latest
+process **snapshot** and return its exact generation", and `commit(activationId,
+ownerId, firstIndex, length)` as "publish a successful guest mutation and
+release writer ownership".
+
+So the mechanism is not a journal of values at all. **The table state crosses as
+a reference graph, in the capture/replay wire formats that already exist.**
+Capture goes through the guest's `saveTables` into a module reference graph;
+restore goes through `decodeReferenceGraph`, `restoreFromArena` and the drive
+plan — the same KFRE/KFRV/KFRS the fork path already uses.
+
+**Why the values can cross at all** is stated in `fork-table-snapshot.ts`'s
+header: a funcref is resolved from the module's resident decoded-graph oracle
+against THIS worker's own per-activation function catalogs, so the
+`(activation, ordinal)` coordinate maps to the worker's own `table.get` **by
+construction** — funcref-ordinal stability across workers. Externref and GC
+values are reconstructed by the module drive into the shared anyref transit and
+read back from there.
+
+That is exactly the encoding a module-side implementation would need, and it is
+already the ABI. `mutation_commit` carries no values because it is a
+NOTIFICATION plus a range: it says which owner's range changed so the next
+`reconcile()` re-applies the snapshot. The generation fence — an atomic i64 at
+`table_generation_addr`, already emitted by
+`crates/fork-instrument/src/module_state.rs` — is the wake signal.
+
+### What this changes
+
+* **Open decision 3 is withdrawn.** There is no undefined format and no
+  maintainer decision owed. The five `module_state_table_*` imports are not
+  blocked on design.
+* The module already owns every primitive the module-side implementation needs:
+  `fm_decode_reference_graph`, `fm_decoded_node_count`, `fm_decoded_node_field`,
+  `fm_restore_from_arena`, and the drive plan. Notably all of those currently
+  sit in `forkModuleEntriesWithoutProductionCaller` — their production caller is
+  precisely this path.
+* It is NOT trivial work, and this census does not claim otherwise. What is
+  established is the format question; the reconcile sequencing, the writer
+  ownership protocol behind `mutation_begin`/`abort`, and what
+  `state_owned(owner)` must answer are not, and reading the attic further for
+  those would be reading the orchestration the maintainer set aside.
