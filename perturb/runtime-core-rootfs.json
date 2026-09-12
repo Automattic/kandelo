@@ -1,0 +1,26 @@
+{
+  "file": "crates/runtime-core/src/rootfs.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "chmod_at drops the mode mask",
+      "scope": "fn chmod_at(",
+      "find": "inode.mode = mode & 0o7777;",
+      "replace": "inode.mode = 0o777;"
+    },
+    {
+      "name": "symlink_at changes symlink mode",
+      "scope": "fn symlink_at(",
+      "find": "            0o777,",
+      "replace": "            0o644,"
+    },
+    {
+      "name": "reset leaks the next_ino counter",
+      "scope": "pub fn reset() {",
+      "scope_end": "\n}\n",
+      "find": "ROOTFS.with(|state| *state = RootfsState::new());",
+      "replace": "ROOTFS.with(|state| { let n = state.next_ino; *state = RootfsState::new(); state.next_ino = n; });"
+    }
+  ],
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
+}

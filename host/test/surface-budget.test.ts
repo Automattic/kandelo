@@ -367,6 +367,11 @@ const MEASURED: Record<string, () => number> = {
       "crates/fork-module/src/lib.rs",
       /^\s*pub (unsafe )?extern "C" fn fm_/,
     ),
+  sffsModuleEntryPoints: () =>
+    countMatches(
+      "crates/sffs-module/src/lib.rs",
+      /^\s*pub (unsafe )?extern "C" fn sm_/,
+    ),
 };
 
 describe("campaign surface budget", () => {
