@@ -1541,9 +1541,35 @@ Genuine floor, confirmed against `host-native`:
 
 ## Increments — rewritten by the census
 
-- **L2 — generate the scratch pointer table** from the kernel's export
-  signatures, closing L-D2 below. Cheapest item; removes a hand-maintained ABI
-  table.
+- **L2 — BLOCKED. Its premise is false, found 2026-09-12 while starting it.**
+
+  The increment said "generate the scratch pointer table from the kernel's own
+  export signatures". **The signatures do not carry that information.** Kernel
+  exports mark pointers three different ways: `*mut u8`
+  (`kernel_get_cwd(pid: u32, buf_ptr: *mut u8, ...)`), bare `usize`
+  (`kernel_handle_channel(scratch_ptr: usize, ...)`), and plain `u32`
+  (`kernel_exec_target_read`). A type-based extraction agrees with the
+  hand-written TypeScript table on **40 of 52 entries and cannot see the other
+  12** — it reports no pointers where the table declares them.
+
+  The 12 are not evidence the TypeScript is wrong; they are evidence the
+  *signatures* are not an authority. `*_ptr` naming is a convention, not a type.
+
+  **Three ways forward, and the choice is the maintainer's:**
+
+  1. **An explicit Rust declaration** — a const table in `crates/shared` naming
+     pointer positions per export, generated into TypeScript and assertable from
+     Rust. Campaign-consistent, but it is a second thing to keep in step with the
+     signatures.
+  2. **Make the type the authority** — change every kernel export to take
+     pointers as `*mut u8`/`*const u8`. Then extraction is exact and the
+     compiler enforces it. Invasive: it touches the whole kernel export surface.
+  3. **Name-based heuristic** (`*_ptr`, `*_buf`). **Not recommended** — a gate
+     that is wrong is worse than no gate, and this would encode a convention as
+     if it were a fact.
+
+  Until then `KERNEL_SCRATCH_EXPORT_NAMES` stays hand-maintained and L-D2 stays
+  open.
 - **L3 — one process-memory layout** in `crates/shared`, consumed by both hosts.
 - **L4 — one bounds-check rule.** `checked_shared_range` already documents
   itself as a copy of the TypeScript.
