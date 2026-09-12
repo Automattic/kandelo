@@ -1709,18 +1709,43 @@ directories, crash safety net, local exec resolution), plus 18 browser-only and
 - **E1 — census.** Done.
 - **E2 — unify the 43 protocol message types.** Type-level and mechanical, so
   it cannot change runtime behaviour. Start here.
-- **E3 — audit the 21 same-named worker-entry declarations** one at a time:
-  shared concept, or genuinely per-host?
+- **E3 — audit of the 21 same-named worker-entry declarations. DONE
+  2026-09-12. None is duplication to remove.**
+
+  **4 are `let` module state** initialised from shared constants —
+  `maxPages`, `initReady`, `defaultThreadSlots`, `processMemoryAllocator`.
+  Sharing a `let` across modules would make them one variable; each host needs
+  its own instance.
+
+  **17 differ for platform reasons.** `vforkMechanismTraceEnabled` is the clean
+  illustration: Node reads `process.env.KERNEL_SYSCALL_LOG`, the browser has no
+  environment and sets it from a runtime message. `handleInit` is 14,191
+  characters in the browser against 3,437 in Node.
+
+  **A caution about how this was nearly mis-read:** a character-count comparison
+  made `vforkMechanismTraceEnabled` look like an 8-vs-691 asymmetry — a
+  candidate for E1's missing category three. The 691 was the declaration plus a
+  trailing doc comment. **Size deltas are not evidence of divergence**; reading
+  the declarations is.
+
+- **E5 — the 18 protocol types with identical bodies but divergent doc
+  comments.** The only remaining mergeable duplication in this lane. Needs a
+  judgement per type about whose comment survives, which is why E2 left them.
 - **E4 — leave `*-kernel-host.ts` alone and record why**, so a later pass does
   not "discover" the divergence and try to merge it.
 
 ## Acceptance evidence
 
-`hostPeerDuplicateDeclarations` reaches **12** — declaration names appearing in
-both halves of a pair, excluding members destructured from the shared lifecycle
-factory. Ceiling 65 (43 protocol + 21 worker-entry + 1 kernel-host). **Not 0**,
-because `kernelWorker`, `port`, `maxPages` and `lifecycle` are legitimately
-per-host instances of a shared concept.
+`hostPeerDuplicateDeclarations` reaches **29**, currently 48.
+
+**The target was 12 and that was a guess.** E3 derived the real floor by reading
+every candidate: **21 worker-entry declarations are legitimately per-host**
+(4 module-state `let`s, 17 platform differences), **6 protocol types genuinely
+differ**, and **2 are message unions** whose members differ by construction.
+21 + 6 + 2 = 29.
+
+What remains between 48 and 29 is **18 protocol types with identical bodies and
+divergent comments** (E5) and one shared constant in the kernel-host pair.
 
 ## Known hazards
 

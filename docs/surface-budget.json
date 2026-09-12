@@ -132,8 +132,8 @@
       "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
       "ceiling": 48,
       "slack": 0,
-      "target": 12,
-      "why": "Lane E, set by the E1 census. Replaces a line-count surface that was unreachable: the kernel-host pair shares exactly one name and is two different jobs, not a drifted copy, so it will never shrink. This counts actual duplication \u2014 43 protocol message types declared twice, 21 same-named worker-entry declarations, 1 in kernel-host. Target is 12, not 0, because a few (kernelWorker, port, maxPages, lifecycle) are legitimately per-host instances of a shared concept."
+      "target": 29,
+      "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons \u2014 vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."
     },
     "artifactTierPathSpellings": {
       "measure": "independent production spellings of the local-binaries/source-only-v1 tier path",
