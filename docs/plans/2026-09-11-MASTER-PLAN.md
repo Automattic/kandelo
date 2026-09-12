@@ -500,37 +500,53 @@ cutover's timing.
 **2. Lane F — the `forkModuleEntryPoints` ceiling now blocks every remaining
 guest import. OPEN, raised 2026-09-12.**
 
-The measure counts `pub extern "C" fn fm_*` in `crates/fork-module/src/lib.rs`,
-and its own `why` field says it counts **host-called** entries only. The regex
-cannot see callers, so it cannot enforce that. Two of the 54 it counts —
-`fm_gc_identity_find` and `fm_gc_identity_claim` — are called by nothing but an
-injected wasm shim inside the same module. The host-called figure is **52**.
+The measure counts `pub extern "C" fn fm_*` in `crates/fork-module/src/lib.rs`.
+Definitions, not calls. Its own `why` field says it counts **host-called**
+entries only; the regex cannot see callers, so it cannot enforce that.
 
-This is not a rounding complaint. Ten of the eighteen remaining guest imports
-each need an injected shim backed by a new `fm_*` helper, for the same reason
-those two exist: **the shim is the only thing that can hold a reference, and
-Rust is the only thing that can hold a map.** That is about **+11 against a
-ceiling of 54**, so the tranche cannot land without a decision, and the brief
-forbids the lane owner from raising a ceiling on their own judgement.
+**Decomposed by who actually calls the 54, measured 2026-09-12:**
 
-Three coherent routes:
+| | count |
+|---|---|
+| called by a host (`crates/host-native` or `host/src`) | **27** |
+| called only by the injector's own shims | **4** |
+| called by neither | **23** |
 
-* **A — raise the ceiling to ~65.** Honest and simple, but it inverts the
-  ratchet's direction and leaves the number conflating two unlike things.
-* **B — narrow the measure to its declared scope** (host-called only). Makes
-  the number mean what the entry already says it means, and the tranche lands
-  inside a ceiling of 52. It is still a weakening of a check, which is why it
-  is the maintainer's call and not the lane's.
-* **C — split the surface.** Keep `forkModuleEntryPoints` for host-called
-  entries and add a separately-ceilinged `forkModuleInternalHelpers` for
-  injector-only ones. **Nothing is weakened, both numbers become honest, and
-  the internal helpers keep a ratchet of their own.** This is the lane's
-  recommendation.
+The entry's purpose is "how many fine-grained calls force the host-side driver
+loops that make the TypeScript grow". Against that purpose only the 27 count.
+The four injector-only entries — `fm_drive_bump`, `fm_capture_claim_gc`,
+`fm_gc_identity_find`, `fm_gc_identity_claim` — grow the host contract by
+**zero**; they are spelled as wasm exports only because the injector resolves
+its helpers by name.
 
-Note that route C needs a measure that can tell the two apart. The injector
-looks its helpers up by name (`exported_function`), so the set is enumerable
-from `crates/fork-module-inject/src/main.rs` — the same file
-`forkGuestImportsUnserved` already reads to find injected exports.
+**This corrects an earlier framing in this same entry.** It previously said the
+ten remaining shim-backed imports were "+11 against a ceiling of 54", and put
+the host-called figure at 52. Both were wrong. Those eleven would all be the
+FOURTH kind — internal helpers a shim calls because the shim is the only thing
+that can hold a reference and Rust is the only thing that can hold a map. They
+add **nothing** to the 27. There is no real collision here: an
+internal-implementation counter was being read as though it were the host API
+contract.
+
+**What is actually open** is therefore narrower: should
+`forkModuleEntryPoints` keep conflating three unlike populations? The lane's
+recommendation is to split it so each is ratcheted on its own — host-called
+entries (the campaign's actual target), injector-only helpers, and the
+uncalled. The injector's set is enumerable from
+`crates/fork-module-inject/src/main.rs`, the same file
+`forkGuestImportsUnserved` already reads.
+
+**The finding that deserves more attention than the ceiling: 23 of 54 have no
+caller anywhere** — not host-native, not `host/src`, not the injector. That is
+H-1 at more than twice the scale previously flagged (recorded as "11
+`fm_capture_*` exports with no production caller"). Not all of it is dead:
+`fm_frame_{reserve,commit,peek,next}` and `fm_resume_peek` call the IDENTICAL
+`*_impl` functions as their `__wpk_fork_frame_*` counterparts, differing only
+in taking an explicit activation id where the guest export uses
+`primary_activation()` — a multi-activation variant nothing has wired up yet.
+**Which of the 23 are pending versus dead is NOT established.** That is a
+census, and it should happen before anyone sets a new ceiling, because the
+number a ceiling should hold depends on the answer.
 
 **3. Lane F — the table-mutation journal has no defined format. OPEN, raised
 2026-09-12.**
