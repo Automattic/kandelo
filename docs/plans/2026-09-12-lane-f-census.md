@@ -1070,3 +1070,59 @@ recorded rather than guessed at. The rest of the trio is ready to build the
 moment the storage question is answered: the identity import exists, the
 injector already emits shims of exactly this shape, and
 `forkModuleInjectorHelpers` has an envelope of 15 against 3 used.
+
+## §21 — Provenance probably needs a per-LAYOUT witness, not a per-object record
+
+§20 framed provenance storage as unbounded and lifetime-coupled, and asked the
+maintainer to choose between a growable side table and a fixed one that fails
+loud. Re-reading the N1-F6 grounding says the premise was too strong.
+
+**What the seed is actually for.** A non-defaultable shape cannot be
+`struct.new_default`'d, so replay's allocate step must pass a type-correct
+non-null value for each mutable internal-reference field, before the true edge
+target may exist. The grounding is explicit that this value is then
+**overwritten**: "Phase 5's fill later overwrites with the real (possibly
+self-referential) edge." The original value is recorded not because replay needs
+*that* value, but because "you cannot conjure an arbitrary instance of an
+application-defined struct/array type out of nothing" — and a value the program
+actually used is, by construction, one that existed and is therefore capturable.
+
+**So the requirement is a type-correct, capturable instance of the field's
+type — not the specific one the original constructor used.** If that holds, the
+storage is bounded by the module's static layout count, not by how many objects
+the program allocates.
+
+### The shape that follows
+
+A **rooted witness table**: one `(ref null any)` slot per provenance layout, in
+a module-owned GC table. The injected constructor wrapper already stages the
+value in a transit slot; it can `table.set` it into the witness slot indexed by
+layout id. That removes, at once, all three costs §20 was worried about:
+
+* **No growth.** One slot per layout, fixed at instrumentation time.
+* **No reclamation problem.** Rooting the witness keeps it alive deliberately;
+  a bounded, known set of retained objects rather than an unbounded leak.
+* **No host call on the allocation hot path.** `table.set` is pure wasm and
+  needs no reference identity at all, so the per-allocation cost that made §20's
+  side table unattractive disappears.
+
+This also answers "can Wasm GC features help" and "can instrumentation solve
+it" together: the GC table IS the storage, and the instrumentation that already
+wraps the constructor is the only writer.
+
+### The one thing that decides it, NOT established
+
+The grounding says the mechanism "is call-site-scoped, not type-scoped". A
+witness pool is type-scoped. Those differ only if two call sites constructing
+the same type need *different* seeds — and since the seed is overwritten by the
+fill, call-site scoping may be conservatism rather than necessity. **That is the
+crux and it is not established here.**
+
+Two smaller checks go with it. The constructor's scalar operands ride in
+`provenance_begin`'s `scalar_lo`/`scalar_hi`, and an array's LENGTH is a scalar
+that is *not* overwritten — but a length is recoverable at capture by inspecting
+the array, so it should not need provenance at all. And a witness must still be
+capturable when the fork happens, which rooting guarantees.
+
+If call-site scoping turns out to be necessary, §20's question returns exactly
+as written. If it does not, provenance stops being a storage problem.
