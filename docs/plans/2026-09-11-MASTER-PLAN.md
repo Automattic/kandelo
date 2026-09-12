@@ -2097,10 +2097,35 @@ The discarded alternative, recorded so it is not re-proposed: teach the
 TypeScript writer SDEF first so both sides match, then repoint. That builds a
 new feature into the file the campaign is deleting.
 
-**A half-migrated corpus still boots**, which is what keeps per-image landing
-safe: both readers are live — `klzy::decode_kernel_lazy_linkage` via
-`rootfs.rs:1613` for the JSON trailer, `sffs_deferred::decode` via
-`sffs.rs:528` for SDEF.
+**CORRECTION 2026-09-12, same day, by measurement.** An earlier version of
+this section said "a half-migrated corpus still boots … both readers are live",
+citing `sffs_deferred::decode` via `sffs.rs:528`. **That was wrong, and wrong in
+the way H-1 warns about.** `sffs.rs:528` is the *definition* site of
+`Sffs::deferred_section`; a caller census finds its only callers are
+`sffs_write.rs`'s own tests. Nothing in the boot path consults SDEF.
+
+**So V5 has no production reader either, not just no production writer.** The
+boot path in `rootfs.rs:1595` reads KLZY and *requires* it —
+`None => return Err(Errno::EINVAL)`, with a comment that is explicit about why:
+an image without the section cannot be distinguished from one whose lazy files
+are recorded only in host-side JSON, so accepting it "would silently build a
+tree where every deferred file reports size 0 — a wrong tree that looks like a
+right one."
+
+Two consequences, and they are the reason this correction matters rather than
+being a citation fix:
+
+* **A Rust-written image must still emit KLZY to boot at all.** The container
+  writer (gap 7) therefore cannot treat KLZY as V5 residue to drop; emitting
+  SDEF *instead* produces an image the kernel rejects.
+* **Per-image landing is still safe, but for a different reason than stated.**
+  Not "both readers are live" — rather, the Rust writer keeps emitting KLZY, so
+  every image stays readable by the kernel that exists. The safety comes from
+  the writer, not from dual readers.
+
+**V5 is therefore incomplete on both sides, and lane Y only closes the writer
+half.** Wiring the SDEF read path is lane V's, and until it lands SDEF is
+carried but not consulted. Any plan that treats Y5 as "V5 done" is wrong.
 
 ### What Y5 actually costs — half of it is one line each
 
