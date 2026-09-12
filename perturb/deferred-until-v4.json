@@ -1,5 +1,5 @@
 {
-  "_comment": "NOT part of the green contract. These trials cannot be killed until lane V's V4 identity contract makes the export's byte source reachable; today the export turns base files and lazy members into empty stubs without consulting it. Move them back into sffs-module-abi.json when V4 lands -- they are the tests that will prove it.",
+  "_comment": "NOT part of the green contract, and re-checked 2026-09-12 after V4's archive-member arm landed: BOTH STILL SURVIVE, which is correct. They are about the export's BYTE SOURCE, and the member arm never reaches it -- a deferred member is described, not read. The source is consulted only for content of a loaded base image, and this module has no host blob store and a fresh build has no base files, so it is unreachable by construction here. They become killable when the export can serialize a DERIVED build (V4 item 2, the BaseSource::Host arm, plus a real byte source), not merely when V4 has started landing. Move them into sffs-module-abi.json then -- they are the tests that will prove it.",
   "file": "crates/sffs-module/src/lib.rs",
   "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "trials": [

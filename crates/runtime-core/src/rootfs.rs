@@ -3347,6 +3347,21 @@ enum ExportNode {
     Dir,
     ImageFile(u32, u64),
     OverlayFile(u32, u64),
+    /// A deferred file the export can DESCRIBE: an archive member, whose real
+    /// size, backing archive and member path the overlay already holds. Written
+    /// as a zero-length body inode plus a record in the image's deferred
+    /// section, which is what preserves laziness -- materializing the bytes
+    /// here is what makes a 249 MiB image impossible.
+    LazyMember {
+        archive_id: u32,
+        source_path: Vec<u8>,
+        size: u64,
+    },
+    /// A deferred file the export CANNOT yet describe: a host-backed base file.
+    /// The kernel holds no identity for one that survives renumbering -- the
+    /// blob id is the source image's inode number and the export assigns new
+    /// ones -- so this still writes an empty file and loses the linkage. See
+    /// the master plan, LANE V, "V4 -- the identity contract", item 2.
     LazyStub,
     Symlink(Vec<u8>),
     Special,
@@ -3566,7 +3581,15 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 }
                 InodeKind::Symlink(target) => ExportNode::Symlink(target.clone()),
                 InodeKind::Special(_) => ExportNode::Special,
-                InodeKind::LazyMember { .. } => ExportNode::LazyStub,
+                InodeKind::LazyMember {
+                    archive_id,
+                    source_path,
+                    size,
+                } => ExportNode::LazyMember {
+                    archive_id: *archive_id,
+                    source_path: source_path.clone(),
+                    size: *size,
+                },
             };
             Ok::<_, Errno>((node, inode.mode, emitted.get(&item.overlay).copied()))
         })?;
@@ -3589,6 +3612,25 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             }
             ExportNode::Symlink(target) => {
                 writer.symlink(item.parent_sffs, &item.name, &target)?
+            }
+            ExportNode::LazyMember {
+                archive_id,
+                source_path,
+                size,
+            } => {
+                // The payload is empty on purpose. It is the HOST's fetch
+                // description, and an archive member has none of its own: the
+                // archive carries the transport, and the two fields beside this
+                // one are the whole of what locates the member inside it.
+                writer.create_deferred_file(
+                    item.parent_sffs,
+                    &item.name,
+                    mode,
+                    size,
+                    archive_id,
+                    &source_path,
+                    b"",
+                )?
             }
             ExportNode::LazyStub => {
                 // `SharedFS.createLazyStub` is `open(O_CREAT)` plus an explicit

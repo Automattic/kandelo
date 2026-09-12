@@ -1056,31 +1056,26 @@ mod tests {
         );
     }
 
-    /// **A registered lazy file exports as an EMPTY FILE, losing its
-    /// identity.** Pinned, because it means `export_image_read` cannot
-    /// serialize a production image at all.
+    /// **A registered lazy file exports as a deferred record carrying its real
+    /// size and its archive linkage.** This test was written the other way up:
+    /// it pinned the damage, because `build_export_image` mapped
+    /// `InodeKind::LazyMember` to an empty file and emitted no deferred record,
+    /// so a 99,999-byte member exported as a zero-length file with no trace of
+    /// where its bytes were. That made `export_image_read` unable to serialize
+    /// a production image at all -- not merely a derived one, since fresh
+    /// builds REGISTER lazy files and the shipped shell image carries 7,546
+    /// deferred entries.
     ///
-    /// The registration itself is correct: before the export, `/usr/big`
-    /// reports its manifest size of 99,999 and its mode, exactly as a builder
-    /// needs pre-fetch.
+    /// Lane V's V4 closed it for this arm. The assertions are inverted rather
+    /// than deleted, so the test still names the defect it was written for and
+    /// a regression reads as "the damage is back" rather than as an unfamiliar
+    /// failure.
     ///
-    /// The export is what loses it. `build_export_image` maps
-    /// `InodeKind::LazyMember` to `ExportNode::LazyStub` and writes
-    /// `create_file(.., Content::Bytes(b""))` -- an empty file. Deferred
-    /// records are only emitted for entries created through
-    /// `create_deferred_file`, which the export never calls, so no SDEF
-    /// section is produced and nothing records where the bytes were.
-    ///
-    /// **This corrects a claim made one commit earlier.** That commit said the
-    /// module "is correct for FRESH builds, which have no base files". Fresh
-    /// builds are not exempt: they REGISTER lazy files, and the shipped shell
-    /// image carries 7,546 deferred entries. So the export path is unusable
-    /// for fresh and derived builds alike, and lane Y needs a serialization
-    /// that calls `create_deferred_file` rather than reusing the kernel's
-    /// rootfs export -- which was built to hand a tree to a consumer that
-    /// re-supplies laziness separately, not to publish an image.
+    /// **The body inode is still zero-length, and that is the point**: the
+    /// image DESCRIBES bytes it does not contain. Materializing them here is
+    /// what would make a 249 MiB image impossible.
     #[test]
-    fn a_registered_lazy_file_is_lost_by_the_export_todo_builder_serialization() {
+    fn a_registered_lazy_file_exports_as_deferred_with_its_real_size() {
         sm_reset();
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
@@ -1116,12 +1111,30 @@ mod tests {
         assert_eq!(
             fs.stat_ino(ino).expect("stat").size,
             0,
-            "THE DAMAGE: a 99,999-byte lazy member exports as a zero-length file",
+            "the body inode is a stub -- the image describes bytes it does not carry",
         );
-        assert!(
-            fs.deferred_section().expect("decodes").is_none(),
-            "THE DAMAGE: and with no deferred record, so its archive and member path are gone",
+
+        let section = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the export emits a deferred section");
+        let record = section
+            .get(ino)
+            .expect("a record for the exported inode, keyed by its NEW number");
+        assert_eq!(
+            record.size, 99_999,
+            "the real size rides in the record, not in the body inode",
         );
+        assert_eq!(record.archive_id, 3, "which archive backs it");
+        assert_eq!(
+            record.source_path, b"members/big.bin",
+            "and which member within that archive",
+        );
+        // The record is keyed on the inode the EXPORT assigned, which is the
+        // whole reason this linkage cannot be carried by inode number across a
+        // rewrite: nothing guarantees it matches the number it was registered
+        // under.
+        assert_eq!(section.len(), 1, "one deferred file, one record");
     }
 
     #[test]

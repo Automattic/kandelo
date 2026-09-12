@@ -1,0 +1,35 @@
+{
+  "file": "crates/runtime-core/src/rootfs.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the export goes back to emptying archive members",
+      "scope": "                InodeKind::LazyMember {\n                    archive_id,",
+      "scope_end": "                },",
+      "find": "                } => ExportNode::LazyMember {\n                    archive_id: *archive_id,\n                    source_path: source_path.clone(),\n                    size: *size,",
+      "replace": "                } => ExportNode::LazyMember {\n                    archive_id: *archive_id,\n                    source_path: source_path.clone(),\n                    size: 0,"
+    },
+    {
+      "name": "the exported record forgets which archive backs the member",
+      "scope": "            ExportNode::LazyMember {",
+      "scope_end": "\n            }\n",
+      "find": "                    archive_id,\n                    &source_path,",
+      "replace": "                    0,\n                    b\"\","
+    },
+    {
+      "name": "the exported record names the wrong member of the right archive",
+      "scope": "            ExportNode::LazyMember {",
+      "scope_end": "\n            }\n",
+      "find": "                    &source_path,\n                    b\"\",",
+      "replace": "                    b\"x\",\n                    b\"\","
+    },
+    {
+      "name": "the member is materialized into the body instead of described",
+      "scope": "            ExportNode::LazyMember {",
+      "scope_end": "\n            }\n",
+      "find": "                writer.create_deferred_file(\n                    item.parent_sffs,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    b\"\",\n                )?",
+      "replace": "                let _ = (archive_id, source_path, size);\n                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b\"\"))?"
+    }
+  ]
+}
