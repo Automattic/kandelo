@@ -715,6 +715,65 @@ mod tests {
     use super::*;
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
 
+    /// The ceiling is the CONFIGURED maximum, asserted against a literal.
+    ///
+    /// Written after mutation testing killed the original version of these
+    /// tests -- which derived the expected value by calling the function under
+    /// test, so dropping the block-size multiply and dropping the clamp both
+    /// survived. A test whose expectation comes from the implementation
+    /// verifies only that the implementation equals itself.
+    #[test]
+    fn growth_ceiling_reports_the_configured_maximum() {
+        use crate::sffs_write::{NoContent, SffsConfig, SffsWriter};
+        // The initial size must hold the metadata that max_size_bytes sizes:
+        // a larger ceiling means more inodes, a bigger block bitmap and a
+        // bigger inode table, and mkfs answers ENOSPC when those do not fit.
+        let w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 2 * 1024 * 1024,
+            max_size_bytes: Some(8 * 1024 * 1024),
+            growable_to_bytes: 2 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
+        let fs = Sffs::mount(body).expect("mount");
+        assert_eq!(
+            fs.growth_ceiling_bytes().expect("ceiling"),
+            8 * 1024 * 1024,
+            "the ceiling is max_size_blocks * block size, and 8 MiB is what was configured",
+        );
+    }
+
+    /// A configured maximum SMALLER than the body reports the body instead.
+    ///
+    /// The clamp has no effect on an ordinary image, which is why dropping it
+    /// went unnoticed: only an image whose recorded ceiling it has already
+    /// outgrown can tell the difference.
+    #[test]
+    fn growth_ceiling_clamps_up_when_the_configured_maximum_is_already_exceeded() {
+        use crate::sffs_write::{NoContent, SffsConfig, SffsWriter};
+        let w = SffsWriter::mkfs(SffsConfig {
+            size_bytes: 2 * 1024 * 1024,
+            // 64 KiB: far below the 2 MiB body this image occupies.
+            max_size_bytes: Some(64 * 1024),
+            growable_to_bytes: 2 * 1024 * 1024,
+            now_ms: 0,
+        })
+        .expect("mkfs");
+        let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
+        let body_len = body.len() as u64;
+        let fs = Sffs::mount(body).expect("mount");
+        assert_eq!(
+            fs.growth_ceiling_bytes().expect("ceiling"),
+            body_len,
+            "a ceiling below the current size is a limit already exceeded; report the real floor",
+        );
+        assert!(
+            body_len > 64 * 1024,
+            "the fixture must actually exceed its configured max, or the clamp is untested",
+        );
+    }
+
     /// `statfs` answers from the real fixture's superblock, and the numbers
     /// are internally consistent with the tree it describes.
     ///

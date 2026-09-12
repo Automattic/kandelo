@@ -233,17 +233,10 @@ mod tests {
         }
     }
 
-    /// The ceiling never reads below the bytes the image already occupies.
-    #[test]
-    fn the_ceiling_is_clamped_up_to_the_body_length() {
-        let fs = mount();
-        let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
-        let st = fs.statfs().expect("statfs");
-        assert!(
-            ceiling >= st.f_blocks * st.f_bsize as u64,
-            "a ceiling below the current size would be a limit already exceeded",
-        );
-    }
+    // The ceiling's own VALUE is pinned in `sffs.rs` against literals, not
+    // here: a test in this module that derives its expectation from
+    // `growth_ceiling_bytes` can only show the function equals itself, which
+    // is exactly how two mutants of it survived the first time round.
 
     #[test]
     fn an_inode_breach_alone_is_refused() {
