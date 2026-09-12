@@ -481,6 +481,34 @@ export class SffsImageFs {
   }
 
   /**
+   * The finished image's bytes, under the name the builders already call.
+   *
+   * Async to match what a recipe is handed today, not because anything here
+   * waits: `exportImage()` is synchronous, and a bridge that pretended
+   * otherwise would be inventing a difference. The signature exists so
+   * `VfsImageFilesystem` can describe both implementations without either
+   * having to change shape at the call sites.
+   *
+   * `materializeAll` and `normalizeTimestampsMs` are accepted and ignored.
+   * Neither has meaning here — nothing in this filesystem is unmaterialised in
+   * the sense the TypeScript one means, and its timestamps are already the
+   * ones the builder set. Accepting and ignoring them is honest where
+   * rejecting them would break a caller that passes a default it does not
+   * depend on; a caller that DEPENDS on either is asking for behaviour this
+   * filesystem does not have, and that is a gap to close rather than fake.
+   */
+  async saveImage(options?: {
+    materializeAll?: boolean;
+    metadata?: unknown;
+    normalizeTimestampsMs?: number;
+  }): Promise<Uint8Array> {
+    if (options?.metadata !== undefined) {
+      this.setImageMetadata(options.metadata);
+    }
+    return this.exportImage();
+  }
+
+  /**
    * Metadata the exported image will declare: the builder's statements about
    * its own artifact (`version`, `kernelAbi`, `createdBy`).
    *

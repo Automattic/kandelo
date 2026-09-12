@@ -100,4 +100,22 @@ export interface VfsImageFilesystem {
   opendir(path: string): number;
   readdir(handle: number): { name: string } | null;
   closedir(handle: number): void;
+
+  /**
+   * The finished image's bytes, uncompressed.
+   *
+   * Compression and the file write are NOT here and should not be: zstd and
+   * `writeFileSync` are host facilities, and the floor this lane reduces
+   * toward is host facilities only. What moves off the host is producing the
+   * image; what stays is putting it somewhere.
+   *
+   * `metadata` is `unknown` for the same reason `getLazyEntry`'s return is —
+   * the builder states it, the filesystem carries it, and nothing in between
+   * reads it.
+   */
+  saveImage(options?: {
+    materializeAll?: boolean;
+    metadata?: unknown;
+    normalizeTimestampsMs?: number;
+  }): Promise<Uint8Array>;
 }
