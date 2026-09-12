@@ -3906,9 +3906,11 @@ mod wasm {
     /// record). Folds the host's former `fm_begin_child_replay` +
     /// per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
     /// into ONE module call. `act0_root` is activation 0's inherited launch anchor.
-    /// A single-activation fork passes `sides_count == 0`. Check `fm_last_errno`;
-    /// the fine-grained `fm_begin_child_replay` / `fm_add_activation_child_replay`
-    /// remain exported for the module unit tests + host-native.
+    /// A single-activation fork passes `sides_count == 0`. Check `fm_last_errno`.
+    /// Both fine-grained exports this replaced -- `fm_begin_child_replay` and
+    /// `fm_add_activation_child_replay` -- have been deleted; the side-activation
+    /// seeding they performed is `add_activation_child_replay_impl` below, which
+    /// this entry calls directly.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_child_seed(
         module_state_root: usize,
@@ -3938,9 +3940,12 @@ mod wasm {
     /// into ONE module call — the borrowed sibling of `fm_child_seed`. `act0_root`
     /// is activation 0's borrowed launch anchor; `act0_private_prefix` its
     /// child-private prefix. A single-activation vfork passes `sides_count == 0`.
-    /// Check `fm_last_errno`; the fine-grained `fm_begin_borrowed_child_replay` /
-    /// `fm_add_activation_borrowed_child_replay` remain exported for the module
-    /// unit tests + host-native.
+    /// Check `fm_last_errno`. Both fine-grained exports this replaced --
+    /// `fm_begin_borrowed_child_replay` and
+    /// `fm_add_activation_borrowed_child_replay` -- have been deleted; the
+    /// side-activation seeding they performed is
+    /// `add_activation_borrowed_child_replay_impl` below, which this entry calls
+    /// directly.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_child_seed_borrowed(
         module_state_root: usize,
@@ -3956,54 +3961,6 @@ mod wasm {
             sides_ptr as u64,
             sides_count as u64,
         ) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Add a dlopen-vfork ("mode-1") SIDE activation to a BORROWED child replay
-    /// begun by `fm_begin_borrowed_child_replay` (Phase 6 item 4). The borrowed
-    /// sibling of `fm_add_activation_child_replay`: read-only rewind over the
-    /// parent's borrowed continuation at `module_buffer`, with this activation's
-    /// fixed prefix copied into its own child-private `private_prefix`. Owns no
-    /// chunks. Check `fm_last_errno`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_add_activation_borrowed_child_replay(
-        activation_id: u32,
-        module_buffer: usize,
-        fixed_prefix: u32,
-        private_prefix: usize,
-    ) {
-        match add_activation_borrowed_child_replay_impl(
-            activation_id,
-            module_buffer as u64,
-            fixed_prefix,
-            private_prefix as u64,
-        ) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Add a dlopen fork's SIDE activation to a child replay begun by
-    /// `fm_begin_child_replay` (Phase 6 D7a.1a — the multi-activation child).
-    /// `activation_id` is the side activation (must not already be seeded);
-    /// `module_buffer` is ITS continuation anchor, inherited at the same guest
-    /// offset via the fork memory copy; `fixed_prefix` is ITS own module-buffer
-    /// fixed runtime prefix (side modules carry their own — the child-side mirror
-    /// of `fm_add_activation_unwind`, and required to decode this activation's
-    /// linked-frame chain). The process-wide journal is NOT reseeded: this
-    /// attaches the activation's replay-only frame state and registers its resume
-    /// slots against the SAME journal + table `fm_begin_child_replay` created.
-    /// On success the guest then drives this activation's per-activation
-    /// trampoline (`fm_frame_peek/next(act, ...)`) in lockstep with the others.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_add_activation_child_replay(
-        activation_id: u32,
-        module_buffer: usize,
-        fixed_prefix: u32,
-    ) {
-        match add_activation_child_replay_impl(activation_id, module_buffer as u64, fixed_prefix) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }

@@ -127,8 +127,9 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // replay, then seeds each side activation from the host-passed (id, root,
   // fixedPrefix) list — replacing the host's former `fm_begin_child_replay` +
   // per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
-  // with ONE module call. The fine-grained `fm_begin_child_replay` DRIVE export
-  // was deleted; `fm_add_activation_child_replay` (below) is retained.
+  // with ONE module call. Both fine-grained exports it replaced -- the
+  // `fm_begin_child_replay` DRIVE export and the per-activation
+  // `fm_add_activation_child_replay` -- have been deleted.
   "fm_child_seed",
   // Control-flow inversion: the coarse BORROWED (vfork) CHILD-SEED entry.
   // Decodes the inherited JournalImage record from the KFMS arena and seeds
@@ -136,17 +137,10 @@ export const FORK_MODULE_REQUIRED_EXPORTS = [
   // host-passed (id, root, fixedPrefix, privatePrefix) list — replacing the
   // host's former `fm_begin_borrowed_child_replay` + per-activation
   // `fm_add_activation_borrowed_child_replay` loop in `attachBorrowedModuleChild`
-  // with ONE module call. The fine-grained `fm_begin_borrowed_child_replay` DRIVE
-  // export was deleted; `fm_add_activation_borrowed_child_replay` (below) is
-  // retained.
+  // with ONE module call. Both fine-grained exports it replaced -- the
+  // `fm_begin_borrowed_child_replay` DRIVE export and the per-activation
+  // `fm_add_activation_borrowed_child_replay` -- have been deleted.
   "fm_child_seed_borrowed",
-  // Phase 6 item 4: add a dlopen-vfork ("mode-1") SIDE activation to a borrowed
-  // child replay seeded by `fm_child_seed_borrowed`, with its own child-private
-  // prefix (borrowed sibling of `fm_add_activation_child_replay`).
-  "fm_add_activation_borrowed_child_replay",
-  // Phase 6 D7a.1a: add a dlopen fork's SIDE activation to the child replay
-  // seeded by `fm_child_seed`, at its inherited continuation anchor.
-  "fm_add_activation_child_replay",
   "fm_last_errno",
   // The single folded proof-of-use counter accessor (fm_stats(field) -> i64),
   // replacing the former 11 individual fm_* counter exports (frames committed/
