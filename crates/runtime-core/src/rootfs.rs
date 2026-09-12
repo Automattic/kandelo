@@ -148,6 +148,21 @@ pub enum BaseSource {
 
 struct Inode {
     kind: InodeKind,
+    /// The opaque deferred description the loaded image carried for this file,
+    /// or empty when it carried none.
+    ///
+    /// This is RETAINED rather than reconstructed, because the kernel cannot
+    /// reconstruct it: for a URL-backed base file the fetch descriptor (URL,
+    /// transport, digest) lives entirely in the payload, and the only other
+    /// thing identifying such a file is its inode number in the image it came
+    /// from — which an export renumbers. Carrying the bytes through is what
+    /// lets an exported image say where a deferred file's content is without
+    /// the kernel ever parsing what it says. See [`crate::sffs_deferred`].
+    ///
+    /// It lives on the inode rather than in a side table keyed by index so it
+    /// dies with the inode; a freed index cannot hand a stale payload to
+    /// whatever is allocated there next.
+    deferred_payload: Vec<u8>,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
     uid: u32,
@@ -170,6 +185,7 @@ impl Inode {
         let (sec, nsec) = now();
         Inode {
             kind,
+            deferred_payload: Vec::new(),
             mode,
             uid,
             gid,
@@ -1074,6 +1090,30 @@ pub fn insert_base_file(
     insert_base_file_from(path, blob_id, size, mode, uid, gid, ino, BaseSource::Host)
 }
 
+/// Attach the deferred description `path`'s bytes came with, so an export can
+/// re-emit it under whatever inode number it assigns.
+///
+/// Separate from [`insert_base_file`] because only SOME base files have one: a
+/// URL-backed lazy file does, a base tree the host walked does not. Calling it
+/// with an empty payload is a no-op rather than an error, so a loader need not
+/// branch on whether the image declared a section.
+pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        return Err(Errno::EINVAL);
+    }
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.deferred_payload = payload.to_vec();
+        Ok(())
+    })
+}
+
 /// Insert a base regular file whose bytes are served by the kernel from the `/`
 /// image itself, at SFFS inode `ino`. The image-authoritative counterpart to
 /// [`insert_base_file`]: same node, no host byte store behind it.
@@ -1644,6 +1684,13 @@ where
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));
 
+    // The image's own deferred descriptions, when it carries them. Read here
+    // and not merged into `lazy_files` because the two answer different
+    // questions: KLZY says which archive backs a file, SDEF carries the opaque
+    // description the host will need to FETCH one. Under V5 the second replaces
+    // the first; until then an image may carry either, both, or neither.
+    let deferred = filesystem.deferred_section()?;
+
     let root_stat = filesystem.stat_ino(ROOT_INO)?;
     if file_type(root_stat.mode) != S_IFDIR {
         return Err(Errno::EINVAL); // `/` is not a directory in the image
@@ -1735,6 +1782,16 @@ where
                             insert_base_file(
                                 &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
+                            // Retain the fetch description verbatim. Without
+                            // it, exporting this file loses the only thing that
+                            // says where its bytes are: its inode number here
+                            // does not survive an export's renumbering, and the
+                            // kernel has no URL of its own.
+                            if let Some(section) = &deferred {
+                                if let Some(record) = section.get(entry.ino) {
+                                    set_deferred_payload(&abs, &record.payload)?;
+                                }
+                            }
                         }
                         // Not deferred at all: the bytes are IN this image, at
                         // this inode, and the kernel reads them itself.
@@ -3357,11 +3414,19 @@ enum ExportNode {
         source_path: Vec<u8>,
         size: u64,
     },
-    /// A deferred file the export CANNOT yet describe: a host-backed base file.
-    /// The kernel holds no identity for one that survives renumbering -- the
-    /// blob id is the source image's inode number and the export assigns new
-    /// ones -- so this still writes an empty file and loses the linkage. See
-    /// the master plan, LANE V, "V4 -- the identity contract", item 2.
+    /// A host-backed base file the loaded image DID describe: the description
+    /// was retained verbatim at load, and is re-emitted here under the inode
+    /// this export assigns. The kernel never parses it -- it is a courier.
+    LazyBase {
+        size: u64,
+        payload: Vec<u8>,
+    },
+    /// A host-backed base file with no retained description. The kernel has
+    /// nothing that says where its bytes are: the blob id is the SOURCE image's
+    /// inode number and this export assigns new ones. Today that is a base tree
+    /// the host walked ([`load_manifest`]), whose bytes are ordinary host files
+    /// rather than a deferred fetch -- so it is not a missing payload, it is a
+    /// file this export cannot serialize at all. It still writes an empty file.
     LazyStub,
     Symlink(Vec<u8>),
     Special,
@@ -3574,7 +3639,16 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     // The image does not carry these bytes; the host owns the
                     // transport. Keep the file lazy rather than force-fetching
                     // it, which is the behaviour the host reconciler documents.
-                    BaseSource::Host => ExportNode::LazyStub,
+                    BaseSource::Host => {
+                        if inode.deferred_payload.is_empty() {
+                            ExportNode::LazyStub
+                        } else {
+                            ExportNode::LazyBase {
+                                size: *size,
+                                payload: inode.deferred_payload.clone(),
+                            }
+                        }
+                    }
                 },
                 InodeKind::Regular(data) => {
                     ExportNode::OverlayFile(item.overlay, data.len() as u64)
@@ -3630,6 +3704,21 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     archive_id,
                     &source_path,
                     b"",
+                )?
+            }
+            ExportNode::LazyBase { size, payload } => {
+                // No archive linkage: these bytes are fetched standalone, which
+                // is exactly what `archive_id == 0` with an empty member path
+                // means. The payload is the whole of the identity, and it is
+                // passed through without being read.
+                writer.create_deferred_file(
+                    item.parent_sffs,
+                    &item.name,
+                    mode,
+                    size,
+                    0,
+                    b"",
+                    &payload,
                 )?
             }
             ExportNode::LazyStub => {
@@ -5640,6 +5729,107 @@ mod tests {
             0,
         )
         .expect("long symlink");
+    }
+
+    /// A whole image with a URL-backed deferred file in it: an SFFS body whose
+    /// deferred section names one inode, a `KLZY` section declaring that inode
+    /// deferred with no archive, and a real VFSI container around both.
+    ///
+    /// Built rather than committed as a fixture because the point is that BOTH
+    /// descriptions come from one writer; a hand-assembled one could disagree
+    /// with itself in a way no production image can.
+    fn url_backed_image(url: &[u8], real_size: u64) -> Vec<u8> {
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        let ino = w
+            .create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", url)
+            .expect("deferred");
+        // No file in this body carries content, so the content source is never
+        // consulted -- a deferred file is described, not stored.
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize the body");
+
+        let klzy = klzy_section(&[], &[(ino, real_size, 0, "")]);
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: &klzy,
+        };
+        let mut image = crate::sffs_container::header(body.len(), sections.flags())
+            .expect("header")
+            .to_vec();
+        image.extend_from_slice(&body);
+        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
+        image
+    }
+
+    #[test]
+    fn a_url_backed_files_description_survives_load_and_export() {
+        let _guard = TestGuard::acquire();
+        // The property V4 item 2 exists for. The kernel cannot RECONSTRUCT this
+        // description -- it holds no URL, and the file's inode number in the
+        // source image does not survive an export's renumbering -- so the only
+        // way an exported image can say where these bytes are is if the loader
+        // kept what it was given.
+        let url: &[u8] = b"https://example.invalid/big.bin#sha256:deadbeef";
+        let image = url_backed_image(url, 45_000);
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+
+        // Before the export: the size is authoritative from the linkage, and
+        // nothing has been fetched.
+        assert_eq!(lstat(b"/big.bin").expect("stat").st_size, 45_000);
+
+        let exported = drain_export(8192, &mut image_host(&image));
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
+
+        let ino = fs.resolve(b"/big.bin", true).expect("the path survives");
+        assert_eq!(
+            fs.stat_ino(ino).expect("stat").size,
+            0,
+            "the body inode is a stub; the image describes bytes it does not carry",
+        );
+
+        let record = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the export emits a deferred section")
+            .get(ino)
+            .cloned()
+            .expect("a record keyed by the inode THIS export assigned");
+        assert_eq!(record.payload, url, "carried through byte for byte");
+        assert_eq!(record.size, 45_000, "the real size, not the stub's");
+        assert_eq!(record.archive_id, 0, "fetched standalone, not from an archive");
+        assert!(record.source_path.is_empty(), "and so with no member path");
+    }
+
+    #[test]
+    fn a_base_file_with_no_description_still_exports_as_a_stub() {
+        let _guard = TestGuard::acquire();
+        // The honest other half. A base tree the host walked ([`load_manifest`])
+        // carries no deferred description at all -- its bytes are ordinary host
+        // files, not a deferred fetch -- so there is nothing to retain and
+        // nothing to re-emit. This is not "the payload went missing"; it is a
+        // file this export cannot serialize, and it must not be dressed up as a
+        // deferred file pointing nowhere.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        insert_base_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 2).expect("base file");
+
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
+        let ino = fs.resolve(b"/walked.bin", true).expect("the path survives");
+        assert_eq!(fs.stat_ino(ino).expect("stat").size, 0);
+        assert!(
+            fs.deferred_section().expect("decodes").is_none(),
+            "no description in, no record out -- an empty payload must not become \
+             a deferred record that says nothing",
+        );
     }
 
     #[test]

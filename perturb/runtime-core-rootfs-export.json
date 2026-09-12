@@ -1,6 +1,6 @@
 {
   "file": "crates/runtime-core/src/rootfs.rs",
-  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1 && scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" rootfs:: >/dev/null 2>&1",
   "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "trials": [
     {
@@ -30,6 +30,48 @@
       "scope_end": "\n            }\n",
       "find": "                writer.create_deferred_file(\n                    item.parent_sffs,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    b\"\",\n                )?",
       "replace": "                let _ = (archive_id, source_path, size);\n                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b\"\"))?"
+    },
+    {
+      "name": "the loader throws away the description it was given",
+      "scope": "                        Some(lazy) => {",
+      "scope_end": "                        // Not deferred at all",
+      "find": "                            if let Some(section) = &deferred {\n                                if let Some(record) = section.get(entry.ino) {\n                                    set_deferred_payload(&abs, &record.payload)?;\n                                }\n                            }",
+      "replace": ""
+    },
+    {
+      "name": "the loader never looks for a deferred section",
+      "scope": "    let deferred = filesystem.deferred_section()?;",
+      "scope_end": "\n",
+      "find": "    let deferred = filesystem.deferred_section()?;",
+      "replace": "    let deferred: Option<crate::sffs_deferred::DeferredSection> = None;"
+    },
+    {
+      "name": "the export drops the retained description and stubs the file",
+      "scope": "                    BaseSource::Host => {",
+      "scope_end": "                    }\n",
+      "find": "                        if inode.deferred_payload.is_empty() {",
+      "replace": "                        if true {"
+    },
+    {
+      "name": "a file with no description becomes a deferred record pointing nowhere",
+      "scope": "                    BaseSource::Host => {",
+      "scope_end": "                    }\n",
+      "find": "                        if inode.deferred_payload.is_empty() {",
+      "replace": "                        if false {"
+    },
+    {
+      "name": "the export invents an archive for a standalone fetch",
+      "scope": "            ExportNode::LazyBase { size, payload } => {",
+      "scope_end": "\n            }\n",
+      "find": "                    size,\n                    0,\n                    b\"\",\n                    &payload,",
+      "replace": "                    size,\n                    1,\n                    b\"m\",\n                    &payload,"
+    },
+    {
+      "name": "the exported record carries an empty description",
+      "scope": "            ExportNode::LazyBase { size, payload } => {",
+      "scope_end": "\n            }\n",
+      "find": "                    &payload,\n                )?",
+      "replace": "                    b\"\",\n                )?"
     }
   ]
 }
