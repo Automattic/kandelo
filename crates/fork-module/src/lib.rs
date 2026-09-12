@@ -1877,7 +1877,21 @@ mod wasm {
     // never calls `allocate` (its `replay_only` guard rejects reserve/commit), so
     // the child mmaps nothing; its `chunks` stays empty and `release_all` is a
     // no-op there.
-    struct FrameArena {
+    /// The fork's chunk list: a doubly-linked run of page-rounded mappings, each
+    /// `SYS_MMAP`'d from the kernel on demand at capture time.
+    ///
+    /// NOT an arena, despite what this type was called until 2026-09-12 and what
+    /// several of the comments around it still imply. There is no fixed region
+    /// and no cap: `allocate` issues a fresh `SYS_MMAP` per chunk through the
+    /// guest syscall channel, the kernel's `find_gap` allocator places it, and
+    /// the chunks link to each other (`ModuleStateChunk` carries `previous` and
+    /// `next`). Fork depth is bounded by what the kernel will map, nothing more.
+    ///
+    /// The name mattered: a 2 MiB bounded arena WAS the design briefly, was
+    /// reverted when its cap turned out to be a fixture artefact, and the word
+    /// outlived it — after which agents kept re-deriving a fixed-size constraint
+    /// that no longer exists.
+    struct ForkChunkList {
         /// Channel mode: issue each chunk's `SYS_MMAP` through this guest syscall
         /// channel base (page-aligned). `0` on a replay-only child (allocates
         /// nothing).
@@ -1885,12 +1899,12 @@ mod wasm {
         chunks: Vec<(u64, u64)>,
     }
 
-    impl FrameArena {
-        /// The production growing arena: each chunk is `SYS_MMAP`'d through the
+    impl ForkChunkList {
+        /// The production growing chunk list: each chunk is `SYS_MMAP`'d through the
         /// guest syscall channel at `channel_base`, growing shared memory on
         /// demand. `0` = a replay-only child that allocates nothing.
         fn new_channel(channel_base: u64) -> Self {
-            FrameArena {
+            ForkChunkList {
                 channel_base,
                 chunks: Vec::new(),
             }
@@ -1906,7 +1920,7 @@ mod wasm {
         }
     }
 
-    impl ChunkAllocator for FrameArena {
+    impl ChunkAllocator for ForkChunkList {
         fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
             let addr = channel_mmap(self.channel_base, capacity)?;
             self.chunks.push((addr, capacity));
@@ -1937,7 +1951,7 @@ mod wasm {
     struct ActivationFrames {
         format: LinkedFrameFormat,
         writer: LinkedFrameWriter,
-        arena: FrameArena,
+        arena: ForkChunkList,
         driver: Option<RewindDriver>,
         committed_ordinals: Vec<u32>,
         module_buffer: u64,
@@ -2042,7 +2056,7 @@ mod wasm {
         module: &mut ForkModule,
         activation_id: u32,
         fmt: LinkedFrameFormat,
-        mut arena: FrameArena,
+        mut arena: ForkChunkList,
     ) -> Result<u64, Errno> {
         if module.activations.contains_key(&activation_id) {
             return Err(Errno::EINVAL); // activation already open in this fork
@@ -2121,7 +2135,7 @@ mod wasm {
         // One capture spans every activation: commits from all activations are
         // recorded in the single process-wide journal in interleaved order.
         module.journal.begin_capture()?;
-        let arena = FrameArena::new_channel(channel_base);
+        let arena = ForkChunkList::new_channel(channel_base);
         let module_buffer = register_unwind_activation(&mut module, activation_id, fmt, arena)?;
 
         *state() = Some(module);
@@ -2154,7 +2168,7 @@ mod wasm {
         if channel_base != st.channel_base {
             return Err(Errno::EINVAL);
         }
-        let arena = FrameArena::new_channel(channel_base);
+        let arena = ForkChunkList::new_channel(channel_base);
         register_unwind_activation(st, activation_id, fmt, arena)
     }
 
@@ -2645,7 +2659,7 @@ mod wasm {
                 // A replay-only child mmaps nothing: `channel_base == 0` and the
                 // `replay_only` guard rejects any reserve/commit, so `allocate`
                 // is never called.
-                arena: FrameArena::new_channel(0),
+                arena: ForkChunkList::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -2826,7 +2840,7 @@ mod wasm {
                 format: fmt,
                 writer: LinkedFrameWriter::new(fmt),
                 // Borrowed side activation: mmaps nothing, releases nothing.
-                arena: FrameArena::new_channel(0),
+                arena: ForkChunkList::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -2903,7 +2917,7 @@ mod wasm {
                 format: fmt,
                 writer: LinkedFrameWriter::new(fmt),
                 // Replay-only side activation: mmaps nothing (see the primary).
-                arena: FrameArena::new_channel(0),
+                arena: ForkChunkList::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
