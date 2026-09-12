@@ -423,3 +423,83 @@ directly), the wasm32/wasm64 builds, `cargo check -p host-native` and the
 surface budget — **not** by the fork Vitest suites. Filed as master-plan hazard
 H-9, because a suite that goes green against a module it never loaded is worse
 than one that fails.
+
+## §10 — What `forkModuleEntryPoints` counts, and the 23 with no production caller
+
+Measured 2026-09-12 against `crates/fork-module/src/lib.rs`,
+`crates/fork-module-inject/src/main.rs`, `crates/host-native/src/*.rs`,
+`host/src/*.ts`, `host/test/*.ts` and `crates/fork-module/tests/*.mjs`. No host
+code constructs an `fm_*` name dynamically (checked), so a name grep is sound
+here.
+
+**The measure is a regex for `pub extern "C" fn fm_*` in one file.** It counts
+definitions. It does not look at callers, and it deliberately excludes the
+`__wpk_fork_*` guest exports. Its `why` field says it counts *host-called*
+entries; it cannot enforce that.
+
+| who calls it | count |
+|---|---|
+| production host (`crates/host-native`, `host/src`) | **27** |
+| the injector's own shims, nothing else | **4** |
+| tests only (`host/test`, `crates/fork-module/tests/*.mjs`) | **20** |
+| nothing at all | **3** |
+
+The entry's purpose — "how many fine-grained calls force the host-side driver
+loops that make the TypeScript grow" — is served by the 27 alone.
+
+### The four injector-only entries are not host surface
+
+`fm_drive_bump`, `fm_capture_claim_gc`, `fm_gc_identity_find`,
+`fm_gc_identity_claim`. Each exists because the work is split across a boundary
+neither side can cross alone: **the injected wasm shim is the only thing that
+can hold a reference, and Rust is the only thing that can hold a map or a
+counter.** They are spelled as wasm exports only because the injector resolves
+its helpers by name (`exported_function`). A host never sees them. Adding more
+of them grows the host contract by **zero** — the correction recorded in the
+master plan's open decision 2.
+
+### The uncalled entries are mostly the unwired half of multi-activation
+
+This looked like H-1 at scale. It is mostly not. Sort the uncalled by signature
+and a pattern appears immediately: **`fm_frame_reserve/commit/peek/next`,
+`fm_resume_peek`, `fm_set_activation_resume_catalog` and
+`fm_activation_module_buffer` all take an explicit `activation_id`**, where the
+guest-facing `__wpk_fork_frame_*` counterparts call the IDENTICAL `*_impl`
+functions with `primary_activation()`.
+
+They are the multi-activation (dlopen fork) variants: a fork across N
+dynamically loaded libraries needs each activation's own resume catalog and its
+own frame cursor, because resume-slot numbering must match THAT activation's
+table by construction. Nothing wires them yet because no host drives a
+multi-activation fork yet.
+
+**That is pending capability, not dead code, and it must not be deleted to bank
+a reduction.** The platform is meant to serve the whole possibility space of
+future guests, and arbitrary numbers of dynamically loaded libraries are
+squarely inside it.
+
+### `fm_abort` is the one that is neither — and it may be a live gap
+
+`fm_abort()` takes no activation id. It calls `abort_impl()`, which is reachable
+from nowhere else, and which releases every channel-mapped fork chunk **without
+requiring the replay to have finished**. Its doc says it "mirrors the JS
+backend's `abort()` releasing the frame arena" — and the JS backend was deleted
+in Phase 4, so it mirrors something that no longer exists.
+
+The normal paths do release: `fm_parent_finish` reaches `finish_replay_impl`,
+and the abort flag reaches it through `finish_abort_impl`. `fm_abort` exists for
+the case where neither runs — a host that errors out mid-fork.
+
+**Open, NOT established:** whether `host-native` has such a path and therefore
+leaks fork chunks today, or whether every error route already funnels through
+`fm_parent_finish`. Settling it means tracing host-native's fork error handling,
+which this census did not do. It is the one entry in the uncalled set that
+should be resolved by answering a question rather than by wiring or deleting.
+
+### Consequence for any future ceiling
+
+A ceiling over all four populations cannot mean anything, because they move for
+different reasons: the 27 should fall, the 4 rise with each shim-backed import,
+the 20 fall only when tests are deleted, and the 3 are a question. **Set
+ceilings per population or not at all** — and settle the `fm_abort` question
+before counting it as anything.
