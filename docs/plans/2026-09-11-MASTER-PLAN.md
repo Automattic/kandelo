@@ -2533,6 +2533,26 @@ meets the recipes where they are — and it costs the host floor NOTHING. Goal V
 counts what a new host must IMPLEMENT; this module implements zero and imports
 zero. A wide surface no host ever sees is not host API surface.
 
+**Validation state of the lane branch, 2026-09-12.** Recorded so the next
+reader does not re-run a four-hour question.
+
+*Green and verified:* `runtime-core` 2,130 + 6; `sffs-module` 21; the bridge 10;
+the surface budget 79 (via the PINNED vitest — see H-10); all five committed
+mutation specs in `perturb/`, 0 survived and 0 invalid.
+
+*Not established:* that the branch leaves the suite baseline (35 files / 69
+tests) unchanged. A full host-suite run in the lane worktree reached **77
+failing files with ZERO lane-Y-adjacent**, and was stopped rather than
+finished, because its dominant signal was **4,634 stale-artifact messages** —
+the seeded tier predating lane G's `a745f262c`. The `kernel-*` failures were
+separately verified to fail IDENTICALLY on a worktree carrying none of lane Y's
+changes, so they are pre-existing.
+
+*What a clean comparison costs:* `./run.sh setup` in the lane worktree, which
+with worktree-local cache roots builds from source. That is hours of machine
+time to confirm a number whose main confound is already identified, and it is a
+maintainer call rather than a worker's.
+
 **Blocked on:** lane V's V4 identity contract, above. The module can build a
 tree and export a mountable image, but any image containing deferred content —
 which is every production image — loses it at serialization. Tests pin both
