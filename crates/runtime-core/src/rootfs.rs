@@ -317,246 +317,6 @@ struct ArchiveEntry {
 }
 
 impl RootfsState {
-
-    /// mkdir against an already-split, already-non-empty component list.
-    fn mkdir_at(
-        &mut self,
-        comps: &[&[u8]],
-        mode: u32,
-        uid: u32,
-        gid: u32,
-    ) -> Result<(), Errno> {
-        let state = self;
-        let (parent, last, target) = state.resolve(&comps)?;
-        if target.is_some() {
-            return Err(Errno::EEXIST);
-        }
-        let last = last.ok_or(Errno::ENOENT)?;
-        let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode::new(
-            InodeKind::Dir(BTreeMap::new()),
-            mode & 0o7777,
-            uid,
-            gid,
-            2,
-            ino,
-        ));
-        match state.get_mut(parent).map(|i| &mut i.kind) {
-            Some(InodeKind::Dir(entries)) => {
-                entries.insert(last.to_vec(), new_idx);
-            }
-            _ => return Err(Errno::ENOTDIR),
-        }
-        // A new subdirectory bumps the parent's link count (its `..`).
-        if let Some(parent_inode) = state.get_mut(parent) {
-            parent_inode.nlink += 1;
-        }
-        Ok(())
-    }
-
-    /// symlink against an already-split component list, target already checked non-empty.
-    fn symlink_at(
-        &mut self,
-        comps: &[&[u8]],
-        target: &[u8],
-        uid: u32,
-        gid: u32,
-    ) -> Result<(), Errno> {
-        let state = self;
-        let (parent, last, existing) = state.resolve(&comps)?;
-        if existing.is_some() {
-            return Err(Errno::EEXIST);
-        }
-        let last = last.ok_or(Errno::ENOENT)?;
-        let ino = state.alloc_ino();
-        let new_idx = state.insert_inode(Inode::new(
-            InodeKind::Symlink(target.to_vec()),
-            0o777,
-            uid,
-            gid,
-            1,
-            ino,
-        ));
-        match state.get_mut(parent).map(|i| &mut i.kind) {
-            Some(InodeKind::Dir(entries)) => {
-                entries.insert(last.to_vec(), new_idx);
-            }
-            _ => return Err(Errno::ENOTDIR),
-        }
-        Ok(())
-    }
-
-    /// chmod an inode already resolved to a table index.
-    fn chmod_at(&mut self, idx: u32, mode: u32) -> Result<(), Errno> {
-        let state = self;
-        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
-        inode.mode = mode & 0o7777;
-        inode.touch_changed();
-        Ok(())
-    }
-
-    /// fchmod an inode already resolved from an open handle.
-    ///
-    /// Deliberately NOT shared with [`RootfsState::chmod_at`]: the bodies are
-    /// identical except that a missing inode is EBADF here and ENOENT there,
-    /// and folding them behind an errno parameter would let a later edit to
-    /// one silently change the other's failure mode.
-    fn fchmod_at(&mut self, idx: u32, mode: u32) -> Result<(), Errno> {
-        let state = self;
-        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        inode.mode = mode & 0o7777;
-        inode.touch_changed();
-        Ok(())
-    }
-
-    /// chown an inode already resolved to a table index.
-    fn chown_at(
-        &mut self,
-        idx: u32,
-        uid: u32,
-        gid: u32,
-        clear_setid: bool,
-    ) -> Result<(), Errno> {
-        let state = self;
-        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
-        if uid != u32::MAX {
-            inode.uid = uid;
-        }
-        if gid != u32::MAX {
-            inode.gid = gid;
-        }
-        if clear_setid {
-            const S_ISUID: u32 = 0o4000;
-            const S_ISGID: u32 = 0o2000;
-            const S_IXGRP: u32 = 0o0010;
-            inode.mode &= !S_ISUID;
-            if inode.mode & S_IXGRP != 0 {
-                inode.mode &= !S_ISGID;
-            }
-        }
-        inode.touch_changed();
-        Ok(())
-    }
-
-    fn insert_base_dir(
-        &mut self,
-        path: &[u8],
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        ino: u64,
-        ) -> Result<(), Errno> {
-        // Body moved verbatim from the former free function; `state`
-        // is bound so the diff shows no change to the logic itself.
-        let state = self;
-            state.bump_next_ino(ino);
-            let Some((parent_comps, last)) = parent_and_last(path) else {
-                // Root: create-or-update its metadata.
-                let root = state.mount_root();
-                if let Some(inode) = state.get_mut(root) {
-                    inode.mode = mode & 0o7777;
-                    inode.uid = uid;
-                    inode.gid = gid;
-                    inode.ino = ino;
-                }
-                return Ok(());
-            };
-            let child = state.insert_inode(Inode::new(
-                InodeKind::Dir(BTreeMap::new()),
-                mode & 0o7777,
-                uid,
-                gid,
-                2,
-                ino,
-            ));
-            let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
-            match link_into_parent(state, &comps, last, child) {
-                Ok(()) => {
-                    // Bump the parent's link count for the new subdirectory's `..`.
-                    let root = state.mount_root();
-                    if let Ok(parent) = state.walk(root, &comps) {
-                        if let Some(p) = state.get_mut(parent) {
-                            p.nlink += 1;
-                        }
-                    }
-                    Ok(())
-                }
-                Err(e) => {
-                    // Roll back the orphaned inode.
-                    state.inodes[child as usize] = None;
-                    state.free_inodes.push(child);
-                    Err(e)
-                }
-            }
-    }
-
-    fn insert_base_file_from(
-        &mut self,
-        path: &[u8],
-        blob_id: u64,
-        size: u64,
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        ino: u64,
-        source: BaseSource,
-        ) -> Result<(), Errno> {
-        // Body moved verbatim from the former free function; `state`
-        // is bound so the diff shows no change to the logic itself.
-        let state = self;
-            state.bump_next_ino(ino);
-            let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
-            let child = state.insert_inode(Inode::new(
-                InodeKind::BaseRegular {
-                    blob_id,
-                    size,
-                    source,
-                },
-                mode & 0o7777,
-                uid,
-                gid,
-                1,
-                ino,
-            ));
-            let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
-            if let Err(e) = link_into_parent(state, &comps, last, child) {
-                state.inodes[child as usize] = None;
-                state.free_inodes.push(child);
-                return Err(e);
-            }
-            Ok(())
-    }
-
-    fn insert_base_symlink(
-        &mut self,
-        path: &[u8],
-        target: &[u8],
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        ino: u64,
-        ) -> Result<(), Errno> {
-        // Body moved verbatim from the former free function; `state`
-        // is bound so the diff shows no change to the logic itself.
-        let state = self;
-            state.bump_next_ino(ino);
-            let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
-            let child = state.insert_inode(Inode::new(
-                InodeKind::Symlink(target.to_vec()),
-                mode & 0o7777,
-                uid,
-                gid,
-                1,
-                ino,
-            ));
-            let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
-            if let Err(e) = link_into_parent(state, &comps, last, child) {
-                state.inodes[child as usize] = None;
-                state.free_inodes.push(child);
-                return Err(e);
-            }
-            Ok(())
-    }
     fn new() -> Self {
         RootfsState {
             inodes: Vec::new(),
@@ -1257,7 +1017,47 @@ pub fn insert_base_dir(
     gid: u32,
     ino: u64,
 ) -> Result<(), Errno> {
-    ROOTFS.with(|state| state.insert_base_dir(path, mode, uid, gid, ino))
+    ROOTFS.with(|state| {
+        state.bump_next_ino(ino);
+        let Some((parent_comps, last)) = parent_and_last(path) else {
+            // Root: create-or-update its metadata.
+            let root = state.mount_root();
+            if let Some(inode) = state.get_mut(root) {
+                inode.mode = mode & 0o7777;
+                inode.uid = uid;
+                inode.gid = gid;
+                inode.ino = ino;
+            }
+            return Ok(());
+        };
+        let child = state.insert_inode(Inode::new(
+            InodeKind::Dir(BTreeMap::new()),
+            mode & 0o7777,
+            uid,
+            gid,
+            2,
+            ino,
+        ));
+        let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
+        match link_into_parent(state, &comps, last, child) {
+            Ok(()) => {
+                // Bump the parent's link count for the new subdirectory's `..`.
+                let root = state.mount_root();
+                if let Ok(parent) = state.walk(root, &comps) {
+                    if let Some(p) = state.get_mut(parent) {
+                        p.nlink += 1;
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Roll back the orphaned inode.
+                state.inodes[child as usize] = None;
+                state.free_inodes.push(child);
+                Err(e)
+            }
+        }
+    })
 }
 
 /// Insert a base regular file whose bytes are served from the host byte store
@@ -1300,7 +1100,29 @@ fn insert_base_file_from(
     ino: u64,
     source: BaseSource,
 ) -> Result<(), Errno> {
-    ROOTFS.with(|state| state.insert_base_file_from(path, blob_id, size, mode, uid, gid, ino, source))
+    ROOTFS.with(|state| {
+        state.bump_next_ino(ino);
+        let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
+        let child = state.insert_inode(Inode::new(
+            InodeKind::BaseRegular {
+                blob_id,
+                size,
+                source,
+            },
+            mode & 0o7777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
+        if let Err(e) = link_into_parent(state, &comps, last, child) {
+            state.inodes[child as usize] = None;
+            state.free_inodes.push(child);
+            return Err(e);
+        }
+        Ok(())
+    })
 }
 
 /// Insert a base symlink holding `target` bytes.
@@ -1312,7 +1134,25 @@ pub fn insert_base_symlink(
     gid: u32,
     ino: u64,
 ) -> Result<(), Errno> {
-    ROOTFS.with(|state| state.insert_base_symlink(path, target, mode, uid, gid, ino))
+    ROOTFS.with(|state| {
+        state.bump_next_ino(ino);
+        let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
+        let child = state.insert_inode(Inode::new(
+            InodeKind::Symlink(target.to_vec()),
+            mode & 0o7777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
+        if let Err(e) = link_into_parent(state, &comps, last, child) {
+            state.inodes[child as usize] = None;
+            state.free_inodes.push(child);
+            return Err(e);
+        }
+        Ok(())
+    })
 }
 
 /// Insert a lazy-archive placeholder file (RTFS v3 `KIND_LAZY_FILE`): `size` is
@@ -2835,7 +2675,33 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
     if comps.is_empty() {
         return Err(Errno::EEXIST); // the root already exists
     }
-    ROOTFS.with(|state| state.mkdir_at(&comps, mode, uid, gid))
+    ROOTFS.with(|state| {
+        let (parent, last, target) = state.resolve(&comps)?;
+        if target.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let ino = state.alloc_ino();
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Dir(BTreeMap::new()),
+            mode & 0o7777,
+            uid,
+            gid,
+            2,
+            ino,
+        ));
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        // A new subdirectory bumps the parent's link count (its `..`).
+        if let Some(parent_inode) = state.get_mut(parent) {
+            parent_inode.nlink += 1;
+        }
+        Ok(())
+    })
 }
 
 /// Remove an empty rootfs directory.
@@ -3008,7 +2874,12 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// chmod a rootfs path (permission bits only).
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
-    ROOTFS.with(|state| state.chmod_at(idx, mode))
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.mode = mode & 0o7777;
+        inode.touch_changed();
+        Ok(())
+    })
 }
 
 /// chown a rootfs path. A field of `u32::MAX` (-1) is left unchanged. When
@@ -3016,13 +2887,37 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 /// file) is cleared, matching the host chown path.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
-    ROOTFS.with(|state| state.chown_at(idx, uid, gid, clear_setid))
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        if uid != u32::MAX {
+            inode.uid = uid;
+        }
+        if gid != u32::MAX {
+            inode.gid = gid;
+        }
+        if clear_setid {
+            const S_ISUID: u32 = 0o4000;
+            const S_ISGID: u32 = 0o2000;
+            const S_IXGRP: u32 = 0o0010;
+            inode.mode &= !S_ISUID;
+            if inode.mode & S_IXGRP != 0 {
+                inode.mode &= !S_ISGID;
+            }
+        }
+        inode.touch_changed();
+        Ok(())
+    })
 }
 
 /// fchmod an open rootfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
-    ROOTFS.with(|state| state.fchmod_at(idx, mode))
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.mode = mode & 0o7777;
+        inode.touch_changed();
+        Ok(())
+    })
 }
 
 /// fchown an open rootfs file handle. A field of `u32::MAX` (-1) is unchanged.
@@ -3083,7 +2978,29 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
     if target.is_empty() {
         return Err(Errno::ENOENT);
     }
-    ROOTFS.with(|state| state.symlink_at(&comps, target, uid, gid))
+    ROOTFS.with(|state| {
+        let (parent, last, existing) = state.resolve(&comps)?;
+        if existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let ino = state.alloc_ino();
+        let new_idx = state.insert_inode(Inode::new(
+            InodeKind::Symlink(target.to_vec()),
+            0o777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+            }
+            _ => return Err(Errno::ENOTDIR),
+        }
+        Ok(())
+    })
 }
 
 /// Create a metadata-only special node (AF_UNIX socket or FIFO) at a rootfs
