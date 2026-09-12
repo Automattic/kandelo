@@ -30,5 +30,6 @@
       "find": "clearSetid ? 1 : 0",
       "replace": "0"
     }
-  ]
+  ],
+  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
 }

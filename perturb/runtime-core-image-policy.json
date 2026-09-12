@@ -37,5 +37,6 @@
       "find": "if actual_bytes != expected_bytes {",
       "replace": "if false {"
     }
-  ]
+  ],
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
 }

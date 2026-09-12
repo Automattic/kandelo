@@ -59,13 +59,6 @@
       "replace": "    5 * 8"
     },
     {
-      "name": "lstat follows the final symlink",
-      "scope": "pub unsafe extern \"C\" fn sm_lstat",
-      "scope_end": "\n}\n",
-      "find": "    let stat = match rootfs::lstat(path) {",
-      "replace": "    let stat = match rootfs::stat(path) {"
-    },
-    {
       "name": "read_file ignores the offset",
       "scope": "pub unsafe extern \"C\" fn sm_read_file",
       "scope_end": "\n}\n",
@@ -121,5 +114,6 @@
       "find": "rootfs::export_image_read(offset, out, &mut source)",
       "replace": "rootfs::export_image_read(0, out, &mut source)"
     }
-  ]
+  ],
+  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
 }

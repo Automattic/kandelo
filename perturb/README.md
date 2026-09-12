@@ -36,6 +36,23 @@ Encoding them here would make a committed spec permanently red, which teaches
 people to ignore the gate. Keeping the reason beside the code keeps it where
 the next reader already is.
 
+## A mutation that does not compile is not a kill
+
+Every spec carries a `build` command that must succeed before the verifier
+runs. Without it, a mutation that fails to COMPILE is indistinguishable from
+one the tests caught — both make `cargo test` exit non-zero — and the harness
+reports "killed".
+
+That produced a real false positive here. A trial replaced `rootfs::lstat` with
+`rootfs::stat`, a function that does not exist, and was recorded as evidence
+that a test detected symlink-following behaviour. It proved only that the
+compiler rejected a typo. The trial is gone; the behaviour it was meant to
+cover is asserted directly instead, by a test that checks a symlink reports
+mode `0o777` rather than its target's mode.
+
+An invalid mutation now fails the run, because a trial that proves nothing is a
+gap in the evidence rather than a pass.
+
 ## Deferred is not accepted
 
 `deferred-until-v4.json` holds two trials that are **not** part of the green

@@ -37,5 +37,6 @@
       "find": "    if flags & VFS_IMAGE_FLAG_HAS_METADATA == 0 {\n        return Ok(None);\n    }",
       "replace": ""
     }
-  ]
+  ],
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
 }

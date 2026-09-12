@@ -37,6 +37,24 @@ struct Spec {
     file: String,
     /// Shell command whose exit status decides whether a mutation was caught.
     verify: String,
+    /// Optional command that must SUCCEED for the mutation to be considered
+    /// valid at all.
+    ///
+    /// # Why this exists
+    ///
+    /// Without it, a mutation that does not COMPILE is indistinguishable from
+    /// one the tests caught: both make `cargo test` exit non-zero, and the
+    /// harness reports "killed". That is a false positive, and it produced one
+    /// here — a trial replacing `rootfs::lstat` with `rootfs::stat`, a function
+    /// that does not exist, was recorded as proof that a test detected
+    /// symlink-following behaviour. It proved only that the compiler rejected
+    /// a typo.
+    ///
+    /// When set, a mutation that fails this command is reported as INVALID and
+    /// fails the run, because an invalid trial is a gap in the evidence rather
+    /// than a pass.
+    #[serde(default)]
+    build: Option<String>,
     trials: Vec<Trial>,
 }
 
@@ -164,6 +182,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     println!("precondition: {} is tracked and clean", spec.file);
 
     let mut survived = Vec::new();
+    let mut invalid = Vec::new();
     for trial in &spec.trials {
         println!("\n=== {} ===", trial.name);
         if let Err(e) = apply(&target, trial) {
@@ -171,6 +190,22 @@ pub fn run(args: &[String]) -> Result<(), String> {
             return Err(e);
         }
         println!("  mutation applied");
+        if let Some(build) = &spec.build {
+            let built = Command::new("sh")
+                .current_dir(&root)
+                .args(["-c", build])
+                .status()
+                .map_err(|e| format!("build: {e}"))?;
+            if !built.success() {
+                revert(&root, &spec.file)?;
+                println!(
+                    "  INVALID — the mutation does not compile, so a non-zero verifier \
+                     would prove nothing. Fix the trial."
+                );
+                invalid.push(trial.name.clone());
+                continue;
+            }
+        }
         let status = Command::new("sh")
             .current_dir(&root)
             .args(["-c", &spec.verify])
@@ -188,13 +223,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
         println!("  reverted and verified against tracked content");
     }
 
-    println!("\n{} trial(s), {} survived", spec.trials.len(), survived.len());
-    if survived.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    println!(
+        "\n{} trial(s), {} survived, {} invalid",
+        spec.trials.len(),
+        survived.len(),
+        invalid.len()
+    );
+    let mut problems = Vec::new();
+    if !survived.is_empty() {
+        problems.push(format!(
             "surviving mutants (uncovered behaviour): {}",
             survived.join(", ")
-        ))
+        ));
+    }
+    if !invalid.is_empty() {
+        problems.push(format!(
+            "invalid mutants (do not compile, so their result means nothing): {}",
+            invalid.join(", ")
+        ));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join("; "))
     }
 }

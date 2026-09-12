@@ -17,5 +17,6 @@
       "find": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO)",
       "replace": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Ok(_dst.len())"
     }
-  ]
+  ],
+  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
 }
