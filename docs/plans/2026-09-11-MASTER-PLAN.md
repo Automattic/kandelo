@@ -48,6 +48,52 @@ Not "every lane finished". #1350 ships when:
 - the host suite's failures are each attributed to a named cause;
 - conformance has no campaign-caused regression, stated with evidence.
 
+## Estimates — and the bias they must be read against
+
+**Unit: agent-days.** One agent-day is one focused agent working one day on a
+provisioned machine. Wall-clock depends on how many lanes run in parallel and
+on machine contention, which has been significant — a package build takes the
+machine to load 100 and makes every timing-sensitive check invalid.
+
+**The systematic bias, stated first because it is the most reliable thing here:
+every item this campaign has estimated has been larger than filed.** Lane M was
+"half done" and was **15%**. Lane X was "retire a parser" and became a kernel
+export, a new authority boundary and a trap that is still unexplained. The fork
+census was "classify some files" and found a superseded engine. **Treat every
+number below as a floor, not a midpoint.** Where a lane's first increment is a
+census or a diagnosis, the estimate after it is honestly unknown until that
+lands — those are marked.
+
+| lane | estimate | confidence | what dominates it |
+|---|---|---|---|
+| **F** fork inversion | **15–30 d** | low | Four coarse entries, each replacing a host driver. The `ABORT_UNWINDING` discipline has already trapped or hung two attempts, and the `kernel_exit` trap change is a prerequisite nobody has scoped. |
+| **M** shared mapping *(deferred)* | **20–40 d** | low | ~15% done. A production resolver, ~15 exports, the range policy, then 2,776 host lines across ~50 call sites — and `MAP_SHARED` coherence fails silently, so the coverage has to precede the cutover. |
+| **I** host imports (V4) | **15–30 d** | low | I1–I2 are 2–3 d. I3 is the rest: moving POSIX filesystem semantics for host-backed mounts into a kernel that already implements them for its own. |
+| **V** VFS / one SFFS | **10–20 d** | **unknown until V6** | The six-consumer census decides everything. Serving them from the kernel is the bulk; deleting 3,752 lines is the easy end. |
+| **P** platform honesty | **10–15 d** | medium | Five independent instances. `st_rdev` is ABI-adjacent on the stat wire; the UI trio is smaller but one item is a product decision, not an engineering one. |
+| **T** test hygiene | **5–10 d** | **unknown until T5** | One file carries 28% of failures and reproduces in isolation. Until it is diagnosed, "40 timeouts" could be one defect or forty. |
+| **S** setuid integrity | **5–10 d** | medium | S1 is 1–2 d — the verifier already exists and the emitter already imports `createHash`. S2 needs a sha256 in the kernel and should land with the SDEF record. |
+| **C** conformance | **4–7 d** | medium | C1 is a runner-contract change; C2 is following through on two XFAIL'd gaps. The 8 remaining failures are all harness. |
+| **B** build truthfulness | **4–7 d** | medium | Reconciling the cheap path with the freshness gate is a decision plus a day; stamping the fixtures is the larger half. |
+| **X** process and exec | **2–5 d** | medium | Blocked on one panic with a precise bisect. Once found, the repoint is a one-commit reapply. |
+| **H** browser + curation | **3–6 d** | medium | The browser pass is short if provisioning holds; curation of ~370 commits into ~14 is a day or two with `commit-tree`. |
+
+**Serial total is not the useful number** — these run in parallel lanes. The
+**critical path is F and M**, both 15–40 d and both low confidence, and neither
+is in #1350: M is deferred, and F is only as far as F0.
+
+**For PR #1350 specifically**, what remains is **H** (browser plus curation,
+3–6 d) and whatever of **T**, **X**, **C**, **B** and **S** the maintainer
+wants inside it rather than after — a further **8–20 d** if all five go in,
+**3–6 d** if only H does.
+
+**What would make these wrong in the optimistic direction**, since that is the
+direction they have always been wrong: a census turning up a second
+implementation nobody knew about (this has happened twice — the SFFS duplicate
+and the superseded fork reference engine); a "floor" turning out to be real
+after all; or a defect found while working that has to be fixed before the lane
+can continue, which has happened in every lane that has run so far.
+
 ## Standing hazards — these are not lane-specific
 
 - **H-1 — a dead floor reads as complete.** Rust that has never executed, with
@@ -878,6 +924,137 @@ disagreeing with the kernel.
 
 ---
 
+# LANE K — `kernel-worker.ts`, the host's second syscall table
+
+**Status: characterized. Never previously named as a lane, and it is the file
+every other lane queues behind.**
+
+## End state
+
+The host worker transports syscalls and does not interpret them. Syscall
+identity, argument shape and dispatch belong to the kernel, which already owns
+them for every call it serves itself.
+
+## The floor
+
+The worker must own the **channel**: reading a request out of shared memory,
+entering the kernel, writing the reply, and the retry/park machinery around a
+blocking call. That is transport. **Knowing what `SYS_IOCTL` means is not.**
+
+## Increments
+
+- **K1 — census the 515 `SYS_` references.** Which are transport (size a
+  buffer, choose a scratch path) and which are semantics (decide an argument's
+  meaning, pick an errno)? The second group is the lane.
+- **K2 — retire the semantic cases**, starting with any that duplicate a
+  decision the kernel already makes. Two dispatch-table defects this campaign
+  found — `setsockopt` and `ioctl` each taking the sixth channel word as a
+  pointer width — were *kernel*-side, but they were invisible partly because
+  the host carries a parallel understanding of the same calls.
+- **K3 — split what remains.** A 32,718-line file is a contention point and a
+  measurement hazard in its own right.
+
+## Acceptance evidence
+
+`kernelWorkerTypeScript` falls to **12,000** in the budget. Per increment, the
+host suite stays green — this file is the syscall hot path, so a regression
+here is not subtle.
+
+## Known hazards
+
+- **Contention.** Lane F's A5, lane X's spawn work and the wait-path lane all
+  live here. Two agents in this file produce a merge that compiles by luck.
+- **It is a measurement hazard.** Moving code inside a file this size shifts V8
+  parse and compile for unrelated functions — visible in the select A/B, where
+  untouched metrics scattered up to +1.94 µs with identical arms.
+- **`CLAUDE.md` names known-bad optimizations here** — syscall argument-count
+  tables, classification sets, cached `DataView`s, conditional debug logging.
+  Do not reintroduce them while restructuring.
+
+---
+
+# LANE G — ABI binding drift
+
+**Status: characterized. Small, and it is the mechanism behind a defect already
+found.**
+
+## End state
+
+Every `process_layout` module the C side depends on reaches C through the
+generated header, and each emitted constant carries a `_Static_assert` against
+the musl definition — so a constant that drifts fails the build instead of
+producing a plausible wrong answer. The header is the delivery mechanism; the
+assert is what makes it a gate, and G1 is not done until both exist.
+
+## The floor
+
+None. The generator, the layouts and the headers are all ours.
+
+## Increments
+
+- **G1 — extend `render_process_layouts_header`** from the 6 modules it imports
+  (`iovec`, `msghdr`, `cmsghdr`, `multicast_group_request`, `rt_sigqueueinfo`,
+  `sigevent`) to all 15. The other 9 — `sigaltstack`, `itimerval`, `mq_attr`,
+  `statfs`, `sysinfo`, `stat`, `dev`, `statx`, `sched_param` — reach C as bare
+  literals or not at all.
+- **G2 — move the remaining bare literals into layout modules.** `statx`'s
+  offsets were numeric literals in `wasm_api.rs` with no constant anywhere.
+
+## Acceptance evidence
+
+`unguardedLayoutModules` reaches **0**. Demonstrated by perturbing one offset
+and watching the C side fail to compile — a static assert nobody has seen fail
+is a guard that cannot fail (H-2).
+
+## Known hazards
+
+- **The snapshot gate does not cover this and will report green.** `xtask
+  dump-abi` captures syscall numbers, kernel exports and generated constants —
+  not struct offsets. This is the documented "necessary but not sufficient"
+  case, and reading a green snapshot as coverage is how the gap survived.
+- **`statx` is the proven instance**: `stx_dev_minor` was never written and the
+  "major" was the low 32 bits rather than the major half, so even a small
+  device number reassembled wrongly. Nothing objected.
+
+---
+
+# LANE D — dead Rust floors
+
+**Status: characterized as a class. Five modules found and never followed up.**
+
+## End state
+
+No Rust module in the tree looks finished while never having executed. Each of
+the five is either wired to a production caller or deleted.
+
+## Increments
+
+- **D1 — census the five**, transitively. A direct grep produced 13 false
+  alarms in one afternoon because most call sites reach their target
+  indirectly, and a module's only references being a `pub mod` line and a doc
+  comment is the signature.
+- **D2 — per module, wire or delete.** Both answers are correct; leaving it is
+  not.
+
+## Acceptance evidence
+
+Per module, either a production call site or its absence from the tree. **Not
+a line count** — "give it a caller" and "delete it" move the number in opposite
+directions and both close the item.
+
+## Known hazards
+
+- **This is H-1 in its pure form.** A dead floor with green tests and careful
+  documentation is *harder* to remove than an undocumented orphan, because the
+  tests and docs are what make it read as complete. Lane M shipped 368 such
+  lines before they were caught, and they were well-tested and well-documented.
+- **`module_state_records.rs` is the sharpest case**: 483 dead Rust lines whose
+  live twin is 3,860 TypeScript lines. It belongs to lane F, not here, but it
+  is the same phenomenon — the Rust never running is why the TypeScript never
+  left.
+
+---
+
 # LANE T — test hygiene
 
 **Status: characterized, blocked on a clean suite read.**
@@ -947,6 +1124,32 @@ directly with no artifact reader installed; no `./run.sh browser` has completed;
 no demo has been verified by hand. Everything else rests on Rust and Node.
 Curation of ~369 commits into ~14 narrative commits also lives here, and the
 maintainer has held it pending a running web app.
+
+---
+
+# Filed defects that are not lanes
+
+Real, characterized enough to act on, too small to be lanes — recorded here so
+they are not lost the way five dead Rust floors were.
+
+- **B36 — a signal-safe wake can complete before a signal the writer has not
+  yet sent.** A parked `ppoll`/`pselect` is woken by a host-scheduled task, not
+  by anything ordered against the writing process's next channel message. The
+  obvious fix was **refuted, not deferred**: after `write()` returns the child
+  is running guest code, so "wait for its next message" has no bound and any
+  bound is the mitigating constant in another hat. POSIX does not require the
+  ordering — the descriptor was ready first — so this is a robustness gap
+  rather than a conformance one, which is why removing the mitigation is a
+  judgement call.
+- **The three spawn `vi.fn` failures.** `spawn-blob-transport`,
+  `spawn-credential-order` and `spawn-pid-authority` fail with
+  `kernel_exec_target_artifact_policy failed`. **Verified unrelated to lane X**
+  by reverting its commits and observing identical counts. Unowned.
+- **`fork-host-import-runtime.test.ts`** fails on `wa_read_facts: malformed
+  type section` against an artifact module built from its canonical recipe.
+  Could not be distinguished from "other worktrees run a newer fetched binary".
+- **`kernel-scratch-contract.test.ts`** reports 4 kernel-entry and 12
+  memory-audit findings, including stale allowances.
 
 ---
 

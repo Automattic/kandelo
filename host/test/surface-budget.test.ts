@@ -101,6 +101,47 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
+  kernelWorkerTypeScript: () => lineCount(["host/src/kernel-worker.ts"]),
+  // Layout modules the C side depends on, minus the ones the generated header
+  // gives a static assert. The remainder can drift from musl silently.
+  unguardedLayoutModules: () => {
+    const layouts = readFileSync(
+      join(repoRoot, "crates/shared/src/process_layout.rs"),
+      "utf8",
+    );
+    const declared = new Set(
+      [...layouts.matchAll(/^pub mod ([a-z_]+)/gm)].map((m) => m[1]!),
+    );
+    // The generated musl header only covers the modules the emitter imports;
+    // anything else can drift from musl with nothing objecting.
+    const emitter = readFileSync(
+      join(repoRoot, "tools/xtask/src/dump_abi.rs"),
+      "utf8",
+    );
+    const useList = emitter.match(
+      /fn render_process_layouts_header[\s\S]*?use shared::process_layout::\{([^}]*)\}/,
+    );
+    if (!useList) {
+      throw new Error(
+        "render_process_layouts_header no longer imports process_layout modules by name; " +
+          "update the unguardedLayoutModules measure to match the new emitter shape.",
+      );
+    }
+    const covered = new Set(
+      useList[1]!
+        .split(",")
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0),
+    );
+    for (const name of covered) {
+      if (!declared.has(name)) {
+        throw new Error(
+          `render_process_layouts_header imports unknown layout module "${name}"`,
+        );
+      }
+    }
+    return declared.size - covered.size;
+  },
   parseShebangReferences: () =>
     lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
       ? Number.parseInt(

@@ -85,6 +85,20 @@
       "slack": 2,
       "target": 0,
       "why": "sudo and sudo-lite ship setuid-root as lazy references fetched by URL with length as the only check. Bytes of the same length from a substituting host, a poisoned cache or a network position execute as root inside the guest."
+    },
+    "kernelWorkerTypeScript": {
+      "measure": "line count of host/src/kernel-worker.ts",
+      "ceiling": 32718,
+      "slack": 400,
+      "target": 12000,
+      "why": "The single largest file in the host and the one every lane contends for. 515 SYS_ references live here, so syscall knowledge the kernel owns is mirrored in the host. Its size is also a measurement hazard: moving code inside it shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
+    },
+    "unguardedLayoutModules": {
+      "measure": "process_layout modules the generated musl header does not cover",
+      "ceiling": 9,
+      "slack": 9,
+      "target": 0,
+      "why": "render_process_layouts_header covers 6 of 15 layout modules, so most of the struct offsets the C side depends on have nothing checking them against musl. That is how statx came to write half a device number with no gate objecting."
     }
   },
   "lanes": {
@@ -213,6 +227,42 @@
         "hazards"
       ],
       "whyExempt": "Deprioritized by the maintainer, who asked to push implementation further before paying the cost of browser verification. Characterizing it now would plan work nobody intends to start."
+    },
+    "K": {
+      "title": "kernel-worker.ts \u2014 the host's second syscall table",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "kernelWorkerTypeScript",
+          "atMost": 12000
+        }
+      ],
+      "why": "The file is 32,718 lines and holds 515 SYS_ references. Syscall dispatch knowledge belongs to the kernel; a host that mirrors it is a second authority that drifts, and every lane queues behind this file."
+    },
+    "G": {
+      "title": "ABI binding drift \u2014 generated headers cover under half the layouts",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "unguardedLayoutModules",
+          "atMost": 0
+        }
+      ],
+      "why": "A layout constant with no static assert on the C side can drift from what musl expects and nothing notices. statx is the proven instance; 9 of 15 modules are equally exposed."
+    },
+    "D": {
+      "title": "dead Rust floors",
+      "status": "open",
+      "closure": "checklist",
+      "checklist": {
+        "fiveRemainingDeadFloorsCensused": false,
+        "eachEitherWiredOrDeleted": false
+      },
+      "why": "Five dead Rust modules beyond shared_mapping_policy were found and never characterized. A count is the wrong measure because the answer per module is either 'give it a caller' or 'delete it', and both reduce the same number. SELF-REPORTED checklist; a tick is a claim.",
+      "sectionsExempt": [
+        "floor"
+      ],
+      "whyExempt": "Dead code has no capability boundary to describe; the floor question belongs to whichever lane owns the subsystem each module was written for."
     }
   }
 }
