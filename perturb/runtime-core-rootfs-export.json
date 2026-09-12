@@ -86,6 +86,34 @@
       "scope_end": "\n                }\n",
       "find": "                    let bytes = ROOTFS\n                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))\n                        .ok_or(Errno::EIO)?;",
       "replace": "                    let bytes = ROOTFS\n                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))\n                        .unwrap_or(0);"
+    },
+    {
+      "name": "the loader goes back to refusing an image described only by its body",
+      "scope": "        None => {\n            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;",
+      "scope_end": "\n        }\n    }\n",
+      "find": "            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;",
+      "replace": "            if true {\n                return Err(Errno::EINVAL);\n            }\n            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;"
+    },
+    {
+      "name": "the loader prefers the body over KLZY when an image carries both",
+      "scope": "    match klzy_span {",
+      "scope_end": "\n        Some((offset, len)) => {",
+      "find": "    match klzy_span {",
+      "replace": "    match if deferred.is_some() { None } else { klzy_span } {"
+    },
+    {
+      "name": "the loader drops the archive table the body declares",
+      "scope": "            for archive in &section.archives {",
+      "scope_end": "\n            }\n",
+      "find": "                lazy_archives.push((archive.archive_id, archive.bytes));",
+      "replace": ""
+    },
+    {
+      "name": "the loader drops the sizes the body declares",
+      "scope": "            for record in &section.records {",
+      "scope_end": "\n            }\n",
+      "find": "                        size: record.size,",
+      "replace": "                        size: 0,"
     }
   ]
 }

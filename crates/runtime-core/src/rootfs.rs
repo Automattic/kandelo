@@ -1647,6 +1647,23 @@ where
     result
 }
 
+/// One deferred file as the loader needs it, normalised across the two carriers
+/// that can describe one.
+///
+/// `KLZY` and `SDEF` disagree about almost nothing that matters here: both say
+/// which inode is deferred, how big it really is, and — for an archive member —
+/// which archive and which member. Normalising at the read means the walk below
+/// has one shape to handle rather than a branch per carrier repeated at every
+/// use, which is where a difference between the two would hide.
+struct DeferredEntry {
+    size: u64,
+    /// `0` for a file fetched standalone, whose transport the host owns.
+    archive_id: u32,
+    /// Empty exactly when `archive_id == 0`. Owned rather than borrowed because
+    /// the two carriers store it differently and neither buffer outlives this.
+    source_path: Vec<u8>,
+}
+
 fn load_image_inner<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
@@ -1662,36 +1679,7 @@ where
     // filesystem is mounted, because both spans come from the same container
     // header and a missing section must stay distinguishable from a corrupt one
     // (`kernel_lazy_span` returns `None` vs `EINVAL`).
-    let linkage = match crate::sffs::kernel_lazy_span(&source)? {
-        // A `/` image that declares no `KLZY` section predates the kernel's
-        // ability to parse an image, and the kernel has no way to tell "this
-        // image has no lazy files" from "this image records its lazy files only
-        // in the host-side JSON the kernel cannot read". Accepting it would
-        // silently build a tree where every deferred file reports size 0 — a
-        // wrong tree that looks like a right one. An image with genuinely no
-        // lazy files still carries the section, empty, in 20 bytes. So a missing
-        // section is a stale artifact, and `docs/agent-guidance/abi.md` is
-        // explicit that a stale artifact fails loudly and is rebuilt through the
-        // normal path rather than shimmed.
-        None => return Err(Errno::EINVAL),
-        Some((offset, len)) => {
-            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
-            bytes.resize(len, 0u8);
-            source.read_exact_at(offset, &mut bytes)?;
-            crate::klzy::decode_kernel_lazy_linkage(&bytes)?
-        }
-    };
-
-    // `ino -> record`. A `KLZY` file record with `archive_id == 0` is a
-    // URL-backed single lazy file whose transport the host owns; the kernel
-    // still needs its real size, because the image's inode holds a zero-length
-    // stub. `decode_kernel_lazy_linkage` already rejects duplicate inodes.
-    let mut lazy_files: BTreeMap<u32, &crate::klzy::KernelLazyFile> = BTreeMap::new();
-    for file in &linkage.files {
-        lazy_files.insert(file.ino, file);
-    }
+    let klzy_span = crate::sffs::kernel_lazy_span(&source)?;
 
     let (sffs_offset, sffs_len) = crate::sffs::sffs_span(&source)?;
     let filesystem = Sffs::mount(SubSource {
@@ -1714,12 +1702,82 @@ where
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));
 
-    // The image's own deferred descriptions, when it carries them. Read here
-    // and not merged into `lazy_files` because the two answer different
-    // questions: KLZY says which archive backs a file, SDEF carries the opaque
-    // description the host will need to FETCH one. Under V5 the second replaces
-    // the first; until then an image may carry either, both, or neither.
+    // The image's own deferred section, when it carries one. It is BOTH a
+    // linkage source (below) and the place the opaque fetch descriptions live,
+    // which is why it is read once and used twice.
     let deferred = filesystem.deferred_section()?;
+
+    // Which carrier describes this image's deferred files.
+    //
+    // `KLZY` when the image declares one, because that is what every image
+    // shipped today carries and its meaning is unchanged. `SDEF` when the image
+    // declares no `KLZY` but its BODY describes its deferred files — which is
+    // what the Rust export writes, and what V5 makes the only description.
+    //
+    // NEITHER is still refused, and for the reason it always was: an image that
+    // declares no `KLZY` section and whose body says nothing either predates
+    // the kernel's ability to parse an image, and the kernel cannot tell "this
+    // image has no lazy files" from "this image records its lazy files only in
+    // the host-side JSON the kernel cannot read". Accepting it would silently
+    // build a tree where every deferred file reports size 0 — a wrong tree that
+    // looks like a right one. An image with genuinely no lazy files still
+    // carries a section, empty, in 20 bytes. So a missing description is a
+    // stale artifact, and `docs/agent-guidance/abi.md` is explicit that a stale
+    // artifact fails loudly and is rebuilt rather than shimmed.
+    //
+    // What CHANGED is only which sections count as a description. An image
+    // carrying both is read from `KLZY`; nothing emits both today, and choosing
+    // the older one keeps this change from altering how any existing image
+    // loads.
+    let mut lazy_files: BTreeMap<u32, DeferredEntry> = BTreeMap::new();
+    let mut lazy_archives: Vec<(u32, u64)> = Vec::new();
+    match klzy_span {
+        Some((offset, len)) => {
+            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(len, 0u8);
+            source.read_exact_at(offset, &mut bytes)?;
+            let linkage = crate::klzy::decode_kernel_lazy_linkage(&bytes)?;
+            // A `KLZY` file record with `archive_id == 0` is a URL-backed single
+            // lazy file whose transport the host owns; the kernel still needs
+            // its real size, because the image's inode holds a zero-length
+            // stub. `decode_kernel_lazy_linkage` already rejects duplicate
+            // inodes.
+            for file in &linkage.files {
+                lazy_files.insert(
+                    file.ino,
+                    DeferredEntry {
+                        size: file.size,
+                        archive_id: file.archive_id,
+                        source_path: file.source_path.as_bytes().to_vec(),
+                    },
+                );
+            }
+            for archive in &linkage.archives {
+                lazy_archives.push((archive.archive_id, archive.archive_bytes));
+            }
+        }
+        None => {
+            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;
+            // `decode` already rejects duplicate inodes, a record naming an
+            // undeclared archive, and a half-specified linkage, so this loop
+            // inherits every rule the `KLZY` branch gets from its own decoder.
+            for record in &section.records {
+                lazy_files.insert(
+                    record.ino,
+                    DeferredEntry {
+                        size: record.size,
+                        archive_id: record.archive_id,
+                        source_path: record.source_path.clone(),
+                    },
+                );
+            }
+            for archive in &section.archives {
+                lazy_archives.push((archive.archive_id, archive.bytes));
+            }
+        }
+    }
 
     let root_stat = filesystem.stat_ino(ROOT_INO)?;
     if file_type(root_stat.mode) != S_IFDIR {
@@ -1797,7 +1855,7 @@ where
                             insert_lazy_file(
                                 &abs,
                                 lazy.archive_id,
-                                lazy.source_path.as_bytes(),
+                                &lazy.source_path,
                                 lazy.size,
                                 stat.mode,
                                 stat.uid,
@@ -1855,11 +1913,11 @@ where
     // Archive table: every lazy archive the image declares, with the total byte
     // length `ensure_archive_member` needs to bound its whole-archive fetch.
     ROOTFS.with(|state| {
-        for archive in &linkage.archives {
+        for &(archive_id, archive_bytes) in &lazy_archives {
             state.archives.insert(
-                archive.archive_id,
+                archive_id,
                 ArchiveEntry {
-                    size: archive.archive_bytes,
+                    size: archive_bytes,
                     raw: None,
                     directory: None,
                     members: BTreeMap::new(),
@@ -5807,7 +5865,7 @@ mod tests {
             lazy_json: b"",
             archive_json: None,
             metadata_json: None,
-            kernel_lazy: &klzy,
+            kernel_lazy: Some(&klzy),
         };
         let mut image = crate::sffs_container::header(body.len(), sections.flags())
             .expect("header")
@@ -5815,6 +5873,206 @@ mod tests {
         image.extend_from_slice(&body);
         image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
         image
+    }
+
+    /// The same image as [`url_backed_image`] but described ONLY by its body:
+    /// no `KLZY` section, and the container flag clear.
+    fn sdef_only_image(url: &[u8], real_size: u64) -> Vec<u8> {
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        w.declare_lazy_archive(3, 8_000_000).expect("declare");
+        w.create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", url)
+            .expect("url-backed");
+        w.create_deferred_file(root, b"php", 0o755, 4_242, 3, b"usr/bin/php", b"")
+            .expect("archive member");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        crate::sffs_container::wrap(&body, &sections).expect("wrap")
+    }
+
+    #[test]
+    fn an_image_the_kernel_exported_is_one_the_kernel_can_load() {
+        let _guard = TestGuard::acquire();
+        // The round trip V4 exists to make possible, and the one thing none of
+        // the increments before it could assert on its own. Each closed a hole
+        // -- the archive member exported as an empty file, the URL-backed file
+        // lost its description, the section could not name an archive, the
+        // loader refused a body-described image -- and any one still open
+        // breaks this.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
+        declare_archive(3, 8_000_000).expect("declare archive");
+        insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2)
+            .expect("archive member");
+        write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
+            .expect("an ordinary file, so the tree is not all deferred");
+
+        let body = drain_export(8192, &mut no_bytes());
+        // The container carries no KLZY: the body describes its own deferred
+        // files, which is what this export writes.
+        let image = crate::sffs_container::wrap(
+            &body,
+            &crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: None,
+            },
+        )
+        .expect("wrap");
+
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load it back");
+        assert_eq!(count, 4, "root, /usr, /usr/php, /etc-ish");
+
+        // The lazy member survived the whole round trip: real size, linkage,
+        // and an archive length to bound its fetch.
+        assert_eq!(lstat(b"/usr/php").expect("stat").st_size, 4_242);
+        assert_eq!(lstat(b"/usr/php").expect("stat").st_mode & 0o7777, 0o755);
+        assert_eq!(
+            lazy_member_source(b"/usr/php").expect("linkage"),
+            (3, b"usr/bin/php".to_vec()),
+        );
+        assert_eq!(archive_size(3), Some(8_000_000));
+
+        // And the ordinary file is still ordinary -- not swept up as deferred.
+        assert_eq!(lstat(b"/etc-ish").expect("stat").st_size, 14);
+    }
+
+    #[test]
+    fn an_image_described_only_by_its_body_loads() {
+        let _guard = TestGuard::acquire();
+        // V4 item 3. The image declares no `KLZY`; its body's SDEF section is
+        // the whole description, which is what the Rust export writes and what
+        // V5 makes the only description. Before this the loader refused it, so
+        // an image the kernel wrote was one the kernel could not read.
+        let url: &[u8] = b"https://example.invalid/big.bin";
+        let image = sdef_only_image(url, 45_000);
+        let count = load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert_eq!(count, 3, "root + two deferred files");
+
+        // Both kinds of deferred file get their REAL size from the body, not
+        // the zero-length stub the body inode holds. That is the whole failure
+        // this refusal was protecting against, now checked rather than avoided.
+        assert_eq!(lstat(b"/big.bin").expect("stat").st_size, 45_000);
+        assert_eq!(lstat(b"/php").expect("stat").st_size, 4_242);
+
+        // The archive member's linkage came through too, and the archive's
+        // length with it -- so the fetch it will need is bounded.
+        assert_eq!(
+            lazy_member_source(b"/php").expect("linkage"),
+            (3, b"usr/bin/php".to_vec()),
+        );
+        assert_eq!(archive_size(3), Some(8_000_000));
+    }
+
+    #[test]
+    fn an_image_that_describes_its_deferred_files_nowhere_is_still_refused() {
+        let _guard = TestGuard::acquire();
+        // The refusal this change was careful NOT to weaken. No `KLZY`, and a
+        // body with no SDEF section either: the kernel cannot tell "no lazy
+        // files" from "lazy files recorded only in host-side JSON I cannot
+        // read", and loading it would build a tree where every deferred file
+        // reports size 0 -- a wrong tree that looks like a right one.
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            128 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"plain", 0o644, crate::sffs_write::Content::Bytes(b"hi"))
+            .expect("a file with no deferred anything");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        let image = crate::sffs_container::wrap(&body, &sections).expect("wrap");
+
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // And the same body WITH an empty KLZY section loads, so the refusal
+        // above is the missing description rather than anything else about
+        // this image.
+        let empty_klzy = klzy_section(&[], &[]);
+        let with_klzy = crate::sffs_container::wrap(
+            &body,
+            &crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(&empty_klzy),
+            },
+        )
+        .expect("wrap");
+        assert_eq!(
+            load_image(with_klzy.len() as u64, image_host(&with_klzy)).expect("loads"),
+            2,
+        );
+    }
+
+    #[test]
+    fn an_image_carrying_both_descriptions_is_read_from_the_older_one() {
+        let _guard = TestGuard::acquire();
+        // Nothing emits both today. The rule is written down and tested anyway,
+        // because "whichever we happen to read first" is how two descriptions
+        // of one thing start disagreeing -- and reading the OLDER one is what
+        // keeps this change from altering how any existing image loads.
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        let ino = w
+            .create_deferred_file(root, b"big.bin", 0o644, 45_000, 0, b"", b"url")
+            .expect("deferred");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+
+        // The KLZY section disagrees with the body on purpose: a different size
+        // for the same inode. Whichever number the tree reports names the
+        // carrier that was read.
+        let klzy = klzy_section(&[], &[(ino, 999, 0, "")]);
+        let image = crate::sffs_container::wrap(
+            &body,
+            &crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(&klzy),
+            },
+        )
+        .expect("wrap");
+
+        load_image(image.len() as u64, image_host(&image)).expect("load");
+        assert_eq!(
+            lstat(b"/big.bin").expect("stat").st_size,
+            999,
+            "KLZY wins while it is present",
+        );
     }
 
     #[test]

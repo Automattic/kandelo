@@ -796,7 +796,7 @@ mod tests {
                         lazy_json: lazy,
                         archive_json: archive,
                         metadata_json: Some(meta),
-                        kernel_lazy: b"KLZY",
+                        kernel_lazy: Some(b"KLZY"),
                     },
                 )
                 .expect("wrap");
@@ -822,7 +822,7 @@ mod tests {
                 lazy_json: b"{}",
                 archive_json: None,
                 metadata_json: None,
-                kernel_lazy: b"KLZY",
+                kernel_lazy: Some(b"KLZY"),
             },
         )
         .expect("wrap");

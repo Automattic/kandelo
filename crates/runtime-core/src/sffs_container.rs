@@ -34,12 +34,19 @@
 //! tree that looks like a right one". An image with genuinely no lazy files
 //! still carries the section, empty, in 20 bytes.
 //!
-//! So [`ContainerSections`] takes `kernel_lazy` as a plain slice, not an
-//! `Option`. A caller cannot forget it, and the unbootable image is not a
-//! state this API can express. **This matters more than it looks under V5:**
-//! deferred metadata is moving into the body as SDEF, which makes KLZY look
-//! like residue to drop — but SDEF has no production reader yet, so dropping
-//! KLZY produces an image the kernel rejects.
+//! That reason still holds, and it is why `kernel_lazy` was once a plain slice
+//! rather than an `Option`: a caller could not forget it, and the unbootable
+//! image was not a state this API could express.
+//!
+//! **It is an `Option` now, because the statement it was protecting changed.**
+//! `rootfs::load_image_inner` reads the body's SDEF section as a linkage source
+//! when an image declares no KLZY, so "declares no KLZY" and "describes its
+//! deferred files nowhere" stopped being the same thing. An image whose body
+//! carries SDEF needs no KLZY, and under V5 that is every image.
+//!
+//! What this API still cannot check is the combination that IS unbootable:
+//! `None` with a body carrying no SDEF. This writer never looks inside the
+//! body, so the loader is the only layer that can refuse it — and does.
 //!
 //! # Streaming
 //!
@@ -66,9 +73,20 @@ pub struct ContainerSections<'a> {
     pub archive_json: Option<&'a [u8]>,
     /// Image metadata JSON (`version`, `kernelAbi`, `createdBy`).
     pub metadata_json: Option<&'a [u8]>,
-    /// The kernel-facing lazy linkage. **Not optional** — see the module docs.
-    /// Pass an empty KLZY section for an image with no deferred files.
-    pub kernel_lazy: &'a [u8],
+    /// The kernel-facing lazy linkage, or `None` when the BODY describes the
+    /// image's deferred files instead (an `SDEF` section, [`crate::sffs_deferred`]).
+    ///
+    /// This was once required, because the loader refused any image declaring
+    /// no `KLZY` — an image with no description of its deferred files loads as
+    /// a tree where every one of them reports size 0, which is a wrong tree
+    /// that looks like a right one. That reason still holds; what changed is
+    /// that `SDEF` is now also a description, so "declares no `KLZY`" and
+    /// "describes nothing" stopped being the same statement.
+    ///
+    /// `None` with a body that carries no `SDEF` produces an image the loader
+    /// refuses, which is the correct outcome and not something this writer can
+    /// check: it never sees inside the body.
+    pub kernel_lazy: Option<&'a [u8]>,
 }
 
 impl ContainerSections<'_> {
@@ -79,7 +97,10 @@ impl ContainerSections<'_> {
     /// `hasArchives` condition. Deriving it from a separate notion here would
     /// produce a flag word no existing image has.
     pub fn flags(&self) -> u32 {
-        let mut flags = wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;
+        let mut flags = 0;
+        if self.kernel_lazy.is_some() {
+            flags |= wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;
+        }
         if !self.lazy_json.is_empty() {
             flags |= VFS_IMAGE_FLAG_HAS_LAZY;
         }
@@ -125,7 +146,9 @@ pub fn trailer(sections: &ContainerSections<'_>) -> Result<Vec<u8>, Errno> {
     if let Some(metadata) = sections.metadata_json {
         push(metadata, "metadata json")?;
     }
-    push(sections.kernel_lazy, "kernel lazy")?;
+    if let Some(kernel_lazy) = sections.kernel_lazy {
+        push(kernel_lazy, "kernel lazy")?;
+    }
     Ok(out)
 }
 
@@ -153,7 +176,7 @@ mod tests {
         lazy: &'a [u8],
         archive: Option<&'a [u8]>,
         metadata: Option<&'a [u8]>,
-        klzy: &'a [u8],
+        klzy: Option<&'a [u8]>,
     ) -> ContainerSections<'a> {
         ContainerSections {
             lazy_json: lazy,
@@ -180,7 +203,7 @@ mod tests {
                 Some(&b"{\"kernelAbi\":44}"[..]),
             ),
         ] {
-            let s = sections(lazy, archive, metadata, klzy);
+            let s = sections(lazy, archive, metadata, Some(klzy));
             let image = wrap(BODY, &s).expect("wrap");
             let (offset, len) = sffs::sffs_span(&image.as_slice()).expect("span");
             assert_eq!(
@@ -202,10 +225,10 @@ mod tests {
     /// with every section.
     #[test]
     fn flag_word_matches_the_shipped_corpus() {
-        let bare = sections(b"", None, Some(b"{}"), b"k");
+        let bare = sections(b"", None, Some(b"{}"), Some(b"k"));
         assert_eq!(bare.flags(), 20, "metadata + kernel lazy");
 
-        let full = sections(b"{\"lazy\":1}", Some(b"[a]"), Some(b"{}"), b"k");
+        let full = sections(b"{\"lazy\":1}", Some(b"[a]"), Some(b"{}"), Some(b"k"));
         assert_eq!(full.flags(), 31, "every section");
     }
 
@@ -225,7 +248,7 @@ mod tests {
     /// transposed trailer.
     #[test]
     fn trailer_writes_sections_in_container_order() {
-        let s = sections(b"LAZY", Some(b"ARCH"), Some(b"META"), b"KLZY");
+        let s = sections(b"LAZY", Some(b"ARCH"), Some(b"META"), Some(b"KLZY"));
         let mut expected = Vec::new();
         for part in [&b"LAZY"[..], &b"ARCH"[..], &b"META"[..], &b"KLZY"[..]] {
             expected.extend_from_slice(&(part.len() as u32).to_le_bytes());
@@ -238,13 +261,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_container_carries_no_bytes_its_flags_do_not_account_for() {
+        // Every section in the trailer is claimed by a flag (or, for the lazy
+        // JSON, unconditional). A section written without a flag to claim it is
+        // trailing slack: the reader walks by length prefix from the body and
+        // stops when the flags say to, so those bytes are unreachable and an
+        // image has two byte representations for one content.
+        //
+        // Found by mutation: making the trailer write an empty kernel-lazy
+        // section when there is none changed no test, because nothing looked at
+        // the container's total length.
+        let body: &[u8] = BODY;
+        for (lazy, archive, metadata, klzy) in [
+            (&b""[..], None, None, None),
+            (&b""[..], None, None, Some(&b"KLZY"[..])),
+            (&b"{\"lazy\":1}"[..], Some(&b"[a]"[..]), Some(&b"{}"[..]), None),
+            (
+                &b"{\"lazy\":1}"[..],
+                Some(&b"[a]"[..]),
+                Some(&b"{}"[..]),
+                Some(&b"KLZY"[..]),
+            ),
+        ] {
+            let s = sections(lazy, archive, metadata, klzy);
+            let image = wrap(body, &s).expect("wrap");
+
+            // What the flags account for, counted independently of `trailer`.
+            let mut accounted = VFSI_HEADER_SIZE + body.len();
+            accounted += 4 + lazy.len();
+            if let Some(archive) = archive {
+                accounted += 4 + archive.len();
+            }
+            if let Some(metadata) = metadata {
+                accounted += 4 + metadata.len();
+            }
+            if let Some(klzy) = klzy {
+                accounted += 4 + klzy.len();
+            }
+            assert_eq!(
+                image.len(),
+                accounted,
+                "flags {:#x} account for every byte",
+                s.flags(),
+            );
+        }
+    }
+
     /// The blindness above, asserted rather than left as prose, so that a
     /// future reader change which DOES start checking order is noticed here
     /// instead of silently making the golden test the only survivor.
     #[test]
     fn the_kernel_walk_cannot_detect_a_transposed_trailer() {
         let klzy: &[u8] = b"KLZY-payload";
-        let s = sections(b"{\"lazy\":1}", None, Some(b"{\"kernelAbi\":44}"), klzy);
+        let s = sections(b"{\"lazy\":1}", None, Some(b"{\"kernelAbi\":44}"), Some(klzy));
 
         let mut transposed = Vec::new();
         for part in [&b"{\"kernelAbi\":44}"[..], &b"{\"lazy\":1}"[..], klzy] {
