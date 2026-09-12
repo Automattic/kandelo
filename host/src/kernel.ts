@@ -34,7 +34,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
-import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
+import { decodeAndDispatch } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
@@ -43,6 +43,7 @@ import {
   IOCTL_REQUESTS,
   KERNEL_SCRATCH_FD_PAIR_BYTES,
   KERNEL_SCRATCH_SOCKLEN_BYTES,
+  NET_READINESS,
   SELECT_FD_SET_BYTES,
   SELECT_FD_SETSIZE,
   STRUCT_SIZE_WASM_DIRENT,
@@ -185,7 +186,6 @@ const intrinsicWasmInstanceExports = Object.getOwnPropertyDescriptor(
   WebAssembly.Instance.prototype,
   "exports",
 )!.get!;
-const intrinsicWasmTableGet = WebAssembly.Table.prototype.get;
 
 const wasmPosixKernelTestCapability = {};
 
@@ -216,14 +216,19 @@ interface WasmPosixKernelTestAuthority {
     bytes: Uint8Array,
   ): void;
   hostFstat(handle: bigint, statPointer: KernelPointer): number;
-  hostOpendir(pathPointer: KernelPointer, pathLength: number): bigint;
+  hostOpenat(
+    dir: bigint,
+    namePointer: KernelPointer,
+    nameLength: number,
+    flags: number,
+    mode: number,
+  ): bigint;
   hostReaddir(
     handle: bigint,
     direntPointer: KernelPointer,
     namePointer: KernelPointer,
     nameLength: number,
   ): number;
-  hostClosedir(handle: bigint): number;
   hostClose(handle: bigint): number;
 }
 
@@ -503,6 +508,13 @@ function dataViewSetUint32(
 function signedI64FromWords(offsetLo: number, offsetHi: number): bigint {
   return (intrinsicBigInt(offsetHi | 0) << 32n)
     | intrinsicBigInt(offsetLo >>> 0);
+}
+
+/** Reconstruct an unsigned 64-bit value from two 32-bit words (both treated as
+ * unsigned). Used for rootfs `blob_id`/`offset`, which are never negative. */
+function u64FromWords(lo: number, hi: number): bigint {
+  return (intrinsicBigInt(hi >>> 0) << 32n)
+    | intrinsicBigInt(lo >>> 0);
 }
 
 interface IntrinsicBufferSourceSpan {
@@ -839,9 +851,44 @@ export class WasmPosixKernel {
     | "initializing"
     | "initialized" = "uninitialized";
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
-  private signalWakeSab: SharedArrayBuffer | null = null;
-  private programFuncTable: WebAssembly.Table | null = null;
-  #kernelFuncTable: WebAssembly.Table | null = null;
+  /**
+   * Deferred-resource byte provider: the host's one remaining job for the
+   * kernel-owned `/`.
+   *
+   * The kernel owns the `/` tree and, since the image-backed byte route, reads
+   * an image-backed file's CONTENT out of the image itself. What the host still
+   * answers for is what the image does not carry: a URL-backed lazy file
+   * (`kind === HOST_DEFERRED_KIND_FILE`, `id` its inode number) and a lazy
+   * archive (`kind === HOST_DEFERRED_KIND_ARCHIVE`, `id` the image-assigned
+   * archive id, whose raw bytes the kernel decodes itself — the host is purely
+   * a transport). Both are the same capability: fetch a resource from a host
+   * transport and serve positioned bytes of it, reporting `-EAGAIN` while the
+   * fetch is in flight, so they are one provider behind one import.
+   *
+   * Fills `dest` from `offset` and returns the count, or a negative errno.
+   * Wired by the worker at boot; until set, `host_fetch_deferred` reports
+   * ENOSYS so the seam is truthfully unbacked.
+   */
+  #rootfsDeferredProvider:
+    | ((
+      kind: number,
+      id: bigint,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number)
+    | undefined = undefined;
+  /**
+   * Raw VFS image byte window (K8 increment 1). The Rust kernel parses the `/`
+   * image itself — it mounts the image's own filesystem, walks it, and reads its
+   * kernel-facing lazy-linkage section — instead of consuming a tree this host
+   * walked and re-encoded. The host resolves no names here: there is exactly one
+   * image, so the provider takes only an offset. Until set, `host_image_read`
+   * reports ENOSYS, which is what keeps `kernel_rootfs_load_image` dormant and
+   * the boot-manifest path authoritative.
+   */
+  #rootfsImageProvider:
+    | ((offset: bigint, dest: Uint8Array) => number)
+    | undefined = undefined;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -863,12 +910,6 @@ export class WasmPosixKernel {
     number,
     { mappingRefs: number; descriptorClosePending: boolean }
   >();
-  /** Active synchronous host_fstat capture used by mmap preflight. */
-  private fstatHandleCapture: {
-    token: object;
-    handle: number | null;
-  } | null = null;
-  isThreadWorker = false;
   /**
    * Live `/dev/fb0` mappings the kernel has reported via
    * `host_bind_framebuffer`. Renderers (canvas in browser, no-op in
@@ -927,11 +968,28 @@ export class WasmPosixKernel {
   }
 
   /**
-   * Set the user program's indirect function table so signal handlers
-   * registered by the program can be called from the kernel.
+   * Install the deferred-resource byte provider.
+   * See {@link WasmPosixKernel.prototype} `#rootfsDeferredProvider`.
    */
-  setProgramFuncTable(table: WebAssembly.Table): void {
-    this.programFuncTable = table;
+  setRootfsDeferredProvider(
+    provider: (
+      kind: number,
+      id: bigint,
+      offset: bigint,
+      dest: Uint8Array,
+    ) => number,
+  ): void {
+    this.#rootfsDeferredProvider = provider;
+  }
+
+  /**
+   * Install the raw VFS image byte window (K8 increment 1).
+   * See {@link WasmPosixKernel.prototype} `#rootfsImageProvider`.
+   */
+  setRootfsImageProvider(
+    provider: (offset: bigint, dest: Uint8Array) => number,
+  ): void {
+    this.#rootfsImageProvider = provider;
   }
 
   constructor(
@@ -950,13 +1008,6 @@ export class WasmPosixKernel {
         throw new Error("missing WasmPosixKernel test runtime");
       }
       this.#instance = testRuntime.instance ?? null;
-      this.#kernelFuncTable = testRuntime.instance === undefined
-        || testRuntime.instance === null
-        ? null
-        : (
-            wasmInstanceExports(testRuntime.instance)
-              .__indirect_function_table as WebAssembly.Table | undefined
-          ) ?? null;
       this.#memory = testRuntime.memory ?? null;
       this.#kernelPtrWidth = testRuntime.pointerWidth ?? 4;
       this.#testEngine = testRuntime.engine;
@@ -1061,9 +1112,14 @@ export class WasmPosixKernel {
       },
     );
     defineMethod(
-      "hostOpendir",
-      (pathPointer: KernelPointer, pathLength: number) =>
-        this.#hostOpendir(pathPointer, pathLength),
+      "hostOpenat",
+      (
+        dir: bigint,
+        namePointer: KernelPointer,
+        nameLength: number,
+        flags: number,
+        mode: number,
+      ) => this.#hostOpenat(dir, namePointer, nameLength, flags, mode),
     );
     defineMethod(
       "hostReaddir",
@@ -1091,10 +1147,6 @@ export class WasmPosixKernel {
           return -14; // EFAULT
         }
       },
-    );
-    defineMethod(
-      "hostClosedir",
-      (handle: bigint) => this.#hostClosedir(handle),
     );
     defineMethod(
       "hostClose",
@@ -1144,36 +1196,6 @@ export class WasmPosixKernel {
       throw new KernelScratchError(`${field} exceeds its declared capacity`);
     }
     return { offset, length, end };
-  }
-
-  /**
-   * Begin capturing the concrete host handle used by one synchronous fstat.
-   *
-   * WHY: the worker must invoke the kernel export directly inside its active
-   * scratch lease; accepting an opaque callback here would let a primitive
-   * scratch address cross a boundary that cannot revoke it. The token makes
-   * the begin/finish pair exact while a `finally` at the caller preserves the
-   * synchronous capture lifetime.
-   */
-  beginFstatHandleCapture(): object {
-    if (this.fstatHandleCapture) {
-      throw new Error("nested host fstat handle capture");
-    }
-    const token = {};
-    this.fstatHandleCapture = { token, handle: null };
-    return token;
-  }
-
-  /**
-   * Finish the exact synchronous fstat capture started by the matching token.
-   */
-  finishFstatHandleCapture(token: object): number | null {
-    const capture = this.fstatHandleCapture;
-    if (!capture || capture.token !== token) {
-      throw new Error("mismatched host fstat handle capture");
-    }
-    this.fstatHandleCapture = null;
-    return capture.handle;
   }
 
   /** Retain one mapping-owned reference to an existing host file handle. */
@@ -1393,10 +1415,6 @@ export class WasmPosixKernel {
     return this.sharedPipes;
   }
 
-  registerSignalWakeSab(sab: SharedArrayBuffer): void {
-    this.signalWakeSab = sab;
-  }
-
   registerWaitpidSab(sab: SharedArrayBuffer): void {
     this.waitpidSab = sab;
   }
@@ -1424,18 +1442,67 @@ export class WasmPosixKernel {
               [module, importObject],
             ) as WebAssembly.Instance
           : await this.#testEngine.instantiate(module, importObject);
-      this.#kernelFuncTable = (
-        wasmInstanceExports(rawInstance)
-          .__indirect_function_table as WebAssembly.Table | undefined
-      ) ?? null;
       this.#instance = createKernelEntryGatedInstance(
         rawInstance,
         this.#kernelEntryGate,
       );
       this.#initializationState = "initialized";
+      this.#publishHostDirectoryRoots();
     } catch (error) {
       this.#abortInitialization(error);
     }
+  }
+
+  /**
+   * Publish this host's directory anchors to the kernel.
+   *
+   * The kernel owns the POSIX namespace. To reach a host filesystem at all it
+   * needs a directory handle to start from, and only the host can issue one —
+   * so this runs once, as soon as there is an instance to call, and hands the
+   * kernel one handle per host-backed mount.
+   *
+   * The payload is self-describing: an 8-byte little-endian handle, then the
+   * mount's canonical guest path, then a NUL. Records carry their prefix
+   * rather than relying on position because this host sorts its mounts by
+   * prefix length and so does not share an index space with the separate
+   * prefix list the worker publishes.
+   *
+   * A host with no host-backed mount publishes nothing, and the kernel then
+   * calls none of the directory family — which is every browser host once `/`
+   * is owned by the in-kernel overlay.
+   */
+  #publishHostDirectoryRoots(): void {
+    const exports = this.#instance?.exports as Record<string, unknown> | undefined;
+    // A kernel that predates the export simply has no host directory
+    // capability, which is a real boundary rather than something to patch.
+    if (typeof exports?.kernel_rootfs_set_foreign_mount_roots !== "function") {
+      return;
+    }
+    const roots = this.io.foreignMountRoots();
+    if (roots.length === 0) return;
+
+    const encoder = new TextEncoder();
+    const records = roots.map((r) => encoder.encode(r.prefix));
+    const total = records.reduce((n, bytes) => n + 8 + bytes.length + 1, 0);
+    const payload = new IntrinsicUint8Array(total);
+    const view = new IntrinsicDataView(typedArrayBuffer(payload));
+    let offset = 0;
+    for (let i = 0; i < roots.length; i++) {
+      dataViewSetBigInt64(view, offset, BigInt(roots[i]!.handle), true);
+      offset += 8;
+      payload.set(records[i]!, offset);
+      offset += records[i]!.length;
+      payload[offset] = 0;
+      offset += 1;
+    }
+
+    this.#requireApiScratch().withLease((scratch) => {
+      scratch.copyFrom(payload, 0, 0, total);
+      scratch.invokeKernelExport("kernel_rootfs_set_foreign_mount_roots", [
+        scratch.exportPointer(0, total),
+        total,
+      ]);
+    });
   }
 
   #beginInitialization(): void {
@@ -1473,7 +1540,6 @@ export class WasmPosixKernel {
     // A failed first attempt has created no usable kernel generation. Clear
     // the partially published import state so callers may retry cleanly.
     this.#instance = null;
-    this.#kernelFuncTable = null;
     this.#memoryGeneration = intrinsicObjectFreeze({});
     this.#memory = null;
     this.#kernelPtrWidth = 4;
@@ -1485,14 +1551,14 @@ export class WasmPosixKernel {
     return {
       env: {
         memory,
-        host_debug_log: (ptr: KernelPointer, len: number): void => {
-          const msg = new TextDecoder().decode(
-            this.#readKernelBytes(ptr, len),
-          );
-          console.log(`[KERNEL] ${msg}`);
-        },
-        host_open: (pathPtr: KernelPointer, pathLen: number, flags: number, mode: number): bigint => {
-          return this.#hostOpen(pathPtr, pathLen, flags, mode);
+        host_openat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          flags: number,
+          mode: number,
+        ): bigint => {
+          return this.#hostOpenat(dir, namePtr, nameLen, flags, mode);
         },
         host_close: (handle: bigint): number => {
           return this.#hostClose(handle);
@@ -1557,6 +1623,49 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
+        host_fetch_deferred: (
+          kind: number,
+          idLo: number,
+          idHi: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          try {
+            return this.#hostFetchDeferred(
+              kind,
+              u64FromWords(idLo, idHi),
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_fetch_deferred destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
+        host_image_read: (
+          bufPtr: KernelPointer,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          try {
+            return this.#hostImageRead(
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_image_read destination",
+              ),
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
         host_pwrite: (
           handle: bigint,
           bufPtr: KernelPointer,
@@ -1589,45 +1698,23 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_stat: (pathPtr: KernelPointer, pathLen: number, statPtr: KernelPointer): number => {
+        host_fstatat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          flags: number,
+          statPtr: KernelPointer,
+        ): number => {
           try {
-            return this.#hostStat(
-              pathPtr,
-              pathLen,
+            return this.#hostFstatat(
+              dir,
+              namePtr,
+              nameLen,
+              flags,
               this.#rustLentKernelDestination(
                 statPtr,
                 WASM_STAT_SIZE,
-                "host_stat destination",
-              ),
-            );
-          } catch {
-            return -14; // EFAULT
-          }
-        },
-        host_lstat: (pathPtr: KernelPointer, pathLen: number, statPtr: KernelPointer): number => {
-          try {
-            return this.#hostLstat(
-              pathPtr,
-              pathLen,
-              this.#rustLentKernelDestination(
-                statPtr,
-                WASM_STAT_SIZE,
-                "host_lstat destination",
-              ),
-            );
-          } catch {
-            return -14; // EFAULT
-          }
-        },
-        host_statfs: (pathPtr: KernelPointer, pathLen: number, statfsPtr: KernelPointer): number => {
-          try {
-            return this.#hostStatfs(
-              pathPtr,
-              pathLen,
-              this.#rustLentKernelDestination(
-                statfsPtr,
-                WASM_STATFS_SIZE,
-                "host_statfs destination",
+                "host_fstatat destination",
               ),
             );
           } catch {
@@ -1642,22 +1729,6 @@ export class WasmPosixKernel {
                 statfsPtr,
                 WASM_STATFS_SIZE,
                 "host_fstatfs destination",
-              ),
-            );
-          } catch {
-            return -14; // EFAULT
-          }
-        },
-        host_pathconf: (pathPtr: KernelPointer, pathLen: number, name: number, valuePtr: KernelPointer): number => {
-          try {
-            return this.#hostPathconf(
-              pathPtr,
-              pathLen,
-              name,
-              this.#rustLentKernelDestination(
-                valuePtr,
-                8,
-                "host_pathconf destination",
               ),
             );
           } catch {
@@ -1679,53 +1750,91 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_mkdir: (pathPtr: KernelPointer, pathLen: number, mode: number): number => {
-          return this.#hostMkdir(pathPtr, pathLen, mode);
+        host_mkdirat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          mode: number,
+        ): number => {
+          return this.#hostMkdirat(dir, namePtr, nameLen, mode);
         },
-        host_rmdir: (pathPtr: KernelPointer, pathLen: number): number => {
-          return this.#hostRmdir(pathPtr, pathLen);
+        host_unlinkat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          flags: number,
+        ): number => {
+          return this.#hostUnlinkat(dir, namePtr, nameLen, flags);
         },
-        host_unlink: (pathPtr: KernelPointer, pathLen: number): number => {
-          return this.#hostUnlink(pathPtr, pathLen);
+        host_renameat: (
+          oldDir: bigint,
+          oldPtr: KernelPointer,
+          oldLen: number,
+          newDir: bigint,
+          newPtr: KernelPointer,
+          newLen: number,
+        ): number => {
+          return this.#hostRenameat(oldDir, oldPtr, oldLen, newDir, newPtr, newLen);
         },
-        host_rename: (oldPtr: KernelPointer, oldLen: number, newPtr: KernelPointer, newLen: number): number => {
-          return this.#hostRename(oldPtr, oldLen, newPtr, newLen);
+        host_linkat: (
+          oldDir: bigint,
+          oldPtr: KernelPointer,
+          oldLen: number,
+          newDir: bigint,
+          newPtr: KernelPointer,
+          newLen: number,
+          flags: number,
+        ): number => {
+          return this.#hostLinkat(oldDir, oldPtr, oldLen, newDir, newPtr, newLen, flags);
         },
-        host_link: (oldPtr: KernelPointer, oldLen: number, newPtr: KernelPointer, newLen: number): number => {
-          return this.#hostLink(oldPtr, oldLen, newPtr, newLen);
+        host_symlinkat: (
+          targetPtr: KernelPointer,
+          targetLen: number,
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+        ): number => {
+          return this.#hostSymlinkat(targetPtr, targetLen, dir, namePtr, nameLen);
         },
-        host_symlink: (targetPtr: KernelPointer, targetLen: number, linkPtr: KernelPointer, linkLen: number): number => {
-          return this.#hostSymlink(targetPtr, targetLen, linkPtr, linkLen);
-        },
-        host_readlink: (pathPtr: KernelPointer, pathLen: number, bufPtr: KernelPointer, bufLen: number): number => {
+        host_readlinkat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+        ): number => {
           try {
-            return this.#hostReadlink(
-              pathPtr,
-              pathLen,
+            return this.#hostReadlinkat(
+              dir,
+              namePtr,
+              nameLen,
               this.#rustLentKernelDestination(
                 bufPtr,
                 bufLen,
-                "host_readlink destination",
+                "host_readlinkat destination",
               ),
             );
           } catch {
             return -14; // EFAULT
           }
         },
-        host_chmod: (pathPtr: KernelPointer, pathLen: number, mode: number): number => {
-          return this.#hostChmod(pathPtr, pathLen, mode);
+        host_fchmodat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          mode: number,
+        ): number => {
+          return this.#hostFchmodat(dir, namePtr, nameLen, mode);
         },
-        host_chown: (pathPtr: KernelPointer, pathLen: number, uid: number, gid: number): number => {
-          return this.#hostChown(pathPtr, pathLen, uid, gid);
-        },
-        host_lchown: (pathPtr: KernelPointer, pathLen: number, uid: number, gid: number): number => {
-          return this.#hostLchown(pathPtr, pathLen, uid, gid);
-        },
-        host_access: (pathPtr: KernelPointer, pathLen: number, amode: number): number => {
-          return this.#hostAccess(pathPtr, pathLen, amode);
-        },
-        host_opendir: (pathPtr: KernelPointer, pathLen: number): bigint => {
-          return this.#hostOpendir(pathPtr, pathLen);
+        host_fchownat: (
+          dir: bigint,
+          namePtr: KernelPointer,
+          nameLen: number,
+          uid: number,
+          gid: number,
+          flags: number,
+        ): number => {
+          return this.#hostFchownat(dir, namePtr, nameLen, uid, gid, flags);
         },
         host_readdir: (dirHandle: bigint, direntPtr: KernelPointer, namePtr: KernelPointer, nameLen: number): number => {
           try {
@@ -1746,9 +1855,6 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_closedir: (dirHandle: bigint): number => {
-          return this.#hostClosedir(dirHandle);
-        },
         host_clock_gettime: (clockId: number, secPtr: KernelPointer, nsecPtr: KernelPointer): number => {
           try {
             return this.#hostClockGettime(
@@ -1767,9 +1873,6 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-        },
-        host_nanosleep: (sec: bigint, nsec: bigint): number => {
-          return this.#hostNanosleep(sec, nsec);
         },
         host_ftruncate: (handle: bigint, length: bigint): number => {
           return this.#hostFtruncate(handle, length);
@@ -1790,37 +1893,6 @@ export class WasmPosixKernel {
           const valueMs = (valueMsHi >>> 0) * 0x100000000 + (valueMsLo >>> 0);
           const intervalMs = (intervalMsHi >>> 0) * 0x100000000 + (intervalMsLo >>> 0);
           return this.#hostSetPosixTimer(timerId, signo, valueMs, intervalMs);
-        },
-        host_sigsuspend_wait: (): number => {
-          return this.#hostSigsuspendWait();
-        },
-        host_call_signal_handler: (handler_index: number, signum: number, sa_flags: number): number => {
-          const SA_SIGINFO = 4;
-          const table = this.programFuncTable
-            ?? this.#kernelFuncTable;
-          if (!table) {
-            return -22; // EINVAL
-          }
-          const handler = intrinsicApply(
-            intrinsicWasmTableGet,
-            table,
-            [handler_index],
-          );
-          if (handler) {
-            try {
-              if (sa_flags & SA_SIGINFO) {
-                // SA_SIGINFO: call handler(signum, siginfo_ptr, ucontext_ptr)
-                // siginfo_ptr=0 and ucontext_ptr=0 for now (no siginfo written to memory yet)
-                (handler as Function)(signum, 0, 0);
-              } else {
-                (handler as Function)(signum);
-              }
-              return 0;
-            } catch (e) {
-              return -5; // EIO
-            }
-          }
-          return -22; // EINVAL
         },
         host_getrandom: (bufPtr: KernelPointer, bufLen: number): number => {
           try {
@@ -1846,11 +1918,33 @@ export class WasmPosixKernel {
             return negErrno(error);
           }
         },
+        // Workstream H4 (host-surface minimization): the network-interface
+        // ioctl content (interface table, MAC, ifreq/ifconf layout) is now
+        // kernel-owned (`crates/runtime-core/src/netif.rs`). This is the one
+        // remaining host-owned fact the kernel cannot compute itself.
+        host_network_local_address: (bufPtr: KernelPointer): number => {
+          const address = this.io.network?.localAddress;
+          if (address?.length !== 4) return 0;
+          try {
+            const destination = this.#rustLentKernelDestination(
+              bufPtr,
+              4,
+              "host_network_local_address destination",
+            );
+            this.#writeKernelBytes(destination, address);
+            return 1;
+          } catch {
+            return 0;
+          }
+        },
         host_utimensat: (
-          pathPtr: KernelPointer, pathLen: number,
+          dir: bigint, namePtr: KernelPointer, nameLen: number,
           atimeSec: bigint, atimeNsec: bigint, mtimeSec: bigint, mtimeNsec: bigint,
+          flags: number,
         ): number => {
-          return this.#hostUtimensat(pathPtr, pathLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
+          return this.#hostUtimensat(
+            dir, namePtr, nameLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec, flags,
+          );
         },
         host_waitpid: (pid: number, options: number, statusPtr: KernelPointer): number => {
           const hasStatus = typeof statusPtr === "bigint"
@@ -1894,8 +1988,8 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_net_poll: (handle: number, events: number): number => {
-          return this.#hostNetPoll(handle, events);
+        host_net_readiness: (handle: number): number => {
+          return this.#hostNetReadiness(handle);
         },
         host_net_connect_status: (handle: number): number => {
           return this.#hostNetConnectStatus(handle);
@@ -1939,14 +2033,8 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
-        host_futex_wait: (addr: KernelPointer, expected: number, timeoutLo: number, timeoutHi: number): number => {
-          return this.#hostFutexWait(addr, expected, timeoutLo, timeoutHi);
-        },
         host_futex_wake: (addr: KernelPointer, count: number): number => {
           return this.#hostFutexWake(addr, count);
-        },
-        host_is_thread_worker: (): number => {
-          return this.isThreadWorker ? 1 : 0;
         },
         // /dev/fb0 hooks: the kernel notifies the host when a process
         // maps or unmaps the framebuffer. The registry is purely
@@ -2200,12 +2288,9 @@ export class WasmPosixKernel {
             }
           }
           if (b.forward) {
-            const rc = validateCommandBuffer(
-              b.cmdbufView,
-              submission.offset,
-              submission.length,
-            );
-            if (rc < 0) return rc;
+            // No structural check here: the kernel validated this span in
+            // `GLIO_SUBMIT` (`dri::cmdbuf`) before calling us, so the
+            // multiplex target receives bytes the kernel has already accepted.
             b.forward.onSubmit(
               sliceUint8Array(
                 b.cmdbufView,
@@ -2293,21 +2378,53 @@ export class WasmPosixKernel {
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
+        // `addr` is a GUEST address and arrives as a BigInt, because the
+        // kernel declares it `u64` so that one import signature serves both a
+        // wasm32 and a wasm64 guest.
+        //
+        // The width passed to `checkedWasmImportMemoryRange` below is
+        // therefore 8, and that 8 describes HOW THE VALUE ARRIVED (an i64
+        // import parameter), not how wide the target process's address space
+        // is. It used to be a hardcoded 4, which was consistent only while the
+        // kernel-side type was `u32`; left at 4 against an i64 parameter it
+        // would reject every call, and "fixed" by narrowing the BigInt it
+        // would alias a wasm64 address above 4 GiB onto its low 32 bits —
+        // exactly the failure `checkHandwrittenProcessAddressArguments` warns
+        // about in `kernel-worker.ts`.
+        //
+        // Width 8 needs no per-process width lookup, because it is not
+        // standing in for one: the real bound is the target process's OWN
+        // current buffer length, which `checkedRange` enforces against
+        // `procMem` directly. A wasm32 process's buffer never exceeds 4 GiB,
+        // so an out-of-range address is rejected by the buffer it misses
+        // rather than by an assumed pointer width — a truer check, and one
+        // that needs no new callback on this class.
         host_proc_write_bytes: (
           pid: number,
-          addr: number,
+          addr: bigint,
           src_ptr: KernelPointer,
           len: number,
         ): number => {
           const procMem = this.callbacks.getProcessMemory?.(pid);
           if (!procMem) return -14;
           try {
+            // WHY allowAddressZero: byte 0 of a guest's linear memory is an
+            // ordinary addressable byte, and the range proof against `procMem`
+            // -- not a null-pointer convention -- is what establishes that the
+            // caller owns it. Refusing address zero here would make the host
+            // impose a null-pointer meaning on caller memory, which the
+            // `KernelDereferenced` contract explicitly reserves to the kernel:
+            // the correct errno for a null pointer is per-syscall, and for the
+            // IPC control calls per-command. The kernel-side destination above
+            // stays strict, because there zero really does mean allocator
+            // failure.
             checkedWasmImportMemoryRange(
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_write_bytes process destination",
+              true,
             );
             const src = this.#readKernelBytes(src_ptr, len);
             // Reacquire the process buffer after copying the kernel source:
@@ -2316,8 +2433,9 @@ export class WasmPosixKernel {
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_write_bytes process destination",
+              true,
             );
             intrinsicApply(
               intrinsicUint8ArraySet,
@@ -2329,9 +2447,11 @@ export class WasmPosixKernel {
             return -14;
           }
         },
+        // `addr` arrives as a BigInt and is checked at width 8 for the same
+        // reason as `host_proc_write_bytes` above.
         host_proc_read_bytes: (
           pid: number,
-          addr: number,
+          addr: bigint,
           dst_ptr: KernelPointer,
           len: number,
         ): number => {
@@ -2345,12 +2465,23 @@ export class WasmPosixKernel {
             );
             const procMem = this.callbacks.getProcessMemory?.(pid);
             if (!procMem) return -14;
+            // WHY allowAddressZero: byte 0 of a guest's linear memory is an
+            // ordinary addressable byte, and the range proof against `procMem`
+            // -- not a null-pointer convention -- is what establishes that the
+            // caller owns it. Refusing address zero here would make the host
+            // impose a null-pointer meaning on caller memory, which the
+            // `KernelDereferenced` contract explicitly reserves to the kernel:
+            // the correct errno for a null pointer is per-syscall, and for the
+            // IPC control calls per-command. The kernel-side destination above
+            // stays strict, because there zero really does mean allocator
+            // failure.
             const source = checkedWasmImportMemoryRange(
               procMem,
               addr,
               len,
-              4,
+              8,
               "host_proc_read_bytes process source",
+              true,
             );
             const processView = new IntrinsicUint8Array(
               wasmMemoryBuffer(procMem),
@@ -2534,30 +2665,6 @@ export class WasmPosixKernel {
   }
 
   /**
-   * host_open(path_ptr, path_len, flags, mode) -> i64
-   *
-   * Reads the path from Wasm memory and delegates to PlatformIO.
-   * For the initial synchronous implementation, we cannot truly await
-   * the async PlatformIO.open — so we use a synchronous fallback that
-   * blocks on the promise. In practice, NodePlatformIO uses sync fs
-   * operations internally, so the promise resolves immediately.
-   */
-  #hostOpen(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    flags: number,
-    mode: number,
-  ): bigint {
-    try {
-      const pathBytes = this.#readKernelBytes(pathPtr, pathLen);
-      const path = new TextDecoder().decode(pathBytes);
-      return BigInt(this.io.open(path, flags, mode));
-    } catch (e) {
-      return BigInt(negErrno(e));
-    }
-  }
-
-  /**
    * host_close(handle: i64) -> i32
    */
   #hostClose(handle: bigint): number {
@@ -2594,6 +2701,14 @@ export class WasmPosixKernel {
       return this.io.close(h);
     } catch (e) {
       return negErrno(e);
+    } finally {
+      // One import closes both files and directories now, so this is where a
+      // directory's staged entry must be dropped. Backends reuse numeric
+      // handles after close: leaving an entry staged would let the next
+      // directory opened at the same number serve a record from the previous
+      // one. The `finally` matters — a backend close that throws must still
+      // clear the staged entry, or a failed close would strand it.
+      this.pendingDirectoryEntries.delete(h);
     }
   }
 
@@ -2621,6 +2736,109 @@ export class WasmPosixKernel {
       destination,
       signedI64FromWords(offsetLo, offsetHi),
     );
+  }
+
+  /**
+   * host_fetch_deferred(kind, id, buf_ptr, buf_len, offset) -> i32
+   *
+   * Serve positioned bytes of a deferred resource — a URL-backed lazy file or
+   * a lazy archive — from the installed provider. Bytes are staged outside
+   * kernel memory and published once (never lend a live view of Rust-owned
+   * memory to the provider), mirroring `#hostReadAt`. Reports ENOSYS when no
+   * provider is installed, so the seam is truthfully unbacked until the worker
+   * wires it.
+   */
+  #hostFetchDeferred(
+    kind: number,
+    id: bigint,
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#rootfsDeferredProvider;
+    if (provider === undefined) {
+      return -38; // ENOSYS
+    }
+    const destinationCapacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(destinationCapacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(kind, id, offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > destinationCapacity) {
+      return -5; // EIO
+    }
+    if (result < 0) {
+      return result; // provider-reported negative errno
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(
+          destination,
+          subarrayUint8Array(staged, 0, result),
+        );
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
+  }
+
+  /**
+   * host_image_read(buf_ptr, buf_len, offset) -> i32
+   *
+   * Serve raw bytes of the VFS image this kernel booted from. The kernel parses
+   * that image itself, so the host resolves no names and carries no id: there is
+   * one image, and this is a positioned window onto it. Bytes are staged outside
+   * kernel memory and published once (never lend a live view of Rust-owned
+   * memory to the provider), mirroring `#hostFetchDeferred`. Reports ENOSYS
+   * when no image source is installed, which is what keeps the kernel's image-parsing
+   * path dormant while the boot manifest is still authoritative.
+   */
+  #hostImageRead(
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#rootfsImageProvider;
+    if (provider === undefined) {
+      return -38; // ENOSYS
+    }
+    const destinationCapacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(destinationCapacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > destinationCapacity) {
+      return -5; // EIO
+    }
+    if (result < 0) {
+      return result; // provider-reported negative errno
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(
+          destination,
+          subarrayUint8Array(staged, 0, result),
+        );
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
   }
 
   /**
@@ -2977,7 +3195,6 @@ export class WasmPosixKernel {
     try {
       const stat = this.io.fstat(h);
       this.#writeStatToMemory(destination, stat);
-      if (this.fstatHandleCapture) this.fstatHandleCapture.handle = h;
       return 0;
     } catch (e) {
       return negErrno(e);
@@ -3056,24 +3273,55 @@ export class WasmPosixKernel {
   // ---- Phase 2: Path-based and directory host imports ----
 
   /**
-   * Read a UTF-8 path string from Wasm memory.
+   * Read a single path component from Wasm memory.
+   *
+   * Under the handle-only kernel contract this is never a path: the kernel
+   * resolves mount routing, `..`, and symlink chains itself and hands this
+   * host exactly one component, relative to a directory handle this host
+   * previously issued. `"."` names the directory itself, which is how a mount
+   * root is addressed. The only exception is a symlink *target*, which is
+   * opaque data stored verbatim and never resolved here.
    */
-  #readPathFromMemory(ptr: KernelPointer, len: number): string {
-    const pathBytes = this.#readKernelBytes(ptr, len);
-    return new TextDecoder().decode(pathBytes);
+  #readComponentFromMemory(ptr: KernelPointer, len: number): string {
+    return new TextDecoder().decode(this.#readKernelBytes(ptr, len));
   }
 
-  /**
-   * host_stat(path_ptr, path_len, stat_ptr) -> i32
-   */
-  #hostStat(
-    pathPtr: KernelPointer,
-    pathLen: number,
+  // ---- The optional host-directory capability ----
+  //
+  // Every import below resolves ONE path component relative to a directory
+  // handle this host issued. A host with no host-backed mount implements none
+  // of them and the kernel never calls them, because no guest path can reach a
+  // mount that does not exist.
+
+  #hostOpenat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    flags: number,
+    mode: number,
+  ): bigint {
+    try {
+      const name = this.#readComponentFromMemory(namePtr, nameLen);
+      const handle = this.io.openat(Number(dir), name, flags, mode);
+      // Backends may reuse numeric handles after close. Never let an entry
+      // staged for an older iterator leak into a new handle with the same id.
+      this.pendingDirectoryEntries.delete(handle);
+      return BigInt(handle);
+    } catch (e) {
+      return BigInt(negErrno(e));
+    }
+  }
+
+  #hostFstatat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    flags: number,
     destination: RustLentKernelDestination,
   ): number {
     try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      const stat = this.io.stat(path);
+      const name = this.#readComponentFromMemory(namePtr, nameLen);
+      const stat = this.io.fstatat(Number(dir), name, flags);
       this.#writeStatToMemory(destination, stat);
       return 0;
     } catch (e) {
@@ -3081,33 +3329,184 @@ export class WasmPosixKernel {
     }
   }
 
-  /**
-   * host_lstat(path_ptr, path_len, stat_ptr) -> i32
-   */
-  #hostLstat(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    destination: RustLentKernelDestination,
+  #hostMkdirat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    mode: number,
   ): number {
     try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      const stat = this.io.lstat(path);
-      this.#writeStatToMemory(destination, stat);
+      this.io.mkdirat(
+        Number(dir),
+        this.#readComponentFromMemory(namePtr, nameLen),
+        mode,
+      );
       return 0;
     } catch (e) {
       return negErrno(e);
     }
   }
 
-  #hostStatfs(
-    pathPtr: KernelPointer,
-    pathLen: number,
+  #hostUnlinkat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    flags: number,
+  ): number {
+    try {
+      this.io.unlinkat(
+        Number(dir),
+        this.#readComponentFromMemory(namePtr, nameLen),
+        flags,
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostRenameat(
+    oldDir: bigint,
+    oldPtr: KernelPointer,
+    oldLen: number,
+    newDir: bigint,
+    newPtr: KernelPointer,
+    newLen: number,
+  ): number {
+    try {
+      this.io.renameat(
+        Number(oldDir),
+        this.#readComponentFromMemory(oldPtr, oldLen),
+        Number(newDir),
+        this.#readComponentFromMemory(newPtr, newLen),
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostLinkat(
+    oldDir: bigint,
+    oldPtr: KernelPointer,
+    oldLen: number,
+    newDir: bigint,
+    newPtr: KernelPointer,
+    newLen: number,
+    _flags: number,
+  ): number {
+    try {
+      this.io.linkat(
+        Number(oldDir),
+        this.#readComponentFromMemory(oldPtr, oldLen),
+        Number(newDir),
+        this.#readComponentFromMemory(newPtr, newLen),
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostSymlinkat(
+    targetPtr: KernelPointer,
+    targetLen: number,
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+  ): number {
+    try {
+      // The target is opaque data stored verbatim — never a path this host
+      // resolves — while `name` is the entry to create.
+      const target = this.#readComponentFromMemory(targetPtr, targetLen);
+      this.io.symlinkat(
+        target,
+        Number(dir),
+        this.#readComponentFromMemory(namePtr, nameLen),
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostReadlinkat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
     destination: RustLentKernelDestination,
   ): number {
     try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      const statfs = this.io.statfs(path);
-      this.#writeStatfsToMemory(destination, statfs);
+      const name = this.#readComponentFromMemory(namePtr, nameLen);
+      const target = this.io.readlinkat(Number(dir), name);
+      const encoded = new TextEncoder().encode(target);
+      const n = Math.min(encoded.length, destination.capacity);
+      this.#writeKernelBytes(destination, subarrayUint8Array(encoded, 0, n));
+      return n;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostFchmodat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    mode: number,
+  ): number {
+    try {
+      this.io.fchmodat(
+        Number(dir),
+        this.#readComponentFromMemory(namePtr, nameLen),
+        mode,
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostFchownat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    uid: number,
+    gid: number,
+    flags: number,
+  ): number {
+    try {
+      this.io.fchownat(
+        Number(dir),
+        this.#readComponentFromMemory(namePtr, nameLen),
+        uid,
+        gid,
+        flags,
+      );
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  #hostUtimensat(
+    dir: bigint,
+    namePtr: KernelPointer,
+    nameLen: number,
+    atimeSec: bigint,
+    atimeNsec: bigint,
+    mtimeSec: bigint,
+    mtimeNsec: bigint,
+    _flags: number,
+  ): number {
+    try {
+      this.io.utimensatAt(
+        Number(dir),
+        this.#readComponentFromMemory(namePtr, nameLen),
+        Number(atimeSec),
+        Number(atimeNsec),
+        Number(mtimeSec),
+        Number(mtimeNsec),
+      );
       return 0;
     } catch (e) {
       return negErrno(e);
@@ -3122,29 +3521,6 @@ export class WasmPosixKernel {
     try {
       const statfs = this.io.fstatfs(Number(handle));
       this.#writeStatfsToMemory(destination, statfs);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  #hostPathconf(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    name: number,
-    destination: RustLentKernelDestination,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      const value = this.io.pathconf(path, name);
-      const bytes = new IntrinsicUint8Array(8);
-      dataViewSetBigInt64(
-        new IntrinsicDataView(typedArrayBuffer(bytes)),
-        0,
-        BigInt(value ?? -1),
-        true,
-      );
-      this.#writeKernelBytes(destination, bytes);
       return 0;
     } catch (e) {
       return negErrno(e);
@@ -3169,221 +3545,6 @@ export class WasmPosixKernel {
       return 0;
     } catch (e) {
       return negErrno(e);
-    }
-  }
-
-  /**
-   * host_mkdir(path_ptr, path_len, mode) -> i32
-   */
-  #hostMkdir(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    mode: number,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.mkdir(path, mode);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_rmdir(path_ptr, path_len) -> i32
-   */
-  #hostRmdir(pathPtr: KernelPointer, pathLen: number): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.rmdir(path);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_unlink(path_ptr, path_len) -> i32
-   */
-  #hostUnlink(pathPtr: KernelPointer, pathLen: number): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.unlink(path);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_rename(old_ptr, old_len, new_ptr, new_len) -> i32
-   */
-  #hostRename(
-    oldPtr: KernelPointer,
-    oldLen: number,
-    newPtr: KernelPointer,
-    newLen: number,
-  ): number {
-    try {
-      const oldPath = this.#readPathFromMemory(oldPtr, oldLen);
-      const newPath = this.#readPathFromMemory(newPtr, newLen);
-      this.io.rename(oldPath, newPath);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_link(old_ptr, old_len, new_ptr, new_len) -> i32
-   */
-  #hostLink(
-    oldPtr: KernelPointer,
-    oldLen: number,
-    newPtr: KernelPointer,
-    newLen: number,
-  ): number {
-    try {
-      const existingPath = this.#readPathFromMemory(oldPtr, oldLen);
-      const newPath = this.#readPathFromMemory(newPtr, newLen);
-      this.io.link(existingPath, newPath);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_symlink(target_ptr, target_len, link_ptr, link_len) -> i32
-   */
-  #hostSymlink(
-    targetPtr: KernelPointer,
-    targetLen: number,
-    linkPtr: KernelPointer,
-    linkLen: number,
-  ): number {
-    try {
-      const target = this.#readPathFromMemory(targetPtr, targetLen);
-      const linkPath = this.#readPathFromMemory(linkPtr, linkLen);
-      this.io.symlink(target, linkPath);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_readlink(path_ptr, path_len, buf_ptr, buf_len) -> i32
-   *
-   * Returns the number of bytes written to the buffer, or -1 on error.
-   */
-  #hostReadlink(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    destination: RustLentKernelDestination,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      const target = this.io.readlink(path);
-      const encoded = new TextEncoder().encode(target);
-      const n = Math.min(encoded.length, destination.capacity);
-      this.#writeKernelBytes(
-        destination,
-        subarrayUint8Array(encoded, 0, n),
-      );
-      return n;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_chmod(path_ptr, path_len, mode) -> i32
-   */
-  #hostChmod(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    mode: number,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.chmod(path, mode);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_chown(path_ptr, path_len, uid, gid) -> i32
-   */
-  #hostChown(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    uid: number,
-    gid: number,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.chown(path, uid, gid);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_lchown(path_ptr, path_len, uid, gid) -> i32
-   */
-  #hostLchown(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    uid: number,
-    gid: number,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.lchown(path, uid, gid);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_access(path_ptr, path_len, amode) -> i32
-   */
-  #hostAccess(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    amode: number,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.access(path, amode);
-      return 0;
-    } catch (e) {
-      return negErrno(e);
-    }
-  }
-
-  /**
-   * host_utimensat(path_ptr, path_len, atime_sec, atime_nsec, mtime_sec, mtime_nsec) -> i32
-   */
-  #hostUtimensat(
-    pathPtr: KernelPointer,
-    pathLen: number,
-    atimeSec: bigint,
-    atimeNsec: bigint,
-    mtimeSec: bigint,
-    mtimeNsec: bigint,
-  ): number {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      this.io.utimensat(path, Number(atimeSec), Number(atimeNsec), Number(mtimeSec), Number(mtimeNsec));
-      return 0;
-    } catch {
-      return -1;
     }
   }
 
@@ -3477,24 +3638,6 @@ export class WasmPosixKernel {
   }
 
   /**
-   * host_opendir(path_ptr, path_len) -> i64
-   *
-   * Returns a directory handle as i64, or -1 on error.
-   */
-  #hostOpendir(pathPtr: KernelPointer, pathLen: number): bigint {
-    try {
-      const path = this.#readPathFromMemory(pathPtr, pathLen);
-      const handle = this.io.opendir(path);
-      // Backends may reuse numeric handles after close. Never let an entry
-      // staged for an older iterator leak into the new one.
-      this.pendingDirectoryEntries.delete(handle);
-      return BigInt(handle);
-    } catch (e) {
-      return BigInt(negErrno(e));
-    }
-  }
-
-  /**
    * host_readdir(dir_handle: i64, dirent_ptr, name_ptr, name_len) -> i32
    *
    * Writes a WasmDirent struct and the entry name to Wasm memory.
@@ -3552,21 +3695,6 @@ export class WasmPosixKernel {
     }
   }
 
-  /**
-   * host_closedir(dir_handle: i64) -> i32
-   */
-  #hostClosedir(dirHandle: bigint): number {
-    const h = Number(dirHandle);
-    try {
-      this.io.closedir(h);
-      return 0;
-    } catch {
-      return -1;
-    } finally {
-      this.pendingDirectoryEntries.delete(h);
-    }
-  }
-
   // ---- Phase 7: Time host imports ----
 
   /**
@@ -3607,21 +3735,6 @@ export class WasmPosixKernel {
       return 0;
     } catch (error) {
       return negErrno(error);
-    }
-  }
-
-  /**
-   * host_nanosleep(sec: i64, nsec: i64) -> i32
-   *
-   * Sleep for the specified duration. The i64 parameters appear as
-   * BigInt in JavaScript.
-   */
-  #hostNanosleep(sec: bigint, nsec: bigint): number {
-    try {
-      this.io.nanosleep(Number(sec), Number(nsec));
-      return 0;
-    } catch {
-      return -1;
     }
   }
 
@@ -3685,42 +3798,6 @@ export class WasmPosixKernel {
       return this.callbacks.onPosixTimer(timerId, signo, valueMs, intervalMs);
     }
     return 0;
-  }
-
-  #hostSigsuspendWait(): number {
-    if (!this.signalWakeSab) {
-      return -(4); // -EINTR, no SAB available
-    }
-    const view = new IntrinsicInt32Array(this.signalWakeSab);
-
-    // Check if already signaled (race-safe via CAS)
-    const old = intrinsicApply(
-      intrinsicAtomicsCompareExchange,
-      Atomics,
-      [view, 0, 1, 0],
-    ) as number;
-    if (old === 1) {
-      const sig = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 1],
-      ) as number;
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-      return sig;
-    }
-
-    // Block until notified
-    intrinsicApply(intrinsicAtomicsWait, Atomics, [view, 0, 0]);
-
-    // Read signal and reset
-    const sig = intrinsicApply(
-      intrinsicAtomicsLoad,
-      Atomics,
-      [view, 1],
-    ) as number;
-    intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 0, 0]);
-    intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-    return sig;
   }
 
   // ---- Public API: Socket & Poll operations ----
@@ -4491,7 +4568,13 @@ export class WasmPosixKernel {
         : -5;
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN
-      return -32; // -EPIPE
+      // WHY: this used to answer -EPIPE for every backend failure, telling the
+      // guest a specific TCP event had happened that no layer had determined.
+      // `negErrno` reports what the backend actually said — a Node socket
+      // error's `code` ("ECONNREFUSED", "ETIMEDOUT", …) or an explicit POSIX
+      // `errno` — and falls back to EIO when nothing classified it, which is
+      // the truthful answer for an unclassified failure.
+      return negErrno(e);
     }
   }
 
@@ -4528,22 +4611,28 @@ export class WasmPosixKernel {
       return dataLength;
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN
-      return -104; // -ECONNRESET
+      // WHY: this used to answer -ECONNRESET for every backend failure. See
+      // the note in #hostNetSend — report what the backend determined.
+      return negErrno(e);
     }
   }
 
-  #hostNetPoll(handle: number, events: number): number {
-    const POLLIN = 0x0001;
-    const POLLOUT = 0x0004;
+  /**
+   * Forward the backend's observable facts to the kernel, which decides
+   * `revents` from them in `runtime_core::net_readiness`. Nothing here
+   * interprets readiness.
+   */
+  #hostNetReadiness(handle: number): number {
     if (!this.io.network) return -107; // -ENOTCONN
+    const network = this.io.network;
+    // A backend with no readiness source. This used to answer
+    // `events & (POLLIN | POLLOUT)` — a readiness claim the backend had not
+    // made. Report the absence instead and let the kernel handle it.
+    if (!network.readiness) return NET_READINESS.UNOBSERVABLE;
     try {
-      if (this.io.network.poll) {
-        return this.io.network.poll(handle, events);
-      }
-      return events & (POLLIN | POLLOUT);
+      return network.readiness(handle);
     } catch (e: any) {
-      if (typeof e?.errno === "number") return -Math.abs(e.errno);
-      return -104; // -ECONNRESET
+      return negErrno(e);
     }
   }
 
@@ -4652,60 +4741,6 @@ export class WasmPosixKernel {
       if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return negErrno(e);
     }
-  }
-
-  #hostFutexWait(
-    addr: KernelPointer,
-    expected: number,
-    timeoutLo: number,
-    timeoutHi: number,
-  ): number {
-    if (!this.#memory) return -22; // -EINVAL
-
-    let index: number;
-    try {
-      const range = checkedWasmImportMemoryRange(
-        this.#memory,
-        addr,
-        4,
-        this.#kernelPtrWidth,
-        "host_futex_wait word",
-      );
-      if (range.pointer % 4 !== 0) return -22; // EINVAL
-      index = range.pointer / 4;
-    } catch {
-      return -14; // EFAULT
-    }
-    const i32view = new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory));
-
-    // Reconstruct 64-bit timeout_ns from lo/hi
-    const timeoutNs = BigInt(timeoutHi >>> 0) * 0x100000000n + BigInt(timeoutLo >>> 0);
-    // Convert to signed
-    const signed = BigInt.asIntN(64, timeoutNs);
-
-    let timeoutMs: number | undefined;
-    if (signed >= 0n) {
-      // Convert ns → ms (rounding up to at least 1ms if nonzero)
-      timeoutMs = Number(signed / 1_000_000n);
-      if (timeoutMs === 0 && signed > 0n) timeoutMs = 1;
-    }
-    // signed < 0 → infinite wait (undefined timeout)
-
-    let result: "ok" | "not-equal" | "timed-out";
-    try {
-      result = intrinsicApply(
-        intrinsicAtomicsWait,
-        Atomics,
-        [i32view, index, expected, timeoutMs],
-      ) as "ok" | "not-equal" | "timed-out";
-    } catch {
-      return -22; // EINVAL: memory was not shared or became unusable
-    }
-    if (result === "timed-out") {
-      return -110; // -ETIMEDOUT
-    }
-    if (result === "not-equal") return -11;  // -EAGAIN
-    return 0; // "ok"
   }
 
   #hostFutexWake(addr: KernelPointer, count: number): number {

@@ -24,8 +24,25 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
-OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+# The os-test checkout to build from. It defaults to the submodule, and
+# KANDELO_OS_TEST_DIR selects a different checkout of the same commit.
+#
+# WHY the override exists: os-test tracks paths that differ only in letter
+# case, which a case-insensitive filesystem cannot check out (see the
+# case-collapse guard below). On such a host the only truthful way to run this
+# suite is from a checkout on a case-sensitive filesystem, and
+# scripts/ensure-case-sensitive-os-test.sh produces one without relocating the
+# repository. The override is explicit on purpose: the runner never silently
+# substitutes a different source tree for the one in the repository.
+OS_TEST="${KANDELO_OS_TEST_DIR:-$REPO_ROOT/tests/sortix/os-test}"
 OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
+# Build output stays on the repository's own filesystem even when sources come
+# from elsewhere. The case-sensitive checkout lives on an APFS sparse disk
+# image, and that image is far slower for this workload than the local disk:
+# the `include` suite writes a `.wasm` and a `.result` per test across ~3,700
+# tests, and putting that traffic on the image made the suite about an order
+# of magnitude slower. Sources are read once per test; outputs are written
+# many times, so only the outputs need the fast path.
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
@@ -45,6 +62,21 @@ BASIC_EXPECTED_FAIL=(
     "unistd/fpathconf" "unistd/pathconf"                  # _PC_FILESIZEBITS is truthfully indeterminate until
                                                           # the selected VFS backend can prove a bit width
     "strings/ffsll"                                       # wasm32 test bug (long vs long long)
+    # ── System V IPC gaps these tests were written to expose ──
+    # Both are real POSIX gaps in Kandelo, not test bugs, and both are
+    # asserted against the POSIX semantic rather than today's behaviour, so
+    # each becomes an XPASS -- which this runner treats as an error -- the
+    # moment the gap closes. See docs/posix-status.md.
+    "sys_shm/shm-attach-aliasing"                         # two shmat attachments in ONE process do not alias:
+                                                          # each is materialized as a separate host byte mirror
+                                                          # (kernel_ipc_shm_record_mapping_for_process). Sharing
+                                                          # BETWEEN processes does work -- sys_shm/shm-cross-process
+                                                          # passes -- so the gap is per-process attachment identity.
+    "sys_msg/msg-cross-process-blocking"                  # a msgrcv that actually blocks is never woken by a later
+                                                          # msgsnd: ipc.rs returns EAGAIN "for host retry" and the
+                                                          # retry is not re-armed by a send. A blocking semop IS
+                                                          # woken (sys_sem/sem-value-and-blocking passes), so this is
+                                                          # specific to the message-queue wait path.
     # aio/aio_cancel was flaky (FAIL once, XPASS next run) — left
     # off this list; if it starts failing reliably, add it back.
     # The previous Linux-CI-only XFAILs for environ propagation
@@ -124,64 +156,88 @@ find_llvm_bin() {
 }
 
 LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
+
+# ── Toolchain: the SDK owns the target/link contract ──
+#
+# Conformance binaries must be built the way user software is built.
+# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix
+# target triple, the guest syscall glue, crt1/libc ordering, the pinned
+# wasm-ld, and the process memory layout (8 MiB main-thread shadow
+# stack, `--global-base`, `__heap_base`/`__abi_version` exports).
+#
+# This runner used to hand-maintain its own copy of that contract. The
+# copy drifted: its binaries reserved wasm-ld's ~64 KiB default shadow
+# stack instead of the SDK's 8 MiB and exported no `__heap_base`, so the
+# suite measured a memory layout no real Kandelo program runs under.
+# Driving `wasm32posix-cc` keeps one authority. See docs/sdk-guide.md.
+CC="$REPO_ROOT/sdk/bin/wasm32posix-cc"
 
 # ── Compile flags ──
+#
+# Only test-specific flags belong here. The SDK supplies the target,
+# sysroot, `-nostdlib`, atomics/bulk-memory/exception-handling, the SjLj
+# and wasm-EH lowering choices, and `-fno-trapping-math`.
 
 CFLAGS_BASE=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
-    # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
-    # so they use race-based timing or skip those features instead.
-    -D__sortix__
 )
 
+# `-D__sortix__` is a CAPABILITY SUPPRESSION, and upstream spends one macro on
+# two unrelated capabilities. Exactly three files in the suite consult it:
+#
+#   udp/udp.h                             skips getifaddrs()
+#   signal/ppoll-block-sleep-write-raise  skips SIGSTOP/SIGCONT
+#   signal/ppoll-block-sleep-raise-write  skips SIGSTOP/SIGCONT
+#
+# Only ONE of those claims is true of Kandelo, so the macro is scoped to the
+# suite whose claim is true rather than asserted platform-wide.
+#
+#   getifaddrs -- TRUE. musl implements it over netlink
+#   (libc/musl/src/network/getifaddrs.c includes netlink.h) and this kernel
+#   implements no AF_NETLINK. The symbol links; the call cannot succeed.
+#
+#   SIGSTOP/SIGCONT -- FALSE. crates/runtime-core/src/signal.rs maps SIGSTOP
+#   to DefaultAction::Stop and SIGCONT to Continue, the process table records
+#   stops, and the host defers a stopped process's channel. Built without the
+#   macro, signal/ppoll-block-sleep-write-raise passed 20/20.
+#
+# Asserting the false half told a conformance suite we lack a feature we have,
+# and the two signal tests then took a deliberately racy fallback -- their own
+# comment is "Sortix does not implement SIGSTOP yet, so just race instead" --
+# instead of the SIGSTOP/SIGCONT sequencing that makes them deterministic.
+# A timing constant was then tuned to survive the degraded path. That is the
+# platform-values contract's "do not shape behavior to hide a platform gap",
+# inverted: a gap was invented that did not exist.
+suite_capability_cflags() {
+    case "$1" in
+        udp) echo "-D__sortix__" ;;
+        *)   echo "" ;;
+    esac
+}
+# The parallel build path runs `_build_runtime_wrapper` through `bash -c`, so
+# this must cross that boundary. Unexported it would not merely be missing: the
+# command substitution would expand to nothing and `udp` would silently lose a
+# suppression it genuinely needs, which looks like a getifaddrs regression.
+export -f suite_capability_cflags
+
+# The SDK driver contributes the whole executable link line: syscall
+# glue, compiler-rt shims, crt1.o, libc.a, and every `-Wl,` flag. `-ldl`
+# selects the dlopen glue the suite's dlopen tests need.
 LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$GLUE_DIR/dlopen.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,--allow-undefined
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
+    -ldl
 )
 
-# Flags for building shared libraries (.so) for dlopen tests
+# Flags for building shared libraries (.so) for dlopen tests. `-shared`
+# selects the SDK's shared-library link contract (SHARED_LINK_FLAGS in
+# sdk/src/lib/flags.ts): no CRT, no libc, no syscall glue, plus
+# --experimental-pic/--shared/--shared-memory/--export-all.
 SO_CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
     -fPIC
     -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
     -DSHARED
 )
 SO_LINK_FLAGS=(
-    -nostdlib
-    -Wl,--experimental-pic
-    -Wl,--shared
-    -Wl,--shared-memory
-    -Wl,--export-all
-    -Wl,--allow-undefined
+    -shared
 )
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
@@ -385,7 +441,9 @@ build_runtime_test() {
     mkdir -p "$(dirname "$wasm")"
     rm -f "$wasm"
 
-    local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
+    # shellcheck disable=SC2046
+    local -a cflags=("${CFLAGS_BASE[@]}" $(suite_capability_cflags "$suite") \
+        -D_GNU_SOURCE -I"$OS_TEST")
     case "$suite/$test_name" in
         process/waitpid-pgid-empty-on-setpgid|\
         process/waitpid-pgid-empty-on-setpgid-rejoin|\
@@ -664,6 +722,7 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_BUILTINS=explicit \
         run_with_timeout "$this_timeout" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
             </dev/null >"$host_diagnostic_file" 2>&1)
@@ -1012,8 +1071,9 @@ run_suite() {
             local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
             mkdir -p "$(dirname "$wasm")"
             rm -f "$wasm"
-            # shellcheck disable=SC2206
-            local -a cflags=($CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST")
+            # shellcheck disable=SC2206,SC2046
+            local -a cflags=($CFLAGS_BASE_STR $(suite_capability_cflags "$suite") \
+                -D_GNU_SOURCE -I"$OS_TEST")
             case "$suite/$test_name" in
                 process/waitpid-pgid-empty-on-setpgid|\
                 process/waitpid-pgid-empty-on-setpgid-rejoin|\
@@ -1118,6 +1178,27 @@ if [ ! -d "$OS_TEST" ]; then
     exit 1
 fi
 
+# Refuse a case-collapsed os-test checkout.
+#
+# WHY: os-test tracks 17 pairs of paths that differ only in letter case, for
+# example `include/inttypes/PRIx16.c` alongside `include/inttypes/PRIX16.c`.
+# A case-insensitive filesystem — the macOS default — cannot hold both, so
+# only one spelling per pair keeps a directory entry. This suite discovers
+# tests by listing directories, so the other spelling is never found and its
+# test is SILENTLY NOT RUN: measured here, `include` reports 3,741 tests on a
+# collapsed checkout against 3,758 on a case-sensitive one, and nothing in the
+# output says 17 are missing. The same collapse also makes 17 tracked files
+# show as modified that nobody edited, because the indexed path now reads its
+# sibling's bytes — so a test opened by exact path would compile the wrong
+# source.
+#
+# A suite that quietly drops 17 conformance tests while reporting a plausible
+# total is worse than one that refuses to run, so refuse.
+if ! "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" "$OS_TEST"; then
+    echo "Refusing to run: os-test results from this checkout would be fictional." >&2
+    exit 1
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -1212,7 +1293,20 @@ if $REPORT_MODE; then
     echo "Report written to: $REPORT"
 fi
 
-# Exit with error if any unexpected failures
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+# Exit with error if any unexpected failures.
+#
+# WHY TIMEOUT counts here: it did not, and this script printed
+# "[OK] All test suites passed" and exited 0 with **1,352 timeouts** out of
+# 5,114 tests. A timeout is a test that did not answer. It is not a pass, and a
+# runner that reports it as one is the same defect this campaign has now found
+# more than a dozen times -- a check that could not run, reporting as a check
+# that passed. It is also exactly how this suite looked green while the
+# `os-test` submodule was uninitialized and it was discovering zero tests.
+#
+# There is deliberately no expected-timeout allowlist. If some case is known to
+# be slow, raise its timeout or mark it XFAIL with a reason; do not let an
+# unanswered test be silently indistinguishable from a passing one.
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] \
+    || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

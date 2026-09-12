@@ -104,7 +104,15 @@
     "./wasm/*": "./wasm/*",
     "./package.json": "./package.json"
   },
-  "sideEffects": false,
+  "imports": {
+    "#wasm-artifact-module-source": {
+      "browser": "./src/wasm-artifact-module-browser.ts",
+      "default": "./src/wasm-artifact-module-node.ts"
+    }
+  },
+  "sideEffects": [
+    "./src/wasm-artifact-module-node.ts"
+  ],
   "files": [
     "dist",
     "wasm"
@@ -112,7 +120,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsup --dts-only",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "typecheck:dts": "tsup --dts-only",
     "docs": "typedoc",
     "test": "vitest",
     "test:teardown": "vitest run test/teardown-reclaim.test.ts test/pthread.test.ts",

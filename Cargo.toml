@@ -3,9 +3,19 @@ resolver = "2"
 members = [
     "crates/shared",
     "crates/runtime-core",
+    "crates/fork-codec",
+    "crates/dylink",
+    "crates/dylink-module",
+    "crates/fork-module",
+    "crates/fork-module-inject",
     "crates/kernel",
     "crates/fork-instrument",
     "crates/wasm-local-root-spill",
+    "crates/wasi-abi",
+    "crates/wasi-module",
+    "crates/wasm-artifact",
+    "crates/wasm-artifact-module",
+    "crates/host-native",
     "tools/xtask",
 ]
 

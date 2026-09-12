@@ -33,6 +33,8 @@ import {
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { mockKernelSpawnBlobDecode } from "./support/spawn-blob-decode-mock";
+import { createSysvMirrorStub } from "./support/sysv-mirror-stub";
 
 const preparedExecFixture = new Uint8Array(
   readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
@@ -63,6 +65,33 @@ function preparedExecExports(memory: WebAssembly.Memory) {
       return count;
     }),
     kernel_exec_target_cancel: vi.fn(() => 0),
+    // The exec-child fixture is a real Wasm module, never a `#!` script, so
+    // the kernel-owned shebang decode reports "not a script" (0). The four
+    // parameters match the real export's arity the scratch caller enforces.
+    kernel_exec_target_shebang: vi.fn((
+      _ownerPid: number,
+      _target: number,
+      _outPtr: number,
+      _outLen: number,
+    ) => 0),
+    // The kernel judges the artifact policy over the bytes it already holds
+    // for the token. The exec-child fixture is a real, current-ABI module, so
+    // the verdict is "acceptable": a five-byte record whose failure count is
+    // zero. The count is what decides the verdict — the host never infers
+    // acceptance from an empty diagnostic — so a stub returning only a length
+    // without writing the count would read as acceptance by accident rather
+    // than by contract.
+    kernel_exec_target_artifact_policy: vi.fn((
+      _ownerPid: number,
+      _target: number,
+      _expectedAbi: number,
+      outPtr: number,
+      _outLen: number,
+    ) => {
+      new DataView(memory.buffer).setUint32(outPtr, 0, true);
+      new Uint8Array(memory.buffer)[outPtr + 4] = 0;
+      return 5;
+    }),
   };
 }
 
@@ -81,6 +110,8 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
 
     await expect(readPreparedExecTarget(kernel, 7, 11)).resolves.toEqual(
@@ -98,6 +129,86 @@ describe("opaque prepared exec target launch", () => {
       }),
     );
     expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 12);
+  });
+
+  it("retries a transient EAGAIN read and completes without cancelling the token", async () => {
+    vi.useFakeTimers();
+    try {
+      const expected = Uint8Array.from([9, 8, 7]);
+      const cancel = vi.fn(() => 0);
+      let attempts = 0;
+      const kernel: PreparedExecKernel = {
+        execTargetSize: () => BigInt(expected.byteLength),
+        execTargetRead: (_ownerPid, _target, offset, destination) => {
+          attempts += 1;
+          if (attempts <= 2) return -11; // EAGAIN: archive member still fetching
+          const start = Number(offset);
+          destination.set(expected.subarray(start));
+          return expected.byteLength - start;
+        },
+        execTargetCancel: cancel,
+        execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
+      };
+
+      const read = readPreparedExecTarget(kernel, 7, 21);
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(read).resolves.toEqual(expected);
+      expect(attempts).toBe(3);
+      expect(cancel).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws a truthful timeout once EAGAIN persists past the safety cap", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn(() => 0);
+      const kernel: PreparedExecKernel = {
+        execTargetSize: () => 4n,
+        execTargetRead: () => -11, // EAGAIN forever: a hypothetical stuck fetch
+        execTargetCancel: cancel,
+        execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
+      };
+
+      const read = readPreparedExecTarget(kernel, 7, 22);
+      const assertion = expect(read).rejects.toEqual(
+        expect.objectContaining({
+          name: "PreparedExecTargetError",
+          errno: 110, // ETIMEDOUT
+          targetCancelled: true,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(31_000);
+      await assertion;
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 22);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws immediately on a non-EAGAIN negative read without retrying", async () => {
+    const cancel = vi.fn(() => 0);
+    const read = vi.fn(() => -5); // EIO
+    const kernel: PreparedExecKernel = {
+      execTargetSize: () => 4n,
+      execTargetRead: read,
+      execTargetCancel: cancel,
+      execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
+    };
+
+    await expect(readPreparedExecTarget(kernel, 7, 23)).rejects.toEqual(
+      expect.objectContaining({
+        name: "PreparedExecTargetError",
+        errno: 5,
+        targetCancelled: true,
+      }),
+    );
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 23);
   });
 
   it("prepares only the shebang interpreter and keeps diagnosticPath display-only", async () => {
@@ -128,6 +239,13 @@ describe("opaque prepared exec target launch", () => {
         cancelled.push(target);
         return 0;
       },
+      // The kernel owns the `#!` decode: target 31 is the script, target 32
+      // (the resolved interpreter) is a real module, never a nested script.
+      execTargetShebang: (_ownerPid, target) =>
+        target === 31
+          ? { interpreter: "/bin/exact-interpreter", argument: "--flag" }
+          : null,
+      execTargetArtifactPolicy: () => null,
     };
 
     const result = await launchPreparedExecTarget({
@@ -193,6 +311,8 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
     const options = () => ({
       kernel,
@@ -250,6 +370,8 @@ describe("opaque prepared exec target launch", () => {
         return count;
       },
       execTargetCancel: cancel,
+      execTargetShebang: () => null,
+      execTargetArtifactPolicy: () => null,
     };
     const launch = (
       target: number,
@@ -317,6 +439,8 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -384,6 +508,8 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -433,6 +559,8 @@ describe("opaque prepared exec target launch", () => {
           return count;
         },
         execTargetCancel: cancel,
+        execTargetShebang: () => null,
+        execTargetArtifactPolicy: () => null,
       },
       ownerPid: 7,
       pid: 7,
@@ -991,18 +1119,33 @@ describe("exec host-state transition", () => {
     const removeProcess = vi.fn();
     const onSpawn = vi.fn(() => spawned);
     const program = resolvedProgram();
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
         onResolveSpawn: vi.fn(async () => program),
         onSpawn,
       },
-      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
+      kernelMemory,
       kernelInstance: {
         exports: {
           kernel_spawn_process: kernelSpawn,
           kernel_publish_spawn_child: publishSpawnChild,
           kernel_remove_process: removeProcess,
+          // The kernel judges the artifact policy for the spawn's
+          // authoritative target. This candidate is acceptable: failure
+          // count zero.
+          kernel_exec_target_artifact_policy: (
+            _ownerPid: number,
+            _target: number,
+            _expectedAbi: number,
+            outPtr: number,
+            _outLen: number,
+          ) => {
+            new DataView(kernelMemory.buffer).setUint32(outPtr, 0, true);
+            new Uint8Array(kernelMemory.buffer)[outPtr + 4] = 0;
+            return 5;
+          },
         },
       },
     });
@@ -1065,6 +1208,20 @@ describe("exec host-state transition", () => {
         exports: {
           kernel_spawn_process: () => 100,
           kernel_remove_process: vi.fn(),
+          // The kernel judges the artifact policy for the spawn's
+          // authoritative target. This candidate is acceptable: failure
+          // count zero.
+          kernel_exec_target_artifact_policy: (
+            _ownerPid: number,
+            _target: number,
+            _expectedAbi: number,
+            outPtr: number,
+            _outLen: number,
+          ) => {
+            new DataView(kernelMemory.buffer).setUint32(outPtr, 0, true);
+            new Uint8Array(kernelMemory.buffer)[outPtr + 4] = 0;
+            return 5;
+          },
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
             fd === 4 ? 41 : -1,
           kernel_find_listener_fd_by_accept_wake:
@@ -1138,7 +1295,6 @@ describe("exec host-state transition", () => {
     const worker = createWorker({
       processes: new Map([[7, { channels: [oldChannel], memory: oldMemory }]]),
       activeChannels: [oldChannel],
-      usePolling: false,
       relistenBatchSize: 64,
       kernelInstance: {
         exports: { kernel_handle_channel: kernelHandleChannel },
@@ -1541,57 +1697,50 @@ describe("exec host-state transition", () => {
     expect(worker.currentHandlePid).toBe(0);
   });
 
-  it("copies SysV mappings before commit and forgets mirrors after Rust detaches", () => {
+  it("publishes SysV attachments before commit and forgets the mirrors after", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     new Uint8Array(memory.buffer, 0x1000, 4).set([1, 2, 3, 4]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const writeChunk = vi.fn(() => 4);
-    const readChunk = vi.fn((_id: number, _offset: number, outPtr: number, len: number) => {
-      new Uint8Array(kernelMemory.buffer, outPtr, len).fill(0);
-      return len;
-    });
     const detach = vi.fn(() => 0);
+    const sysv = createSysvMirrorStub();
+    sysv.seed(7, 0x1000, { segId: 3, size: 4, readOnly: false });
     const worker = createWorker({
       processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
-      shmMappings: new Map([[7, new Map([
-        [0x1000, {
-          segId: 3,
-          size: 4,
-          readOnly: false,
-          snapshot: new Uint8Array(4),
-          seenVersion: 0,
-        }],
-      ])]]),
-      shmSegmentVersions: new Map([[3, 0]]),
+      sysvActivePidCount: 1,
       currentHandlePid: 0,
       kernelMemory,
       getKernelMem: () => new Uint8Array(kernelMemory.buffer),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
-          kernel_ipc_shm_read_chunk: readChunk,
-          kernel_ipc_shm_write_chunk: writeChunk,
           kernel_ipc_shmdt_for_process: detach,
+          ...sysv.exports,
         },
       },
     });
 
+    // The preflight must force a final publication while the old address
+    // space is still readable, but must not touch attachment identity: a
+    // failed exec has to be able to keep using it.
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
-    expect(writeChunk).toHaveBeenCalledWith(
-      3,
-      0,
-      workerScratchPointer(worker) + CH_DATA,
-      4,
-    );
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_sync_process")).toEqual([
+      { name: "kernel_shared_mapping_sysv_sync_process", args: [7, 1] },
+    ]);
     expect(detach).not.toHaveBeenCalled();
-    expect(worker.shmMappings.has(7)).toBe(true);
+    expect(sysv.count(7)).toBe(1);
 
+    // The Rust exec commit already drained the attachment records, so
+    // finalization forgets the mirror WITHOUT detaching: repeating the detach
+    // would release a different same-segment attachment.
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
+    expect(sysv.callsTo("kernel_shared_mapping_sysv_release_process")).toEqual([
+      { name: "kernel_shared_mapping_sysv_release_process", args: [7, 0, 0] },
+    ]);
     expect(detach).not.toHaveBeenCalled();
-    expect(worker.shmMappings.has(7)).toBe(false);
+    expect(sysv.count(7)).toBe(0);
   });
 
-  it("commits the exact caller and target before pruning closed epoll mirrors", () => {
+  it("commits the exact caller and target before pruning host fd mirrors", () => {
     let ambientPid = 0;
     let committedCaller = 0;
     let committedTarget = 0;
@@ -1614,13 +1763,6 @@ describe("exec host-state transition", () => {
           kernel_fd_is_open: (_pid: number, fd: number) => openFds.has(fd) ? 1 : 0,
         },
       },
-      epollInterests: new Map([
-        ["7:6", [
-          { fd: 8, events: 1, data: 11n },
-          { fd: 9, events: 1, data: 12n },
-        ]],
-        ["7:10", []],
-      ]),
     });
 
     expect(worker.kernelExecCommit(7, 11, 13)).toBe(0);
@@ -1628,10 +1770,6 @@ describe("exec host-state transition", () => {
     expect(committedTarget).toBe(13);
     expect(ambientPid).toBe(7);
     expect(worker.currentHandlePid).toBe(0);
-    expect(worker.epollInterests.get("7:6")).toEqual([
-      { fd: 8, events: 1, data: 11n },
-    ]);
-    expect(worker.epollInterests.has("7:10")).toBe(false);
   });
 
   it("fails loudly when the target-aware commit export is absent", () => {
@@ -1800,12 +1938,6 @@ describe("exec host-state transition", () => {
           },
         ]),
       ),
-      epollInterests: new Map([
-        ["8:4", [{ fd: 6, events: 1, data: 1n }]],
-        ["9:4", [{ fd: 6, events: 1, data: 2n }]],
-        ["10:4", [{ fd: 6, events: 1, data: 3n }]],
-        ["11:4", [{ fd: 6, events: 1, data: 4n }]],
-      ]),
     });
 
     expect(worker.shouldLaunchPendingChild(8)).toBe(false);
@@ -1818,10 +1950,6 @@ describe("exec host-state transition", () => {
     expect(listenerClose.get(9)).not.toHaveBeenCalled();
     expect(listenerClose.get(10)).toHaveBeenCalledOnce();
     expect(listenerClose.get(11)).toHaveBeenCalledOnce();
-    expect(worker.epollInterests.has("8:4")).toBe(false);
-    expect(worker.epollInterests.has("9:4")).toBe(true);
-    expect(worker.epollInterests.has("10:4")).toBe(false);
-    expect(worker.epollInterests.has("11:4")).toBe(false);
     expect(removeProcess).not.toHaveBeenCalled();
   });
 });
@@ -1945,6 +2073,23 @@ function createWorker(overrides: Record<string, unknown>): any {
       return count;
     });
   }
+  if (!("kernel_exec_target_shebang" in exports)) {
+    // The synthetic spawn target is a real Wasm module, never a `#!` script,
+    // so the kernel-owned decode reports "not a script" (0). Four parameters
+    // match the export arity the scratch caller enforces.
+    exports.kernel_exec_target_shebang = vi.fn((
+      _ownerPid: number,
+      _target: number,
+      _outPtr: number,
+      _outLen: number,
+    ) => 0);
+  }
+  if (!("kernel_spawn_blob_decode" in exports)) {
+    // The kernel now owns the SYS_SPAWN blob decode; the host reads back the
+    // argv/envp framing it writes. Use the faithful in-place double so spawn
+    // cases surface the same errno the real kernel would.
+    exports.kernel_spawn_blob_decode = mockKernelSpawnBlobDecode(kernelMemory);
+  }
   if (!("kernel_exec_target_cancel" in exports)) {
     exports.kernel_exec_target_cancel = vi.fn(() => 0);
   }
@@ -1970,6 +2115,9 @@ function createWorker(overrides: Record<string, unknown>): any {
       kernelExports: exports,
       kernelExportNames: [
         "kernel_take_process_timer_cleanup",
+        // `sys_clone` places a pthread's control slot; the harness's default
+        // export answers with a page-aligned address.
+        "kernel_thread_slot_addr",
         ...Object.entries(exports)
           .filter(([, value]) => typeof value === "function")
           .map(([name]) => name),

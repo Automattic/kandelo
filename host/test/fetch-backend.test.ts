@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backend";
 import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
+import { NET_READINESS } from "../src/generated/abi";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -108,15 +109,15 @@ class LoopbackMitmTls implements TlsMitmConnection {
 }
 
 async function waitForReadable(
-  backend: Pick<TlsNetworkBackend, "poll">,
+  backend: Pick<TlsNetworkBackend, "readiness">,
   handle: number,
 ): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
-    if ((backend.poll(handle, 0x0001) & 0x0001) !== 0) return;
+    if ((backend.readiness(handle) & NET_READINESS.RECV_READY) !== 0) return;
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  throw new Error("timed out waiting for readable poll");
+  throw new Error("timed out waiting for readable bytes");
 }
 
 describe("FetchNetworkBackend", () => {
@@ -139,27 +140,14 @@ describe("FetchNetworkBackend", () => {
       expect(addr1).toEqual(addr2);
     });
 
-    it("returns numeric IPv4 literals without synthesizing a DNS address", () => {
-      const backend = new FetchNetworkBackend();
-      expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
-    });
-
-    it("rejects malformed numeric IPv4 literals", () => {
-      const backend = new FetchNetworkBackend();
-      expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
-    });
-
-    it("rejects syntactically invalid DNS names", () => {
+    // Numeric IPv4 literals and DNS syntax are now decided by the kernel, in
+    // `crates/runtime-core/src/hostname.rs` and `sys_getaddrinfo`, so neither
+    // ever reaches this backend. The assertions that were here now live in
+    // `test_getaddrinfo_answers_numeric_addresses_without_the_host` and
+    // `test_getaddrinfo_refuses_names_that_cannot_name_a_host`.
+    it("accepts an absolute name and keeps its synthetic address stable", () => {
       const backend = new FetchNetworkBackend();
       expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
-      expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
     });
 
     it("rejects the reserved invalid zone without rejecting unqualified names", () => {
@@ -209,11 +197,38 @@ describe("FetchNetworkBackend", () => {
     });
   });
 
-  describe("poll", () => {
-    it("reports writable readiness without echoing requested error bits", () => {
+  describe("readiness", () => {
+    it("reports facts only — a fresh connection accepts a write and has nothing to read", () => {
       const backend = new FetchNetworkBackend();
       backend.connect(1, new Uint8Array([93, 184, 216, 34]), 80);
-      expect(backend.poll(1, 0x0004 | 0x0008)).toBe(0x0004);
+      // No `events` argument exists to echo back: this backend can no longer
+      // claim readiness the caller merely asked about. It reports that the
+      // engine will take a write, and nothing else.
+      expect(backend.readiness(1)).toBe(NET_READINESS.SEND_READY);
+    });
+
+    it("reports a completed empty-bodied response as end-of-stream, not hangup", async () => {
+      // A finished HTTP response is EOF on this response, not a dead
+      // connection: the kernel turns RECV_EOF into POLLIN (recv returns 0)
+      // and leaves POLLOUT set for the next keep-alive request. This backend
+      // used to report POLLHUP here, alongside an unconditional POLLOUT —
+      // a pair POSIX calls mutually exclusive.
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("hi")));
+      const backend = new FetchNetworkBackend();
+      const addr = backend.getaddrinfo("example.com");
+      backend.connect(1, addr, 80);
+      backend.send(
+        1,
+        new TextEncoder().encode("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+        0,
+      );
+      await waitForReadable(backend, 1);
+      while (backend.recv(1, 4096, 0).length > 0) { /* drain */ }
+
+      const facts = backend.readiness(1);
+      expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+      expect(facts & NET_READINESS.HANGUP).toBe(0);
+      expect(facts & NET_READINESS.SEND_READY).toBe(NET_READINESS.SEND_READY);
     });
   });
 
@@ -291,6 +306,42 @@ describe("FetchNetworkBackend", () => {
     ]);
   });
 
+  // The plain-HTTP and TLS-MITM backends each carried their own
+  // `formatHttpResponse`, and only the TLS one suppressed the upstream
+  // `Content-Length` before appending the length it computes for the decoded
+  // body. `fetch()` has already undone `Content-Encoding`, so the two values
+  // disagree whenever the origin compressed the response, and RFC 9110 §8.6
+  // makes conflicting `Content-Length` field lines unrecoverable. Both
+  // backends now share `http1.ts`.
+  it("emits exactly one Content-Length when the origin sent its own", async () => {
+    const body = "compressed-then-decoded";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(body, {
+        headers: {
+          // The encoded length an origin would report for a gzipped body —
+          // deliberately not the decoded length this response actually carries.
+          "Content-Length": "11",
+          "Content-Type": "text/plain",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const backend = new FetchNetworkBackend();
+    const addr = backend.getaddrinfo("example.com");
+    backend.connect(1, addr, 80);
+    sendGet(backend, 1, "/gzipped");
+
+    const raw = decoder.decode(await recvWhenReady(backend, 1));
+    const contentLengths = raw
+      .split("\r\n")
+      .filter((line) => line.toLowerCase().startsWith("content-length:"));
+    expect(contentLengths).toEqual([`Content-Length: ${body.length}`]);
+    // The upstream headers ARE forwarded — `content-type` proves it — so under
+    // the old formatter the origin's `content-length: 11` would have been
+    // forwarded alongside the computed `Content-Length: 23`.
+    expect(raw.toLowerCase()).toContain("content-type: text/plain");
+  });
+
   it("projects only the fallback Fetch after a direct Fetch failure", async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError("CORS blocked"))
@@ -333,27 +384,14 @@ describe("FetchNetworkBackend", () => {
 
 describe("TlsNetworkBackend HTTP proxy path", () => {
   describe("getaddrinfo", () => {
-    it("returns numeric IPv4 literals without synthesizing a DNS address", () => {
-      const backend = new TlsNetworkBackend();
-      expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
-      expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
-    });
-
-    it("rejects malformed numeric IPv4 literals", () => {
-      const backend = new TlsNetworkBackend();
-      expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
-    });
-
-    it("rejects syntactically invalid DNS names", () => {
+    // Numeric IPv4 literals and DNS syntax are now decided by the kernel, in
+    // `crates/runtime-core/src/hostname.rs` and `sys_getaddrinfo`, so neither
+    // ever reaches this backend. The assertions that were here now live in
+    // `test_getaddrinfo_answers_numeric_addresses_without_the_host` and
+    // `test_getaddrinfo_refuses_names_that_cannot_name_a_host`.
+    it("accepts an absolute name and keeps its synthetic address stable", () => {
       const backend = new TlsNetworkBackend();
       expect(backend.getaddrinfo("example.com.")).toHaveLength(4);
-      expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
-      expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
     });
 
     it("rejects special-use invalid but permits potentially resolvable unqualified names", () => {
@@ -617,7 +655,8 @@ describe("TlsNetworkBackend TLS MITM path", () => {
 
     await waitForReadable(backend, 1);
     const peeked = backend.recv(1, 8, MSG_PEEK);
-    expect(backend.poll(1, 0x0001) & 0x0001).toBe(0x0001);
+    expect(backend.readiness(1) & NET_READINESS.RECV_READY)
+      .toBe(NET_READINESS.RECV_READY);
     const consumed = backend.recv(1, 8, 0);
     expect(peeked).toEqual(consumed);
     const response = decoder.decode(

@@ -1,0 +1,9 @@
+<!doctype html><meta charset=utf-8><title>K0c epoll probe (worker)</title>
+<body><pre id=out>running…</pre><script type="module">
+window.__done = new Promise((resolve) => {
+  const w = new Worker('./kernel-worker-probe.js', { type: 'module' });
+  w.onmessage = (e) => { document.getElementById('out').textContent = JSON.stringify(e.data, null, 1); resolve({ crossOriginIsolated: self.crossOriginIsolated, ...e.data }); };
+  w.onerror = (e) => resolve({ workerError: e.message });
+  w.postMessage('go');
+});
+</script></body>

@@ -21,11 +21,37 @@ export function browserRepositoryAliases(repoRoot) {
  */
 export const browserKernelModuleSpecifier = "@kernel-wasm";
 export const browserRootfsModuleSpecifier = "@rootfs-vfs";
+// Phase 6 D5: the co-resident wasm32 fork-module, supplied as URL bytes so the
+// kernel host can ship it to process workers behind WASM_POSIX_FORK_MODULE.
+export const browserForkModule32ModuleSpecifier = "@fork-module32-wasm";
+// The co-resident wasm32 WASI module, supplied as URL bytes so the kernel host
+// can ship it to process workers. Unlike the fork-module this is not behind a
+// demo opt-in: it IS the browser's WASI Preview 1 support, so a browser build
+// that cannot supply it cannot run a WASI guest at all.
+export const browserWasiModule32ModuleSpecifier = "@wasi-module32-wasm";
+// The standalone dynamic-linking planner (`crates/dylink-module`), supplied as
+// URL bytes so the kernel host can ship it to every process worker. wasm32 only:
+// the planner is not compiled per pointer width, it carries the process's width
+// in its configuration record.
+export const browserDylinkModule32ModuleSpecifier = "@dylink-module32-wasm";
+// The standalone WebAssembly artifact reader (`crates/wasm-artifact-module`),
+// supplied as URL bytes. wasm32 only: the reader answers questions ABOUT an
+// artifact's data model rather than sharing it, so one module serves wasm32 and
+// wasm64 artifacts alike. Unlike the three above this is not optional for any
+// browser build -- every host validates an artifact before running it, and the
+// kernel host reads the kernel's own pointer width through this module BEFORE
+// the kernel is compiled.
+export const browserWasmArtifactModule32ModuleSpecifier =
+  "@wasm-artifact-module32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
 
 export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",
+  [browserForkModule32ModuleSpecifier]: "fork-module32-wasm",
+  [browserWasiModule32ModuleSpecifier]: "wasi-module32-wasm",
+  [browserDylinkModule32ModuleSpecifier]: "dylink-module32-wasm",
+  [browserWasmArtifactModule32ModuleSpecifier]: "wasm-artifact-module32-wasm",
   [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

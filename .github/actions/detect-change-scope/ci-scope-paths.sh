@@ -74,7 +74,6 @@ binary_materialization_changed_files() {
     -e '^scripts/(activate-local-shell-build-override|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
     -e '^scripts/resolve-binary\.(ts|bundle\.mjs|bundle\.LICENSES\.txt)$' \
-    -e '^scripts/vfs-has-stale-abi\.mjs$' \
     -e '^host/src/binary-resolver\.ts$' \
     -e '^tests/package-system/' \
     || true

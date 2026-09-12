@@ -1,3 +1,6 @@
+import {
+  ENOENT,
+} from "../../../host/src/vfs/vfs-errors";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -27,7 +30,6 @@ import { loadVfsProductCatalog } from "../../../scripts/vfs-product-catalog.mjs"
 import {
   MemoryFileSystem,
 } from "../../../host/src/vfs/memory-fs";
-import { ENOENT } from "../../../host/src/vfs/sharedfs-vendor";
 import {
   parseTarBytes,
   parseTarGzip,

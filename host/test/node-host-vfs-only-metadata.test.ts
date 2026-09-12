@@ -21,9 +21,30 @@ import {
 } from "../src/vfs/host-fs";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { NodeTimeProvider } from "../src/vfs/time";
-import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
+import type { MountSpec } from "../src/vfs/default-mounts";
 import { resolveForNode } from "../src/vfs/default-mounts-node";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+// This suite exercises the host-owned scratch-mount machinery (HostFileSystem,
+// VirtualPlatformIO metadata, and the Node resolver's scratch-backend creation)
+// directly. The in-kernel tmpfs owns its scratch prefixes unconditionally, so
+// the resolver always drops them; the one resolver case below uses a spec of
+// non-tmpfs scratch paths to exercise the surviving materialisation machinery.
+const HOST_SCRATCH_MOUNT_SPEC: MountSpec[] = [
+  { path: "/", source: "image", readonly: false },
+  { path: "/run", source: "scratch", mode: 0o1777, nosuid: true },
+  { path: "/var/spool", source: "scratch", mode: 0o1777, nosuid: true },
+  { path: "/var/cache", source: "scratch", mode: 0o755, nosuid: true },
+  {
+    path: "/home/dev",
+    source: "scratch",
+    mode: 0o755,
+    uid: 1000,
+    gid: 1000,
+    nosuid: true,
+  },
+  { path: "/opt/admin", source: "scratch", mode: 0o700, uid: 0, gid: 0, nosuid: true },
+];
+
 
 const O_RDWR = 0o2;
 const O_CREAT = 0o100;
@@ -53,7 +74,6 @@ interface MetadataBackend {
   fchown(handle: number, uid: number, gid: number): void;
   ftruncate(handle: number, length: number): void;
   mkdir(path: string, mode: number): void;
-  access(path: string, mode: number): void;
   link(existingPath: string, newPath: string): void;
   rename(oldPath: string, newPath: string): void;
   unlink(path: string): void;
@@ -508,25 +528,6 @@ describe.each(backendFactories)("%s", (_name, makeCase) => {
     expectNativeMetadataUnchanged(native, before);
   });
 
-  it("answers access from VFS mode metadata instead of native mode", () => {
-    const c = makeCase();
-    const native = c.nativePath("access-file");
-    writeFileSync(native, "data");
-    chmodSync(native, 0o777);
-    const before = statSync(native);
-
-    c.backend.chmod(c.vfsPath("access-file"), 0o000);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0)).not.toThrow();
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o4)).toThrow(/EACCES/);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o2)).toThrow(/EACCES/);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o1)).toThrow(/EACCES/);
-    expectNativeMetadataUnchanged(native, before);
-
-    c.backend.chmod(c.vfsPath("access-file"), 0o400);
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o4)).not.toThrow();
-    expect(() => c.backend.access(c.vfsPath("access-file"), 0o2)).toThrow(/EACCES/);
-  });
-
   it("shares virtual metadata across hard links without changing native metadata", () => {
     const c = makeCase();
     const source = c.nativePath("source");
@@ -681,34 +682,14 @@ describe("VirtualPlatformIO on Node host mounts", () => {
     expectNativeMetadataUnchanged(native, before);
   });
 
-  it("routes access through VFS metadata", () => {
-    const root = makeTempRoot("wasm-posix-virtual-platform-access-");
-    const native = join(root, "access-file");
-    writeFileSync(native, "data");
-    chmodSync(native, 0o777);
-    const before = statSync(native);
-
-    const io = new VirtualPlatformIO(
-      [{ mountPoint: "/", backend: new HostFileSystem(root) }],
-      new NodeTimeProvider(),
-    );
-    io.chmod("/access-file", 0o000);
-
-    expect(() => io.access("/access-file", 0)).not.toThrow();
-    expect(() => io.access("/access-file", 0o4)).toThrow(/EACCES/);
-    expect(() => io.access("/access-file", 0o2)).toThrow(/EACCES/);
-    expect(() => io.access("/access-file", 0o1)).toThrow(/EACCES/);
-    expectNativeMetadataUnchanged(native, before);
-  });
-
-  it("applies every default Node scratch mount mode virtually", async () => {
+  it("applies every Node scratch mount mode virtually", async () => {
     const sessionDir = makeTempRoot("wasm-posix-default-node-vfs-only-");
     const image = await buildEmptyImage();
     const mounts = await withUmaskAsync(0, () =>
-      resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir)
+      resolveForNode(HOST_SCRATCH_MOUNT_SPEC, image, sessionDir)
     );
 
-    for (const spec of DEFAULT_MOUNT_SPEC) {
+    for (const spec of HOST_SCRATCH_MOUNT_SPEC) {
       if (spec.source !== "scratch" || spec.mode === undefined) continue;
       const mount = mounts.find((m) => m.mountPoint === spec.path);
       expect(mount, `missing mount ${spec.path}`).toBeDefined();

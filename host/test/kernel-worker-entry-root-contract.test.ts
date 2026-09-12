@@ -172,6 +172,49 @@ function auditEntrySource(sourceText: string, fileName: string): Finding[] {
   return findings;
 }
 
+/**
+ * The callback names `processLifecycleKernelCallbacks()` returns.
+ *
+ * Both entries spread that one record, so the parity this file asserts is
+ * now structurally guaranteed for the shared half — which is stronger than
+ * comparing two hand-written copies. What is still worth asserting is that
+ * the record reaching the kernel is complete, and that each entry actually
+ * takes it.
+ */
+function sharedLifecycleCallbackNames(): string[] {
+  const url = new URL("../src/process-lifecycle.ts", import.meta.url);
+  const source = ts.createSourceFile(
+    url.pathname,
+    readFileSync(url, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const names: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isFunctionDeclaration(node)
+      && node.name?.text === "processLifecycleKernelCallbacks"
+    ) {
+      const ret = node.body?.statements.find(ts.isReturnStatement);
+      const literal = ret?.expression;
+      if (literal !== undefined && ts.isObjectLiteralExpression(literal)) {
+        for (const property of literal.properties) {
+          const name = property.name;
+          if (name !== undefined && ts.isIdentifier(name)) names.push(name.text);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(
+    names,
+    "process-lifecycle.ts must declare processLifecycleKernelCallbacks",
+  ).not.toHaveLength(0);
+  return names;
+}
+
 function kernelCallbackNames(sourceText: string, fileName: string): string[] {
   const source = ts.createSourceFile(
     fileName,
@@ -191,6 +234,19 @@ function kernelCallbackNames(sourceText: string, fileName: string): string[] {
       const callbacks = node.arguments?.[2];
       if (callbacks !== undefined && ts.isObjectLiteralExpression(callbacks)) {
         callbackSets.push(callbacks.properties.flatMap((property) => {
+          // The process-lifecycle callbacks are one record now, spread in by
+          // both entries. Resolve the spread to the names that record
+          // actually declares, so this stays a check on which callbacks reach
+          // the kernel rather than on where they are typed.
+          if (
+            ts.isSpreadAssignment(property)
+            && ts.isCallExpression(property.expression)
+            && ts.isIdentifier(property.expression.expression)
+            && property.expression.expression.text
+              === "processLifecycleKernelCallbacks"
+          ) {
+            return sharedLifecycleCallbackNames();
+          }
           if (
             !ts.isPropertyAssignment(property)
             && !ts.isShorthandPropertyAssignment(property)
@@ -242,5 +298,14 @@ describe("kernel worker entry-root authority contract", () => {
 
     expect(callbackSets[0]).toEqual([...REQUIRED_KERNEL_CALLBACKS]);
     expect(callbackSets[1]).toEqual(callbackSets[0]);
+
+    // Sharing the record must not read as an entry losing its wiring.
+    for (const relativePath of ENTRY_SOURCES) {
+      const url = new URL(relativePath, import.meta.url);
+      expect(
+        readFileSync(url, "utf8"),
+        `${relativePath} must spread the shared callback record`,
+      ).toContain("...processLifecycleKernelCallbacks(),");
+    }
   });
 });

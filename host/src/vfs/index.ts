@@ -79,7 +79,6 @@ export type {
   TarHardlinkEntry,
   TarSymlinkEntry,
 } from "./tar";
-export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
@@ -92,14 +91,10 @@ export type {
   DirEntry,
 } from "./types";
 export { PATHCONF_NAMES } from "../generated/abi";
-export { filesystemPathconf } from "../pathconf";
+export { backendPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";
 export type { PathconfValue } from "../types";
-export {
-  DEFAULT_MOUNT_SPEC,
-  ensureMountParentDirectories,
-  resolveForBrowser,
-} from "./default-mounts";
+export { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "./default-mounts";
 export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
 export { resolveForNode } from "./default-mounts-node";
 export { overlayEtcFromRootfs } from "./rootfs-overlay";

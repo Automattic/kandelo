@@ -1,4 +1,4 @@
-import { concatUint8Arrays } from '../shims';
+import { concatUint8Arrays, toCryptoBufferSource } from '../shims';
 
 import { ServerNameExtension } from '../extensions/0_server_name';
 import { ECPointFormatsExtension } from '../extensions/11_ec_point_formats';
@@ -351,7 +351,9 @@ export class TLS_1_2_Connection {
 			serverPrivateKey: ecdheKeyPair.privateKey,
 			clientPublicKey: await crypto.subtle.importKey(
 				'raw',
-				clientKeyExchangeRecord.body.exchange_keys,
+				toCryptoBufferSource(
+					clientKeyExchangeRecord.body.exchange_keys
+				),
 				{ name: 'ECDH', namedCurve: 'P-256' },
 				false,
 				[]
@@ -414,7 +416,9 @@ export class TLS_1_2_Connection {
 			const sessionHash = new Uint8Array(
 				await crypto.subtle.digest(
 					'SHA-256',
-					concatUint8Arrays(this.handshakeMessages)
+					toCryptoBufferSource(
+						concatUint8Arrays(this.handshakeMessages)
+					)
 				)
 			);
 			masterSecret = new Uint8Array(
@@ -454,14 +458,14 @@ export class TLS_1_2_Connection {
 			masterSecret,
 			clientWriteKey: await crypto.subtle.importKey(
 				'raw',
-				clientWriteKey,
+				toCryptoBufferSource(clientWriteKey),
 				{ name: 'AES-GCM' },
 				false,
 				['encrypt', 'decrypt']
 			),
 			serverWriteKey: await crypto.subtle.importKey(
 				'raw',
-				serverWriteKey,
+				toCryptoBufferSource(serverWriteKey),
 				{ name: 'AES-GCM' },
 				false,
 				['encrypt', 'decrypt']
@@ -773,7 +777,7 @@ export class TLS_1_2_Connection {
 				tagLength: 128,
 			},
 			this.sessionKeys!.serverWriteKey,
-			payload
+			toCryptoBufferSource(payload)
 		);
 		++this.sentRecordSequenceNumber;
 
@@ -1315,7 +1319,7 @@ class MessageEncoder {
 		// Step 1: Compute the hash of the handshake messages
 		const handshakeHash = await crypto.subtle.digest(
 			'SHA-256',
-			concatUint8Arrays(handshakeMessages)
+			toCryptoBufferSource(concatUint8Arrays(handshakeMessages))
 		);
 
 		// Step 2: Compute the verify_data using the PRF

@@ -42,10 +42,6 @@ interface TestTcpListener {
 
 interface ExecWorkerState {
   currentHandlePid: number;
-  epollInterests: Map<
-    string,
-    Array<{ fd: number; events: number; data: bigint }>
-  >;
   tcpListenerTargets: Map<
     number,
     Array<{ pid: number; fd: number; acceptWakeIdx?: number }>
@@ -292,7 +288,6 @@ describe("kernel exec entry authority", () => {
   it("publishes a complete mirror plan before closing host listeners", () => {
     const observations: Array<{
       readonly phase: string;
-      readonly epollPresent: boolean;
       readonly targetsPresent: boolean;
       readonly listenerPresent: boolean;
       readonly virtualKeyPresent: boolean;
@@ -301,7 +296,6 @@ describe("kernel exec entry authority", () => {
     const observe = (phase: string, state: ExecWorkerState): void => {
       observations.push({
         phase,
-        epollPresent: state.epollInterests.has("7:6"),
         targetsPresent: state.tcpListenerTargets.has(8080),
         listenerPresent: state.tcpListeners.has("7:4"),
         virtualKeyPresent: state.tcpVirtualListenerKeys.has(8080),
@@ -346,9 +340,6 @@ describe("kernel exec entry authority", () => {
     registerExecCaller(harness);
     state = execState(harness.worker);
     state.currentHandlePid = 0;
-    state.epollInterests = new Map([
-      ["7:6", [{ fd: 9, events: 1, data: 11n }]],
-    ]);
     state.tcpListenerTargets = new Map([
       [8080, [{ pid: 7, fd: 4, acceptWakeIdx: 41 }]],
     ]);
@@ -368,7 +359,6 @@ describe("kernel exec entry authority", () => {
     expect(observations).toEqual([
       {
         phase: "wake drain",
-        epollPresent: true,
         targetsPresent: true,
         listenerPresent: true,
         virtualKeyPresent: true,
@@ -376,7 +366,6 @@ describe("kernel exec entry authority", () => {
       },
       {
         phase: "wake drain",
-        epollPresent: true,
         targetsPresent: true,
         listenerPresent: true,
         virtualKeyPresent: true,
@@ -384,7 +373,6 @@ describe("kernel exec entry authority", () => {
       },
       {
         phase: "virtual close",
-        epollPresent: false,
         targetsPresent: false,
         listenerPresent: false,
         virtualKeyPresent: false,
@@ -392,7 +380,6 @@ describe("kernel exec entry authority", () => {
       },
       {
         phase: "server close",
-        epollPresent: false,
         targetsPresent: false,
         listenerPresent: false,
         virtualKeyPresent: false,
@@ -415,11 +402,13 @@ describe("kernel exec entry authority", () => {
       kernel_vblank: () => 0,
     });
     const state = execState(harness.worker);
-    const interests = [{ fd: 9, events: 1, data: 11n }];
-    state.epollInterests = new Map([["7:6", interests]]);
+    const targets = [{ pid: 7, fd: 4, acceptWakeIdx: 41 }];
+    state.tcpListenerTargets = new Map([[8080, targets]]);
 
     expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(-5);
-    expect(state.epollInterests.get("7:6")).toBe(interests);
+    // The identity check is the point: a failed commit must not publish a
+    // rebuilt mirror, not merely leave one with equal contents.
+    expect(state.tcpListenerTargets.get(8080)).toBe(targets);
     expect(fdIsOpen).not.toHaveBeenCalled();
   });
 });

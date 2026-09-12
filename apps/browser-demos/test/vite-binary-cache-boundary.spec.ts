@@ -96,35 +96,40 @@ function writeSourceOnlyViteFixture(
 
   const manifestSha256 = "1".repeat(64);
   const cacheKeySha256 = "2".repeat(64);
-  const authority = {
-    format: "kandelo-source-only-program-projection-v1",
-    projection: {
-      format: "kandelo-program-packages-v2",
-      identities: {
-        [packageName]: {
-          manifestSha256,
-          cacheKeys: {
-            wasm32: cacheKeySha256,
-            wasm64: "3".repeat(64),
-          },
-        },
-      },
-      packages: {
-        [packageName]: {
-          manifestSha256,
-          arches: ["wasm32"],
-          cacheKeys: { wasm32: cacheKeySha256 },
-          dependencyClosures: { wasm32: [] },
-          members: [{
-            kind: "output",
-            sourceArtifact,
-            mirrorPath: sourceArtifact,
-            outputName: packageName,
-            forkInstrumentation: "disabled",
-          }],
+  const projection = {
+    format: "kandelo-program-packages-v2",
+    identities: {
+      [packageName]: {
+        manifestSha256,
+        cacheKeys: {
+          wasm32: cacheKeySha256,
+          wasm64: "3".repeat(64),
         },
       },
     },
+    packages: {
+      [packageName]: {
+        manifestSha256,
+        arches: ["wasm32"],
+        cacheKeys: { wasm32: cacheKeySha256 },
+        dependencyClosures: { wasm32: [] },
+        members: [{
+          kind: "output",
+          sourceArtifact,
+          mirrorPath: sourceArtifact,
+          outputName: packageName,
+          forkInstrumentation: "disabled",
+        }],
+      },
+    },
+  };
+  const authority = {
+    format: "kandelo-source-only-program-projection-v1",
+    projection,
+    // This case runs under the `source-only-v1` policy, which never reaches
+    // the tier-identity comparison in `pinSourceOnlyTierClosure`. The field is
+    // required by the parser, so record the same package set.
+    selectionProjection: projection,
     graphAuthoritySha256: "4".repeat(64),
     nodes: [{
       node: { kind: "package", name: packageName, targetArch: "wasm32" },

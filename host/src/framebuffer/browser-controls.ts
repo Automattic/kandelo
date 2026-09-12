@@ -111,9 +111,6 @@ export interface AudioOutputHandle {
 
 export const DEFAULT_POINTER_LOCK_MOUSE_SENSITIVITY = 4;
 
-const MIN_MOUSE_DELTA = -128;
-const MAX_MOUSE_DELTA = 127;
-
 /**
  * DOM KeyboardEvent.code -> Linux input keycode.
  *
@@ -523,27 +520,11 @@ export function scalePointerLockMouseDelta(
 
   return {
     dx: movementX * scaleX * sensitivity,
-    // Browser coordinates are positive-down; PS/2 is positive-up.
-    dy: -movementY * scaleY * sensitivity,
+    // Screen sense throughout: positive is down, as the browser reports it.
+    // `crates/runtime-core/src/mouse.rs` inverts to the PS/2 sense when it
+    // builds the packet, because the packet's sign bits are its to own.
+    dy: movementY * scaleY * sensitivity,
   };
-}
-
-export function injectChunkedMouseMotion(
-  sink: MouseEventSink,
-  dx: number,
-  dy: number,
-  buttons: number,
-): void {
-  let remainingX = finiteTrunc(dx);
-  let remainingY = finiteTrunc(dy);
-
-  while (remainingX !== 0 || remainingY !== 0) {
-    const stepX = clamp(remainingX, MIN_MOUSE_DELTA, MAX_MOUSE_DELTA);
-    const stepY = clamp(remainingY, MIN_MOUSE_DELTA, MAX_MOUSE_DELTA);
-    sink.injectMouseEvent(stepX, stepY, buttons & 0x07);
-    remainingX -= stepX;
-    remainingY -= stepY;
-  }
 }
 
 export function attachPointerLockMouse(
@@ -618,7 +599,10 @@ export function attachPointerLockMouse(
     fractionalX -= dx;
     fractionalY -= dy;
     if (dx === 0 && dy === 0) return;
-    injectChunkedMouseMotion(sink, dx, dy, buttons);
+    // The kernel's PS/2 device model splits a displacement wider than one
+    // packet across consecutive packets (`crates/runtime-core/src/mouse.rs`).
+    // Pass the whole delta and let it do that.
+    sink.injectMouseEvent(dx, dy, buttons);
   };
 
   const onMouseDown = (e: MouseEvent) => {
@@ -717,10 +701,6 @@ export function createPcmAudioScheduler(
     close: () => {},
     getState: () => "unavailable",
   };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function finiteTrunc(value: number): number {

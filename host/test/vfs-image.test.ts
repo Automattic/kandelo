@@ -94,7 +94,14 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
   const lazyJson = new TextEncoder().encode(JSON.stringify(entries));
   const legacy = new Uint8Array(lazyOffset + 4 + lazyJson.byteLength);
   legacy.set(image.subarray(0, lazyOffset));
-  new DataView(legacy.buffer).setUint32(lazyOffset, lazyJson.byteLength, true);
+  const legacyView = new DataView(legacy.buffer);
+  // Truncating at the lazy section drops the archive, metadata and kernel-lazy
+  // (KLZY) sections, so the header must stop claiming them. Leaving the flags
+  // set would not be a legacy image at all — it would be a CORRUPT current
+  // one, whose header promises sections the bytes do not contain.
+  // Bit 0 is the lazy-file section, the only one these bytes still carry.
+  legacyView.setUint32(8, legacyView.getUint32(8, true) & 0b1, true);
+  legacyView.setUint32(lazyOffset, lazyJson.byteLength, true);
   legacy.set(lazyJson, lazyOffset + 4);
   return legacy;
 }

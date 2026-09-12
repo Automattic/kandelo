@@ -141,6 +141,166 @@ pub fn host_handle_ref_count(h: i64) -> u32 {
     get_host_handle_refs().get(&h).copied().unwrap_or(0)
 }
 
+
+// ---------------------------------------------------------------------------
+// Mapping-held ownership of a host file handle
+// ---------------------------------------------------------------------------
+//
+// POSIX keeps a `MAP_SHARED` mapping alive across `close(2)` of the descriptor
+// that created it: "The mmap() function adds an extra reference to the file
+// associated with the file descriptor fildes which is not removed by a
+// subsequent close() on that file descriptor." A backing of a host-owned
+// regular file reads and writes the file through the stable host handle the
+// descriptor supplied, so the kernel must not hand that handle back to
+// `host_close` while a backing still holds it.
+//
+// `HOST_HANDLE_REFS` above cannot express this. It counts *processes* holding
+// a descriptor, and reaching zero there is exactly the moment a single-process
+// mapping still needs the handle. The mapping reference is therefore a second,
+// independent count, and the two compose in the only order that is correct:
+//
+// - the descriptor lifetime ends normally — locks are released, the OFD is
+//   freed, the fd number is reusable, `close(2)` returns success — and only
+//   the *physical* close is withheld and marked owed;
+// - the last mapping reference then drops and performs the owed close.
+//
+// Withholding the close inside `HOST_HANDLE_REFS` instead would also withhold
+// `release_final_ofd_locks`, leaving an F_OFD_SETLK record alive for as long
+// as the mapping, which POSIX does not permit.
+//
+// The kernel owning this is what makes it a *kernel* reference rather than a
+// host capability: no import is added, and the host's own
+// `retainedHostFileHandles` deferral becomes deletable with the rest of the
+// TypeScript mapping subsystem.
+
+struct MappingHeldHandles(UnsafeCell<Option<BTreeMap<i64, MappingHold>>>);
+unsafe impl Sync for MappingHeldHandles {}
+
+static MAPPING_HELD_HANDLES: MappingHeldHandles = MappingHeldHandles(UnsafeCell::new(None));
+
+#[derive(Debug, Default, Clone, Copy)]
+struct MappingHold {
+    /// Live backings holding this handle.
+    mapping_refs: u32,
+    /// The descriptor lifetime ended while a backing still held the handle, so
+    /// the physical close is owed to whoever drops the last mapping reference.
+    descriptor_close_pending: bool,
+}
+
+fn get_mapping_held_handles() -> &'static mut BTreeMap<i64, MappingHold> {
+    let opt = unsafe { &mut *MAPPING_HELD_HANDLES.0.get() };
+    opt.get_or_insert_with(BTreeMap::new)
+}
+
+/// What the caller must do after dropping one mapping reference.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum MappingHandleRelease {
+    /// The handle was not held by any mapping. Releasing one is a caller bug,
+    /// not a recoverable condition, so it is reported rather than ignored.
+    NotHeld,
+    /// Another backing still holds the handle.
+    StillHeld,
+    /// This was the last mapping reference and no descriptor close is owed:
+    /// the handle is still a live descriptor somewhere.
+    Released,
+    /// This was the last mapping reference and the descriptor lifetime already
+    /// ended. The caller owes the deferred `host_close`.
+    CloseNow,
+}
+
+/// Take one mapping-held reference to a live host file handle.
+///
+/// Fails rather than succeeding quietly in the two cases where a success would
+/// hand the caller a handle it cannot rely on:
+///
+/// - a negative handle is a kernel-owned backing (tmpfs, memfd, rootfs overlay,
+///   procfs, synthetic regular), which has no host handle to keep alive and
+///   rides the fd-writeback bridge instead;
+/// - a handle whose descriptor close is already owed is closed as far as the
+///   rest of the machine is concerned; only the pending physical close remains,
+///   and the number is free to be reissued by the backend at any moment.
+pub fn retain_mapping_host_handle(handle: i64) -> Result<(), Errno> {
+    if handle < 0 {
+        return Err(Errno::EBADF);
+    }
+    let held = get_mapping_held_handles();
+    let entry = held.entry(handle).or_default();
+    if entry.descriptor_close_pending {
+        return Err(Errno::EBADF);
+    }
+    entry.mapping_refs += 1;
+    Ok(())
+}
+
+/// Drop one mapping-held reference.
+pub fn release_mapping_host_handle(handle: i64) -> MappingHandleRelease {
+    let held = get_mapping_held_handles();
+    let Some(entry) = held.get_mut(&handle) else {
+        return MappingHandleRelease::NotHeld;
+    };
+    if entry.mapping_refs == 0 {
+        // Only a pending-close placeholder can reach zero while still present,
+        // and `retain_mapping_host_handle` refuses those, so nothing should
+        // hold a reference to count down.
+        return MappingHandleRelease::NotHeld;
+    }
+    entry.mapping_refs -= 1;
+    if entry.mapping_refs > 0 {
+        return MappingHandleRelease::StillHeld;
+    }
+    let close_pending = entry.descriptor_close_pending;
+    held.remove(&handle);
+    if close_pending {
+        MappingHandleRelease::CloseNow
+    } else {
+        MappingHandleRelease::Released
+    }
+}
+
+/// Record that a descriptor lifetime ended, and report whether the physical
+/// close must be withheld because a mapping still holds the handle.
+///
+/// Returns `true` when the close is now owed to the last mapping reference and
+/// the caller must NOT close the handle itself.
+pub fn host_close_deferred_by_mapping(handle: i64) -> bool {
+    if handle < 0 {
+        return false;
+    }
+    let held = get_mapping_held_handles();
+    let Some(entry) = held.get_mut(&handle) else {
+        return false;
+    };
+    if entry.mapping_refs == 0 {
+        return false;
+    }
+    entry.descriptor_close_pending = true;
+    true
+}
+
+/// Live mapping references on a host handle. Zero for a handle no mapping
+/// holds.
+pub fn mapping_host_handle_refs(handle: i64) -> u32 {
+    get_mapping_held_handles()
+        .get(&handle)
+        .map(|entry| entry.mapping_refs)
+        .unwrap_or(0)
+}
+
+/// Whether a physical `host_close` is owed to the last mapping reference.
+#[cfg(test)]
+pub fn mapping_host_handle_close_pending(handle: i64) -> bool {
+    get_mapping_held_handles()
+        .get(&handle)
+        .is_some_and(|entry| entry.descriptor_close_pending)
+}
+
+/// Forget every mapping-held reference. Tests only: the table is machine-wide
+/// state and case isolation needs an explicit reset.
+#[cfg(test)]
+pub fn reset_mapping_held_handles_for_test() {
+    get_mapping_held_handles().clear();
+}
+
 /// The set of flags that F_SETFL is allowed to modify (POSIX semantics).
 const SETFL_MODIFIABLE: u32 = O_APPEND | O_NONBLOCK;
 
@@ -776,6 +936,74 @@ impl OfdTable {
 mod tests {
     use super::*;
     use wasm_posix_shared::flags::*;
+
+
+    // -- mapping-held host-handle retention ------------------------------
+
+    #[test]
+    fn mapping_refs_accumulate_and_only_the_last_owes_the_close() {
+        reset_mapping_held_handles_for_test();
+        retain_mapping_host_handle(7).unwrap();
+        retain_mapping_host_handle(7).unwrap();
+        assert_eq!(mapping_host_handle_refs(7), 2);
+
+        assert!(host_close_deferred_by_mapping(7));
+        assert!(mapping_host_handle_close_pending(7));
+
+        assert_eq!(release_mapping_host_handle(7), MappingHandleRelease::StillHeld);
+        assert_eq!(release_mapping_host_handle(7), MappingHandleRelease::CloseNow);
+        assert_eq!(mapping_host_handle_refs(7), 0);
+    }
+
+    #[test]
+    fn a_handle_no_mapping_holds_is_closed_by_its_descriptor() {
+        reset_mapping_held_handles_for_test();
+        assert!(!host_close_deferred_by_mapping(7));
+        assert_eq!(release_mapping_host_handle(7), MappingHandleRelease::NotHeld);
+    }
+
+    /// A kernel-owned backing (tmpfs, memfd, rootfs overlay, procfs, synthetic
+    /// regular) is addressed by a negative handle and has no host handle to
+    /// keep alive; it rides the fd-writeback bridge instead. Retaining one is a
+    /// caller bug and must say so rather than book a reference against a
+    /// number `host_close` would never be given.
+    #[test]
+    fn retaining_a_kernel_owned_backing_is_refused() {
+        reset_mapping_held_handles_for_test();
+        assert_eq!(retain_mapping_host_handle(-3), Err(Errno::EBADF));
+        assert_eq!(mapping_host_handle_refs(-3), 0);
+    }
+
+    /// Once the descriptor lifetime has ended the handle is closed as far as
+    /// the rest of the machine is concerned — only the physical close is
+    /// outstanding, and the backend is free to reissue the number the moment it
+    /// runs. A second backing that adopted it would be reading someone else's
+    /// file, so the retain is refused.
+    #[test]
+    fn retaining_a_handle_whose_close_is_already_owed_is_refused() {
+        reset_mapping_held_handles_for_test();
+        retain_mapping_host_handle(11).unwrap();
+        assert!(host_close_deferred_by_mapping(11));
+
+        assert_eq!(retain_mapping_host_handle(11), Err(Errno::EBADF));
+        assert_eq!(
+            mapping_host_handle_refs(11),
+            1,
+            "the refused retain must not have counted",
+        );
+        assert_eq!(release_mapping_host_handle(11), MappingHandleRelease::CloseNow);
+    }
+
+    /// `host_close_deferred_by_mapping` reports "not deferred" for a handle
+    /// whose last mapping reference already dropped, so a later descriptor
+    /// close still closes it. Nothing is left behind to strand the handle.
+    #[test]
+    fn releasing_every_mapping_ref_restores_the_ordinary_close() {
+        reset_mapping_held_handles_for_test();
+        retain_mapping_host_handle(21).unwrap();
+        assert_eq!(release_mapping_host_handle(21), MappingHandleRelease::Released);
+        assert!(!host_close_deferred_by_mapping(21));
+    }
 
     #[test]
     fn test_create_ofd() {

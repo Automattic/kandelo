@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { populateShellRuntimeLayout } from "../../../host/src/shell-runtime-layout";
+import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,

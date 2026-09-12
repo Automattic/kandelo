@@ -291,6 +291,30 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     }
   }
 
+  /**
+   * The environment a worker started from `resolveBundledSourceEntry` needs.
+   *
+   * That entry is a copy of this package's source bundled into the OS temp
+   * directory, so the realm it starts has no path back to the checkout:
+   * `binary-resolver.ts`'s `findRepoRoot` walks up from the bundle's own
+   * directory and reports "Could not find repo root". Everything the worker
+   * resolves from the repo then fails -- the artifact reader
+   * (`wasm_artifact_module32.wasm`) first, since every program launch reads
+   * an artifact before it runs. Name the checkout explicitly instead.
+   *
+   * An inherited value wins: the local-build engine already sets this on
+   * every package-build child, and that one is authoritative for the build
+   * it is running.
+   */
+  private relocatedBundleEnv(): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      WASM_POSIX_BINARY_RESOLVER_REPO_ROOT:
+        process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT
+          ?? fileURLToPath(new URL(".", this.entryUrl)),
+    };
+  }
+
   createWorker(workerData: unknown): WorkerHandle {
     // Test-only fault boundary for the production DeferredWorker factory.
     // The mode check leaves kernel/top-level/ordinary Workers untouched, and
@@ -312,12 +336,15 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     );
     // Try the compiled JS entry first (much faster startup — avoids tsx
     // bootstrap which takes >500ms with 10+ concurrent workers).
-    const compiledEntry =
-      this.resolveCompiledEntry() ?? this.resolveBundledSourceEntry();
+    const inRepoEntry = this.resolveCompiledEntry();
+    const compiledEntry = inRepoEntry ?? this.resolveBundledSourceEntry();
     if (compiledEntry) {
       const worker = new Worker(
         compiledEntry,
-        nodeWorkerOptions(initialization.workerDataValue),
+        nodeWorkerOptions(
+          initialization.workerDataValue,
+          inRepoEntry ? {} : { env: this.relocatedBundleEnv() },
+        ),
       );
       return this.initializeWorker(worker, initialization);
     }

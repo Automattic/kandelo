@@ -95,6 +95,12 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # wasm-tools, not just wabt: wabt's `wat2wasm` predates the
+            # WebAssembly GC text format, so checked-in GC fixtures (e.g.
+            # the fork GC-array `.wat`) cannot be reassembled with it. A
+            # fixture the declared toolchain cannot rebuild is undeclared
+            # host state doing load-bearing work.
+            pkgs.wasm-tools
             # cbindgen — required by Mozilla's JS/SpiderMonkey configure
             # path once Rust support is enabled.
             pkgs.rust-cbindgen

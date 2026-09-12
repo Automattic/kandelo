@@ -97,6 +97,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let platform_limits_header = render_platform_limits_header();
     let process_layouts_header = render_process_layouts_header();
     let channel_scalars_header = render_channel_scalars_header();
+    let marshal_header = render_marshal_header();
     let thread_syscalls_header = render_thread_syscalls_header();
     let spawn_header = render_spawn_contract_header();
     let soundcard_header = render_soundcard_header();
@@ -110,12 +111,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         repo_root().join("libc/musl-overlay/include/bits/kandelo_process_layouts.h");
     let channel_scalars_header_out =
         repo_root().join("libc/musl-overlay/include/bits/kandelo_channel_scalars.h");
+    let marshal_header_out =
+        repo_root().join("libc/musl-overlay/include/bits/kandelo_syscall_marshal.h");
     let thread_syscalls_header_out =
         repo_root().join("libc/musl-overlay/include/bits/kandelo_thread_syscalls.h");
     let spawn_header_out =
         repo_root().join("libc/musl-overlay/src/process/wasm32posix/spawn_contract.h");
     let soundcard_header_out = repo_root().join("libc/musl-overlay/include/sys/soundcard.h");
     let ts_out = repo_root().join("host/src/generated/abi.ts");
+    let session_syscalls = render_session_syscall_names();
+    let session_syscalls_out =
+        repo_root().join("web-libs/kandelo-session/src/generated/syscall-names.ts");
 
     if check {
         check_file(&out, &rendered, "ABI snapshot")?;
@@ -136,6 +142,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "musl Kandelo channel scalars header",
         )?;
         check_file(
+            &marshal_header_out,
+            &marshal_header,
+            "musl Kandelo syscall marshal header",
+        )?;
+        check_file(
             &thread_syscalls_header_out,
             &thread_syscalls_header,
             "musl Kandelo thread syscall header",
@@ -147,6 +158,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "libc/musl-overlay/include/sys/soundcard.h",
         )?;
         check_file(&ts_out, &ts_module, "host/src/generated/abi.ts")?;
+        check_file(
+            &session_syscalls_out,
+            &session_syscalls,
+            "web-libs/kandelo-session/src/generated/syscall-names.ts",
+        )?;
         println!("abi snapshot up-to-date: {}", out.display());
         println!("abi header up-to-date:  {}", header_out.display());
         println!(
@@ -160,6 +176,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         println!(
             "channel scalars header up-to-date: {}",
             channel_scalars_header_out.display(),
+        );
+        println!(
+            "syscall marshal header up-to-date: {}",
+            marshal_header_out.display(),
         );
         println!(
             "thread syscall header up-to-date: {}",
@@ -187,6 +207,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", process_layouts_header_out.display());
     write_file(&channel_scalars_header_out, &channel_scalars_header)?;
     println!("wrote {}", channel_scalars_header_out.display());
+    write_file(&marshal_header_out, &marshal_header)?;
+    println!("wrote {}", marshal_header_out.display());
     write_file(&thread_syscalls_header_out, &thread_syscalls_header)?;
     println!("wrote {}", thread_syscalls_header_out.display());
     write_file(&spawn_header_out, &spawn_header)?;
@@ -195,6 +217,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     println!("wrote {}", soundcard_header_out.display());
     write_file(&ts_out, &ts_module)?;
     println!("wrote {}", ts_out.display());
+    write_file(&session_syscalls_out, &session_syscalls)?;
+    println!("wrote {}", session_syscalls_out.display());
     Ok(())
 }
 
@@ -270,9 +294,393 @@ fn render_channel_scalars_header() -> String {
     out
 }
 
+/// Render the guest syscall-marshalling descriptor header.
+///
+/// `SYSCALL_ARG_DESCRIPTORS` (`crates/shared/src/host_abi.rs`) is the single
+/// authority for which syscall arguments are pointers and how the host sizes
+/// them. Phase 2 moves that marshalling into the guest glue, so the guest needs
+/// the same per-syscall knowledge at runtime. This header projects the same
+/// table into a compact C form the encoder in `libc/glue/channel_syscall.c`
+/// consumes (`__marshal_channel_record`). It is ADDITIVE — it does not feed the
+/// ABI snapshot and does not change any ABI-locked value; it only re-expresses
+/// data already present in the snapshot's `host_abi` section.
+///
+/// Two families collapse into the same table:
+///   * every entry in `SYSCALL_ARG_DESCRIPTORS` (flat pointer args), whose
+///     direction/size projects to a record `SPAN_KIND_*` plus a size rule; and
+///   * the nested iovec/msghdr syscalls (`writev`/`readv`/`preadv`/`pwritev`/
+///     `preadv2`/`pwritev2`, `sendmsg`/`recvmsg`), which are NOT in the flat
+///     descriptor table and are marked with a nested shape the encoder folds
+///     into a single `IOVEC_ARRAY`/`MSGHDR` span.
+///
+/// The `SPAN_KIND_*` / `SIZE_*` numeric values mirror
+/// `wasm_posix_shared::channel_record` and `wasm_posix_shared::host_abi` and are
+/// asserted against those sources by the marshal encoder's tests.
+fn render_marshal_header() -> String {
+    use shared::channel_record as record;
+    use shared::host_abi::{SyscallArgDirection, SyscallArgSize, SYSCALL_ARG_DESCRIPTORS};
+
+    // Record span kinds sourced from the authoritative record module so the
+    // guest encoder cannot drift from the decoder.
+    const SPAN_IN: u8 = record::SPAN_KIND_IN_PTR;
+    const SPAN_OUT: u8 = record::SPAN_KIND_OUT_PTR;
+    const SPAN_INOUT: u8 = record::SPAN_KIND_IN_OUT_PTR;
+    const SPAN_PATH: u8 = record::SPAN_KIND_PATH_STR;
+    const SPAN_IOVEC: u8 = record::SPAN_KIND_IOVEC_ARRAY;
+    const SPAN_MSGHDR: u8 = record::SPAN_KIND_MSGHDR;
+    // Size-rule kinds (mirror wasm_posix_shared::host_abi::SyscallArgSize order).
+    const SIZE_CSTRING: u8 = 0;
+    const SIZE_ARG: u8 = 1;
+    const SIZE_DEREF: u8 = 2;
+    const SIZE_FIXED: u8 = 3;
+    const SIZE_LAYOUT: u8 = 4;
+    // Whole-syscall nested shapes.
+    const NESTED_NONE: u8 = 0;
+    const NESTED_IOVEC: u8 = 1;
+    const NESTED_MSGHDR: u8 = 2;
+
+    fn dir_span(d: SyscallArgDirection) -> u8 {
+        match d {
+            SyscallArgDirection::In => 1,
+            SyscallArgDirection::Out => 2,
+            SyscallArgDirection::InOut => 3,
+        }
+    }
+
+    struct Entry {
+        number: u32,
+        nested: u8,
+        // Each arg: (arg_index, span_kind, size_kind, nullable, a, b, c).
+        args: Vec<(u8, u8, u8, u8, u32, u32, u32)>,
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+
+    for descriptor in SYSCALL_ARG_DESCRIPTORS {
+        let mut args = Vec::new();
+        for arg in descriptor.args {
+            let (span_kind, size_kind, a, b, c) = match arg.size {
+                SyscallArgSize::CString { max_bytes, .. } => {
+                    // Every CString descriptor is an input path/string; the
+                    // record models it as a PATH_STR span (guest scans NUL,
+                    // len includes the terminator, bounded by max_bytes).
+                    (SPAN_PATH, SIZE_CSTRING, max_bytes, 0, 0)
+                }
+                SyscallArgSize::Arg {
+                    arg_index,
+                    multiplier,
+                    add,
+                } => (dir_span(arg.direction), SIZE_ARG, arg_index as u32, multiplier, add),
+                SyscallArgSize::Deref { arg_index } => {
+                    (dir_span(arg.direction), SIZE_DEREF, arg_index as u32, 0, 0)
+                }
+                SyscallArgSize::Fixed { size } => (dir_span(arg.direction), SIZE_FIXED, size, 0, 0),
+                SyscallArgSize::ProcessLayout {
+                    wasm32_size,
+                    wasm64_size,
+                } => (dir_span(arg.direction), SIZE_LAYOUT, wasm32_size, wasm64_size, 0),
+                // The kernel dereferences this argument itself, so the guest
+                // record carries no span for it: the raw guest address in the
+                // scalar slot is the whole contract. Emitting a span would
+                // ask the guest to copy bytes the kernel is about to read
+                // directly, and no span kind can describe an extent the
+                // kernel has not yet computed.
+                SyscallArgSize::KernelDereferenced => continue,
+            };
+            args.push((
+                arg.arg_index,
+                span_kind,
+                size_kind,
+                arg.nullable as u8,
+                a,
+                b,
+                c,
+            ));
+        }
+        entries.push(Entry {
+            number: descriptor.syscall_number,
+            nested: NESTED_NONE,
+            args,
+        });
+    }
+
+    // writev/readv/preadv/pwritev/preadv2/pwritev2 deliberately have NO nested
+    // entry, for the same reason as sendmsg/recvmsg below: their `struct iovec`
+    // table is declared `KernelDereferenced` in `SYSCALL_ARG_DESCRIPTORS`, so
+    // the record carries only the caller's raw address in its scalar slot and
+    // the kernel walks the caller's own table.
+
+    // sendmsg/recvmsg deliberately have NO nested entry. Their `msghdr` is
+    // declared `KernelDereferenced` in `SYSCALL_ARG_DESCRIPTORS` above, so the
+    // record carries only the caller's raw address in its scalar slot and the
+    // kernel walks the header, the iovec table and the CMSG chain itself. A
+    // MSGHDR span here would replace that address with a scratch offset and
+    // make the kernel read caller memory the caller never named.
+
+    entries.sort_by_key(|entry| entry.number);
+
+    let mut out = String::new();
+    out.push_str(
+        "/* GENERATED by `cargo xtask dump-abi`. Do not edit by hand. */\n\
+         /* Regenerated by scripts/check-abi-version.sh; drift is a CI failure. */\n\
+         /*\n\
+          * Guest self-marshalling descriptor table (Phase 2 opaque transport).\n\
+          *\n\
+          * Projects `wasm_posix_shared::host_abi::SYSCALL_ARG_DESCRIPTORS` plus\n\
+          * the nested iovec/msghdr syscalls into a compact runtime table the\n\
+          * musl glue encoder (`__marshal_channel_record`) consumes to build an\n\
+          * opaque `channel_record` at DATA_OFFSET. Additive: not on the live\n\
+          * syscall path yet, and does NOT participate in the ABI snapshot.\n\
+          */\n\
+         #ifndef KANDELO_SYSCALL_MARSHAL_H\n\
+         #define KANDELO_SYSCALL_MARSHAL_H\n\
+         \n\
+         #include <stdint.h>\n\
+         \n",
+    );
+    out.push_str(&format!(
+        "/* Record wire layout, sourced from wasm_posix_shared::channel_record\n\
+          * and ::channel so the encoder never hardcodes offsets. */\n\
+         #define KANDELO_RECORD_MAGIC 0x{magic:08X}u\n\
+         #define KANDELO_RECORD_ABI {record_abi}u\n\
+         #define KANDELO_RECORD_HEADER_BYTES {header_bytes}u\n\
+         #define KANDELO_RECORD_SPAN_DESCRIPTOR_BYTES {span_desc_bytes}u\n\
+         #define KANDELO_RECORD_MAX_SPANS {max_spans}u\n\
+         #define KANDELO_RECORD_MAX_IOVEC {max_iovec}u\n\
+         #define KANDELO_RECORD_INLINE_BUDGET {inline_budget}u\n\
+         /* RecordHeader field byte offsets. */\n\
+         #define KANDELO_RECORD_H_MAGIC {h_magic}u\n\
+         #define KANDELO_RECORD_H_RECORD_ABI {h_abi}u\n\
+         #define KANDELO_RECORD_H_SYSCALL {h_syscall}u\n\
+         #define KANDELO_RECORD_H_SPAN_COUNT {h_span_count}u\n\
+         #define KANDELO_RECORD_H_FLAGS {h_flags}u\n\
+         #define KANDELO_RECORD_H_SCALARS {h_scalars}u\n\
+         /* SpanDescriptor field byte offsets. */\n\
+         #define KANDELO_RECORD_D_KIND {d_kind}u\n\
+         #define KANDELO_RECORD_D_ARG_INDEX {d_arg_index}u\n\
+         #define KANDELO_RECORD_D_OFFSET {d_offset}u\n\
+         #define KANDELO_RECORD_D_LEN {d_len}u\n\
+         /* Nested iovec-array region field offsets. */\n\
+         #define KANDELO_RECORD_IOVEC_COUNT_OFFSET {iov_count_off}u\n\
+         #define KANDELO_RECORD_IOVEC_ENTRIES_OFFSET {iov_entries_off}u\n\
+         #define KANDELO_RECORD_IOVEC_ENTRY_BYTES {iov_entry_bytes}u\n\
+         /* Nested msghdr region field offsets (fixed prefix). */\n\
+         #define KANDELO_RECORD_MSGHDR_NAME_OFF_OFFSET {msg_name_off}u\n\
+         #define KANDELO_RECORD_MSGHDR_NAME_LEN_OFFSET {msg_name_len}u\n\
+         #define KANDELO_RECORD_MSGHDR_IOVEC_BLOCK_OFFSET {msg_block_off}u\n\
+         \n\
+         /* Flat-span record kinds (mirror channel_record::SPAN_KIND_*). */\n\
+         #define KANDELO_MARSHAL_SPAN_IN_PTR {span_in}u\n\
+         #define KANDELO_MARSHAL_SPAN_OUT_PTR {span_out}u\n\
+         #define KANDELO_MARSHAL_SPAN_IN_OUT_PTR {span_inout}u\n\
+         #define KANDELO_MARSHAL_SPAN_PATH_STR {span_path}u\n\
+         #define KANDELO_MARSHAL_SPAN_IOVEC_ARRAY {span_iovec}u\n\
+         #define KANDELO_MARSHAL_SPAN_MSGHDR {span_msghdr}u\n\
+         \n",
+        magic = record::RECORD_MAGIC,
+        record_abi = record::RECORD_ABI,
+        header_bytes = record::RECORD_HEADER_BYTES,
+        span_desc_bytes = record::SPAN_DESCRIPTOR_BYTES,
+        max_spans = record::MAX_SPANS,
+        max_iovec = record::MAX_IOVEC,
+        inline_budget = shared::channel::DATA_SIZE - shared::channel::SIG_AREA_SIZE,
+        h_magic = offset_of!(record::RecordHeader, magic),
+        h_abi = offset_of!(record::RecordHeader, record_abi),
+        h_syscall = offset_of!(record::RecordHeader, syscall),
+        h_span_count = offset_of!(record::RecordHeader, span_count),
+        h_flags = offset_of!(record::RecordHeader, flags),
+        h_scalars = offset_of!(record::RecordHeader, scalar_args),
+        d_kind = offset_of!(record::SpanDescriptor, kind),
+        d_arg_index = offset_of!(record::SpanDescriptor, arg_index),
+        d_offset = offset_of!(record::SpanDescriptor, offset),
+        d_len = offset_of!(record::SpanDescriptor, len),
+        iov_count_off = record::IOVEC_ARRAY_COUNT_OFFSET,
+        iov_entries_off = record::IOVEC_ARRAY_ENTRIES_OFFSET,
+        iov_entry_bytes = record::IOVEC_ARRAY_ENTRY_BYTES,
+        msg_name_off = record::MSGHDR_NAME_OFF_OFFSET,
+        msg_name_len = record::MSGHDR_NAME_LEN_OFFSET,
+        msg_block_off = record::MSGHDR_IOVEC_BLOCK_OFFSET,
+        span_in = SPAN_IN,
+        span_out = SPAN_OUT,
+        span_inout = SPAN_INOUT,
+        span_path = SPAN_PATH,
+        span_iovec = SPAN_IOVEC,
+        span_msghdr = SPAN_MSGHDR,
+    ));
+    out.push_str(
+        "/* Size rules (mirror host_abi::SyscallArgSize variant order). */\n\
+         #define KANDELO_MARSHAL_SIZE_CSTRING 0u\n\
+         #define KANDELO_MARSHAL_SIZE_ARG 1u\n\
+         #define KANDELO_MARSHAL_SIZE_DEREF 2u\n\
+         #define KANDELO_MARSHAL_SIZE_FIXED 3u\n\
+         #define KANDELO_MARSHAL_SIZE_LAYOUT 4u\n\
+         \n\
+         /* Whole-syscall nested marshalling shapes. */\n\
+         #define KANDELO_MARSHAL_NESTED_NONE 0u\n\
+         #define KANDELO_MARSHAL_NESTED_IOVEC 1u\n\
+         #define KANDELO_MARSHAL_NESTED_MSGHDR 2u\n\
+         \n\
+         /* One pointer argument to marshal.\n\
+          *   arg_index : which of the six syscall words holds the pointer.\n\
+          *   span_kind : KANDELO_MARSHAL_SPAN_* emitted for this arg.\n\
+          *   size_kind : KANDELO_MARSHAL_SIZE_* selecting how `len` is computed.\n\
+          *   nullable  : 1 => a null pointer omits the span entirely.\n\
+          *   a,b,c     : size-rule operands, by size_kind:\n\
+          *     CSTRING -> a = max_bytes (scan ceiling incl. NUL)\n\
+          *     ARG     -> a = length arg index, b = multiplier, c = add\n\
+          *     DEREF   -> a = arg index holding a u32* length\n\
+          *     FIXED   -> a = byte length\n\
+          *     LAYOUT  -> a = wasm32 size, b = wasm64 size\n\
+          *   For a nested syscall the single entry carries, for IOVEC,\n\
+          *   a = the iovcnt arg index; MSGHDR uses arg_index only.\n\
+          */\n\
+         struct kandelo_marshal_arg {\n\
+         \x20   uint8_t arg_index;\n\
+         \x20   uint8_t span_kind;\n\
+         \x20   uint8_t size_kind;\n\
+         \x20   uint8_t nullable;\n\
+         \x20   uint32_t a;\n\
+         \x20   uint32_t b;\n\
+         \x20   uint32_t c;\n\
+         };\n\
+         \n\
+         struct kandelo_marshal_syscall {\n\
+         \x20   uint32_t syscall_number;\n\
+         \x20   uint8_t nested; /* KANDELO_MARSHAL_NESTED_* */\n\
+         \x20   uint8_t arg_count;\n\
+         \x20   const struct kandelo_marshal_arg *args;\n\
+         };\n\
+         \n",
+    );
+
+    // Ioctl request -> (arg representation, direction, buffer size) contract,
+    // projected from wasm_posix_shared::ioctl_contract. Ioctl is NOT in the flat
+    // descriptor table because its arg-2 buffer size is selected by the request
+    // number, and legacy request encodings (e.g. TIOCGWINSZ = 0x5413) do not
+    // embed their size, so `_IOC_SIZE` is insufficient. The guest sizes the
+    // buffer from this table. Additive: like the rest of this header it is not
+    // on the live syscall path and does NOT participate in the ABI snapshot.
+    // A wasm32/wasm64 size of KANDELO_IOCTL_SIZE_UNSUPPORTED means the request
+    // is known but unsupported for that caller data model (`Option::None`),
+    // intentionally distinct from a zero-length buffer.
+    {
+        use shared::ioctl_contract::{IoctlArgKind, IoctlDirection, IOCTL_REQUEST_CONTRACTS};
+        const IOCTL_SIZE_UNSUPPORTED: u32 = 0xFFFF_FFFF;
+        fn ioctl_arg_kind(kind: IoctlArgKind) -> u8 {
+            match kind {
+                IoctlArgKind::None => 0,
+                IoctlArgKind::ScalarI32 => 1,
+                IoctlArgKind::Pointer => 2,
+            }
+        }
+        fn ioctl_direction(dir: IoctlDirection) -> u8 {
+            match dir {
+                IoctlDirection::None => 0,
+                IoctlDirection::In => 1,
+                IoctlDirection::Out => 2,
+                IoctlDirection::InOut => 3,
+            }
+        }
+        out.push_str(
+            "/* Ioctl arg representation and copy direction (mirror\n\
+             * wasm_posix_shared::ioctl_contract::{IoctlArgKind, IoctlDirection}). */\n\
+             #define KANDELO_IOCTL_ARG_NONE 0u\n\
+             #define KANDELO_IOCTL_ARG_SCALAR_I32 1u\n\
+             #define KANDELO_IOCTL_ARG_POINTER 2u\n\
+             #define KANDELO_IOCTL_DIR_NONE 0u\n\
+             #define KANDELO_IOCTL_DIR_IN 1u\n\
+             #define KANDELO_IOCTL_DIR_OUT 2u\n\
+             #define KANDELO_IOCTL_DIR_INOUT 3u\n\
+             /* Known request unsupported for this caller data model (None). */\n\
+             #define KANDELO_IOCTL_SIZE_UNSUPPORTED 0xFFFFFFFFu\n\
+             \n\
+             struct kandelo_ioctl_contract {\n\
+             \x20   uint32_t request;\n\
+             \x20   uint8_t arg_kind;   /* KANDELO_IOCTL_ARG_* */\n\
+             \x20   uint8_t direction;  /* KANDELO_IOCTL_DIR_* */\n\
+             \x20   uint32_t wasm32_size;\n\
+             \x20   uint32_t wasm64_size;\n\
+             };\n\
+             \n\
+             static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {\n",
+        );
+        for contract in IOCTL_REQUEST_CONTRACTS {
+            out.push_str(&format!(
+                "    {{ 0x{request:08X}u, {arg}u, {dir}u, {w32}u, {w64}u }},\n",
+                request = contract.request,
+                arg = ioctl_arg_kind(contract.arg_kind),
+                dir = ioctl_direction(contract.direction),
+                w32 = contract.wasm32_size.unwrap_or(IOCTL_SIZE_UNSUPPORTED),
+                w64 = contract.wasm64_size.unwrap_or(IOCTL_SIZE_UNSUPPORTED),
+            ));
+        }
+        out.push_str("};\n\n");
+        out.push_str(&format!(
+            "#define KANDELO_IOCTL_CONTRACT_COUNT {}u\n\n",
+            IOCTL_REQUEST_CONTRACTS.len()
+        ));
+    }
+
+    for entry in &entries {
+        out.push_str(&format!(
+            "static const struct kandelo_marshal_arg kandelo_marshal_args_{}[] = {{\n",
+            entry.number
+        ));
+        for (arg_index, span_kind, size_kind, nullable, a, b, c) in &entry.args {
+            out.push_str(&format!(
+                "    {{ {arg_index}u, {span_kind}u, {size_kind}u, {nullable}u, {a}u, {b}u, {c}u }},\n",
+            ));
+        }
+        out.push_str("};\n\n");
+    }
+
+    out.push_str("static const struct kandelo_marshal_syscall kandelo_marshal_table[] = {\n");
+    for entry in &entries {
+        out.push_str(&format!(
+            "    {{ {number}u, {nested}u, {count}u, kandelo_marshal_args_{number} }},\n",
+            number = entry.number,
+            nested = entry.nested,
+            count = entry.args.len(),
+        ));
+    }
+    out.push_str("};\n\n");
+    out.push_str(&format!(
+        "#define KANDELO_MARSHAL_SYSCALL_COUNT {}u\n\n",
+        entries.len()
+    ));
+
+    // Phase 2 (Option A) RAW syscall set, projected from
+    // wasm_posix_shared::host_raw_syscalls. A RAW syscall keeps its raw i64 args
+    // in the channel and is NEVER marshalled into a record: the guest glue skips
+    // the encoder for it, and the host asserts a RAW syscall never carries a
+    // record magic. Sorted ascending so the guest can binary/linear scan.
+    {
+        use shared::host_raw_syscalls::host_raw_syscalls_sorted;
+        let (sorted, len) = host_raw_syscalls_sorted();
+        out.push_str(
+            "/* Phase 2 RAW syscalls: keep raw args, never build a record.\n\
+             * Source of truth: wasm_posix_shared::host_raw_syscalls. Sorted\n\
+             * ascending. Additive to this header; the host guard (abi.ts\n\
+             * HOST_RAW_SYSCALLS) is the cross-checked mirror. */\n\
+             static const uint32_t kandelo_raw_syscalls[] = {\n",
+        );
+        for &n in &sorted[..len] {
+            out.push_str(&format!("    {n}u,\n"));
+        }
+        out.push_str("};\n\n");
+        out.push_str(&format!(
+            "#define KANDELO_RAW_SYSCALL_COUNT {len}u\n\n",
+        ));
+    }
+
+    out.push_str("#endif /* KANDELO_SYSCALL_MARSHAL_H */\n");
+    out
+}
+
 fn render_process_layouts_header() -> String {
     use shared::process_layout::{
-        cmsghdr, iovec, msghdr, multicast_group_request, rt_sigqueueinfo, sigevent,
+        cmsghdr, dev, iovec, mq_attr, msghdr, multicast_group_request, rt_sigqueueinfo,
+        sched_param, sigaltstack, sigevent, stat, statfs, statx, sysinfo,
     };
 
     format!(
@@ -368,6 +776,133 @@ fn render_process_layouts_header() -> String {
          #define KANDELO_KERNEL_POLLFD_EVENTS_OFFSET {pollfd_events}u\n\
          #define KANDELO_KERNEL_POLLFD_REVENTS_OFFSET {pollfd_revents}u\n\
          \n\
+         #define KANDELO_PROCESS_STAT_SIZE {stat_size}u\n\
+         #define KANDELO_PROCESS_STAT_DEV_OFFSET {stat_dev}u\n\
+         #define KANDELO_PROCESS_STAT_INO_OFFSET {stat_ino}u\n\
+         #define KANDELO_PROCESS_STAT_MODE_OFFSET {stat_mode}u\n\
+         #define KANDELO_PROCESS_STAT_NLINK_OFFSET {stat_nlink}u\n\
+         #define KANDELO_PROCESS_STAT_UID_OFFSET {stat_uid}u\n\
+         #define KANDELO_PROCESS_STAT_GID_OFFSET {stat_gid}u\n\
+         #define KANDELO_PROCESS_STAT_SIZE_OFFSET {stat_size_off}u\n\
+         #define KANDELO_PROCESS_STAT_ATIME_SEC_OFFSET {stat_atime}u\n\
+         #define KANDELO_PROCESS_STAT_MTIME_SEC_OFFSET {stat_mtime}u\n\
+         #define KANDELO_PROCESS_STAT_CTIME_SEC_OFFSET {stat_ctime}u\n\
+         #define KANDELO_PROCESS_STAT_RDEV_OFFSET {stat_rdev}u\n\
+         #define KANDELO_PROCESS_STAT_BLKSIZE_OFFSET {stat_blksize}u\n\
+         #define KANDELO_PROCESS_STAT_BLOCKS_OFFSET {stat_blocks}u\n\
+         \n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_SIZE {sigaltstack_wasm32_size}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_SP_OFFSET {sigaltstack_wasm32_sp_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_FLAGS_OFFSET {sigaltstack_wasm32_flags_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_STACK_SIZE_OFFSET {sigaltstack_wasm32_stack_size_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_SIZE {sigaltstack_wasm64_size}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_SP_OFFSET {sigaltstack_wasm64_sp_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_FLAGS_OFFSET {sigaltstack_wasm64_flags_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_STACK_SIZE_OFFSET {sigaltstack_wasm64_stack_size_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_SIZE {mq_attr_wasm32_size}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_FLAGS_OFFSET {mq_attr_wasm32_flags_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_MAXMSG_OFFSET {mq_attr_wasm32_maxmsg_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_MSGSIZE_OFFSET {mq_attr_wasm32_msgsize_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_CURMSGS_OFFSET {mq_attr_wasm32_curmsgs_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_SIZE {mq_attr_wasm64_size}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_FLAGS_OFFSET {mq_attr_wasm64_flags_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_MAXMSG_OFFSET {mq_attr_wasm64_maxmsg_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_MSGSIZE_OFFSET {mq_attr_wasm64_msgsize_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_CURMSGS_OFFSET {mq_attr_wasm64_curmsgs_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_SIZE {statfs_wasm32_size}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_TYPE_OFFSET {statfs_wasm32_type_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BSIZE_OFFSET {statfs_wasm32_bsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BLOCKS_OFFSET {statfs_wasm32_blocks_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BFREE_OFFSET {statfs_wasm32_bfree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BAVAIL_OFFSET {statfs_wasm32_bavail_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FILES_OFFSET {statfs_wasm32_files_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FFREE_OFFSET {statfs_wasm32_ffree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FSID_OFFSET {statfs_wasm32_fsid_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_NAMELEN_OFFSET {statfs_wasm32_namelen_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FRSIZE_OFFSET {statfs_wasm32_frsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FLAGS_OFFSET {statfs_wasm32_flags_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_SPARE_OFFSET {statfs_wasm32_spare_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_SIZE {statfs_wasm64_size}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_TYPE_OFFSET {statfs_wasm64_type_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BSIZE_OFFSET {statfs_wasm64_bsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BLOCKS_OFFSET {statfs_wasm64_blocks_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BFREE_OFFSET {statfs_wasm64_bfree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BAVAIL_OFFSET {statfs_wasm64_bavail_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FILES_OFFSET {statfs_wasm64_files_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FFREE_OFFSET {statfs_wasm64_ffree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FSID_OFFSET {statfs_wasm64_fsid_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_NAMELEN_OFFSET {statfs_wasm64_namelen_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FRSIZE_OFFSET {statfs_wasm64_frsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FLAGS_OFFSET {statfs_wasm64_flags_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_SPARE_OFFSET {statfs_wasm64_spare_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_SIZE {sysinfo_wasm32_size}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_UPTIME_OFFSET {sysinfo_wasm32_uptime_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_LOADS_OFFSET {sysinfo_wasm32_loads_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_TOTALRAM_OFFSET {sysinfo_wasm32_totalram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_FREERAM_OFFSET {sysinfo_wasm32_freeram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_SHAREDRAM_OFFSET {sysinfo_wasm32_sharedram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_BUFFERRAM_OFFSET {sysinfo_wasm32_bufferram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_TOTALSWAP_OFFSET {sysinfo_wasm32_totalswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_FREESWAP_OFFSET {sysinfo_wasm32_freeswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_PROCS_OFFSET {sysinfo_wasm32_procs_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_TOTALHIGH_OFFSET {sysinfo_wasm32_totalhigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_FREEHIGH_OFFSET {sysinfo_wasm32_freehigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_MEM_UNIT_OFFSET {sysinfo_wasm32_mem_unit_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_RESERVED_OFFSET {sysinfo_wasm32_reserved_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_SIZE {sysinfo_wasm64_size}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_UPTIME_OFFSET {sysinfo_wasm64_uptime_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_LOADS_OFFSET {sysinfo_wasm64_loads_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_TOTALRAM_OFFSET {sysinfo_wasm64_totalram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_FREERAM_OFFSET {sysinfo_wasm64_freeram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_SHAREDRAM_OFFSET {sysinfo_wasm64_sharedram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_BUFFERRAM_OFFSET {sysinfo_wasm64_bufferram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_TOTALSWAP_OFFSET {sysinfo_wasm64_totalswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_FREESWAP_OFFSET {sysinfo_wasm64_freeswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_PROCS_OFFSET {sysinfo_wasm64_procs_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_TOTALHIGH_OFFSET {sysinfo_wasm64_totalhigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_FREEHIGH_OFFSET {sysinfo_wasm64_freehigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_MEM_UNIT_OFFSET {sysinfo_wasm64_mem_unit_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_RESERVED_OFFSET {sysinfo_wasm64_reserved_offset}u\n\
+         #define KANDELO_PROCESS_STATX_SIZE {statx_size}u\n\
+         #define KANDELO_PROCESS_STATX_MASK_OFFSET {statx_mask_offset}u\n\
+         #define KANDELO_PROCESS_STATX_BLKSIZE_OFFSET {statx_blksize_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATTRIBUTES_OFFSET {statx_attributes_offset}u\n\
+         #define KANDELO_PROCESS_STATX_NLINK_OFFSET {statx_nlink_offset}u\n\
+         #define KANDELO_PROCESS_STATX_UID_OFFSET {statx_uid_offset}u\n\
+         #define KANDELO_PROCESS_STATX_GID_OFFSET {statx_gid_offset}u\n\
+         #define KANDELO_PROCESS_STATX_MODE_OFFSET {statx_mode_offset}u\n\
+         #define KANDELO_PROCESS_STATX_INO_OFFSET {statx_ino_offset}u\n\
+         #define KANDELO_PROCESS_STATX_SIZE_FIELD_OFFSET {statx_size_field_offset}u\n\
+         #define KANDELO_PROCESS_STATX_BLOCKS_OFFSET {statx_blocks_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATTRIBUTES_MASK_OFFSET {statx_attributes_mask_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATIME_SEC_OFFSET {statx_atime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATIME_NSEC_OFFSET {statx_atime_nsec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_BTIME_SEC_OFFSET {statx_btime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_CTIME_SEC_OFFSET {statx_ctime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_CTIME_NSEC_OFFSET {statx_ctime_nsec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_MTIME_SEC_OFFSET {statx_mtime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_MTIME_NSEC_OFFSET {statx_mtime_nsec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_RDEV_MAJOR_OFFSET {statx_rdev_major_offset}u\n\
+         #define KANDELO_PROCESS_STATX_RDEV_MINOR_OFFSET {statx_rdev_minor_offset}u\n\
+         #define KANDELO_PROCESS_STATX_DEV_MAJOR_OFFSET {statx_dev_major_offset}u\n\
+         #define KANDELO_PROCESS_STATX_DEV_MINOR_OFFSET {statx_dev_minor_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SIZE {sched_param_size}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_PRIORITY_OFFSET {sched_param_priority_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_MAX_REPL_OFFSET {sched_param_ss_max_repl_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_REPL_PERIOD_SEC_OFFSET {sched_param_ss_repl_period_sec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_REPL_PERIOD_NSEC_OFFSET {sched_param_ss_repl_period_nsec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_INIT_BUDGET_SEC_OFFSET {sched_param_ss_init_budget_sec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_INIT_BUDGET_NSEC_OFFSET {sched_param_ss_init_budget_nsec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_LOW_PRIORITY_OFFSET {sched_param_ss_low_priority_offset}u\n\
+         \n\
+         /* `dev` carries no offsets. These are a round-trip vector computed by\n\
+          * the Rust encoder, chosen so both the high and low bit fields of the\n\
+          * Linux dev_t split are non-zero, letting C assert musl's macros\n\
+          * against it. */\n\
+         #define KANDELO_PROCESS_DEV_VECTOR_MAJOR {dev_vec_major}u\n\
+         #define KANDELO_PROCESS_DEV_VECTOR_MINOR {dev_vec_minor}u\n\
+         #define KANDELO_PROCESS_DEV_VECTOR_MAKEDEV {dev_vec_makedev}ull\n\
+         \n\
          #define KANDELO_SELECT_FD_SETSIZE {fd_setsize}u\n\
          #define KANDELO_SELECT_FD_SET_BYTES {fd_set_bytes}u\n\
          \n\
@@ -454,6 +989,130 @@ fn render_process_layouts_header() -> String {
         pollfd_fd = offset_of!(shared::WasmPollFd, fd),
         pollfd_events = offset_of!(shared::WasmPollFd, events),
         pollfd_revents = offset_of!(shared::WasmPollFd, revents),
+        stat_size = stat::SIZE,
+        stat_dev = stat::DEV_OFFSET,
+        stat_ino = stat::INO_OFFSET,
+        stat_mode = stat::MODE_OFFSET,
+        stat_nlink = stat::NLINK_OFFSET,
+        stat_uid = stat::UID_OFFSET,
+        stat_gid = stat::GID_OFFSET,
+        stat_size_off = stat::SIZE_OFFSET,
+        stat_atime = stat::ATIME_SEC_OFFSET,
+        stat_mtime = stat::MTIME_SEC_OFFSET,
+        stat_ctime = stat::CTIME_SEC_OFFSET,
+        stat_rdev = stat::RDEV_OFFSET,
+        stat_blksize = stat::BLKSIZE_OFFSET,
+        stat_blocks = stat::BLOCKS_OFFSET,
+        sigaltstack_wasm32_size = sigaltstack::WASM32_SIZE,
+        sigaltstack_wasm32_sp_offset = sigaltstack::WASM32_SP_OFFSET,
+        sigaltstack_wasm32_flags_offset = sigaltstack::WASM32_FLAGS_OFFSET,
+        sigaltstack_wasm32_stack_size_offset = sigaltstack::WASM32_STACK_SIZE_OFFSET,
+        sigaltstack_wasm64_size = sigaltstack::WASM64_SIZE,
+        sigaltstack_wasm64_sp_offset = sigaltstack::WASM64_SP_OFFSET,
+        sigaltstack_wasm64_flags_offset = sigaltstack::WASM64_FLAGS_OFFSET,
+        sigaltstack_wasm64_stack_size_offset = sigaltstack::WASM64_STACK_SIZE_OFFSET,
+        mq_attr_wasm32_size = mq_attr::WASM32_SIZE,
+        mq_attr_wasm32_flags_offset = mq_attr::WASM32_FLAGS_OFFSET,
+        mq_attr_wasm32_maxmsg_offset = mq_attr::WASM32_MAXMSG_OFFSET,
+        mq_attr_wasm32_msgsize_offset = mq_attr::WASM32_MSGSIZE_OFFSET,
+        mq_attr_wasm32_curmsgs_offset = mq_attr::WASM32_CURMSGS_OFFSET,
+        mq_attr_wasm64_size = mq_attr::WASM64_SIZE,
+        mq_attr_wasm64_flags_offset = mq_attr::WASM64_FLAGS_OFFSET,
+        mq_attr_wasm64_maxmsg_offset = mq_attr::WASM64_MAXMSG_OFFSET,
+        mq_attr_wasm64_msgsize_offset = mq_attr::WASM64_MSGSIZE_OFFSET,
+        mq_attr_wasm64_curmsgs_offset = mq_attr::WASM64_CURMSGS_OFFSET,
+        statfs_wasm32_size = statfs::WASM32_SIZE,
+        statfs_wasm32_type_offset = statfs::WASM32_TYPE_OFFSET,
+        statfs_wasm32_bsize_offset = statfs::WASM32_BSIZE_OFFSET,
+        statfs_wasm32_blocks_offset = statfs::WASM32_BLOCKS_OFFSET,
+        statfs_wasm32_bfree_offset = statfs::WASM32_BFREE_OFFSET,
+        statfs_wasm32_bavail_offset = statfs::WASM32_BAVAIL_OFFSET,
+        statfs_wasm32_files_offset = statfs::WASM32_FILES_OFFSET,
+        statfs_wasm32_ffree_offset = statfs::WASM32_FFREE_OFFSET,
+        statfs_wasm32_fsid_offset = statfs::WASM32_FSID_OFFSET,
+        statfs_wasm32_namelen_offset = statfs::WASM32_NAMELEN_OFFSET,
+        statfs_wasm32_frsize_offset = statfs::WASM32_FRSIZE_OFFSET,
+        statfs_wasm32_flags_offset = statfs::WASM32_FLAGS_OFFSET,
+        statfs_wasm32_spare_offset = statfs::WASM32_SPARE_OFFSET,
+        statfs_wasm64_size = statfs::WASM64_SIZE,
+        statfs_wasm64_type_offset = statfs::WASM64_TYPE_OFFSET,
+        statfs_wasm64_bsize_offset = statfs::WASM64_BSIZE_OFFSET,
+        statfs_wasm64_blocks_offset = statfs::WASM64_BLOCKS_OFFSET,
+        statfs_wasm64_bfree_offset = statfs::WASM64_BFREE_OFFSET,
+        statfs_wasm64_bavail_offset = statfs::WASM64_BAVAIL_OFFSET,
+        statfs_wasm64_files_offset = statfs::WASM64_FILES_OFFSET,
+        statfs_wasm64_ffree_offset = statfs::WASM64_FFREE_OFFSET,
+        statfs_wasm64_fsid_offset = statfs::WASM64_FSID_OFFSET,
+        statfs_wasm64_namelen_offset = statfs::WASM64_NAMELEN_OFFSET,
+        statfs_wasm64_frsize_offset = statfs::WASM64_FRSIZE_OFFSET,
+        statfs_wasm64_flags_offset = statfs::WASM64_FLAGS_OFFSET,
+        statfs_wasm64_spare_offset = statfs::WASM64_SPARE_OFFSET,
+        sysinfo_wasm32_size = sysinfo::WASM32_SIZE,
+        sysinfo_wasm32_uptime_offset = sysinfo::WASM32_UPTIME_OFFSET,
+        sysinfo_wasm32_loads_offset = sysinfo::WASM32_LOADS_OFFSET,
+        sysinfo_wasm32_totalram_offset = sysinfo::WASM32_TOTALRAM_OFFSET,
+        sysinfo_wasm32_freeram_offset = sysinfo::WASM32_FREERAM_OFFSET,
+        sysinfo_wasm32_sharedram_offset = sysinfo::WASM32_SHAREDRAM_OFFSET,
+        sysinfo_wasm32_bufferram_offset = sysinfo::WASM32_BUFFERRAM_OFFSET,
+        sysinfo_wasm32_totalswap_offset = sysinfo::WASM32_TOTALSWAP_OFFSET,
+        sysinfo_wasm32_freeswap_offset = sysinfo::WASM32_FREESWAP_OFFSET,
+        sysinfo_wasm32_procs_offset = sysinfo::WASM32_PROCS_OFFSET,
+        sysinfo_wasm32_totalhigh_offset = sysinfo::WASM32_TOTALHIGH_OFFSET,
+        sysinfo_wasm32_freehigh_offset = sysinfo::WASM32_FREEHIGH_OFFSET,
+        sysinfo_wasm32_mem_unit_offset = sysinfo::WASM32_MEM_UNIT_OFFSET,
+        sysinfo_wasm32_reserved_offset = sysinfo::WASM32_RESERVED_OFFSET,
+        sysinfo_wasm64_size = sysinfo::WASM64_SIZE,
+        sysinfo_wasm64_uptime_offset = sysinfo::WASM64_UPTIME_OFFSET,
+        sysinfo_wasm64_loads_offset = sysinfo::WASM64_LOADS_OFFSET,
+        sysinfo_wasm64_totalram_offset = sysinfo::WASM64_TOTALRAM_OFFSET,
+        sysinfo_wasm64_freeram_offset = sysinfo::WASM64_FREERAM_OFFSET,
+        sysinfo_wasm64_sharedram_offset = sysinfo::WASM64_SHAREDRAM_OFFSET,
+        sysinfo_wasm64_bufferram_offset = sysinfo::WASM64_BUFFERRAM_OFFSET,
+        sysinfo_wasm64_totalswap_offset = sysinfo::WASM64_TOTALSWAP_OFFSET,
+        sysinfo_wasm64_freeswap_offset = sysinfo::WASM64_FREESWAP_OFFSET,
+        sysinfo_wasm64_procs_offset = sysinfo::WASM64_PROCS_OFFSET,
+        sysinfo_wasm64_totalhigh_offset = sysinfo::WASM64_TOTALHIGH_OFFSET,
+        sysinfo_wasm64_freehigh_offset = sysinfo::WASM64_FREEHIGH_OFFSET,
+        sysinfo_wasm64_mem_unit_offset = sysinfo::WASM64_MEM_UNIT_OFFSET,
+        sysinfo_wasm64_reserved_offset = sysinfo::WASM64_RESERVED_OFFSET,
+        statx_size = statx::SIZE,
+        statx_mask_offset = statx::MASK_OFFSET,
+        statx_blksize_offset = statx::BLKSIZE_OFFSET,
+        statx_attributes_offset = statx::ATTRIBUTES_OFFSET,
+        statx_nlink_offset = statx::NLINK_OFFSET,
+        statx_uid_offset = statx::UID_OFFSET,
+        statx_gid_offset = statx::GID_OFFSET,
+        statx_mode_offset = statx::MODE_OFFSET,
+        statx_ino_offset = statx::INO_OFFSET,
+        statx_size_field_offset = statx::SIZE_FIELD_OFFSET,
+        statx_blocks_offset = statx::BLOCKS_OFFSET,
+        statx_attributes_mask_offset = statx::ATTRIBUTES_MASK_OFFSET,
+        statx_atime_sec_offset = statx::ATIME_SEC_OFFSET,
+        statx_atime_nsec_offset = statx::ATIME_NSEC_OFFSET,
+        statx_btime_sec_offset = statx::BTIME_SEC_OFFSET,
+        statx_ctime_sec_offset = statx::CTIME_SEC_OFFSET,
+        statx_ctime_nsec_offset = statx::CTIME_NSEC_OFFSET,
+        statx_mtime_sec_offset = statx::MTIME_SEC_OFFSET,
+        statx_mtime_nsec_offset = statx::MTIME_NSEC_OFFSET,
+        statx_rdev_major_offset = statx::RDEV_MAJOR_OFFSET,
+        statx_rdev_minor_offset = statx::RDEV_MINOR_OFFSET,
+        statx_dev_major_offset = statx::DEV_MAJOR_OFFSET,
+        statx_dev_minor_offset = statx::DEV_MINOR_OFFSET,
+        sched_param_size = sched_param::SIZE,
+        sched_param_priority_offset = sched_param::PRIORITY_OFFSET,
+        sched_param_ss_max_repl_offset = sched_param::SS_MAX_REPL_OFFSET,
+        sched_param_ss_repl_period_sec_offset = sched_param::SS_REPL_PERIOD_SEC_OFFSET,
+        sched_param_ss_repl_period_nsec_offset = sched_param::SS_REPL_PERIOD_NSEC_OFFSET,
+        sched_param_ss_init_budget_sec_offset = sched_param::SS_INIT_BUDGET_SEC_OFFSET,
+        sched_param_ss_init_budget_nsec_offset = sched_param::SS_INIT_BUDGET_NSEC_OFFSET,
+        sched_param_ss_low_priority_offset = sched_param::SS_LOW_PRIORITY_OFFSET,
+        // All bits set in both fields. A sparser vector silently under-tests
+        // the encoder: 0x12345 has bit 12 clear, so a mask perturbed from
+        // 0xffff_f000 to 0xffff_e000 produced an IDENTICAL value and the C
+        // assert could not fire. Maximal values make every mask bit matter.
+        dev_vec_major = 0x000f_ffffu32,
+        dev_vec_minor = 0xffff_ffffu32,
+        dev_vec_makedev = dev::makedev(0x000f_ffff, 0xffff_ffff),
         fd_setsize = shared::select::FD_SETSIZE,
         fd_set_bytes = shared::select::FD_SET_BYTES,
     )
@@ -688,6 +1347,7 @@ fn render_c_channel_contract() -> String {
          #define WASM_POSIX_CHANNEL_STATUS_PENDING {status_pending}u\n\
          #define WASM_POSIX_CHANNEL_STATUS_COMPLETE {status_complete}u\n\
          #define WASM_POSIX_CHANNEL_STATUS_ERROR {status_error}u\n\
+         #define WASM_POSIX_CHANNEL_STATUS_TEARDOWN {status_teardown}u\n\
          \n\
          /* Shared syscall-channel layout. */\n\
          #define WASM_POSIX_CHANNEL_STATUS_OFFSET {status_offset}u\n\
@@ -706,6 +1366,7 @@ fn render_c_channel_contract() -> String {
          #define WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY {defer_signal_delivery}u\n\
          #define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT {request_flag_cancellation_point}u\n\
          #define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED {request_flag_cancellation_wake_allowed}u\n\
+         #define WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD {request_flag_opaque_record}u\n\
          #define WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK {request_flags_known_mask}u\n\
          #define WASM_POSIX_CHANNEL_DATA_OFFSET {data_offset}u\n\
          #define WASM_POSIX_CHANNEL_DATA_SIZE {data_size}u\n\
@@ -736,6 +1397,7 @@ fn render_c_channel_contract() -> String {
         status_pending = shared::ChannelStatus::Pending as u32,
         status_complete = shared::ChannelStatus::Complete as u32,
         status_error = shared::ChannelStatus::Error as u32,
+        status_teardown = shared::ChannelStatus::Teardown as u32,
         status_offset = channel::STATUS_OFFSET,
         status_size = channel::STATUS_SIZE,
         syscall_offset = channel::SYSCALL_OFFSET,
@@ -752,6 +1414,7 @@ fn render_c_channel_contract() -> String {
         defer_signal_delivery = channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
         request_flag_cancellation_point = channel::REQUEST_FLAG_CANCELLATION_POINT,
         request_flag_cancellation_wake_allowed = channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
+        request_flag_opaque_record = channel::REQUEST_FLAG_OPAQUE_RECORD,
         request_flags_known_mask = channel::REQUEST_FLAGS_KNOWN_MASK,
         data_offset = channel::DATA_OFFSET,
         data_size = channel::DATA_SIZE,
@@ -1042,6 +1705,36 @@ fn oss_capability_constants() -> Vec<(&'static str, u32)> {
 /// Keep this generated from the same Rust/shared source of truth as
 /// `abi/snapshot.json`; otherwise the host can silently drift on channel
 /// offsets or syscall numbers even when the ABI check is green.
+/// Syscall names for `web-libs/kandelo-session`.
+///
+/// A separate, tiny module rather than reusing `host/src/generated/abi.ts`
+/// because `kandelo-session` deliberately does not depend on `host/`: it
+/// redefines host types structurally "so this file doesn't depend on host/'s
+/// wire types" and so UI bundles do not drag concrete host classes in.
+/// Importing the full generated ABI module would cross that boundary for one
+/// table.
+///
+/// It replaces a hand-maintained `SYSCALL_NAMES_LOCAL` that had drifted: 137
+/// entries against 233, so 96 syscalls rendered in the UI as `syscall_NNN`,
+/// and two names disagreed outright (129 `statfs` vs `statfs64`, 130 `fstatfs`
+/// vs `fstatfs64`). The file that carried it predicted the drift in a comment
+/// and accepted it.
+fn render_session_syscall_names() -> String {
+    let mut out = String::from(
+        "// GENERATED by `cargo xtask dump-abi`. Do not edit by hand.\n\
+         //\n\
+         // Syscall numbers to names, from `crates/shared`. Generated into\n\
+         // web-libs rather than imported from `host/src/generated/abi.ts`\n\
+         // because kandelo-session does not depend on host/.\n\n\
+         export const SESSION_SYSCALL_NAMES: Readonly<Record<number, string>> = {\n",
+    );
+    for (number, name) in all_syscall_log_names() {
+        out.push_str(&format!("  {number}: {name:?},\n"));
+    }
+    out.push_str("};\n");
+    out
+}
+
 fn render_ts_module() -> String {
     use shared::channel;
 
@@ -1061,6 +1754,31 @@ fn render_ts_module() -> String {
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
     ));
+
+    // Phase 2 (Option A) RAW syscall set, projected from
+    // wasm_posix_shared::host_raw_syscalls. These syscalls keep raw i64 args and
+    // are never carried as an opaque record. The blind record fast-path in
+    // kernel-worker.ts asserts a RAW syscall never arrives with RECORD_MAGIC.
+    out.push_str(&format!(
+        "/* Opaque channel-record sentinel (wasm_posix_shared::channel_record). */\n\
+         export const RECORD_MAGIC = 0x{:08X} as const;\n\n",
+        shared::channel_record::RECORD_MAGIC,
+    ));
+    {
+        use shared::host_raw_syscalls::host_raw_syscalls_sorted;
+        let (sorted, len) = host_raw_syscalls_sorted();
+        out.push_str(
+            "/* Phase 2 RAW syscalls (keep raw args, never a record). Source of\n\
+             * truth: wasm_posix_shared::host_raw_syscalls; mirror of the guest\n\
+             * marshal header's kandelo_raw_syscalls. */\n\
+             export const HOST_RAW_SYSCALLS: ReadonlySet<number> = new Set<number>([\n",
+        );
+        for &n in &sorted[..len] {
+            out.push_str(&format!("  {n},\n"));
+        }
+        out.push_str("]);\n\n");
+    }
+
     out.push_str(&format!(
         "export const WPK_FORK_LINKED_FRAME_FORMAT_SECTION = {:?} as const;\n",
         shared::abi::WPK_FORK_LINKED_FRAME_FORMAT_SECTION
@@ -1225,6 +1943,10 @@ fn render_ts_module() -> String {
         (
             "REPLAY_EVENT_SEGMENT",
             shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT,
+        ),
+        (
+            "JOURNAL_IMAGE",
+            shared::abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
         ),
     ] {
         out.push_str(&format!(
@@ -1517,6 +2239,33 @@ fn render_ts_module() -> String {
     ] {
         out.push_str(&format!(
             "export const WPK_FORK_ACTIVATION_CONTINUATIONS_{name} = {value} as const;\n"
+        ));
+    }
+    out.push_str(&format!(
+        "export const WPK_FORK_JOURNAL_IMAGE_MAGIC = {:?} as const;\n",
+        shared::abi::WPK_FORK_JOURNAL_IMAGE_MAGIC,
+    ));
+    for (name, value) in [
+        ("OWNER", shared::abi::WPK_FORK_JOURNAL_IMAGE_OWNER),
+        (
+            "VERSION",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_VERSION),
+        ),
+        (
+            "HEADER_SIZE",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE),
+        ),
+        (
+            "PAYLOAD_SIZE",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE),
+        ),
+        (
+            "KNOWN_FLAGS",
+            u32::from(shared::abi::WPK_FORK_JOURNAL_IMAGE_KNOWN_FLAGS),
+        ),
+    ] {
+        out.push_str(&format!(
+            "export const WPK_FORK_JOURNAL_IMAGE_{name} = {value} as const;\n"
         ));
     }
     out.push_str(&format!(
@@ -2042,6 +2791,10 @@ fn render_ts_module() -> String {
             shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
         ),
         (
+            "WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF",
+            shared::abi::WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF,
+        ),
+        (
             "WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE",
             shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
         ),
@@ -2221,6 +2974,21 @@ fn render_ts_module() -> String {
     for (name, value) in epoll_events() {
         out.push_str(&format!("  {}: {},\n", name, value));
     }
+    out.push_str("} as const;\n\n");
+    out.push_str(
+        "/* Facts a host network engine reports over `host_net_readiness`.\n\
+         * The host reports these; the kernel alone decides `revents` from\n\
+         * them (runtime_core::net_readiness::stream_revents). */\n",
+    );
+    out.push_str("export const NET_READINESS = {\n");
+    for (name, value) in net_readiness_facts() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str(&format!(
+        "  ERRNO_SHIFT: {},\n  FLAG_MASK: {},\n",
+        shared::net_readiness::ERRNO_SHIFT,
+        shared::net_readiness::FLAG_MASK,
+    ));
     out.push_str("} as const;\n\n");
     out.push_str("export const OPEN_FLAGS = {\n");
     for (name, value) in open_flags() {
@@ -2624,10 +3392,6 @@ fn render_ts_module() -> String {
         shared::socket::SCM_RIGHTS_FD_BYTES
     ));
     out.push_str(&format!(
-        "export const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT = {} as const;\n",
-        shared::socket::KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT
-    ));
-    out.push_str(&format!(
         "export const SPAWN_WIRE_HEADER_BYTES = {} as const;\n",
         shared::spawn_contract::WIRE_HEADER_BYTES
     ));
@@ -2799,6 +3563,37 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
 
+    // The artifact search tiers and their order. Generated because the order
+    // was spelled independently in eight places -- the TypeScript resolver,
+    // host-native, and seven literals in xtask, which is what WRITES the tiers
+    // -- and the disagreement cost 39 of 53 host-native tests against a tree
+    // where the build had just succeeded.
+    out.push_str(
+        "/**\n\
+         * Every artifact search root, in search order. First match wins.\n\
+         *\n\
+         * `conditional` tiers exist only once a local build has written them,\n\
+         * so a consumer must check for existence before searching.\n\
+         * `anchor` says what `relativePath` is relative to: \"repo\" needs a\n\
+         * source checkout, \"package\" is always present.\n\
+         */\n",
+    );
+    out.push_str("export const ARTIFACT_TIERS = [\n");
+    for tier in shared::artifact_tiers::ARTIFACT_TIERS {
+        out.push_str(&format!(
+            "  {{ kind: {:?}, label: {:?}, relativePath: {:?}, anchor: {:?}, conditional: {} }},\n",
+            tier.kind,
+            tier.label,
+            tier.relative_path,
+            match tier.anchor {
+                shared::artifact_tiers::TierAnchor::RepoRoot => "repo",
+                shared::artifact_tiers::TierAnchor::PackageRoot => "package",
+            },
+            tier.conditional,
+        ));
+    }
+    out.push_str("] as const;\n\n");
+
     out.push_str("export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [\n");
     for export_name in shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
         out.push_str(&format!("  {:?},\n", export_name));
@@ -2835,8 +3630,12 @@ fn render_ts_module() -> String {
         shared::ChannelStatus::Complete as u32
     ));
     out.push_str(&format!(
-        "export const CHANNEL_STATUS_ERROR = {} as const;\n\n",
+        "export const CHANNEL_STATUS_ERROR = {} as const;\n",
         shared::ChannelStatus::Error as u32
+    ));
+    out.push_str(&format!(
+        "export const CHANNEL_STATUS_TEARDOWN = {} as const;\n\n",
+        shared::ChannelStatus::Teardown as u32
     ));
 
     out.push_str("export const CHANNEL_STATUS = {\n");
@@ -2844,6 +3643,7 @@ fn render_ts_module() -> String {
     out.push_str("  Pending: CHANNEL_STATUS_PENDING,\n");
     out.push_str("  Complete: CHANNEL_STATUS_COMPLETE,\n");
     out.push_str("  Error: CHANNEL_STATUS_ERROR,\n");
+    out.push_str("  Teardown: CHANNEL_STATUS_TEARDOWN,\n");
     out.push_str("} as const;\n\n");
 
     out.push_str(&format!(
@@ -2889,6 +3689,10 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED = {} as const;\n",
         channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
+    ));
+    out.push_str(&format!(
+        "export const CHANNEL_REQUEST_FLAG_OPAQUE_RECORD = {} as const;\n",
+        channel::REQUEST_FLAG_OPAQUE_RECORD
     ));
     out.push_str(&format!(
         "export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = {} as const;\n",
@@ -3159,82 +3963,6 @@ fn render_ts_module() -> String {
         offset_of!(shared::WasmPollFd, revents)
     ));
     out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_IOVEC_WIRE = {} as const;\n",
-        size_of::<shared::KernelIovecWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_IOVEC_WIRE_ALIGN = {} as const;\n",
-        align_of::<shared::KernelIovecWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_IOVEC_WIRE_BASE_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelIovecWire, base)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_IOVEC_WIRE_LEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelIovecWire, len)
-    ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_MSGHDR_WIRE = {} as const;\n",
-        size_of::<shared::KernelMsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_ALIGN = {} as const;\n",
-        align_of::<shared::KernelMsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_NAME_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, name)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, name_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_IOV_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, iov)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, iov_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_CONTROL_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, control)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, control_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_MSGHDR_WIRE_FLAGS_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelMsghdrWire, flags)
-    ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_CMSGHDR_WIRE = {} as const;\n",
-        size_of::<shared::KernelCmsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_ALIGN = {} as const;\n",
-        align_of::<shared::KernelCmsghdrWire>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_LEN_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelCmsghdrWire, cmsg_len)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelCmsghdrWire, cmsg_level)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_TYPE_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelCmsghdrWire, cmsg_type)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_CMSGHDR_WIRE_DATA_OFFSET = {} as const;\n",
-        size_of::<shared::KernelCmsghdrWire>()
-    ));
-    out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_EPOLL_EVENT = {} as const;\n",
         size_of::<shared::WasmEpollEvent>()
     ));
@@ -3289,6 +4017,39 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = {} as const;\n\n",
         offset_of!(shared::KernelWaitResult, rusage)
+    ));
+
+    out.push_str(&format!(
+        "export const STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS = {} as const;\n",
+        size_of::<shared::KernelSharedMappingFdFacts>()
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, dev)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, ino)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, size)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, host_handle)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, mode)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET = {} as const;\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, access_mode)
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET = {} as const;\n\n",
+        offset_of!(shared::KernelSharedMappingFdFacts, has_host_handle)
     ));
 
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
@@ -3362,6 +4123,45 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
 
+    // The signals a Wasm trap can raise, and the base of the shell's signalled
+    // exit convention. Which trap raises which of these is decided in
+    // `wasm_posix_shared::trap_signal` and reached from TypeScript through the
+    // kernel's `kernel_classify_wasm_trap_signal` export — these constants
+    // exist so a host never spells a signal number itself.
+    out.push_str("export const TRAP_SIGNALS = {\n");
+    for (name, number) in [
+        ("SIGILL", shared::signal::SIGILL),
+        ("SIGFPE", shared::signal::SIGFPE),
+        ("SIGSEGV", shared::signal::SIGSEGV),
+    ] {
+        out.push_str(&format!("  {name}: {number},\n"));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str(&format!(
+        "export const SIGNAL_EXIT_STATUS_BASE = {} as const;\n\n",
+        shared::trap_signal::signal_exit_status(0)
+    ));
+
+    // Errno values, POSITIVE as POSIX and `shared::Errno` define them.
+    //
+    // V-D1: these had no generator while their neighbours (open flags, mode
+    // bits, syscall names) had one, so `host/src/vfs/sharedfs-vendor.ts` and
+    // `host/src/exec-target.ts` each hand-wrote the subset they needed.
+    //
+    // Consumers that follow the negated-errno convention must negate
+    // explicitly; see `host/src/vfs/vfs-errors.ts`. Emitting the POSIX sign
+    // and negating at one visible place beats baking a second convention into
+    // the generated table.
+    out.push_str("export const ERRNO = {\n");
+    for value in 1u32..=256 {
+        if let Some(errno) = shared::Errno::from_u32(value) {
+            // `Debug` is the variant name; ENOTSUP aliases EOPNOTSUPP, so the
+            // canonical name for a shared value appears once.
+            out.push_str(&format!("  {:?}: {value},\n", errno));
+        }
+    }
+    out.push_str("} as const;\n\n");
+
     out.push_str("export const ABI_SYSCALL_NAMES: Record<number, string> = {\n");
     for (number, name) in all_syscall_log_names() {
         out.push_str(&format!("  {number}: {name:?},\n"));
@@ -3374,16 +4174,13 @@ fn render_ts_module() -> String {
     out.push_str("  | { type: \"arg\"; argIndex: number; multiplier?: number; add?: number }\n");
     out.push_str("  | { type: \"deref\"; argIndex: number }\n");
     out.push_str("  | { type: \"fixed\"; size: number }\n");
-    out.push_str("  | { type: \"process-layout\"; wasm32Size: number; wasm64Size: number };\n\n");
+    out.push_str("  | { type: \"process-layout\"; wasm32Size: number; wasm64Size: number }\n");
+    out.push_str("  | { type: \"kernel-dereferenced\" };\n\n");
     out.push_str("export type SyscallArgCopyOutLengthSpec =\n");
     out.push_str("  | { type: \"u32-field\"; argIndex: number; offset: number }\n");
     out.push_str(
         "  | { type: \"return-value\"; multiplier: number; maxValue: number };\n\n",
     );
-    out.push_str(&format!(
-        "export const PROCESS_POINTER_WIDTH_ARG_INDEX = {} as const;\n\n",
-        shared::host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX
-    ));
     out.push_str("export interface SyscallArgDesc {\n");
     out.push_str("  argIndex: number;\n");
     out.push_str("  direction: SyscallArgDirection;\n");
@@ -3587,6 +4384,9 @@ fn ts_syscall_arg_size(size: shared::host_abi::SyscallArgSize) -> String {
             format!("{{ type: \"deref\", argIndex: {arg_index} }}")
         }
         SyscallArgSize::Fixed { size } => format!("{{ type: \"fixed\", size: {size} }}"),
+        SyscallArgSize::KernelDereferenced => {
+            "{ type: \"kernel-dereferenced\" }".to_string()
+        }
         SyscallArgSize::ProcessLayout {
             wasm32_size,
             wasm64_size,
@@ -3991,6 +4791,25 @@ fn epoll_events() -> [(&'static str, u32); 4] {
     ]
 }
 
+/// Facts a host network engine reports over `host_net_readiness`.
+///
+/// These cross the host/kernel boundary, so the host's copy is generated from
+/// this one rather than retyped. The readiness *decision* they feed is the
+/// kernel's alone; see `runtime_core::net_readiness`.
+fn net_readiness_facts() -> [(&'static str, u32); 7] {
+    use shared::net_readiness::*;
+
+    [
+        ("RECV_READY", RECV_READY),
+        ("RECV_EOF", RECV_EOF),
+        ("SEND_READY", SEND_READY),
+        ("SEND_CLOSED", SEND_CLOSED),
+        ("HANGUP", HANGUP),
+        ("ERROR", ERROR),
+        ("UNOBSERVABLE", UNOBSERVABLE),
+    ]
+}
+
 fn io_multiplexing() -> Value {
     let poll_events: Vec<Value> = poll_events()
         .into_iter()
@@ -4000,10 +4819,19 @@ fn io_multiplexing() -> Value {
         .into_iter()
         .map(|(name, value)| json!({ "name": name, "value": value }))
         .collect();
+    let net_readiness_facts: Vec<Value> = net_readiness_facts()
+        .into_iter()
+        .map(|(name, value)| json!({ "name": name, "value": value }))
+        .collect();
 
     json!({
         "poll_events": poll_events,
         "epoll_events": epoll_events,
+        "net_readiness": {
+            "facts": net_readiness_facts,
+            "errno_shift": shared::net_readiness::ERRNO_SHIFT,
+            "flag_mask": shared::net_readiness::FLAG_MASK,
+        },
         "select": {
             "fd_setsize": shared::select::FD_SETSIZE,
             "fd_set_bytes": shared::select::FD_SET_BYTES,
@@ -4207,11 +5035,180 @@ fn channel_scalar_contract() -> Value {
 }
 
 fn process_native_layouts() -> Value {
+    // All fifteen modules. This recorded six until 2026-09-12, so the
+    // committed snapshot — the campaign's drift-detection artifact — covered
+    // less than half of what it named. `statx` was among the missing, and its
+    // unrecorded offsets are how `stx_dev_minor` came to be never written.
     use shared::process_layout::{
-        cmsghdr, iovec, msghdr, multicast_group_request, rt_sigqueueinfo, sigevent,
+        cmsghdr, iovec, itimerval, mq_attr, msghdr, multicast_group_request,
+        rt_sigqueueinfo, sched_param, sigaltstack, sigevent, stat, statfs, statx,
+        sysinfo,
     };
 
     json!({
+        "sigaltstack": {
+            "wasm32": {
+                "flags_offset": sigaltstack::WASM32_FLAGS_OFFSET,
+                "size": sigaltstack::WASM32_SIZE,
+                "sp_offset": sigaltstack::WASM32_SP_OFFSET,
+                "stack_size_offset": sigaltstack::WASM32_STACK_SIZE_OFFSET,
+            },
+            "wasm64": {
+                "flags_offset": sigaltstack::WASM64_FLAGS_OFFSET,
+                "size": sigaltstack::WASM64_SIZE,
+                "sp_offset": sigaltstack::WASM64_SP_OFFSET,
+                "stack_size_offset": sigaltstack::WASM64_STACK_SIZE_OFFSET,
+            },
+        },
+        "itimerval": {
+            "wasm32": {
+                "size": itimerval::WASM32_SIZE,
+            },
+            "wasm64": {
+                "size": itimerval::WASM64_SIZE,
+            },
+            "interval_sec_index": itimerval::INTERVAL_SEC_INDEX,
+            "interval_usec_index": itimerval::INTERVAL_USEC_INDEX,
+            "value_sec_index": itimerval::VALUE_SEC_INDEX,
+            "value_usec_index": itimerval::VALUE_USEC_INDEX,
+        },
+        "mq_attr": {
+            "wasm32": {
+                "curmsgs_offset": mq_attr::WASM32_CURMSGS_OFFSET,
+                "flags_offset": mq_attr::WASM32_FLAGS_OFFSET,
+                "maxmsg_offset": mq_attr::WASM32_MAXMSG_OFFSET,
+                "msgsize_offset": mq_attr::WASM32_MSGSIZE_OFFSET,
+                "size": mq_attr::WASM32_SIZE,
+            },
+            "wasm64": {
+                "curmsgs_offset": mq_attr::WASM64_CURMSGS_OFFSET,
+                "flags_offset": mq_attr::WASM64_FLAGS_OFFSET,
+                "maxmsg_offset": mq_attr::WASM64_MAXMSG_OFFSET,
+                "msgsize_offset": mq_attr::WASM64_MSGSIZE_OFFSET,
+                "size": mq_attr::WASM64_SIZE,
+            },
+        },
+        "statfs": {
+            "wasm32": {
+                "bavail_offset": statfs::WASM32_BAVAIL_OFFSET,
+                "bfree_offset": statfs::WASM32_BFREE_OFFSET,
+                "blocks_offset": statfs::WASM32_BLOCKS_OFFSET,
+                "bsize_offset": statfs::WASM32_BSIZE_OFFSET,
+                "ffree_offset": statfs::WASM32_FFREE_OFFSET,
+                "files_offset": statfs::WASM32_FILES_OFFSET,
+                "flags_offset": statfs::WASM32_FLAGS_OFFSET,
+                "frsize_offset": statfs::WASM32_FRSIZE_OFFSET,
+                "fsid_offset": statfs::WASM32_FSID_OFFSET,
+                "namelen_offset": statfs::WASM32_NAMELEN_OFFSET,
+                "size": statfs::WASM32_SIZE,
+                "spare_offset": statfs::WASM32_SPARE_OFFSET,
+                "type_offset": statfs::WASM32_TYPE_OFFSET,
+            },
+            "wasm64": {
+                "bavail_offset": statfs::WASM64_BAVAIL_OFFSET,
+                "bfree_offset": statfs::WASM64_BFREE_OFFSET,
+                "blocks_offset": statfs::WASM64_BLOCKS_OFFSET,
+                "bsize_offset": statfs::WASM64_BSIZE_OFFSET,
+                "ffree_offset": statfs::WASM64_FFREE_OFFSET,
+                "files_offset": statfs::WASM64_FILES_OFFSET,
+                "flags_offset": statfs::WASM64_FLAGS_OFFSET,
+                "frsize_offset": statfs::WASM64_FRSIZE_OFFSET,
+                "fsid_offset": statfs::WASM64_FSID_OFFSET,
+                "namelen_offset": statfs::WASM64_NAMELEN_OFFSET,
+                "size": statfs::WASM64_SIZE,
+                "spare_offset": statfs::WASM64_SPARE_OFFSET,
+                "type_offset": statfs::WASM64_TYPE_OFFSET,
+            },
+        },
+        "sysinfo": {
+            "wasm32": {
+                "bufferram_offset": sysinfo::WASM32_BUFFERRAM_OFFSET,
+                "freehigh_offset": sysinfo::WASM32_FREEHIGH_OFFSET,
+                "freeram_offset": sysinfo::WASM32_FREERAM_OFFSET,
+                "freeswap_offset": sysinfo::WASM32_FREESWAP_OFFSET,
+                "loads_offset": sysinfo::WASM32_LOADS_OFFSET,
+                "mem_unit_offset": sysinfo::WASM32_MEM_UNIT_OFFSET,
+                "procs_offset": sysinfo::WASM32_PROCS_OFFSET,
+                "reserved_offset": sysinfo::WASM32_RESERVED_OFFSET,
+                "sharedram_offset": sysinfo::WASM32_SHAREDRAM_OFFSET,
+                "size": sysinfo::WASM32_SIZE,
+                "totalhigh_offset": sysinfo::WASM32_TOTALHIGH_OFFSET,
+                "totalram_offset": sysinfo::WASM32_TOTALRAM_OFFSET,
+                "totalswap_offset": sysinfo::WASM32_TOTALSWAP_OFFSET,
+                "uptime_offset": sysinfo::WASM32_UPTIME_OFFSET,
+            },
+            "wasm64": {
+                "bufferram_offset": sysinfo::WASM64_BUFFERRAM_OFFSET,
+                "freehigh_offset": sysinfo::WASM64_FREEHIGH_OFFSET,
+                "freeram_offset": sysinfo::WASM64_FREERAM_OFFSET,
+                "freeswap_offset": sysinfo::WASM64_FREESWAP_OFFSET,
+                "loads_offset": sysinfo::WASM64_LOADS_OFFSET,
+                "mem_unit_offset": sysinfo::WASM64_MEM_UNIT_OFFSET,
+                "procs_offset": sysinfo::WASM64_PROCS_OFFSET,
+                "reserved_offset": sysinfo::WASM64_RESERVED_OFFSET,
+                "sharedram_offset": sysinfo::WASM64_SHAREDRAM_OFFSET,
+                "size": sysinfo::WASM64_SIZE,
+                "totalhigh_offset": sysinfo::WASM64_TOTALHIGH_OFFSET,
+                "totalram_offset": sysinfo::WASM64_TOTALRAM_OFFSET,
+                "totalswap_offset": sysinfo::WASM64_TOTALSWAP_OFFSET,
+                "uptime_offset": sysinfo::WASM64_UPTIME_OFFSET,
+            },
+        },
+        "stat": {
+            "atime_nsec_offset": stat::ATIME_NSEC_OFFSET,
+            "atime_sec_offset": stat::ATIME_SEC_OFFSET,
+            "blksize_offset": stat::BLKSIZE_OFFSET,
+            "blocks_offset": stat::BLOCKS_OFFSET,
+            "ctime_nsec_offset": stat::CTIME_NSEC_OFFSET,
+            "ctime_sec_offset": stat::CTIME_SEC_OFFSET,
+            "dev_offset": stat::DEV_OFFSET,
+            "gid_offset": stat::GID_OFFSET,
+            "ino_offset": stat::INO_OFFSET,
+            "mode_offset": stat::MODE_OFFSET,
+            "mtime_nsec_offset": stat::MTIME_NSEC_OFFSET,
+            "mtime_sec_offset": stat::MTIME_SEC_OFFSET,
+            "nlink_offset": stat::NLINK_OFFSET,
+            "rdev_offset": stat::RDEV_OFFSET,
+            "size": stat::SIZE,
+            "size_offset": stat::SIZE_OFFSET,
+            "uid_offset": stat::UID_OFFSET,
+        },
+        "statx": {
+            "atime_nsec_offset": statx::ATIME_NSEC_OFFSET,
+            "atime_sec_offset": statx::ATIME_SEC_OFFSET,
+            "attributes_mask_offset": statx::ATTRIBUTES_MASK_OFFSET,
+            "attributes_offset": statx::ATTRIBUTES_OFFSET,
+            "basic_stats_mask": statx::BASIC_STATS_MASK,
+            "blksize_offset": statx::BLKSIZE_OFFSET,
+            "blocks_offset": statx::BLOCKS_OFFSET,
+            "btime_sec_offset": statx::BTIME_SEC_OFFSET,
+            "ctime_nsec_offset": statx::CTIME_NSEC_OFFSET,
+            "ctime_sec_offset": statx::CTIME_SEC_OFFSET,
+            "dev_major_offset": statx::DEV_MAJOR_OFFSET,
+            "dev_minor_offset": statx::DEV_MINOR_OFFSET,
+            "gid_offset": statx::GID_OFFSET,
+            "ino_offset": statx::INO_OFFSET,
+            "mask_offset": statx::MASK_OFFSET,
+            "mode_offset": statx::MODE_OFFSET,
+            "mtime_nsec_offset": statx::MTIME_NSEC_OFFSET,
+            "mtime_sec_offset": statx::MTIME_SEC_OFFSET,
+            "nlink_offset": statx::NLINK_OFFSET,
+            "rdev_major_offset": statx::RDEV_MAJOR_OFFSET,
+            "rdev_minor_offset": statx::RDEV_MINOR_OFFSET,
+            "size": statx::SIZE,
+            "size_field_offset": statx::SIZE_FIELD_OFFSET,
+            "uid_offset": statx::UID_OFFSET,
+        },
+        "sched_param": {
+            "priority_offset": sched_param::PRIORITY_OFFSET,
+            "size": sched_param::SIZE,
+            "ss_init_budget_nsec_offset": sched_param::SS_INIT_BUDGET_NSEC_OFFSET,
+            "ss_init_budget_sec_offset": sched_param::SS_INIT_BUDGET_SEC_OFFSET,
+            "ss_low_priority_offset": sched_param::SS_LOW_PRIORITY_OFFSET,
+            "ss_max_repl_offset": sched_param::SS_MAX_REPL_OFFSET,
+            "ss_repl_period_nsec_offset": sched_param::SS_REPL_PERIOD_NSEC_OFFSET,
+            "ss_repl_period_sec_offset": sched_param::SS_REPL_PERIOD_SEC_OFFSET,
+        },
         "cmsghdr": {
             "wasm32": {
                 "align": cmsghdr::WASM32_ALIGN,
@@ -4237,10 +5234,6 @@ fn process_native_layouts() -> Value {
         },
         "socket_message_flags": {
             "trunc": shared::socket::MSG_TRUNC,
-        },
-        "kernel_message_wire": {
-            "flattened_iovec_count":
-                shared::socket::KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT,
         },
         "iovec": {
             "wasm32": {
@@ -4755,7 +5748,7 @@ fn marshalled_structs() -> Value {
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
-        KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire, KernelWaitResult, WasmDirent,
+        KernelWaitResult, WasmDirent,
         WasmEpollEvent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat, WasmStatfs,
         WasmSysvMessageHeader, WasmTimespec,
     };
@@ -4871,30 +5864,6 @@ fn marshalled_structs() -> Value {
             fd,
             events,
             revents
-        }),
-    );
-    structs.insert(
-        "KernelIovecWire".into(),
-        struct_layout!(KernelIovecWire { base, len }),
-    );
-    structs.insert(
-        "KernelMsghdrWire".into(),
-        struct_layout!(KernelMsghdrWire {
-            name,
-            name_len,
-            iov,
-            iov_len,
-            control,
-            control_len,
-            flags,
-        }),
-    );
-    structs.insert(
-        "KernelCmsghdrWire".into(),
-        struct_layout!(KernelCmsghdrWire {
-            cmsg_len,
-            cmsg_level,
-            cmsg_type,
         }),
     );
     structs.insert(
@@ -5645,6 +6614,9 @@ fn syscall_arg_size_json(size: shared::host_abi::SyscallArgSize) -> Value {
             m.insert("type".into(), json!("fixed"));
             m.insert("size".into(), json!(size));
         }
+        SyscallArgSize::KernelDereferenced => {
+            m.insert("type".into(), json!("kernel-dereferenced"));
+        }
         SyscallArgSize::ProcessLayout {
             wasm32_size,
             wasm64_size,
@@ -5665,6 +6637,7 @@ fn channel_status_codes() -> Value {
         (Pending, "Pending"),
         (Complete, "Complete"),
         (Error, "Error"),
+        (Teardown, "Teardown"),
     ] {
         let mut m: JsonMap = BTreeMap::new();
         m.insert("number".into(), json!(n as u32));
@@ -6957,6 +7930,22 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "vfs_metadata" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            // Layout modules are keyed by struct name, exactly like the three
+            // sections above. Recording a module nobody recorded before cannot
+            // break a consumer that never read it, while CHANGING an existing
+            // module's offsets stays breaking -- `classify_additive_object_by_key`
+            // reports changed and removed entries, and only additions are
+            // forgiven.
+            //
+            // Until 2026-09-12 this section fell through to the catch-all, so
+            // extending coverage from 6 of 15 modules to all 15 was classified
+            // as an incompatible change and demanded an ABI_VERSION bump. The
+            // effect was that the snapshot could not gain coverage at all, and
+            // the generated C header ended up guarding 14 modules while the
+            // snapshot recorded 6.
+            "process_native_layouts" => {
+                classify_additive_object_by_key(key, old_value, new_value, &mut report)?
+            }
             _ if old_value != new_value => {
                 report
                     .breaking
@@ -7252,15 +8241,8 @@ mod tests {
         ));
         assert!(rendered.contains("export const PROCESS_MSGHDR_WASM64_SIZE = 56 as const;"));
         assert!(rendered.contains("export const PROCESS_CMSGHDR_WASM64_ALIGN = 8 as const;"));
-        assert!(rendered.contains("export const STRUCT_SIZE_KERNEL_IOVEC_WIRE = 8 as const;"));
-        assert!(rendered.contains("export const STRUCT_SIZE_KERNEL_MSGHDR_WIRE = 28 as const;"));
-        assert!(rendered.contains("export const STRUCT_SIZE_KERNEL_CMSGHDR_WIRE = 12 as const;"));
         assert!(rendered.contains("export const PROCESS_METADATA_KIND_ARGV = 0 as const;"));
         assert!(rendered.contains("export const PROCESS_METADATA_KIND_ENVIRONMENT = 1 as const;"));
-        assert!(
-            rendered
-                .contains("export const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT = 1 as const;")
-        );
         assert!(rendered.contains("export const SOCKET_MSG_TRUNC = 32 as const;"));
         assert!(rendered.contains("export const WASM_EPOLL_EVENT_EVENTS_OFFSET = 0 as const;"));
         assert!(rendered.contains("export const WASM_EPOLL_EVENT_PAD_OFFSET = 4 as const;"));
@@ -7420,6 +8402,24 @@ mod tests {
                     "fd_setsize": 1024,
                     "fd_set_bytes": 128,
                 },
+                // The facts a host reports about a socket, from which the
+                // kernel decides readiness. Added when socket readiness moved
+                // out of the four host backends and into the kernel; this
+                // assertion is what makes that metadata's completeness a gate
+                // rather than a hope.
+                "net_readiness": {
+                    "facts": [
+                        { "name": "RECV_READY", "value": 1 },
+                        { "name": "RECV_EOF", "value": 2 },
+                        { "name": "SEND_READY", "value": 4 },
+                        { "name": "SEND_CLOSED", "value": 8 },
+                        { "name": "HANGUP", "value": 16 },
+                        { "name": "ERROR", "value": 32 },
+                        { "name": "UNOBSERVABLE", "value": 64 },
+                    ],
+                    "flag_mask": 65535,
+                    "errno_shift": 16,
+                },
             }),
         );
 
@@ -7506,7 +8506,7 @@ mod tests {
             "export const CHANNEL_RESULT_DEFAULT_KIND = \"i32\" as const;",
             "  5: { 1: \"split-i64-low-u32\", 2: \"split-i64-high-i32\", },",
             "  64: { 2: \"process-size\", 3: \"i64\", },",
-            "  295: { 3: \"split-i64-low-u32\", 4: \"split-i64-high-i32\", },",
+            "  295: { 1: \"process-address\", 3: \"split-i64-low-u32\", 4: \"split-i64-high-i32\", },",
             "  5: \"i64\",",
             "  46: \"process-address\",",
         ] {
@@ -7541,6 +8541,7 @@ mod tests {
             "#define WASM_POSIX_CHANNEL_STATUS_PENDING 1u",
             "#define WASM_POSIX_CHANNEL_STATUS_COMPLETE 2u",
             "#define WASM_POSIX_CHANNEL_STATUS_ERROR 3u",
+            "#define WASM_POSIX_CHANNEL_STATUS_TEARDOWN 4u",
             "#define WASM_POSIX_CHANNEL_STATUS_OFFSET 0u",
             "#define WASM_POSIX_CHANNEL_SYSCALL_OFFSET 4u",
             "#define WASM_POSIX_CHANNEL_ARGS_OFFSET 8u",
@@ -7553,7 +8554,8 @@ mod tests {
             "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY 4u",
             "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT 1u",
             "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED 2u",
-            "#define WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK 7u",
+            "#define WASM_POSIX_CHANNEL_REQUEST_FLAG_OPAQUE_RECORD 8u",
+            "#define WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK 15u",
             "#define WASM_POSIX_CHANNEL_DATA_OFFSET 72u",
             "#define WASM_POSIX_CHANNEL_DATA_SIZE 65536u",
             "#define WASM_POSIX_CHANNEL_HEADER_SIZE 72u",
@@ -7586,7 +8588,8 @@ mod tests {
             "export const CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY = 4 as const;",
             "export const CHANNEL_REQUEST_FLAG_CANCELLATION_POINT = 1 as const;",
             "export const CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED = 2 as const;",
-            "export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = 7 as const;",
+            "export const CHANNEL_REQUEST_FLAG_OPAQUE_RECORD = 8 as const;",
+            "export const CHANNEL_REQUEST_FLAGS_KNOWN_MASK = 15 as const;",
             "export const CH_SIG_AREA_SIZE = 56 as const;",
             "export const CH_SIG_DELIVERY_SIZE = 56 as const;",
             "export const CH_SIG_SI_VALUE = 65564 as const;",
@@ -7741,10 +8744,6 @@ mod tests {
             }),
         );
         assert_eq!(
-            layouts["kernel_message_wire"],
-            json!({"flattened_iovec_count": 1}),
-        );
-        assert_eq!(
             layouts["socket_message_flags"],
             json!({"trunc": shared::socket::MSG_TRUNC}),
         );
@@ -7828,10 +8827,6 @@ mod tests {
         assert!(header.contains("#define KANDELO_SOCKADDR_UNIX_PATH_BYTES 108u"));
         assert!(header.contains("#define KANDELO_SELECT_FD_SET_BYTES 128u"));
 
-        let structs = marshalled_structs();
-        assert_eq!(structs["KernelIovecWire"]["size"], json!(8));
-        assert_eq!(structs["KernelMsghdrWire"]["size"], json!(28));
-        assert_eq!(structs["KernelCmsghdrWire"]["size"], json!(12));
     }
 
     #[test]
@@ -7904,7 +8899,7 @@ mod tests {
         let record_kinds = fork["module_state"]["arena"]["record"]["kinds"]
             .as_array()
             .unwrap();
-        assert_eq!(record_kinds.len(), 13);
+        assert_eq!(record_kinds.len(), 14);
         assert_eq!(
             record_kinds[11],
             json!({"name": "reference_recipe_segment", "number": 12})
@@ -7912,6 +8907,10 @@ mod tests {
         assert_eq!(
             record_kinds[12],
             json!({"name": "replay_event_segment", "number": 13})
+        );
+        assert_eq!(
+            record_kinds[13],
+            json!({"name": "journal_image", "number": 14})
         );
         assert_eq!(
             fork["module_state"]["record_payloads"]["mutable_global"]["header_size"],
@@ -7950,7 +8949,15 @@ mod tests {
         );
 
         let imports = fork["required_imports"].as_array().unwrap();
-        assert_eq!(imports.len(), 47);
+        assert_eq!(imports.len(), 48);
+        // The 48th required import is the externref provenance broker
+        // (`WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF`); pin its identity so
+        // the count above is not a blind bump. It is verified by the ABI snapshot
+        // (`abi/snapshot.json`) and the `WPK_FORK_REQUIRED_IMPORTS.len()`
+        // self-test in `crates/shared`.
+        assert!(imports.iter().any(|entry| {
+            entry["name"] == json!("__wpk_fork_ref_provenance_externref")
+        }));
         assert_eq!(
             imports[0],
             json!({

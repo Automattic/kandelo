@@ -706,34 +706,189 @@ ABI 43 also makes System V IPC control-structure sizing explicit. Required
 pointer-width queries report the target musl layouts: `msqid_ds` is 96 bytes
 on wasm32 time64 and 120 bytes on wasm64 LP64, `semid_ds` is 72/88 bytes, and
 `shmid_ds` is 88/112 bytes. The process width is authoritative even when it
-differs from the kernel Wasm width. The host stages `msgctl`/`shmctl`
-`IPC_STAT` and `IPC_SET` according to the command and carries that width in its
-private sixth kernel-dispatch slot. The required
-`kernel_semctl_array_bytes(pid, tid, semid, command)` export performs the
-permission-aware GETALL/SETALL size preflight; the host does not substitute a
-read-only `IPC_STAT` query for a write-only SETALL operation.
+differs from the kernel Wasm width.
+
+**ABI 44 changes who applies that rule.** These arguments are now declared
+`SyscallArgSize::KernelDereferenced`: the host copies nothing and passes the
+caller's raw guest address, and the kernel reads and writes the structure
+itself through `host_proc_read_bytes` / `host_proc_write_bytes`, taking the
+caller's width from the private sixth kernel-dispatch slot. The five ABI 43
+sizing exports — `kernel_semid_ds_bytes`, `kernel_msqid_ds_bytes`,
+`kernel_shmid_ds_bytes`, `kernel_semctl_array_bytes`, and
+`kernel_mq_descriptor_msgsize` — answered a question the host no longer asks
+and are removed from `kernel_exports`. That is a snapshot change without an
+`ABI_VERSION` bump, which the ABI-44 epoch decision permits, but it is an
+export REMOVAL rather than a purely additive change: a host validating
+`required_kernel_exports` against an ABI 43 list will see five fewer entries.
+
+The GETALL/SETALL permission rule is unchanged and still explicit: a process
+may have permission to write a semaphore set without permission to read its
+metadata, so the array length comes from the requested command's own
+permission-checked query, never from a read-only `IPC_STAT`.
+
+**ABI 44 also withdraws 121 dispatch-only kernel exports**, taking
+`kernel_exports` from 322 entries to 201 (320 `kernel_*` symbols to 199,
+alongside the unchanged `__abi_version` and `memory`). These are the functions
+nothing outside the kernel module could ever call. `dispatch_channel_syscall`
+reaches them as plain Rust function calls — `SYS_CLOSE` dispatches as
+`kernel_close(a1)`, not as a re-entry through the export table — so
+`#[unsafe(no_mangle)] pub extern "C"` published a symbol with no consumer. The
+bodies and every caller are unchanged; only the export attribute is gone.
+
+Dispatch-only is not the same as dead, and the difference is worth stating
+because this epoch already got it wrong once: `kernel_brk` and `kernel_time`
+were called dead on the evidence of zero host references and were live, reached
+from inside `wasm_api.rs`. Zero host references means the host does not call
+it, not that nothing does.
+
+Removal was verified against every consumer of the export table, not just the
+hosts: `host/src` and `host/test`; `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS` and
+its OPTIONAL sibling; the `wasm_require_exports` list in
+`packages/registry/kernel/build-kernel.sh` and `KERNEL_REQUIRED_EXPORTS` in
+`run.sh`; and every `get_typed_func` lookup in `crates/host-native`, which runs
+the kernel under wasmtime and is therefore the one consumer that reads exports
+by name. Guests cannot reach them either: a guest's `kernel.*` import namespace
+is `buildKernelImports` in `host/src/worker-main.ts`, a closed set of
+hand-written JavaScript, and `assertSupportedKernelFunctionImports` rejects any
+module importing a name outside it.
+
+One function that looked like a consumer is not. `crates/host-native` mentions
+`kernel_wait4`, but only as `linker.func_wrap("kernel", "kernel_wait4", ...)`
+— supplying that import to a GUEST, never reading the kernel's export.
+Supplying an import and consuming an export share a name and nothing else.
+`kernel_exec_target_resolve_shebang`, the other host-native mention, is a real
+`kernel.get_typed_func` lookup and keeps its export.
+
+As with the five sizing exports above, this is a snapshot change without an
+`ABI_VERSION` bump, which the ABI-44 epoch decision permits, and as with those
+it is an export REMOVAL rather than an additive change: a host validating a
+required-export list built against ABI 43 will see 121 fewer entries. Nothing
+else in the snapshot moved — the regeneration diff is 0 lines added and 605
+removed, and the kernel's 76 `env.host_*` imports are unchanged.
+
+**`kernel_sendmsg` and `kernel_recvmsg` change signature in ABI 44**, from
+`(i32, i32, i32, i64) -> i32` to `(i32, i64, i32, i32, i64) -> i32`. The second
+argument was a kernel-scratch pointer to a fixed `KernelMsghdrWire` the host
+built; it is now the caller's own `struct msghdr *` as an `i64`, and the new
+fourth argument names the caller's pointer width. The kernel walks the header,
+the `msg_iov` table and the `cmsghdr` chain in the caller's memory, in the
+caller's data model.
+
+This is an **incompatible change to an existing export**, not an additive one:
+an ABI 43 guest calling the four-argument form would trap on the arity
+mismatch. It stays under ABI 44 because the whole epoch is unreleased and
+in-development, and because guest re-instrumentation and package rebuilds are
+available — but it is recorded here rather than left to the structural snapshot
+check, which sees a signature change without knowing it is breaking.
+
+**The scatter/gather syscalls follow in ABI 44, and take three `repr(C)`
+struct layouts out of the snapshot with them.** `writev` (81), `readv` (82),
+`preadv` (295), `pwritev` (296), `preadv2` (297) and `pwritev2` (298) now
+declare argument 1 — the caller's `struct iovec *` table — as
+`SyscallArgSize::KernelDereferenced`, with slot 1 declared
+`ChannelScalarKind::ProcessAddress` so a wasm64 address above 4 GiB cannot
+alias its low word. The host copies nothing; the kernel walks the caller's
+table and its buffers itself and carries out one gathered or scattered
+transfer, which is what preserves PIPE_BUF atomicity and datagram boundaries.
+No kernel export is added or removed: these arguments reach the kernel through
+`kernel_handle_channel`'s existing dispatch.
+
+Three structures leave `abi/snapshot.json` as a result — `KernelIovecWire`,
+`KernelMsghdrWire` and `KernelCmsghdrWire` — along with the
+`kernel_message_wire.flattened_iovec_count` constant. They described the
+fixed-width table the host used to stage into kernel scratch; nothing stages it
+any more, on any host. **This is a snapshot REMOVAL, not an additive change:** a
+consumer reading those layouts out of the snapshot will not find them. It stays
+under ABI 44 for the same reason the export removals above do — the epoch is
+unreleased — and it is recorded here rather than left to the structural
+snapshot check.
+
+Two generated musl headers move with it, so **musl and everything linked
+against it must be rebuilt**: `kandelo_channel_scalars.h` gains `__NR_writev` /
+`__NR_readv` assertions, and `kandelo_syscall_marshal.h` drops the nested
+IOVEC_ARRAY span entry for all six syscalls, exactly as it has none for
+`sendmsg`/`recvmsg`. The opaque transport still decodes an IOVEC_ARRAY or
+MSGHDR span, but preparation now refuses one with `EINVAL`: honouring it would
+replace the caller's guest address with a kernel-scratch offset the guest never
+named.
+
+**That collision is now closed: the pointer width is registered per process,
+and channel slot 5 belongs to the caller again.** It was recorded here rather
+than hidden — the caller's pointer width used to land in
+`host_abi::PROCESS_POINTER_WIDTH_ARG_INDEX`, channel slot 5, which for
+`preadv2`/`pwritev2` is the guest's `flags`, so no `RWF_*` value reached the
+kernel. The fix is the one this document named: give the kernel a per-process
+pointer width at registration instead of per dispatch.
+
+`Process` carries `pointer_width`, established at each point where an address
+space comes into being and read by the kernel as a lookup:
+
+- **creation** — the host calls the new `kernel_set_process_pointer_width(pid,
+  width)` export during `registerProcess`, beside the brk base, mmap base and
+  thread-slot quota. The host is what read the program's bytes and
+  instantiated its `Memory`, so it is what knows;
+- **`fork`** — the child inherits it with the address space it describes,
+  through the fork state record. That record's version moves **15 → 16**;
+- **`exec`** — the kernel replaces it itself, inside
+  `exec_target::finish_commit`, from the artifact bytes the incoming image
+  committed to (`wasm_artifact::detect_pointer_width`). This is the only
+  instant at which it may change: after the outgoing image has stopped being
+  the one that runs, and before the host launches the incoming one. The read
+  happens before the point of no return, so an unreadable or drifted target
+  fails the exec rather than committing an image under the outgoing image's
+  data model.
+
+**This changes the meaning of an existing argument slot, not only the
+structural snapshot.** Slot 5 of `preadv2` (297) and `pwritev2` (298) is newly
+declared `ChannelScalarKind::U32` and carries the caller's `flags`; every other
+kernel-dereferenced and process-layout syscall simply stops having slot 5
+overwritten. Seven writers of the slot are gone — three in
+`host/src/kernel-worker.ts` (`setsockopt`, `ioctl`, and the descriptor-driven
+path), one in `crates/host-native`, and three in the guest's own
+`libc/glue/channel_syscall.c`, which forced slot 5 to `sizeof(void *)` in every
+opaque channel record it emitted. **musl and everything linked against it must
+be rebuilt**, because the guest side of this contract changed.
+
+`preadv2`/`pwritev2` then get honest flag handling.
+`wasm_posix_shared::rwf_flags::check_rwf_flags` implements `RWF_NOWAIT`, which
+suppresses the blocking retry a would-block transfer parks on, and refuses
+every other `RWF_*` bit with `EOPNOTSUPP` rather than ignoring it — as Linux
+does. A stub that accepted `RWF_DSYNC` and returned success without
+synchronizing would be telling the caller something untrue.
+
+It stays under ABI 44 with no `ABI_VERSION` bump for the same reason the export
+removals above do: the epoch is unreleased, so its surface — including an
+existing export's argument *semantics* — may still move. The snapshot delta is
+exactly three entries: slot 5 of `preadv2` and of `pwritev2`, and the
+`kernel_set_process_pointer_width` export. The kernel's host import count is
+unchanged at 75. A guard test in `crates/shared` still pins the set of
+kernel-dereferenced syscalls so the next addition has to review its argument
+meanings.
 
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
 (16/32), `mq_attr` (32/64), `sigevent` (64/64), `statfs` (88/120), and
 `sysinfo` (312/368), and `siginfo_t` for `rt_sigqueueinfo` (128/128). The host
-stages exactly the selected record and carries the process width in its
-private sixth dispatch slot. Rust rejects any other width and parses or
+stages exactly the selected record; the kernel selects the width from the
+process's registered pointer width. Rust rejects any other width and parses or
 serializes the exact bounded slice; padding and reserved output bytes are
 initialized. This prevents the kernel Wasm's own wasm32 data model from
 truncating a wasm64 process record. Fixed generated descriptors separately
 carry `stat` (112 bytes) and `sched_param` (48 bytes); those records do not use
-width selection or the private process-width slot.
+width selection at all.
 
-The channel `setsockopt` path uses the otherwise private sixth dispatch slot
-for the same independently known caller width. The generated native
+The channel `setsockopt` path needs the same independently known caller width,
+because `optlen` is only a byte extent and cannot say whether an embedded
+`sockaddr_storage` uses wasm32 or wasm64 alignment. It reads it from the
+registered width; it used to be handed the value in the private sixth dispatch
+slot. The generated native
 `group_req` layout is 132 bytes with its group at offset 4 on wasm32 and 136
 bytes with its group at offset 8 on wasm64; `group_source_req` is 260/264
 bytes with its source at offset 132/136. Rust accepts only widths 4 and 8.
 Neither `optlen` nor padding bytes may select a data model. The public
 five-argument `kernel_setsockopt` export is structurally unchanged and uses
-the kernel's native width for direct calls; only channel dispatch consumes the
-host-private width. Adding the generated layout constants and correcting this
+the kernel's native width for direct calls; only channel dispatch consults the
+caller's registered width. Adding the generated layout constants and correcting this
 interpretation remain part of unpublished ABI 43 and do not create ABI 44.
 
 Signal and timer transport also change incompatibly in ABI 43. The
@@ -855,6 +1010,200 @@ candidate source identities, runtime-artifact fingerprints, workloads, and
 separate Node.js/real-Chromium results belong in the draft PR evidence ledger
 after the candidate is frozen. No latency improvement or broad performance
 no-regression is claimed here.
+
+### ABI 44 opaque transport, kernel-owned exec targets, and export reduction
+
+ABI 44 is the **current in-development epoch and is unreleased**. Per the
+amendment rule recorded below, an unreleased epoch is amended in place rather
+than superseded: a further incompatible change while 44 is unpublished is folded
+into 44 and does not justify inventing ABI 45. This section is the durable
+record of what 44 contains, so the epoch's contract does not stay scattered
+across `docs/plans/`.
+
+Changes folded into ABI 44 so far:
+
+- **Opaque channel transport.** Variable-sized scalar and vector syscall I/O
+  moved behind bounded channel or tokenized transfer dispatch, so the host no
+  longer interprets guest argument shape per syscall.
+- **Kernel-owned exec targets.** `#!` shebang resolution became kernel
+  authority via `kernel_exec_target_resolve_shebang`, replacing host-side
+  parsing.
+- **The `TEARDOWN` channel status value**, used by cooperative thread
+  reclamation.
+- **Fork contract changes** from the fork control-flow inversion, including the
+  co-resident fork-module becoming the sole capture/replay engine.
+- **Removed kernel exports.** Twenty-four `kernel_*` exports with no caller
+  anywhere in the repository were deleted from the kernel's exported surface
+  (`pub extern "C" fn` count 336 → 312). They had been carried in
+  `abi/snapshot.json` while reachable from nothing: not the host, not
+  `dispatch_channel_syscall`, not `crates/host-native`, not any test, and — as
+  verified against all 143 built `.wasm` artifacts — not imported by any guest.
+  The matching dead `KERNEL_IMPORT` declarations were removed from
+  `libc/glue/syscall_imports.h`, and the corresponding `libc/glue/syscall_glue.c`
+  call sites now return `ENOSYS` with a recorded reason rather than referencing
+  exports that no longer exist. Removing an export is an incompatible change to
+  the kernel's exported surface; it is folded into 44 because 44 is unreleased,
+  and because no artifact of any epoch imported these names.
+
+Export removal is not bookkeeping for generated constants: it changes what a
+host or guest may link against. It is recorded here so that a later reader can
+tell which names ceased to exist in this epoch rather than inferring it from a
+snapshot diff.
+
+- **Per-process pointer width.** A process's data model is registered once,
+  via the new `kernel_set_process_pointer_width` export, inherited across
+  `fork` and replaced by the kernel at exec commit, instead of being written
+  into channel argument slot 5 on every call that needed it. That returns the
+  slot to `preadv2`/`pwritev2`, whose `flags` argument lives there, so
+  `RWF_NOWAIT` is implemented and every other `RWF_*` bit is refused with
+  `EOPNOTSUPP` rather than silently ignored. This changes an existing
+  argument's meaning, not only the structural snapshot, and the guest's own
+  libc glue stopped writing the slot too, so musl must be rebuilt. Host import
+  count unchanged at 75. Details above.
+
+- **The handle-only host filesystem contract.** The kernel stopped asking the
+  host to resolve pathnames. Eighteen name-taking `env.host_*` imports were
+  removed and ten directory-relative `*at` replacements added, taking the built
+  artifact's host import surface from **83 to 75**. Details below.
+
+#### The handle-only host filesystem contract (ABI 44 epoch)
+
+This is an incompatible change to the host adapter surface, folded into 44
+because 44 is unreleased, and recorded here because a snapshot diff shows
+*which names moved* but not *what the contract now means*.
+
+**Removed (18):** `host_access`, `host_open`, `host_stat`, `host_lstat`,
+`host_statfs`, `host_pathconf`, `host_mkdir`, `host_rmdir`, `host_unlink`,
+`host_rename`, `host_link`, `host_symlink`, `host_readlink`, `host_chmod`,
+`host_chown`, `host_lchown`, `host_opendir`, `host_closedir`.
+
+**Added (10):** `host_openat`, `host_fstatat`, `host_mkdirat`,
+`host_unlinkat`, `host_renameat`, `host_linkat`, `host_symlinkat`,
+`host_readlinkat`, `host_fchmodat`, `host_fchownat`.
+
+**Reshaped in place (1):** `host_utimensat` now takes a directory handle, one
+path component, and `AT_*` flags.
+
+**Unchanged, but re-filed under a different concept (6):** `host_fstat`,
+`host_fstatfs`, `host_fpathconf`, `host_fchmod`, `host_fchown`,
+`host_readdir`. These were already handle-shaped. `host_fstatfs` and
+`host_fpathconf` absorb the path-taking `host_statfs` and `host_pathconf`,
+because both answer a property of the *filesystem*, which the kernel now
+reaches through a directory handle on that filesystem.
+
+**The invariant a host must now satisfy:** *resolve at most one path
+component, relative to a directory handle you previously issued.* A host never
+receives a guest path, a mount prefix, a `..`, or a symlink chain. It also
+never receives two kinds of handle: `host_openat(..., O_DIRECTORY)` issues a
+directory handle that `host_readdir` iterates and `host_close` releases, which
+is why `host_opendir`/`host_closedir` are gone rather than renamed.
+
+**Why the count did not reach zero.** `mkdir`, `unlink`, `rename`, `link`, and
+`symlink` name an entry that does not yet exist or is about to stop existing;
+there is no handle for it. `lstat`, `lchown`, and an `AT_SYMLINK_NOFOLLOW`
+`utimensat` name an entry the host must *not* open, because opening a symlink
+follows it. No host API escapes this, and POSIX concedes the same point — the
+`*at` family exists precisely because the final component is irreducible. The
+honest description of the change is not "no names" but **no name resolution**.
+
+**The count is the wrong unit for what changed.** 83 → 75 understates it. The
+whole family is now an **optional capability** — "expose a real host
+directory" — reachable only under a mount the host published a root handle
+for. A host that exposes no host-backed directory implements *none* of the
+eleven, and the kernel calls none of them, because no guest path can reach a
+mount that does not exist. Before this change, every host had to implement a
+POSIX filesystem namespace in its own language — mount routing, symlink
+resolution, `..`, permission semantics — and keep it consistent with the
+kernel's. That was mandatory, and it was the largest single concept in the
+host contract.
+
+#### `kernel_rootfs_set_foreign_mount_roots` (ABI 44 epoch)
+
+A NEW export beside `kernel_rootfs_set_foreign_prefixes`. It attaches a host
+directory handle to each host-backed mount, giving the kernel the anchor its
+per-component walks start from. Every existing export keeps its kind,
+signature, and semantics, so under the additive rule above this needs no
+`ABI_VERSION` bump.
+
+Its payload is a sequence of self-describing records: an 8-byte little-endian
+`i64` handle, the mount's canonical guest path, and a NUL. A record naming `/`
+means the host serves the root itself rather than sibling mounts beneath an
+overlay-owned `/`; it anchors every path no longer-prefixed record claims.
+
+Two decisions are worth recording because both had a plausible alternative:
+
+1. **Records carry their prefix rather than relying on position.** A parallel
+   array of handles, ordered to match the prefix list, was the obvious cheaper
+   payload. It is unsound here: `VirtualPlatformIO` sorts its mounts by prefix
+   length, so the host's own mount table and the prefix list published through
+   `kernel_rootfs_set_foreign_prefixes` are provably *not* the same ordering. A
+   positional payload would have bound two orderings that differ.
+2. **A new export rather than an extension of the existing one.** Extending
+   `kernel_rootfs_set_foreign_prefixes`'s payload under its existing signature
+   would be exactly the class of change the snapshot cannot catch — a semantic
+   reinterpretation with an unchanged signature. A new export with a new
+   signature is visible to the ABI gate. It also puts the publication in the
+   host component that owns the directory-handle table.
+
+The anchor registry is independent of the foreign-prefix registry. The two
+answer different questions — *which paths are host-owned* versus *which host
+directory anchors a path* — so coupling them would impose a publication order
+on the host for no gain.
+
+**A kernel built before this export gets no anchors**, and therefore has no
+host directory capability at all. That is a truthful boundary, not something to
+paper over: kernel and hosts ship together from this repository and
+`verify-fresh` catches a stale pairing.
+
+#### The snapshot cannot see the import change (as of this epoch)
+
+Worth stating plainly, because a reader diffing `abi/snapshot.json` across this
+change will see **only** the new export and could reasonably conclude nothing
+else moved.
+
+`abi/snapshot.json` records the kernel's *exports*; it has no section for its
+*imports*. So eighteen removed and ten added `env.host_*` names — the whole
+substance of the handle-only contract — produce no snapshot diff at all. The
+evidence for that half of the change is `EXPECTED_HOST_IMPORT_COUNT` in
+`crates/host-native/src/lib.rs`, which is asserted against the freshly built
+artifact by `smoke_loads_real_kernel_and_reads_abi`, plus the changelog comment
+that constant carries.
+
+That is a real gap in the gate, not a property of this change. Import polarity
+is the reverse of export polarity: *adding* an import is breaking, because an
+older host cannot satisfy it, while *removing* one is compatible. Recording the
+import section would therefore make any future host-import **addition** fail the
+ABI gate mechanically, instead of depending on a reviewer noticing. That work is
+tracked separately; until it lands, count the artifact.
+
+**Declared now equals linked, and there is now only one place to declare.**
+`wasm_api.rs`'s `extern` declarations name exactly 72 `env.host_*` functions and
+the linked kernel imports exactly 72, measured on the built artifact
+(2026-09-11, after `host_debug_log` was removed; 73 before that, 74 before the
+`host_fetch_deferred` collapse recorded below). The kernel used to declare one
+more than it linked — a callerless `host_debug_log` the linker discarded —
+which is the residue pattern that let `host_futex_wait` survive for months as a
+documented floor. That import is gone entirely, along with the second
+declaration site in `runtime-core` that briefly made "declared" ambiguous, so
+counting either way gives the same answer.
+
+**When the import section is added, record wasm32 only, and name the section for
+that width.** Measured rather than assumed: **10** of the imports carry a
+`usize` and therefore differ on wasm64 — `host_futex_wake`,
+`host_bind_framebuffer`, `host_fb_write`, `host_gbm_bo_bind`,
+`host_gbm_bo_unbind`, `host_gl_bind`, `host_gl_create_context`,
+`host_gl_create_surface`, `host_gl_submit`, `host_gl_query`. Every one is a
+futex or graphics/KMS/GL import; **none is in the filesystem family**, so the
+handle-only contract neither adds nor removes wasm64 exposure.
+
+The cost of recording both widths is a second full `cargo build --release -p
+kandelo` for wasm64 in every ABI check, locally and in CI, and the kernel build
+is the slowest part of `scripts/check-abi-version.sh`. The residual risk is
+bounded and enumerable — those ten names, listed here. Paying a second kernel
+build on every check to guard ten signatures that no shipping host exercises is
+the wrong trade today. Name the section for its width so it cannot be mistaken
+for both, list the ten as the known residual, and revisit if a wasm64 host ever
+ships.
 
 ## The snapshot
 
@@ -1062,6 +1411,178 @@ so additive kernel API growth does not force every package to rebuild.
 Packages built after an additive change may depend on the new syscall or
 export; those packages should be resolved with the matching current
 kernel, even though the ABI epoch did not change.
+
+#### `kernel_rootfs_load_image` and `env.host_image_read` (ABI 44 epoch)
+
+Additive, in both directions, and recorded here so the reasoning is
+auditable rather than implicit.
+
+`kernel_rootfs_load_image(image_len_lo, image_len_hi)` lets the kernel
+build the in-kernel rootfs overlay's base tree by parsing the `/` VFS
+image itself, instead of consuming the RTFS boot manifest a host walked
+the image to produce. It is a NEW export beside
+`kernel_rootfs_load_manifest`; every existing export keeps its kind,
+signature, and semantics, and a host that never calls the new one behaves
+exactly as before. Under the rule above, that is a backward-compatible
+addition: snapshot regenerated, no `ABI_VERSION` bump.
+
+The kernel reads the image's bytes through a new `env.host_image_read`
+import. That is an addition to the HOST adapter surface, not the guest
+one: it does not change what a compiled program must carry, and
+`ABI_VERSION` gates program-to-kernel binding. It does mean a host built
+before this change cannot instantiate a kernel built after it — the
+instantiation fails loudly with a missing-import link error, which is the
+truthful failure, not a silent wrong answer. Kernel and hosts ship
+together from this repository, and `verify-fresh` catches a stale
+pairing.
+
+The import was expected to be temporary as a NET addition:
+`EXPECTED_HOST_IMPORT_COUNT` (`crates/host-native/src/lib.rs`) rose from
+84 to 85 here, and the cutover that deletes `emitRootfsManifest` was
+expected to retire `host_blob_read` with it.
+
+**Corrected 2026-09-10, after the cutover landed.** `emitRootfsManifest`
+is gone from `host/src` and both worker entries now hand the kernel the
+raw image, but `host_blob_read` did NOT go with it. `rootfs::load_image`
+records an image-backed regular file as a base file whose `blob_id` is its
+inode number, and the host still serves those bytes — so the host-side
+inode-to-path map survives in `host/src/vfs/rootfs-blob-store.ts`. It is
+still needed because the byte store is addressed by path and a lazy
+leaf's materialization is keyed by path (`open` starts the fetch and
+throws `EAGAIN` until it lands). Retiring the import needs the kernel to
+serve an image-backed file's bytes from the image through the SFFS reader
+`load_image` already mounts; that is the work item that collects it.
+The count is 83 today (K3's increment 0b removed two dead imports).
+
+**Collected 2026-09-11.** That work item landed, and it did retire the
+import — with one correction to the shape the paragraph above predicted.
+
+The kernel now reads an image-backed file's bytes out of the `/` image,
+through the SFFS reader `load_image` already mounts: a base regular file
+records whether its bytes are in the image (`BaseSource::Image`, read
+in-kernel) or in a host byte store (`BaseSource::Host`). The host's image
+window therefore stays open past boot instead of being replaced by an
+`ENOSYS` stub, but it is re-pointed at the SFFS body the restored
+`MemoryFileSystem` already holds, so no second copy of a 16-256 MiB body
+is pinned.
+
+The correction: that alone does NOT empty `host_blob_read`, because two
+callers survive an image-backed byte route. A URL-backed lazy file is a
+base file the image genuinely does not carry — it records only the real
+size, in `KLZY` with `archive_id == 0` — and `rootfs::load_manifest`,
+which `crates/host-native` still uses, places a base tree the kernel never
+saw an image of. Both need host bytes.
+
+What emptied the import was noticing that its remaining meaning had become
+`host_fetch_archive`'s: fetch a resource the image does not carry from a
+host transport, serve positioned bytes of it, report `EAGAIN` while the
+fetch is in flight. One capability over two id namespaces. So the two are
+now one import, `env.host_fetch_deferred(kind, id_lo, id_hi, buf_ptr,
+buf_len, offset_lo, offset_hi)`, with `kind` an explicit argument
+(`abi::HOST_DEFERRED_KIND_FILE` / `_ARCHIVE`) rather than a reserved range
+of one opaque id — an id that means two things is a semantic-surface
+increase wearing a no-change disguise.
+
+**Removed (2):** `host_blob_read`, `host_fetch_archive`.
+**Added (1):** `host_fetch_deferred`.
+`EXPECTED_HOST_IMPORT_COUNT`: **75 → 74**, verified against the built
+artifact's import section (`wasm-objdump -j Import -x`), not against the
+constant.
+
+Import polarity again: removing two is compatible for an older host, but
+`host_fetch_deferred` is an addition, so a host built before this change
+cannot instantiate a kernel built after it. That fails loudly as a
+missing-import link error, which is the truthful failure; kernel and hosts
+ship together from this repository and `verify-fresh` catches a stale
+pairing. No `ABI_VERSION` bump: 44 is unreleased.
+
+The host side collapsed with it. `host/src/vfs/rootfs-blob-store.ts` is
+deleted, including the boot-time walk of the entire `/` tree it did to
+build an inode-to-path map. The surviving map covers only URL-backed lazy
+files and is read straight off the lazy table
+(`MemoryFileSystem.exportLazyEntries`), because those are now the only
+inodes the kernel can ask a path-keyed byte store about.
+
+#### `kernel_rootfs_mkdir_parents` (ABI 44 epoch)
+
+Additive, and recorded for the same auditability.
+
+`kernel_rootfs_mkdir_parents(path_ptr, path_len, mode)` creates the
+missing ancestor directories of a path in the kernel-owned rootfs, so a
+following `kernel_rootfs_write_file` can create the path itself. It is a
+NEW export; every existing export keeps its kind, signature, and
+semantics, and a host that never calls it behaves exactly as before.
+Snapshot regenerated, no `ABI_VERSION` bump.
+
+It exists because the boot cutover made `/` the kernel's, and a host that
+must place genuine per-session runtime data there cannot assume the image
+carries the directories leading to it. The live case is the browser's
+TLS-MITM CA certificate at `/etc/ssl/certs/ca-certificates.crt`, which can
+never be baked into an image and which a demo image need not have a
+directory for.
+
+It is deliberately a separate export rather than implicit `mkdir -p`
+inside `kernel_rootfs_write_file`. That export opens with `O_CREAT`, which
+returns `ENOENT` on a missing parent exactly as POSIX requires; giving it
+implicit parent creation would be a silent semantic change to the live
+`write_vfs_file` contract for every existing caller, which the rule above
+says an additive change must not do.
+
+**Image compatibility is NOT additive, and is deliberately strict.**
+`kernel_rootfs_load_image` requires the image to declare a `KLZY`
+kernel-lazy section. An image predating that section is refused with
+`EINVAL` rather than read on a best-effort basis: the kernel cannot
+distinguish "this image has no lazy files" from "this image records its
+lazy files only in the host-side JSON I cannot read", and the
+best-effort read produces a tree where every deferred file reports size
+0 — wrong, and indistinguishable from right. An image with genuinely no
+lazy files still carries the section, empty, in 20 bytes. Per the ABI
+contract, an ABI-mismatched image fails loudly and is rebuilt through the
+normal package/release path.
+
+#### Removing VFS image sections inside the ABI 44 epoch
+
+Non-additive, and it rides `ABI_VERSION` 44 anyway. Recorded here
+because that is the unusual case and a future reader is owed the
+reasoning.
+
+The VFS image trailer carries three JSON sections (lazy files, lazy
+archives, image metadata) plus the binary `KLZY` kernel-lazy section.
+Adding `KLZY` was additive: no existing reader checks for trailing bytes
+or rejects unknown flag bits, so older readers cannot see it. *Removing*
+a JSON section is not additive, and `docs/agent-guidance/abi.md` lists
+"VFS image metadata that binds Wasm programs to a kernel ABI" as ABI
+surface. That would ordinarily demand a bump.
+
+**Decision: no `ABI_VERSION` bump for section removals made inside the
+ABI 44 epoch.** ABI 44 is unreleased, so its surface may still move. An
+ABI-44 image is already unreadable by an ABI-43 reader — the epoch
+boundary is what refuses it, before any section-level question
+arises — so removing sections *within* the unreleased epoch breaks
+no contract that has been handed to anyone. The obligation an epoch
+bump exists to discharge is owed to holders of artifacts built against
+a *released* epoch, and there are none.
+
+The premise was verified rather than assumed, on 2026-09-10:
+
+- No reader in the tree expects an ABI-43 image. Every image-ABI
+  comparison in the repository compares against the *current*
+  `ABI_VERSION` (`host/src/binary-resolver.ts`'s artifact-policy check
+  and `MemoryFileSystem.assertImageKernelAbi`), so an ABI-43 image is
+  already rejected by both.
+- No committed artifact or fixture depends on the JSON sections. The
+  only `.vfs` file tracked in version control is
+  `crates/runtime-core/src/testdata/tiny.vfs`, whose header flags are
+  `0x0` — it carries no lazy, archive, or metadata section at all.
+
+This decision is about the ABI *version*, and about nothing else. It
+does not by itself make any particular section safe to remove: a
+section with live readers still has to lose those readers first, on
+ordinary correctness grounds. As of 2026-09-10 the lazy-archive
+`entries[]` array and the metadata `kernelAbi` stamp both still have
+live readers; what those readers are, and why they block removal, is
+recorded in
+`docs/plans/2026-09-09-k1b-image-format-grounding.md`.
 
 An additive export is compatible only while existing required capabilities and
 existing semantics remain unchanged. ABI 43's scratch work is deliberately not

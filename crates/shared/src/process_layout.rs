@@ -21,12 +21,12 @@ pub const fn select(pointer_width: u32, wasm32: u32, wasm64: u32) -> Option<u32>
 
 /// Caller-native musl `struct iovec`.
 ///
-/// This is deliberately distinct from the kernel-scratch [`KernelIovecWire`]
+/// This is deliberately distinct from the fixed u32-pointer iovec the kernel
+/// once read out of its own scratch
 /// record. A single wasm32 kernel can serve wasm32 and wasm64 callers, so the
 /// host must decode the caller-native table before constructing the fixed
 /// kernel wire.
 ///
-/// [`KernelIovecWire`]: crate::KernelIovecWire
 pub mod iovec {
     pub const WASM32_SIZE: u32 = 8;
     pub const WASM32_BASE_OFFSET: u32 = 0;
@@ -66,10 +66,9 @@ pub mod msghdr {
 ///
 /// The wasm64 header has a four-byte pad after `cmsg_len`, and successive
 /// records are aligned to eight bytes. Kernel scratch instead uses the fixed
-/// [`KernelCmsghdrWire`] layout, so host translation must use these generated
+/// wasm32 `cmsghdr` layout, so any translation must use these generated
 /// values in both directions.
 ///
-/// [`KernelCmsghdrWire`]: crate::KernelCmsghdrWire
 pub mod cmsghdr {
     pub const WASM32_SIZE: u32 = 12;
     pub const WASM32_ALIGN: u32 = 4;
@@ -278,6 +277,80 @@ pub mod stat {
     pub const BLOCKS_OFFSET: u32 = 104;
 }
 
+/// Linux/musl `dev_t` encoding.
+///
+/// A device number is not an opaque integer once it crosses an interface that
+/// splits it, which `statx` does: it carries `major` and `minor` as two `u32`
+/// fields rather than one `u64`. These mirror `major`/`minor`/`makedev` in
+/// musl's `sys/sysmacros.h` exactly, and between them the split is lossless —
+/// major carries device bits 8..19 and 44..63, minor carries 0..7 and 20..43,
+/// so every one of the 64 bits survives a round trip.
+///
+/// That matters more than it looks. A device number that is merely truncated
+/// to 32 bits produces a *plausible* wrong answer rather than a refusal, and
+/// two distinct devices can then report the same identity.
+pub mod dev {
+    /// The `major` half of a device number.
+    pub const fn major(dev: u64) -> u32 {
+        (((dev >> 32) & 0xffff_f000) | ((dev >> 8) & 0x0000_0fff)) as u32
+    }
+
+    /// The `minor` half of a device number.
+    pub const fn minor(dev: u64) -> u32 {
+        (((dev >> 12) & 0xffff_ff00) | (dev & 0x0000_00ff)) as u32
+    }
+
+    /// Reassemble a device number from its halves, as the guest's `makedev`
+    /// does. Present so the round trip can be asserted rather than assumed.
+    pub const fn makedev(major: u32, minor: u32) -> u64 {
+        let (major, minor) = (major as u64, minor as u64);
+        ((major & 0xffff_f000) << 32)
+            | ((major & 0x0000_0fff) << 8)
+            | ((minor & 0xffff_ff00) << 12)
+            | (minor & 0x0000_00ff)
+    }
+}
+
+/// Linux `struct statx`, as musl's `statx()` reads it.
+///
+/// Named because they were bare numeric literals at the one site that writes
+/// this buffer, with no constant here and no ABI snapshot coverage — which is
+/// how `stx_dev_major` came to be written while `stx_dev_minor` never was.
+///
+/// `stx_rdev_major`/`stx_rdev_minor` are named but not yet written by anything:
+/// [`crate::WasmStat`] carries no `st_rdev`, so the kernel has no device number
+/// to report for a device node, through `statx` or through `stat`. That is a
+/// real gap and is left visible as one rather than filled with a zero that
+/// reads as an answer.
+pub mod statx {
+    pub const SIZE: u32 = 256;
+    pub const MASK_OFFSET: u32 = 0;
+    pub const BLKSIZE_OFFSET: u32 = 4;
+    pub const ATTRIBUTES_OFFSET: u32 = 8;
+    pub const NLINK_OFFSET: u32 = 16;
+    pub const UID_OFFSET: u32 = 20;
+    pub const GID_OFFSET: u32 = 24;
+    pub const MODE_OFFSET: u32 = 28;
+    pub const INO_OFFSET: u32 = 32;
+    pub const SIZE_FIELD_OFFSET: u32 = 40;
+    pub const BLOCKS_OFFSET: u32 = 48;
+    pub const ATTRIBUTES_MASK_OFFSET: u32 = 56;
+    pub const ATIME_SEC_OFFSET: u32 = 64;
+    pub const ATIME_NSEC_OFFSET: u32 = 72;
+    pub const BTIME_SEC_OFFSET: u32 = 80;
+    pub const CTIME_SEC_OFFSET: u32 = 96;
+    pub const CTIME_NSEC_OFFSET: u32 = 104;
+    pub const MTIME_SEC_OFFSET: u32 = 112;
+    pub const MTIME_NSEC_OFFSET: u32 = 120;
+    pub const RDEV_MAJOR_OFFSET: u32 = 128;
+    pub const RDEV_MINOR_OFFSET: u32 = 132;
+    pub const DEV_MAJOR_OFFSET: u32 = 136;
+    pub const DEV_MINOR_OFFSET: u32 = 140;
+
+    /// `STATX_BASIC_STATS`.
+    pub const BASIC_STATS_MASK: u32 = 0x0000_07ff;
+}
+
 /// Native POSIX `struct sched_param`.
 ///
 /// Kandelo exposes the POSIX sporadic-server fields even though its current
@@ -292,4 +365,60 @@ pub mod sched_param {
     pub const SS_INIT_BUDGET_SEC_OFFSET: u32 = 24;
     pub const SS_INIT_BUDGET_NSEC_OFFSET: u32 = 32;
     pub const SS_LOW_PRIORITY_OFFSET: u32 = 40;
+}
+
+#[cfg(test)]
+mod dev_tests {
+    use super::dev::{major, makedev, minor};
+
+    /// The split must be lossless for every bit, because the guest reassembles
+    /// with `makedev` and compares the result against what `stat` reported.
+    /// Major carries device bits 8..19 and 44..63; minor carries 0..7 and
+    /// 20..43. A value with every bit set exercises all four runs at once.
+    #[test]
+    fn every_bit_of_a_device_number_survives_the_split() {
+        for dev in [
+            0,
+            1,
+            5,
+            0x50,
+            0x7300_0000,
+            0x7400_0000,
+            u64::MAX,
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0001,
+            0xdead_beef_cafe_f00d,
+        ] {
+            assert_eq!(
+                makedev(major(dev), minor(dev)),
+                dev,
+                "device {dev:#x} did not survive the major/minor split",
+            );
+        }
+    }
+
+    /// The bug this encoding replaced: the low 32 bits alone. Two devices that
+    /// differ only above bit 32 must not report the same identity — that is
+    /// how one file's mapping would be reached through another's descriptor.
+    #[test]
+    fn devices_differing_only_in_their_high_half_stay_distinct() {
+        let low = 0x0000_0000_1234_5678u64;
+        let high = 0x8000_0000_1234_5678u64;
+        assert_eq!(low as u32, high as u32, "the discarded halves were equal");
+        assert_ne!(
+            (major(low), minor(low)),
+            (major(high), minor(high)),
+            "a truncating split would have collapsed these onto one device",
+        );
+    }
+
+    /// A device number at or above 2^63 must not report a zero major, which a
+    /// `dev as u32` truncation produced for the first such device and which a
+    /// reader cannot distinguish from "no device".
+    #[test]
+    fn a_high_device_number_does_not_report_itself_as_absent() {
+        let dev = 0x8000_0000_0000_0000u64;
+        assert_eq!(dev as u32, 0, "the truncation this replaces yielded zero");
+        assert_ne!((major(dev), minor(dev)), (0, 0));
+    }
 }

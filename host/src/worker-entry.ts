@@ -3,6 +3,10 @@ import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-mai
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 import { runWithProcessWorkerQuiescence } from "./worker-quiescence";
 import { isNodeWorkerInitByMessage } from "./node-worker-initialization";
+// The process worker validates its program artifact before executing it,
+// and holds no kernel instance to ask, so it reads through the standalone
+// module like every other kernel-less caller.
+
 
 /** @internal Exported so one-shot process-init ownership can be tested. */
 export function receiveNodeWorkerInit(

@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>K10 I0 probes</title>
+<pre id="out">running…</pre>
+<script type="module">
+import { runProbes } from './probe-core.js';
+import { runProbe4 } from './probe4-core.js';
+import { driveProbe } from './chan-core.js';
+
+const load = async (f) => new Uint8Array(await (await fetch(f)).arrayBuffer());
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const results = {};
+results['crossOriginIsolated'] = self.crossOriginIsolated === true;
+results['SharedArrayBuffer'] = typeof SharedArrayBuffer !== 'undefined';
+
+try {
+  Object.assign(results, await runProbes(load));
+} catch (e) {
+  results['P1P3.FATAL'] = String((e && e.stack) || e);
+}
+
+try {
+  Object.assign(results, await runProbe4(load));
+} catch (e) {
+  results['P4.FATAL'] = String((e && e.stack) || e);
+}
+
+try {
+  const bytes = await load('p2-chan.wasm');
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 256, shared: true });
+  const base = 4 * 65536;
+  const p2 = await driveProbe({
+    memory, bytes, base, sleep,
+    spawn: (onMessage) => {
+      const w = new Worker('./chan-waiter.js', { type: 'module' });
+      w.onmessage = (ev) => { onMessage(ev.data); if (ev.data.phase === 'end') w.terminate(); };
+      w.onerror = (e) => onMessage({ phase: 'end', error: String(e.message || e) });
+      w.postMessage({ memory, bytes, base });
+    },
+  });
+  for (const [k, v] of Object.entries(p2)) results['P2.' + k] = v;
+} catch (e) {
+  results['P2.ERROR'] = String((e && e.stack) || e);
+}
+
+document.getElementById('out').textContent = JSON.stringify(results, null, 2);
+window.__done = results;
+</script>

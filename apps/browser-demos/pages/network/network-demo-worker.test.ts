@@ -47,7 +47,6 @@ test("canonical network rootfs binds activated lazy URLs before mounting", async
           export function detectPtrWidth() { return 4; }
           export function extractHeapBase() { return null; }
           export class LocalVirtualNetwork {}
-          export class DeviceFileSystem {}
           export class BrowserTimeProvider {}
           export const DEFAULT_MOUNT_SPEC = [];
           export async function resolveForBrowser() { return []; }
@@ -167,7 +166,6 @@ test("legacy map-only network rootfs preserves absent lazy asset authority", asy
           export function detectPtrWidth() { return 4; }
           export function extractHeapBase() { return null; }
           export class LocalVirtualNetwork {}
-          export class DeviceFileSystem {}
           export class BrowserTimeProvider {}
           export const DEFAULT_MOUNT_SPEC = [];
           export async function resolveForBrowser() { return []; }

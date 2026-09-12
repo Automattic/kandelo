@@ -1,5 +1,5 @@
 {
-  "abi_version": 43,
+  "abi_version": 44,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -47,7 +47,7 @@
     "request_flags": {
       "cancellation_point": 1,
       "cancellation_wake_allowed": 2,
-      "known_mask": 7
+      "known_mask": 15
     },
     "size": 72
   },
@@ -356,6 +356,28 @@
         "arguments": [
           {
             "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "writev",
+        "number": 81,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "readv",
+        "number": 82,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
             "kind": "i64"
           }
         ],
@@ -476,6 +498,28 @@
         ],
         "musl_name": "setgroups",
         "number": 136,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "sendmsg",
+        "number": 137,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "recvmsg",
+        "number": 138,
         "result": "i32"
       },
       {
@@ -700,6 +744,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 3,
             "kind": "split-i64-low-u32"
           },
@@ -714,6 +762,10 @@
       },
       {
         "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
           {
             "index": 3,
             "kind": "split-i64-low-u32"
@@ -730,12 +782,20 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 3,
             "kind": "split-i64-low-u32"
           },
           {
             "index": 4,
             "kind": "split-i64-high-i32"
+          },
+          {
+            "index": 5,
+            "kind": "u32"
           }
         ],
         "musl_name": "preadv2",
@@ -745,12 +805,20 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 3,
             "kind": "split-i64-low-u32"
           },
           {
             "index": 4,
             "kind": "split-i64-high-i32"
+          },
+          {
+            "index": 5,
+            "kind": "u32"
           }
         ],
         "musl_name": "pwritev2",
@@ -775,6 +843,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -786,6 +858,10 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -796,6 +872,10 @@
       },
       {
         "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
           {
             "index": 2,
             "kind": "process-size"
@@ -812,12 +892,27 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
             "index": 2,
             "kind": "process-size"
           }
         ],
         "musl_name": "msgsnd",
         "number": 339,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "msgctl",
+        "number": 340,
         "result": "i32"
       },
       {
@@ -834,12 +929,34 @@
       {
         "arguments": [
           {
+            "index": 3,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "semctl",
+        "number": 343,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 1,
             "kind": "process-size"
           }
         ],
         "musl_name": "shmget",
         "number": 344,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "shmctl",
+        "number": 347,
         "result": "i32"
       },
       {
@@ -939,6 +1056,10 @@
     {
       "name": "Error",
       "number": 3
+    },
+    {
+      "name": "Teardown",
+      "number": 4
     }
   ],
   "custom_sections": [
@@ -976,7 +1097,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 43,
+      "abi_version": 44,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1046,10 +1167,14 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_release_host_region",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
-      "kernel_set_mmap_base"
+      "kernel_set_mmap_base",
+      "kernel_set_thread_slot_quota",
+      "kernel_thread_parent_tid_target",
+      "kernel_thread_slot_addr"
     ],
     "optional_kernel_features": 0,
     "required_kernel_exports": [
@@ -1064,7 +1189,9 @@
       "kernel_exec_commit",
       "kernel_exec_target_cancel",
       "kernel_exec_target_prepare",
+      "kernel_exec_target_probe",
       "kernel_exec_target_read",
+      "kernel_exec_target_shebang",
       "kernel_exec_target_size",
       "kernel_fork_process",
       "kernel_get_cwd",
@@ -1089,8 +1216,6 @@
       "kernel_ipc_shmdt_for_task",
       "kernel_is_fd_nonblock",
       "kernel_mark_process_signaled",
-      "kernel_mq_descriptor_msgsize",
-      "kernel_msqid_ds_bytes",
       "kernel_pcm_claim_transport",
       "kernel_pcm_clock_update",
       "kernel_pcm_reconcile",
@@ -1108,11 +1233,9 @@
       "kernel_publish_spawn_child",
       "kernel_reap_exited_child",
       "kernel_remove_process",
-      "kernel_semctl_array_bytes",
-      "kernel_semid_ds_bytes",
       "kernel_set_current_tid",
       "kernel_set_cwd",
-      "kernel_shmid_ds_bytes",
+      "kernel_spawn_blob_decode",
       "kernel_spawn_exec_commit",
       "kernel_spawn_exec_target_prepare",
       "kernel_spawn_process",
@@ -1192,6 +1315,40 @@
         "value": 16
       }
     ],
+    "net_readiness": {
+      "errno_shift": 16,
+      "facts": [
+        {
+          "name": "RECV_READY",
+          "value": 1
+        },
+        {
+          "name": "RECV_EOF",
+          "value": 2
+        },
+        {
+          "name": "SEND_READY",
+          "value": 4
+        },
+        {
+          "name": "SEND_CLOSED",
+          "value": 8
+        },
+        {
+          "name": "HANGUP",
+          "value": 16
+        },
+        {
+          "name": "ERROR",
+          "value": 32
+        },
+        {
+          "name": "UNOBSERVABLE",
+          "value": 64
+        }
+      ],
+      "flag_mask": 65535
+    },
     "poll_events": [
       {
         "name": "POLLIN",
@@ -1698,6 +1855,36 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "35088": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 40
+    },
+    "35090": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 8,
+      "wasm64Size": 16
+    },
+    "35093": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 40
+    },
+    "35111": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 40
+    },
+    "35123": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 40
+    },
     "64": {
       "argKind": "pointer",
       "direction": "in",
@@ -1767,21 +1954,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_accept4",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_access",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_alarm",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_alloc_scratch",
       "signature": "(i32) -> (i32)"
     },
@@ -1812,11 +1984,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_bind",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_blocking_retry_release",
       "signature": "(i32,i32,i64) -> (i32)"
     },
@@ -1827,28 +1994,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_brk",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_chdir",
+      "name": "kernel_classify_wasm_trap_signal",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_chmod",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_chown",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_clear_argv",
-      "signature": "() -> ()"
     },
     {
       "kind": "func",
@@ -1862,33 +2009,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_clock_getres",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_clock_gettime",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_clock_nanosleep",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_clone",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_close",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_closedir",
-      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1897,13 +2019,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_connect",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_convert_pipe_to_host",
-      "signature": "(i32,i64) -> (i32)"
+      "name": "kernel_commit_process_group_exit",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1937,11 +2054,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_dup2",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_dup3",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -1962,28 +2074,18 @@
     },
     {
       "kind": "func",
-      "name": "kernel_epoll_create1",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_epoll_ctl",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_epoll_pwait",
+      "name": "kernel_epoll_wake_indices",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_eventfd2",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_exec_commit",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_target_artifact_policy",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1997,8 +2099,23 @@
     },
     {
       "kind": "func",
+      "name": "kernel_exec_target_probe",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_exec_target_read",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_target_resolve_shebang",
+      "signature": "(i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_target_shebang",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2012,42 +2129,12 @@
     },
     {
       "kind": "func",
-      "name": "kernel_faccessat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fchdir",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_fchmod",
       "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_fchmodat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_fchown",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fchownat",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fcntl",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fcntl_lock",
       "signature": "(i32,i32,i32) -> (i32)"
     },
     {
@@ -2072,33 +2159,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_flock",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_fork_process",
       "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fpathconf",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fstat",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fstatat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_fstatfs",
-      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -2109,11 +2171,6 @@
       "kind": "func",
       "name": "kernel_ftruncate",
       "signature": "(i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_futex",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2134,11 +2191,6 @@
       "kind": "func",
       "name": "kernel_get_dirfd_path",
       "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_get_exit_status",
-      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -2182,16 +2234,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_get_fork_exec_path_pid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_get_fork_state",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_get_memory_pages",
       "signature": "() -> (i32)"
     },
@@ -2199,11 +2241,6 @@
       "kind": "func",
       "name": "kernel_get_parent_pid",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_get_pipe_ofds",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2222,11 +2259,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_get_robust_list",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_get_socket_recv_pipe",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2242,93 +2274,13 @@
     },
     {
       "kind": "func",
-      "name": "kernel_getaddrinfo",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getcwd",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getdents64",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getegid",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getenv",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_geteuid",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getgid",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_getgroups",
       "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_getitimer",
-      "signature": "(i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getpeername",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getpgid_direct",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_getpgrp",
       "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getpid",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getppid",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getrandom",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getresgid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getresuid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getrlimit",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2342,28 +2294,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_getsockname",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_getsockopt",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gettid",
-      "signature": "() -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gettimeofday",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_getuid",
-      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -2452,11 +2384,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_ipc_shmdt",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_ipc_shmdt_addr",
       "signature": "(i32) -> (i32)"
     },
@@ -2492,21 +2419,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_is_fork_child_pid",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_is_signal_blocked",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_isatty",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_kill",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2522,63 +2434,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_link",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_linkat",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_listen",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_lseek",
-      "signature": "(i32,i32,i32,i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_lstat",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_madvise",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_mark_process_signaled",
       "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mkdir",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mkdirat",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mmap",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mprotect",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mq_descriptor_msgsize",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2587,53 +2444,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_mq_is_mqd",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_mremap",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_msqid_ds_bytes",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_munmap",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_nanosleep",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_open",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_openat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_opendir",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_pathconf",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_pause",
-      "signature": "() -> (i32)"
+      "name": "kernel_next_wait_deadline_ns",
+      "signature": "() -> (i64)"
     },
     {
       "kind": "func",
@@ -2727,21 +2539,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_posix_timer_interval_fire",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_ppoll",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_prctl",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_process_metadata_begin",
       "signature": "(i32) -> (i32)"
     },
@@ -2764,11 +2561,6 @@
       "kind": "func",
       "name": "kernel_process_secure_exec",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_pselect6",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2802,33 +2594,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_raise",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_read_proc_maps",
       "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_readdir",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_readlink",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_readlinkat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_realpath",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2847,28 +2614,13 @@
     },
     {
       "kind": "func",
-      "name": "kernel_recvfrom",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_recvmsg",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
+      "name": "kernel_release_host_region",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_remove_process",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_rename",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_renameat",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2882,28 +2634,48 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rewinddir",
-      "signature": "(i32) -> (i32)"
+      "name": "kernel_rootfs_export_tree",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_rmdir",
+      "name": "kernel_rootfs_load_image",
       "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_rt_sigtimedwait",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sched_getparam",
+      "name": "kernel_rootfs_load_manifest",
       "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_seekdir",
+      "name": "kernel_rootfs_mkdir_parents",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_read_file",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_set_foreign_mount_roots",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_set_foreign_prefixes",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_stat_mode",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_write_file",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2912,33 +2684,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_semctl_array_bytes",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_semid_ds_bytes",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_send",
       "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sendfile",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sendmsg",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sendto",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2962,16 +2709,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_set_fork_exec",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_set_fork_fd_action",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_set_max_addr",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -2987,23 +2724,43 @@
     },
     {
       "kind": "func",
-      "name": "kernel_set_robust_list",
+      "name": "kernel_set_process_pointer_width",
       "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_set_tid_address",
+      "name": "kernel_set_rootfs_enabled",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_rootfs_nosuid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_rootfs_now",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_thread_slot_quota",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_tmpfs_enabled",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_wait_queue_enabled",
       "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_setegid",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_setenv",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3017,32 +2774,7 @@
     },
     {
       "kind": "func",
-      "name": "kernel_setgroups",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_setitimer",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_setpgid",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_setresgid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_setresuid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_setrlimit",
       "signature": "(i32,i32) -> (i32)"
     },
     {
@@ -3062,8 +2794,53 @@
     },
     {
       "kind": "func",
-      "name": "kernel_shmid_ds_bytes",
+      "name": "kernel_shared_mapping_fd_facts",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_active_pid_count",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_drop_mapping",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_inherit",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_process_count",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_publish_mapping",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_release_process",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_sync_process",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_sync_segment",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_shared_mapping_sysv_track",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3072,32 +2849,7 @@
     },
     {
       "kind": "func",
-      "name": "kernel_sigaction",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sigaltstack",
-      "signature": "(i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_signal",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_signalfd4",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sigprocmask",
-      "signature": "(i32,i32,i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_sigsuspend",
       "signature": "(i32,i32) -> (i32)"
     },
     {
@@ -3109,6 +2861,11 @@
       "kind": "func",
       "name": "kernel_socketpair",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_blob_decode",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3157,31 +2914,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_stat",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_statfs",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_statx",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_symlink",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_symlinkat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_sysconf",
       "signature": "(i32) -> (i64)"
     },
@@ -3202,16 +2934,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_telldir",
-      "signature": "(i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_tgkill",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_thread_exit",
       "signature": "(i32,i32) -> (i64)"
     },
@@ -3222,53 +2944,13 @@
     },
     {
       "kind": "func",
-      "name": "kernel_time",
-      "signature": "() -> (i64)"
+      "name": "kernel_thread_parent_tid_target",
+      "signature": "(i32,i32) -> (i64)"
     },
     {
       "kind": "func",
-      "name": "kernel_timer_create",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timer_delete",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timer_getoverrun",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timer_gettime",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timer_settime",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timerfd_create",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timerfd_gettime",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_timerfd_settime",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_tkill",
-      "signature": "(i32,i32) -> (i32)"
+      "name": "kernel_thread_slot_addr",
+      "signature": "(i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -3317,31 +2999,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_unlink",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_unlinkat",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_unsetenv",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_usleep",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_utimensat",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_validate_task",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -3352,13 +3009,38 @@
     },
     {
       "kind": "func",
-      "name": "kernel_wait4",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
+      "name": "kernel_wait_child_poll",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_wait_child_poll",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+      "name": "kernel_wait_deadline_close",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_deadline_open",
+      "signature": "(i32,i32,i32,i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_deadline_remaining_ns",
+      "signature": "(i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_queue_len",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_queue_stats",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_retire_process",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "memory",
@@ -3774,81 +3456,6 @@
         }
       ],
       "size": 32
-    },
-    "KernelCmsghdrWire": {
-      "fields": [
-        {
-          "name": "cmsg_len",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "cmsg_level",
-          "offset": 4,
-          "span": 4
-        },
-        {
-          "name": "cmsg_type",
-          "offset": 8,
-          "span": 4
-        }
-      ],
-      "size": 12
-    },
-    "KernelIovecWire": {
-      "fields": [
-        {
-          "name": "base",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "len",
-          "offset": 4,
-          "span": 4
-        }
-      ],
-      "size": 8
-    },
-    "KernelMsghdrWire": {
-      "fields": [
-        {
-          "name": "name",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "name_len",
-          "offset": 4,
-          "span": 4
-        },
-        {
-          "name": "iov",
-          "offset": 8,
-          "span": 4
-        },
-        {
-          "name": "iov_len",
-          "offset": 12,
-          "span": 4
-        },
-        {
-          "name": "control",
-          "offset": 16,
-          "span": 4
-        },
-        {
-          "name": "control_len",
-          "offset": 20,
-          "span": 4
-        },
-        {
-          "name": "flags",
-          "offset": 24,
-          "span": 4
-        }
-      ],
-      "size": 28
     },
     "KernelWaitResult": {
       "fields": [
@@ -5344,8 +4951,33 @@
         "size": 16
       }
     },
-    "kernel_message_wire": {
-      "flattened_iovec_count": 1
+    "itimerval": {
+      "interval_sec_index": 0,
+      "interval_usec_index": 1,
+      "value_sec_index": 2,
+      "value_usec_index": 3,
+      "wasm32": {
+        "size": 16
+      },
+      "wasm64": {
+        "size": 32
+      }
+    },
+    "mq_attr": {
+      "wasm32": {
+        "curmsgs_offset": 12,
+        "flags_offset": 0,
+        "maxmsg_offset": 4,
+        "msgsize_offset": 8,
+        "size": 32
+      },
+      "wasm64": {
+        "curmsgs_offset": 24,
+        "flags_offset": 0,
+        "maxmsg_offset": 8,
+        "msgsize_offset": 16,
+        "size": 64
+      }
     },
     "msghdr": {
       "wasm32": {
@@ -5383,10 +5015,34 @@
         "source_offset": 136
       }
     },
+    "sched_param": {
+      "priority_offset": 0,
+      "size": 48,
+      "ss_init_budget_nsec_offset": 32,
+      "ss_init_budget_sec_offset": 24,
+      "ss_low_priority_offset": 40,
+      "ss_max_repl_offset": 4,
+      "ss_repl_period_nsec_offset": 16,
+      "ss_repl_period_sec_offset": 8
+    },
     "scm_rights": {
       "fd_bytes": 4,
       "level": 1,
       "type": 1
+    },
+    "sigaltstack": {
+      "wasm32": {
+        "flags_offset": 4,
+        "size": 12,
+        "sp_offset": 0,
+        "stack_size_offset": 8
+      },
+      "wasm64": {
+        "flags_offset": 8,
+        "size": 24,
+        "sp_offset": 0,
+        "stack_size_offset": 16
+      }
     },
     "sigevent": {
       "wasm32": {
@@ -5427,6 +5083,117 @@
     },
     "socket_message_flags": {
       "trunc": 32
+    },
+    "stat": {
+      "atime_nsec_offset": 48,
+      "atime_sec_offset": 40,
+      "blksize_offset": 96,
+      "blocks_offset": 104,
+      "ctime_nsec_offset": 80,
+      "ctime_sec_offset": 72,
+      "dev_offset": 0,
+      "gid_offset": 28,
+      "ino_offset": 8,
+      "mode_offset": 16,
+      "mtime_nsec_offset": 64,
+      "mtime_sec_offset": 56,
+      "nlink_offset": 20,
+      "rdev_offset": 88,
+      "size": 112,
+      "size_offset": 32,
+      "uid_offset": 24
+    },
+    "statfs": {
+      "wasm32": {
+        "bavail_offset": 24,
+        "bfree_offset": 16,
+        "blocks_offset": 8,
+        "bsize_offset": 4,
+        "ffree_offset": 40,
+        "files_offset": 32,
+        "flags_offset": 64,
+        "frsize_offset": 60,
+        "fsid_offset": 48,
+        "namelen_offset": 56,
+        "size": 88,
+        "spare_offset": 68,
+        "type_offset": 0
+      },
+      "wasm64": {
+        "bavail_offset": 32,
+        "bfree_offset": 24,
+        "blocks_offset": 16,
+        "bsize_offset": 8,
+        "ffree_offset": 48,
+        "files_offset": 40,
+        "flags_offset": 80,
+        "frsize_offset": 72,
+        "fsid_offset": 56,
+        "namelen_offset": 64,
+        "size": 120,
+        "spare_offset": 88,
+        "type_offset": 0
+      }
+    },
+    "statx": {
+      "atime_nsec_offset": 72,
+      "atime_sec_offset": 64,
+      "attributes_mask_offset": 56,
+      "attributes_offset": 8,
+      "basic_stats_mask": 2047,
+      "blksize_offset": 4,
+      "blocks_offset": 48,
+      "btime_sec_offset": 80,
+      "ctime_nsec_offset": 104,
+      "ctime_sec_offset": 96,
+      "dev_major_offset": 136,
+      "dev_minor_offset": 140,
+      "gid_offset": 24,
+      "ino_offset": 32,
+      "mask_offset": 0,
+      "mode_offset": 28,
+      "mtime_nsec_offset": 120,
+      "mtime_sec_offset": 112,
+      "nlink_offset": 16,
+      "rdev_major_offset": 128,
+      "rdev_minor_offset": 132,
+      "size": 256,
+      "size_field_offset": 40,
+      "uid_offset": 20
+    },
+    "sysinfo": {
+      "wasm32": {
+        "bufferram_offset": 28,
+        "freehigh_offset": 48,
+        "freeram_offset": 20,
+        "freeswap_offset": 36,
+        "loads_offset": 4,
+        "mem_unit_offset": 52,
+        "procs_offset": 40,
+        "reserved_offset": 56,
+        "sharedram_offset": 24,
+        "size": 312,
+        "totalhigh_offset": 44,
+        "totalram_offset": 16,
+        "totalswap_offset": 32,
+        "uptime_offset": 0
+      },
+      "wasm64": {
+        "bufferram_offset": 56,
+        "freehigh_offset": 96,
+        "freeram_offset": 40,
+        "freeswap_offset": 72,
+        "loads_offset": 8,
+        "mem_unit_offset": 104,
+        "procs_offset": 80,
+        "reserved_offset": 108,
+        "sharedram_offset": 48,
+        "size": 368,
+        "totalhigh_offset": 88,
+        "totalram_offset": 32,
+        "totalswap_offset": 64,
+        "uptime_offset": 0
+      }
     }
   },
   "process_snapshot_wire": {
@@ -5864,6 +5631,10 @@
               {
                 "name": "replay_event_segment",
                 "number": 13
+              },
+              {
+                "name": "journal_image",
+                "number": 14
               }
             ],
             "magic_bytes": [
@@ -6912,6 +6683,17 @@
         {
           "kind": "func",
           "module": "env",
+          "name": "__wpk_fork_ref_provenance_externref",
+          "params": [
+            "externref"
+          ],
+          "results": [
+            "externref"
+          ]
+        },
+        {
+          "kind": "func",
+          "module": "env",
           "name": "__wpk_fork_ref_scratch_release",
           "params": [
             "ptr",
@@ -7529,6 +7311,26 @@
         }
       }
     ],
+    "137": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "138": [
+      {
+        "argIndex": 1,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
     "139": [
       {
         "argIndex": 1,
@@ -7916,6 +7718,17 @@
         }
       }
     ],
+    "240": [
+      {
+        "argIndex": 3,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "size": 16,
+          "type": "fixed"
+        }
+      }
+    ],
     "244": [
       {
         "argIndex": 2,
@@ -8168,6 +7981,46 @@
         }
       }
     ],
+    "295": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "296": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "297": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "298": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
     "299": [
       {
         "argIndex": 0,
@@ -8323,10 +8176,9 @@
       {
         "argIndex": 1,
         "direction": "in",
-        "required": true,
+        "nullable": true,
         "size": {
-          "argIndex": 2,
-          "type": "arg"
+          "type": "kernel-dereferenced"
         }
       },
       {
@@ -8343,10 +8195,9 @@
       {
         "argIndex": 1,
         "direction": "out",
-        "required": true,
+        "nullable": true,
         "size": {
-          "argIndex": 2,
-          "type": "arg"
+          "type": "kernel-dereferenced"
         }
       },
       {
@@ -8402,6 +8253,36 @@
         }
       }
     ],
+    "338": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "339": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "340": [
+      {
+        "argIndex": 2,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
     "342": [
       {
         "argIndex": 1,
@@ -8411,6 +8292,26 @@
           "argIndex": 2,
           "multiplier": 6,
           "type": "arg"
+        }
+      }
+    ],
+    "343": [
+      {
+        "argIndex": 3,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "347": [
+      {
+        "argIndex": 2,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
         }
       }
     ],
@@ -8850,6 +8751,26 @@
         "size": {
           "size": 8,
           "type": "fixed"
+        }
+      }
+    ],
+    "81": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
+        }
+      }
+    ],
+    "82": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "type": "kernel-dereferenced"
         }
       }
     ],

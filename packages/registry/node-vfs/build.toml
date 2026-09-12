@@ -19,7 +19,7 @@ inputs = [
   "host/src/generated/abi.ts",
   "host/src/vfs/materialization-plan.ts",
   "host/src/pathconf.ts",
-  "host/src/shell-runtime-layout.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs",

@@ -2,7 +2,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-TMP_DIR="$(mktemp -d)"
+# WHY `pwd -P`: on macOS `/tmp` is a symlink to `/private/tmp`, and the two
+# sides of the comparisons below disagree about which name to use. `find`
+# reports the path it was handed, while Vitest reports the resolved one, so an
+# unresolved TMP_DIR makes every path compare unequal at character 2 and the
+# suite fails for a reason that has nothing to do with sharding.
+TMP_DIR="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # WHY: ordinary files stay in Vitest's deterministic two-way partition while
@@ -57,14 +62,26 @@ for shard in 1 2; do
         > "$TMP_DIR/vitest-union"
     mv "$TMP_DIR/vitest-union" "$vitest_seen"
 done
-cmp "$vitest_expected" "$vitest_seen"
+compare_path_lists() {
+    # WHY: a bare `cmp` reports "differ: char N, line M" and nothing else,
+    # which names the byte offset of a disagreement instead of the file that
+    # was or was not selected. Show the actual difference.
+    cmp "$1" "$2" && return 0
+    echo "$3" >&2
+    diff -u "$1" "$2" >&2 || true
+    exit 1
+}
+
+compare_path_lists "$vitest_expected" "$vitest_seen" \
+    "ordinary Vitest shards did not cover exactly the ordinary files"
 if grep -Fxq "$resource_fixture" "$vitest_seen"; then
     echo "ordinary Vitest shards included the resource-isolated file" >&2
     exit 1
 fi
 printf '%s\n' "$resource_fixture" >> "$vitest_seen"
 LC_ALL=C sort -o "$vitest_seen" "$vitest_seen"
-cmp "$vitest_all_expected" "$vitest_seen"
+compare_path_lists "$vitest_all_expected" "$vitest_seen" \
+    "ordinary shards plus the isolated file did not cover every fixture file"
 
 resource_expected="$TMP_DIR/vitest-resource-expected"
 resource_seen="$TMP_DIR/vitest-resource-seen"
@@ -518,7 +535,7 @@ resource_path=../packages/registry/ruby/test/posix-spawn.test.ts
 resource_exclude="--exclude=$resource_path"
 # The runner appends the disabled-software exclusions to every ordinary and
 # exact Vitest run. Mirror that exact suffix so the captured command lines match.
-disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/privileged-projection.test.ts --exclude=test/shell-vfs-build.test.ts --exclude=test/vfs-product-builder-contract.test.ts"
+disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/shell-vfs-build.test.ts --exclude=test/vfs-product-builder-contract.test.ts"
 resource_manifest="$FIXTURE/scripts/ci-vitest-resource-isolated-cases.tsv"
 resource_manifest_valid="$TMP_DIR/vitest-resource-manifest-valid.tsv"
 resource_inventory="$TMP_DIR/vitest-resource-inventory"

@@ -860,6 +860,16 @@ function writeSourceOnlyProjection(
         identities,
         packages: projectedPackages,
       },
+      // These cases run under the `source-only-v1` policy, which resolves
+      // through the authority directly and never reaches the tier-identity
+      // comparison in `pinSourceOnlyTierClosure`. The field is required by the
+      // parser, so record the same package set; the comparison itself is
+      // covered in `host/test/binary-resolver.test.ts`.
+      selectionProjection: {
+        format: "kandelo-program-packages-v2",
+        identities,
+        packages: projectedPackages,
+      },
     })}\n`,
     { mode: 0o644 },
   );

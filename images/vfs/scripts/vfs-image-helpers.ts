@@ -20,6 +20,23 @@ import {
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 
+/**
+ * Make the Rust artifact reader available to every VFS image builder.
+ *
+ * `assertNoStaleWasmArtifacts` below reads every `.wasm` file an image carries,
+ * and since the TypeScript WebAssembly reader was deleted every such read goes
+ * through `wasm_artifact_module32.wasm`, which a host entry point must install
+ * in its realm first. The kernel workers and the Node main-thread host each do
+ * that at their own entry; an image builder is a Node entry point too, but it
+ * is a `tsx` script with no shared entry module, so registering it here — in
+ * the one Node-only module every builder imports to save an image — installs it
+ * for all of them instead of repeating the line in fifteen scripts.
+ *
+ * Registered as a LOADER, so a builder never reads the module from disk unless
+ * it actually inspects an artifact; when it does and the module is missing, the
+ * failure names the build command rather than passing an unchecked image.
+ */
+
 export {
   writeVfsFile,
   writeVfsBinary,

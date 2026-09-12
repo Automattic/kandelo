@@ -205,7 +205,19 @@ pub(crate) struct NodeExecutionResultV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SourceOnlyProgramProjectionV1 {
     format: &'static str,
+    /// The tier's own identity, under `ResolvePolicy::SourceOnlyV1`: the
+    /// namespace its cache entries and receipts live in. Never comparable to
+    /// `packages/registry/program-packages.json`, whose keys are computed
+    /// under `ResolvePolicy::Default`.
     projection: ProgramPackageIndex,
+    /// The selection state this tier was materialized from, as
+    /// `authoritative_program_package_index` computed it — byte-for-byte the
+    /// value that same build wrote to `program-packages.json`. This is the
+    /// half a resolver may compare against the index it regenerates at resolve
+    /// time, because both come from that one function under one policy. See
+    /// `authoritative_program_package_index` for why the tier cannot be
+    /// checked against `projection` instead.
+    selection_projection: ProgramPackageIndex,
     graph_authority_sha256: String,
     nodes: Vec<SourceOnlyProgramNodeV1>,
 }
@@ -363,7 +375,10 @@ pub(crate) struct BootstrapStep {
 }
 
 /// The ordered host-plus-engine build closure for `xtask bootstrap` /
-/// `./run.sh setup`. Pure and testable: `fork-instrument-tool` must precede
+/// `./run.sh setup`. Pure and testable: `root-npm` must come first (the
+/// `engine` step's `node-browser-bundle` package and the `rootfs` step's
+/// `build-rootfs.sh` both hard-require the repository's locked ROOT npm
+/// dependencies, and neither installs them); `fork-instrument-tool` must precede
 /// `engine` (the `msmtpd` package node consumes the built
 /// `wasm-fork-instrument` CLI); `sysroot`/`sysroot64`/`sdk` must precede
 /// `engine` (every package build script in the local-supported set reads the
@@ -380,6 +395,7 @@ pub(crate) struct BootstrapStep {
 /// the engine regenerates).
 pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
     vec![
+        BootstrapStep { name: "root-npm" },
         BootstrapStep {
             name: "fork-instrument-tool",
         },
@@ -406,6 +422,18 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
 /// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
 /// worktree its own isolated cache instead; leaving it unset shares the
 /// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
+/// The tier a completed local build publishes into, rooted at `base`.
+///
+/// Derived from `crates/shared/src/artifact_tiers.rs` rather than spelled here,
+/// because this is the WRITER and the two hosts are the readers. When the three
+/// disagreed, `local-binaries/kernel.wasm` (a seven-hour-old symlink) shadowed
+/// the freshly written `local-binaries/source-only-v1/kernel.wasm`, and
+/// `cargo test -p host-native` failed 39 of 53 against a tree where the build
+/// had just succeeded.
+fn source_only_output_root(base: &Path) -> PathBuf {
+    base.join(wasm_posix_shared::artifact_tiers::SOURCE_ONLY_TIER.relative_path)
+}
+
 fn default_source_cache_root() -> Result<PathBuf, String> {
     resolve_source_cache_root(
         std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
@@ -504,10 +532,11 @@ pub(crate) enum Selection {
 /// "does this actually exist" to the engine/host-step runner, which already
 /// has the real registry and product catalog available to validate against.
 ///
-/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, and `sdk` are
-/// the non-graph host steps `./run.sh`'s `need_host`/`need_fork_instrument`/
-/// `need_rootfs`/`need_sysroot`/`need_sysroot64`/`need_sdk` used to build by
-/// hand; everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
+/// `host`, `fork-instrument`, `rootfs`, `sysroot`, `sysroot64`, `sdk` and
+/// `root-npm` are the non-graph host steps `./run.sh`'s `need_host`/
+/// `need_fork_instrument`/`need_rootfs`/`need_sysroot`/`need_sysroot64`/
+/// `need_sdk` used to build by hand (`root-npm` is named here so the root
+/// dependency install can be run and verified on its own); everything else (`kernel`, `zlib`, `php`, `mariadb-vfs`, ...) is a
 /// package or product name the engine's own graph already understands.
 pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
     match target {
@@ -517,6 +546,7 @@ pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
         "sysroot" => Selection::HostStep("sysroot"),
         "sysroot64" => Selection::HostStep("sysroot64"),
         "sdk" => Selection::HostStep("sdk"),
+        "root-npm" => Selection::HostStep("root-npm"),
         other => Selection::Package(other.to_string()),
     }
 }
@@ -612,6 +642,82 @@ fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<
     }
 }
 
+/// The sentinel that decides whether the repository's ROOT npm dependencies
+/// are installed. `node_modules/tsx/dist/cli.mjs` is the exact file
+/// `scripts/build-rootfs.sh` and
+/// `packages/registry/node-browser-bundle/build-node-browser-bundle.sh` both
+/// refuse to run without, so keying on it means the check this bootstrap step
+/// makes and the check those build scripts make cannot disagree.
+///
+/// Pure, so the "is it needed" decision is unit-testable without running npm.
+pub(crate) fn root_npm_install_needed(repo: &Path) -> bool {
+    !repo.join("node_modules/tsx/dist/cli.mjs").is_file()
+}
+
+/// Install the repository's ROOT npm dependencies when they are absent.
+///
+/// WHY THIS IS A BOOTSTRAP STEP: `tsx`, `fflate`, `fzstd` and `vite` are ROOT
+/// dependencies, not `host/` ones, and two engine-driven builds hard-require
+/// them — `scripts/build-rootfs.sh` (the `rootfs` step) and the
+/// `node-browser-bundle` package (inside the `engine` step). Before this step
+/// existed, `./run.sh setup` bootstrapped `host/` and `tools/mkrootfs/` (both
+/// from inside `build-rootfs.sh`) but never the root, so a fresh worktree's
+/// `setup` failed on `rootfs`, and `rootfs` failing cascade-blocks every
+/// browser product — `platform-rootfs`, `browser-main-shell`, `browser-nginx`,
+/// `browser-wordpress`, `shell`, `node-vfs`, `nginx-vfs`, `lamp` and
+/// `coreutils-docs`. A provisioning step that cannot do its job reported
+/// success, and the resulting failure named a locked `tsx` CLI rather than
+/// the missing step.
+///
+/// WHY THIS DOES NOT WEAKEN THE SEALED CONTRACT: `build-rootfs.sh` refuses to
+/// install anything when `ROOTFS_SEALED_BUILD=1`, on the documented ground
+/// that "resolver-owned package builds must be read-only with respect to the
+/// source checkout". That rule is about *package builds*, and it is untouched
+/// here: those guards stay exactly as they are. `bootstrap` is the opposite
+/// kind of step — it is the front door whose whole job is to provision the
+/// checkout (it already builds musl sysroots, the SDK, the kernel and the
+/// rootfs image into the tree), so installing the locked root dependencies is
+/// the same class of work, not an exception to the sealed rule.
+///
+/// `npm ci` (not `npm install`) because the guards' own messages name it and
+/// because it installs the lockfile exactly instead of rewriting it — a
+/// bootstrap step must not mutate tracked source. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`
+/// matches `scripts/ci-run-test-suite.sh`'s `install_node_deps`, so `setup`
+/// does not silently pull hundreds of megabytes of browser binaries that only
+/// the Playwright suites need; `npx playwright install` remains their explicit
+/// step.
+fn run_root_npm_step(repo: &Path) -> Result<(), String> {
+    if !root_npm_install_needed(repo) {
+        return Ok(());
+    }
+    eprintln!("==> Installing the repository's locked root npm dependencies (npm ci)...");
+    let status = Command::new("npm")
+        .args(["ci", "--no-audit", "--no-fund"])
+        .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+        .current_dir(repo)
+        .status()
+        .map_err(|error| format!("bootstrap root-npm: spawn npm ci: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "bootstrap root-npm: `npm ci` in {} exited with {}",
+            repo.display(),
+            match status.code() {
+                Some(code) => code.to_string(),
+                None => "no exit code (terminated by signal)".to_string(),
+            }
+        ));
+    }
+    if root_npm_install_needed(repo) {
+        return Err(format!(
+            "bootstrap root-npm: `npm ci` reported success but {} is still absent. \
+             The root dependencies are not installed; `rootfs` and \
+             `node-browser-bundle` will fail on the locked tsx CLI.",
+            repo.join("node_modules/tsx/dist/cli.mjs").display()
+        ));
+    }
+    Ok(())
+}
+
 /// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
 /// loop and single-target selection, so a target built alone (e.g.
 /// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
@@ -631,7 +737,7 @@ fn run_bootstrap_step(
         "engine" => run_aggregate(LocalBuildRunArgsV1 {
             set: repo.join("packages/sets/local-supported.toml"),
             source_cache_root: default_source_cache_root()?,
-            output_root: repo.join("local-binaries/source-only-v1"),
+            output_root: source_only_output_root(repo),
             products,
             jobs,
             rebuild,
@@ -658,6 +764,7 @@ fn run_bootstrap_step(
                 if rebuild { "1" } else { "0" },
             )],
         ),
+        "root-npm" => run_root_npm_step(repo),
         "sysroot" => bootstrap_sysroot_step(repo, "sysroot", "wasm32posix"),
         "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
         "sdk" => {
@@ -706,6 +813,12 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         Selection::HostStep(name) => {
+            // Same root-npm prerequisite the whole-tree plan runs first: a
+            // standalone `./run.sh rebuild rootfs` reaches `build-rootfs.sh`
+            // without passing through `Selection::All`, and that script's
+            // locked-tsx guard is the failure this step exists to prevent.
+            // No-op once the root dependencies are installed.
+            run_bootstrap_step(&repo, "root-npm", jobs, rebuild, verify_cache, Vec::new())?;
             // The old `need_host` built the kernel before the TypeScript host
             // (`host/dist` embeds/tests against it); preserve that edge for a
             // standalone `bootstrap host` the same way `bootstrap_step_plan`
@@ -724,6 +837,10 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
             run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
         }
         Selection::Package(name) => {
+            // Same root-npm prerequisite as above: `node-browser-bundle` (and
+            // every product whose closure contains it, e.g. `shell`) reads the
+            // repository's locked root `tsx` directly.
+            run_bootstrap_step(&repo, "root-npm", jobs, rebuild, verify_cache, Vec::new())?;
             // Preserve the exact universal prerequisite set every `run.sh`
             // `build_<pkg>` relied on (`need_kernel` + `need_sdk`, which
             // itself ensures `need_sysroot`), except for the kernel itself,
@@ -810,14 +927,61 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// depends on it). A stale input there is a cache-key mismatch that already
 /// forces a rebuild through the normal engine path, not a silent-staleness
 /// hazard this freshness check needs to duplicate.
+/// The artifacts `verify-fresh` inspects, relative to `local-binaries/`.
+///
+/// Declared here, beside the gate that reads them, and consumed by
+/// `build_deps`'s install-time freshness note so the two cannot disagree about
+/// what will be checked. A note that warned about an artifact the gate never
+/// looks at would be noise, and noise is how a real warning stops being read.
+pub(crate) const VERIFY_FRESH_KERNEL_ARTIFACTS: &[&str] =
+    &["source-only-v1/kernel.wasm", "kernel.wasm"];
+
 pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
-    let kernel_path = repo
-        .join("local-binaries")
-        .join("source-only-v1")
-        .join("kernel.wasm");
+    // Every projected kernel artifact, not just the SourceOnlyV1 one.
+    //
+    // WHY BOTH: this gate used to check only `source-only-v1/kernel.wasm`, on
+    // the premise (recorded above) that the ambient `local-binaries/kernel.wasm`
+    // was a dead `build.sh`-era name. That premise is false — the ambient path
+    // is alive and load-bearing: `crates/host-native/src/lib.rs:290` loads it
+    // directly, and `build-deps install-local-artifact` still writes it. On
+    // 2026-09-09 a `./run.sh rebuild kernel` refreshed the SourceOnlyV1
+    // projection and left the ambient one three days stale, so `verify-fresh`
+    // reported green while every host-native test failed to instantiate on an
+    // import-type mismatch. A freshness gate that passes over the artifact a
+    // consumer actually loads is worse than no gate: it converts "never
+    // checked" into "checked and fine".
+    //
+    // An unbuilt tree short-circuits: nothing can be stale before
+    // `./run.sh setup`/`bootstrap` has produced this tier, and the machine-wide
+    // checks below would otherwise fail on a checkout that simply has no
+    // artifacts yet. `any_present` preserves that early-out, which an earlier
+    // revision of this loop lost by returning Ok() from the per-artifact helper
+    // and then running the machine-wide checks regardless.
+    let mut any_present = false;
+    for relative in VERIFY_FRESH_KERNEL_ARTIFACTS {
+        any_present |= verify_fresh_kernel_artifact(repo, relative)?;
+    }
+    if !any_present {
+        return Ok(());
+    }
+    snapshot_drift_check(repo, false)?;
+    verify_fresh_coresident_side_modules(repo)?;
+    Ok(())
+}
+
+/// One projected `kernel.wasm`: ABI-version match, then same-ABI build-key
+/// match. A missing artifact is not staleness — nothing can be stale before
+/// `./run.sh setup`/`bootstrap` has produced that tier, and the resolver's own
+/// "binary not found" error already reports absence plainly.
+/// Returns whether the artifact was present (absent is not staleness).
+fn verify_fresh_kernel_artifact(repo: &Path, relative: &str) -> Result<bool, String> {
+    let mut kernel_path = repo.join("local-binaries");
+    for segment in relative.split('/') {
+        kernel_path.push(segment);
+    }
     let bytes = match fs::read(&kernel_path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
             return Err(format!("read {}: {error}", kernel_path.display()));
         }
@@ -871,13 +1035,200 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
             crate::util::hex(&expected_key),
         ));
     }
-    // B3: the ABI-version check and the build-key backstop above both prove
-    // the staged kernel.wasm matches the current source tree. Neither one
-    // proves the committed abi/snapshot.json (a separate tracked artifact,
-    // consumed by CI's structural-compat gate) still matches those same
-    // sources -- so run that check too, gated to keep the local no-op path
-    // fast.
-    snapshot_drift_check(repo, false)?;
+    // B3 and L5 (the committed abi/snapshot.json, and the projected
+    // co-resident fork-module) are machine-wide rather than per-artifact, so
+    // they run once in `verify_fresh_report` instead of per kernel copy.
+    Ok(true)
+}
+
+/// L5 freshness gate for the PROJECTED co-resident fork-module.
+///
+/// `crates/fork-module/build-wasm.sh` builds `fork_module{32,64}.wasm`
+/// out-of-band (no `packages/registry/<name>/build.toml`), and the local-build
+/// engine projects them into the SourceOnlyV1 root as first-class owned members
+/// alongside `kernel.wasm` (see `coresident_side_module_projection` /
+/// `coresident_side_module_nodes`). The browser's pinned-projection resolver
+/// (`binary-resolver.ts` / `source-only-vite-assets.ts`) serves each fork-module
+/// member and validates the fetched bytes against the size + sha the projection
+/// manifest declares for it.
+///
+/// The kernel `verify-fresh` backstop above only proves `kernel.wasm` is fresh.
+/// Left ungated, a fork-module rebuild that changes the wasm size leaves the
+/// manifest declaring the OLD size while the staged bytes are new, and the boot
+/// 500s ("member size is X, expected Y") with `verify-fresh` reporting green.
+/// This closes that seam by failing loud on either staleness dimension:
+///
+///  1. **Stale vs source.** Each projected fork-module node records the
+///     fork-module cargo-closure digest it was built for as its
+///     `cacheKeySha256` (the same `workspace_crates_closure_sha` digest the
+///     build-key stamp carries). Recompute it from the CURRENT source tree; any
+///     drift means the projected module was built from older sources.
+///  2. **Stale mirror (the direct browser-500 condition).** The bytes staged at
+///     the projection root must match the size + sha the manifest declares,
+///     because that is exactly what the resolver validates the fetched member
+///     against.
+///
+/// Mirrors the kernel check's "not projected yet -> Ok" semantics: a missing
+/// manifest, or one that carries no fork-module node, is not a staleness error.
+fn verify_fresh_coresident_side_modules(repo: &Path) -> Result<(), String> {
+    let output_root = repo.join("local-binaries").join("source-only-v1");
+    let manifest_path = output_root
+        .join(".kandelo")
+        .join("source-only-program-projection-v1.json");
+    let bytes = match fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read {}: {error}", manifest_path.display())),
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
+
+    for module in CORESIDENT_SIDE_MODULES {
+        // Freshness signal 1 (stale vs source): recompute this module's current
+        // closure digest and compare every projected node against it. Computed
+        // here (needs `cargo metadata` on `repo`) and handed to the pure
+        // validator so the validator itself is unit-testable without a Cargo
+        // workspace.
+        let crates: Vec<String> = module
+            .closure_crates
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        let current_closure = crate::util::hex(&crate::cargo_closure::side_module_build_key(
+            repo,
+            &crates,
+            module.script,
+        )?);
+        check_projected_side_module_freshness(
+            module.node_name,
+            module.closure_description,
+            &manifest,
+            &current_closure,
+            &output_root,
+            &manifest_path,
+        )?;
+    }
+    Ok(())
+}
+
+/// Pure validator for [`verify_fresh_coresident_side_modules`]: given the parsed
+/// projection `manifest`, the `current_closure` digest recomputed from source,
+/// and the `output_root` the fork-module members are staged under, fail loud on
+/// either staleness dimension (see the caller's doc). Split out with no I/O
+/// beyond reading the already-staged member files so it can be unit-tested with
+/// a synthetic manifest and a known closure, without a Cargo workspace.
+fn check_projected_side_module_freshness(
+    node_name: &str,
+    closure_description: &str,
+    manifest: &serde_json::Value,
+    current_closure: &str,
+    output_root: &Path,
+    manifest_path: &Path,
+) -> Result<(), String> {
+    let nodes = manifest
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| format!("{}: manifest has no nodes array", manifest_path.display()))?;
+
+    let fork_nodes: Vec<&serde_json::Value> = nodes
+        .iter()
+        .filter(|node| {
+            node.get("node")
+                .and_then(|id| id.get("name"))
+                .and_then(|name| name.as_str())
+                == Some(node_name)
+        })
+        .collect();
+    if fork_nodes.is_empty() {
+        // No fork-module projected (projection predates fork-module projection,
+        // or does not include it): nothing to verify here.
+        return Ok(());
+    }
+
+    for node in fork_nodes {
+        let arch = node
+            .get("node")
+            .and_then(|id| id.get("targetArch"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("<unknown-arch>");
+        let recorded_key = node
+            .get("cacheKeySha256")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "{}: projected {node_name} node ({arch}) has no cacheKeySha256",
+                    manifest_path.display()
+                )
+            })?;
+        if recorded_key != current_closure {
+            return Err(format!(
+                "{} is stale: the projected co-resident {node_name} ({arch}) was built for \
+                 closure key {recorded_key}, but the current source tree \
+                 ({closure_description}) resolves to {current_closure}. Rebuild + re-project \
+                 with `./run.sh setup` (or a `cargo xtask local-build` that finalizes the \
+                 SourceOnly projection).",
+                manifest_path.display()
+            ));
+        }
+
+        // Freshness signal 2 (stale mirror -> the browser-500 condition): the
+        // staged bytes must match the size + sha the manifest declares.
+        let members = node
+            .get("members")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| {
+                format!(
+                    "{}: projected {node_name} node ({arch}) has no members array",
+                    manifest_path.display()
+                )
+            })?;
+        for member in members {
+            let mirror_path = member
+                .get("mirrorPath")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: projected {node_name} member has no mirrorPath",
+                        manifest_path.display()
+                    )
+                })?;
+            let recorded_size = member
+                .get("size")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: projected {node_name} member {mirror_path} has no size",
+                        manifest_path.display()
+                    )
+                })?;
+            let recorded_sha = member
+                .get("sha256")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: projected {node_name} member {mirror_path} has no sha256",
+                        manifest_path.display()
+                    )
+                })?;
+            let staged = output_root.join(mirror_path);
+            let staged_bytes = fs::read(&staged)
+                .map_err(|error| format!("read projected {}: {error}", staged.display()))?;
+            let actual_size = staged_bytes.len() as u64;
+            let actual_sha = sha256_bytes(&staged_bytes);
+            if actual_size != recorded_size || actual_sha.as_str() != recorded_sha {
+                return Err(format!(
+                    "{} is stale: the projection manifest declares co-resident {node_name} \
+                     member {mirror_path} as size {recorded_size} sha {recorded_sha}, but the \
+                     staged file is size {actual_size} sha {actual_sha}. The browser's \
+                     pinned-projection resolver validates each fetched member against the \
+                     manifest, so this mismatch would 500 the boot. Re-project with \
+                     `./run.sh setup` (or a `cargo xtask local-build` that finalizes the \
+                     SourceOnly projection).",
+                    manifest_path.display()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1222,7 +1573,7 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
 
     let compiled_cache_root =
         plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?.compiled;
-    let output_root = repo.join("local-binaries/source-only-v1");
+    let output_root = source_only_output_root(&repo);
 
     let mut removed_paths = Vec::new();
     for cleaned in &removal {
@@ -1451,6 +1802,15 @@ fn source_only_program_projection_is_current(
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
         return false;
     };
+    // An authority published before the tier recorded the selection state it
+    // was built from cannot answer the resolver's identity question, so it is
+    // never "current" no matter which graph it names: re-publish it.
+    if !value
+        .get("selectionProjection")
+        .is_some_and(|recorded| recorded.is_object())
+    {
+        return false;
+    }
     value
         .get("graphAuthoritySha256")
         .and_then(|recorded| recorded.as_str())
@@ -1560,6 +1920,39 @@ fn compute_skip_receipts(
     BTreeMap::new()
 }
 
+/// Whether this run can still materialize members into the projection tier,
+/// decided from the UP-FRONT skip result rather than from the build's results.
+///
+/// This is the pre-build half of the fully-clean no-op fast path's predicate in
+/// `run_aggregate`, and it must stay the same question asked earlier. Every
+/// compiled-package and product node that is not already skippable launches a
+/// child, and a child materializes its members into the tier as it finishes
+/// (`materialize_source_only_program_target_with_cache_root`). If every one of
+/// them is skippable, no child runs that can write into the tier, so the
+/// published authority still describes exactly the bytes on disk and is left
+/// alone -- which is what keeps the no-op fast path reachable.
+///
+/// Source-kind package nodes are deliberately NOT counted. They always run a
+/// child, and a run of a fully-cached tree normally contains several, so
+/// counting them would retract on every no-op build and cost a whole-graph
+/// re-derivation each time. They populate the source cache and never the
+/// projection tier: `install_local_artifact` refuses any manifest whose kind is
+/// not `Program`, and only a program's declared outputs are projected.
+fn run_can_materialize_into_tier(
+    selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
+    expected_receipt_nodes: &BTreeSet<PlanNodeV1>,
+    skip_receipts: &BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>>,
+) -> bool {
+    let every_compiled_package_is_skippable = expected_receipt_nodes
+        .iter()
+        .all(|node| matches!(skip_receipts.get(node), Some(Some(_))));
+    let every_product_is_skippable = selected
+        .keys()
+        .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
+        .all(|node| skip_receipts.contains_key(node));
+    !(every_compiled_package_is_skippable && every_product_is_skippable)
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     generate_vfs_product_catalog(&repo)?;
@@ -1583,6 +1976,12 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     })?;
     let output_root = exact_canonical_directory(&output_intended, "local-build output root")?;
     validate_run_roots(&repo, &set, &cache_roots.base, &output_root)?;
+
+    // Build/refresh the co-resident PIC side modules (the fork module and the
+    // WASI module) before finalization so they can be projected as owned
+    // members. Each build-wasm.sh owns its build + closure-derived freshness
+    // stamp; this only invokes them.
+    ensure_coresident_side_modules_built(&repo)?;
 
     let run_directory = create_run_directory(&output_root)?;
     let mut result_paths = BTreeMap::new();
@@ -1631,6 +2030,71 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
     };
     let skip_receipts = Arc::new(skip_receipts);
+
+    // B30: publication of the projection authority is contingent on the build
+    // completing, and that contingency is established BEFORE the build can be
+    // killed rather than after it fails.
+    //
+    // WHY NOT A HANDLER. Every node materializes its members into the tier as
+    // it finishes (`materialize_source_only_program_target_with_cache_root` in
+    // `build_deps.rs`), so from the first child onward a previously published
+    // authority may describe bytes that are already gone. The retraction below
+    // the scheduler covers a build that FAILS. It cannot cover a build that is
+    // KILLED, and on this machine builds are killed routinely: harness reaps
+    // (exit 144), timeout SIGTERM (exit 143), and deliberate SIGKILL when a
+    // build is taking the machine. No in-process trap, atexit hook or drop
+    // guard runs on SIGKILL, so no post-hoc mechanism can make this safe. The
+    // only shape that survives an uncatchable signal is one whose guarantee is
+    // already on disk before the signal can arrive: unlink first, publish last.
+    // A killed build then leaves a tier with NO authority -- which is already a
+    // named refusal every reader implements, and which the next build
+    // republishes from the receipts without rebuilding -- instead of one
+    // describing a build that never finished.
+    //
+    // WHY NOT A COMPLETION MARKER. A marker checked by readers survives SIGKILL
+    // equally well, but it needs every reader to learn a second mechanism (the
+    // TypeScript resolver included) to reach the same refusal the absent
+    // authority already produces. Retraction reuses the refusal that exists.
+    //
+    // WHAT IS DELIBERATELY NOT RETRACTED. A run whose compiled-package and
+    // product nodes are all already skippable launches no child that can
+    // materialize into the tier, so it mutates nothing and keeps its authority.
+    // That is the same predicate the fully-clean no-op fast path below tests,
+    // evaluated from the up-front skip decision rather than from the results,
+    // so the no-op path stays reachable. Source-kind package nodes still run a
+    // child; they populate the source cache and never the projection tier.
+    //
+    // The co-resident side modules are the second way in. They are built into
+    // `local-binaries/` before the scheduler and STAGED INTO THE TIER by the
+    // finalizer, under the projection lock but before the authority is
+    // replaced. So a run whose every package and product node is skippable can
+    // still rewrite tier bytes, and a kill in that window would leave the old
+    // authority describing side modules that are no longer there. Evaluated
+    // here, before the scheduler, because nothing the scheduler does changes
+    // these artifacts.
+    let run_writes_to_tier =
+        run_can_materialize_into_tier(&selected, &expected_receipt_nodes, &skip_receipts)
+            || !coresident_side_module_projection_is_current(&output_root, &repo);
+    if run_writes_to_tier {
+        match retract_source_only_program_projection(&output_root) {
+            Ok(false) => {}
+            Ok(true) => eprintln!(
+                "source-only program authority retracted before building: this \
+                 build replaces bytes the published authority describes. It is \
+                 republished when the build completes. If this build is killed \
+                 or fails, the tier reports that it has no authority rather \
+                 than describing a build that did not finish."
+            ),
+            Err(error) => {
+                return Err(format!(
+                    "source-only program authority could not be retracted before \
+                     the build, so a killed build would leave the tier claiming \
+                     bytes this build replaces: {error}"
+                ));
+            }
+        }
+    }
+
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -1760,14 +2224,14 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // authority, the finalizer would reproduce precisely what is already on
     // disk. Leave it in place instead of re-deriving and re-publishing it.
     // `--rebuild`/`--verify-cache` disable the skip, so this is unreachable then.
+    // `run_writes_to_tier` is the SAME value the pre-build retraction decided
+    // on, reused rather than recomputed. Recomputing it was how the two could
+    // drift: if this path ever judged a run a no-op that the retraction had
+    // judged capable of writing to the tier, the authority would already be
+    // gone and this would leave it gone -- a regression whose only symptom is a
+    // tier that refuses itself.
     let projection_up_to_date = package_projection_is_eligible(&selected, &results)
-        && expected_receipt_nodes
-            .iter()
-            .all(|node| matches!(skip_receipts.get(node), Some(Some(_))))
-        && selected
-            .keys()
-            .filter(|node| matches!(node, PlanNodeV1::Product { .. }))
-            .all(|node| skip_receipts.contains_key(node))
+        && !run_writes_to_tier
         && source_only_program_projection_is_current(&output_root, &graph.authority_sha256);
     let projection_finalization_error = if projection_up_to_date {
         None
@@ -1786,14 +2250,43 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
             args.verify_cache,
         )
         .err()
+        .map(|error| format!("finalization failed: {error}"))
     } else {
-        None
+        // The build did not finish, so no authority can describe it -- but the
+        // packages that DID finish were mirrored into the tier as they went, so
+        // any authority still published there now describes different bytes.
+        // Retract it. Leaving it is the illusion the platform-values contract
+        // warns against: artifacts served under the provenance of a build that
+        // did not produce them.
+        //
+        // B30 made this a BACKSTOP rather than the guarantee. Any run that can
+        // materialize into the tier already retracted before its first child,
+        // so on that path this reports `Ok(false)` and says nothing. It still
+        // runs because it is the correct answer whenever the pre-build
+        // retraction did not apply, and because a guarantee that depends on
+        // exactly one call site is one refactor away from being no guarantee.
+        match retract_source_only_program_projection(&output_root) {
+            Ok(false) => None,
+            Ok(true) => {
+                eprintln!(
+                    "source-only program authority retracted: this build did not \
+                     complete, and the packages it did finish replaced bytes the \
+                     published authority described. Re-run `./run.sh setup` after \
+                     fixing the failure above to republish."
+                );
+                None
+            }
+            Err(error) => Some(format!(
+                "could not be retracted after an incomplete build, so the tier \
+                 still claims bytes this build replaced: {error}"
+            )),
+        }
     };
     if let Some(error) = &projection_finalization_error {
         if !aggregate_failed {
             eprintln!("{}", render_projection_failure_banner(color));
         }
-        eprintln!("source-only program authority finalization failed: {error}");
+        eprintln!("source-only program authority: {error}");
     }
 
     for path in result_paths.values() {
@@ -2086,6 +2579,321 @@ fn selected_resolved_package_nodes(
         .collect()
 }
 
+/// The name every co-resident fork-module projection node carries. It is not a
+/// registry package (fork-module has no `packages/registry/<name>/build.toml`);
+/// the name is a stable, single-path-component identity the projection consumer
+/// admits as a root-level member alongside `kernel.wasm`.
+const CORESIDENT_FORK_MODULE_NODE_NAME: &str = "fork-module";
+
+/// The name every co-resident WASI-module projection node carries. Same rule as
+/// the fork-module's: `crates/wasi-module` carries no `build.toml` either.
+const CORESIDENT_WASI_MODULE_NODE_NAME: &str = "wasi-module";
+
+/// The name every dynamic-linking-planner projection node carries. Same rule
+/// again: `crates/dylink-module` carries no `build.toml`.
+const DYLINK_MODULE_NODE_NAME: &str = "dylink-module";
+
+/// The name every artifact-reader projection node carries. Same rule again:
+/// `crates/wasm-artifact-module` carries no `build.toml`.
+const WASM_ARTIFACT_MODULE_NODE_NAME: &str = "wasm-artifact-module";
+
+/// A wasm module the local-build engine builds and projects, but the package
+/// resolver does not model.
+///
+/// There are four: `crates/fork-module` (fork capture/replay),
+/// `crates/wasi-module` (WASI Preview 1), `crates/dylink-module` (the
+/// dynamic-linking planner), and `crates/wasm-artifact-module` (the
+/// WebAssembly artifact reader). What they share is the pipeline, not the
+/// shape —
+/// each is built out-of-band by its own `build-wasm.sh`, each stages a
+/// closure-derived build-key stamp next to its artifact, and each must reach
+/// the SourceOnly projection as an owned root-level member or the browser's
+/// pinned-projection resolver refuses to serve it. Describing them rather than
+/// duplicating the machinery means a fourth module is one entry here.
+///
+/// **They are not all co-resident, despite the name.** The first two are PIC
+/// (`--pie`) SIDE modules placed inside the guest's linear memory. The planner
+/// is not: it imports nothing at all, not even `env.memory`, and owns its own
+/// memory. Do not infer PIC build flags or guest-memory placement from
+/// membership in this table; that is per-module, and each module's
+/// `build-wasm.sh` owns it.
+pub(crate) struct CoresidentSideModule {
+    /// Projection node name; also the identity the consumer's root-level
+    /// member rule admits.
+    node_name: &'static str,
+    /// Build script, repo-relative. Owns the build and the freshness stamp.
+    pub(crate) script: &'static str,
+    /// Crates whose contents define this artifact's closure digest. Derived
+    /// from the real build closure, never a hand-list of files.
+    closure_crates: &'static [&'static str],
+    /// The artifacts the script stages into `local-binaries/`, as
+    /// `(file name, target arch, required)`. A non-required artifact mirrors a
+    /// best-effort tier-3 target: absent is not an error, but a present one is
+    /// still freshness-checked.
+    artifacts: &'static [(&'static str, &'static str, bool)],
+    /// The crate list named in a staleness message, for a reader who has to
+    /// act on it.
+    closure_description: &'static str,
+}
+
+pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[
+    CoresidentSideModule {
+        node_name: CORESIDENT_FORK_MODULE_NODE_NAME,
+        script: "crates/fork-module/build-wasm.sh",
+        closure_crates: &["fork-module", "fork-module-inject"],
+        artifacts: &[
+            ("fork_module32.wasm", "wasm32", true),
+            // wasm64 is a tier-3 best-effort target in build-wasm.sh.
+            ("fork_module64.wasm", "wasm64", false),
+        ],
+        closure_description:
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: CORESIDENT_WASI_MODULE_NODE_NAME,
+        script: "crates/wasi-module/build-wasm.sh",
+        closure_crates: &["wasi-module", "wasi-abi"],
+        // WASI Preview 1 is a wasm32 ABI, so there is no wasm64 counterpart.
+        artifacts: &[("wasi_module32.wasm", "wasm32", true)],
+        closure_description: "crates/wasi-module, crates/wasi-abi, crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: DYLINK_MODULE_NODE_NAME,
+        script: "crates/dylink-module/build-wasm.sh",
+        closure_crates: &["dylink-module", "dylink"],
+        // The planner is not compiled per pointer width. It narrows its
+        // arithmetic at its own boundary and carries the process's pointer
+        // width in its configuration record, so one wasm32 module serves
+        // wasm32 and wasm64 guests alike.
+        artifacts: &[("dylink_module32.wasm", "wasm32", true)],
+        closure_description: "crates/dylink-module, crates/dylink, crates/fork-codec, \
+                              crates/shared",
+    },
+    CoresidentSideModule {
+        node_name: WASM_ARTIFACT_MODULE_NODE_NAME,
+        script: "crates/wasm-artifact-module/build-wasm.sh",
+        closure_crates: &["wasm-artifact-module", "wasm-artifact"],
+        // The reader is not compiled per pointer width. It answers questions
+        // ABOUT an artifact's data model rather than sharing it -- which is the
+        // whole reason `kernel.ts` can ask this module which width a kernel
+        // uses before compiling that kernel -- so one wasm32 module serves
+        // wasm32 and wasm64 artifacts alike.
+        artifacts: &[("wasm_artifact_module32.wasm", "wasm32", true)],
+        closure_description: "crates/wasm-artifact-module, crates/wasm-artifact, \
+                              crates/fork-codec, crates/shared",
+    },
+];
+
+/// The pointer-width co-resident fork-module wasm side modules
+/// (`fork_module32.wasm` / `fork_module64.wasm`) are built out-of-band by
+/// `crates/fork-module/build-wasm.sh` — a position-independent (`--pie`)
+/// side-module `cargo build` (with `-Z build-std` plus a post-build walrus
+/// injector) that the package resolver deliberately does not model (fork-module
+/// carries no `build.toml`; see that script's header). Left unprojected they
+/// resolve only through the ambient `local-binaries/` tier, which the browser's
+/// SourceOnly Vite snapshot session cannot own — so a module-on browser build
+/// fails its dep scan with "fork_module32.wasm is not owned by the pinned
+/// SourceOnly projection" (`apps/browser-demos/source-only-vite-assets.ts`).
+///
+/// This projects them as first-class owned members of the source-only
+/// projection, exactly like `kernel.wasm`, so every host (Node and the V8
+/// browser) resolves the co-resident module through the same pinned projection
+/// rather than an ambient copy. They are staged at the projection ROOT (their
+/// host-visible resolver relPath is the unadjusted `fork_module{32,64}.wasm`),
+/// each as its own single-member node so the consumer's root-level member rule
+/// admits them next to `kernel.wasm`.
+struct CoresidentSideModuleProjection {
+    /// The fork-module cargo-closure digest that gates freshness, reused from
+    /// `build-wasm.sh`'s build-key stamp (see
+    /// `cargo_closure::workspace_crates_closure_sha`).
+    closure_sha: String,
+    members: Vec<MaterializedProgramMemberV1>,
+}
+
+/// Compute the co-resident fork-module projection members from the artifacts
+/// `crates/fork-module/build-wasm.sh` stages into `local-binaries/`, verifying
+/// each carries a build-key stamp matching the current fork-module cargo
+/// closure. `fork_module32.wasm` is required; `fork_module64.wasm` mirrors the
+/// build script's best-effort wasm64 policy (a tier-3 target) and is projected
+/// only when present.
+fn coresident_side_module_projection(
+    repo: &Path,
+    module: &CoresidentSideModule,
+) -> Result<CoresidentSideModuleProjection, String> {
+    let crates: Vec<String> = module
+        .closure_crates
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    let script = module.script;
+    // The module's declared recipe is part of its key, computed by the one
+    // function the build scripts also reach through
+    // `xtask workspace-closure-sha --recipe`. See `side_module_build_key`.
+    let closure = crate::cargo_closure::side_module_build_key(repo, &crates, script)?;
+    let closure_sha = crate::util::hex(&closure);
+    let mut members = Vec::new();
+    for (name, _arch, required) in module.artifacts {
+        let name = (*name).to_string();
+        let artifact = repo.join("local-binaries").join(&name);
+        if !artifact.is_file() {
+            if *required {
+                return Err(format!(
+                    "co-resident side module {name} is missing from local-binaries; \
+                     build it with `{script}`"
+                ));
+            }
+            continue;
+        }
+        let key_path = repo
+            .join("local-binaries")
+            .join(format!("{name}.build-key"));
+        let stamped = fs::read_to_string(&key_path).map_err(|error| {
+            format!(
+                "co-resident side module {name} carries no build-key stamp ({}): {error}; \
+                 rebuild with `{script}`",
+                key_path.display()
+            )
+        })?;
+        if stamped.trim() != closure_sha {
+            return Err(format!(
+                "co-resident side module {name} is stale (build-key {}, current closure \
+                 {closure_sha}); rebuild with `{script}`",
+                stamped.trim()
+            ));
+        }
+        let bytes = fs::read(&artifact)
+            .map_err(|error| format!("read {}: {error}", artifact.display()))?;
+        members.push(MaterializedProgramMemberV1 {
+            source_artifact: name.clone(),
+            mirror_path: name.clone(),
+            mode: 0o644,
+            size: bytes.len() as u64,
+            sha256: sha256_bytes(&bytes),
+        });
+    }
+    members.sort_by(|left, right| {
+        (&left.mirror_path, &left.source_artifact)
+            .cmp(&(&right.mirror_path, &right.source_artifact))
+    });
+    Ok(CoresidentSideModuleProjection {
+        closure_sha,
+        members,
+    })
+}
+
+/// One source-only projection node per co-resident fork-module width. Each is a
+/// single root-level member so the consumer admits it under the same
+/// root-level member rule as `kernel.wasm` (`binary-resolver.ts`).
+fn coresident_side_module_nodes(
+    module: &CoresidentSideModule,
+    projection: &CoresidentSideModuleProjection,
+) -> Vec<SourceOnlyProgramNodeV1> {
+    projection
+        .members
+        .iter()
+        .map(|member| {
+            let target_arch = module
+                .artifacts
+                .iter()
+                .find(|(name, _, _)| *name == member.mirror_path)
+                .map(|(_, arch, _)| *arch)
+                .unwrap_or("wasm32");
+            // The node's manifest identity is a stable declaration tag (the
+            // members ARE the artifacts, not a package manifest); its cache key
+            // is the fork-module closure digest that gates freshness; its
+            // receipt digest binds the projected member content.
+            let manifest_sha256 = sha256_bytes(b"kandelo-coresident-fork-module-node-v1");
+            let mut receipt = Sha256::new();
+            receipt.update(b"kandelo-coresident-fork-module-receipt-v1\0");
+            receipt.update((member.mirror_path.len() as u64).to_le_bytes());
+            receipt.update(member.mirror_path.as_bytes());
+            receipt.update(member.sha256.as_bytes());
+            receipt.update(member.size.to_le_bytes());
+            receipt.update((member.mode as u64).to_le_bytes());
+            let cache_receipt_sha256 = crate::util::hex(&receipt.finalize());
+            SourceOnlyProgramNodeV1 {
+                node: SourceOnlyProgramNodeIdentityV1 {
+                    kind: "package",
+                    name: module.node_name.to_string(),
+                    target_arch: target_arch.to_string(),
+                },
+                manifest_sha256,
+                cache_key_sha256: projection.closure_sha.clone(),
+                cache_receipt_sha256,
+                members: vec![member.clone()],
+            }
+        })
+        .collect()
+}
+
+/// Stage the co-resident fork-module artifacts into the projection root so the
+/// bytes the manifest records as members exist on disk (mirroring how the
+/// per-node materialization stages `kernel.wasm`). Copies the freshness-verified
+/// `local-binaries/` artifact and forces the recorded `0o644` mode so the
+/// consumer's stable-read mode check matches.
+fn stage_coresident_side_module_members(
+    repo: &Path,
+    output_root: &Path,
+    projection: &CoresidentSideModuleProjection,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    for member in &projection.members {
+        let src = repo.join("local-binaries").join(&member.mirror_path);
+        let dst = output_root.join(&member.mirror_path);
+        fs::copy(&src, &dst)
+            .map_err(|error| format!("stage {} -> {}: {error}", src.display(), dst.display()))?;
+        fs::set_permissions(&dst, fs::Permissions::from_mode(member.mode))
+            .map_err(|error| format!("chmod {}: {error}", dst.display()))?;
+    }
+    Ok(())
+}
+
+/// Ensure the co-resident fork-module side modules are built and stamped fresh
+/// before the projection is finalized. Fast path: `--verify-fresh` skips the
+/// (slower) `-Z build-std` build when the staged artifacts already match the
+/// current fork-module cargo closure; only a stale/unstamped/missing artifact
+/// triggers a rebuild. This is what makes `fork_module*.wasm` a build-pipeline
+/// artifact instead of a manual side step.
+fn ensure_coresident_side_modules_built(repo: &Path) -> Result<(), String> {
+    for module in CORESIDENT_SIDE_MODULES {
+        let script = repo.join(module.script);
+        let fresh = Command::new("bash")
+            .arg(&script)
+            .arg("--verify-fresh")
+            .current_dir(repo)
+            .status()
+            .map_err(|error| format!("spawn {} --verify-fresh: {error}", script.display()))?;
+        if fresh.success() {
+            continue;
+        }
+        run_repo_script(repo, module.script, &[])?;
+    }
+    Ok(())
+}
+
+/// Whether the projection root already carries the current co-resident
+/// fork-module artifacts byte-for-byte. Called only on the fully-clean no-op
+/// fast path, after `ensure_coresident_side_modules_built` has refreshed the
+/// `local-binaries/` copies, so a stale or missing projected copy (e.g. a
+/// fork-module source change with an otherwise-unchanged package graph) forces
+/// the finalizer to re-stage rather than leaving a stale module on disk.
+fn coresident_side_module_projection_is_current(output_root: &Path, repo: &Path) -> bool {
+    for (name, _arch, required) in CORESIDENT_SIDE_MODULES
+        .iter()
+        .flat_map(|module| module.artifacts.iter())
+    {
+        let src = fs::read(repo.join("local-binaries").join(name)).ok();
+        let dst = fs::read(output_root.join(name)).ok();
+        match (required, src, dst) {
+            // A best-effort artifact: an absent source must also be absent here.
+            (false, None, None) => {}
+            (_, Some(source), Some(projected)) if source == projected => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 fn refreshed_source_only_program_projection(
     repo: &Path,
@@ -2126,13 +2934,69 @@ fn refreshed_source_only_program_projection(
         .into_iter()
         .flatten()
         .collect::<BTreeSet<_>>();
-    let authority = source_only_program_projection_candidate(
+    // The selection half comes from the same function that writes
+    // `packages/registry/program-packages.json`, so the resolver compares the
+    // tier against a value produced by one generator under one policy rather
+    // than across two policy namespaces that can never agree.
+    let selection_projection =
+        crate::build_deps::authoritative_program_package_index(registry)?;
+    let mut authority = source_only_program_projection_candidate(
         projection,
+        selection_projection,
         expected_graph_authority_sha256,
         receipts,
         &root_mirror_nodes,
     )?;
+    // Project the co-resident side modules as owned root-level members (built
+    // out-of-band by their build-wasm.sh scripts; see
+    // `coresident_side_module_projection`). Appended after the package-derived
+    // candidate so the package receipt validation loop is untouched, then the
+    // whole node set is re-sorted to preserve the consumer's (name, targetArch)
+    // ordering invariant.
+    for module in CORESIDENT_SIDE_MODULES {
+        let coresident = coresident_side_module_projection(repo, module)?;
+        for node in coresident_side_module_nodes(module, &coresident) {
+            if authority.nodes.iter().any(|existing| {
+                existing.node.name == node.node.name
+                    && existing.node.target_arch == node.node.target_arch
+            }) {
+                return Err(format!(
+                    "co-resident side-module node {}/{} collides with a package projection node",
+                    node.node.name, node.node.target_arch
+                ));
+            }
+            authority.nodes.push(node);
+        }
+    }
+    authority.nodes.sort_by(|left, right| {
+        (&left.node.name, &left.node.target_arch)
+            .cmp(&(&right.node.name, &right.node.target_arch))
+    });
     source_only_program_projection_bytes(&authority)
+}
+
+/// Withdraw the published program authority when this build cannot replace it.
+///
+/// The counterpart to `finalize_source_only_program_projection`, and the reason
+/// an incomplete build is not simply left alone. Each package node mirrors its
+/// own bytes into the tier as it completes, while the authority that describes
+/// the whole tier is written once at the end. So a build that fails partway
+/// leaves the tier holding this build's bytes under the previous build's
+/// record -- artifacts whose provenance the tier states incorrectly, which is
+/// worse than artifacts it cannot describe at all.
+///
+/// Retracting leaves the bytes in place. They resolve to nothing without an
+/// authority (the tier reports it "has no usable projection authority", a named
+/// refusal), the content-addressed cache still owns them, and the next complete
+/// build republishes from that cache instead of rebuilding.
+///
+/// Returns whether an authority was there to remove, so the caller only
+/// announces a retraction that happened. A tier that was never published (a
+/// fresh worktree whose first build failed) is already truthful.
+fn retract_source_only_program_projection(output_root: &Path) -> Result<bool, String> {
+    with_source_only_program_projection_lock(output_root, |authority| {
+        authority.retract_projection_authority()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2165,6 +3029,13 @@ fn finalize_source_only_program_projection(
         graph_authority_sha256,
         receipts,
     )?;
+    // The co-resident side-module members the candidate records are staged into
+    // the projection root under the same lock, before the manifest goes live, so
+    // the published authority never references bytes that are not yet on disk.
+    let coresident: Vec<CoresidentSideModuleProjection> = CORESIDENT_SIDE_MODULES
+        .iter()
+        .map(|module| coresident_side_module_projection(repo, module))
+        .collect::<Result<_, String>>()?;
     with_source_only_program_projection_lock(output_root, |authority| {
         for node in expected_receipt_nodes {
             let PlanNodeV1::Package { name, target_arch } = node else {
@@ -2197,6 +3068,10 @@ fn finalize_source_only_program_projection(
                 verify_cache,
                 receipt,
             )?;
+        }
+
+        for projection in &coresident {
+            stage_coresident_side_module_members(repo, output_root, projection)?;
         }
 
         if verify_cache {
@@ -4059,6 +4934,7 @@ fn graph_authority_bytes(authority: &GraphAuthorityV1) -> Result<Vec<u8>, String
 
 fn source_only_program_projection_candidate(
     projection: ProgramPackageIndex,
+    selection_projection: ProgramPackageIndex,
     graph_authority_sha256: &str,
     receipts: &BTreeMap<PlanNodeV1, PackageNodeReceiptV1>,
     root_mirror_nodes: &BTreeSet<PlanNodeV1>,
@@ -4069,6 +4945,23 @@ fn source_only_program_projection_candidate(
             "source-only program projection has unexpected v2 format {:?}",
             projection.format
         ));
+    }
+    if selection_projection.format != "kandelo-program-packages-v2" {
+        return Err(format!(
+            "source-only selection projection has unexpected v2 format {:?}",
+            selection_projection.format
+        ));
+    }
+    // Every package this tier projects must carry a selection identity, or the
+    // resolver has nothing comparable to check it against and would have to
+    // either refuse it or accept it unchecked. Both are worse than failing the
+    // build that would have published it.
+    for name in projection.packages.keys() {
+        if !selection_projection.packages.contains_key(name) {
+            return Err(format!(
+                "source-only program projection projects {name:?}, but the selection projection the tier was built from does not; the package registry changed during the build"
+            ));
+        }
     }
     let mut required_identities = projection.packages.keys().cloned().collect::<BTreeSet<_>>();
     for package in projection.packages.values() {
@@ -4323,6 +5216,7 @@ fn source_only_program_projection_candidate(
     Ok(SourceOnlyProgramProjectionV1 {
         format: SOURCE_ONLY_PROGRAM_PROJECTION_FORMAT,
         projection,
+        selection_projection,
         graph_authority_sha256: graph_authority_sha256.to_string(),
         nodes,
     })
@@ -4722,9 +5616,23 @@ mod tests {
         let path = output
             .join(".kandelo")
             .join("source-only-program-projection-v1.json");
+        // An authority from before the tier recorded its selection state
+        // cannot answer the resolver's identity question, so no graph
+        // authority makes it current: it must be republished.
         write(
             &path,
             &format!(r#"{{"graphAuthoritySha256":"{authority}","nodes":[]}}"#),
+        );
+        assert!(
+            !source_only_program_projection_is_current(output, &authority),
+            "a projection with no recorded selection state is never current"
+        );
+
+        write(
+            &path,
+            &format!(
+                r#"{{"graphAuthoritySha256":"{authority}","selectionProjection":{{"format":"kandelo-program-packages-v2","identities":{{}},"packages":{{}}}},"nodes":[]}}"#
+            ),
         );
 
         assert!(
@@ -5790,6 +6698,7 @@ materialization = "lazy"
         assert_eq!(
             names,
             vec![
+                "root-npm",
                 "fork-instrument-tool",
                 "sysroot",
                 "sysroot64",
@@ -5798,7 +6707,10 @@ materialization = "lazy"
                 "rootfs",
                 "host-dist",
             ],
-            "fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
+            "root-npm must come first (the engine's node-browser-bundle package and \
+             build-rootfs.sh both hard-require the repository's locked ROOT npm \
+             dependencies, and neither installs them); \
+             fork-instrument must precede the engine (msmtpd needs it); sysroot/ \
              sysroot64/sdk must precede the engine (every package build script reads \
              the ambient musl sysroot and wasm{{32,64}}posix-cc directly, which the \
              engine's own dependency graph does not model as an edge) and sdk must \
@@ -5808,6 +6720,29 @@ materialization = "lazy"
              rootfs image); host-dist must follow the engine (needs the regenerated \
              program index)"
         );
+    }
+
+    #[test]
+    fn root_npm_install_needed_keys_on_the_same_file_the_build_scripts_guard_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        assert!(
+            root_npm_install_needed(repo),
+            "an unprovisioned checkout needs the root install"
+        );
+
+        // The exact path `scripts/build-rootfs.sh` and
+        // `build-node-browser-bundle.sh` refuse to run without. Anything short
+        // of it must still read as "needed", or `setup` would report success
+        // and leave `rootfs`/`node-browser-bundle` to fail on the locked tsx.
+        std::fs::create_dir_all(repo.join("node_modules/tsx/dist")).unwrap();
+        assert!(
+            root_npm_install_needed(repo),
+            "a node_modules tree without the tsx CLI is still not provisioned"
+        );
+
+        std::fs::write(repo.join("node_modules/tsx/dist/cli.mjs"), b"//\n").unwrap();
+        assert!(!root_npm_install_needed(repo));
     }
 
     #[test]
@@ -5868,6 +6803,10 @@ materialization = "lazy"
         assert_eq!(
             bootstrap_target_to_selection("sysroot64"),
             Selection::HostStep("sysroot64")
+        );
+        assert_eq!(
+            bootstrap_target_to_selection("root-npm"),
+            Selection::HostStep("root-npm")
         );
         assert_eq!(
             bootstrap_target_to_selection("sdk"),
@@ -6050,6 +6989,154 @@ materialization = "lazy"
             err.contains("kernel.wasm has no __abi_version export"),
             "must name the missing export: {err}"
         );
+    }
+
+    // -- L5: projected co-resident fork-module freshness gate --
+    //
+    // Exercise the pure validator `check_projected_side_module_freshness`
+    // directly with a synthetic projection manifest + staged member bytes and a
+    // known closure digest, so no Cargo workspace / `cargo metadata` run is
+    // needed. The outer `verify_fresh_coresident_side_modules` only adds the
+    // closure recompute + manifest read, both covered end-to-end against the
+    // real repo in the empirical validation step.
+
+    /// Build a one-node projection manifest for a fork-module width, declaring
+    /// the given member `size`/`sha256` and node `cache_key`.
+    fn fork_module_manifest(
+        arch: &str,
+        mirror_path: &str,
+        cache_key: &str,
+        size: u64,
+        sha256: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "nodes": [
+                {
+                    "node": { "kind": "package", "name": CORESIDENT_FORK_MODULE_NODE_NAME, "targetArch": arch },
+                    "manifestSha256": "00",
+                    "cacheKeySha256": cache_key,
+                    "cacheReceiptSha256": "00",
+                    "members": [
+                        { "sourceArtifact": mirror_path, "mirrorPath": mirror_path, "mode": 420, "size": size, "sha256": sha256 }
+                    ]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn l5_passes_for_a_fresh_projected_fork_module() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let output_root = source_only_output_root(temp.path());
+        fs::create_dir_all(&output_root).unwrap();
+        let bytes = b"fork-module-bytes-fresh";
+        fs::write(output_root.join("fork_module32.wasm"), bytes).unwrap();
+        let sha = sha256_bytes(bytes);
+        let closure = "deadbeef";
+        let manifest =
+            fork_module_manifest("wasm32", "fork_module32.wasm", closure, bytes.len() as u64, &sha);
+        check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
+            &manifest,
+            closure,
+            &output_root,
+            &output_root.join(".kandelo/source-only-program-projection-v1.json"),
+        )
+        .expect("a fresh projected fork-module must verify clean");
+    }
+
+    #[test]
+    fn l5_fails_when_projected_fork_module_is_stale_vs_source() {
+        // The manifest was built for an OLD closure key; the current source
+        // resolves to a different one -> stale-vs-source.
+        let temp = tempfile::TempDir::new().unwrap();
+        let output_root = source_only_output_root(temp.path());
+        fs::create_dir_all(&output_root).unwrap();
+        let bytes = b"fork-module-bytes";
+        fs::write(output_root.join("fork_module32.wasm"), bytes).unwrap();
+        let sha = sha256_bytes(bytes);
+        let manifest = fork_module_manifest(
+            "wasm32",
+            "fork_module32.wasm",
+            "oldclosurekey",
+            bytes.len() as u64,
+            &sha,
+        );
+        let err = check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
+            &manifest,
+            "newclosurekey",
+            &output_root,
+            &output_root.join(".kandelo/source-only-program-projection-v1.json"),
+        )
+        .unwrap_err();
+        assert!(err.contains("oldclosurekey"), "must name the recorded key: {err}");
+        assert!(err.contains("newclosurekey"), "must name the current key: {err}");
+        assert!(err.contains("was built for closure key"), "{err}");
+    }
+
+    #[test]
+    fn l5_fails_when_manifest_size_sha_disagree_with_staged_file() {
+        // The exact live browser-500 seam: the closure key still matches (not
+        // stale vs source) but the staged bytes differ from what the manifest
+        // declares, so the pinned-projection resolver would reject the member.
+        let temp = tempfile::TempDir::new().unwrap();
+        let output_root = source_only_output_root(temp.path());
+        fs::create_dir_all(&output_root).unwrap();
+        let staged = b"the-actually-staged-newer-bytes";
+        fs::write(output_root.join("fork_module32.wasm"), staged).unwrap();
+        let closure = "matchingkey";
+        // Manifest declares a DIFFERENT (older/smaller) member than what is staged.
+        let manifest = fork_module_manifest(
+            "wasm32",
+            "fork_module32.wasm",
+            closure,
+            999,
+            &sha256_bytes(b"older-manifest-bytes"),
+        );
+        let err = check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
+            &manifest,
+            closure,
+            &output_root,
+            &output_root.join(".kandelo/source-only-program-projection-v1.json"),
+        )
+        .unwrap_err();
+        assert!(err.contains("would 500 the boot"), "must explain the browser impact: {err}");
+        assert!(
+            err.contains(&format!("{}", staged.len())),
+            "must report the actual staged size: {err}"
+        );
+    }
+
+    #[test]
+    fn l5_ok_when_no_fork_module_node_is_projected() {
+        // A manifest with nodes but no fork-module node: nothing to verify.
+        let manifest = serde_json::json!({ "nodes": [
+            { "node": { "kind": "package", "name": "kernel", "targetArch": "wasm32" },
+              "cacheKeySha256": "x", "members": [] }
+        ]});
+        check_projected_side_module_freshness(
+            CORESIDENT_FORK_MODULE_NODE_NAME,
+            "crates/fork-module, crates/fork-module-inject, crates/fork-codec, crates/shared",
+            &manifest,
+            "anyclosure",
+            Path::new("/nonexistent"),
+            Path::new("/nonexistent/manifest.json"),
+        )
+        .expect("no fork-module node -> nothing to verify");
+    }
+
+    #[test]
+    fn l5_ok_when_no_projection_manifest_exists() {
+        // `verify_fresh_coresident_side_modules` treats an absent manifest as
+        // "not projected yet", mirroring the kernel check's NotFound -> Ok.
+        let temp = tempfile::TempDir::new().unwrap();
+        verify_fresh_coresident_side_modules(temp.path())
+            .expect("absent projection manifest must not fail freshness");
     }
 
     // -- snapshot_drift_check / abi_sources_changed_since_snapshot (B3) --
@@ -6526,6 +7613,28 @@ materialization = "lazy"
                 },
             )]),
         };
+        // The selection half a real build records: the same packages keyed
+        // under the Default resolve policy, so every cache key differs from
+        // the tier's SourceOnlyV1 key exactly as it does on disk. A registry
+        // index also carries packages this build did not project, so add one.
+        let selection = {
+            let mut selection = projection.clone();
+            let rekey = |key: &mut String| *key = format!("d{}", &key[1..]);
+            for identity in selection.identities.values_mut() {
+                identity.cache_keys.values_mut().for_each(rekey);
+            }
+            for package in selection.packages.values_mut() {
+                package.cache_keys.values_mut().for_each(rekey);
+                for closure in package.dependency_closures.values_mut() {
+                    for dependency in closure.iter_mut() {
+                        rekey(&mut dependency.cache_key);
+                    }
+                }
+            }
+            let unprojected = selection.packages["app"].clone();
+            selection.packages.insert("kernel".to_string(), unprojected);
+            selection
+        };
         let node = PlanNodeV1::package("app", "wasm32");
         let kernel_node = PlanNodeV1::package("kernel", "wasm32");
         let receipt = PackageNodeReceiptV1 {
@@ -6558,6 +7667,7 @@ materialization = "lazy"
         ]);
         let authority = source_only_program_projection_candidate(
             projection,
+            selection.clone(),
             &"66".repeat(32),
             &receipts,
             &BTreeSet::from([kernel_node.clone()]),
@@ -6570,6 +7680,11 @@ materialization = "lazy"
             parsed,
             serde_json::json!({
                 "format": "kandelo-source-only-program-projection-v1",
+                // The authority records the selection index verbatim: that
+                // exact identity, not a re-derivation of it, is what a later
+                // resolver compares its freshly regenerated
+                // `program-packages.json` against.
+                "selectionProjection": serde_json::to_value(&selection).unwrap(),
                 "projection": {
                     "format": "kandelo-program-packages-v2",
                     "identities": {
@@ -6655,6 +7770,7 @@ materialization = "lazy"
         let rogue_node = PlanNodeV1::package("rogue", "wasm32");
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([
                 (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
@@ -6676,6 +7792,7 @@ materialization = "lazy"
             .insert("kernel".to_string(), kernel_identity);
         let error = source_only_program_projection_candidate(
             kernel_in_v2,
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([(kernel_node.clone(), receipt.clone())]),
             &BTreeSet::from([kernel_node.clone()]),
@@ -6695,6 +7812,7 @@ materialization = "lazy"
             });
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([
                 (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
@@ -6710,6 +7828,7 @@ materialization = "lazy"
             SOURCE_ONLY_PROGRAM_MEMBER_LIMIT + 1;
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([(
                 PlanNodeV1::package("app", "wasm32"),
@@ -6725,6 +7844,7 @@ materialization = "lazy"
             SOURCE_ONLY_PROGRAM_MEMBER_LIMIT + 1;
         let error = source_only_program_projection_candidate(
             authority.projection.clone(),
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([
                 (PlanNodeV1::package("app", "wasm32"), receipt.clone()),
@@ -6748,6 +7868,7 @@ materialization = "lazy"
         );
         let error = source_only_program_projection_candidate(
             extra_identity_projection,
+            selection.clone(),
             &"66".repeat(32),
             &receipts,
             &BTreeSet::from([kernel_node]),
@@ -6759,12 +7880,103 @@ materialization = "lazy"
         wrong_receipt.cache_key_sha256 = "77".repeat(32);
         let error = source_only_program_projection_candidate(
             authority.projection,
+            selection.clone(),
             &"66".repeat(32),
             &BTreeMap::from([(PlanNodeV1::package("app", "wasm32"), wrong_receipt)]),
             &BTreeSet::new(),
         )
         .unwrap_err();
         assert!(error.contains("cache key"), "{error}");
+    }
+
+    /// B30: the pre-build retraction decision.
+    ///
+    /// The retraction exists because a killed build must not leave a published
+    /// authority describing bytes it replaced, and nothing in-process runs on
+    /// SIGKILL -- so the authority is withdrawn BEFORE the first child can
+    /// materialize into the tier. This predicate is what decides that a run can
+    /// mutate the tier at all, and it is also what keeps the fully-clean no-op
+    /// fast path reachable, so it is wrong in two different expensive ways: too
+    /// eager and every no-op build pays a whole-graph re-derivation; too shy and
+    /// a killed build leaves the lie in place.
+    ///
+    /// Every case below was checked by mutating the predicate and confirming
+    /// this test fails, each at a DIFFERENT assertion: dropping the
+    /// compiled-package clause trips case 2, dropping the product clause trips
+    /// case 3, counting source-kind nodes trips case 1 (it makes an all-cached
+    /// run look dirty and retract), and relaxing the `Some(Some(_))` receipt
+    /// match trips case 4. The unmutated predicate passes.
+    #[test]
+    fn tier_mutation_predicate_matches_the_nodes_that_can_write_into_the_tier() {
+        fn receipt() -> PackageNodeReceiptV1 {
+            PackageNodeReceiptV1 {
+                manifest_sha256: "0".repeat(64),
+                cache_key_sha256: "1".repeat(64),
+                cache_receipt_sha256: "2".repeat(64),
+                materialized_members: Vec::new(),
+            }
+        }
+
+        let compiled = PlanNodeV1::package("app", "wasm32");
+        let source_kind = PlanNodeV1::package("app-source", "wasm32");
+        let product = PlanNodeV1::product("browser-app");
+        let selected = BTreeMap::from([
+            (compiled.clone(), BTreeSet::new()),
+            (source_kind.clone(), BTreeSet::new()),
+            (product.clone(), BTreeSet::from([compiled.clone()])),
+        ]);
+        // Source-kind packages are never in `expected_receipt_nodes`: only a
+        // compiled package carries a receipt the finalizer validates.
+        let expected_receipts = BTreeSet::from([compiled.clone()]);
+
+        // 1. Everything that can write to the tier is already skippable: the
+        //    run mutates nothing and keeps its published authority.
+        //
+        //    The fixture's source-kind node is deliberately absent from the skip
+        //    map, because a source node always runs a child and a fully-cached
+        //    tree normally contains several. Counting them would retract on
+        //    every no-op build and cost a whole-graph re-derivation each time;
+        //    they populate the source cache and never the projection tier.
+        let all_clean =
+            BTreeMap::from([(compiled.clone(), Some(receipt())), (product.clone(), None)]);
+        assert!(
+            !all_clean.contains_key(&source_kind),
+            "the fixture must exercise an unskippable source node",
+        );
+        assert!(
+            !run_can_materialize_into_tier(&selected, &expected_receipts, &all_clean),
+            "an all-cached run launches no child that can write into the tier",
+        );
+
+        // 2. One compiled package must rebuild.
+        let package_dirty = BTreeMap::from([(product.clone(), None)]);
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &package_dirty),
+            "a compiled package that must rebuild materializes into the tier",
+        );
+
+        // 3. One product must re-run. A product builds no image, but its child
+        //    resolves and validates its mapped package against the tier.
+        let product_dirty = BTreeMap::from([(compiled.clone(), Some(receipt()))]);
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &product_dirty),
+            "a product that must re-run is not a no-op for the tier",
+        );
+
+        // 4. A compiled node recorded as skippable but WITHOUT its receipt is
+        //    not skippable: the finalizer needs the receipt, so the node will
+        //    run a child.
+        let receiptless = BTreeMap::from([(compiled.clone(), None), (product.clone(), None)]);
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &receiptless),
+            "a compiled package with no retained receipt still runs its child",
+        );
+
+        // 5. `--rebuild`/`--verify-cache` clear the skip map entirely.
+        assert!(
+            run_can_materialize_into_tier(&selected, &expected_receipts, &BTreeMap::new()),
+            "a forced rebuild always mutates the tier",
+        );
     }
 
     #[test]

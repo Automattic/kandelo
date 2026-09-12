@@ -5,15 +5,16 @@ import {
   VIRTUAL_NETWORK_ERRNO,
 } from "../src/networking/virtual-network";
 import type { TcpConnectionPeer, UdpDatagram } from "../src/types";
+import { NET_READINESS } from "../src/generated/abi";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
-  it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
+  // The numeric-address grammar and the DNS syntax check this test used to
+  // assert here are now the kernel's, in `crates/runtime-core/src/hostname.rs`
+  // and `sys_getaddrinfo`. What the virtual network still owns is its own
+  // machine-name table.
+  it("resolves the names its attached machines registered", () => {
     const net = new LocalVirtualNetwork();
     const backend = net.attachMachine({
       id: "server",
@@ -21,16 +22,9 @@ describe("LocalVirtualNetwork", () => {
       hostnames: ["example.test", "example.test."],
     });
 
-    expect(Array.from(backend.getaddrinfo("2130706433"))).toEqual([127, 0, 0, 1]);
-    expect(Array.from(backend.getaddrinfo("127.1"))).toEqual([127, 0, 0, 1]);
-    expect(Array.from(backend.getaddrinfo("127.1.1"))).toEqual([127, 1, 0, 1]);
-    expect(Array.from(backend.getaddrinfo("127.0.0.1"))).toEqual([127, 0, 0, 1]);
     expect(Array.from(backend.getaddrinfo("example.test"))).toEqual([10, 88, 0, 2]);
     expect(Array.from(backend.getaddrinfo("example.test."))).toEqual([10, 88, 0, 2]);
-
-    expect(() => backend.getaddrinfo("4294967296")).toThrow("ENOENT");
-    expect(() => backend.getaddrinfo("1..2")).toThrow("ENOENT");
-    expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
+    expect(() => backend.getaddrinfo("unregistered.test")).toThrow("ENOENT");
   });
 
   it("routes TCP streams between attached machines", () => {
@@ -111,11 +105,18 @@ describe("LocalVirtualNetwork", () => {
 
     net.detachMachine("server");
 
-    const revents = client.poll!(7, POLLIN | POLLOUT);
-    expect(revents & POLLERR).toBe(POLLERR);
-    expect(revents & POLLIN).toBe(POLLIN);
-    expect(revents & POLLOUT).toBe(0);
-    expect(revents & POLLHUP).toBe(POLLHUP);
+    // The backend reports facts; the kernel turns them into revents, and its
+    // own tests (`runtime_core::net_readiness`) pin that mapping. A reset
+    // takes both directions down, so it is an error, end-of-stream, a hangup,
+    // and no longer writable — which the kernel renders as
+    // POLLERR | POLLIN | POLLHUP with POLLOUT suppressed.
+    const facts = client.readiness!(7);
+    expect(facts & NET_READINESS.ERROR).toBe(NET_READINESS.ERROR);
+    expect(facts >>> NET_READINESS.ERRNO_SHIFT)
+      .toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
+    expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+    expect(facts & NET_READINESS.HANGUP).toBe(NET_READINESS.HANGUP);
+    expect(facts & NET_READINESS.SEND_READY).toBe(0);
     try {
       client.recv(7, 16, 0);
       throw new Error("recv after detached peer unexpectedly succeeded");
@@ -152,9 +153,13 @@ describe("LocalVirtualNetwork", () => {
 
     expect(new TextDecoder().decode(client.recv(7, 16, 0))).toBe("queued");
     expect(client.recv(7, 16, 0)).toHaveLength(0);
-    const revents = client.poll!(7, POLLIN | POLLOUT);
-    expect(revents & POLLIN).toBe(POLLIN);
-    expect(revents & POLLOUT).toBe(POLLOUT);
+    // A bare peer FIN is end-of-stream, not a hangup: the write half is still
+    // live, so the kernel reports POLLIN and keeps POLLOUT set. This endpoint
+    // used to raise POLLHUP here, and only when POLLIN was requested.
+    const facts = client.readiness!(7);
+    expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+    expect(facts & NET_READINESS.SEND_READY).toBe(NET_READINESS.SEND_READY);
+    expect(facts & NET_READINESS.HANGUP).toBe(0);
     expect(client.send(7, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
     expect(client.send(7, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
     client.close(7);
@@ -322,6 +327,41 @@ describe("LocalVirtualNetwork", () => {
     expect(client.connectStatus(11)).toBe(0);
     expect(oneAccepted).toBe(0);
     expect(twoAccepted).toBe(1);
+  });
+
+  it("defers every internet-domain bind conflict to the kernel", () => {
+    // The kernel decides EADDRINUSE in crates/runtime-core/src/socket.rs
+    // (udp_can_bind / tcp_can_bind) and only notifies the host once that
+    // decision has succeeded. The fabric must not hold a second opinion: it
+    // cannot see SO_REUSEADDR, and it cannot see that two pids are
+    // fork-inherited co-owners of one logical binding, so any answer it gives
+    // is guesswork that overrides a correct one.
+    const net = new LocalVirtualNetwork();
+    const machine = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
+    const noopUdp = { receive: () => 0 };
+    const noopTcp = { accept: () => 0 };
+
+    // Two distinct sockets on the same wildcard address and port: the shape
+    // SO_REUSEADDR produces, and the shape a fork leaves behind.
+    expect(machine.bindUdp!("1:4", new Uint8Array([0, 0, 0, 0]), 5000, noopUdp)).toBe(0);
+    expect(machine.bindUdp!("1:5", new Uint8Array([0, 0, 0, 0]), 5000, noopUdp)).toBe(0);
+    // A specific address overlapping an existing wildcard binding, and the
+    // reverse order, are likewise the kernel's call and not the fabric's.
+    expect(machine.bindUdp!("2:4", new Uint8Array([10, 88, 0, 2]), 5000, noopUdp)).toBe(0);
+    expect(machine.bindUdp!("2:5", new Uint8Array([0, 0, 0, 0]), 5001, noopUdp)).toBe(0);
+    expect(machine.bindUdp!("2:6", new Uint8Array([10, 88, 0, 2]), 5001, noopUdp)).toBe(0);
+
+    expect(machine.listenTcp!("1:8", new Uint8Array([0, 0, 0, 0]), 8080, noopTcp)).toBe(0);
+    expect(machine.listenTcp!("1:9", new Uint8Array([0, 0, 0, 0]), 8080, noopTcp)).toBe(0);
+    expect(machine.listenTcp!("2:8", new Uint8Array([10, 88, 0, 2]), 8080, noopTcp)).toBe(0);
+
+    // The one address fact the fabric does own is which machine holds which
+    // virtual address, so binding a peer's address still fails here.
+    net.attachMachine({ id: "peer", address: [10, 88, 0, 3] });
+    expect(machine.bindUdp!("3:4", new Uint8Array([10, 88, 0, 3]), 5002, noopUdp))
+      .toBe(VIRTUAL_NETWORK_ERRNO.EADDRNOTAVAIL);
+    expect(machine.listenTcp!("3:8", new Uint8Array([10, 88, 0, 3]), 8081, noopTcp))
+      .toBe(VIRTUAL_NETWORK_ERRNO.EADDRNOTAVAIL);
   });
 
   it("uses normal UDP errno style for missing destination hosts and ports", () => {

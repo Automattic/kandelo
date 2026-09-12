@@ -63,6 +63,102 @@ not preventing races. Do not reach for it as a routine default — a
 per-worktree cache discards the cross-worktree reuse the shared cache exists
 to provide.
 
+If you do isolate, **the path you choose must contain a `kandelo/` segment**
+(`~/.cache/kandelo/<worktree>`, not `~/.cache/kandelo-<worktree>`). The SDK's
+`pkg-config` wrapper filters `PKG_CONFIG_PATH` down to entries whose path
+contains that literal, so a root outside it silently drops every dependency
+`.pc` directory and `php` fails its ICU configure check with an error naming
+neither the cache root nor the filter. See "Known trap" in
+`docs/package-management.md`.
+
+A workspace-crate-backed package's cache-key inputs must derive from that
+crate's actual `cargo metadata` dependency closure (`inputs = ["cargo:<crate
+name>"]` in `build.toml`; see `tools/xtask/src/cargo_closure.rs`), never a
+hand-maintained file list. A hand list silently omits a compile input the
+first time a new file or dependency is added — this is exactly what let
+`crates/runtime-core/src/netif.rs` slip out of the kernel's cache key before
+the `cargo:kandelo` fix (kernel-staleness Stage 1, #1351). A build artifact
+with no resolver `build.toml` at all (e.g. `crates/fork-module`, built by a
+standalone `build-wasm.sh`) should still get the same coverage via `xtask
+workspace-closure-sha --crates <a,b,c>`, which unions the cargo closures of
+one or more named crates into a single content digest a script can stamp and
+later re-verify (see `crates/fork-module/build-wasm.sh --verify-fresh`).
+`tools/xtask/src/cargo_closure.rs`'s
+`registry_packages_that_cargo_build_a_workspace_crate_declare_its_closure_input`
+test fails the build if any `packages/registry/*/build.toml` package compiles
+a workspace crate directly without declaring the matching `cargo:<crate>`
+input, so this class of gap cannot reappear undetected.
+
+### Adding a wasm module that is not a registry package
+
+A correct `build-wasm.sh` and a correct build-key stamp are **not enough to
+make a module reach a host**. `crates/wasi-module` had both for a while and
+was served by neither host, because nothing invoked its script, nothing
+projected its artifact, and no resolver admitted its name. That is the failure
+mode to avoid, and it is silent: the crate builds, its tests pass, and the
+module is simply never loaded.
+
+The pipeline is driven by the `CoresidentSideModule` table in
+`tools/xtask/src/local_build.rs` (`CORESIDENT_SIDE_MODULES`). Adding a row
+gives a module all of the build, freshness, and projection wiring at once: the
+build invocation from the local-build engine, the `xtask verify-fresh` gate on
+the *projected* copy, the SourceOnly projection node, member staging, and the
+clean-no-op fast path. `crates/fork-module`, `crates/wasi-module` and
+`crates/dylink-module` are all rows in it.
+
+Despite the name, **not every row is co-resident**. fork-module and
+wasi-module are PIC (`--pie`) side modules placed inside the guest's linear
+memory; the dynamic-linking planner imports nothing at all and owns its own
+memory. Membership in the table says how a module is *delivered*, not how it
+is *built* — each `build-wasm.sh` owns its own flags.
+
+Four things still have to be done per module, and each fails **only** in a
+SourceOnly browser build, so a Node run will not catch any of them:
+
+1. A `cargo_closure.rs` guard test asserting the module's closure really
+   covers every crate whose content can change the artifact.
+2. Admission by name in `host/src/binary-resolver.ts`. This is deliberately
+   an allowlist, not "any root-level member": it is what stops a node in an
+   untrusted projection from claiming a root path. **Forgetting it does not
+   break only that module** — the projection parse throws before any binary
+   resolves, so an unadmitted node takes down every SourceOnly boot. That is
+   exactly what a row added to the table without a matching allowlist entry
+   produces, and it happened once already.
+3. The browser registrations: a specifier plus capability in
+   `apps/browser-demos/browser-module-contract.mjs`, a resolve branch in
+   `apps/browser-demos/vite.config.ts`, its own `?url` artifact module under
+   `host/src/` (its own file, so a build that does not need the module does
+   not require the artifact), and the fetch/transfer/compile chain in
+   `browser-kernel-host.ts` + `browser-kernel-worker-entry.ts` with a field
+   on `browser-kernel-protocol.ts`.
+4. Delivery to workers on both hosts, through the `sideModuleInitFields`
+   helper each kernel-worker entry spreads into process-worker `InitData`.
+   Check its early returns: it short-circuits for a wasm64 worker because the
+   two PIC side modules are wasm32-only, so a module that is NOT
+   width-specific has to be attached on that path too.
+
+Decide deliberately whether delivery is gated. Fork-module is instantiated
+only under `if (hasForkInstrumentation)`; a module implementing a **generic**
+POSIX facility must not inherit that gate, or it silently disappears for
+every uninstrumented process — a gap no artifact in this repository would
+catch when the one package that exercises the facility happens to be
+instrumented.
+
+The local-build engine's "skip fast path" (`compute_skip_receipts` /
+`source_only_skip_receipt_if_clean` in `tools/xtask/src/local_build.rs` and
+`build_deps.rs`) reports a package node `Cached` without launching a child
+process when a valid canonical cache entry for the package's current content
+key already exists. It must verify that any file already sitting at the
+node's *output projection path* (e.g.
+`local-binaries/source-only-v1/kernel.wasm`) actually matches that cache
+entry's recorded content digest before trusting it — a same-size file
+existing there is not proof of that (a differently-keyed generation, from an
+earlier build or a sibling session sharing the cache root, can occupy the
+same path). Checking mere presence let a `Cached` disposition leave a stale
+generation's bytes in place indefinitely; `xtask verify-fresh` still caught
+it because it recomputes the expected key directly rather than trusting the
+skip path's notion of "already projected."
+
 ## Line editing for REPL CLIs
 
 A command-line program with an interactive REPL — a read-eval-print loop that

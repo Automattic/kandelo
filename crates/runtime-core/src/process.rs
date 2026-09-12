@@ -38,7 +38,31 @@ pub struct HostAppendOutcome {
 
 /// Trait for host I/O operations that the kernel delegates to the runtime.
 pub trait HostIO {
-    fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno>;
+    /// Open `name` — exactly one path component — relative to a directory
+    /// handle this host previously issued, and return a new handle.
+    ///
+    /// This is the anchor of the handle-only filesystem contract. A host never
+    /// receives a guest path, a mount prefix, a `..`, or a symlink chain; the
+    /// kernel resolves the namespace itself and steps the host one component at
+    /// a time from the mount root it published through
+    /// `kernel_rootfs_set_foreign_mount_roots`. `name` may be `.`, naming the
+    /// directory itself, which is how a mount root is addressed.
+    ///
+    /// `O_DIRECTORY` yields a handle that `host_readdir` iterates. There is no
+    /// separate directory-handle namespace: a directory is closed with
+    /// `host_close` like any other handle.
+    ///
+    /// Defaults to unsupported so a host with no directory capability — every
+    /// browser host once `/` is overlay-owned — implements none of this family.
+    fn host_openat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _flags: u32,
+        _mode: u32,
+    ) -> Result<i64, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_close(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_read(&mut self, handle: i64, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno>;
@@ -57,15 +81,58 @@ pub trait HostIO {
         // implementation would race another user of the shared host cursor.
         Err(Errno::ENOSYS)
     }
+    /// Read up to `buf.len()` bytes at `offset` from a content byte-leaf named by
+    /// `blob_id`. This is the narrow byte-provider seam for the in-kernel rootfs
+    /// overlay (Phase 5 Increment 2): the kernel owns the `/` tree and asks the
+    /// host only for a base file's immutable bytes, addressed by a manifest-
+    /// assigned blob id rather than a mutable path or a shared-cursor handle.
+    /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
+    /// mock hosts and hosts predating the overlay compile unchanged.
+    fn blob_read(&mut self, _blob_id: u64, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Read up to `buf.len()` bytes at `offset` from the raw byte store backing
+    /// lazy-archive member `archive_id`. This is the narrow raw-archive
+    /// transport seam for the in-kernel rootfs overlay's `LazyMember` nodes
+    /// (Phase 5 Increment 3b-wiring.2): the host is only a byte store for the
+    /// whole archive blob, addressed by a manifest-assigned `archive_id`; the
+    /// kernel decodes the archive format (zip) and owns member extraction.
+    /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
+    /// mock hosts and hosts predating lazy-archive support compile unchanged.
+    fn fetch_archive(&mut self, _archive_id: u32, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
+    /// image this kernel booted from. This is the seam that lets the kernel
+    /// parse its own image (`rootfs::load_image`) rather than consume a tree the
+    /// host walked and re-encoded for it: the host stops resolving names and
+    /// becomes a positioned byte window over one container it already holds.
+    /// There is exactly one image per kernel, so no id is carried.
+    ///
+    /// Returns the number of bytes read (0 at end of image). Defaults to
+    /// unsupported so mock hosts and hosts that still drive the boot manifest
+    /// compile and behave unchanged — that default is what keeps the image path
+    /// dormant until a host installs an image source.
+    fn image_read(&mut self, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_pwrite(&mut self, _handle: i64, _buf: &[u8], _offset: i64) -> Result<usize, Errno> {
         // See host_pread: unsupported is truthful; cursor emulation is not.
         Err(Errno::ENOSYS)
     }
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno>;
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
-    fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
-    fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
-    fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
+    /// Metadata for `name` — one path component — relative to a directory
+    /// handle. `flags` carries `AT_SYMLINK_NOFOLLOW` to describe a symlink
+    /// itself rather than its target; a symlink cannot be opened without
+    /// following it, which is why this cannot reduce to `host_fstat` on an
+    /// opened handle.
+    fn host_fstatat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _flags: u32,
+    ) -> Result<WasmStat, Errno> {
         Err(Errno::ENOSYS)
     }
     /// Query filesystem policy through an already-open exact host object.
@@ -73,26 +140,84 @@ pub trait HostIO {
     fn host_fstatfs(&mut self, _handle: i64) -> Result<WasmStatfs, Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_pathconf(&mut self, _path: &[u8], _name: i32) -> Result<Option<i64>, Errno> {
-        Err(Errno::ENOSYS)
-    }
     fn host_fpathconf(&mut self, _handle: i64, _name: i32) -> Result<Option<i64>, Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
-    fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno>;
-    fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno>;
-    fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno>;
-    fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno>;
-    fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno>;
-    fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno>;
-    fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
-    fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno>;
-    fn host_lchown(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> Result<(), Errno> {
+    /// Create a directory named by one component of a directory handle.
+    fn host_mkdirat(&mut self, _dir: i64, _name: &[u8], _mode: u32) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
-    fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
+    /// Remove an entry named by one component of a directory handle.
+    /// `AT_REMOVEDIR` in `flags` selects `rmdir(2)` semantics; POSIX defines
+    /// the same host operation for both, distinguished by that flag.
+    fn host_unlinkat(&mut self, _dir: i64, _name: &[u8], _flags: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Rename one component of one directory handle to one component of
+    /// another. Both entries are named in a single call so the host
+    /// filesystem's atomicity survives; performing it as two operations would
+    /// not be a rename.
+    fn host_renameat(
+        &mut self,
+        _old_dir: i64,
+        _old_name: &[u8],
+        _new_dir: i64,
+        _new_name: &[u8],
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn host_linkat(
+        &mut self,
+        _old_dir: i64,
+        _old_name: &[u8],
+        _new_dir: i64,
+        _new_name: &[u8],
+        _flags: u32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Create a symlink. `target` is opaque data the host stores verbatim and
+    /// must never resolve; only `name` names an entry to create.
+    fn host_symlinkat(
+        &mut self,
+        _target: &[u8],
+        _dir: i64,
+        _name: &[u8],
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    fn host_readlinkat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _buf: &mut [u8],
+    ) -> Result<usize, Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Change the mode of an entry named by one component of a directory
+    /// handle.
+    ///
+    /// This is not reducible to `host_openat` followed by `host_fchmod`:
+    /// opening a file to change its mode fails with `EACCES` on a file the
+    /// caller owns but cannot read — which `chmod(2)` must still permit — and
+    /// blocks indefinitely on a FIFO with no writer.
+    fn host_fchmodat(&mut self, _dir: i64, _name: &[u8], _mode: u32) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
+    /// Change ownership of an entry named by one component of a directory
+    /// handle. `AT_SYMLINK_NOFOLLOW` in `flags` gives `lchown(2)`, which is
+    /// why `host_fchown` on an opened handle does not cover the family: a
+    /// symlink cannot be opened without following it.
+    fn host_fchownat(
+        &mut self,
+        _dir: i64,
+        _name: &[u8],
+        _uid: u32,
+        _gid: u32,
+        _flags: u32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
     /// Read and consume the next directory entry.
     ///
     /// An error must leave the iterator at the same entry. The kernel may
@@ -103,9 +228,7 @@ pub trait HostIO {
         handle: i64,
         name_buf: &mut [u8],
     ) -> Result<Option<(u64, u32, usize)>, Errno>;
-    fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
-    fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
     fn host_ftruncate(&mut self, handle: i64, length: i64) -> Result<(), Errno>;
     fn host_fsync(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_fchmod(&mut self, handle: i64, mode: u32) -> Result<(), Errno>;
@@ -123,29 +246,26 @@ pub trait HostIO {
         value_ms: i64,
         interval_ms: i64,
     ) -> Result<(), Errno>;
-    /// Block until a signal is delivered. Returns the signal number.
-    fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno>;
-    /// Ask the host to invoke a user-space signal handler.
-    /// `handler_index` is the Wasm function table index.
-    /// `signum` is the signal number being delivered.
-    /// `sa_flags` is the sigaction flags (SA_SIGINFO, SA_RESTART, etc.)
-    /// When SA_SIGINFO is set, the host should call handler(signum, siginfo_ptr, 0)
-    /// instead of handler(signum).
-    fn host_call_signal_handler(
-        &mut self,
-        handler_index: u32,
-        signum: u32,
-        sa_flags: u32,
-    ) -> Result<(), Errno>;
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
+    /// Set timestamps on an entry named by one component of a directory handle.
+    /// `AT_SYMLINK_NOFOLLOW` in `flags` stamps a symlink itself rather than its
+    /// target.
+    /// Set timestamps on an entry named by one component of a directory handle.
+    /// `AT_SYMLINK_NOFOLLOW` in `flags` stamps a symlink itself rather than its
+    /// target.
+    #[allow(clippy::too_many_arguments)]
     fn host_utimensat(
         &mut self,
-        path: &[u8],
-        atime_sec: i64,
-        atime_nsec: i64,
-        mtime_sec: i64,
-        mtime_nsec: i64,
-    ) -> Result<(), Errno>;
+        _dir: i64,
+        _name: &[u8],
+        _atime_sec: i64,
+        _atime_nsec: i64,
+        _mtime_sec: i64,
+        _mtime_nsec: i64,
+        _flags: u32,
+    ) -> Result<(), Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
     /// Query the status of a host-delegated connect that was previously
@@ -161,9 +281,22 @@ pub trait HostIO {
         flags: u32,
         buf: &mut [u8],
     ) -> Result<usize, Errno>;
-    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
+    /// Report what the host engine can observe about a delegated connection.
+    ///
+    /// The return value is a `wasm_posix_shared::net_readiness` fact word, not
+    /// `poll` `revents`: the host reports facts, the kernel decides readiness
+    /// in `crate::net_readiness::stream_revents`. See that module for why the
+    /// decision was pulled back here.
+    ///
+    /// The default is [`UNOBSERVABLE`] — the honest answer for a host with no
+    /// readiness source, and a *named* fallback rather than the old default,
+    /// which returned the caller's own `events` and so told every caller that
+    /// everything it asked about was ready.
+    ///
+    /// [`UNOBSERVABLE`]: wasm_posix_shared::net_readiness::UNOBSERVABLE
+    fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
         let _ = handle;
-        Ok(events)
+        Ok(wasm_posix_shared::net_readiness::UNOBSERVABLE)
     }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
@@ -189,15 +322,15 @@ pub trait HostIO {
         Err(Errno::ENETUNREACH)
     }
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
-    /// Futex wait: block if `*addr == expected`, with optional timeout in nanoseconds.
-    /// timeout_ns < 0 means infinite wait.
-    /// Returns 0 on wake, negative errno on error.
-    fn host_futex_wait(
-        &mut self,
-        addr: usize,
-        expected: u32,
-        timeout_ns: i64,
-    ) -> Result<i32, Errno>;
+    /// The machine's real assigned IPv4 address, for the kernel-owned
+    /// network-interface `ioctl`s (`SIOCGIFADDR`, `SIOCGIFCONF`) to report on
+    /// the one non-loopback virtual interface. `None` means the host has no
+    /// address configured (yet) or does not model one at all — hosts that
+    /// don't track network configuration (e.g. `host-native`'s headless
+    /// conformance target) keep this default.
+    fn host_network_local_address(&mut self) -> Option<[u8; 4]> {
+        None
+    }
     /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
     fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Notify the host that process `pid` has mapped its `/dev/fb0`
@@ -328,17 +461,56 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn kms_drop_master(&mut self, pid: i32) {}
 
+    /// Copy `src` from kernel-owned memory into the wasm process at `pid`'s
+    /// linear memory at guest address `addr`. Returns 0 on success, negative
+    /// errno on failure.
+    ///
+    /// # The copy is not atomic
+    ///
+    /// A guest process's linear memory is a `SharedArrayBuffer` (browser and
+    /// Node hosts) or a wasmtime `SharedMemory` (native host). Another thread
+    /// of that process — a pthread, or the process's own main thread when the
+    /// copy happens outside a channel round-trip — may write those bytes
+    /// *during* the copy, and no host can serialize against it: there is no
+    /// lock a Wasm kernel can take over a peer instance's linear memory. A
+    /// successful return therefore means "`src.len()` bytes were transferred",
+    /// never "they were transferred as a consistent snapshot". A concurrent
+    /// writer may tear the copy at any granularity.
+    ///
+    /// # Copy once, then parse
+    ///
+    /// The load-bearing consequence for every caller: **copy once into
+    /// kernel-owned memory, then parse the copy. Never validate a value in
+    /// guest memory and re-read it afterwards.** Any length, count, index, or
+    /// nested pointer the kernel takes out of guest memory must be validated
+    /// against the copy it will actually use. Re-reading a validated value is
+    /// a time-of-check/time-of-use bug that does not exist while the kernel
+    /// only ever sees a copy. Linux states the same rule for `copy_from_user`
+    /// and Kandelo inherits it.
+    ///
+    /// # Target liveness
+    ///
+    /// The only sound target is the process the kernel is currently
+    /// dispatching for. It is live by construction: the import must not
+    /// re-enter the kernel, and host dispatch is synchronous, so no exec or
+    /// exit can interleave and rebind the pid's memory. Targeting a peer
+    /// process is a separate contract change with its own liveness proof.
     #[allow(unused_variables)]
-    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
-        0
+    fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
     }
 
     /// Copy `dst.len()` bytes from the wasm process at `pid`'s linear
     /// memory at `addr` into the kernel-side scratch `dst`. Returns 0 on
     /// success, negative errno on failure.
+    ///
+    /// The non-atomicity, copy-once-then-parse, and target-liveness rules
+    /// documented on [`HostIO::proc_write_bytes`] apply here identically, and
+    /// the copy-once rule binds hardest in this direction: the bytes this call
+    /// delivers are the only trustworthy view of that guest range.
     #[allow(unused_variables)]
-    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
-        0
+    fn proc_read_bytes(&mut self, pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
     }
 
     #[allow(unused_variables)]
@@ -488,6 +660,38 @@ impl Deref for ThreadIdentity {
 #[derive(Debug, Clone)]
 pub struct ThreadState {
     pub ctid_ptr: usize, // CLONE_CHILD_CLEARTID address (futex wake on exit)
+    /// `CLONE_PARENT_SETTID` address: where the *creating* thread expects this
+    /// thread's tid to appear in process memory, or 0 when the flag was not
+    /// requested.
+    ///
+    /// The kernel cannot store into a process address space itself, so it
+    /// records the target and the host performs the one write -- the same
+    /// division of labour as [`Self::ctid_ptr`], which the host clears on
+    /// thread exit from the address `kernel_thread_exit` returns. Keeping the
+    /// decision here rather than in each host's clone path is what stops the
+    /// two hosts disagreeing about whether a flag is honoured: a host that
+    /// tested the flag itself made the kernel *look* like it implemented
+    /// `CLONE_PARENT_SETTID` while the other host silently did not, which left
+    /// `struct pthread.tid` zero and deadlocked musl's thread-list lock.
+    pub parent_settid_ptr: usize,
+    /// Byte address of this thread's per-thread control slot -- the
+    /// `PAGES_PER_THREAD_SLOT` pages holding its TLS/control page, its
+    /// fork-save page, and its syscall channel.
+    ///
+    /// The kernel *places* the slot, in `sys_clone`, out of the same
+    /// address-space allocator that answers `mmap` and
+    /// `kernel_reserve_host_region`. It is the only allocator that knows what
+    /// else lives in the address space, so a slot it hands out cannot collide
+    /// with a mapping, with the brk heap, or with another thread's slot -- and
+    /// there is one such decision rather than one per host.
+    ///
+    /// The host is told the address (`kernel_thread_slot_addr`) and makes the
+    /// range addressable: only a host can grow a `WebAssembly.Memory`, so
+    /// growing to cover the slot, zeroing it, and launching the thread stay
+    /// host acts. The same division as [`Self::parent_settid_ptr`] and
+    /// [`Self::ctid_ptr`]: the kernel names the address, the host performs the
+    /// store.
+    pub slot_addr: usize,
     pub stack_ptr: usize,
     pub tls_ptr: usize,
     pub tidptr: usize, // set_tid_address pointer
@@ -526,6 +730,8 @@ impl ThreadInfo {
                 tid,
                 state: ThreadState {
                     ctid_ptr,
+                    parent_settid_ptr: 0,
+                    slot_addr: 0,
                     stack_ptr,
                     tls_ptr,
                     tidptr: 0,
@@ -575,14 +781,31 @@ pub struct EventFdState {
 }
 
 /// An entry in an epoll interest list.
+///
+/// Linux keys an interest on the pair `(struct file *, fd)`: the open file
+/// description the descriptor named at registration, plus the descriptor
+/// number. `ofd_id` is the identity half — machine-wide, never reused, and
+/// preserved by `dup`, `fork`, and `exec` — so a registration follows the
+/// description rather than the number a later `open` may reuse.
 #[derive(Debug, Clone)]
 pub struct EpollInterest {
+    /// Descriptor number used at registration. Part of the key, not the
+    /// identity: `EPOLL_CTL_ADD` of a `dup` at a different number is a
+    /// second interest in the same description, exactly as on Linux.
     pub fd: i32,
+    /// Identity of the registered open file description.
+    pub ofd_id: crate::lock::OfdId,
     pub events: u32,
     pub data: u64,
 }
 
-/// An epoll instance: a set of monitored file descriptors.
+/// An epoll instance: a set of monitored open file descriptions.
+///
+/// The instance is owned by the open file description its `epoll_create1`
+/// descriptor names, not by a process — see
+/// [`crate::descriptor_backing::with_epolls`]. A `fork` child's duplicated
+/// descriptor therefore reaches the same instance, and `epoll_ctl` through
+/// either descriptor is visible to both processes.
 #[derive(Debug, Clone)]
 pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
@@ -733,12 +956,44 @@ pub struct ProcessIdentity {
 pub struct Process {
     identity: ProcessIdentity,
     pub ppid: u32,
+    /// Maximum number of pthreads that may exist **concurrently** in this
+    /// process.
+    ///
+    /// POSIX gives `pthread_create` EAGAIN when "the system lacked the
+    /// necessary resources to create another thread, or the system-imposed
+    /// limit on the total number of threads in a process
+    /// {PTHREAD_THREADS_MAX} would be exceeded". Both clauses describe
+    /// threads that exist *now*, so this is a ceiling on live threads and
+    /// never a budget spent once per thread created: a joined thread stops
+    /// counting immediately, and a create/join loop must run indefinitely.
+    ///
+    /// The kernel enforces it because the kernel owns the live-thread set
+    /// ([`ProcessIdentity::threads`]) and is the only place that can refuse a
+    /// clone *before* a tid is allocated -- which is what POSIX requires, a
+    /// `pthread_create` that fails having created nothing. Each host declares
+    /// the ceiling it can actually honour (a program's
+    /// `__wasm_posix_thread_slots` declaration, clamped by whatever the host's
+    /// own per-thread control arena can place), so an EAGAIN here is a
+    /// truthful statement about that machine rather than a shared guess.
+    pub thread_slot_quota: u32,
     credentials: Credentials,
     /// Kernel-owned secure-startup fact for the current process image.
     ///
     /// Task 9 only preserves this marker across process-state transport.
     /// Target-aware exec commit is the sole future authority that may set it.
     pub secure_exec: bool,
+    /// The calling convention width, in bytes, of this process's address
+    /// space: 4 for a wasm32 image, 8 for a wasm64 one.
+    ///
+    /// WHY THIS IS REGISTERED RATHER THAN PASSED. One kernel Wasm instance
+    /// serves wasm32 and wasm64 processes at once, so the kernel's own
+    /// compilation target cannot select a caller-native structure layout. The
+    /// width used to travel per-call, in the channel's sixth argument slot,
+    /// which cost `preadv2`/`pwritev2` the `flags` argument POSIX gives them.
+    /// It is a property of the address space, not of any one syscall, so it is
+    /// recorded once here: at process creation, inherited across `fork`, and
+    /// replaced by [`crate::exec_target`] at the instant a new image commits.
+    pub pointer_width: u8,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
@@ -821,8 +1076,6 @@ pub struct Process {
     pub fork_fd_actions: Vec<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
-    /// Epoll instances owned by this process.
-    pub epolls: Vec<Option<EpollInstance>>,
     /// POSIX timers (timer_create / timer_settime).
     pub posix_timers: Vec<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
@@ -1063,6 +1316,7 @@ impl Process {
         terminal.foreground_pgid = pid as i32;
 
         Process {
+            thread_slot_quota: wasm_posix_shared::process_memory::DEFAULT_THREAD_SLOTS,
             identity: ProcessIdentity {
                 pid,
                 threads: Vec::new(),
@@ -1070,6 +1324,7 @@ impl Process {
             ppid: 0,
             credentials: Credentials::root(),
             secure_exec: false,
+            pointer_width: 4,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
             spawn_publication_pending: false,
@@ -1110,7 +1365,6 @@ impl Process {
             fork_exec_argv: None,
             fork_fd_actions: Vec::new(),
             next_ephemeral_port: 49152,
-            epolls: Vec::new(),
             posix_timers: Vec::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
@@ -2326,9 +2580,6 @@ pub mod test_host {
     pub struct NoopHost;
 
     impl HostIO for NoopHost {
-        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
-            Err(Errno::ENOSYS)
-        }
         fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
             Ok(())
         }
@@ -2344,45 +2595,6 @@ pub mod test_host {
         fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
             Err(Errno::ENOSYS)
         }
-        fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-            Err(Errno::ENOENT)
-        }
-        fn host_lstat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-            Err(Errno::ENOENT)
-        }
-        fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_link(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_symlink(&mut self, _t: &[u8], _l: &[u8]) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_readlink(&mut self, _p: &[u8], _b: &mut [u8]) -> Result<usize, Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
-            Err(Errno::ENOSYS)
-        }
-        fn host_access(&mut self, _p: &[u8], _a: u32) -> Result<(), Errno> {
-            Err(Errno::ENOENT)
-        }
-        fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
-            Err(Errno::ENOSYS)
-        }
         fn host_readdir(
             &mut self,
             _h: i64,
@@ -2390,14 +2602,8 @@ pub mod test_host {
         ) -> Result<Option<(u64, u32, usize)>, Errno> {
             Ok(None)
         }
-        fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
             Ok((0, 0))
-        }
-        fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
             Ok(())
@@ -2423,27 +2629,11 @@ pub mod test_host {
         ) -> Result<(), Errno> {
             Ok(())
         }
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
-            Err(Errno::EINTR)
-        }
-        fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
-            Ok(())
-        }
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
             for x in b.iter_mut() {
                 *x = 0;
             }
             Ok(b.len())
-        }
-        fn host_utimensat(
-            &mut self,
-            _p: &[u8],
-            _as: i64,
-            _an: i64,
-            _ms: i64,
-            _mn: i64,
-        ) -> Result<(), Errno> {
-            Ok(())
         }
         fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
             Err(Errno::ECHILD)
@@ -2475,9 +2665,6 @@ pub mod test_host {
         fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
-        fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
-            Err(Errno::EAGAIN)
-        }
         fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
             Ok(0)
         }
@@ -2495,6 +2682,170 @@ pub mod test_host {
         fn unbind_framebuffer(&mut self, _p: i32) {}
         fn fb_write(&mut self, _p: i32, _o: usize, _b: &[u8]) {}
     }
+
+    /// A [`NoopHost`] that additionally models ONE process's linear memory, so
+    /// the cross-memory primitives can be exercised without a wasm engine.
+    ///
+    /// Kernel-dereferenced syscall arguments (`SyscallArgSize::KernelDereferenced`)
+    /// are read and written straight out of the caller's address space rather
+    /// than staged into the scratch channel, which makes
+    /// `proc_read_bytes`/`proc_write_bytes` the only surface under test for a
+    /// growing set of syscalls: SysV `msgsnd`/`msgrcv`/`msgctl`/`semctl`, POSIX
+    /// message queues, `sendmsg`/`recvmsg`, and `SIOCGIFCONF`. Every other
+    /// method forwards to `NoopHost`, so a test that reaches one is asking for
+    /// something this double does not model and should say so.
+    ///
+    /// `base` is the guest address the modelled region starts at. Choosing a
+    /// non-zero base is deliberate: it keeps a test from passing merely because
+    /// an offset happened to equal an address.
+    pub struct GuestMemoryHost {
+        pub base: u64,
+        pub memory: alloc::vec::Vec<u8>,
+        /// Number of `proc_read_bytes` calls served, and the total bytes they
+        /// asked for. Kernel-side walkers that are supposed to read *part* of a
+        /// guest region — `dri::cmdbuf`'s command-stream validator skips over
+        /// payload bodies it never inspects — can assert on the cost of the
+        /// walk rather than only on its answer.
+        pub reads: usize,
+        pub bytes_read: usize,
+    }
+
+    impl GuestMemoryHost {
+        pub fn new(base: u64, len: usize) -> Self {
+            Self {
+                base,
+                memory: alloc::vec![0u8; len],
+                reads: 0,
+                bytes_read: 0,
+            }
+        }
+
+        /// Overwrite the modelled region at guest address `addr`.
+        pub fn poke(&mut self, addr: u64, bytes: &[u8]) {
+            let range = self
+                .range(addr, bytes.len())
+                .expect("test poke outside the modelled guest region");
+            self.memory[range].copy_from_slice(bytes);
+        }
+
+        /// Read the modelled region back at guest address `addr`.
+        pub fn peek(&self, addr: u64, len: usize) -> &[u8] {
+            let range = self
+                .range(addr, len)
+                .expect("test peek outside the modelled guest region");
+            &self.memory[range]
+        }
+
+        fn range(&self, addr: u64, len: usize) -> Option<core::ops::Range<usize>> {
+            let offset = usize::try_from(addr.checked_sub(self.base)?).ok()?;
+            let end = offset.checked_add(len)?;
+            (end <= self.memory.len()).then_some(offset..end)
+        }
+    }
+
+    impl HostIO for GuestMemoryHost {
+        fn proc_read_bytes(&mut self, _pid: i32, addr: u64, dst: &mut [u8]) -> i32 {
+            match self.range(addr, dst.len()) {
+                Some(range) => {
+                    self.reads += 1;
+                    self.bytes_read += dst.len();
+                    dst.copy_from_slice(&self.memory[range]);
+                    0
+                }
+                None => -(Errno::EFAULT as i32),
+            }
+        }
+
+        fn proc_write_bytes(&mut self, _pid: i32, addr: u64, src: &[u8]) -> i32 {
+            match self.range(addr, src.len()) {
+                Some(range) => {
+                    self.memory[range].copy_from_slice(src);
+                    0
+                }
+                None => -(Errno::EFAULT as i32),
+            }
+        }
+
+        fn host_close(&mut self, h: i64) -> Result<(), Errno> {
+            NoopHost.host_close(h)
+        }
+        fn host_read(&mut self, h: i64, b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_read(h, b)
+        }
+        fn host_write(&mut self, h: i64, b: &[u8]) -> Result<usize, Errno> {
+            NoopHost.host_write(h, b)
+        }
+        fn host_seek(&mut self, h: i64, o: i64, w: u32) -> Result<i64, Errno> {
+            NoopHost.host_seek(h, o, w)
+        }
+        fn host_fstat(&mut self, h: i64) -> Result<WasmStat, Errno> {
+            NoopHost.host_fstat(h)
+        }
+        fn host_readdir(&mut self, h: i64, b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
+            NoopHost.host_readdir(h, b)
+        }
+        fn host_clock_gettime(&mut self, c: u32) -> Result<(i64, i64), Errno> {
+            NoopHost.host_clock_gettime(c)
+        }
+        fn host_ftruncate(&mut self, h: i64, l: i64) -> Result<(), Errno> {
+            NoopHost.host_ftruncate(h, l)
+        }
+        fn host_fsync(&mut self, h: i64) -> Result<(), Errno> {
+            NoopHost.host_fsync(h)
+        }
+        fn host_fchmod(&mut self, h: i64, m: u32) -> Result<(), Errno> {
+            NoopHost.host_fchmod(h, m)
+        }
+        fn host_fchown(&mut self, h: i64, u: u32, g: u32) -> Result<(), Errno> {
+            NoopHost.host_fchown(h, u, g)
+        }
+        fn host_set_alarm(&mut self, s: u32) -> Result<(), Errno> {
+            NoopHost.host_set_alarm(s)
+        }
+        fn host_set_posix_timer(&mut self, t: i32, s: i32, v: i64, i: i64) -> Result<(), Errno> {
+            NoopHost.host_set_posix_timer(t, s, v, i)
+        }
+        fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_getrandom(b)
+        }
+        fn host_waitpid(&mut self, p: i32, o: u32) -> Result<(i32, i32), Errno> {
+            NoopHost.host_waitpid(p, o)
+        }
+        fn host_net_connect(&mut self, h: i32, a: &[u8], p: u16) -> Result<(), Errno> {
+            NoopHost.host_net_connect(h, a, p)
+        }
+        fn host_net_connect_status(&mut self, h: i32) -> Result<(), Errno> {
+            NoopHost.host_net_connect_status(h)
+        }
+        fn host_net_send(&mut self, h: i32, d: &[u8], f: u32) -> Result<usize, Errno> {
+            NoopHost.host_net_send(h, d, f)
+        }
+        fn host_net_recv(&mut self, h: i32, l: u32, f: u32, b: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_net_recv(h, l, f, b)
+        }
+        fn host_net_close(&mut self, h: i32) -> Result<(), Errno> {
+            NoopHost.host_net_close(h)
+        }
+        fn host_net_listen(&mut self, f: i32, p: u16, a: &[u8; 4]) -> Result<(), Errno> {
+            NoopHost.host_net_listen(f, p, a)
+        }
+        fn host_getaddrinfo(&mut self, n: &[u8], r: &mut [u8]) -> Result<usize, Errno> {
+            NoopHost.host_getaddrinfo(n, r)
+        }
+        fn host_futex_wake(&mut self, a: usize, c: u32) -> Result<i32, Errno> {
+            NoopHost.host_futex_wake(a, c)
+        }
+        fn bind_framebuffer(&mut self, p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) {
+            NoopHost.bind_framebuffer(p, a, l, w, h, s, f)
+        }
+        fn unbind_framebuffer(&mut self, p: i32) {
+            NoopHost.unbind_framebuffer(p)
+        }
+        fn fb_write(&mut self, p: i32, o: usize, b: &[u8]) {
+            NoopHost.fb_write(p, o, b)
+        }
+    }
+
 }
 
 #[cfg(test)]

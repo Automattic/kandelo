@@ -8,6 +8,18 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
 //!                         pre-flight workflow to skip already-published
 //!                         matrix entries.
+//!   workspace-closure-sha Print a content digest (64 hex chars) over the union
+//!                         of one or more workspace crates' cargo dependency
+//!                         closures. Args: --crates <a,b,c>, and for a side
+//!                         module also --recipe <repo-relative build script>,
+//!                         which folds the recipe's own digest in. For a build
+//!                         artifact with no resolver `build.toml` (so it has
+//!                         no `cargo:<crate>` cache-key input), this gives the
+//!                         same drift-proof, cargo-metadata-derived freshness
+//!                         coverage. Every `crates/*/build-wasm.sh` stamps the
+//!                         key this prints; nothing may compute part of that
+//!                         key itself, or the stamp and the checks that read it
+//!                         stop describing the same thing.
 //!   sort-package-matrix   Order a package matrix so selected package dependencies
 //!                         appear before their dependents.
 //!   partition-package-matrix
@@ -53,6 +65,7 @@ mod bundle_program;
 mod cargo_closure;
 mod determinism_check;
 mod dump_abi;
+mod dump_wasi_translation;
 mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
@@ -84,9 +97,11 @@ fn main() -> ExitCode {
     }
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
+        "dump-wasi-translation" => dump_wasi_translation::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
+        "workspace-closure-sha" => cargo_closure::run_workspace_closure_sha(rest),
         "sort-package-matrix" => package_matrix::run_sort(rest),
         "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),

@@ -7,9 +7,8 @@ import type {
   UdpReceiveTarget,
 } from "../types";
 import { EagainError } from "./fetch-backend";
-import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
+import { NET_READINESS } from "../generated/abi";
 
-const EADDRINUSE = 98;
 const EADDRNOTAVAIL = 99;
 const ENETUNREACH = 101;
 const ECONNRESET = 104;
@@ -17,10 +16,6 @@ const ENOTCONN = 107;
 const EISCONN = 106;
 const ECONNREFUSED = 111;
 const EHOSTUNREACH = 113;
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 const ANY = "0.0.0.0";
@@ -33,12 +28,17 @@ function copyAddr(addr: Uint8Array): Uint8Array {
   return new Uint8Array([addr[0] ?? 0, addr[1] ?? 0, addr[2] ?? 0, addr[3] ?? 0]);
 }
 
+/**
+ * Forwarding match for a routed packet: a wildcard-bound endpoint accepts any
+ * destination address on its machine, a specifically-bound one accepts only
+ * its own.
+ *
+ * This is the fabric's forwarding-table lookup — the simulated wire deciding
+ * which attached endpoint a packet is for. It is deliberately *not* a POSIX
+ * bind decision; see the note on `LocalVirtualNetwork`.
+ */
 function addrMatches(bound: string, dst: string): boolean {
   return bound === ANY || bound === dst;
-}
-
-function addrConflicts(a: string, b: string): boolean {
-  return a === ANY || b === ANY || a === b;
 }
 
 function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBufferLike> {
@@ -118,25 +118,38 @@ class VirtualTcpPeer implements TcpConnectionPeer {
     throw new EagainError();
   }
 
-  poll(events: number): number {
-    let revents = 0;
+  /**
+   * Report the fabric-observable state of this endpoint. No POSIX readiness
+   * decision is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(): number {
+    // A reset takes the connection down in both directions at once.
     if (this.reset) {
-      revents |= POLLERR;
+      return NET_READINESS.ERROR
+        | (ECONNRESET << NET_READINESS.ERRNO_SHIFT)
+        | NET_READINESS.RECV_EOF
+        | NET_READINESS.SEND_CLOSED
+        | NET_READINESS.HANGUP;
     }
-    if ((events & POLLIN) !== 0) {
-      if (this.recvBuf.length > 0 || !this.peer || this.peer.writeClosed || this.readClosed) {
-        revents |= POLLIN;
-      }
-      if (!this.peer || this.peer.writeClosed) {
-        revents |= POLLHUP;
-      }
+
+    let facts = 0;
+    if (this.recvBuf.length > 0) facts |= NET_READINESS.RECV_READY;
+    if (!this.peer || this.peer.writeClosed || this.readClosed) {
+      facts |= NET_READINESS.RECV_EOF;
     }
-    if ((events & POLLOUT) !== 0) {
-      if (!this.writeClosed && this.peer && !this.peer.readClosed && !this.peer.reset) {
-        revents |= POLLOUT;
-      }
+    // A hangup is both directions down, matching Linux's
+    // `sk_shutdown == SHUTDOWN_MASK`. A bare peer FIN is end-of-stream, not a
+    // hangup; this used to raise POLLHUP on a half-close, and then only when
+    // the caller happened to have asked for POLLIN.
+    if ((!this.peer || this.peer.writeClosed) && this.writeClosed) {
+      facts |= NET_READINESS.HANGUP;
     }
-    return revents;
+    if (this.writeClosed || !this.peer || this.peer.readClosed || this.peer.reset) {
+      facts |= NET_READINESS.SEND_CLOSED;
+    } else {
+      facts |= NET_READINESS.SEND_READY;
+    }
+    return facts;
   }
 
   shutdown(how: number): void {
@@ -207,6 +220,42 @@ export interface VirtualNetworkMachineOptions {
   hostnames?: string[];
 }
 
+/**
+ * A simulated wire joining several Kandelo machines that share one host
+ * thread. Each attached machine has its own kernel instance; this class is
+ * the switch between them, not part of any one kernel.
+ *
+ * **It does not decide bind conflicts.** `EADDRINUSE` for an AF_INET or
+ * AF_INET6 endpoint is decided once, in the kernel, by
+ * `crates/runtime-core/src/socket.rs` (`udp_can_bind` / `udp_register`,
+ * `tcp_can_bind` / `tcp_register`). `listenTcp` and `bindUdp` below are
+ * reached only *after* that kernel decision has already succeeded — see
+ * `udp_bind_socket` in `crates/runtime-core/src/syscalls.rs`, which calls
+ * `socket::udp_register` and only then notifies the host.
+ *
+ * This class used to re-derive that rule with its own wildcard-conflict
+ * predicate and its own `EADDRINUSE`, giving the fabric a veto over a bind
+ * the kernel had already allowed. The two authorities disagreed on real
+ * POSIX cases:
+ *
+ * - **`SO_REUSEADDR`.** `socket::udp_can_bind` permits two sockets to share
+ *   an address when both set `SO_REUSEADDR`. The fabric copy had no notion
+ *   of the option and answered `EADDRINUSE`, which `udp_bind_socket`
+ *   propagates to the caller after rolling the kernel registration back. On
+ *   a virtual-network machine, `SO_REUSEADDR` therefore did not work.
+ * - **Inherited bindings.** `socket.rs` keeps a binding alive while any
+ *   `fork`/`spawn` peer still owns the socket. The fabric keyed entries by
+ *   `pid:handle`, so an inherited copy looked like an unrelated conflicting
+ *   binding to it.
+ *
+ * Neither case is exercised by the in-repo network demo. They are POSIX
+ * cases regardless, which is why the second authority is removed rather than
+ * reconciled: one rule, in the kernel, for every host.
+ *
+ * What genuinely belongs here is what no single kernel can know — which
+ * machine owns which virtual address, the hostname aliases between them, and
+ * the paired peer objects that carry the bytes.
+ */
 export class LocalVirtualNetwork {
   private machines = new Map<string, VirtualNetworkBackend>();
   private addressOwners = new Map<string, string>();
@@ -253,9 +302,8 @@ export class LocalVirtualNetwork {
   }
 
   resolve(hostname: string): Uint8Array | null {
-    const direct = parseNumericIpv4Hostname(hostname);
-    if (direct) return direct;
-    validateDnsHostname(hostname);
+    // Numeric addresses were already answered, and names that cannot be host
+    // names already refused, by `crates/runtime-core/src/hostname.rs`.
     const addr = this.hostnames.get(hostname);
     return addr ? copyAddr(addr) : null;
   }
@@ -269,15 +317,6 @@ export class LocalVirtualNetwork {
   ): number {
     const addrKey = ipKey(addr);
     if (!this.machineOwnsAddress(machineId, addrKey)) return EADDRNOTAVAIL;
-    for (const listener of this.tcpListeners) {
-      if (
-        listener.machineId === machineId &&
-        listener.port === port &&
-        addrConflicts(listener.addrKey, addrKey)
-      ) {
-        return EADDRINUSE;
-      }
-    }
     this.closeTcpListener(listenerId);
     this.tcpListeners.push({
       machineId,
@@ -339,15 +378,6 @@ export class LocalVirtualNetwork {
   ): number {
     const addrKey = ipKey(addr);
     if (!this.machineOwnsAddress(machineId, addrKey)) return EADDRNOTAVAIL;
-    for (const endpoint of this.udpEndpoints) {
-      if (
-        endpoint.machineId === machineId &&
-        endpoint.port === port &&
-        addrConflicts(endpoint.addrKey, addrKey)
-      ) {
-        return EADDRINUSE;
-      }
-    }
     this.unbindUdp(endpointId);
     this.udpEndpoints.push({
       machineId,
@@ -456,13 +486,15 @@ export class VirtualNetworkBackend implements NetworkIO {
     return conn.recv(maxLen, flags);
   }
 
-  poll(handle: number, events: number): number {
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: ENOTCONN });
-    if (typeof conn.poll === "function") {
-      return conn.poll(events);
+    if (typeof conn.readiness === "function") {
+      return conn.readiness();
     }
-    return events;
+    // A peer with no readiness source. This used to `return events`, telling
+    // the caller every event it asked about was ready; say so instead.
+    return NET_READINESS.UNOBSERVABLE;
   }
 
   close(handle: number): void {
@@ -517,7 +549,6 @@ export class VirtualNetworkBackend implements NetworkIO {
 }
 
 export const VIRTUAL_NETWORK_ERRNO = {
-  EADDRINUSE,
   EADDRNOTAVAIL,
   ENETUNREACH,
   ECONNRESET,

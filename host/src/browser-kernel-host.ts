@@ -86,6 +86,11 @@ export interface BrowserKernelOptions {
   onProcessStderr?: (pid: number, data: Uint8Array) => void;
   /** Called for host-runtime diagnostics that are not guest stderr. */
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
+  /** Called for co-resident fork-module proof-of-use telemetry (frame/reference
+   *  reconstruction counts). This is an informational success signal, NOT a
+   *  problem, so it rides a channel separate from `onHostDiagnostic`; a caller
+   *  that does not opt in never sees a fork emit proof-of-use. */
+  onForkModuleProof?: (diagnostic: HostDiagnostic) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
   /** Called when the service-worker HTTP bridge gains or completes preview requests. */
@@ -202,6 +207,65 @@ async function fetchDefaultBrowserKernelArtifact(
   return fetch(browserKernelDefaultArtifactUrls[kind]).then((response) =>
     response.arrayBuffer()
   );
+}
+
+/**
+ * Phase 6 D5: fetch the wasm32 fork-module bytes from its bundler URL.
+ *
+ * Kept behind its own dynamic import so the artifact is one nameable
+ * dependency edge (see `browser-fork-module-artifact`), not because the boot
+ * can do without it: `bootWorker` awaits this unconditionally, and a build
+ * that cannot supply the module fails here rather than booting a kernel that
+ * cannot fork.
+ */
+async function fetchDefaultBrowserForkModule32(): Promise<ArrayBuffer> {
+  const { browserForkModule32ArtifactUrl } = await import(
+    "./browser-fork-module-artifact"
+  );
+  return fetch(browserForkModule32ArtifactUrl).then((response) =>
+    response.arrayBuffer()
+  );
+}
+
+/**
+ * Fetch the wasm32 WASI module bytes from its bundler URL.
+ *
+ * Kept behind its own dynamic import for the same reason the fork-module's is:
+ * one nameable dependency edge on the staged artifact. The module is the
+ * browser's entire WASI Preview 1 implementation, so this is not an optional
+ * capability — a failure here means a WASI guest cannot run, and the boot says
+ * so rather than continuing with something that only resembles WASI.
+ */
+async function fetchDefaultBrowserWasiModule32(): Promise<ArrayBuffer> {
+  const { browserWasiModule32ArtifactUrl } = await import(
+    "./browser-wasi-module-artifact"
+  );
+  return fetch(browserWasiModule32ArtifactUrl).then((response) =>
+    response.arrayBuffer()
+  );
+}
+
+/**
+ * Fetch the standalone dynamic-linking planner bytes from its optional bundler
+ * URL, or `null` when this build did not stage the artifact.
+ *
+ * Behind its own dynamic import for the same reason as the two above. Unlike
+ * them this resolves to `null` rather than throwing: nothing drives the planner
+ * yet, so a tree that has not built it must still boot. Once something does
+ * drive it, its absence has to surface as a loud `dlopen` failure at the call
+ * site — not as a quiet substitution here.
+ */
+async function fetchDefaultBrowserDylinkModule32(): Promise<ArrayBuffer | null> {
+  try {
+    const { browserDylinkModule32ArtifactUrl } = await import(
+      "./browser-dylink-module-artifact"
+    );
+    const response = await fetch(browserDylinkModule32ArtifactUrl);
+    if (!response.ok) return null;
+    return await response.arrayBuffer();
+  } catch {
+    return null;
+  }
 }
 
 export class BrowserKernel {
@@ -402,6 +466,21 @@ export class BrowserKernel {
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
+    // The co-resident fork-module is the UNCONDITIONAL fork reconstructor on the
+    // browser V8 host too: fetch the wasm32 module bytes and ship them to the
+    // kernel worker, which compiles them once and hands the compiled module to
+    // every fork-instrumented process worker. There is no kill switch and no JS
+    // reference engine behind it.
+    const forkModuleBytes = await fetchDefaultBrowserForkModule32();
+    // The co-resident WASI module is the browser's WASI Preview 1 support:
+    // fetch its bytes and ship them alongside the fork-module so the kernel
+    // worker can hand a compiled module to any process worker that turns out
+    // to be running a WASI guest.
+    const wasiModuleBytes = await fetchDefaultBrowserWasiModule32();
+    // The dynamic-linking planner travels the same route: fetched here,
+    // transferred to the kernel worker, compiled once there, and handed to
+    // every process worker. Optional for now because nothing drives it yet.
+    const dylinkModuleBytes = await fetchDefaultBrowserDylinkModule32();
     // Create the kernel worker
     this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     this.workerStarted = true;
@@ -474,6 +553,9 @@ export class BrowserKernel {
         const initMsg: MainToKernelMessage = {
           type: "init",
           kernelWasmBytes: transferBuf,
+          ...(forkModuleBytes ? { forkModuleBytes } : {}),
+          ...(wasiModuleBytes ? { wasiModuleBytes } : {}),
+          ...(dylinkModuleBytes ? { dylinkModuleBytes } : {}),
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
@@ -497,6 +579,15 @@ export class BrowserKernel {
           },
         };
         const transfer: Transferable[] = [transferBuf];
+        if (forkModuleBytes) {
+          transfer.push(forkModuleBytes);
+        }
+        if (wasiModuleBytes) {
+          transfer.push(wasiModuleBytes);
+        }
+        if (dylinkModuleBytes) {
+          transfer.push(dylinkModuleBytes);
+        }
         if (opts.takeVfsImageOwnership) {
           // WHY: this API is used at durable reboot boundaries where the main
           // thread has already hashed the image and will not reuse it. Transfer
@@ -1491,6 +1582,15 @@ export class BrowserKernel {
         break;
       case "host_diagnostic": {
         this.options.onHostDiagnostic?.({
+          pid: msg.pid,
+          source: msg.source,
+          message: msg.message,
+          ...(msg.status === undefined ? {} : { status: msg.status }),
+        });
+        break;
+      }
+      case "fork_module_proof": {
+        this.options.onForkModuleProof?.({
           pid: msg.pid,
           source: msg.source,
           message: msg.message,

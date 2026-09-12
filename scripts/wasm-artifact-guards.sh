@@ -11,18 +11,108 @@ wasm_is_binary() {
     [ "$(od -An -tx1 -N4 "$path" 2>/dev/null | tr -d ' \n')" = "0061736d" ]
 }
 
+# Asyncify instrumentation is a PROPERTY of a module, not a string that
+# appears somewhere in it. The Binaryen transform adds exports named
+# `asyncify_start_unwind`, `asyncify_stop_unwind`, `asyncify_start_rewind` and
+# `asyncify_stop_rewind`; exporting those is what makes an artifact
+# instrumented.
+#
+# WHY this is not a byte scan: `crates/wasm-artifact` is linked into the kernel
+# and puts the literal `asyncify_` in its data section, so scanning the whole
+# file refused every freshly built kernel and blocked the install path
+# outright. A mention is not a property. The identical defect was already
+# fixed in `tools/xtask/src/build_deps.rs` and `host/src/constants.ts`; this
+# was the third copy of the same check and the last one still scanning bytes.
+#
+# WHY not `wasm-objdump`: wabt 1.0.37, the version this dev shell pins, cannot
+# parse this repo's modules -- it exits 1 with "table elem type must be a
+# reference type" on the fork side module. Walking the section table needs no
+# understanding of value types or instructions, so it stays correct as the
+# proposals this platform uses continue to move.
+#
+# Exit status: 0 instrumented, 1 clean, 2 could not be determined.
 wasm_has_legacy_asyncify() {
     wasm_is_binary "${1:-}" || return 1
-    grep -a -q 'asyncify_' "$1" 2>/dev/null
+    python3 - "$1" <<'PYEOF'
+import sys
+
+ASYNCIFY = (
+    b"asyncify_start_unwind",
+    b"asyncify_stop_unwind",
+    b"asyncify_start_rewind",
+    b"asyncify_stop_rewind",
+)
+
+
+def uleb(buf, i):
+    value = 0
+    shift = 0
+    while True:
+        if i >= len(buf):
+            raise ValueError("truncated LEB128")
+        byte = buf[i]
+        i += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, i
+        shift += 7
+        if shift > 35:
+            raise ValueError("oversized LEB128")
+
+
+try:
+    data = open(sys.argv[1], "rb").read()
+    if data[:8] != b"\x00asm\x01\x00\x00\x00":
+        raise ValueError("not a wasm binary module")
+    pos = 8
+    instrumented = False
+    while pos < len(data):
+        section_id = data[pos]
+        size, pos = uleb(data, pos + 1)
+        end = pos + size
+        if end > len(data):
+            raise ValueError("section runs past end of file")
+        if section_id == 7:  # export section
+            count, cur = uleb(data, pos)
+            for _ in range(count):
+                name_len, cur = uleb(data, cur)
+                name = data[cur:cur + name_len]
+                cur += name_len + 1          # skip the export kind byte
+                _, cur = uleb(data, cur)     # skip the export index
+                if name in ASYNCIFY:
+                    instrumented = True
+            break
+        pos = end
+except Exception as error:                    # noqa: BLE001 - reported, not swallowed
+    print("wasm export scan failed: %s" % error, file=sys.stderr)
+    raise SystemExit(2)
+
+raise SystemExit(0 if instrumented else 1)
+PYEOF
 }
 
 wasm_require_no_legacy_asyncify() {
     local path="${1:-}"
-    if wasm_has_legacy_asyncify "$path"; then
-        echo "ERROR: refusing legacy Asyncify wasm artifact: $path" >&2
-        echo "       Rebuild it with scripts/run-wasm-fork-instrument.sh for fork-capable binaries." >&2
-        return 1
-    fi
+    local status=0
+    wasm_has_legacy_asyncify "$path" || status=$?
+    case "$status" in
+        0)
+            echo "ERROR: refusing legacy Asyncify wasm artifact: $path" >&2
+            echo "       Rebuild it with scripts/run-wasm-fork-instrument.sh for fork-capable binaries." >&2
+            return 1
+            ;;
+        1)
+            return 0
+            ;;
+        *)
+            # WHY refuse rather than allow: an artifact whose status could not
+            # be determined must not pass a guard. Scoring "could not inspect"
+            # as "clean" is how a gate quietly stops being a gate, which this
+            # repo has now been bitten by ten times.
+            echo "ERROR: cannot determine Asyncify status of $path" >&2
+            return 1
+            ;;
+    esac
 }
 
 # Reject unresolved imports in Kandelo's reserved libc/host namespace unless
@@ -876,7 +966,8 @@ _wasm_structural_loader_identity() {
 
 # Print `executable` or `side-module` for a structurally decoded Wasm module.
 # A valid Kandelo side module carries exactly one `dylink.0` custom section as
-# its first section, matching the runtime loader contract in host/src/dylink.ts.
+# its first section, matching the runtime loader contract now owned by
+# `crates/dylink` (the TypeScript `host/src/dylink.ts` was deleted with K5 I6c).
 # Return a status greater than 1 for a decoder failure or a misplaced/duplicate
 # marker so callers cannot reinterpret malformed side-module input as a process
 # executable.
@@ -936,7 +1027,8 @@ wasm_artifact_role() {
 
 # Validate the import shape that the Kandelo dynamic linker can instantiate.
 # Side modules share the process memory and may import only from the namespaces
-# that host/src/dylink.ts supplies. Print the detected memory architecture.
+# that the linker supplies -- now `crates/dylink` plus the engine-act executor
+# in `host/src/dylink-planner.ts`. Print the detected memory architecture.
 wasm_validate_side_module_imports() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 2

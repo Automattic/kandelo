@@ -1,0 +1,15 @@
+<!doctype html><meta charset=utf-8><title>K0c epoll probe</title>
+<body><pre id=out>running…</pre>
+<script type="module">
+import { runEpollProbe } from './epoll-core.js';
+window.__done = (async () => {
+  try {
+    const bytes = new Uint8Array(await (await fetch('./kernel.wasm')).arrayBuffer());
+    const r = await runEpollProbe(bytes);
+    document.getElementById('out').textContent = JSON.stringify(r, null, 1);
+    return { crossOriginIsolated: self.crossOriginIsolated, ...r };
+  } catch (e) {
+    return { fatal: String(e && e.stack || e) };
+  }
+})();
+</script></body>

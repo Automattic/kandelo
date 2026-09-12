@@ -9,10 +9,6 @@ import {
   KernelEntryGate,
 } from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
-import {
-  createWasmPosixKernelTestHarness,
-  WasmPosixKernel,
-} from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import {
   ABI_SYSCALLS,
@@ -28,23 +24,16 @@ import {
   PR_GET_NAME,
   PR_SET_NAME,
   IOCTL_REQUESTS,
-  KERNEL_CMSGHDR_WIRE_ALIGN,
-  KERNEL_CMSGHDR_WIRE_DATA_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEN_OFFSET,
-  KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
-  KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
-  KERNEL_IOVEC_WIRE_BASE_OFFSET,
-  KERNEL_IOVEC_WIRE_LEN_OFFSET,
-  KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT,
-  KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-  KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-  KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-  KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
   KERNEL_SCRATCH_SOCKET_OPTION_MAX_BYTES,
+  KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET,
+  KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET,
+  STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
   POSIX_IOV_MAX,
   POSIX_NAME_MAX_BYTES,
   POSIX_NGROUPS_MAX,
@@ -79,8 +68,6 @@ import {
   SOCKET_MSG_TRUNC,
   SOCKET_SCM_RIGHTS,
   SOCKET_SOL_SOCKET,
-  STRUCT_SIZE_KERNEL_IOVEC_WIRE,
-  STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
@@ -108,7 +95,6 @@ const SCALAR_IOCTL_REQUESTS = Object.entries(IOCTL_REQUESTS)
   .filter(([, contract]) => contract.argKind === "scalar-i32")
   .map(([request]) => Number(request));
 const SIOCGIFNAME = 0x8910;
-const SIOCGIFCONF = 0x8912;
 const SIOCGIFADDR = 0x8915;
 const SIOCGIFHWADDR = 0x8927;
 const SIOCGIFINDEX = 0x8933;
@@ -142,37 +128,6 @@ const NETWORK_IFREQ_HANDLERS = [
     },
   },
 ] as const;
-const IOVEC_HANDLER_PATHS = [
-  {
-    name: "writev",
-    handler: "handleWritev",
-    syscall: ABI_SYSCALLS.Writev,
-    message: false,
-    input: true,
-  },
-  {
-    name: "readv",
-    handler: "handleReadv",
-    syscall: ABI_SYSCALLS.Readv,
-    message: false,
-    input: false,
-  },
-  {
-    name: "sendmsg",
-    handler: "handleSendmsg",
-    syscall: ABI_SYSCALLS.Sendmsg,
-    message: true,
-    input: true,
-  },
-  {
-    name: "recvmsg",
-    handler: "handleRecvmsg",
-    syscall: ABI_SYSCALLS.Recvmsg,
-    message: true,
-    input: false,
-  },
-] as const;
-
 interface TestChannel {
   pid: number;
   memory: WebAssembly.Memory;
@@ -346,7 +301,6 @@ function makeScratchHarness(
     kernel_get_socket_timeout_ms: () => -1n,
     kernel_is_fd_nonblock: () => 0,
     kernel_get_process_exit_signal: () => 0,
-    kernel_mq_descriptor_msgsize: () => 8_192,
     kernel_pick_signal_target_tid: () => 0,
     kernel_set_current_tid: () => 0,
     kernel_thread_has_deliverable: () => 0,
@@ -443,7 +397,6 @@ function makeScratchHarness(
   ]);
   worker.pendingSelectRetries = new Map();
   worker.pendingPollRetries = new Map();
-  worker.epollInterests = new Map();
 
   kernelBytes.fill(0xa5, scratchEnd, scratchEnd + 16_384);
   return {
@@ -534,22 +487,6 @@ function dispatchScratchBoundarySyscallWithArgs(
   dispatchScratchBoundarySyscall(harness);
 }
 
-function writeIfconf(
-  bytes: Uint8Array,
-  pointerWidth: 4 | 8,
-  pointer: number,
-  capacity: number,
-  outputPointer: number | bigint,
-): void {
-  const view = new DataView(bytes.buffer);
-  view.setInt32(pointer, capacity, true);
-  if (pointerWidth === 8) {
-    view.setBigUint64(pointer + 8, BigInt(outputPointer), true);
-  } else {
-    view.setUint32(pointer + 4, Number(outputPointer), true);
-  }
-}
-
 function invokeNetworkIoctlHandler(
   harness: ScratchHarness,
   handler: string,
@@ -558,7 +495,7 @@ function invokeNetworkIoctlHandler(
   const path = NETWORK_IFREQ_HANDLERS.find(
     (candidate) => candidate.handler === handler,
   );
-  const request = handler === "handleIoctlIfconf" ? SIOCGIFCONF : path?.request;
+  const request = path?.request;
   if (request === undefined) {
     throw new Error(`unknown network ioctl test handler ${handler}`);
   }
@@ -608,23 +545,6 @@ function installCompletePathProducer(
         : "kernel_get_fd_path"
   ] = producer;
   return producer;
-}
-
-function writeNativeIovec(
-  processBytes: Uint8Array,
-  pointerWidth: 4 | 8,
-  iovPointer: number,
-  base: number | bigint,
-  length: number,
-): void {
-  const view = new DataView(processBytes.buffer);
-  if (pointerWidth === 8) {
-    view.setBigUint64(iovPointer, BigInt(base), true);
-    view.setBigUint64(iovPointer + 8, BigInt(length), true);
-  } else {
-    view.setUint32(iovPointer, Number(base), true);
-    view.setUint32(iovPointer + 4, length, true);
-  }
 }
 
 function alignUp(value: number, alignment: number): number {
@@ -795,12 +715,12 @@ function writeNativeRightsRecords(
 function canonicalRightsBytes(records: number[][]): Uint8Array {
   const lengths = records.map(
     (descriptors) =>
-      KERNEL_CMSGHDR_WIRE_DATA_OFFSET +
+      PROCESS_CMSGHDR_WASM32_DATA_OFFSET +
       descriptors.length * SCM_RIGHTS_FD_BYTES,
   );
   const output = new Uint8Array(
     lengths.reduce(
-      (total, length) => total + alignUp(length, KERNEL_CMSGHDR_WIRE_ALIGN),
+      (total, length) => total + alignUp(length, PROCESS_CMSGHDR_WASM32_ALIGN),
       0,
     ),
   );
@@ -808,125 +728,29 @@ function canonicalRightsBytes(records: number[][]): Uint8Array {
   let offset = 0;
   records.forEach((descriptors, recordIndex) => {
     const length = lengths[recordIndex];
-    view.setUint32(offset + KERNEL_CMSGHDR_WIRE_LEN_OFFSET, length, true);
+    view.setUint32(offset + PROCESS_CMSGHDR_WASM32_LEN_OFFSET, length, true);
     view.setUint32(
-      offset + KERNEL_CMSGHDR_WIRE_LEVEL_OFFSET,
+      offset + PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
       SOCKET_SOL_SOCKET,
       true,
     );
     view.setUint32(
-      offset + KERNEL_CMSGHDR_WIRE_TYPE_OFFSET,
+      offset + PROCESS_CMSGHDR_WASM32_TYPE_OFFSET,
       SOCKET_SCM_RIGHTS,
       true,
     );
     descriptors.forEach((descriptor, descriptorIndex) => {
       view.setInt32(
         offset +
-          KERNEL_CMSGHDR_WIRE_DATA_OFFSET +
+          PROCESS_CMSGHDR_WASM32_DATA_OFFSET +
           descriptorIndex * SCM_RIGHTS_FD_BYTES,
         descriptor,
         true,
       );
     });
-    offset += alignUp(length, KERNEL_CMSGHDR_WIRE_ALIGN);
+    offset += alignUp(length, PROCESS_CMSGHDR_WASM32_ALIGN);
   });
   return output;
-}
-
-function invokeIovecHandler(
-  harness: ScratchHarness,
-  pointerWidth: 4 | 8,
-  path: (typeof IOVEC_HANDLER_PATHS)[number],
-  iovPointer: number,
-): void {
-  if (path.message) {
-    const messagePointer = 128;
-    writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-      iovecPointer: iovPointer,
-      iovecCount: 1,
-    });
-    invokeIovecMethod(harness, path.handler, [7, messagePointer, 0, 0, 0, 0]);
-    return;
-  }
-  invokeIovecMethod(harness, path.handler, [
-    7n,
-    BigInt(iovPointer),
-    1n,
-    0n,
-    0n,
-    0n,
-  ]);
-}
-
-function invokeIovecMethod(
-  harness: ScratchHarness,
-  method: (typeof IOVEC_HANDLER_PATHS)[number]["handler"],
-  args: readonly number[] | readonly bigint[],
-  syscallOverride?: number,
-): void {
-  const path = IOVEC_HANDLER_PATHS.find(
-    (candidate) => candidate.handler === method,
-  );
-  if (!path) throw new Error(`unknown iovec test handler ${method}`);
-  writeChannelSyscall(
-    harness,
-    syscallOverride ?? path.syscall,
-    args.map((value) => BigInt(value)),
-  );
-  dispatchScratchBoundarySyscall(harness);
-}
-
-function respondToSingleKernelIovec(
-  harness: ScratchHarness,
-  path: (typeof IOVEC_HANDLER_PATHS)[number],
-  payload: Uint8Array,
-): void {
-  harness.handleChannel.mockImplementation((offset: number | bigint) => {
-    const channelView = new DataView(
-      harness.kernelBytes.buffer,
-      Number(offset),
-    );
-    const argumentPointer = Number(
-      channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-    );
-    const kernelView = new DataView(harness.kernelBytes.buffer);
-    const kernelIovecPointer = path.message
-      ? kernelView.getUint32(argumentPointer + 8, true)
-      : argumentPointer;
-    const kernelDataPointer = path.message
-      ? kernelView.getUint32(kernelIovecPointer, true)
-      : kernelIovecPointer;
-    const kernelLength = path.message
-      ? kernelView.getUint32(kernelIovecPointer + 4, true)
-      : Number(channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true));
-    expect(kernelLength, path.name).toBe(payload.byteLength);
-    if (path.input) {
-      expect(
-        harness.kernelBytes.slice(
-          kernelDataPointer,
-          kernelDataPointer + payload.byteLength,
-        ),
-        path.name,
-      ).toEqual(payload);
-    } else {
-      harness.kernelBytes.set(payload, kernelDataPointer);
-    }
-    channelView.setBigInt64(CH_RETURN, BigInt(payload.byteLength), true);
-    channelView.setUint32(CH_ERRNO, 0, true);
-    return 0;
-  });
-}
-
-function writeWasm32Iovecs(
-  processBytes: Uint8Array,
-  iovPtr: number,
-  entries: Array<{ base: number; len: number }>,
-): void {
-  const view = new DataView(processBytes.buffer);
-  entries.forEach(({ base, len }, index) => {
-    view.setUint32(iovPtr + index * 8, base, true);
-    view.setUint32(iovPtr + index * 8 + 4, len, true);
-  });
 }
 
 function expectScratchTailUntouched(harness: ScratchHarness): void {
@@ -1204,52 +1028,56 @@ describe("kernel scratch transfer capacity regressions", () => {
     expect(sendSignalToProcess).not.toHaveBeenCalled();
   });
 
-  it("releases fstat capture and preserves a fatal export failure", () => {
+  it("releases the fd-facts query and preserves a fatal export failure", () => {
     const harness = makeScratchHarness();
     const kernelMemory = harness.kernelMemory;
-    const fstat = vi.fn(() => ({
-      dev: 11n,
-      ino: 22n,
-      mode: 0o100644,
-      nlink: 1,
-      uid: 2,
-      gid: 3,
-      size: 4096,
-      atimeMs: 1000,
-      mtimeMs: 2000,
-      ctimeMs: 3000,
-    }));
-    const kernel = createWasmPosixKernelTestHarness({
-      io: { fstat } as never,
-      memory: kernelMemory,
-      pointerWidth: 4,
-    }) as WasmPosixKernel & Record<string, any>;
-    harness.worker.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
 
+    // `kernel_shared_mapping_fd_facts` answers identity, access mode, and
+    // host-handle ownership in one record. The host previously re-derived all
+    // three: a synthetic fstat channel, a `host_fstat` capture side-channel to
+    // recover the handle, and a second synthetic channel for `F_GETFL`.
     let hostHandle = 501;
-    harness.handleChannel.mockImplementation((offset: number | bigint) => {
-      const channelView = new DataView(
+    const fdFacts = vi.fn((_pid: number, _fd: number, ptr: number | bigint) => {
+      const view = new DataView(
         kernelMemory.buffer,
-        Number(offset),
-        CH_TOTAL_SIZE,
+        Number(ptr),
+        STRUCT_SIZE_KERNEL_SHARED_MAPPING_FD_FACTS,
       );
-      expect(channelView.getUint32(CH_SYSCALL, true)).toBe(ABI_SYSCALLS.Fstat);
-      const statPointer = channelView.getBigUint64(CH_ARGS + CH_ARG_SIZE, true);
-      expect(
-        kernel.testAuthority.hostFstat(
-          BigInt(hostHandle),
-          kernel.toKernelPtr(statPointer),
-        ),
-      ).toBe(0);
-      channelView.setBigInt64(CH_RETURN, 0n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
+      view.setBigUint64(KERNEL_SHARED_MAPPING_FD_FACTS_DEV_OFFSET, 11n, true);
+      view.setBigUint64(KERNEL_SHARED_MAPPING_FD_FACTS_INO_OFFSET, 22n, true);
+      view.setBigUint64(
+        KERNEL_SHARED_MAPPING_FD_FACTS_SIZE_OFFSET,
+        4096n,
+        true,
+      );
+      view.setBigInt64(
+        KERNEL_SHARED_MAPPING_FD_FACTS_HOST_HANDLE_OFFSET,
+        BigInt(hostHandle),
+        true,
+      );
+      view.setUint32(
+        KERNEL_SHARED_MAPPING_FD_FACTS_MODE_OFFSET,
+        0o100644,
+        true,
+      );
+      view.setUint32(
+        KERNEL_SHARED_MAPPING_FD_FACTS_ACCESS_MODE_OFFSET,
+        2,
+        true,
+      );
+      view.setUint32(
+        KERNEL_SHARED_MAPPING_FD_FACTS_HAS_HOST_HANDLE_OFFSET,
+        1,
+        true,
+      );
       return 0;
     });
+    harness.kernelExports.kernel_shared_mapping_fd_facts = fdFacts;
 
-    const capture = () =>
-      harness.worker.getFdStatForSharedMapping(harness.channel, 7);
+    const query = () =>
+      harness.worker.sharedMappingFdFacts(harness.channel, 7);
 
-    expect(capture()).toEqual({
+    expect(query()).toEqual({
       kind: "ok",
       value: {
         dev: 11n,
@@ -1257,39 +1085,39 @@ describe("kernel scratch transfer capacity regressions", () => {
         mode: 0o100644,
         size: 4096,
         hostHandle: 501,
+        accessMode: 2,
       },
     });
     expect(harness.worker.currentHandlePid).toBe(0);
 
-    const cause = new Error("synthetic handleChannel failure");
-    harness.handleChannel.mockImplementationOnce(() => {
+    const cause = new Error("synthetic fd-facts failure");
+    fdFacts.mockImplementationOnce(() => {
       throw cause;
     });
     let exportFailure: unknown;
     try {
-      capture();
+      query();
     } catch (error) {
       exportFailure = error;
     }
     expect(exportFailure).toMatchObject({
-      message: "kernel export kernel_handle_channel failed",
+      message: "kernel export kernel_shared_mapping_fd_facts failed",
     });
     expect((exportFailure as { cause?: unknown }).cause).toBe(cause);
     expect(harness.worker.currentHandlePid).toBe(0);
 
-    // A thrown kernel export poisons this generation. Capture cleanup restores
-    // host state, but the exact fatal value must escape this catch and every
-    // later entry instead of being downgraded to a recoverable EIO.
+    // A thrown kernel export poisons this generation. The query restores host
+    // state, but the exact fatal value must escape this catch and every later
+    // entry instead of being downgraded to a recoverable EIO.
     hostHandle = 502;
     let repeatedFailure: unknown;
     try {
-      capture();
+      query();
     } catch (error) {
       repeatedFailure = error;
     }
     expect(repeatedFailure).toBe(exportFailure);
-    expect(fstat).toHaveBeenNthCalledWith(1, 501);
-    expect(fstat).toHaveBeenCalledTimes(1);
+    expect(fdFacts).toHaveBeenCalledTimes(2);
   });
 
   it("chunks PTY input at the exact scratch capacity and capacity + 1", () => {
@@ -1348,7 +1176,12 @@ describe("kernel scratch transfer capacity regressions", () => {
     expectScratchTailUntouched(harness);
   });
 
-  it("uses intrinsic source spans for System V and pipe chunk staging", () => {
+  // This used to cover the System V segment path too, through
+  // `writeSysvShmRange`. The host no longer stages segment bytes at all: the
+  // SysV byte mirror is Rust-owned and the kernel reads and writes its own
+  // `IpcTable` segments directly, so there is no host scratch staging left on
+  // that path to defend. The pipe path keeps the identical defence.
+  it("uses intrinsic source spans for pipe chunk staging", () => {
     const harness = makeScratchHarness();
     const input = hostileBytes(1, 4);
     Uint8Array.prototype.set.call(input, [0x42]);
@@ -1357,13 +1190,6 @@ describe("kernel scratch transfer capacity regressions", () => {
       harness.scratchOffset,
       harness.scratchOffset + 8,
     );
-    const writeShm = vi.fn(
-      (_segment: number, _offset: number, pointer: number, length: number) => {
-        expect(length).toBe(1);
-        expect(harness.kernelBytes[pointer]).toBe(0x42);
-        return length;
-      },
-    );
     const writePipe = vi.fn(
       (_pid: number, _pipe: number, pointer: number, length: number) => {
         expect(length).toBe(1);
@@ -1371,13 +1197,10 @@ describe("kernel scratch transfer capacity regressions", () => {
         return length;
       },
     );
-    harness.kernelExports.kernel_ipc_shm_write_chunk = writeShm;
     harness.kernelExports.kernel_pipe_write = writePipe;
 
-    expect((harness.worker as any).writeSysvShmRange(7, 0, input)).toBe(true);
     expect((harness.worker as any).writePipeChunked(41, 9, input)).toBe(1);
 
-    expect(writeShm).toHaveBeenCalledOnce();
     expect(writePipe).toHaveBeenCalledOnce();
     expectScratchTailUntouched(harness);
   });
@@ -2129,143 +1952,17 @@ describe("kernel scratch transfer capacity regressions", () => {
     },
   );
 
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "returns %s mq_timedsend EMSGSIZE before a large reservation can fail",
-    (_pointerKind, pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      prepareGenericSyscallHarness(harness, pointerWidth);
-      const descriptor = 0x4000_0000;
-      const source = 65_536;
-      const requested = 84 * 1_024;
-      const query = vi.fn(() => 1_024);
-      const begin = vi.fn(() => -BigInt(ENOMEM));
-      harness.kernelExports.kernel_mq_descriptor_msgsize = query;
-      harness.kernelExports.kernel_transfer_scratch_begin = begin;
-      writeChannelSyscall(harness, ABI_SYSCALLS.MqTimedsend, [
-        BigInt(descriptor),
-        BigInt(source),
-        BigInt(requested),
-        0n,
-        0n,
-      ]);
-
-      dispatchScratchBoundarySyscall(harness);
-
-      expect(query).toHaveBeenCalledWith(
-        harness.channel.pid,
-        harness.channel.pid,
-        descriptor,
-      );
-      expect(begin).not.toHaveBeenCalled();
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        -1,
-        EMSGSIZE,
-      ]);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "sizes a huge %s mq_timedreceive capacity from the queue maximum",
-    (_pointerKind, pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      prepareGenericSyscallHarness(harness, pointerWidth);
-      const descriptor = 0x4000_0000;
-      const destination = 65_536;
-      const requested = 84 * 1_024;
-      const query = vi.fn(() => 1_024);
-      const begin = vi.fn(() => -BigInt(ENOMEM));
-      harness.kernelExports.kernel_mq_descriptor_msgsize = query;
-      harness.kernelExports.kernel_transfer_scratch_begin = begin;
-      harness.processBytes.fill(0x7b, destination, destination + 1_025);
-      harness.handleChannel.mockImplementation((offset: number | bigint) => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          Number(offset),
-        );
-        const stagedPointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        expect(stagedPointer).toBe(harness.scratchOffset + CH_DATA);
-        expect(channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)).toBe(
-          1_024n,
-        );
-        harness.kernelBytes.set(Uint8Array.of(0x11, 0x22, 0x33), stagedPointer);
-        channelView.setBigInt64(CH_RETURN, 3n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-      writeChannelSyscall(harness, ABI_SYSCALLS.MqTimedreceive, [
-        BigInt(descriptor),
-        BigInt(destination),
-        BigInt(requested),
-        0n,
-        0n,
-      ]);
-
-      dispatchScratchBoundarySyscall(harness);
-
-      expect(query).toHaveBeenCalledWith(
-        harness.channel.pid,
-        harness.channel.pid,
-        descriptor,
-      );
-      expect(begin).not.toHaveBeenCalled();
-      expect(harness.handleChannel).toHaveBeenCalledOnce();
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        3, 0,
-      ]);
-      expect(harness.completeChannel.mock.calls[0]?.[6]).toEqual([
-        {
-          ptr: destination,
-          bytes: Uint8Array.of(0x11, 0x22, 0x33),
-        },
-      ]);
-      expect(harness.processBytes.slice(destination, destination + 4)).toEqual(
-        new Uint8Array(4).fill(0x7b),
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["wasm32", 4],
-    ["wasm64", 8],
-  ] as const)(
-    "rejects a short %s mq_timedreceive capacity before reservation",
-    (_pointerKind, pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      prepareGenericSyscallHarness(harness, pointerWidth);
-      const query = vi.fn(() => 1_024);
-      const begin = vi.fn(() => -BigInt(ENOMEM));
-      harness.kernelExports.kernel_mq_descriptor_msgsize = query;
-      harness.kernelExports.kernel_transfer_scratch_begin = begin;
-      writeChannelSyscall(harness, ABI_SYSCALLS.MqTimedreceive, [
-        0x4000_0000n,
-        65_536n,
-        1_023n,
-        0n,
-        0n,
-      ]);
-
-      dispatchScratchBoundarySyscall(harness);
-
-      expect(begin).not.toHaveBeenCalled();
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        -1,
-        EMSGSIZE,
-      ]);
-      expectScratchTailUntouched(harness);
-    },
-  );
+  // The three mq_timedsend/mq_timedreceive EMSGSIZE cases that stood here died
+  // with their subject. They proved the HOST resolved the queue's own
+  // `mq_msgsize` — through a dedicated kernel export — before reserving space
+  // for the caller's bytes, so an oversized `msg_len` reported EMSGSIZE rather
+  // than the ENOMEM a failed reservation would have produced. The caller's
+  // buffer is a kernel-dereferenced guest address now, so that ordering lives
+  // inside the kernel's own dispatch and the export is gone. The equivalent
+  // proof is `mqueue_zero_length_message_never_constructs_a_null_raw_slice` in
+  // `crates/kernel/tests/wasm_api_channel_pointer_contract.rs`, which pins
+  // that `mq_msgsize` is resolved and compared BEFORE any caller memory is
+  // read.
 
   it.each([
     ["wasm32", 4, 1n],
@@ -2394,2062 +2091,45 @@ describe("kernel scratch transfer capacity regressions", () => {
     },
   );
 
-  it.each([
-    ["wasm32", 4, "writev", "handleWritev", ABI_SYSCALLS.Writev, false],
-    ["wasm32", 4, "readv", "handleReadv", ABI_SYSCALLS.Readv, true],
-    ["wasm64", 8, "writev", "handleWritev", ABI_SYSCALLS.Writev, false],
-    ["wasm64", 8, "readv", "handleReadv", ABI_SYSCALLS.Readv, true],
-  ] as const)(
-    "%s %s uses one channel operation at exact capacity and one reservation at capacity + 1",
-    (_widthName, pointerWidth, _name, method, syscallNr, readOperation) => {
-      for (const length of [CH_DATA_SIZE, CH_DATA_SIZE + 1]) {
-        const harness = makeScratchHarness(pointerWidth);
-        const iovPointer = 256;
-        const firstPointer = 65_536;
-        const firstLength = 17;
-        const secondPointer = firstPointer + firstLength + 32;
-        const secondLength = length - firstLength;
-        const payload = Uint8Array.from(
-          { length },
-          (_, index) => (index * 17 + 3) % 251,
-        );
-        writeNativeIovec(
-          harness.processBytes,
-          pointerWidth,
-          iovPointer,
-          firstPointer,
-          firstLength,
-        );
-        writeNativeIovec(
-          harness.processBytes,
-          pointerWidth,
-          iovPointer + 2 * pointerWidth,
-          secondPointer,
-          secondLength,
-        );
-        if (!readOperation) {
-          harness.processBytes.set(
-            payload.subarray(0, firstLength),
-            firstPointer,
-          );
-          harness.processBytes.set(
-            payload.subarray(firstLength),
-            secondPointer,
-          );
-        }
-        const callerCanary = 0x7e;
-        harness.processBytes[secondPointer + secondLength] = callerCanary;
+  // ---------------------------------------------------------------------
+  // RETIRED: the host's iovec marshaller, and the cases that pinned it.
+  //
+  // These drove `handleWritev` / `handleReadv` -- methods that walked the
+  // caller's `struct iovec` table in TypeScript, bounded `iovcnt`, proved
+  // every nested range, flattened the payload into kernel scratch, rewrote the
+  // syscall to its scalar twin, and scattered the result back by hand. None of
+  // that exists. Argument 1 of writev/readv/preadv/pwritev/preadv2/pwritev2 is
+  // `SyscallArgSize::KernelDereferenced`, so the host passes the caller's raw
+  // guest address through and the kernel walks the table itself.
+  //
+  // Every property they held is still proven, where it is now enforced:
+  //
+  // * `IOV_MAX`, aggregate `SSIZE_MAX`, a negative count, and a zero count
+  //   ignoring the table pointer -- `msghdr::read_iovecs` and its tests in
+  //   `crates/runtime-core/src/msghdr.rs`.
+  // * PIPE_BUF atomicity, datagram boundaries, eventfd record atomicity,
+  //   RLIMIT_FSIZE, EBADF by direction, ESPIPE, and offset-before-access
+  //   ordering -- `syscalls::sys_vector_io` and its tests in
+  //   `crates/runtime-core/src/syscalls.rs`, each staging a real guest table.
+  // * A zero-length entry whose base is unrepresentable, an `IOV_MAX`-wide
+  //   table at the capacity edge, large multi-entry vectors, positioned
+  //   offsets, and cursor neutrality -- end to end on BOTH caller widths by
+  //   `examples/kernel_scratch_browser_test.c`, run from
+  //   `test/kernel-scratch-runtime.test.ts`.
+  // * That no vector syscall touches the reserved-transfer protocol --
+  //   `test/kernel-large-transfer-protocol.test.ts`.
+  //
+  // The address-zero cases are the reason `guest_ptr` grew an
+  // `_at_any_address` pair. The marshaller accepted a caller table or buffer at
+  // guest address zero, arguing that byte 0 of a guest's linear memory is
+  // addressable and that the range proof, not a null-pointer convention,
+  // establishes ownership. It was right, and it is load-bearing:
+  // `host/test/fixtures/wasi-hello.wat` places its `ciovec` at offset 0 on
+  // purpose, and `test/wasi-module.test.ts` fails outright without it. The
+  // C null-pointer convention still applies to arguments that ARE C pointers,
+  // which is why `read_msghdr` and the IPC control paths keep it.
+  // ---------------------------------------------------------------------
 
-        const execute = vi.fn(
-          (
-            _pid: number,
-            _tid: number,
-            _token: bigint,
-            offered: number | bigint,
-            originalSyscall: number,
-            _fd: number,
-            _offset: bigint,
-            retryToken: bigint,
-          ) => {
-            expect(Number(offered)).toBe(length);
-            expect(originalSyscall).toBe(syscallNr);
-            expect(retryToken).toBe(0n);
-            if (readOperation) {
-              harness.kernelBytes.set(payload, harness.transferOffset);
-            } else {
-              expect(
-                harness.kernelBytes.slice(
-                  harness.transferOffset,
-                  harness.transferOffset + length,
-                ),
-              ).toEqual(payload);
-            }
-            return length;
-          },
-        );
-        harness.kernelExports.kernel_transfer_io_execute = execute;
-
-        harness.handleChannel.mockImplementation(() => {
-          const channelView = new DataView(
-            harness.kernelBytes.buffer,
-            harness.scratchOffset,
-          );
-          expect(channelView.getUint32(CH_SYSCALL, true)).toBe(
-            readOperation ? ABI_SYSCALLS.Read : ABI_SYSCALLS.Write,
-          );
-          const dataPointer = Number(
-            channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-          );
-          expect(dataPointer).toBe(harness.scratchOffset + CH_DATA);
-          expect(
-            Number(channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)),
-          ).toBe(length);
-          if (readOperation) {
-            harness.kernelBytes.set(payload, dataPointer);
-          } else {
-            expect(
-              harness.kernelBytes.slice(dataPointer, dataPointer + length),
-            ).toEqual(payload);
-          }
-          channelView.setBigInt64(CH_RETURN, BigInt(length), true);
-          channelView.setUint32(CH_ERRNO, 0, true);
-          return 0;
-        });
-
-        if (length > CH_DATA_SIZE) useTransferScratchInstance(harness);
-        invokeIovecMethod(harness, method, [
-          7n,
-          BigInt(iovPointer),
-          2n,
-          0n,
-          0n,
-          0n,
-        ]);
-
-        expect(harness.handleChannel).toHaveBeenCalledTimes(
-          length === CH_DATA_SIZE ? 1 : 0,
-        );
-        expect(execute).toHaveBeenCalledTimes(length === CH_DATA_SIZE ? 0 : 1);
-        expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-          length,
-          0,
-        ]);
-        if (readOperation) {
-          expect(
-            harness.processBytes.slice(
-              firstPointer,
-              firstPointer + firstLength,
-            ),
-          ).toEqual(payload.subarray(0, firstLength));
-          expect(
-            harness.processBytes.slice(
-              secondPointer,
-              secondPointer + secondLength,
-            ),
-          ).toEqual(payload.subarray(firstLength));
-        }
-        expect(harness.processBytes[secondPointer + secondLength]).toBe(
-          callerCanary,
-        );
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "accepts a bounded wasm%s iovec table at caller address zero",
-    (pointerWidth) => {
-      const dataPointer = 2048;
-      const payload = Uint8Array.from([1, 2, 3, 4]);
-      for (const path of IOVEC_HANDLER_PATHS) {
-        const harness = makeScratchHarness(pointerWidth);
-        writeNativeIovec(
-          harness.processBytes,
-          pointerWidth,
-          0,
-          dataPointer,
-          payload.byteLength,
-        );
-        if (path.input) {
-          harness.processBytes.set(payload, dataPointer);
-        } else {
-          harness.processBytes.fill(
-            0x6d,
-            dataPointer,
-            dataPointer + payload.byteLength,
-          );
-        }
-        respondToSingleKernelIovec(harness, path, payload);
-
-        invokeIovecHandler(harness, pointerWidth, path, 0);
-
-        expect(harness.handleChannel, path.name).toHaveBeenCalledOnce();
-        expect(
-          harness.completeChannel.mock.calls[0]?.slice(4, 6),
-          path.name,
-        ).toEqual([payload.byteLength, 0]);
-        if (!path.input) {
-          expect(
-            harness.processBytes.slice(
-              dataPointer,
-              dataPointer + payload.byteLength,
-            ),
-            path.name,
-          ).toEqual(payload);
-        }
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "accepts bounded positive-length wasm%s iovec data at caller address zero",
-    (pointerWidth) => {
-      const iovPointer = 512;
-      const payload = Uint8Array.from([5, 6, 7, 8]);
-      for (const path of IOVEC_HANDLER_PATHS) {
-        const harness = makeScratchHarness(pointerWidth);
-        writeNativeIovec(
-          harness.processBytes,
-          pointerWidth,
-          iovPointer,
-          0,
-          payload.byteLength,
-        );
-        if (path.input) {
-          harness.processBytes.set(payload, 0);
-        } else {
-          harness.processBytes.fill(0x6d, 0, payload.byteLength);
-        }
-        respondToSingleKernelIovec(harness, path, payload);
-
-        invokeIovecHandler(harness, pointerWidth, path, iovPointer);
-
-        expect(harness.handleChannel, path.name).toHaveBeenCalledOnce();
-        expect(
-          harness.completeChannel.mock.calls[0]?.slice(4, 6),
-          path.name,
-        ).toEqual([payload.byteLength, 0]);
-        if (!path.input) {
-          expect(
-            harness.processBytes.slice(0, payload.byteLength),
-            path.name,
-          ).toEqual(payload);
-        }
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "accepts a zero-length wasm%s iovec with base address zero",
-    (pointerWidth) => {
-      const iovPointer = 512;
-      for (const path of IOVEC_HANDLER_PATHS) {
-        const harness = makeScratchHarness(pointerWidth);
-        harness.processBytes.fill(0x6d, 0, 16);
-        const addressZeroBefore = harness.processBytes.slice(0, 16);
-        writeNativeIovec(harness.processBytes, pointerWidth, iovPointer, 0, 0);
-        respondToSingleKernelIovec(harness, path, new Uint8Array(0));
-
-        invokeIovecHandler(harness, pointerWidth, path, iovPointer);
-
-        expect(harness.handleChannel, path.name).toHaveBeenCalledOnce();
-        expect(
-          harness.completeChannel.mock.calls[0]?.slice(4, 6),
-          path.name,
-        ).toEqual([0, 0]);
-        expect(harness.processBytes.slice(0, 16), path.name).toEqual(
-          addressZeroBefore,
-        );
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it("accepts a zero-length wasm64 iovec without narrowing its ignored base", () => {
-    const iovPointer = 512;
-    const ignoredBase = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
-    for (const path of IOVEC_HANDLER_PATHS) {
-      const harness = makeScratchHarness(8);
-      writeNativeIovec(harness.processBytes, 8, iovPointer, ignoredBase, 0);
-      respondToSingleKernelIovec(harness, path, new Uint8Array(0));
-
-      invokeIovecHandler(harness, 8, path, iovPointer);
-
-      expect(harness.handleChannel, path.name).toHaveBeenCalledOnce();
-      expect(
-        harness.completeChannel.mock.calls[0]?.slice(4, 6),
-        path.name,
-      ).toEqual([0, 0]);
-      expectScratchTailUntouched(harness);
-    }
-  });
-
-  it("subtracts the complete readv iovec table from data capacity", () => {
-    const harness = makeScratchHarness();
-    const iovPtr = 256;
-    const destination = 24_576;
-    const entries = Array.from({ length: IOV_MAX }, (_, index) => ({
-      base: destination,
-      len: index === IOV_MAX - 1 ? 56 : 64,
-    }));
-    writeWasm32Iovecs(harness.processBytes, iovPtr, entries);
-    harness.handleChannel.mockImplementation(() => {
-      const view = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      view.setBigInt64(CH_RETURN, 0n, true);
-      view.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    invokeIovecMethod(harness, "handleReadv", [
-      7n,
-      BigInt(iovPtr),
-      BigInt(entries.length),
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expectScratchTailUntouched(harness);
-  });
-
-  it.each([
-    ["sendmsg", "handleSendmsg", ABI_SYSCALLS.Sendmsg],
-    ["recvmsg", "handleRecvmsg", ABI_SYSCALLS.Recvmsg],
-  ] as const)(
-    "rejects %s iovec counts above IOV_MAX before building a kernel table",
-    (_name, method, _syscallNr) => {
-      const harness = makeScratchHarness();
-      const msgPtr = 128;
-      const iovPtr = 1024;
-      const view = new DataView(harness.processBytes.buffer);
-      view.setUint32(msgPtr + 8, iovPtr, true);
-      view.setUint32(msgPtr + 12, IOV_MAX + 1, true);
-      writeWasm32Iovecs(
-        harness.processBytes,
-        iovPtr,
-        Array.from({ length: IOV_MAX + 1 }, () => ({ base: 0, len: 0 })),
-      );
-
-      invokeIovecMethod(harness, method, [7, msgPtr, 0, 0, 0, 0]);
-
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EINVAL,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "bounds nested wasm%s sendmsg addresses at sockaddr_storage",
-    (pointerWidth) => {
-      const messagePointer = 128;
-      const namePointer = 4096;
-      for (const nameLength of [
-        KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-        KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES + 1,
-      ]) {
-        const harness = makeScratchHarness(pointerWidth);
-        const expected = Uint8Array.from(
-          { length: nameLength },
-          (_, index) => (index * 17 + 3) % 251,
-        );
-        harness.processBytes.set(expected, namePointer);
-        writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-          namePointer,
-          nameLength,
-        });
-        harness.handleChannel.mockImplementation(() => {
-          const channelView = new DataView(
-            harness.kernelBytes.buffer,
-            harness.scratchOffset,
-          );
-          const kernelMessagePointer = Number(
-            channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-          );
-          const kernelView = new DataView(harness.kernelBytes.buffer);
-          const kernelNamePointer = kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-            true,
-          );
-          expect(
-            kernelView.getUint32(
-              kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-              true,
-            ),
-          ).toBe(nameLength);
-          expect(
-            harness.kernelBytes.slice(
-              kernelNamePointer,
-              kernelNamePointer + nameLength,
-            ),
-          ).toEqual(expected);
-          channelView.setBigInt64(CH_RETURN, 0n, true);
-          channelView.setUint32(CH_ERRNO, 0, true);
-          return 0;
-        });
-
-        invokeIovecMethod(harness, "handleSendmsg", [
-          7,
-          messagePointer,
-          0,
-          0,
-          0,
-          0,
-        ]);
-
-        const accepted = nameLength === KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES;
-        expect(harness.handleChannel).toHaveBeenCalledTimes(accepted ? 1 : 0);
-        if (!accepted) {
-          expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-            harness.channel,
-            -1,
-            EINVAL,
-          );
-        }
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "clamps nested wasm%s recvmsg address capacity to sockaddr_storage",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 128;
-      const namePointer =
-        harness.channel.channelOffset - KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES;
-      const expected = Uint8Array.from(
-        { length: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES },
-        (_, index) => (index * 23 + 7) % 251,
-      );
-      writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-        namePointer,
-        nameLength: 0xffff_ffff,
-      });
-      harness.processBytes.fill(
-        0x6d,
-        namePointer,
-        namePointer + KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-      );
-      harness.handleChannel.mockImplementation(() => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        const kernelNamePointer = kernelView.getUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-          true,
-        );
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-            true,
-          ),
-        ).toBe(KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES);
-        harness.kernelBytes.set(expected, kernelNamePointer);
-        kernelView.setUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-          KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-          true,
-        );
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(harness, "handleRecvmsg", [
-        7,
-        messagePointer,
-        0,
-        0,
-        0,
-        0,
-      ]);
-
-      expect(harness.handleChannel).toHaveBeenCalledOnce();
-      expect(
-        harness.processBytes.slice(
-          namePointer,
-          namePointer + KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-        ),
-      ).toEqual(expected);
-      const messageView = new DataView(harness.processBytes.buffer);
-      expect(
-        messageView.getUint32(
-          messagePointer +
-            (pointerWidth === 8
-              ? PROCESS_MSGHDR_WASM64_NAMELEN_OFFSET
-              : PROCESS_MSGHDR_WASM32_NAMELEN_OFFSET),
-          true,
-        ),
-      ).toBe(KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "rejects a wasm%s recvmsg address result larger than sockaddr_storage",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 128;
-      const namePointer = 4096;
-      writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-        namePointer,
-        nameLength: KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-      });
-      harness.processBytes.fill(
-        0x6d,
-        namePointer,
-        namePointer + KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-      );
-      const before = harness.processBytes.slice(
-        namePointer,
-        namePointer + KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-      );
-      harness.handleChannel.mockImplementation(() => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        kernelView.setUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-          KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES + 1,
-          true,
-        );
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(harness, "handleRecvmsg", [
-        7,
-        messagePointer,
-        0,
-        0,
-        0,
-        0,
-      ]);
-
-      expect(harness.completeChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EIO,
-      );
-      expect(
-        harness.processBytes.slice(
-          namePointer,
-          namePointer + KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
-        ),
-      ).toEqual(before);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "ignores stale wasm%s sendmsg name length when msg_name is absent",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 128;
-      writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-        namePointer: 0,
-        nameLength: 0xffff_ffff,
-      });
-      harness.handleChannel.mockImplementation((offset: number | bigint) => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          Number(offset),
-        );
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-            true,
-          ),
-        ).toBe(0);
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-            true,
-          ),
-        ).toBe(0);
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(harness, "handleSendmsg", [
-        7,
-        messagePointer,
-        0,
-        0,
-        0,
-        0,
-      ]);
-
-      expect(harness.handleChannel).toHaveBeenCalledOnce();
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "distinguishes absent and present zero-capacity wasm%s recvmsg names",
-    (pointerWidth) => {
-      for (const namePresent of [false, true]) {
-        const harness = makeScratchHarness(pointerWidth);
-        const messagePointer = 128;
-        const namePointer = namePresent ? 4096 : 0;
-        const initialNameLength = namePresent ? 0 : 0xffff_ffff;
-        const nameCanary = 0x6d;
-        writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-          namePointer,
-          nameLength: initialNameLength,
-        });
-        if (namePresent) {
-          harness.processBytes[namePointer] = nameCanary;
-        }
-        harness.handleChannel.mockImplementation((offset: number | bigint) => {
-          const channelView = new DataView(
-            harness.kernelBytes.buffer,
-            Number(offset),
-          );
-          const kernelMessagePointer = Number(
-            channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-          );
-          const kernelView = new DataView(harness.kernelBytes.buffer);
-          const stagedNamePointer = kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-            true,
-          );
-          expect(stagedNamePointer === 0).toBe(!namePresent);
-          expect(
-            kernelView.getUint32(
-              kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-              true,
-            ),
-          ).toBe(0);
-          if (namePresent) {
-            expect(stagedNamePointer).toBe(
-              kernelMessagePointer + STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-            );
-            kernelView.setUint32(
-              kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-              2,
-              true,
-            );
-          }
-          channelView.setBigInt64(CH_RETURN, 0n, true);
-          channelView.setUint32(CH_ERRNO, 0, true);
-          return 0;
-        });
-
-        invokeIovecMethod(harness, "handleRecvmsg", [
-          7,
-          messagePointer,
-          0,
-          0,
-          0,
-          0,
-        ]);
-
-        expect(harness.handleChannel).toHaveBeenCalledOnce();
-        const nameLengthOffset = pointerWidth === 8
-          ? PROCESS_MSGHDR_WASM64_NAMELEN_OFFSET
-          : PROCESS_MSGHDR_WASM32_NAMELEN_OFFSET;
-        expect(
-          new DataView(harness.processBytes.buffer).getUint32(
-            messagePointer + nameLengthOffset,
-            true,
-          ),
-        ).toBe(namePresent ? 2 : initialNameLength);
-        if (namePresent) {
-          expect(harness.processBytes[namePointer]).toBe(nameCanary);
-        }
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([
-    ["sendmsg", "handleSendmsg", true],
-    ["recvmsg", "handleRecvmsg", false],
-  ] as const)(
-    "uses the ordinary exact-capacity %s layout and a token-owned capacity+1 layout",
-    (_name, method, input) => {
-      const exactDataCapacity =
-        CH_DATA_SIZE -
-        STRUCT_SIZE_KERNEL_MSGHDR_WIRE -
-        STRUCT_SIZE_KERNEL_IOVEC_WIRE;
-      expect(exactDataCapacity).toBe(65_500);
-
-      for (const length of [exactDataCapacity, exactDataCapacity + 1]) {
-        const harness = makeScratchHarness();
-        const messagePointer = 128;
-        const iovecPointer = 512;
-        const dataPointer = 65_536;
-        const payload = Uint8Array.from(
-          { length },
-          (_, index) => (index * 19 + 5) % 251,
-        );
-        const callerCanary = 0x7e;
-        const processView = new DataView(harness.processBytes.buffer);
-        processView.setUint32(messagePointer + 8, iovecPointer, true);
-        processView.setUint32(messagePointer + 12, 1, true);
-        writeNativeIovec(
-          harness.processBytes,
-          4,
-          iovecPointer,
-          dataPointer,
-          length,
-        );
-        if (input) {
-          harness.processBytes.set(payload, dataPointer);
-        } else {
-          harness.processBytes.fill(0x6d, dataPointer, dataPointer + length);
-        }
-        harness.processBytes[dataPointer + length] = callerCanary;
-        const mainScratchBefore = harness.kernelBytes.slice(
-          harness.scratchOffset,
-          harness.scratchEnd,
-        );
-        const totalCapacity = alignUp(
-          CH_DATA +
-            STRUCT_SIZE_KERNEL_MSGHDR_WIRE +
-            STRUCT_SIZE_KERNEL_IOVEC_WIRE +
-            length,
-          8,
-        );
-        const reserved = length > exactDataCapacity;
-        const expectedChannelBase = reserved
-          ? harness.transferOffset
-          : harness.scratchOffset;
-        const transferCanary = 0xc7;
-        if (reserved) {
-          harness.kernelBytes.fill(
-            transferCanary,
-            harness.transferOffset + totalCapacity,
-            harness.transferOffset + totalCapacity + 16,
-          );
-        }
-        const begin = vi.fn(
-          harness.kernelExports.kernel_transfer_scratch_begin as (
-            minimumCapacity: number | bigint,
-          ) => bigint,
-        );
-        const executeReserved = vi.fn(
-          harness.kernelExports.kernel_transfer_channel_execute as (
-            pid: number,
-            tid: number,
-            token: bigint,
-            retryToken: bigint,
-          ) => number,
-        );
-        const cancel = vi.fn(
-          harness.kernelExports.kernel_transfer_scratch_cancel as (
-            token: bigint,
-          ) => number,
-        );
-        harness.kernelExports.kernel_transfer_scratch_begin = begin;
-        harness.kernelExports.kernel_transfer_channel_execute = executeReserved;
-        harness.kernelExports.kernel_transfer_scratch_cancel = cancel;
-
-        harness.handleChannel.mockImplementation((offset: number | bigint) => {
-          const channelView = new DataView(
-            harness.kernelBytes.buffer,
-            Number(offset),
-          );
-          const kernelMessagePointer = Number(
-            channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-          );
-          const kernelView = new DataView(harness.kernelBytes.buffer);
-          const kernelIovecPointer = kernelView.getUint32(
-            kernelMessagePointer + 8,
-            true,
-          );
-          const kernelDataPointer = kernelView.getUint32(
-            kernelIovecPointer,
-            true,
-          );
-          expect(kernelMessagePointer).toBe(expectedChannelBase + CH_DATA);
-          expect(kernelIovecPointer).toBe(
-            kernelMessagePointer + STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-          );
-          expect(kernelView.getUint32(kernelMessagePointer + 12, true)).toBe(1);
-          expect(kernelView.getUint32(kernelIovecPointer + 4, true)).toBe(
-            length,
-          );
-          expect(kernelDataPointer).toBe(kernelIovecPointer + 8);
-          expect(kernelDataPointer + length).toBe(
-            expectedChannelBase +
-              CH_DATA +
-              STRUCT_SIZE_KERNEL_MSGHDR_WIRE +
-              STRUCT_SIZE_KERNEL_IOVEC_WIRE +
-              length,
-          );
-          expect(kernelDataPointer + length).toBeLessThanOrEqual(
-            expectedChannelBase + totalCapacity,
-          );
-          if (input) {
-            expect(
-              harness.kernelBytes.slice(
-                kernelDataPointer,
-                kernelDataPointer + length,
-              ),
-            ).toEqual(payload);
-          } else {
-            harness.kernelBytes.set(payload, kernelDataPointer);
-          }
-          channelView.setBigInt64(CH_RETURN, BigInt(length), true);
-          channelView.setUint32(CH_ERRNO, 0, true);
-          return 0;
-        });
-
-        invokeIovecMethod(harness, method, [7, messagePointer, 0, 0, 0, 0]);
-
-        expect(harness.handleChannel).toHaveBeenCalledOnce();
-        expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-          length,
-          0,
-        ]);
-        expect(begin).toHaveBeenCalledTimes(reserved ? 1 : 0);
-        expect(executeReserved).toHaveBeenCalledTimes(reserved ? 1 : 0);
-        expect(cancel).toHaveBeenCalledTimes(reserved ? 1 : 0);
-        if (reserved) {
-          expect(executeReserved.mock.calls[0]).toHaveLength(4);
-          expect(executeReserved.mock.calls[0]?.[3]).toBe(0n);
-        }
-        if (!input) {
-          expect(
-            harness.processBytes.slice(dataPointer, dataPointer + length),
-          ).toEqual(payload);
-        }
-        if (reserved) {
-          expect(
-            harness.kernelBytes.slice(
-              harness.scratchOffset,
-              harness.scratchEnd,
-            ),
-          ).toEqual(mainScratchBefore);
-          expect(
-            harness.kernelBytes.slice(
-              harness.transferOffset + totalCapacity,
-              harness.transferOffset + totalCapacity + 16,
-            ),
-          ).toEqual(new Uint8Array(16).fill(transferCanary));
-        }
-        expect(harness.processBytes[dataPointer + length]).toBe(callerCanary);
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([
-    ["sendmsg", "handleSendmsg"],
-    ["recvmsg", "handleRecvmsg"],
-  ] as const)(
-    "flattens exactly IOV_MAX zero-length %s entries to one empty wire iovec",
-    (_name, method) => {
-      const harness = makeScratchHarness();
-      const messagePointer = 128;
-      const iovecPointer = 1024;
-      const processView = new DataView(harness.processBytes.buffer);
-      processView.setUint32(messagePointer + 8, iovecPointer, true);
-      processView.setUint32(messagePointer + 12, IOV_MAX, true);
-      writeWasm32Iovecs(
-        harness.processBytes,
-        iovecPointer,
-        Array.from({ length: IOV_MAX }, () => ({ base: 0, len: 0 })),
-      );
-      harness.handleChannel.mockImplementation((offset: number | bigint) => {
-        const channelView = new DataView(harness.kernelBytes.buffer, offset);
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        const kernelIovecPointer = kernelView.getUint32(
-          kernelMessagePointer + 8,
-          true,
-        );
-        expect(kernelMessagePointer).toBe(harness.scratchOffset + CH_DATA);
-        expect(kernelIovecPointer).toBe(
-          kernelMessagePointer + STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-        );
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-            true,
-          ),
-        ).toBe(KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT);
-        expect(
-          kernelIovecPointer + STRUCT_SIZE_KERNEL_IOVEC_WIRE,
-        ).toBeLessThanOrEqual(harness.scratchEnd);
-        expect(
-          harness.kernelBytes.slice(
-            kernelIovecPointer,
-            kernelIovecPointer + STRUCT_SIZE_KERNEL_IOVEC_WIRE,
-          ),
-        ).toEqual(new Uint8Array(STRUCT_SIZE_KERNEL_IOVEC_WIRE));
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(harness, method, [7, messagePointer, 0, 0, 0, 0]);
-
-      expect(harness.handleChannel).toHaveBeenCalledOnce();
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        0, 0,
-      ]);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    [4, "sendmsg", "handleSendmsg", true],
-    [8, "sendmsg", "handleSendmsg", true],
-    [4, "recvmsg", "handleRecvmsg", false],
-    [8, "recvmsg", "handleRecvmsg", false],
-  ] as const)(
-    "uses one canonical wire iovec for wasm%s multi-iovec %s",
-    (pointerWidth, _name, method, input) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 128;
-      const iovecPointer = 512;
-      const firstPointer = 4096;
-      const secondPointer = 8192;
-      const payload = Uint8Array.from([1, 2, 3, 4, 5]);
-      const entrySize = pointerWidth === 8 ? 16 : 8;
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        iovecPointer,
-        firstPointer,
-        2,
-      );
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        iovecPointer + entrySize,
-        0,
-        0,
-      );
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        iovecPointer + 2 * entrySize,
-        secondPointer,
-        3,
-      );
-      writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-        iovecPointer,
-        iovecCount: 3,
-      });
-      if (input) {
-        harness.processBytes.set(payload.subarray(0, 2), firstPointer);
-        harness.processBytes.set(payload.subarray(2), secondPointer);
-      } else {
-        harness.processBytes.fill(0x61, firstPointer, firstPointer + 2);
-        harness.processBytes.fill(0x62, secondPointer, secondPointer + 3);
-      }
-      harness.processBytes[firstPointer + 2] = 0x91;
-      harness.processBytes[secondPointer + 3] = 0x92;
-
-      harness.handleChannel.mockImplementation((offset: number | bigint) => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          Number(offset),
-        );
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-            true,
-          ),
-        ).toBe(KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT);
-        const kernelIovecPointer = kernelView.getUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-          true,
-        );
-        const kernelDataPointer = kernelView.getUint32(
-          kernelIovecPointer + KERNEL_IOVEC_WIRE_BASE_OFFSET,
-          true,
-        );
-        expect(
-          kernelView.getUint32(
-            kernelIovecPointer + KERNEL_IOVEC_WIRE_LEN_OFFSET,
-            true,
-          ),
-        ).toBe(payload.length);
-        if (input) {
-          expect(
-            harness.kernelBytes.slice(
-              kernelDataPointer,
-              kernelDataPointer + payload.length,
-            ),
-          ).toEqual(payload);
-        } else {
-          harness.kernelBytes.set(payload, kernelDataPointer);
-        }
-        channelView.setBigInt64(CH_RETURN, BigInt(payload.length), true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(harness, method, [7, messagePointer, 0, 0, 0, 0]);
-
-      expect(harness.handleChannel).toHaveBeenCalledOnce();
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        payload.length,
-        0,
-      ]);
-      if (!input) {
-        expect(
-          harness.processBytes.slice(firstPointer, firstPointer + 2),
-        ).toEqual(payload.subarray(0, 2));
-        expect(
-          harness.processBytes.slice(secondPointer, secondPointer + 3),
-        ).toEqual(payload.subarray(2));
-      }
-      expect(harness.processBytes[firstPointer + 2]).toBe(0x91);
-      expect(harness.processBytes[secondPointer + 3]).toBe(0x92);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["sendmsg", "handleSendmsg"],
-    ["recvmsg", "handleRecvmsg"],
-  ] as const)(
-    "does not let an oversized %s iovec table cross the scratch allocation",
-    (_name, method) => {
-      const harness = makeScratchHarness();
-      const msgPtr = 128;
-      const iovPtr = 1024;
-      const countThatFillsTheDataArea = 8192;
-      const view = new DataView(harness.processBytes.buffer);
-      view.setUint32(msgPtr + 8, iovPtr, true);
-      view.setUint32(msgPtr + 12, countThatFillsTheDataArea, true);
-      writeWasm32Iovecs(
-        harness.processBytes,
-        iovPtr,
-        Array.from({ length: countThatFillsTheDataArea }, () => ({
-          base: 0,
-          len: 0,
-        })),
-      );
-
-      invokeIovecMethod(harness, method, [7, msgPtr, 0, 0, 0, 0]);
-
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("accepts recvmsg MSG_TRUNC lengths larger than bounded iovec data", () => {
-    const harness = makeScratchHarness();
-    const msgPtr = 128;
-    const iovPtr = 1024;
-    const destination = 2048;
-    const payloadLength = 13;
-    const view = new DataView(harness.processBytes.buffer);
-    view.setUint32(msgPtr + 8, iovPtr, true);
-    view.setUint32(msgPtr + 12, 1, true);
-    writeWasm32Iovecs(harness.processBytes, iovPtr, [
-      { base: destination, len: 4 },
-    ]);
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      const kernelMessagePointer = Number(
-        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-      );
-      const kernelView = new DataView(harness.kernelBytes.buffer);
-      const kernelIovecPointer = kernelView.getUint32(
-        kernelMessagePointer + 8,
-        true,
-      );
-      const kernelDataPointer = kernelView.getUint32(kernelIovecPointer, true);
-      harness.kernelBytes.set(
-        new TextEncoder().encode("recv"),
-        kernelDataPointer,
-      );
-      channelView.setBigInt64(CH_RETURN, BigInt(payloadLength), true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    invokeIovecMethod(harness, "handleRecvmsg", [
-      7,
-      msgPtr,
-      SOCKET_MSG_TRUNC,
-      0,
-      0,
-      0,
-    ]);
-
-    expect(harness.processBytes.slice(destination, destination + 4)).toEqual(
-      new TextEncoder().encode("recv"),
-    );
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.channel,
-      ABI_SYSCALLS.Recvmsg,
-      [7, msgPtr, SOCKET_MSG_TRUNC, 0, 0, 0],
-      undefined,
-      payloadLength,
-      0,
-    );
-    expectScratchTailUntouched(harness);
-  });
-
-  it("does not publish staged recvmsg output while an EAGAIN retry is parked", () => {
-    const harness = makeScratchHarness();
-    const msgPtr = 128;
-    const iovPtr = 1024;
-    const dataPtr = 2048;
-    const namePtr = 4096;
-    const controlPtr = 8192;
-    const view = new DataView(harness.processBytes.buffer);
-    view.setUint32(msgPtr, namePtr, true);
-    view.setUint32(msgPtr + 4, 16, true);
-    view.setUint32(msgPtr + 8, iovPtr, true);
-    view.setUint32(msgPtr + 12, 1, true);
-    view.setUint32(msgPtr + 16, controlPtr, true);
-    view.setUint32(msgPtr + 20, 16, true);
-    writeWasm32Iovecs(harness.processBytes, iovPtr, [
-      { base: dataPtr, len: 16 },
-    ]);
-    harness.processBytes.fill(0x5a, dataPtr, dataPtr + 16);
-    harness.processBytes.fill(0x6b, namePtr, namePtr + 16);
-    harness.processBytes.fill(0x7c, controlPtr, controlPtr + 16);
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      channelView.setBigInt64(CH_RETURN, -1n, true);
-      channelView.setUint32(CH_ERRNO, EAGAIN, true);
-      return 0;
-    });
-
-    invokeIovecMethod(harness, "handleRecvmsg", [7, msgPtr, 0, 0, 0, 0]);
-
-    expect(harness.processBytes.slice(dataPtr, dataPtr + 16)).toEqual(
-      new Uint8Array(16).fill(0x5a),
-    );
-    expect(harness.processBytes.slice(namePtr, namePtr + 16)).toEqual(
-      new Uint8Array(16).fill(0x6b),
-    );
-    expect(harness.processBytes.slice(controlPtr, controlPtr + 16)).toEqual(
-      new Uint8Array(16).fill(0x7c),
-    );
-    expect(view.getUint32(msgPtr + 4, true)).toBe(16);
-    expect(view.getUint32(msgPtr + 20, true)).toBe(16);
-    expect(harness.handleBlockingRetry).toHaveBeenCalledWith(
-      harness.channel,
-      ABI_SYSCALLS.Recvmsg,
-      [7, msgPtr, 0, 0, 0, 0],
-    );
-    expect(harness.blockingRetryToken).toHaveBeenCalledWith(
-      harness.channel.pid,
-      harness.channel.pid,
-      ABI_SYSCALLS.Recvmsg,
-    );
-    expect(harness.blockingRetryRelease).not.toHaveBeenCalled();
-    expectScratchTailUntouched(harness);
-  });
-
-  it("rejects a wrapped wasm32 ancillary length before scratch mutation", () => {
-    const harness = makeScratchHarness(4);
-    const messagePointer = 128;
-    const controlPointer = 2048;
-    const controlLength = 28;
-    const secondRecordOffset = alignUp(
-      PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
-      PROCESS_CMSGHDR_WASM32_ALIGN,
-    );
-    const view = new DataView(harness.processBytes.buffer);
-    view.setUint32(
-      controlPointer + PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
-      PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
-      true,
-    );
-    view.setUint32(
-      controlPointer + secondRecordOffset + PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
-      0xffff_fff8,
-      true,
-    );
-    view.setUint32(
-      controlPointer + secondRecordOffset + PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
-      SOCKET_SOL_SOCKET,
-      true,
-    );
-    view.setUint32(
-      controlPointer + secondRecordOffset + PROCESS_CMSGHDR_WASM32_TYPE_OFFSET,
-      SOCKET_SCM_RIGHTS,
-      true,
-    );
-    writeNativeMessage(harness.processBytes, 4, messagePointer, {
-      controlPointer,
-      controlLength,
-    });
-    const scratchBefore = harness.kernelBytes.slice(
-      harness.scratchOffset,
-      harness.scratchEnd,
-    );
-
-    invokeIovecMethod(harness, "handleSendmsg", [
-      7,
-      messagePointer,
-      0,
-      0,
-      0,
-      0,
-    ]);
-
-    expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EINVAL,
-    );
-    expect(
-      harness.kernelBytes.slice(harness.scratchOffset, harness.scratchEnd),
-    ).toEqual(scratchBefore);
-    expectScratchTailUntouched(harness);
-  });
-
-  it.each([4, 8] as const)(
-    "translates wasm%s SCM_RIGHTS records to canonical wire bytes across sequential reuse",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 128;
-      const controlPointer = 2048;
-      const calls = [[[17], [23, 24]], [[31]]];
-      let callIndex = 0;
-      harness.handleChannel.mockImplementation((offset: number | bigint) => {
-        const expected = canonicalRightsBytes(calls[callIndex]);
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          Number(offset),
-        );
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        const kernelControlPointer = kernelView.getUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-          true,
-        );
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-            true,
-          ),
-        ).toBe(expected.length);
-        expect(
-          harness.kernelBytes.slice(
-            kernelControlPointer,
-            kernelControlPointer + expected.length,
-          ),
-        ).toEqual(expected);
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_IOVLEN_OFFSET,
-            true,
-          ),
-        ).toBe(0);
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        callIndex += 1;
-        return 0;
-      });
-
-      for (const records of calls) {
-        const controlLength = writeNativeRightsRecords(
-          harness.processBytes,
-          pointerWidth,
-          controlPointer,
-          records,
-        );
-        writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-          controlPointer,
-          controlLength,
-        });
-        if (pointerWidth === 8) {
-          new DataView(harness.processBytes.buffer).setUint32(
-            messagePointer + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET + 4,
-            0xa5a5_a5a5,
-            true,
-          );
-        }
-        invokeIovecMethod(harness, "handleSendmsg", [
-          7,
-          messagePointer,
-          0,
-          0,
-          0,
-          0,
-        ]);
-      }
-
-      expect(harness.handleChannel).toHaveBeenCalledTimes(calls.length);
-      expect(harness.completeChannel).toHaveBeenCalledTimes(calls.length);
-      if (pointerWidth === 8) {
-        expect(
-          new DataView(harness.processBytes.buffer).getUint32(
-            messagePointer + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET + 4,
-            true,
-          ),
-        ).toBe(0xa5a5_a5a5);
-      }
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    {
-      pointerWidth: 4 as const,
-      capacity: 15,
-      wireCapacity: 0,
-      descriptors: [] as number[],
-      reportedLength: 0,
-      flags: MSG_CTRUNC,
-    },
-    {
-      pointerWidth: 4 as const,
-      capacity: 16,
-      wireCapacity: 16,
-      descriptors: [61],
-      reportedLength: 16,
-      flags: 0,
-    },
-    {
-      pointerWidth: 4 as const,
-      capacity: 19,
-      wireCapacity: 16,
-      descriptors: [62],
-      reportedLength: 16,
-      flags: 0,
-    },
-    {
-      pointerWidth: 4 as const,
-      capacity: 20,
-      wireCapacity: 20,
-      descriptors: [63, 64],
-      reportedLength: 20,
-      flags: 0,
-    },
-    {
-      pointerWidth: 8 as const,
-      capacity: 19,
-      wireCapacity: 0,
-      descriptors: [] as number[],
-      reportedLength: 0,
-      flags: MSG_CTRUNC,
-    },
-    {
-      pointerWidth: 8 as const,
-      capacity: 20,
-      wireCapacity: 16,
-      descriptors: [71],
-      reportedLength: 20,
-      flags: 0,
-    },
-    {
-      pointerWidth: 8 as const,
-      capacity: 23,
-      wireCapacity: 16,
-      descriptors: [72],
-      reportedLength: 23,
-      flags: 0,
-    },
-    {
-      pointerWidth: 8 as const,
-      capacity: 24,
-      wireCapacity: 20,
-      descriptors: [73],
-      reportedLength: 24,
-      flags: 0,
-    },
-    {
-      pointerWidth: 8 as const,
-      capacity: 24,
-      wireCapacity: 20,
-      descriptors: [74, 75],
-      reportedLength: 24,
-      flags: 0,
-    },
-  ])(
-    "maps wasm$pointerWidth recvmsg control capacity $capacity to $wireCapacity canonical bytes",
-    ({
-      pointerWidth,
-      capacity,
-      wireCapacity,
-      descriptors,
-      reportedLength,
-      flags,
-    }) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 128;
-      const controlPointer = 2048;
-      const controlCanary = 0x6d;
-      const native =
-        pointerWidth === 8
-          ? {
-              dataOffset: PROCESS_CMSGHDR_WASM64_DATA_OFFSET,
-              lengthOffset: PROCESS_CMSGHDR_WASM64_LEN_OFFSET,
-              levelOffset: PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET,
-              typeOffset: PROCESS_CMSGHDR_WASM64_TYPE_OFFSET,
-            }
-          : {
-              dataOffset: PROCESS_CMSGHDR_WASM32_DATA_OFFSET,
-              lengthOffset: PROCESS_CMSGHDR_WASM32_LEN_OFFSET,
-              levelOffset: PROCESS_CMSGHDR_WASM32_LEVEL_OFFSET,
-              typeOffset: PROCESS_CMSGHDR_WASM32_TYPE_OFFSET,
-            };
-      const messageControlLengthOffset =
-        pointerWidth === 8
-          ? PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET
-          : PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET;
-      const messageFlagsOffset =
-        pointerWidth === 8
-          ? PROCESS_MSGHDR_WASM64_FLAGS_OFFSET
-          : PROCESS_MSGHDR_WASM32_FLAGS_OFFSET;
-      harness.processBytes.fill(
-        controlCanary,
-        controlPointer,
-        controlPointer + capacity + 1,
-      );
-      writeNativeMessage(harness.processBytes, pointerWidth, messagePointer, {
-        controlPointer,
-        controlLength: capacity,
-      });
-      const processView = new DataView(harness.processBytes.buffer);
-      if (pointerWidth === 8) {
-        processView.setUint32(
-          messagePointer + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET + 4,
-          0xa5a5_a5a5,
-          true,
-        );
-      }
-
-      harness.handleChannel.mockImplementation((offset: number | bigint) => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          Number(offset),
-        );
-        const kernelMessagePointer = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        const kernelControlPointer = kernelView.getUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-          true,
-        );
-        expect(
-          kernelView.getUint32(
-            kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-            true,
-          ),
-        ).toBe(wireCapacity);
-        expect(kernelControlPointer === 0).toBe(wireCapacity === 0);
-        const wire =
-          descriptors.length > 0
-            ? canonicalRightsBytes([descriptors])
-            : new Uint8Array(0);
-        if (wire.length > 0) {
-          harness.kernelBytes.set(wire, kernelControlPointer);
-        }
-        kernelView.setUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-          wire.length,
-          true,
-        );
-        kernelView.setUint32(
-          kernelMessagePointer + KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-          flags,
-          true,
-        );
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(harness, "handleRecvmsg", [
-        7,
-        messagePointer,
-        0,
-        0,
-        0,
-        0,
-      ]);
-
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        0, 0,
-      ]);
-      expect(
-        processView.getUint32(
-          messagePointer + messageControlLengthOffset,
-          true,
-        ),
-      ).toBe(reportedLength);
-      if (pointerWidth === 8) {
-        expect(
-          processView.getUint32(
-            messagePointer + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET + 4,
-            true,
-          ),
-        ).toBe(0xa5a5_a5a5);
-      }
-      expect(
-        processView.getUint32(messagePointer + messageFlagsOffset, true),
-      ).toBe(flags);
-      if (descriptors.length === 0) {
-        expect(
-          harness.processBytes.slice(controlPointer, controlPointer + capacity),
-        ).toEqual(new Uint8Array(capacity).fill(controlCanary));
-      } else {
-        const nativeLength =
-          native.dataOffset + descriptors.length * SCM_RIGHTS_FD_BYTES;
-        expect(
-          processView.getUint32(controlPointer + native.lengthOffset, true),
-        ).toBe(nativeLength);
-        expect(
-          processView.getUint32(controlPointer + native.levelOffset, true),
-        ).toBe(SOCKET_SOL_SOCKET);
-        expect(
-          processView.getUint32(controlPointer + native.typeOffset, true),
-        ).toBe(SOCKET_SCM_RIGHTS);
-        if (pointerWidth === 8) {
-          expect(
-            harness.processBytes.slice(
-              controlPointer + PROCESS_CMSGHDR_WASM64_LEN_OFFSET + 4,
-              controlPointer + PROCESS_CMSGHDR_WASM64_LEVEL_OFFSET,
-            ),
-          ).toEqual(new Uint8Array(4));
-        }
-        descriptors.forEach((descriptor, index) => {
-          expect(
-            processView.getInt32(
-              controlPointer + native.dataOffset + index * SCM_RIGHTS_FD_BYTES,
-              true,
-            ),
-          ).toBe(descriptor);
-        });
-        expect(
-          harness.processBytes.slice(
-            controlPointer + nativeLength,
-            controlPointer + reportedLength,
-          ),
-        ).toEqual(new Uint8Array(reportedLength - nativeLength));
-      }
-      expect(harness.processBytes[controlPointer + reportedLength]).toBe(
-        controlCanary,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("rejects recvmsg canonical control capacity plus one without guest writes", () => {
-    const harness = makeScratchHarness(8);
-    const messagePointer = 128;
-    const iovecPointer = 512;
-    const namePointer = 1024;
-    const controlPointer = 2048;
-    const dataPointer = 4096;
-    const controlCapacity = 20;
-    writeNativeIovec(harness.processBytes, 8, iovecPointer, dataPointer, 4);
-    writeNativeMessage(harness.processBytes, 8, messagePointer, {
-      namePointer,
-      nameLength: 4,
-      iovecPointer,
-      iovecCount: 1,
-      controlPointer,
-      controlLength: controlCapacity,
-      flags: 0x1122_3344,
-    });
-    harness.processBytes.fill(0x51, namePointer, namePointer + 4);
-    harness.processBytes.fill(
-      0x52,
-      controlPointer,
-      controlPointer + controlCapacity,
-    );
-    harness.processBytes.fill(0x53, dataPointer, dataPointer + 4);
-    const messageBefore = harness.processBytes.slice(
-      messagePointer,
-      messagePointer + PROCESS_MSGHDR_WASM64_SIZE,
-    );
-    const nameBefore = harness.processBytes.slice(namePointer, namePointer + 4);
-    const controlBefore = harness.processBytes.slice(
-      controlPointer,
-      controlPointer + controlCapacity,
-    );
-    const dataBefore = harness.processBytes.slice(dataPointer, dataPointer + 4);
-
-    harness.handleChannel.mockImplementation((offset: number | bigint) => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        Number(offset),
-      );
-      const kernelMessagePointer = Number(
-        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-      );
-      const kernelView = new DataView(harness.kernelBytes.buffer);
-      const kernelNamePointer = kernelView.getUint32(
-        kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAME_OFFSET,
-        true,
-      );
-      const kernelControlPointer = kernelView.getUint32(
-        kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROL_OFFSET,
-        true,
-      );
-      const kernelIovecPointer = kernelView.getUint32(
-        kernelMessagePointer + KERNEL_MSGHDR_WIRE_IOV_OFFSET,
-        true,
-      );
-      const kernelDataPointer = kernelView.getUint32(
-        kernelIovecPointer + KERNEL_IOVEC_WIRE_BASE_OFFSET,
-        true,
-      );
-      harness.kernelBytes.set(
-        new TextEncoder().encode("name"),
-        kernelNamePointer,
-      );
-      harness.kernelBytes.set(
-        canonicalRightsBytes([[81]]),
-        kernelControlPointer,
-      );
-      harness.kernelBytes.set(
-        new TextEncoder().encode("data"),
-        kernelDataPointer,
-      );
-      kernelView.setUint32(
-        kernelMessagePointer + KERNEL_MSGHDR_WIRE_NAMELEN_OFFSET,
-        4,
-        true,
-      );
-      kernelView.setUint32(
-        kernelMessagePointer + KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET,
-        17,
-        true,
-      );
-      kernelView.setUint32(
-        kernelMessagePointer + KERNEL_MSGHDR_WIRE_FLAGS_OFFSET,
-        0x40,
-        true,
-      );
-      channelView.setBigInt64(CH_RETURN, 4n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    invokeIovecMethod(harness, "handleRecvmsg", [
-      7,
-      messagePointer,
-      0,
-      0,
-      0,
-      0,
-    ]);
-
-    expect(harness.completeChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EIO,
-    );
-    expect(
-      harness.processBytes.slice(
-        messagePointer,
-        messagePointer + PROCESS_MSGHDR_WASM64_SIZE,
-      ),
-    ).toEqual(messageBefore);
-    expect(harness.processBytes.slice(namePointer, namePointer + 4)).toEqual(
-      nameBefore,
-    );
-    expect(
-      harness.processBytes.slice(
-        controlPointer,
-        controlPointer + controlCapacity,
-      ),
-    ).toEqual(controlBefore);
-    expect(harness.processBytes.slice(dataPointer, dataPointer + 4)).toEqual(
-      dataBefore,
-    );
-    expectScratchTailUntouched(harness);
-  });
-
-  it("rejects a wasm64 iovec pointer that cannot be represented losslessly", () => {
-    const harness = makeScratchHarness(8);
-    const iovPtr = 256;
-    const view = new DataView(harness.processBytes.buffer);
-    view.setBigUint64(iovPtr, BigInt(Number.MAX_SAFE_INTEGER) + 1n, true);
-    view.setBigUint64(iovPtr + 8, 1n, true);
-
-    invokeIovecMethod(harness, "handleWritev", [
-      7n,
-      BigInt(iovPtr),
-      1n,
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
-    expectScratchTailUntouched(harness);
-  });
-
-  it.each([
-    ["sendmsg", "handleSendmsg"],
-    ["recvmsg", "handleRecvmsg"],
-  ] as const)(
-    "validates the complete 56-byte wasm64 %s msghdr",
-    (_name, method) => {
-      const harness = makeScratchHarness(8);
-      const msgPtr = harness.processBytes.byteLength - 48;
-
-      invokeIovecMethod(harness, method, [7, msgPtr, 0, 0, 0, 0]);
-
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EFAULT,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("writes wasm64 recvmsg flags after musl's msg_controllen padding", () => {
-    const harness = makeScratchHarness(8);
-    const msgPtr = 128;
-    const controlPtr = 2048;
-    const view = new DataView(harness.processBytes.buffer);
-    writeNativeMessage(harness.processBytes, 8, msgPtr, {
-      controlPointer: controlPtr,
-      controlLength: 8,
-    });
-    view.setUint32(
-      msgPtr + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET + 4,
-      0xa5a5_a5a5,
-      true,
-    );
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      const kernelMessagePointer = Number(
-        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-      );
-      const kernelMessage = new DataView(
-        harness.kernelBytes.buffer,
-        kernelMessagePointer,
-        STRUCT_SIZE_KERNEL_MSGHDR_WIRE,
-      );
-      kernelMessage.setUint32(KERNEL_MSGHDR_WIRE_CONTROLLEN_OFFSET, 0, true);
-      kernelMessage.setUint32(KERNEL_MSGHDR_WIRE_FLAGS_OFFSET, 0x40, true);
-      channelView.setBigInt64(CH_RETURN, 0n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    invokeIovecMethod(harness, "handleRecvmsg", [7, msgPtr, 0, 0, 0, 0]);
-
-    expect(
-      view.getUint32(msgPtr + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET, true),
-    ).toBe(0);
-    expect(
-      view.getUint32(
-        msgPtr + PROCESS_MSGHDR_WASM64_CONTROLLEN_OFFSET + 4,
-        true,
-      ),
-    ).toBe(0xa5a5_a5a5);
-    expect(
-      view.getUint32(msgPtr + PROCESS_MSGHDR_WASM64_FLAGS_OFFSET, true),
-    ).toBe(0x40);
-    expectScratchTailUntouched(harness);
-  });
-
-  it.each([
-    ["writev", "handleWritev", ABI_SYSCALLS.Writev],
-    ["readv", "handleReadv", ABI_SYSCALLS.Readv],
-  ] as const)(
-    "rejects an out-of-range nested buffer in the %s slow path",
-    (_name, method, syscallNr) => {
-      const harness = makeScratchHarness();
-      const iovPtr = 256;
-      writeWasm32Iovecs(harness.processBytes, iovPtr, [
-        {
-          base: harness.processBytes.byteLength - 8,
-          len: CH_DATA_SIZE + 1,
-        },
-      ]);
-
-      invokeIovecMethod(harness, method, [7, iovPtr, 1, 0, 0, 0]);
-
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EFAULT,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["wasm32", "EOF", 4, 0],
-    ["wasm32", "a short read", 4, 3],
-    ["wasm64", "EOF", 8, 0],
-    ["wasm64", "a short read", 8, 3],
-  ] as const)(
-    "%s readv performs one reserved operation for %s",
-    (_widthName, _resultName, pointerWidth, returned) => {
-      const harness = makeScratchHarness(pointerWidth);
-      useTransferScratchInstance(harness);
-      const iovPointer = 256;
-      const firstDestination = 65_536;
-      const secondDestination = 196_608;
-      const firstLength = CH_DATA_SIZE + 1;
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        iovPointer,
-        firstDestination,
-        firstLength,
-      );
-      writeNativeIovec(
-        harness.processBytes,
-        pointerWidth,
-        iovPointer + 2 * pointerWidth,
-        secondDestination,
-        4,
-      );
-      const payload = Uint8Array.of(0x21, 0x43, 0x65);
-      const execute = vi.fn(
-        (
-          _pid: number,
-          _tid: number,
-          _token: bigint,
-          offered: number | bigint,
-          originalSyscall: number,
-          _fd: number,
-          _offset: bigint,
-          retryToken: bigint,
-        ) => {
-          expect(Number(offered)).toBe(firstLength + 4);
-          expect(originalSyscall).toBe(ABI_SYSCALLS.Readv);
-          expect(retryToken).toBe(0n);
-          if (returned > 0) {
-            harness.kernelBytes.set(
-              payload.subarray(0, returned),
-              harness.transferOffset,
-            );
-          }
-          return returned;
-        },
-      );
-      harness.kernelExports.kernel_transfer_io_execute = execute;
-
-      invokeIovecMethod(harness, "handleReadv", [
-        7n,
-        BigInt(iovPointer),
-        2n,
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(execute).toHaveBeenCalledOnce();
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannel.mock.calls[0]?.slice(4, 6)).toEqual([
-        returned,
-        0,
-      ]);
-      expect(
-        harness.processBytes.slice(
-          firstDestination,
-          firstDestination + returned,
-        ),
-      ).toEqual(payload.subarray(0, returned));
-      expect(
-        harness.processBytes.slice(secondDestination, secondDestination + 4),
-      ).toEqual(new Uint8Array(4));
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["pwritev", "handleWritev", ABI_SYSCALLS.Pwritev, false],
-    ["preadv", "handleReadv", ABI_SYSCALLS.Preadv, true],
-    ["pwritev2", "handleWritev", ABI_SYSCALLS.Pwritev2, false],
-    ["preadv2", "handleReadv", ABI_SYSCALLS.Preadv2, true],
-  ] as const)(
-    "%s preserves one offset above Number.MAX_SAFE_INTEGER in reserved I/O",
-    (_name, method, syscallNr, readOperation) => {
-      const harness = makeScratchHarness(8);
-      useTransferScratchInstance(harness);
-      const iovPointer = 256;
-      const buffer = 65_536;
-      const length = CH_DATA_SIZE + 1;
-      const offset = 9_007_199_254_740_993n;
-      writeNativeIovec(harness.processBytes, 8, iovPointer, buffer, length);
-      if (!readOperation) {
-        harness.processBytes.fill(0x5a, buffer, buffer + length);
-      }
-      const observed: Array<{
-        syscall: number;
-        offset: bigint;
-      }> = [];
-      const execute = vi.fn(
-        (
-          _pid: number,
-          _tid: number,
-          _token: bigint,
-          offered: bigint,
-          originalSyscall: number,
-          _fd: number,
-          exactOffset: bigint,
-          retryToken: bigint,
-        ) => {
-          observed.push({
-            syscall: originalSyscall,
-            offset: exactOffset,
-          });
-          expect(Number(offered)).toBe(length);
-          expect(retryToken).toBe(0n);
-          return 0;
-        },
-      );
-      harness.kernelExports.kernel_transfer_io_execute = execute;
-
-      writeChannelSyscall(harness, syscallNr, [
-        7n,
-        BigInt(iovPointer),
-        1n,
-        offset,
-        offset >> 32n,
-        0x4000_0000n,
-      ]);
-      prepareGenericSyscallHarness(harness, 8);
-      dispatchScratchBoundarySyscall(harness);
-
-      expect(observed).toEqual([
-        {
-          syscall: syscallNr,
-          offset,
-        },
-      ]);
-      expect(execute.mock.calls[0]).toHaveLength(8);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["pwritev2", "handleWritev", ABI_SYSCALLS.Pwritev2, ABI_SYSCALLS.Pwrite],
-    ["preadv2", "handleReadv", ABI_SYSCALLS.Preadv2, ABI_SYSCALLS.Pread],
-  ] as const)(
-    "%s uses one scalar channel call and keeps the documented ignored-flags behavior",
-    (_name, method, syscallNr, scalarSyscall) => {
-      const harness = makeScratchHarness();
-      const iovPointer = 256;
-      const buffer = 1024;
-      const offset = 0x0000_0001_8000_0000n;
-      writeWasm32Iovecs(harness.processBytes, iovPointer, [
-        {
-          base: buffer,
-          len: 4,
-        },
-      ]);
-      harness.processBytes.set([1, 2, 3, 4], buffer);
-      const calls: Array<{
-        syscall: number;
-        offset: bigint;
-        unusedFlagsSlot: bigint;
-      }> = [];
-      harness.handleChannel.mockImplementation(() => {
-        const view = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        calls.push({
-          syscall: view.getUint32(CH_SYSCALL, true),
-          offset: view.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true),
-          unusedFlagsSlot: view.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true),
-        });
-        view.setBigInt64(CH_RETURN, 0n, true);
-        view.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      invokeIovecMethod(
-        harness,
-        method,
-        [7n, BigInt(iovPointer), 1n, 0x8000_0000n, 1n, 0x4000_0000n],
-        syscallNr,
-      );
-
-      expect(calls).toEqual([
-        {
-          syscall: scalarSyscall,
-          offset,
-          unusedFlagsSlot: 0n,
-        },
-      ]);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("rejects a writev result larger than the staged caller data", () => {
-    const harness = makeScratchHarness();
-    const iovPtr = 256;
-    const source = 1024;
-    writeWasm32Iovecs(harness.processBytes, iovPtr, [
-      {
-        base: source,
-        len: 4,
-      },
-    ]);
-    harness.processBytes.set([1, 2, 3, 4], source);
-    harness.handleChannel.mockImplementation(() => {
-      const view = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      view.setBigInt64(CH_RETURN, 5n, true);
-      view.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    invokeIovecMethod(harness, "handleWritev", [
-      7n,
-      BigInt(iovPtr),
-      1n,
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.channel,
-      ABI_SYSCALLS.Writev,
-      [7, iovPtr, 1, 0, 0, 0],
-      undefined,
-      -1,
-      EIO,
-    );
-    expectScratchTailUntouched(harness);
-  });
 
   it.each([
     ["wasm32", 4, "pwrite", ABI_SYSCALLS.Pwrite],
@@ -4658,11 +2338,17 @@ describe("kernel scratch transfer capacity regressions", () => {
     ).not.toThrow();
 
     expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
+    // epoll_ctl is no longer hand-marshalled by the host: it declares a
+    // `SYSCALL_ARG_DESCRIPTORS` entry and is staged by the generic path, which
+    // faults through completeChannel (naming the syscall and its descriptors)
+    // rather than the raw completion the deleted handler used. The errno the
+    // caller observes is unchanged.
+    expect(harness.completeChannelRaw).not.toHaveBeenCalled();
+    expect(
+      harness.completeChannel.mock.calls.map(
+        (call: unknown[]) => [call[1], call[4], call[5]],
+      ),
+    ).toEqual([[ABI_SYSCALLS.EpollCtl, -1, EFAULT]]);
     expectScratchTailUntouched(harness);
   });
 
@@ -4721,13 +2407,6 @@ describe("kernel scratch transfer capacity regressions", () => {
     ]);
 
     expect(harness.handleChannel).toHaveBeenCalledTimes(1);
-    expect(harness.worker.epollInterests.get("41:3")).toEqual([
-      {
-        fd: 7,
-        events: 0x1234,
-        data: expectedData,
-      },
-    ]);
     expectScratchTailUntouched(harness);
   });
 
@@ -4735,14 +2414,6 @@ describe("kernel scratch transfer capacity regressions", () => {
     const harness = makeScratchHarness();
     const invalidEvents =
       harness.processBytes.byteLength - STRUCT_SIZE_WASM_EPOLL_EVENT + 1;
-    harness.worker.epollInterests.set("41:3", [
-      {
-        fd: 7,
-        events: 1,
-        data: 9n,
-      },
-    ]);
-
     expect(() =>
       dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.EpollPwait, [
         3,
@@ -4773,22 +2444,28 @@ describe("kernel scratch transfer capacity regressions", () => {
       eventsPointer,
       eventsPointer + STRUCT_SIZE_WASM_EPOLL_EVENT,
     );
-    harness.worker.epollInterests.set("41:3", [
-      {
-        fd: 7,
-        events: 1,
-        data: expectedData,
-      },
-    ]);
     harness.handleChannel.mockImplementation(() => {
       const channelView = new DataView(
         harness.kernelBytes.buffer,
         harness.scratchOffset,
       );
-      const pollfdsPointer = Number(channelView.getBigInt64(CH_ARGS, true));
-      new DataView(harness.kernelBytes.buffer).setInt16(
-        pollfdsPointer + 6,
+      // sys_epoll_pwait writes the ready epoll_events into the staged output
+      // array — arg 1, which the host addressed at CH_DATA — and returns how
+      // many it wrote. Reading the address back proves the host staged it
+      // rather than assuming the offset.
+      const eventsOut = Number(
+        channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
+      );
+      const kernelView = new DataView(harness.kernelBytes.buffer);
+      kernelView.setUint32(
+        eventsOut + WASM_EPOLL_EVENT_EVENTS_OFFSET,
         1,
+        true,
+      );
+      kernelView.setUint32(eventsOut + WASM_EPOLL_EVENT_PAD_OFFSET, 0, true);
+      kernelView.setBigUint64(
+        eventsOut + WASM_EPOLL_EVENT_DATA_OFFSET,
+        expectedData,
         true,
       );
       channelView.setBigInt64(CH_RETURN, 1n, true);
@@ -4823,583 +2500,16 @@ describe("kernel scratch transfer capacity regressions", () => {
     expectScratchTailUntouched(harness);
   });
 
-  it.each([
-    [4, 0x1020_3040n],
-    [8, 0x0102_0304_0506_0708n],
-  ] as const)(
-    "translates an exact-end wasm%s msgsnd buffer to the canonical i64 header",
-    (pointerWidth, mtype) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const text = Uint8Array.of(0x61, 0x62, 0x63);
-      const messagePointer =
-        harness.processBytes.byteLength - pointerWidth - text.byteLength;
-      const processView = new DataView(harness.processBytes.buffer);
-      if (pointerWidth === 8) {
-        processView.setBigInt64(messagePointer, mtype, true);
-      } else {
-        processView.setInt32(messagePointer, Number(mtype), true);
-      }
-      harness.processBytes.set(text, messagePointer + pointerWidth);
-      harness.handleChannel.mockImplementation(() => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        const kernelMessage = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        expect(kernelView.getBigInt64(kernelMessage, true)).toBe(mtype);
-        expect(
-          harness.kernelBytes.slice(
-            kernelMessage + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-            kernelMessage +
-              STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER +
-              text.byteLength,
-          ),
-        ).toEqual(text);
-        expect(
-          Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(pointerWidth);
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Msgsnd, [
-        3n,
-        BigInt(messagePointer),
-        BigInt(text.byteLength),
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(harness.handleChannel).toHaveBeenCalledTimes(1);
-      expect(harness.completeChannel).toHaveBeenCalledWith(
-        harness.channel,
-        ABI_SYSCALLS.Msgsnd,
-        [3, messagePointer, text.byteLength, 0, 0, 0],
-        undefined,
-        0,
-        0,
-        undefined,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    [4, "msgsnd", ABI_SYSCALLS.Msgsnd],
-    [8, "msgsnd", ABI_SYSCALLS.Msgsnd],
-    [4, "msgrcv", ABI_SYSCALLS.Msgrcv],
-    [8, "msgrcv", ABI_SYSCALLS.Msgrcv],
-  ] as const)(
-    "rejects a one-byte-short wasm%s %s caller message range",
-    (pointerWidth, _name, syscallNr) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const textBytes = 3;
-      const pointer =
-        harness.processBytes.byteLength - pointerWidth - textBytes + 1;
-      dispatchScratchBoundarySyscallWithArgs(harness, syscallNr, [
-        3n,
-        BigInt(pointer),
-        BigInt(textBytes),
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EFAULT,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    [4, 0x1234_5678n],
-    [8, 0x0102_0304_0506_0708n],
-  ] as const)(
-    "translates canonical msgrcv output to a wasm%s native-long prefix",
-    (pointerWidth, mtype) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const messagePointer = 4096;
-      const text = Uint8Array.of(0x71, 0x72, 0x73);
-      const selectedType = pointerWidth === 8 ? 0x0102_0304_0506_0708n : 7n;
-      harness.handleChannel.mockImplementation(() => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        expect(channelView.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true)).toBe(
-          selectedType,
-        );
-        const kernelMessage = Number(
-          channelView.getBigInt64(CH_ARGS + CH_ARG_SIZE, true),
-        );
-        const kernelView = new DataView(harness.kernelBytes.buffer);
-        kernelView.setBigInt64(kernelMessage, mtype, true);
-        harness.kernelBytes.set(
-          text,
-          kernelMessage + STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER,
-        );
-        channelView.setBigInt64(CH_RETURN, BigInt(text.byteLength), true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Msgrcv, [
-        3n,
-        BigInt(messagePointer),
-        BigInt(text.byteLength),
-        selectedType,
-        0n,
-        0n,
-      ]);
-
-      const outputWrites = harness.completeChannel.mock.calls[0]?.[6] as
-        Array<{ ptr: number; bytes: Uint8Array }> | undefined;
-      expect(outputWrites).toHaveLength(1);
-      expect(outputWrites?.[0]?.ptr).toBe(messagePointer);
-      const output = outputWrites![0]!.bytes;
-      const outputView = new DataView(
-        output.buffer,
-        output.byteOffset,
-        output.byteLength,
-      );
-      expect(
-        pointerWidth === 8
-          ? outputView.getBigInt64(0, true)
-          : BigInt(outputView.getInt32(0, true)),
-      ).toBe(mtype);
-      expect(output.subarray(pointerWidth)).toEqual(text);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("accepts exact SysV scratch capacity and rejects capacity plus one", () => {
-    const exact = CH_DATA_SIZE - STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER;
-    for (const messageSize of [exact, exact + 1]) {
-      const harness = makeScratchHarness(8);
-      const messagePointer = 4096;
-      new DataView(harness.processBytes.buffer).setBigInt64(
-        messagePointer,
-        1n,
-        true,
-      );
-      harness.handleChannel.mockImplementation(() => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Msgsnd, [
-        3n,
-        BigInt(messagePointer),
-        BigInt(messageSize),
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(harness.handleChannel).toHaveBeenCalledTimes(
-        messageSize === exact ? 1 : 0,
-      );
-      if (messageSize !== exact) {
-        expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-          harness.channel,
-          -1,
-          EINVAL,
-        );
-      }
-      expectScratchTailUntouched(harness);
-    }
-  });
-
-  it("returns IPC_NOWAIT EAGAIN instead of parking a SysV message retry", () => {
-    const harness = makeScratchHarness(8);
-    const messagePointer = 4096;
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      channelView.setBigInt64(CH_RETURN, -1n, true);
-      channelView.setUint32(CH_ERRNO, EAGAIN, true);
-      return 0;
-    });
-
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Msgrcv, [
-      3n,
-      BigInt(messagePointer),
-      0n,
-      0n,
-      BigInt(IPC_NOWAIT),
-      0n,
-    ]);
-
-    expect(harness.handleBlockingRetry).not.toHaveBeenCalled();
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.channel,
-      ABI_SYSCALLS.Msgrcv,
-      [3, messagePointer, 0, 0, IPC_NOWAIT, 0],
-      undefined,
-      -1,
-      EAGAIN,
-    );
-    expectScratchTailUntouched(harness);
-  });
-
-  it.each([
-    ["msgctl wasm32", ABI_SYSCALLS.Msgctl, "kernel_msqid_ds_bytes", 4, 96],
-    ["msgctl wasm64", ABI_SYSCALLS.Msgctl, "kernel_msqid_ds_bytes", 8, 120],
-    ["shmctl wasm32", ABI_SYSCALLS.Shmctl, "kernel_shmid_ds_bytes", 4, 88],
-    ["shmctl wasm64", ABI_SYSCALLS.Shmctl, "kernel_shmid_ds_bytes", 8, 112],
-  ] as const)(
-    "rejects a one-byte-short %s IPC_STAT destination before scratch use",
-    (_name, syscallNr, exportName, pointerWidth, bytes) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const invalidBuffer = harness.processBytes.byteLength - bytes + 1;
-      const statBytes = vi.fn(() => bytes);
-      Object.assign(harness.kernelExports, {
-        [exportName]: statBytes,
-      });
-
-      dispatchScratchBoundarySyscallWithArgs(harness, syscallNr, [
-        3n,
-        2n,
-        BigInt(invalidBuffer),
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(statBytes).toHaveBeenCalledWith(pointerWidth);
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EFAULT,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["msgctl wasm32", ABI_SYSCALLS.Msgctl, "kernel_msqid_ds_bytes", 4, 96],
-    ["msgctl wasm64", ABI_SYSCALLS.Msgctl, "kernel_msqid_ds_bytes", 8, 120],
-    ["shmctl wasm32", ABI_SYSCALLS.Shmctl, "kernel_shmid_ds_bytes", 4, 88],
-    ["shmctl wasm64", ABI_SYSCALLS.Shmctl, "kernel_shmid_ds_bytes", 8, 112],
-  ] as const)(
-    "copies the exact kernel-sized %s IPC_STAT result",
-    (_name, syscallNr, exportName, pointerWidth, bytes) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const outputPointer = 4096;
-      const expected = Uint8Array.from(
-        { length: bytes },
-        (_, index) => (index * 13) & 0xff,
-      );
-      const statBytes = vi.fn(() => bytes);
-      Object.assign(harness.kernelExports, {
-        [exportName]: statBytes,
-      });
-      harness.handleChannel.mockImplementation(() => {
-        const channelView = new DataView(
-          harness.kernelBytes.buffer,
-          harness.scratchOffset,
-        );
-        expect(channelView.getUint32(CH_SYSCALL, true)).toBe(syscallNr);
-        expect(
-          Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(pointerWidth);
-        const dataPointer = Number(
-          channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true),
-        );
-        harness.kernelBytes.set(expected, dataPointer);
-        channelView.setBigInt64(CH_RETURN, 0n, true);
-        channelView.setUint32(CH_ERRNO, 0, true);
-        return 0;
-      });
-
-      dispatchScratchBoundarySyscallWithArgs(harness, syscallNr, [
-        3n,
-        2n,
-        BigInt(outputPointer),
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(statBytes).toHaveBeenCalledWith(pointerWidth);
-      expect(
-        harness.processBytes.slice(outputPointer, outputPointer + bytes),
-      ).toEqual(expected);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("stages IPC_SET input without copying scratch back to the caller", () => {
-    const harness = makeScratchHarness(8);
-    const inputPointer = 4096;
-    const bytes = 120;
-    const input = Uint8Array.from(
-      { length: bytes },
-      (_, index) => (index * 7) & 0xff,
-    );
-    harness.processBytes.set(input, inputPointer);
-    Object.assign(harness.kernelExports, {
-      kernel_msqid_ds_bytes: vi.fn(() => bytes),
-    });
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      const dataPointer = Number(
-        channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true),
-      );
-      expect(
-        harness.kernelBytes.slice(dataPointer, dataPointer + bytes),
-      ).toEqual(input);
-      harness.kernelBytes.fill(0xee, dataPointer, dataPointer + bytes);
-      channelView.setBigInt64(CH_RETURN, 0n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Msgctl, [
-      3n,
-      1n,
-      BigInt(inputPointer),
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expect(
-      harness.processBytes.slice(inputPointer, inputPointer + bytes),
-    ).toEqual(input);
-    expectScratchTailUntouched(harness);
-  });
-
-  it("rejects invalid or missing IPC control sizing exports", () => {
-    for (const configuredSize of [undefined, CH_DATA_SIZE + 1]) {
-      const harness = makeScratchHarness(
-        4,
-        configuredSize === undefined ? ["kernel_msqid_ds_bytes"] : [],
-      );
-      if (configuredSize !== undefined) {
-        Object.assign(harness.kernelExports, {
-          kernel_msqid_ds_bytes: vi.fn(() => configuredSize),
-        });
-      }
-
-      dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Msgctl, [
-        3n,
-        2n,
-        4096n,
-        0n,
-        0n,
-        0n,
-      ]);
-
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EIO,
-      );
-      expectScratchTailUntouched(harness);
-    }
-  });
-
-  it("does not pass an unsafe wasm64 IPC control pointer to Rust", () => {
-    const harness = makeScratchHarness(8);
-    Object.assign(harness.kernelExports, {
-      kernel_shmid_ds_bytes: vi.fn(() => 112),
-    });
-    const unsafePointer = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
-
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Shmctl, [
-      3n,
-      2n,
-      unsafePointer,
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EFAULT,
-    );
-    expectScratchTailUntouched(harness);
-  });
-
-  it("dispatches IPC_RMID without a pointer or sizing query", () => {
-    const harness = makeScratchHarness(8);
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      expect(channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)).toBe(0n);
-      channelView.setBigInt64(CH_RETURN, 0n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Shmctl, [
-      3n,
-      0n,
-      0n,
-      0n,
-      0n,
-      0n,
-    ]);
-
-    expect(harness.handleChannel).toHaveBeenCalledOnce();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      0,
-      0,
-    );
-    expectScratchTailUntouched(harness);
-  });
-
-  it.each([
-    ["wasm32 IPC_STAT output", 2, 72, 4],
-    ["wasm64 IPC_STAT output", 2, 88, 8],
-    ["GETALL output", 13, 64, 4],
-    ["SETALL input", 17, 64, 4],
-  ] as const)(
-    "rejects an out-of-range semctl %s before touching kernel scratch",
-    (_name, command, bytes, pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const invalidBuffer = harness.processBytes.byteLength - bytes + 1;
-      const arrayBytes = vi.fn(() => bytes);
-      const statBytes = vi.fn(() => bytes);
-      Object.assign(harness.kernelExports, {
-        kernel_semctl_array_bytes: arrayBytes,
-        kernel_semid_ds_bytes: statBytes,
-      });
-
-      expect(() =>
-        dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Semctl, [
-          3,
-          0,
-          command,
-          invalidBuffer,
-          0,
-          0,
-        ]),
-      ).not.toThrow();
-
-      if (command === 2) {
-        expect(arrayBytes).not.toHaveBeenCalled();
-        expect(statBytes).toHaveBeenCalledWith(pointerWidth);
-      } else {
-        expect(statBytes).not.toHaveBeenCalled();
-        expect(arrayBytes).toHaveBeenCalledWith(
-          harness.channel.pid,
-          harness.channel.pid,
-          3,
-          command,
-        );
-      }
-      expect(harness.handleChannel).not.toHaveBeenCalled();
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -1,
-        EFAULT,
-      );
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it("uses the permission-aware kernel export to size semctl arrays", () => {
-    const harness = makeScratchHarness();
-    const outputPointer = 4096;
-    const semaphoreCount = 32;
-    const outputBytes = semaphoreCount * 2;
-    const expected = new Uint8Array(outputBytes).map(
-      (_, index) => index & 0xff,
-    );
-    const arrayBytes = vi.fn(() => outputBytes);
-    Object.assign(harness.kernelExports, {
-      kernel_semctl_array_bytes: arrayBytes,
-      kernel_semid_ds_bytes: vi.fn(() => 72),
-    });
-    harness.handleChannel.mockImplementation(() => {
-      const channelView = new DataView(
-        harness.kernelBytes.buffer,
-        harness.scratchOffset,
-      );
-      const command =
-        Number(channelView.getBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, true)) &
-        ~0x100;
-      const dataPointer = Number(
-        channelView.getBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, true),
-      );
-      expect(command).toBe(13);
-      expect(
-        Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-      ).toBe(4);
-      harness.kernelBytes.set(expected, dataPointer);
-      channelView.setBigInt64(CH_RETURN, 0n, true);
-      channelView.setUint32(CH_ERRNO, 0, true);
-      return 0;
-    });
-
-    dispatchScratchBoundarySyscallWithArgs(harness, ABI_SYSCALLS.Semctl, [
-      3,
-      0,
-      13,
-      outputPointer,
-      0,
-      0,
-    ]);
-
-    expect(arrayBytes).toHaveBeenCalledWith(
-      harness.channel.pid,
-      harness.channel.pid,
-      3,
-      13,
-    );
-    expect(harness.handleChannel).toHaveBeenCalledOnce();
-    expect(
-      harness.processBytes.slice(outputPointer, outputPointer + outputBytes),
-    ).toEqual(expected);
-    expectScratchTailUntouched(harness);
-  });
-
-  it("fails closed when a required semctl sizing export is absent", () => {
-    const harness = makeScratchHarness(4, ["kernel_semctl_array_bytes"]);
-
-    dispatchScratchBoundarySyscallWithArgs(
-      harness,
-      ABI_SYSCALLS.Semctl,
-      [3, 0, 13, 4096, 0, 0],
-    );
-
-    expect(harness.handleChannel).not.toHaveBeenCalled();
-    expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-      harness.channel,
-      -1,
-      EIO,
-    );
-    expectScratchTailUntouched(harness);
-  });
+  // The SysV msgsnd/msgrcv/msgctl/shmctl/semctl scratch-boundary cases that
+  // stood here died with their subject. They proved the HOST's translation of
+  // caller-native structures into the fixed kernel scratch wire: the
+  // native-`long` msgbuf prefix, the cmd-dependent IPC_STAT/IPC_SET direction,
+  // and the permission-aware semctl array sizing. None of that crosses the
+  // scratch channel any more — those arguments are declared
+  // KernelDereferenced, so the kernel reads and writes the caller's memory
+  // itself. The equivalent proofs now live in Rust beside the layouts:
+  // `crates/runtime-core/src/ipc_wire.rs` and
+  // `crates/runtime-core/src/guest_ptr.rs`.
 
   it("rejects a negative generic descriptor length before scratch mutation", () => {
     const harness = makeScratchHarness();
@@ -6481,7 +3591,7 @@ describe("kernel scratch transfer capacity regressions", () => {
   );
 
   it.each([4, 8] as const)(
-    "carries wasm%s setsockopt layout width independently of bounded optlen",
+    "leaves the wasm%s setsockopt sixth slot to the caller across bounded optlen",
     (pointerWidth) => {
       const optionPointer = 8192;
       const maximum = 264;
@@ -6505,12 +3615,19 @@ describe("kernel scratch transfer capacity regressions", () => {
                 true,
               ),
             );
+            // The host used to overwrite this slot with the caller's
+            // pointer width, because `optlen` is only a byte extent and
+            // cannot say whether an embedded sockaddr_storage uses wasm32 or
+            // wasm64 alignment. The width is registered per process now, so
+            // the kernel looks it up and the slot stays the caller's --
+            // which is what returns it to preadv2/pwritev2's `flags`. The
+            // 99 below is the caller's own value, and it must survive.
             expect(
               channelView.getBigInt64(
                 CH_ARGS + 5 * CH_ARG_SIZE,
                 true,
               ),
-            ).toBe(BigInt(pointerWidth));
+            ).toBe(99n);
             expect(
               harness.kernelBytes.slice(
                 stagedPointer,
@@ -7650,9 +4767,15 @@ describe("kernel scratch transfer capacity regressions", () => {
           Number(offset),
         );
         const scratchPointer = Number(channelView.getBigInt64(CH_ARGS, true));
+        // Slot 5 is the caller's own argument. The host used to overwrite it
+        // with the calling process's pointer width so the kernel could size
+        // this ioctl's structure; the width is registered per process now and
+        // the kernel looks it up, which is what returns the slot to
+        // preadv2/pwritev2's `flags`. ioctl passes nothing here, so it stays
+        // zero -- and must not be written.
         expect(
           Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(pointerWidth);
+        ).toBe(0);
         harness.kernelBytes.fill(
           0x6b,
           scratchPointer,
@@ -7739,27 +4862,13 @@ describe("kernel scratch transfer capacity regressions", () => {
   );
 
   it.each([4, 8] as const)(
-    "rejects a null wasm%s outer ifconf without touching address zero",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const ifconfSize = pointerWidth === 8 ? 16 : 8;
-      harness.processBytes.fill(0x6d, 0, ifconfSize + 16);
-      writeIfconf(harness.processBytes, pointerWidth, 0, 0, 0);
-      const before = harness.processBytes.slice(0, ifconfSize + 16);
-
-      invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", 0);
-
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(harness.processBytes.slice(0, ifconfSize + 16)).toEqual(before);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([4, 8] as const)(
+    // SIOCGIFNAME/SIOCGIFHWADDR/SIOCGIFADDR/SIOCGIFINDEX are plain
+    // fixed-size `struct ifreq` requests and, since Workstream H4, are no
+    // longer host-intercepted at all: they flow through the same generic
+    // ioctl-contract marshal path as every other pointer-valued ioctl (see
+    // "rejects a null pointer for a pointer-valued ioctl" below), so a null
+    // pointer is rejected by `completeChannel` before `kernel_handle_channel`
+    // is ever reached, not by a bespoke `completeChannelRaw` call.
     "rejects null wasm%s outer ifreq objects for every network handler",
     (pointerWidth) => {
       const ifreqSize = pointerWidth === 8 ? 40 : 32;
@@ -7771,60 +4880,22 @@ describe("kernel scratch transfer capacity regressions", () => {
 
         invokeNetworkIoctlHandler(harness, entry.handler, 0);
 
+        expect(harness.handleChannel, `ioctl 0x${entry.request.toString(16)}`)
+          .not.toHaveBeenCalled();
         expect(
-          harness.completeChannelRaw,
+          harness.completeChannel,
           `ioctl 0x${entry.request.toString(16)}`,
-        ).toHaveBeenCalledWith(harness.channel, -EFAULT, EFAULT);
+        ).toHaveBeenCalledWith(
+          harness.channel,
+          ABI_SYSCALLS.Ioctl,
+          [7, entry.request, 0, 0, 0, 0],
+          undefined,
+          -1,
+          EFAULT,
+        );
         expect(harness.processBytes.slice(0, ifreqSize + 16)).toEqual(before);
         expectScratchTailUntouched(harness);
       }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "accepts an exact wasm%s outer ifconf and rejects one byte short",
-    (pointerWidth) => {
-      const ifconfSize = pointerWidth === 8 ? 16 : 8;
-      const ifreqSize = pointerWidth === 8 ? 40 : 32;
-
-      const exact = makeScratchHarness(pointerWidth);
-      const exactPointer = exact.processBytes.byteLength - ifconfSize;
-      exact.processBytes.fill(0x6d, exactPointer - 16, exactPointer);
-      writeIfconf(exact.processBytes, pointerWidth, exactPointer, 0, 0);
-      const exactPrefix = exact.processBytes.slice(
-        exactPointer - 16,
-        exactPointer,
-      );
-
-      invokeNetworkIoctlHandler(exact, "handleIoctlIfconf", exactPointer);
-
-      expect(exact.completeChannelRaw).toHaveBeenCalledWith(
-        exact.channel,
-        0,
-        0,
-      );
-      expect(
-        new DataView(exact.processBytes.buffer).getInt32(exactPointer, true),
-      ).toBe(2 * ifreqSize);
-      expect(exact.processBytes.slice(exactPointer - 16, exactPointer)).toEqual(
-        exactPrefix,
-      );
-      expectScratchTailUntouched(exact);
-
-      const short = makeScratchHarness(pointerWidth);
-      const shortPointer = short.processBytes.byteLength - ifconfSize + 1;
-      short.processBytes.fill(0x6d, shortPointer - 16);
-      const shortBefore = short.processBytes.slice(shortPointer - 16);
-
-      invokeNetworkIoctlHandler(short, "handleIoctlIfconf", shortPointer);
-
-      expect(short.completeChannelRaw).toHaveBeenCalledWith(
-        short.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(short.processBytes.slice(shortPointer - 16)).toEqual(shortBefore);
-      expectScratchTailUntouched(short);
     },
   );
 
@@ -7843,12 +4914,24 @@ describe("kernel scratch transfer capacity regressions", () => {
           exactPointer,
         );
 
+        exact.handleChannel.mockImplementation((offset: number | bigint) => {
+          const channelView = new DataView(
+            exact.kernelBytes.buffer,
+            Number(offset),
+          );
+          channelView.setBigInt64(CH_RETURN, 0n, true);
+          channelView.setUint32(CH_ERRNO, 0, true);
+          return 0;
+        });
+
         invokeNetworkIoctlHandler(exact, entry.handler, exactPointer);
 
+        expect(exact.handleChannel, `ioctl 0x${entry.request.toString(16)}`)
+          .toHaveBeenCalledOnce();
         expect(
-          exact.completeChannelRaw,
+          exact.completeChannel.mock.calls[0]?.slice(4, 6),
           `ioctl 0x${entry.request.toString(16)}`,
-        ).toHaveBeenCalledWith(exact.channel, 0, 0);
+        ).toEqual([0, 0]);
         expect(
           exact.processBytes.slice(exactPointer - 16, exactPointer),
         ).toEqual(exactPrefix);
@@ -7862,139 +4945,24 @@ describe("kernel scratch transfer capacity regressions", () => {
 
         invokeNetworkIoctlHandler(short, entry.handler, shortPointer);
 
+        expect(short.handleChannel, `ioctl 0x${entry.request.toString(16)}`)
+          .not.toHaveBeenCalled();
         expect(
-          short.completeChannelRaw,
+          short.completeChannel,
           `ioctl 0x${entry.request.toString(16)}`,
-        ).toHaveBeenCalledWith(short.channel, -EFAULT, EFAULT);
+        ).toHaveBeenCalledWith(
+          short.channel,
+          ABI_SYSCALLS.Ioctl,
+          [7, entry.request, shortPointer, 0, 0, 0],
+          undefined,
+          -1,
+          EFAULT,
+        );
         expect(short.processBytes.slice(shortPointer - 16)).toEqual(
           shortBefore,
         );
         expectScratchTailUntouched(short);
       }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "bounds wasm%s nested ifconf output at exact capacity and capacity + 1",
-    (pointerWidth) => {
-      const ifreqSize = pointerWidth === 8 ? 40 : 32;
-      for (const extraCapacity of [0, 1]) {
-        const harness = makeScratchHarness(pointerWidth);
-        const ifconfPointer = 4096;
-        const outputPointer = 8192;
-        const guardStart = outputPointer - 16;
-        const guardEnd = outputPointer + ifreqSize + extraCapacity + 16;
-        harness.processBytes.fill(0x6d, guardStart, guardEnd);
-        writeIfconf(
-          harness.processBytes,
-          pointerWidth,
-          ifconfPointer,
-          ifreqSize + extraCapacity,
-          outputPointer,
-        );
-        const prefix = harness.processBytes.slice(guardStart, outputPointer);
-        const suffix = harness.processBytes.slice(
-          outputPointer + ifreqSize,
-          guardEnd,
-        );
-
-        invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", ifconfPointer);
-
-        expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-          harness.channel,
-          0,
-          0,
-        );
-        expect(
-          new DataView(harness.processBytes.buffer).getInt32(
-            ifconfPointer,
-            true,
-          ),
-        ).toBe(ifreqSize);
-        expect(
-          new TextDecoder().decode(
-            harness.processBytes.slice(outputPointer, outputPointer + 2),
-          ),
-        ).toBe("lo");
-        expect(harness.processBytes.slice(guardStart, outputPointer)).toEqual(
-          prefix,
-        );
-        expect(
-          harness.processBytes.slice(outputPointer + ifreqSize, guardEnd),
-        ).toEqual(suffix);
-        expectScratchTailUntouched(harness);
-      }
-    },
-  );
-
-  it.each([4, 8] as const)(
-    "rejects a one-byte-short wasm%s nested ifconf output without mutation",
-    (pointerWidth) => {
-      const harness = makeScratchHarness(pointerWidth);
-      const ifreqSize = pointerWidth === 8 ? 40 : 32;
-      const ifconfPointer = 4096;
-      const outputPointer = harness.processBytes.byteLength - ifreqSize + 1;
-      harness.processBytes.fill(0x6d, outputPointer - 16);
-      const outputBefore = harness.processBytes.slice(outputPointer - 16);
-      writeIfconf(
-        harness.processBytes,
-        pointerWidth,
-        ifconfPointer,
-        ifreqSize,
-        outputPointer,
-      );
-
-      invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", ifconfPointer);
-
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(harness.processBytes.slice(outputPointer - 16)).toEqual(
-        outputBefore,
-      );
-      expect(
-        new DataView(harness.processBytes.buffer).getInt32(ifconfPointer, true),
-      ).toBe(ifreqSize);
-      expectScratchTailUntouched(harness);
-    },
-  );
-
-  it.each([
-    ["high", 0x1_0000_2000n],
-    ["unsafe", 0x20_0000_0000_2000n],
-  ] as const)(
-    "rejects wasm64 nested ifconf pointer class %s without a low-address alias",
-    (_kind, nestedPointer) => {
-      const harness = makeScratchHarness(8);
-      const ifconfPointer = 4096;
-      const lowAlias = Number(nestedPointer & 0xffff_ffffn);
-      const ifreqSize = 40;
-      harness.processBytes.fill(0x6d, lowAlias - 16, lowAlias + ifreqSize + 16);
-      const lowBefore = harness.processBytes.slice(
-        lowAlias - 16,
-        lowAlias + ifreqSize + 16,
-      );
-      writeIfconf(
-        harness.processBytes,
-        8,
-        ifconfPointer,
-        ifreqSize,
-        nestedPointer,
-      );
-
-      invokeNetworkIoctlHandler(harness, "handleIoctlIfconf", ifconfPointer);
-
-      expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-        harness.channel,
-        -EFAULT,
-        EFAULT,
-      );
-      expect(
-        harness.processBytes.slice(lowAlias - 16, lowAlias + ifreqSize + 16),
-      ).toEqual(lowBefore);
-      expectScratchTailUntouched(harness);
     },
   );
 
@@ -8018,7 +4986,7 @@ describe("kernel scratch transfer capacity regressions", () => {
       ).toBe(4);
       expect(
         Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-      ).toBe(4);
+      ).toBe(0);
       harness.kernelBytes.set(result, scratchPointer);
       channelView.setBigInt64(CH_RETURN, 0n, true);
       channelView.setUint32(CH_ERRNO, 0, true);
@@ -8088,7 +5056,7 @@ describe("kernel scratch transfer capacity regressions", () => {
         ).toBe(size);
         expect(
           Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(pointerWidth);
+        ).toBe(0);
         expect(
           harness.kernelBytes.slice(scratchPointer, scratchPointer + size),
         ).toEqual(new Uint8Array(size).fill(expectedInputByte));
@@ -8175,7 +5143,7 @@ describe("kernel scratch transfer capacity regressions", () => {
         ).toBe(0);
         expect(
           Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-        ).toBe(8);
+        ).toBe(0);
         channelView.setBigInt64(CH_RETURN, 0n, true);
         channelView.setUint32(CH_ERRNO, 0, true);
         return 0;
@@ -8224,7 +5192,7 @@ describe("kernel scratch transfer capacity regressions", () => {
           ).toBe(0);
           expect(
             Number(channelView.getBigInt64(CH_ARGS + 5 * CH_ARG_SIZE, true)),
-          ).toBe(8);
+          ).toBe(0);
           channelView.setBigInt64(CH_RETURN, 0n, true);
           channelView.setUint32(CH_ERRNO, 0, true);
           return 0;

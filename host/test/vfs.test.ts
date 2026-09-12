@@ -1334,13 +1334,17 @@ describe("Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", () => {
       new NodeTimeProvider(),
     );
 
-    const dh = vfs.opendir("/");
+    // The kernel reaches a host directory through an anchor this host
+    // published, then one component at a time. `"."` names the anchor itself.
+    const O_DIRECTORY = 0o200000;
+    const root = vfs.foreignMountRoots().find((r) => r.prefix === "/")!.handle;
+    const dh = vfs.openat(root, ".", O_DIRECTORY, 0);
     const names: string[] = [];
     let entry;
     while ((entry = vfs.readdir(dh)) !== null) {
       names.push(entry.name);
     }
-    vfs.closedir(dh);
+    vfs.close(dh);
 
     expect(names).toContain("a.txt");
     expect(names).toContain("b.txt");

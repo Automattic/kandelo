@@ -186,9 +186,6 @@ assert_matches binary_materialization_changed_files \
 assert_matches binary_materialization_changed_files \
   "scripts/test-wasm-artifact-guards.sh" \
   "scripts/test-wasm-artifact-guards.sh"
-assert_matches binary_materialization_changed_files \
-  "scripts/vfs-has-stale-abi.mjs" \
-  "scripts/vfs-has-stale-abi.mjs"
 for resolver_input in \
   host/src/binary-resolver.ts \
   scripts/resolve-binary.ts \

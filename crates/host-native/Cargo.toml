@@ -1,0 +1,112 @@
+[package]
+name = "host-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native reference host: loads the real kernel.wasm in Wasmtime and runs the channel handshake"
+publish = false
+
+# HOST-ONLY crate. Wasmtime (and its Cranelift backend) does not build for
+# `wasm32-unknown-unknown`, so this crate — like `tools/xtask` — must always
+# be built and tested for the host target, never the workspace-default wasm
+# target from `.cargo/config.toml`:
+#
+#     cargo build -p host-native --target aarch64-apple-darwin
+#     cargo test  -p host-native --target aarch64-apple-darwin
+#
+# It is a workspace member so the closed-by-default
+# `cargo test --workspace --exclude xtask --target <host>` suite picks it up
+# automatically. The wasm kernel build (`cargo build --release -p kandelo
+# -Z build-std=core,alloc`) targets `-p kandelo` specifically and never
+# compiles this crate, so Wasmtime is only resolved (into Cargo.lock), never
+# built, on the wasm path.
+
+[lib]
+name = "host_native"
+path = "src/lib.rs"
+
+[dependencies]
+# Wasmtime 35 originally matched the feasibility spike in
+# docs/plans/2026-08-25-rust-first-runtime-design.md. It supports every
+# feature the kernel needs (threads/shared-memory + atomic wait/notify,
+# bulk-memory, mutable-globals, imported/exported memory) with no WASI or
+# Component Model. Loading the same `kernel.wasm` on a non-JS engine is the
+# freeze-gate acid test that the platform boundary is not JavaScript-shaped.
+#
+# Upgraded 35 -> 48 (N1-I4/I5 native-fork unblock): Wasmtime 35 cannot load a
+# fork-instrumented guest at all — it rejects the exception-handling
+# proposal's `exnref`/`Exn` heap type outright ("unsupported heap type Exn").
+# Wasmtime 48 supports the exceptions proposal (see
+# `kernel_engine`'s `Config::wasm_exceptions` call in `src/lib.rs`), which is
+# the whole point of this bump: native `fork()` needs the fork-instrumented
+# guest to load in the first place.
+wasmtime = "48"
+
+# The authoritative ABI: syscall numbers, channel offsets, and the pointer-arg
+# marshalling descriptors. A `no_std` constants/types crate with no external
+# dependencies, so linking it into this `std` host binary is free and keeps the
+# native pump keyed off the same source of truth the kernel and guest glue use —
+# never hand-copied magic numbers.
+wasm-posix-shared = { path = "../shared" }
+
+# The artifact reader that answers "what did this program declare?" from wasm
+# bytes -- here, `__wasm_posix_thread_slots`. The JavaScript hosts read the
+# same declaration through the same crate (compiled to `wasm-artifact-module`),
+# so a program's pthread ceiling is one answer with one implementation rather
+# than one per host.
+wasm-artifact = { path = "../wasm-artifact" }
+
+# The portable, `no_std`, wasmtime-free fork core: wire decoders, the linked-
+# frame writer, the replay journal, the rewind driver, and the reference/GC
+# graph builder this crate drives directly (`fork_codec::ReferenceGraphBuilder`,
+# `gc_codec`, `drive_plan`, `reference_replay`, etc. throughout `guest.rs`). H3
+# (host-surface minimization, 2026-09-06) deleted the `ForkHostCapabilities`
+# engine-floor trait this dependency used to also carry — it was never wired
+# to any guest on any host (native trapped every `wpk_fork_host.*` import as
+# unreachable) and the completed F5/F6 reference-completeness work bypassed
+# it entirely, so `fork-codec` stays a dependency solely for the live
+# portable core above.
+fork-codec = { path = "../fork-codec" }
+
+# Ergonomic error propagation for the pump (`bail!`, `?` across the many
+# fallible kernel-export calls). Wasmtime already pulls anyhow into the tree.
+anyhow = "1"
+
+# The handle-only host filesystem contract (K9). The kernel resolves the POSIX
+# namespace itself and asks this host to resolve at most ONE path component,
+# relative to a directory handle it previously issued — see
+# `crates/runtime-core/src/hostdir.rs`.
+#
+# `cap-std` is here for a type-checking reason, not for convenience.
+# `std::fs` has no `openat`, so a handle-relative host would otherwise be
+# hand-rolled `unsafe libc::*at` calls; and `cap_std::fs::Dir` IS the
+# mount-root-handle abstraction the contract describes — a `Dir` cannot be
+# escaped through `..` or an absolute symlink, so "this operation stays inside
+# the mount it was issued for" is enforced by the type instead of by the
+# lexical `..`-popping guard host-native used to carry. That guard was also
+# weaker: it followed a symlink inside the tree that pointed out of it.
+#
+# `cap-fs-ext` supplies the three options cap-std deliberately keeps out of its
+# own surface but that POSIX needs: `follow` (`O_NOFOLLOW`), `maybe_dir`
+# (opening a directory at all), and `set_times`/`set_symlink_times`, which is
+# `utimensat(2)` in cap-std's symbolic vocabulary — including a `SymbolicNow`
+# that re-spells Linux's `UTIME_NOW` for whichever platform is running.
+#
+# `rustix` (same crate family, thinner) covers the two operations neither
+# crate models: `chownat` and `fstatvfs`. It takes a `BorrowedFd`, so it acts
+# on the `Dir`'s own descriptor and stays inside the same capability.
+cap-std = "4"
+cap-fs-ext = "4"
+rustix = { version = "1", features = ["fs"] }
+
+# `fpathconf(3)`, which neither cap-std nor rustix models, plus the platform's
+# own `E*` constants. The errno numbers this host reports to the guest are
+# LINUX's, and macOS numbers them differently past the oldest POSIX codes, so
+# `errno_from_io` translates BY NAME using these constants rather than passing
+# a raw platform errno through and forging a wrong one.
+libc = "0.2"
+
+[dev-dependencies]
+# `wat` compiles the tiny WAT wait/notify probe module in-test, keeping the
+# fixture readable alongside the assertions that consume it.
+wat = "1"

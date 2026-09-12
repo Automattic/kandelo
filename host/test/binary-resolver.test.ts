@@ -39,6 +39,8 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "../src/generated/abi";
+import { resetWasmArtifactModuleForTesting } from "../src/wasm-artifact-driver";
+import { useNodeWasmArtifactModule } from "../src/wasm-artifact-module-node";
 import {
   MemoryFileSystem,
   type VfsImageMetadata,
@@ -335,6 +337,29 @@ interface FixtureDependencyIdentity {
 function fixtureCacheKey(packageName: string, arch = "wasm32"): string {
   return createHash("sha256")
     .update(`binary-resolver fixture:${packageName}:${arch}`)
+    .digest("hex");
+}
+
+/**
+ * The key the `source-only-v1` tier addresses its own cache entries by. It is
+ * deliberately NOT `fixtureCacheKey`: in a real tree the two are computed under
+ * different resolve policies, and `ResolvePolicy::SourceOnlyV1` prefixes the
+ * hash with a domain separator, so they differ for every package by
+ * construction.
+ *
+ * This fixture used to reuse `fixtureCacheKey` on both sides. That one
+ * shortcut is why this suite stayed green through the entire life of a bug
+ * that refused every package closure in every locally built worktree: the test
+ * compared a value against itself, so the comparison it was covering could not
+ * fail here and could not succeed anywhere else. Keep the two namespaces
+ * distinct so the fixture can tell them apart the way production must.
+ */
+function fixtureSourceOnlyCacheKey(
+  packageName: string,
+  arch = "wasm32",
+): string {
+  return createHash("sha256")
+    .update(`binary-resolver fixture source-only-v1:${packageName}:${arch}`)
     .digest("hex");
 }
 
@@ -1127,6 +1152,11 @@ function writeSourceOnlyProjectionWithKernel(root: string): string {
           ],
         },
       ],
+      selectionProjection: {
+        format: "kandelo-program-packages-v2",
+        identities: {},
+        packages: {},
+      },
       projection: {
         format: "kandelo-program-packages-v2",
         identities: {},
@@ -1187,6 +1217,317 @@ describe("binary resolver unified tier", () => {
     expect(resolveBinary("kernel.wasm")).toContain(
       "local-binaries/source-only-v1",
     );
+  });
+});
+
+/**
+ * Materialize a package into a `local-binaries/source-only-v1` tier the way
+ * the local-build engine does: byte-verbatim REGULAR FILES plus the
+ * `.kandelo/source-only-program-projection-v1.json` authority that carries
+ * their identity. The browser cannot follow a host symlink, so this tier
+ * never uses the `.kandelo-local-generations` symlink shape the other local
+ * tiers use — the authority is how it proves one generation instead.
+ */
+function materializeSourceOnlyPackage(
+  root: string,
+  packageName: string,
+  members: readonly FixtureProjectionMember[],
+  arch = "wasm32",
+): void {
+  const manifestPath = join(fixturePackageDirectory(packageName), "package.toml");
+  const manifestSha256 = createHash("sha256")
+    .update(readFileSync(manifestPath))
+    .digest("hex");
+  const cacheKey = fixtureSourceOnlyCacheKey(packageName, arch);
+
+  const nodeMembers = [...members]
+    .map((member) => {
+      const mirrorPath = `programs/${arch}/${member.mirrorPath}`;
+      const bytes = mirrorPath.endsWith(".wasm")
+        ? Buffer.from(executableWasmWithAbi(ABI_VERSION))
+        : Buffer.from(`source-only:${mirrorPath}`);
+      const absolute = join(root, ...mirrorPath.split("/"));
+      mkdirSync(dirname(absolute), { recursive: true });
+      writeFileSync(absolute, bytes, { mode: 0o644 });
+      chmodSync(absolute, 0o644);
+      return {
+        sourceArtifact: member.sourceArtifact,
+        mirrorPath,
+        mode: 0o644,
+        size: bytes.byteLength,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    })
+    .sort((left, right) =>
+      left.mirrorPath < right.mirrorPath
+        ? -1
+        : left.mirrorPath > right.mirrorPath
+        ? 1
+        : 0
+    );
+
+  const metadataDir = join(root, ".kandelo");
+  mkdirSync(metadataDir, { recursive: true, mode: 0o755 });
+  const authorityPath = join(
+    metadataDir,
+    "source-only-program-projection-v1.json",
+  );
+  writeFileSync(
+    authorityPath,
+    `${JSON.stringify({
+      format: "kandelo-source-only-program-projection-v1",
+      graphAuthoritySha256: "e".repeat(64),
+      nodes: [
+        {
+          node: { kind: "package", name: packageName, targetArch: arch },
+          manifestSha256,
+          cacheKeySha256: cacheKey,
+          cacheReceiptSha256: "c".repeat(64),
+          members: nodeMembers,
+        },
+      ],
+      // The tier's own identity, in the `source-only-v1` cache namespace.
+      projection: {
+        format: "kandelo-program-packages-v2",
+        identities: {
+          [packageName]: {
+            manifestSha256,
+            cacheKeys: {
+              wasm32: fixtureSourceOnlyCacheKey(packageName, "wasm32"),
+              wasm64: fixtureSourceOnlyCacheKey(packageName, "wasm64"),
+            },
+          },
+        },
+        packages: {
+          [packageName]: {
+            manifestSha256,
+            arches: [arch],
+            cacheKeys: { [arch]: cacheKey },
+            dependencyClosures: { [arch]: [] },
+            members,
+          },
+        },
+      },
+      // The selection state the build recorded: a verbatim copy of the
+      // registry index, which is what a real build writes and what the
+      // resolver regenerates and compares against.
+      selectionProjection: {
+        format: "kandelo-program-packages-v2",
+        identities: fixtureRegistryIdentities,
+        packages: fixtureRegistryPackages,
+      },
+    }, null, 2)}\n`,
+    { mode: 0o644 },
+  );
+  chmodSync(authorityPath, 0o644);
+}
+
+/**
+ * B19: a locally built `source-only-v1` tier holds regular files, and it is
+ * the FIRST tier the resolver consults. Before this suite, the tier was
+ * constructed with `allowRegularFileClosure: false` and had no
+ * `source-only-generation` arm in either `pinPackageClosureIdentity` or
+ * `mutableGenerationIdentityFailure`, so it could not satisfy ANY package
+ * closure — not even a single-output package such as `dash`. The resolver
+ * therefore refused the artifacts a completed `./run.sh setup` had just
+ * written and fell through to the legacy `local-binaries/` symlink mirror,
+ * which either served an older build or reported "(missing)" about a file
+ * that was plainly on disk. That blocked every kernel-booting conformance
+ * suite in a locally built worktree.
+ */
+describe("binary resolver source-only tier package closures", () => {
+  it("resolves a single-output package materialized as a regular file", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const fixture = createScalarOutputFixture();
+    const outputName = basename(fixture.relPath);
+    materializeSourceOnlyPackage(
+      join(repo, "local-binaries/source-only-v1"),
+      fixture.name,
+      [{
+        kind: "output",
+        sourceArtifact: fixture.sourceArtifact,
+        mirrorPath: outputName,
+        outputName: outputName.replace(/\.wasm$/, ""),
+        forkInstrumentation: "auto",
+      }],
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+
+    expect(resolveBinary(fixture.relPath)).toBe(
+      join(repo, "local-binaries/source-only-v1", fixture.relPath),
+    );
+  });
+
+  it("resolves every member of a multi-member package from one generation", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const fixture = createMultiOutputFixture();
+    materializeSourceOnlyPackage(
+      join(repo, "local-binaries/source-only-v1"),
+      fixture.name,
+      [
+        {
+          kind: "output",
+          sourceArtifact: "artifacts/image.zip",
+          mirrorPath: `${fixture.name}/image.zip`,
+          outputName: "image",
+          forkInstrumentation: "auto",
+        },
+        {
+          kind: "output",
+          sourceArtifact: "support/bootstrap.zip",
+          mirrorPath: `${fixture.name}/bootstrap.zip`,
+          outputName: "bootstrap",
+          forkInstrumentation: "auto",
+        },
+        {
+          kind: "runtime-file",
+          sourceArtifact: "share/runtime.dat",
+          mirrorPath: `${fixture.name}/share/runtime.dat`,
+          guestPath: "/usr/share/runtime.dat",
+          mode: 0o644,
+        },
+      ],
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+
+    const relPaths = fixture.members.map((member) => member.relPath);
+    expect(tryResolveBinarySet(relPaths)).toEqual(
+      relPaths.map((relPath) =>
+        join(repo, "local-binaries/source-only-v1", relPath)
+      ),
+    );
+    for (const relPath of relPaths) {
+      expect(resolveBinary(relPath)).toBe(
+        join(repo, "local-binaries/source-only-v1", relPath),
+      );
+    }
+  });
+
+  it("refuses a member whose bytes drifted from the projection authority", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const root = join(repo, "local-binaries/source-only-v1");
+    const fixture = createMultiOutputFixture();
+    materializeSourceOnlyPackage(root, fixture.name, [
+      {
+        kind: "output",
+        sourceArtifact: "artifacts/image.zip",
+        mirrorPath: `${fixture.name}/image.zip`,
+        outputName: "image",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "support/bootstrap.zip",
+        mirrorPath: `${fixture.name}/bootstrap.zip`,
+        outputName: "bootstrap",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "runtime-file",
+        sourceArtifact: "share/runtime.dat",
+        mirrorPath: `${fixture.name}/share/runtime.dat`,
+        guestPath: "/usr/share/runtime.dat",
+        mode: 0o644,
+      },
+    ]);
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    writeFileSync(
+      join(root, fixture.members[0]!.relPath),
+      "tampered but the same length!!!!!!!!!!!",
+      { mode: 0o644 },
+    );
+
+    expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
+      /is invalid: member (sha256|size)/,
+    );
+  });
+
+  it("distinguishes an uninspectable artifact from a policy verdict", () => {
+    // The reader module is a HOST bootstrap dependency: without it no artifact
+    // can be examined at all. Reporting that as "rejected by artifact policy"
+    // sends the reader to rebuild an artifact nothing ever looked at. This is
+    // not hypothetical — it is the single reason behind the
+    // `the wasm-artifact module has not been installed in this realm` cluster
+    // whenever a host entry point forgets to install it.
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    writeKernelArtifact(join(repo, "local-binaries"));
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    resetWasmArtifactModuleForTesting();
+    try {
+      let message = "";
+      try {
+        resolveBinary("kernel.wasm");
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toContain("could not be inspected");
+      expect(message).toContain("has not been installed in this realm");
+      expect(message).not.toContain("rejected by artifact policy");
+    } finally {
+      useNodeWasmArtifactModule();
+    }
+  });
+
+  it("names a rejected tier as rejected, never as a missing artifact", () => {
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY; // default policy
+    const repo = makeTempRepo();
+    const root = join(repo, "local-binaries/source-only-v1");
+    const fixture = createMultiOutputFixture();
+    // Materialize the bytes, then remove the authority: the artifacts are
+    // present, so a truthful resolver must say the tier was REJECTED and why,
+    // not that the file it can see is "(missing)".
+    materializeSourceOnlyPackage(root, fixture.name, [
+      {
+        kind: "output",
+        sourceArtifact: "artifacts/image.zip",
+        mirrorPath: `${fixture.name}/image.zip`,
+        outputName: "image",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "support/bootstrap.zip",
+        mirrorPath: `${fixture.name}/bootstrap.zip`,
+        outputName: "bootstrap",
+        forkInstrumentation: "auto",
+      },
+      {
+        kind: "runtime-file",
+        sourceArtifact: "share/runtime.dat",
+        mirrorPath: `${fixture.name}/share/runtime.dat`,
+        guestPath: "/usr/share/runtime.dat",
+        mode: 0o644,
+      },
+    ]);
+    rmSync(join(root, ".kandelo"), { recursive: true, force: true });
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+
+    let message = "";
+    try {
+      resolveBinary(fixture.members[0]!.relPath);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("REJECTED");
+    expect(message).toContain("projection authority");
+    expect(message).toContain("Re-running the build does not clear a rejection");
+    // The whole point: the resolver must not describe a file it can see as
+    // absent. Every present member belongs under REJECTED, never as
+    // "(missing)" in the tier that holds it.
+    const rejectedSection = message.slice(
+      message.indexOf("REJECTED"),
+      message.indexOf("ABSENT") === -1
+        ? undefined
+        : message.indexOf("ABSENT"),
+    );
+    expect(rejectedSection).toContain("source-only-v1");
+    for (const member of fixture.members) {
+      expect(rejectedSection).not.toContain(`also absent here: ${member.relPath}`);
+    }
   });
 });
 
@@ -1333,16 +1674,21 @@ describe("binary resolver artifact policy", () => {
       rejected,
       new TextEncoder().encode("not a Wasm module"),
     );
+    // The message must name the verdict, not just report one: an artifact the
+    // reader could not examine at all is a different failure from one it
+    // examined and refused.
     expect(() => tryResolveBinary(rejected)).toThrow(
-      /exists but was rejected by artifact policy/,
+      /exists but was not accepted[\s\S]*rejected by artifact policy: not a WebAssembly module/,
     );
 
     const dangling = fixtureRelPath(".dat");
     const danglingPath = candidatePath(localBinariesDir(), dangling);
     mkdirSync(dirname(danglingPath), { recursive: true });
     symlinkSync(`${danglingPath}.missing-target`, danglingPath);
+    // A dangling symlink is present-but-unusable, and the reason says so
+    // rather than blaming the artifact's contents.
     expect(() => tryResolveBinary(dangling)).toThrow(
-      /exists but was rejected by artifact policy/,
+      /exists but was not accepted[\s\S]*could not be read/,
     );
   });
 });
@@ -3076,10 +3422,10 @@ wasm = "${fixture.sourceArtifact}"
     );
 
     expect(() => resolveBinary(fixture.relPath)).toThrow(
-      /shared package identity rejected/,
+      /whole tier refused: /,
     );
     expect(() => tryResolveBinarySet([fixture.relPath])).toThrow(
-      /shared package identity rejected/,
+      /whole tier refused: /,
     );
   });
 
@@ -3164,7 +3510,7 @@ wasm = "bin/${renamedOutput}.zip"
     }
 
     expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
-      /shared package identity rejected/,
+      /whole tier refused: /,
     );
   });
 
@@ -3269,7 +3615,7 @@ wasm = "bin/${renamedOutput}.zip"
     }
 
     expect(() => resolveBinary(fixture.members[0]!.relPath)).toThrow(
-      /shared package identity rejected: member symlinks target different canonical package generations/,
+      /whole tier refused: member symlinks target different canonical package generations/,
     );
   });
 

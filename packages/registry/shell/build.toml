@@ -18,7 +18,6 @@ inputs = [
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
   "host/src/pathconf.ts",
-  "host/src/shell-runtime-layout.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",
   "host/src/vfs/deferred-tree-limits.ts",

@@ -37,7 +37,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern.                                                                                                                          |
 | Override an artifact locally                   | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these over the cache.                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — `revision` lives in the project-view file). Invalidates the local cache for that package. Only bump when output bytes legitimately change.                                                            |
-| Isolate a worktree's build cache              | Set `KANDELO_SOURCE_CACHE_ROOT=<absolute path>` before `./run.sh local-build` / `setup` / `bootstrap`. The SourceOnly cache is shared across every worktree on the machine by default (content-addressed, so identical inputs build once and are reused everywhere — this is what keeps a fresh worktree fast); the override gives this worktree its own cache. Useful when an in-progress change alters cached artifact bytes and you don't want it churning the shared cache. Leave unset to share.                     |
+| Isolate a worktree's build cache              | Set `KANDELO_SOURCE_CACHE_ROOT=<absolute path>` before `./run.sh local-build` / `setup` / `bootstrap`. The SourceOnly cache is shared across every worktree on the machine by default (content-addressed, so identical inputs build once and are reused everywhere — this is what keeps a fresh worktree fast); the override gives this worktree its own cache. Useful when an in-progress change alters cached artifact bytes and you don't want it churning the shared cache. Leave unset to share. **The path must contain a `kandelo/` segment** — see the warning below.                     |
 | Publish package recipes from another repository | [docs/package-sources.md](package-sources.md) — package-source layout for source-built recipes consumed via `WASM_POSIX_DEPS_REGISTRY`.                                                                                                                          |
 | Trace an ABI mismatch                         | [docs/abi-versioning.md](abi-versioning.md).                                                                                                                                                                                                                       |
 | See what's missing                            | [docs/package-management-future-work.md](package-management-future-work.md).                                                                                                                                                                                       |
@@ -45,6 +45,35 @@ Most readers want one of these. Detailed sections follow further down.
 The rest of this doc is the reference manual: schema details, cache-key
 hashing, resolver ordering, the consumer-side migration pattern, and
 release semantics.
+
+### Known trap: an isolated cache root must contain `kandelo/`
+
+`KANDELO_SOURCE_CACHE_ROOT` accepts any absolute path, but the SDK's
+`pkg-config` wrapper (`sdk/src/bin/pkg-config.ts`) does not. It filters the
+caller's `PKG_CONFIG_PATH` down to entries it believes target wasm, and it
+decides that by testing whether the path contains the literal `kandelo/` (or a
+`sysroot`/`sysroot64` segment). A cache root such as
+`~/.cache/kandelo-agent-1` contains `kandelo-agent-1/`, not `kandelo/`, so
+every dependency `.pc` directory under it is dropped.
+
+The failure names neither the cache root nor the filter. The first package to
+notice is `php`, whose ICU dependency is reached only through
+`PKG_CONFIG_PATH` (the other libraries it uses are also installed into the
+sysroot, so they still resolve):
+
+```
+checking for icu-uc >= 50.1 icu-io icu-i18n... no
+configure: error: Package requirements (icu-uc >= 50.1 icu-io icu-i18n) were not met
+```
+
+Until the filter is repaired, keep an isolated root under a `kandelo/`
+segment — `~/.cache/kandelo/<worktree-name>` rather than
+`~/.cache/kandelo-<worktree-name>`. The filter itself is a substring guess
+where it should be a comparison against the resolver's real roots; repairing
+it changes `sdk/src`, which is in `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS`, so the
+repair invalidates the cache key of every library and program package and
+should be batched with another cache-invalidating change rather than landed on
+its own.
 
 ## Why
 
@@ -79,6 +108,26 @@ enters the repository dev shell only when necessary. It selects every active
 product, uses 16 concurrent jobs, stores verified sources below
 `$HOME/.cache/kandelo/source-only`, and publishes the validated projection to
 `local-binaries/source-only-v1`.
+
+The default output ends with a concise node, cache, build, and product
+The published projection authority records two distinct
+`kandelo-program-packages-v2` values, and confusing them is a real failure
+mode rather than a theoretical one. `projection` is the tier's own identity
+under `ResolvePolicy::SourceOnlyV1`, whose cache keys are domain-separated so
+the tier can address `$HOME/.cache/kandelo/source-only`. `selectionProjection`
+is the selection index the build ran against — the same value the build wrote
+to the generated `packages/registry/program-packages.json` under
+`ResolvePolicy::Default`, produced by `authoritative_program_package_index`.
+
+A resolver checking whether the tier is stale must compare against
+`selectionProjection` and never against `projection`: a `SourceOnlyV1` key and
+a `Default` key for the same unchanged package differ by construction, so
+comparing them cannot hold for any package after any build. That comparison
+shipped once and refused every package closure in every locally built
+worktree with a staleness message no rebuild could clear, which blocked every
+kernel-booting conformance suite. Both halves now come from one generator
+under one policy, so they differ only when the package registry actually
+changed.
 
 The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
@@ -275,6 +324,42 @@ files = ["share/runtime-data.bin"]                   # other runtime data
 - `dev-shell` requires the all-zero SHA sentinel. It is currently used only by
   `libcxx`, whose identity binds the exact LLVM 21.1.7 compiler and Nix source
   paths supplied by the repository dev shell.
+
+#### Origin fallbacks for `[source].url`
+
+`[source].url` stays a single declared URL. There is no `urls`, `mirrors`, or
+per-package mirror key, and adding one is not the mechanism here.
+
+Instead, the fetcher derives an ordered candidate list from the declared URL's
+**origin**: the declared URL is always tried first, then any fallback the
+repository knows for that origin. Today one origin has a rule —
+`ftpmirror.gnu.org`, GNU's redirector, falls back to the canonical direct host
+`ftp.gnu.org/gnu/<path>`. That single rule covers the 14 manifests that name
+the redirector, and covers new GNU packages without per-manifest opt-in.
+
+Three properties this preserves, all load-bearing:
+
+- **Integrity is unchanged.** `[source].sha256` is pinned, and the pin — not
+  the host that answered — establishes the artifact. Bytes that do not hash to
+  the pin are rejected by the same single check as before. The fallback is
+  about *reachability*; it never selects content, and a reachable origin
+  serving the wrong bytes fails loudly rather than being skipped.
+- **Cache identity is unchanged.** The cache key still hashes the declared
+  `source.url`. Candidates are not manifest data and are not hashed, so this
+  mechanism invalidates no cache key and rebuilds no package.
+- **Interpretation is unchanged.** `ArchiveFormat::from_url` and
+  `WASM_POSIX_DEP_SOURCE_URL` both read the declared URL, never whichever
+  candidate answered.
+
+A package with no origin rule has exactly one candidate and takes the original
+code path, error variant included.
+
+Redirectors that do **not** have a rule, and why: `downloads.sourceforge.net`,
+`prdownloads.sourceforge.net` and `download.sourceforge.net` can strand the
+same way, but a SourceForge fallback means naming a specific
+`dl.sourceforge.net` mirror, which reintroduces the rotating-volunteer
+dependency the rule exists to remove, and the project/path layout differs per
+package so there is no verifiable rewrite. Recorded rather than guessed.
 
 The checked-in local-supported authority must spell the provider explicitly.
 For compatibility, source and archived manifests that predate this field still
@@ -773,6 +858,27 @@ non-store, non-UTF-8, oversized, or failing compiler/source inputs fail before
 cache lookup. The declared Repository/DevShell byte traversal is currently a
 Unix-only capability: native non-Unix hosts return the documented
 unsupported-platform error rather than using a weaker pathname-based digest.
+
+### When a build changes its own cache key
+
+A source-only build recomputes its cache key after the build script exits and
+refuses to publish if the key moved, because the result belongs to neither
+key. The refusal now names the inputs that moved — classified as changed,
+appeared, or disappeared — instead of printing only two shas. Two opaque shas
+read as a concurrent-edit race, and that reading invites a retry loop rather
+than a fix.
+
+One blind spot is worth knowing about when reading such a refusal.
+`global_package_toolchain_digests` memoizes per repository root for the life
+of the process, so the pre- and post-build keys necessarily agree about the
+global toolchain inputs (`libc/musl`, `libc/glue`, `sdk/bin`, `sdk/src`, and
+the rest) even if the tree underneath them changed mid-build. The drift report
+re-reads those inputs **uncached** so that case becomes visible, and says
+explicitly that the key comparison understates the drift when it fires.
+
+Note that global toolchain input digests are unfiltered directory walks of the
+working tree. `libc/musl` is therefore sensitive to build state: building musl
+in-tree adds its object files to that digest.
 
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the

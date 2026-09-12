@@ -31,7 +31,7 @@ import {
   openNativeBackingFile,
 } from "../native-positioned-write";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import {
   DIRENT_TYPES,
   OPEN_FLAGS,
@@ -547,18 +547,16 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
-    // Validate the live descriptor. The remaining values are Kandelo
-    // namespace/backend capabilities and do not depend on a remembered path,
-    // so this remains valid after the opened file is renamed or unlinked.
-    const stat = this.fstat(handle);
-    return filesystemPathconf(
-      stat,
-      name,
-      {
-        supportsSymlinks: true,
-        timestampResolutionNs: 1_000_000,
-      },
-    );
+    // Validate the live descriptor. The remaining values are backend
+    // capabilities and do not depend on a remembered path, so this remains
+    // valid after the opened file is renamed or unlinked. Node exposes no
+    // `fpathconf(3)` binding, so every other name is refused with ENOSYS and
+    // the kernel answers it — see `backendPathconf`.
+    this.fstat(handle);
+    return backendPathconf(name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   ftruncate(handle: number, length: number): void {
@@ -601,16 +599,11 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const nativePath = this.safePath(path);
-    const stat = this.toStatResult(fs.statSync(nativePath, { bigint: true }));
-    return filesystemPathconf(
-      stat,
-      name,
-      {
-        supportsSymlinks: true,
-        timestampResolutionNs: 1_000_000,
-      },
-    );
+    fs.statSync(this.safePath(path), { bigint: true });
+    return backendPathconf(name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   mkdir(path: string, mode: number): void {
@@ -682,13 +675,6 @@ export class HostFileSystem implements FileSystemBackend {
       fs.lstatSync(this.safePath(path, false), { bigint: true }),
       uid,
       gid,
-    );
-  }
-
-  access(path: string, mode: number): void {
-    this.metadata.access(
-      fs.statSync(this.safePath(path), { bigint: true }),
-      mode,
     );
   }
 

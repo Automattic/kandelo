@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import * as net from "node:net";
 import { TcpNetworkBackend } from "../src/networking/tcp-backend";
+import { NET_READINESS } from "../src/generated/abi";
 
 const LOOPBACK = new Uint8Array([127, 0, 0, 1]);
-const POLLIN = 0x0001;
+// The backend reports observable facts, not `poll` revents: the POSIX
+// readiness decision belongs to the kernel (`runtime_core::net_readiness`).
+const RECV_READY = NET_READINESS.RECV_READY;
+const NET_ERROR = NET_READINESS.ERROR;
 const MSG_PEEK = 0x0002;
 
 async function listenLoopback(): Promise<{
@@ -53,35 +57,18 @@ async function waitForConnected(backend: TcpNetworkBackend, handle: number): Pro
 async function waitForReadable(backend: TcpNetworkBackend, handle: number): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    if ((backend.poll(handle, POLLIN) & POLLIN) !== 0) return;
+    if ((backend.readiness(handle) & RECV_READY) !== 0) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("readable data timed out");
 }
 
-describe("TcpNetworkBackend hostname parsing", () => {
-  it.each([
-    ["2130706433", [127, 0, 0, 1]],
-    ["127.1", [127, 0, 0, 1]],
-    ["127.1.1", [127, 1, 0, 1]],
-    ["127.0.0.1", [127, 0, 0, 1]],
-  ])("resolves the decimal IPv4 form %s without DNS", (hostname, expected) => {
-    const backend = new TcpNetworkBackend();
-    expect(Array.from(backend.getaddrinfo(hostname))).toEqual(expected);
-  });
-
-  it.each([
-    "4294967296",
-    "1..2",
-    "1.2.3.256",
-    ".example.com",
-    "foo_bar.localhost",
-    `www.${"x".repeat(64)}.com`,
-  ])("rejects the invalid hostname %s before DNS", (hostname) => {
-    const backend = new TcpNetworkBackend();
-    expect(() => backend.getaddrinfo(hostname)).toThrow("ENOENT");
-  });
-});
+// The numeric-address grammar and the DNS syntax check this file used to assert
+// against `TcpNetworkBackend` are now the kernel's, in
+// `crates/runtime-core/src/hostname.rs` and `sys_getaddrinfo`: a numeric address
+// is answered before the host is consulted, and a name that cannot be a host
+// name never reaches a backend. See `test_getaddrinfo_answers_numeric_addresses
+// _without_the_host` and `test_getaddrinfo_refuses_names_that_cannot_name_a_host`.
 
 describe("TcpNetworkBackend", () => {
   const servers: net.Server[] = [];
@@ -209,10 +196,15 @@ describe("TcpNetworkBackend", () => {
     acceptedSocket.resetAndDestroy();
 
     const deadline = Date.now() + 2_000;
-    while ((backend.poll(9, 0x0008) & 0x0008) === 0) {
+    while ((backend.readiness(9) & NET_ERROR) === 0) {
       if (Date.now() > deadline) throw new Error("reset observation timed out");
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
+
+    // The errno the engine actually observed rides along with the error fact,
+    // so SO_ERROR reports ECONNRESET because the socket was reset — not
+    // because a transport layer picked ECONNRESET as its generic failure.
+    expect(backend.readiness(9) >>> NET_READINESS.ERRNO_SHIFT).toBe(104);
 
     expect(() => backend.send(9, new TextEncoder().encode("after-reset"), 0))
       .toThrowError(/ECONNRESET/);

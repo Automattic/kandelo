@@ -106,7 +106,10 @@ const diffWasm = optionalBinary("programs/diffutils/diff.wasm");
 const cmpWasm = optionalBinary("programs/diffutils/cmp.wasm");
 const sdiffWasm = optionalBinary("programs/diffutils/sdiff.wasm");
 const diff3Wasm = optionalBinary("programs/diffutils/diff3.wasm");
-const perlWasm = optionalBinary("programs/perl.wasm");
+// Multi-member since the package gained its `perl-runtime.zip` runtime file,
+// so the legacy flat path throws rather than resolving. Member path, like
+// ruby/findutils/diffutils above.
+const perlWasm = optionalBinary("programs/perl/perl.wasm");
 const nanoWasm = optionalBinary("programs/nano.wasm");
 const tclshWasm = optionalBinary("programs/tcl.wasm");
 const testfixtureBuild = resolve(
@@ -507,6 +510,9 @@ async function main() {
         host = new NodeKernelHost({
             maxWorkers: 4,
             rootfsImage: runnerFilesystem.rootfsImage,
+            ...(runnerFilesystem.rootfsMountSpec === undefined
+                ? {}
+                : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
             // WHY: isolated mode must give explicitly resolved guest tools
             // precedence over same-named lazy rootfs stubs. `execPrograms` is
