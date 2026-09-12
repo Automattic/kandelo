@@ -143,6 +143,32 @@ const MEASURED: Record<string, () => number> = {
     }
     return declared.size - covered.size;
   },
+  kernelHostImportTypeScript: () => lineCount(["host/src/kernel.ts"]),
+  processExecTypeScript: () =>
+    lineCount(["host/src/process-lifecycle.ts", "host/src/exec-target.ts"]),
+  hostKernelPlumbingTypeScript: () =>
+    lineCount([
+      "host/src/kernel-scratch.ts",
+      "host/src/kernel-entry-gate.ts",
+      "host/src/process-memory.ts",
+      "host/src/worker-protocol.ts",
+    ]),
+  hostEntryPairTypeScript: () =>
+    lineCount([
+      "host/src/browser-kernel-host.ts",
+      "host/src/node-kernel-host.ts",
+      "host/src/browser-kernel-worker-entry.ts",
+      "host/src/node-kernel-worker-entry.ts",
+      "host/src/browser-kernel-protocol.ts",
+      "host/src/node-kernel-protocol.ts",
+    ]),
+  binaryResolverTypeScript: () => lineCount(["host/src/binary-resolver.ts"]),
+  imageBuilderTypeScript: () => lineCount(["images/vfs/scripts/*.ts"]),
+  webLibsSessionTypeScript: () =>
+    lineCount(["web-libs/kandelo-session/src/*.ts"]),
+  buildAutomationShell: () =>
+    lineCount(["scripts/*.sh", "scripts/**/*.sh"]),
+  buildAutomationScript: () => lineCount(["scripts/*.ts", "scripts/*.mjs"]),
   parseShebangReferences: () =>
     lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
       ? Number.parseInt(
@@ -348,6 +374,21 @@ describe("master plan characterization", () => {
   for (const block of plan.split(/^# LANE /m).slice(1)) {
     sections.set(block.trim().charAt(0), block);
   }
+
+  it("estimates every lane in the budget", () => {
+    // An estimates table that silently falls behind the roster is how nine
+    // lanes came to be uncosted. Every lane gets a row or the gate fails.
+    const estimated = new Set(
+      [...plan.matchAll(/^\| \*\*([A-Z])\*\*[^|]*\|\s*\*\*[^|]*d\*\*/gm)].map(
+        (m) => m[1]!,
+      ),
+    );
+    const missing = Object.keys(lanes).filter((id) => !estimated.has(id));
+    expect(
+      missing,
+      `lanes with no row in the estimates table: ${missing.join(", ")}`,
+    ).toEqual([]);
+  });
 
   it("has a plan section for every lane in the budget", () => {
     expect([...sections.keys()].sort()).toEqual(Object.keys(lanes).sort());

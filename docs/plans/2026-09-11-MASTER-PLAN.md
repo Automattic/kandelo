@@ -77,10 +77,30 @@ lands — those are marked.
 | **B** build truthfulness | **4–7 d** | medium | Reconciling the cheap path with the freshness gate is a decision plus a day; stamping the fixtures is the larger half. |
 | **X** process and exec | **2–5 d** | medium | Blocked on one panic with a precise bisect. Once found, the repoint is a one-commit reapply. |
 | **H** browser + curation | **3–6 d** | medium | The browser pass is short if provisioning holds; curation of ~370 commits into ~14 is a day or two with `commit-tree`. |
+| **K** `kernel-worker.ts` | **30–60 d** | **unknown until K1** | The largest single file in the repo, 32,718 lines with 515 `SYS_` references. Plausibly the largest lane in the campaign, and no census has run. |
+| **L** host↔kernel plumbing (V4) | **10–20 d** | **unknown until L1** | 5,853 lines holding two real invariants. `crates/host-native` is the existence proof for what the floor actually is, and nobody has compared against it. |
+| **E** Node/browser peers | **10–20 d** | **unknown until E1** | ~70% divergence across three pairs. The classification *is* the work; `process-lifecycle.ts` proves the mechanism. |
+| **Y** image builders (V3) | **10–20 d** | **unknown until Y1** | 13,502 lines, and byte-identical output for nine production images is the bar. **Blocks lane V.** |
+| **U** build automation | **15–30 d** | low | 25,658 lines of shell plus 10,921 of TS/MJS. Ranked last: none of it is host API surface. |
+| **W** `web-libs` contracts | **4–8 d** | medium | Small and mostly a split: the host contract leaves, the browser product surface stays. |
+| **R** binary resolution | **4–8 d** | medium | Bounded, and the duplication is already provable against `host-native`'s own resolver. |
+| **G** ABI binding drift | **3–6 d** | medium | Nine layout modules to cover plus the bare literals behind `statx`. The generator is ours end to end. |
+| **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
 **Serial total is not the useful number** — these run in parallel lanes. The
-**critical path is F and M**, both 15–40 d and both low confidence, and neither
-is in #1350: M is deferred, and F is only as far as F0.
+**critical path is K, F and M** — K at 30–60 d is now the largest single lane
+in the campaign and has had no census at all, and F and M are 15–40 d apiece at
+low confidence. None of the three is in #1350: M is deferred, F is only as far
+as F0, and K is planned only.
+
+**One ordering constraint is now explicit and was not before: lane Y blocks
+lane V.** `memoryFsTypeScript` cannot reach 0 while `images/vfs/scripts`
+imports `memory-fs.ts`, so any schedule that runs V to completion before Y is
+wrong on its face.
+
+**The nine lanes added on 2026-09-11 add 88–177 agent-days to the campaign**,
+against 93–180 for the eleven that preceded them — they very nearly double it. That is the honest scale of what the plan
+was previously not counting, and it is a floor like every other number here.
 
 **For PR #1350 specifically**, what remains is **H** (browser plus curation,
 3–6 d) and whatever of **T**, **X**, **C**, **B** and **S** the maintainer
@@ -119,6 +139,21 @@ can continue, which has happened in every lane that has run so far.
   excludes, or your "N repetitions" is a ritual.
 - **H-7 — measure on a quiet machine and say the load.** One performance number
   has already been withdrawn; a real 3.5 µs regression read as zero for a day.
+- **H-8 — low coupling is not evidence of migratability, and may be evidence of
+  the opposite.** The 2026-09-11 survey screened `host/src` for references to
+  `WebAssembly.`, `SharedArrayBuffer`/`Atomics.` and `postMessage`, and read the
+  near-zero scores of `dylink-planner.ts` and `wasm-artifact-driver.ts` as
+  "migration candidates". **Both are the opposite: deliberately built floors
+  left behind by migrations that already succeeded.** `host/src/dylink.ts` —
+  4,188 lines — was deleted and replaced by 14,543 lines of Rust in
+  `crates/dylink`; the low score is what success looks like, because the
+  decisions left and only the engine acts stayed. Two files also score low
+  because their coupling runs through what they *import*
+  (`binary-resolver.ts` → `memory-fs.ts`), and `web-libs` scores low because
+  its browser coupling is product concepts rather than API calls. **A coupling
+  score selects files to open. It never classifies one.** Open the file, read
+  its header, and check for an existing Rust crate before calling anything a
+  lane.
 
 ---
 
@@ -1138,6 +1173,433 @@ maintainer has held it pending a running web app.
 
 ---
 
+# LANE L — host↔kernel plumbing, the part of goal V4 that is not the imports
+
+**Status: characterized. This lane is closest to the campaign's stated primary
+goal and is also the one where floor and orchestration are hardest to separate.**
+
+`kernel-scratch.ts` (2,491), `kernel-entry-gate.ts` (1,596), `process-memory.ts`
+(1,337), `worker-protocol.ts` (429) — **5,853 lines**.
+
+## What this lane is
+
+Lane I counts the host imports. This lane is everything a host must build
+*around* them to call into the kernel instance safely: serializing entry into
+the instance, handing the kernel scratch memory it can trust, laying out process
+memory, and carrying messages to process workers.
+
+Two invariants here are real, and the lane must not delete them:
+
+- **Single entry.** A kernel export may synchronously call a host import while
+  Rust still owns mutable kernel state, so a host callback must not enter
+  another export before the outer call returns. `kernel-entry-gate.ts` exists
+  for this.
+- **Capacity beside pointer.** A pointer being inside `WebAssembly.Memory`
+  proves the host *can* address those bytes, not that the allocator *gave* them
+  to this caller. `kernel-scratch.ts` keeps capacity with the pointer and checks
+  both facts independently.
+
+## End state
+
+Both invariants still hold, and neither costs 4,087 lines of TypeScript to
+hold. Entry serialization and scratch capacity are enforced where they can be
+type-checked — in Rust, or by a shape that makes the violation unrepresentable
+rather than caught — and the TypeScript that remains is the engine acts a host
+genuinely cannot delegate.
+
+## The floor — and the existence proof that settles it
+
+**We do not have to reason about this floor. A second host already exists.**
+`crates/host-native` is **17,757 lines of Rust** running the same kernel with no
+JavaScript at all, and it solved both invariants already: `guest.rs` carries
+explicit re-entrancy handling for exactly the case `kernel-entry-gate.ts`
+guards.
+
+So the floor is not "these invariants need a host language." It is whatever
+`host-native` genuinely could not express — and the first increment is to go
+find out rather than assert it. **This is the single most valuable grounding
+lens available to lanes L, E and R, and it went unused until the 2026-09-11
+survey.**
+
+## Increments
+
+- **L1 — the census, against `host-native`.** For each of the four files, ask
+  what the native host does for the same job. Three outcomes per unit: already
+  in Rust and the TypeScript is duplicate; genuinely absent from the native host
+  because it is a JS-engine fact; or absent because the native host has the same
+  gap unfixed. **Only the first is deletable, and the third is a defect to
+  file, not a migration.** Nothing dispatches before this.
+- **L2 — unify what the census finds duplicate**, on the `crates/dylink`
+  pattern: the decision moves to Rust, the act stays in TypeScript.
+- **L3 — make the two invariants structural.** An entry gate that is a
+  discipline callers must remember is weaker than one they cannot bypass.
+- **L4 — `worker-protocol.ts`** is a wire format with no Rust peer; it belongs
+  with `crates/fork-codec`'s approach, not hand-written encode/decode.
+
+## Acceptance evidence
+
+`hostKernelPlumbingTypeScript` reaches **1,500**. The target is provisional and
+L1 sets the real one.
+
+Per increment, the invariants must be shown still enforced, not assumed: a test
+that attempts a re-entrant kernel export and is refused, and a test that
+presents a valid in-bounds pointer with a capacity it was not given and is
+refused. **Both must be seen to fail before they are trusted (H-2).**
+
+## Known hazards
+
+- **Deleting an invariant while deleting its verbosity.** The 4,087 lines are
+  mostly ceremony *around* two real rules. A rewrite that loses a rule while
+  passing every existing test is the most likely way this lane does damage,
+  because the rules are about what must *not* happen.
+- **`process-memory.ts` and `kernel-entry-gate.ts` are claimed by lane X's
+  cluster too.** Ownership is settled here — X owns `process-lifecycle.ts` and
+  `exec-target.ts`, L owns these — but a dispatch that ignores that will have
+  two lanes editing one file.
+- **`host-native` having the same gap is not permission to keep the gap.** The
+  census's third outcome is a defect to file.
+
+---
+
+# LANE E — Node and browser peers that drifted
+
+**Status: characterized. The fix is already started, which changes what this
+lane is: finishing a consolidation, not opening one.**
+
+`browser-kernel-host.ts` / `node-kernel-host.ts` (1,785 / 1,371),
+`browser-kernel-worker-entry.ts` / `node-kernel-worker-entry.ts` (1,805 /
+1,401), `browser-kernel-protocol.ts` / `node-kernel-protocol.ts` (680 / 471) —
+**7,513 lines**.
+
+## What this lane is
+
+Three pairs of files doing the same three jobs once for Node and once for the
+browser. The host-runtime contract says the two hosts are peers and a change is
+incomplete until both have the same platform-observable behavior — this lane is
+about making that structurally true instead of a rule people must follow.
+
+**The cost is measured, not asserted.** `process-lifecycle.ts`'s header records
+it: of 105 commits since 2026-06-01 that touched an entry file, **73 (70%) had
+to touch both**, and the copies drifted anyway — as far as a VM interrupt timer
+left armed across a lease release.
+
+## End state
+
+One implementation of each job, with per-host adapters holding only what is
+genuinely a platform difference. A change to lifecycle, protocol or host
+behavior is impossible to make for one host alone.
+
+## The floor
+
+**Real, and larger than in most lanes.** Worker spawn, `SharedArrayBuffer`
+availability, OPFS versus Node `fs`, service-worker mediation and transferable
+semantics are genuine platform differences, not drift. The browser file is the
+larger of the pair in all three cases, which is consistent with the browser
+carrying real extra platform work.
+
+**These are peers that diverged, not copies to delete.** After normalising away
+the host names the pairs still differ on **2,154 / 2,120 / 515 lines — roughly
+70%**. Any increment that assumes duplication will produce a merged file full
+of `if (isBrowser)`, which is worse than two honest files.
+
+## Increments
+
+- **E1 — classify every divergence.** For each differing hunk: genuine platform
+  boundary, accidental drift, or a bug in one host the other fixed. **The third
+  category is the one that justifies the lane** — it is a defect the structure
+  is generating.
+- **E2 — extend `process-lifecycle.ts`'s pattern to the rest.** It already
+  holds the shared fork/vfork/clone/exec/spawn/exit/thread implementation and
+  both entries import **10 symbols each** from it. The mechanism is proven; the
+  work is widening it.
+- **E3 — collapse the protocol pair**, the smallest and most mechanical of the
+  three (515 differing lines).
+- **E4 — leave per-host adapters explicitly named as such**, so the remaining
+  divergence is a documented boundary rather than residue.
+
+## Acceptance evidence
+
+`hostEntryPairTypeScript` reaches **2,000**. Provisional; E1 sets the real
+number, and E1's classification is the deliverable that makes it honest.
+
+The lane's real evidence is behavioral, not a line count: a test that asserts
+the two hosts agree on the lifecycle transitions this lane consolidates, and
+which fails if one host is changed alone.
+
+## Known hazards
+
+- **Merging peers into one file with host conditionals**, which converts
+  visible divergence into invisible divergence. The 70% figure is the guard
+  against anyone attempting this in one step.
+- **Deleting a divergence that was a fix.** E1's third category exists because
+  one host having different code is sometimes the only record that a bug was
+  found there.
+- **Browser behavior cannot be validated from Node** (lane H). This lane
+  changes browser-facing code, so Node-green is not evidence for it.
+
+---
+
+# LANE R — binary and artifact resolution
+
+**Status: characterized. Small, bounded, and the duplication is already
+provable.**
+
+`binary-resolver.ts` — **4,020 lines**.
+
+## What this lane is
+
+Resolving a packaged artifact — Wasm executable, side module, VFS image,
+archive, declared runtime data file — out of `local-binaries/` or `binaries/`,
+with a priority order, legacy-fork-artifact staleness rules and package
+candidates.
+
+It is the **largest body in `host/src` with zero `WebAssembly.`,
+`SharedArrayBuffer`/`Atomics.` or `postMessage` references**: essentially no
+engine coupling at all.
+
+## End state
+
+One resolver, in Rust, consulted by both hosts. The TypeScript that remains
+reads bytes from the host's own filesystem and nothing else decides *which*
+bytes.
+
+## The floor
+
+Reading files from the host's filesystem — Node `fs` in one host, fetch/OPFS in
+the other. That is a byte-fetch, not a resolution policy.
+
+**The duplication is already visible.** `crates/host-native` resolves
+`local-binaries/` itself, and its source records a specific incident in the
+process: paths named `local-binaries/` alone while the resolver consults
+`local-binaries/source-only-v1/` first, so a run exited 0 against a file that
+was not the one intended. **Two resolvers with different precedence is exactly
+the failure mode this lane closes**, and it has already produced a wrong answer
+once.
+
+## Increments
+
+- **R1 — diff the two precedence orders**, TypeScript against `host-native`,
+  and write down every case where they disagree. The incident above says at
+  least one disagreement is real.
+- **R2 — one resolver in Rust**, with the precedence rules as data and the
+  disagreements from R1 resolved deliberately rather than by whichever host is
+  asked.
+- **R3 — the hosts call it** and keep only byte-fetch.
+
+## Acceptance evidence
+
+`binaryResolverTypeScript` reaches **500** — not 0, because a host still reads
+its own filesystem. Provisional; R1 sets the real number.
+
+The decisive evidence is a differential test: for a corpus of resolution
+requests, the TypeScript and Rust resolvers must agree on every answer before
+the TypeScript is deleted, and the R1 disagreements must each appear as a
+deliberate, recorded decision rather than a silent pick.
+
+## Known hazards
+
+- **`binary-resolver.ts` imports `vfs/memory-fs.ts`**, so it is coupled to lane
+  V even though its own coupling score is zero. The zero measures what the file
+  touches directly, not what it imports (H-8).
+- **Resolution feeds the build**, so a wrong answer here is a stale-artifact
+  bug that presents as a kernel or package defect somewhere else entirely —
+  which is how the `source-only-v1` incident presented.
+- **This lane is dev-and-build-time**, so it is not on the wasmtime host's
+  critical path in the way lane L is. It is cheap and provable, not urgent.
+
+---
+
+# LANE Y — VFS image builders write the image format in TypeScript
+
+**Status: characterized. This is goal V3 stated directly, and it is a hard
+prerequisite for lane V.**
+
+`images/vfs/scripts/*.ts` — **13,502 lines**. Largest:
+`staged-product-inputs.ts` (1,973), `vfs-product-builder-contract.ts` (952),
+`wordpress-preinstall.ts` (921), `shell-vfs-build.ts` (870),
+`build-source-rootfs-shell-image.ts` (813).
+
+## What this lane is
+
+The builders that produce every VFS image. **They write images through
+`host/src/vfs/memory-fs.ts`** — `images/vfs/scripts/vfs-image-helpers.ts`
+imports it directly — which means the image format is written by the same
+TypeScript filesystem lane V is deleting.
+
+## End state
+
+Images are produced by the Rust writer that already exists. **Goal V3 — an ABI
+change cannot break an image — is achieved by construction**, because the
+kernel and the builder share one implementation of the format rather than
+agreeing to match.
+
+## The floor
+
+Deciding *what goes in* an image is product configuration and stays: which
+packages, which demo metadata, which lazy archives, WordPress preinstall steps.
+**Writing the format is not floor**, and a Rust SFFS writer already exists —
+`sffs_write.rs`, 2,387 lines, live via `kernel_rootfs_export_tree` and pinned
+to the TypeScript one by four byte-level cross-language fixtures.
+
+The split this lane draws: builders keep the *recipe*, the writer owns the
+*format*.
+
+## Increments
+
+- **Y1 — census the format-touching builders.** `dinit-image-helpers.ts`,
+  `staged-product-inputs.ts` and `vfs-image-helpers.ts` reference the format
+  directly; the rest reach it through those. Establish which need the format
+  and which only need a directory tree.
+- **Y2 — route image writing through the Rust writer**, via the export it
+  already has plus whatever Y1 shows is missing.
+- **Y3 — cut the `memory-fs.ts` import.** This is the increment **lane V is
+  blocked on**: `memoryFsTypeScript` cannot reach 0 while `images/` imports it.
+- **Y4 — the recipe layer stays TypeScript** and is explicitly named as product
+  configuration, so it is not mistaken for residue later.
+
+## Acceptance evidence
+
+`imageBuilderTypeScript` reaches **2,000**. Provisional; Y1 sets the real
+number.
+
+The format evidence is byte equality: every production image must build
+byte-identically through the Rust writer before the TypeScript path is removed
+— the same standard lane V's four cross-language fixtures already set, applied
+to whole images rather than fixtures. **Nine production images exist and all
+nine must pass**, the corpus lane C already used for the lazy-identity gate.
+
+## Known hazards
+
+- **Lane V cannot close without this lane**, and the master plan did not say so
+  until now. Any schedule that puts V before Y is wrong.
+- **A builder that silently produces a different image** is the worst outcome
+  here, because images are validated by running them and a subtly wrong image
+  fails somewhere unrelated. Byte equality is the only acceptable bar.
+- **`wordpress-preinstall.ts` (921 lines) is product logic, not format logic**,
+  and a line-count target invites deleting the wrong 921 lines.
+
+---
+
+# LANE W — `web-libs` session contracts
+
+**Status: characterized. Small, and it is the contract layer a second host
+consumes.**
+
+`web-libs/kandelo-session/src/*.ts` — **5,360 lines**, of which
+`kernel-host.ts` is 2,776.
+
+## What this lane is
+
+`KernelHost`, boot descriptors, demo configuration, snapshots and gallery
+metadata: the reusable contracts between a host and the things that drive it.
+`kernel-host.ts` touches the host boundary **6 times in 2,776 lines**.
+
+## End state
+
+The contracts a host implements are defined once, in a form both the browser
+host and a native host can consume, so "what a host must provide" is a typed
+artifact rather than a TypeScript interface only one host can read.
+
+## The floor
+
+Boot descriptors, sharing and gallery metadata are **browser product surface**
+with no kernel meaning, and they stay in TypeScript. The browser-and-user
+contract also makes descriptors and shared URLs untrusted input needing
+versioning, size caps and path validation — that validation is product
+behavior, not kernel behavior.
+
+The part that is not floor is the `KernelHost` contract itself.
+
+## Increments
+
+- **W1 — separate the host contract from the product surface** inside
+  `kandelo-session`. They are one package today and only the first half is
+  shared with a native host.
+- **W2 — express the host contract where both hosts can consume it**, which
+  means generated from Rust in the way `host/src/generated/abi.ts` already is.
+- **W3 — leave the product surface alone** and say so.
+
+## Acceptance evidence
+
+`webLibsSessionTypeScript` reaches **2,500** — roughly the product-surface half.
+Provisional; W1 sets the real number and W1 is the deliverable that makes the
+split defensible.
+
+The real evidence is that `crates/host-native` can satisfy the `KernelHost`
+contract without a TypeScript shim.
+
+## Known hazards
+
+- **The 6-reference coupling score understates the browser coupling**, because
+  boot descriptors and sharing are browser *product* concepts rather than
+  browser *API* calls. A low score here means "does not call browser APIs", not
+  "is host-neutral" (H-8).
+- **Untrusted-input validation must not be migrated into something weaker.**
+  Descriptor validation is a security boundary.
+
+---
+
+# LANE U — build automation in shell and MJS
+
+**Status: characterized. Ranked last of the new lanes, deliberately, and the
+reason is stated rather than left to be inferred.**
+
+`scripts/*.sh` and `scripts/**/*.sh` — **25,658 lines**. `scripts/*.ts` and
+`scripts/*.mjs` — **10,921 lines**.
+
+## What this lane is
+
+Build, test, package and release automation, in a language where nothing type
+checks it, for a repo whose standing preference is that new tools default to a
+Rust `xtask` verb.
+
+## End state
+
+Automation that participates in the build's correctness — cache keys, package
+manifests, artifact staging, release publishing — is Rust with tests. Thin shell
+wrappers that invoke it remain, because a shell entry point is a convenience,
+not a place decisions live.
+
+## The floor
+
+Shell is genuinely right for process orchestration: invoking a compiler, wiring
+stdio, setting up the dev shell. **The floor is the wrapper, not the logic.**
+
+## Increments
+
+- **U1 — rank by blast radius, not size.** A script that computes a cache key
+  or emits a manifest can produce a wrong artifact silently; a script that runs
+  a test suite fails loudly. **Only the first kind earns migration.**
+- **U2 — `generate-rootfs-package-manifest.mjs` first.** Lane S already
+  indicted it: it emits `sudo` and `sudo-lite` setuid-root as lazy refs with
+  **no integrity digest**. It is the proof that manifest emission in an
+  untested language has a security consequence.
+- **U3 — cache-key and artifact-staging scripts next**, on the closure-derived
+  cache-key pattern already established.
+- **U4 — leave test runners and dev conveniences in shell** and say so.
+
+## Acceptance evidence
+
+`buildAutomationShell` reaches **8,000** and `buildAutomationScript` reaches
+**4,000**. Both provisional; U1's ranking sets the real numbers.
+
+Per increment, a migrated script must have a test that fails when the logic is
+wrong — which is the entire point, since the current failure mode is silence.
+
+## Known hazards
+
+- **This lane does not serve goal V4 at all.** No part of build automation is
+  host API surface. It is listed so the roster is complete and ranked last so
+  it does not compete with lanes L, I and V for attention. **Working this lane
+  while V4 is the stated primary goal would be motion, not progress.**
+- **Line-count targets are a poor fit for shell**, where a 400-line script may
+  be a thin wrapper and a 40-line one may compute a cache key. U1's blast-radius
+  ranking exists because the surface numbers here are the weakest in the budget.
+- **Rewriting working automation is how build systems break.** Every migration
+  must be provable against the existing script's output before it replaces it.
+
+---
+
 # Unclaimed surface — the survey this plan was missing
 
 **`docs/plans/2026-09-11-repo-survey-unclaimed-surface.md` holds the complete
@@ -1150,22 +1612,41 @@ fork lane.** Outside `host/src` there are a further 14,091 TypeScript lines of
 VFS image builders, 25,658 lines of shell plus 9,729 of TS/MJS build automation,
 and 5,360 lines of `web-libs` session contracts, none of it claimed either.
 
-The survey names seven clusters with evidence and coupling measurements:
-dynamic linking (3,263), binary resolution (4,020), the host↔kernel plumbing
-that *is* goal V4 (11,481), the Node/browser host pairs (7,513, and ~70%
-divergent rather than duplicated), the process/exec host side (8,359 — behind
-lane X's 12-reference gate), the image builders (14,091 — goal V3), and build
-automation.
+The survey named seven clusters. **Six became the lanes above and one turned
+out not to be a lane at all**, which is the survey's most useful result:
 
-**None of those clusters is a lane yet**, because none has the five-section
-characterization this file requires, and for most of them the floor has not
-been established. They are listed so that "is everything covered?" has a
-written answer instead of a remembered one. Two consequences of the survey are
-already applied: lanes K, G and D exist, and `memoryFsTypeScript` closed lane
-V's gate hole.
+| Cluster | Outcome |
+|---|---|
+| Dynamic linking, 3,263 | **Not a lane.** Already migrated; this is the floor it left behind. See H-8. |
+| Host↔kernel plumbing | **Lane L**, less `kernel.ts` (lane I's body) and `wasm-artifact-driver.ts` (another finished floor) — 5,853 |
+| Node/browser host pairs | **Lane E** — 7,513, and the fix is already partly built |
+| Binary resolution | **Lane R** — 4,020 |
+| Image builders | **Lane Y** — 13,502, and lane V is blocked on it |
+| Build automation | **Lane U** — ranked last; it does not serve V4 |
+| `web-libs` contracts | **Lane W** — 5,360 |
 
-**This plan is therefore not yet complete, and should not be described as
-complete.** It is complete for the lanes it characterizes.
+Two existing lanes had the same gate hole lane V had — a small gate on a large
+body — and both are now closed: **lane I** gained
+`kernelHostImportTypeScript` (`kernel.ts`, 4,774 lines implementing the 72
+imports it counted), and **lane X** gained `processExecTypeScript` (5,426 lines
+behind a 12-reference gate).
+
+**Every target on the new lanes is provisional**, and each lane's first
+increment is the census that sets the real one. That is stated in each lane and
+in each surface's `why`, because a provisional number presented as a commitment
+is how a budget stops being honest.
+
+## What "complete" means for this plan now
+
+The roster is complete: twenty lanes, every one carrying the five required
+sections, every one gated by a measurement that has been shown to fail. **The
+characterization is not uniformly deep.** Lanes F, V, I and C have been worked
+and their increments are grounded in what was found; lanes L, E, R, Y, W and U
+are characterized from a survey and a reading, and their first increment is in
+every case a census precisely because that grounding does not exist yet.
+
+**No work has been done on any of the six new lanes.** They are planned, not
+started.
 
 ---
 

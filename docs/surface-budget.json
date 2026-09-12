@@ -106,6 +106,69 @@
       "slack": 9,
       "target": 0,
       "why": "render_process_layouts_header covers 6 of 15 layout modules, so most of the struct offsets the C side depends on have nothing checking them against musl. That is how statx came to write half a device number with no gate objecting."
+    },
+    "kernelHostImportTypeScript": {
+      "measure": "line count of host/src/kernel.ts",
+      "ceiling": 4774,
+      "slack": 150,
+      "target": 1200,
+      "why": "The implementation behind lane I's 72 host imports. Lane I counted the imports and never measured the code implementing them, so the lane could have reached 40 imports with all 4,774 lines standing. kernel.ts's own header enumerates the env.host_* functions it provides: it is the host API surface a wasmtime host must reproduce. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "processExecTypeScript": {
+      "measure": "line count of host/src/process-lifecycle.ts and host/src/exec-target.ts",
+      "ceiling": 5426,
+      "slack": 150,
+      "target": 1500,
+      "why": "Lane X's body. Its only gate was parseShebangReferences (12 -> 0) \u2014 a 12-reference gate on a 5,426-line subject, the same hole lane V had. process-lifecycle.ts is the shared fork/vfork/clone/exec/spawn/exit/thread implementation both worker entries call. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "hostKernelPlumbingTypeScript": {
+      "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
+      "ceiling": 5853,
+      "slack": 150,
+      "target": 1500,
+      "why": "Lane L. What a wasmtime host has to write beyond the imports themselves: single-entry serialization into the kernel instance, capacity-carrying scratch views, process memory layout and the worker wire. Two real invariants live here \u2014 a kernel export may synchronously call a host import while Rust still owns mutable state, and a pointer inside WebAssembly.Memory does not prove the allocator gave those bytes to this caller \u2014 so the target is not 0. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "hostEntryPairTypeScript": {
+      "measure": "line count of the six browser-/node- kernel host, worker-entry and protocol files",
+      "ceiling": 7513,
+      "slack": 200,
+      "target": 2000,
+      "why": "Lane E. The Node and browser peers of the same three jobs. Measured divergence after normalising host names: 2,154 / 2,120 / 515 lines, about 70% \u2014 these are peers that drifted, not copies to delete. process-lifecycle.ts already exists to fix this and both entries import 10 symbols from it, so the lane is finishing a consolidation, not starting one. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "binaryResolverTypeScript": {
+      "measure": "line count of host/src/binary-resolver.ts",
+      "ceiling": 4020,
+      "slack": 150,
+      "target": 500,
+      "why": "Lane R. Artifact resolution over local-binaries/ and binaries/ \u2014 priority order, legacy-fork-artifact staleness, package candidates. The largest body in host/src with zero WebAssembly, SharedArrayBuffer or postMessage references. Partial Rust already exists in crates/host-native and tools/xtask. Target is not 0 because a host must still read its own filesystem. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "imageBuilderTypeScript": {
+      "measure": "line count of images/vfs/scripts/*.ts",
+      "ceiling": 13502,
+      "slack": 300,
+      "target": 2000,
+      "why": "Lane Y, and goal V3 directly. The builders that produce VFS images write them through host/src/vfs/memory-fs.ts \u2014 the TypeScript filesystem lane V is deleting \u2014 so an ABI change can still break an image, and lane V cannot finish while they depend on it. A Rust SFFS writer already exists (sffs_write.rs, 2,387 lines, live via kernel_rootfs_export_tree). **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "webLibsSessionTypeScript": {
+      "measure": "line count of web-libs/kandelo-session/src/*.ts",
+      "ceiling": 5360,
+      "slack": 150,
+      "target": 2500,
+      "why": "Lane W. KernelHost, boot descriptors, demo config and snapshots \u2014 the contracts a new host consumes. kernel-host.ts is 2,776 of the 5,360 and touches the host boundary 6 times. Target is not 0 because boot descriptors and sharing are browser-facing product surface that has no kernel meaning. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "buildAutomationShell": {
+      "measure": "line count of scripts/*.sh and scripts/**/*.sh",
+      "ceiling": 25658,
+      "slack": 500,
+      "target": 8000,
+      "why": "Lane U. Build, test, package and release automation in shell, where nothing type-checks it. Serves V2 and the standing repo preference that new tools default to a Rust xtask verb. It does NOT serve V4 \u2014 no part of this is host API surface \u2014 and the lane is ranked accordingly. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "buildAutomationScript": {
+      "measure": "line count of scripts/*.ts and scripts/*.mjs",
+      "ceiling": 10921,
+      "slack": 300,
+      "target": 4000,
+      "why": "Lane U's TypeScript and MJS half. Includes generate-rootfs-package-manifest.mjs, the emitter lane S already indicted for shipping sudo setuid-root as a lazy ref with no integrity digest. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
     }
   },
   "lanes": {
@@ -150,6 +213,10 @@
         {
           "surface": "hostImportFunctions",
           "atMost": 40
+        },
+        {
+          "surface": "kernelHostImportTypeScript",
+          "atMost": 1200
         }
       ],
       "why": "28 of 72 imports are POSIX filesystem operations the kernel already implements for its own mounts. A host-backed mount needs roughly six calls. 40 is the ceiling to beat, not the goal."
@@ -178,6 +245,10 @@
         {
           "surface": "parseShebangReferences",
           "atMost": 0
+        },
+        {
+          "surface": "processExecTypeScript",
+          "atMost": 1500
         }
       ],
       "why": "Closure is the kernel deciding what a spawn runs. parseShebang reaching zero is the measurable form; the probe traps today, so the panic is the blocker rather than the design."
@@ -274,6 +345,76 @@
         "floor"
       ],
       "whyExempt": "Dead code has no capability boundary to describe; the floor question belongs to whichever lane owns the subsystem each module was written for."
+    },
+    "L": {
+      "title": "Host-kernel plumbing \u2014 what a wasmtime host writes beyond the imports",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "hostKernelPlumbingTypeScript",
+          "atMost": 1500
+        }
+      ],
+      "why": "Goal V4's core. 5,853 lines of entry serialization, scratch capacity views, process memory layout and worker wire that a second host reproduces from scratch. Two genuine invariants live here, so the lane is about separating them from the orchestration around them, not deletion."
+    },
+    "E": {
+      "title": "Node/browser peer divergence in the kernel host and worker entries",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "hostEntryPairTypeScript",
+          "atMost": 2000
+        }
+      ],
+      "why": "Goal V1. Three pairs of files doing the same three jobs, ~70% divergent. 73 of 105 entry-touching commits had to touch both and they drifted anyway. process-lifecycle.ts is the started fix; this lane finishes it."
+    },
+    "R": {
+      "title": "Binary and artifact resolution in the host",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "binaryResolverTypeScript",
+          "atMost": 500
+        }
+      ],
+      "why": "Goal V4. The largest wholly-uncoupled body in host/src. A second host reimplements artifact resolution today, and partial Rust already exists in host-native and xtask."
+    },
+    "Y": {
+      "title": "VFS image builders write the image format in TypeScript",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "imageBuilderTypeScript",
+          "atMost": 2000
+        }
+      ],
+      "why": "Goal V3 directly: ABI changes can break images because the builders write them through the TypeScript filesystem. Also a hard prerequisite for lane V \u2014 memory-fs.ts cannot be deleted while images/vfs/scripts imports it."
+    },
+    "W": {
+      "title": "web-libs session contracts a new host consumes",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "webLibsSessionTypeScript",
+          "atMost": 2500
+        }
+      ],
+      "why": "Goals V1 and V4. KernelHost, boot descriptors and snapshots are the contracts a host implements against; they are barely coupled to the browser and are not shared with a native host today."
+    },
+    "U": {
+      "title": "Build automation in shell and MJS",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "buildAutomationShell",
+          "atMost": 8000
+        },
+        {
+          "surface": "buildAutomationScript",
+          "atMost": 4000
+        }
+      ],
+      "why": "Goal V2 and the repo's Rust-tools preference. Explicitly does NOT serve V4 and is ranked last of the new lanes for that reason; it is listed so the roster is complete, not because it competes for priority."
     }
   }
 }

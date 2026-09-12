@@ -120,14 +120,31 @@ These are groupings the survey suggests, with the evidence for each. They
 are **candidates for lanes, not lanes** — none has the five-section
 characterization the master plan requires before dispatch.
 
-### Dynamic linking — 3,263 lines
+### Dynamic linking — 3,263 lines — **NOT A LANE. Already migrated.**
 
-`dylink-planner.ts` (1,243), `dylink-planner-wire.ts` (1,047),
-`dylink-loader.ts` (973). The planner and its wire format touch the host
-boundary **zero times between them apart from one `SharedArrayBuffer`
-reference**: this is dylink planning arithmetic living in TypeScript. The
-loader carries the real floor (15 `WebAssembly.` references — instantiating
-side modules). Goals V2 and V4.
+**The first draft of this survey got this wrong and the correction is the
+most useful thing in this file.** The coupling screen flagged
+`dylink-planner.ts` (1,243) and `dylink-planner-wire.ts` (1,047) as
+near-zero-coupling TypeScript and therefore migration candidates. Reading
+the files says the opposite: this is a *deliberately built floor* left
+behind by a migration that already happened.
+
+`host/src/dylink.ts` — 4,188 lines that interleaved linker computation
+with the JS-API calls realising it — **has been deleted**. In its place
+are 14,543 lines of Rust across `crates/dylink` and `crates/dylink-module`,
+and the surviving TypeScript is a session wrapper plus an executor for
+the eight acts wasm cannot perform on itself (`compile`, `newGlobal`,
+`readGlobal`/`writeGlobal`, `growTable`/`writeTable`, `growMemory`,
+`newTag`). The planner's own header states the rule: *"if a change here
+would encode a linker DECISION, the decision belongs in `crates/dylink`."*
+
+The low coupling count is therefore **evidence the migration succeeded** —
+the decisions left, the acts stayed. `wasm-artifact-driver.ts` (854) is
+the same story with the same header, against `crates/wasm-artifact-module`.
+
+**This is the exemplar the other lanes should be measured against**, and
+it is why a low coupling score must never be read as "migratable" without
+opening the file. See hazard H-8 in the master plan.
 
 ### Binary and package resolution — 4,020 lines
 
@@ -138,14 +155,29 @@ Goal V4: a second host reimplements binary resolution today.
 
 ### Host↔kernel entry, scratch and memory plumbing — 11,481 lines
 
-`kernel.ts` (4,774), `kernel-scratch.ts` (2,491), `kernel-entry-gate.ts`
-(1,596), `process-memory.ts` (1,337), `wasm-artifact-driver.ts` (854),
-`worker-protocol.ts` (429). **This cluster is goal V4 itself** — it is
-approximately the thing a wasmtime host would have to write. It is also
-the cluster where floor and orchestration are most entangled, so it needs
-a census on the pattern of lane V's V6 before any of it is dispatched.
+**`kernel.ts` (4,774) is lane I's body, not unclaimed.** Its header
+enumerates the `env.host_*` import functions it implements — it *is* the
+72-import surface lane I counts. Lane I measures the count and never names
+the implementation, which is the same gate hole lane V had. It is
+subtracted from this cluster below, leaving 6,707.
 
-### Node/browser host pairs — 7,513 lines
+`wasm-artifact-driver.ts` (854) is likewise already-migrated floor, for
+the same reason and with the same header, so it comes out too. What
+remains genuinely unclaimed is **5,853 lines**: `kernel-scratch.ts`
+(2,491), `kernel-entry-gate.ts` (1,596), `process-memory.ts` (1,337) and
+`worker-protocol.ts` (429).
+
+**This remainder is goal V4 itself** — approximately the thing a wasmtime
+host would have to write. It is also where floor and orchestration are
+most entangled: `kernel-entry-gate.ts` exists because a kernel export may
+synchronously call a host import while Rust still owns mutable state, and
+`kernel-scratch.ts` exists because a pointer inside `WebAssembly.Memory`
+proves the host *can* address bytes, not that the allocator *gave* them to
+this caller. Both are real invariants; whether they need 4,087 lines of
+TypeScript to hold is the open question. It needs a census on the pattern
+of lane V's V6 before any of it is dispatched.
+
+### Node/browser host pairs — 7,513 lines — **partly under way already**
 
 `browser-kernel-host.ts` / `node-kernel-host.ts` (1,785 / 1,371),
 `browser-kernel-worker-entry.ts` / `node-kernel-worker-entry.ts`
@@ -158,6 +190,14 @@ divergence. The V1 concern is real but it is *divergence between peers*,
 not duplication to delete, and any lane here has to say which divergences
 are genuine platform boundaries. Note the direction: the browser file is
 larger in all three pairs.
+
+**`process-lifecycle.ts` (4,836) already exists to fix exactly this**, and
+its header carries the measurement that motivated it: 105 commits since
+2026-06-01 touched an entry file and **73 of them (70%) had to touch
+both**, and the copies drifted anyway — as far as a VM interrupt timer
+left armed across a lease release. Both entries do import from it today,
+**10 symbols each**, so the consolidation is real and partial. The lane
+here is *finish it*, not *start it*.
 
 ### Process and exec host side — 8,359 lines
 
@@ -214,12 +254,37 @@ contracts a new host consumes. Goals V1 and V4.
   its floor established before it becomes a lane, and the survey
   deliberately stops short of asserting one.
 
-## Immediate consequences already applied
+## Consequences — all applied
 
-- Lanes **K**, **G**, **D** added to the master plan and the budget
-  (commit `1ff6b646d`).
-- Surface **`memoryFsTypeScript`** added and put in lane V's closure, so
-  the lane can no longer go green with 8,501 of its 12,253 lines standing
+Every cluster above has been resolved into the master plan. Nothing in
+this file is still unclaimed.
+
+- Lanes **K**, **G**, **D** added (commit `1ff6b646d`).
+- Surface **`memoryFsTypeScript`** added to lane V's closure, so the lane
+  can no longer go green with 8,501 of its 12,253 lines standing
   (commit `d9f313955`).
+- Lanes **L**, **E**, **R**, **Y**, **W**, **U** added with full
+  five-section characterizations and budgeted surfaces.
+- Two pre-existing gate holes closed: **lane I** gained
+  `kernelHostImportTypeScript` (`kernel.ts`, 4,774 lines implementing the
+  72 imports it counted) and **lane X** gained `processExecTypeScript`
+  (5,426 lines behind a 12-reference gate).
+- Hazard **H-8** records the survey's own mistake so it is not repeated:
+  a low coupling score selects a file to open, it never classifies one.
+- The estimates table now covers all 20 lanes, and a gate fails if it
+  ever falls behind the roster again. The nine lanes added on this date
+  are **88–177 agent-days** against **93–180** for the eleven before
+  them — they very nearly double the campaign.
 
-Everything else above is still unclaimed as of this file's date.
+**One ordering constraint fell out of this survey and was not known
+before: lane Y blocks lane V.** `memory-fs.ts` cannot be deleted while
+`images/vfs/scripts` imports it.
+
+## What this survey got wrong, kept here deliberately
+
+The first draft read low coupling scores as migration candidates and was
+wrong twice in the same way — `dylink-planner.ts` and
+`wasm-artifact-driver.ts` are finished floors, not candidates. The
+corrected entries above say so, and the error is recorded as H-8 rather
+than edited out, because the next survey will be tempted by exactly the
+same shortcut.
