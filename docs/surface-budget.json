@@ -322,7 +322,7 @@
       "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service \u2014 worker creation, Atomics.wait blocking, shared memory \u2014 and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
     },
     "G": {
-      "title": "ABI binding drift \u2014 generated headers cover under half the layouts",
+      "title": "ABI binding drift \u2014 14/15 layout modules anchored to generated constants",
       "status": "open",
       "closure": [
         {

@@ -195,7 +195,7 @@ lands — those are marked.
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **2–4 d** | medium-high *(R1 done)* | One shared constant and four consumers, not a resolver migration. The 4,020-line file is policy nobody duplicates. |
-| **G** ABI binding drift | **~1 d left** | high *(14/15 done)* | Blocked only on the `itimerval` decision. The rest landed: 103 constants emitted, 68 asserts, every batch perturbation-tested. |
+| **G** ABI binding drift | **1–2 d** | high *(14/15 done)* | Blocked only on the `itimerval` decision. The rest landed: 103 constants emitted, 68 asserts, every batch perturbation-tested. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
 **Serial total is not the useful number** — these run in parallel lanes. The
@@ -1217,7 +1217,9 @@ None. The generator, the layouts and the headers are all ours.
 **But not every module is a musl-struct mirror**, which the lane did not
 anticipate — see `itimerval` below.
 
-## What landed
+## Increments
+
+**Landed:**
 
 - **G1 — `stat`**, re-anchored from literals to macros; coverage 8 → 14 facts.
 - **G2 — `iovec`, `msghdr`, `cmsghdr`, `sigevent`** in `channel_syscall.c`.
@@ -1228,6 +1230,15 @@ anticipate — see `itimerval` below.
   vector since it is three `const fn`s, not offsets.
 
 103 constants emitted; 68 asserts.
+
+**Remaining:**
+
+- **G5 — `itimerval`**, blocked on the decision below.
+- **G6 — `sched_param`'s six `__reserved2` offsets**, which no portable member
+  name can reach; needs either a Kandelo-side struct to take `offsetof` against
+  or a documented exemption.
+- **G7 — the ABI snapshot builder** (`process_native_layouts`) still records
+  only the original six modules.
 
 ## Acceptance evidence
 
