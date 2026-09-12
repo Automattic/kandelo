@@ -1061,10 +1061,12 @@ mutation proved were otherwise dead, and they reach them by construction.
   (`crates/sffs-module/src/lib.rs`), so V4 has a measured definition of done
   rather than a hazard to reason about.
 
-  **Ownership is open.** Lane Y is blocked on it and holds the tests; the
-  mechanism is V4's and the record format is V5's SDEF, which is in progress.
-  Writing the contract before V5 settles risks building against a format
-  mid-change.
+  **Ownership: LANE V. Decided by the maintainer, 2026-09-12.** Lane Y supplies
+  the tests and stays blocked until it lands. The two trials that will prove it
+  finished are held out of lane Y's green contract in
+  `perturb/deferred-until-v4.json` — they cannot be killed while the export
+  stubs deferred content, and become killable the moment the identity contract
+  makes the byte source reachable.
 - **The existing `KLZY`-versus-JSON gate cannot catch it**, because it compares
   the image's two *descriptions* of itself against each other; both can agree
   perfectly and both disagree with the body. Under V5 that gate becomes
