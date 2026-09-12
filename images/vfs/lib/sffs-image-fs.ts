@@ -162,7 +162,24 @@ export class SffsImageFs {
       this.check(this.exports.sm_chmod(p, pl, mode), "chmod", path));
   }
 
-  /** `-1` leaves a field unchanged, as POSIX chown does. */
+  /**
+   * `-1` leaves a field unchanged, as POSIX chown does.
+   *
+   * The explicit mapping to `0xffff_ffff` is BEHAVIOURALLY REDUNDANT and kept
+   * on purpose. Passing `-1` to a wasm `u32` parameter already yields the same
+   * bit pattern, because JavaScript coerces arguments with ToInt32 — so a
+   * mutation removing this mapping survives every test, and provably would.
+   *
+   * It stays because the equivalence is a property of the calling convention
+   * rather than of this code: a future signature change to `i32`, or a caller
+   * passing a BigInt, breaks the coincidence silently. Writing the sentinel
+   * makes the intent legible to a reader who should not have to know ToInt32
+   * to understand what `-1` means here.
+   *
+   * Recorded as an accepted surviving mutant, alongside the two in
+   * `crates/sffs-module/src/lib.rs`, so it is an explained result rather than
+   * an unexplained red that teaches people to ignore the gate.
+   */
   chown(path: string, uid: number, gid: number, clearSetid = false): void {
     const u = uid < 0 ? 0xffff_ffff : uid;
     const g = gid < 0 ? 0xffff_ffff : gid;
