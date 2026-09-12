@@ -4,11 +4,11 @@
   "verify": "scripts/dev-shell.sh cargo test -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" vfs_image_describe >/dev/null 2>&1",
   "trials": [
     {
-      "name": "the deferred set is never read, making the bar vacuous",
+      "name": "the KLZY deferred set is never read, making the bar vacuous",
       "scope": "fn read_deferred<S: sffs::BlockSource>",
       "scope_end": "\n}\n",
-      "find": "    if let Some(section) = fs.deferred_section().map_err(|e| format!(\"SDEF: {e:?}\"))? {",
-      "replace": "    if let Some(section) = None::<crate::vfs_image_describe::NeverSdef> {"
+      "find": "        for file in &linkage.files {",
+      "replace": "        for file in linkage.files.iter().take(0) {"
     },
     {
       "name": "content digests are dropped",

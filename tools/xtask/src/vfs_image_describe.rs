@@ -508,6 +508,25 @@ mod tests {
         assert_eq!(as_json(&a), as_json(&b));
     }
 
+    /// The growth ceiling is part of the description.
+    ///
+    /// It was added so that two images with identical trees but different
+    /// ceilings cannot compare equal — they are not interchangeable artifacts.
+    /// Nothing asserted it, and a mutant that reported 0 for every image
+    /// survived the suite, which would have quietly removed that dimension
+    /// from the bar.
+    #[test]
+    fn the_description_carries_the_growth_ceiling() {
+        let d = describe_ok(&build(0o644, b"hello sffs\n"));
+        // `build` asks for no explicit maximum, and mkfs then uses the
+        // vendor's default of four times the initial size: 128 KiB -> 512 KiB.
+        assert_eq!(
+            d.container.growth_ceiling_bytes,
+            512 * 1024,
+            "the ceiling must be read from the image, not defaulted",
+        );
+    }
+
     #[test]
     fn reads_the_namespace_it_was_given() {
         let d = describe_ok(&build(0o644, b"hello sffs\n"));
