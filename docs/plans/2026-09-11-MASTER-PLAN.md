@@ -2213,6 +2213,40 @@ filesystem needed rebuilding.
   filesystem already exists, dormant, in Phase 5's `tmpfs.rs` and `rootfs.rs`.
   See the decided entry above.
 
+**`rebaseToNewFileSystem` is RETIRED, not ported — and the claim that it has
+only test callers is wrong. 2026-09-12.**
+
+Commit `1cb5008ad` states that `rebaseToNewFileSystem` "has **only test
+callers**". It has **three production call sites**, all in the image builders:
+
+* `images/vfs/scripts/shell-vfs-build.ts:399`
+* `images/vfs/scripts/package-shell-vfs-build.ts:154`
+* `images/vfs/scripts/build-php-test-vfs-image.ts:344`
+
+All three do the same thing — restore a filesystem from a base image, compare
+its capacity against the product profile, and rebase when they differ. Each is
+guarded by that comparison, so it fires only on a mismatch, which is probably
+why a search for live callers read as empty.
+
+**The conclusion that rested on it still holds, for a better reason.** Rebase
+exists because a `SharedArrayBuffer`'s `maxByteLength` is fixed at
+construction: the TypeScript path restores an image, discovers the capacity is
+wrong, and copies the entire tree into a new buffer. It is a workaround for a
+property of the backing store, not an image-format operation.
+
+The Rust path has no such constraint. Capacity is `SffsConfig.max_size_bytes`,
+chosen when the writer is constructed at SERIALIZATION time — after all content
+is known and with the product profile in hand. There is nothing to rebase
+because the image is written with the right ceiling from the start.
+
+**So the census's fourth gap is retired rather than implemented**, and the
+instance-handle question is unaffected: rebase is the one API that holds two
+filesystems at once, and the Rust path never performs it.
+
+**Recorded rather than silently corrected** because a future reader checking
+`1cb5008ad`'s reasoning will find the premise does not hold, and needs to know
+the conclusion was re-derived instead of inherited.
+
 **`rebaseToNewFileSystem` was a census open question and is now answered by
 reading it** (`host/src/vfs/memory-fs.ts:4319`): it changes an image's
 **capacity**, by snapshotting to a quiescent source and full-tree-copying into
