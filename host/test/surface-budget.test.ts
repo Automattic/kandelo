@@ -74,14 +74,101 @@ function budget(): Record<string, Surface> {
   return readBudget().surfaces;
 }
 
-/** Count lines across a shell glob, resolved from the repo root. */
-function lineCount(globs: string[]): number {
-  const script = `cat ${globs.join(" ")} 2>/dev/null | wc -l`;
-  const out = execFileSync("/bin/sh", ["-c", script], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  return Number.parseInt(out.trim(), 10);
+/**
+ * Count CODE lines across a shell glob, resolved from the repo root: lines that
+ * are neither blank nor purely a comment.
+ *
+ * # Why this is not `wc -l`
+ *
+ * It was, and counting every line made these ceilings measure the wrong thing.
+ * The surfaces below exist to stop TypeScript IMPLEMENTATION growing, because
+ * the campaign's goal is to move implementation into Rust and the fork-module.
+ * A total-line ceiling cannot tell an added function from an added paragraph of
+ * explanation, so it fails a commit that deletes code and documents why.
+ *
+ * That is not hypothetical. Lane F's `fm_capture_intern` collapse removed four
+ * per-type module exports and three host marshalling wrappers -- fork
+ * TypeScript CODE fell 5 lines -- and the total-line gate failed it, because the
+ * commit also explained the collapse in 20 lines of comment. The author's first
+ * response was to compress the explanation until the number went down, which is
+ * the metric shaping the code instead of measuring it.
+ *
+ * So the measure counts code and the ceilings are stated in code lines. A
+ * comment now costs nothing, which is the intended incentive: this campaign
+ * repeatedly finds that the expensive defects are the ones nobody wrote down.
+ *
+ * # What it counts
+ *
+ * A scanner, not a regex, because `//` and `/*` appear inside string and
+ * template literals and a regex strips those too. It tracks single-quote,
+ * double-quote and template-literal state, so a line whose only content is a
+ * comment is excluded and a line of code carrying a trailing comment is not.
+ * Nested template substitutions are not tracked; a `${...}` containing a quote
+ * character is the known limit, and it costs at most a line either way.
+ */
+function codeLineCount(globs: string[]): number {
+  const listed = execFileSync(
+    "/bin/sh",
+    ["-c", `ls ${globs.join(" ")} 2>/dev/null`],
+    { cwd: repoRoot, encoding: "utf8" },
+  )
+    .split("\n")
+    .filter((f) => f.length > 0);
+  let total = 0;
+  for (const rel of listed) {
+    total += codeLinesInSource(readFileSync(join(repoRoot, rel), "utf8"));
+  }
+  return total;
+}
+
+/** @internal Exported shape kept simple so the scanner itself is testable. */
+function codeLinesInSource(source: string): number {
+  let inBlockComment = false;
+  let count = 0;
+  for (const line of source.split("\n")) {
+    let sawCode = false;
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      const next = line[i + 1];
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (quote !== null) {
+        sawCode = true;
+        if (ch === "\\") {
+          i += 1;
+        } else if (ch === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (ch === "/" && next === "/") {
+        break; // line comment: nothing after it counts
+      }
+      if (ch === "/" && next === "*") {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        sawCode = true;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        sawCode = true;
+      }
+    }
+    if (sawCode) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function countMatches(relPath: string, pattern: RegExp): number {
@@ -91,9 +178,9 @@ function countMatches(relPath: string, pattern: RegExp): number {
 
 const MEASURED: Record<string, () => number> = {
   forkTypeScript: () =>
-    lineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]),
-  workerMainTypeScript: () => lineCount(["host/src/worker-main.ts"]),
-  sffsTypeScript: () => lineCount(["host/src/vfs/sharedfs-vendor.ts"]),
+    codeLineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]),
+  workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
+  sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),
   hostImportFunctions: () =>
     Number.parseInt(
       /EXPECTED_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
@@ -101,8 +188,8 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
-  memoryFsTypeScript: () => lineCount(["host/src/vfs/memory-fs.ts"]),
-  kernelWorkerTypeScript: () => lineCount(["host/src/kernel-worker.ts"]),
+  memoryFsTypeScript: () => codeLineCount(["host/src/vfs/memory-fs.ts"]),
+  kernelWorkerTypeScript: () => codeLineCount(["host/src/kernel-worker.ts"]),
   // 91.6% of kernel-worker.ts is one class. A line gate alone permits
   // shuffling code between methods of the same god class; this does not.
   kernelWorkerClassMethods: () => {
@@ -214,9 +301,9 @@ const MEASURED: Record<string, () => number> = {
     }
     return declared.filter((name) => !asserted.has(name)).length;
   },
-  kernelHostImportTypeScript: () => lineCount(["host/src/kernel.ts"]),
+  kernelHostImportTypeScript: () => codeLineCount(["host/src/kernel.ts"]),
   hostKernelPlumbingTypeScript: () =>
-    lineCount([
+    codeLineCount([
       "host/src/kernel-scratch.ts",
       "host/src/kernel-entry-gate.ts",
       "host/src/process-memory.ts",
@@ -335,7 +422,7 @@ const MEASURED: Record<string, () => number> = {
       10,
     ),
   parseShebangReferences: () =>
-    lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
+    codeLineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
       ? Number.parseInt(
           execFileSync("/bin/sh", [
             "-c",

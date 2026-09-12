@@ -34,36 +34,56 @@
     "Increments list, Acceptance evidence and Known hazards before it is",
     "dispatchable. A lane legitimately missing one declares `sectionsExempt` with",
     "a reason -- because the failure this file exists to end is a status asserted",
-    "in prose that nothing checks, and that applies to its own sections first."
+    "in prose that nothing checks, and that applies to its own sections first.",
+    "",
+    "MEASURE CHANGE 2026-09-12 -- the seven TypeScript line surfaces count CODE",
+    "lines (neither blank nor purely a comment), not total lines. They exist to",
+    "stop TypeScript IMPLEMENTATION growing, because the goal is to move",
+    "implementation into Rust and the fork-module, and a total-line ceiling cannot",
+    "tell an added function from an added paragraph of explanation.",
+    "",
+    "It failed a real commit that did the right thing: lane F's fm_capture_intern",
+    "collapse removed four per-type module exports and three host marshalling",
+    "wrappers -- fork TypeScript CODE fell 5 lines -- and the gate rejected it",
+    "because the commit also explained the collapse in 20 lines of comment. The",
+    "first response was to compress the explanation until the number went down.",
+    "That is the metric shaping the code instead of measuring it, so the metric",
+    "changed. A comment now costs nothing, which is the intended incentive: this",
+    "campaign's expensive defects are consistently the ones nobody wrote down.",
+    "",
+    "Ceilings and targets were re-baselined in the same change. Targets were",
+    "scaled by each surface's own code/total ratio (~0.80), so a target keeps the",
+    "meaning it had: what fraction of this surface should survive. Targets of 0",
+    "stay 0."
   ],
   "surfaces": {
     "forkTypeScript": {
-      "measure": "line count of host/src/fork-*.ts and host/src/vfork-*.ts",
-      "ceiling": 24726,
+      "measure": "code lines (non-blank, non-comment) of host/src/fork-*.ts and host/src/vfork-*.ts",
+      "ceiling": 19796,
       "slack": 200,
-      "target": 2500,
-      "why": "The Rust-First contract says this shrinks toward the floor and does not grow. It grew 23,246 -> 26,113 across the campaign. The target assumes inversion to 3-5 coarse fm_* entries, which collapses transport rather than only orchestration; deletion alone cannot reach it."
+      "target": 2000,
+      "why": "The Rust-First contract says this shrinks toward the floor and does not grow. It grew 23,246 -> 26,113 across the campaign. The target assumes inversion to 3-5 coarse fm_* entries, which collapses transport rather than only orchestration; deletion alone cannot reach it. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 24726 -> 19796, target 2500 -> 2000. Same code, a measure that counts implementation."
     },
     "workerMainTypeScript": {
-      "measure": "line count of host/src/worker-main.ts",
-      "ceiling": 7499,
+      "measure": "code lines (non-blank, non-comment) of host/src/worker-main.ts",
+      "ceiling": 5958,
       "slack": 150,
-      "target": 3000,
-      "why": "Holds the fork drive loop. 6,083 -> 7,536 across the campaign; every fine-grained fm_* call leaves a host-side seeding and base-arithmetic loop behind by construction."
+      "target": 2400,
+      "why": "Holds the fork drive loop. 6,083 -> 7,536 across the campaign; every fine-grained fm_* call leaves a host-side seeding and base-arithmetic loop behind by construction. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 7499 -> 5958, target 3000 -> 2400. Same code, a measure that counts implementation."
     },
     "sffsTypeScript": {
-      "measure": "line count of host/src/vfs/sharedfs-vendor.ts",
-      "ceiling": 3716,
+      "measure": "code lines (non-blank, non-comment) of host/src/vfs/sharedfs-vendor.ts",
+      "ceiling": 3047,
       "slack": 100,
       "target": 0,
-      "why": "The SFFS block filesystem is implemented twice: 3,752 lines here against 3,727 in sffs.rs + sffs_write.rs + sffs_deferred.rs, same superblock geometry, same allocators, same magic. Target is zero because one of the two must go and the kernel owns the format."
+      "why": "The SFFS block filesystem is implemented twice: 3,752 lines here against 3,727 in sffs.rs + sffs_write.rs + sffs_deferred.rs, same superblock geometry, same allocators, same magic. Target is zero because one of the two must go and the kernel owns the format. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 3716 -> 3047, target 0 -> 0. Same code, a measure that counts implementation."
     },
     "memoryFsTypeScript": {
-      "measure": "line count of host/src/vfs/memory-fs.ts",
-      "ceiling": 8501,
+      "measure": "code lines (non-blank, non-comment) of host/src/vfs/memory-fs.ts",
+      "ceiling": 7473,
       "slack": 200,
       "target": 0,
-      "why": "The other half of the 12,198-line TypeScript filesystem the lane V text names and no register measured. MemoryFileSystem backs `/` on every machine and implements stat, statfs, pathconf, dirents, open flags and ST_NOSUID setuid handling in the host, against 1,724 lines of tmpfs.rs in the kernel. Target is 0 because lane V's end state says the host supplies nothing inside the image body; the V6 census is the deliverable that would prove any of it is floor, and until that census runs the 0 is an assertion of the plan's end state, not a measured floor. If the census finds real floor here, this target gets revised in the open with that evidence attached."
+      "why": "The other half of the 12,198-line TypeScript filesystem the lane V text names and no register measured. MemoryFileSystem backs `/` on every machine and implements stat, statfs, pathconf, dirents, open flags and ST_NOSUID setuid handling in the host, against 1,724 lines of tmpfs.rs in the kernel. Target is 0 because lane V's end state says the host supplies nothing inside the image body; the V6 census is the deliverable that would prove any of it is floor, and until that census runs the 0 is an assertion of the plan's end state, not a measured floor. If the census finds real floor here, this target gets revised in the open with that evidence attached. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 8501 -> 7473, target 0 -> 0. Same code, a measure that counts implementation."
     },
     "hostImportFunctions": {
       "measure": "env.host_* function imports of the built kernel; see EXPECTED_HOST_IMPORT_COUNT",
@@ -74,7 +94,7 @@
     },
     "forkModuleEntryPoints": {
       "measure": "pub extern \"C\" fn fm_* declared in crates/fork-module/src/lib.rs",
-      "ceiling": 66,
+      "ceiling": 63,
       "slack": 2,
       "target": 5,
       "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow."
@@ -94,11 +114,11 @@
       "why": "sudo and sudo-lite ship setuid-root as lazy references fetched by URL with length as the only check. Bytes of the same length from a substituting host, a poisoned cache or a network position execute as root inside the guest."
     },
     "kernelWorkerTypeScript": {
-      "measure": "line count of host/src/kernel-worker.ts",
-      "ceiling": 32718,
+      "measure": "code lines (non-blank, non-comment) of host/src/kernel-worker.ts",
+      "ceiling": 26495,
       "slack": 400,
-      "target": 12000,
-      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
+      "target": 9700,
+      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 32718 -> 26495, target 12000 -> 9700. Same code, a measure that counts implementation."
     },
     "unguardedLayoutModules": {
       "measure": "process_layout modules whose C-side _Static_asserts are not anchored to a generated KANDELO_ macro",
@@ -108,18 +128,18 @@
       "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' \u2014 WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it \u2014 two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
     },
     "kernelHostImportTypeScript": {
-      "measure": "line count of host/src/kernel.ts",
-      "ceiling": 4774,
+      "measure": "code lines (non-blank, non-comment) of host/src/kernel.ts",
+      "ceiling": 3822,
       "slack": 150,
-      "target": 2650,
-      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction \u2014 4,774 x (40/72) \u2014 a consequence of the lane succeeding rather than an independent goal, and it is not a measurement."
+      "target": 2100,
+      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction \u2014 4,774 x (40/72) \u2014 a consequence of the lane succeeding rather than an independent goal, and it is not a measurement. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 4774 -> 3822, target 2650 -> 2100. Same code, a measure that counts implementation."
     },
     "hostKernelPlumbingTypeScript": {
-      "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
-      "ceiling": 5853,
+      "measure": "code lines (non-blank, non-comment) of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
+      "ceiling": 4734,
       "slack": 150,
-      "target": 3600,
-      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
+      "target": 2900,
+      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 5853 -> 4734, target 3600 -> 2900. Same code, a measure that counts implementation."
     },
     "imageBuilderFilesystemImporters": {
       "measure": "files under images/ importing host/src/vfs/memory-fs or sharedfs-vendor",
