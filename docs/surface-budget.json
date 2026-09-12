@@ -125,8 +125,8 @@
       "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
       "ceiling": 5853,
       "slack": 150,
-      "target": 1500,
-      "why": "Lane L. What a wasmtime host has to write beyond the imports themselves: single-entry serialization into the kernel instance, capacity-carrying scratch views, process memory layout and the worker wire. Two real invariants live here \u2014 a kernel export may synchronously call a host import while Rust still owns mutable state, and a pointer inside WebAssembly.Memory does not prove the allocator gave those bytes to this caller \u2014 so the target is not 0. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+      "target": 3600,
+      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
     },
     "hostEntryPairTypeScript": {
       "measure": "line count of the six browser-/node- kernel host, worker-entry and protocol files",
@@ -352,10 +352,10 @@
       "closure": [
         {
           "surface": "hostKernelPlumbingTypeScript",
-          "atMost": 1500
+          "atMost": 3600
         }
       ],
-      "why": "Goal V4's core. 5,853 lines of entry serialization, scratch capacity views, process memory layout and worker wire that a second host reproduces from scratch. Two genuine invariants live here, so the lane is about separating them from the orchestration around them, not deletion."
+      "why": "Goal V1 more than V4, which the L1 census established: a new host's burden here is already near zero \u2014 host-native proves it \u2014 but the same knowledge exists twice and the second copy was made by transcription (47 comments in host-native cite host/src/*.ts). Two transcribed copies drift and host #3 transcribes a third."
     },
     "E": {
       "title": "Node/browser peer divergence in the kernel host and worker entries",

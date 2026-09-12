@@ -1173,91 +1173,102 @@ maintainer has held it pending a running web app.
 
 ---
 
-# LANE L — host↔kernel plumbing, the part of goal V4 that is not the imports
+# LANE L — host↔kernel plumbing
 
-**Status: characterized. This lane is closest to the campaign's stated primary
-goal and is also the one where floor and orchestration are hardest to separate.**
+**Status: L1 census COMPLETE — `docs/plans/2026-09-11-lane-l1-census.md`.
+Target derived, not provisional. The census changed what this lane is.**
 
 `kernel-scratch.ts` (2,491), `kernel-entry-gate.ts` (1,596), `process-memory.ts`
 (1,337), `worker-protocol.ts` (429) — **5,853 lines**.
 
-## What this lane is
+## What this lane is — as corrected by the census
 
-Lane I counts the host imports. This lane is everything a host must build
-*around* them to call into the kernel instance safely: serializing entry into
-the instance, handing the kernel scratch memory it can trust, laying out process
-memory, and carrying messages to process workers.
+The lane was written as "5,853 lines a wasmtime host must reproduce." **That was
+wrong, and `crates/host-native` disproves it**: 17,757 lines of Rust run the
+same kernel, and for this entire lane they wrote a small layout struct, one
+bounds-check helper, and nothing else. A new host's burden here is already near
+zero.
 
-Two invariants here are real, and the lane must not delete them:
+What the lane actually is: **the same knowledge exists twice, and the second copy
+was made by transcription.** `host-native` cites `host/src/*.ts` in **47
+comments**. Its `ProcessLayout` carries the same fields as `ProcessMemoryLayout`
+and says the pointer width is derived "the same moment `host/src/kernel-worker.ts`
+calls `detectPtrWidth`". Its `checked_shared_range` doc names the TypeScript
+function it mirrors, down to `allowAddressZero: false`.
 
-- **Single entry.** A kernel export may synchronously call a host import while
-  Rust still owns mutable kernel state, so a host callback must not enter
-  another export before the outer call returns. `kernel-entry-gate.ts` exists
-  for this.
-- **Capacity beside pointer.** A pointer being inside `WebAssembly.Memory`
-  proves the host *can* address those bytes, not that the allocator *gave* them
-  to this caller. `kernel-scratch.ts` keeps capacity with the pointer and checks
-  both facts independently.
+**Two transcribed copies drift, and host #3 transcribes a third.** This is a V1
+cost — share code across hosts — more than the V4 cost the lane originally
+claimed.
 
 ## End state
 
-Both invariants still hold, and neither costs 4,087 lines of TypeScript to
-hold. Entry serialization and scratch capacity are enforced where they can be
-type-checked — in Rust, or by a shape that makes the violation unrepresentable
-rather than caught — and the TypeScript that remains is the engine acts a host
-genuinely cannot delegate.
+The knowledge that is duplicated exists once: one process-memory layout, one
+bounds-check rule, one scratch pointer table generated from the kernel's own
+export signatures. The two genuinely JavaScript-shaped things — the re-entrancy
+gate and the worker protocol — stay, and are named as such so they are not
+mistaken for residue later.
 
-## The floor — and the existence proof that settles it
+## The floor — and the fourth category the lane missed
 
-**We do not have to reason about this floor. A second host already exists.**
-`crates/host-native` is **17,757 lines of Rust** running the same kernel with no
-JavaScript at all, and it solved both invariants already: `guest.rs` carries
-explicit re-entrancy handling for exactly the case `kernel-entry-gate.ts`
-guards.
+The lane assumed every line is floor or migratable. **About 428 are neither.**
+`kernel-scratch.ts` captures 46 `intrinsic*` bindings and `kernel-entry-gate.ts`
+27 more, because in JavaScript `DataView.prototype.getInt32` can be replaced at
+runtime. Rust has no such hazard and `host-native` captures nothing.
 
-So the floor is not "these invariants need a host language." It is whatever
-`host-native` genuinely could not express — and the first increment is to go
-find out rather than assert it. **This is the single most valuable grounding
-lens available to lanes L, E and R, and it went unused until the 2026-09-11
-survey.**
+**These lines cost a new host nothing.** Counting them in a "minimize the host
+API surface" budget overstates the surface a wasmtime host faces. They are a tax
+JavaScript pays for being JavaScript.
 
-## Increments
+Genuine floor, confirmed against `host-native`:
 
-- **L1 — the census, against `host-native`.** For each of the four files, ask
-  what the native host does for the same job. Three outcomes per unit: already
-  in Rust and the TypeScript is duplicate; genuinely absent from the native host
-  because it is a JS-engine fact; or absent because the native host has the same
-  gap unfixed. **Only the first is deletable, and the third is a defect to
-  file, not a migration.** Nothing dispatches before this.
-- **L2 — unify what the census finds duplicate**, on the `crates/dylink`
-  pattern: the decision moves to Rust, the act stays in TypeScript.
-- **L3 — make the two invariants structural.** An entry gate that is a
-  discipline callers must remember is weaker than one they cannot bypass.
-- **L4 — `worker-protocol.ts`** is a wire format with no Rust peer; it belongs
-  with `crates/fork-codec`'s approach, not hand-written encode/decode.
+- **The re-entrancy gate stays.** Rust gets this from the borrow checker — you
+  cannot hold `&mut Store` twice, which is why `host-native` reaches exports
+  through `caller_export_typed`. JavaScript has no such mechanism, so the gate
+  must be written. **Goal V2 delivering exactly what it promises.**
+- **`worker-protocol.ts` (429) stays.** `host-native` uses native threads and
+  has no worker wire at all.
+
+## Increments — rewritten by the census
+
+- **L2 — generate the scratch pointer table** from the kernel's export
+  signatures, closing L-D2 below. Cheapest item; removes a hand-maintained ABI
+  table.
+- **L3 — one process-memory layout** in `crates/shared`, consumed by both hosts.
+- **L4 — one bounds-check rule.** `checked_shared_range` already documents
+  itself as a copy of the TypeScript.
+- **L5 — fix L-D1** by giving the native host the capacity invariant, rather
+  than deleting the JavaScript host's version of it.
+- **The re-entrancy gate and worker protocol are not lane L work.** Saying so is
+  part of the deliverable.
 
 ## Acceptance evidence
 
-`hostKernelPlumbingTypeScript` reaches **1,500**. The target is provisional and
-L1 sets the real one.
+`hostKernelPlumbingTypeScript` reaches **3,600** — derived per unit by the L1
+census, not provisional. **The census raised this from a guessed 1,500**; a
+ratchet behind the guess would have judged a correct landing at 3,600 a failure.
 
-Per increment, the invariants must be shown still enforced, not assumed: a test
-that attempts a re-entrant kernel export and is refused, and a test that
-presents a valid in-bounds pointer with a capacity it was not given and is
-refused. **Both must be seen to fail before they are trusted (H-2).**
+Per increment: the layout and bounds rules must be shown to produce identical
+results in both hosts before either copy is deleted, and the generated pointer
+table must reproduce the current hand-written one exactly before it replaces it.
 
 ## Known hazards
 
-- **Deleting an invariant while deleting its verbosity.** The 4,087 lines are
-  mostly ceremony *around* two real rules. A rewrite that loses a rule while
-  passing every existing test is the most likely way this lane does damage,
-  because the rules are about what must *not* happen.
-- **`process-memory.ts` and `kernel-entry-gate.ts` are claimed by lane X's
-  cluster too.** Ownership is settled here — X owns `process-lifecycle.ts` and
-  `exec-target.ts`, L owns these — but a dispatch that ignores that will have
-  two lanes editing one file.
-- **`host-native` having the same gap is not permission to keep the gap.** The
-  census's third outcome is a defect to file.
+- **L-D1 — the native host does not enforce the capacity invariant.** It writes
+  scratch through a bare `copy_nonoverlapping` after a `ptr > 0` check. The
+  call site is sound by construction; nothing enforces that. Census outcome 3:
+  not floor, and not permission to keep the gap.
+- **L-D2 — the scratch pointer table is 35 exports wider than the generated ABI
+  list.** `KERNEL_SCRATCH_EXPORT_NAMES` names 55 exports by hand; the generated
+  lists cover 78 + 8 and **overlap it on only 20**. `kernel_ioctl`,
+  `kernel_select`, `kernel_poll`, `kernel_recv`, `kernel_send` and
+  `kernel_rootfs_write_file` are among the 35 in neither. Lane G's failure mode
+  in a different file.
+- **Deleting an invariant while deleting its verbosity.** Still the way this
+  lane does damage: the rules are about what must *not* happen, so a rewrite
+  that loses one passes every existing test.
+- **`process-memory.ts` and `kernel-entry-gate.ts` are also named by lane X's
+  cluster.** Ownership is settled here; a dispatch that ignores it will have two
+  lanes editing one file.
 
 ---
 
