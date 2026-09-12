@@ -1221,6 +1221,29 @@ and means different things under each.
    stating: an image that carries NO SDEF section still loses its URL-backed
    files on export, because there is nothing to retain from one. That closes
    when the producers emit SDEF, which is V5.
+* **The SDEF archive table** (`914f14c37`, "SDEF declares the archives its
+  records point into") — prerequisite for item 3 that this plan had not named:
+  a record saying *archive 7, member `usr/bin/php`* is useless without archive
+  7's LENGTH, because materialising one member means fetching the archive and
+  the kernel bounds that read. KLZY has an archive table; SDEF had none, so it
+  could not replace it. SDEF v3 declares every archive it references and
+  refuses a dangling reference in encoder and decoder independently.
+
+  **It drops `mount_prefix`, which KLZY carries — measured, not assumed.** The
+  only thing in the tree that touches that field is a test fixture BUILDING a
+  KLZY section; the kernel never reads it.
+
+  **The bridge gained no entry point.** An archive's length goes in through
+  `sm_register_lazy_file` alongside the member rather than through a nineteenth
+  export, because a member is useless without it and the campaign's goal is to
+  shrink what a new host must implement. Host surface still 18.
+
+  Mutation testing found five tests wrong, **three of them regressions this
+  change caused**: two poked record fields at `HEADER_SIZE + offset` and the
+  archive table moved where records begin, so they passed while corrupting the
+  table instead. Recorded because it is the recurring shape — a format change
+  silently repoints every test that hardcodes an offset, and they keep passing.
+
 3. **`load_image_inner` accepts SDEF in KLZY's place.** Today it *refuses* an
    image that declares no KLZY section, and **there is no KLZY encoder in
    Rust** — `klzy.rs` is a decoder only. So an exported image is not loadable
