@@ -14,6 +14,9 @@
  */
 
 import {
+  createForkModuleHostCapabilities,
+  type ForkExternrefResolver,
+  type ForkModuleHostCapabilities,
   type ForkModuleHostImports,
 } from "./fork-module-host-capabilities";
 
@@ -49,6 +52,23 @@ export interface ForkModuleInstance {
   readonly functionCatalog: WebAssembly.Table;
   readonly driveTable: WebAssembly.Table;
   readonly staticRootCatalog: WebAssembly.Table;
+  /**
+   * A fixed staging slab INSIDE the reserved region, for pre-fork catalog
+   * scratch and GC-codec staging.
+   *
+   * It lives here rather than in a growing channel mmap for a fork-correctness
+   * reason: a growing mmap would permanently enlarge the shared process memory,
+   * and a fork-from-thread child clones that memory, so the child would observe
+   * a different size than its parent. A request larger than the slab falls back
+   * to the channel mmap, whose growth that path does not assert against.
+   */
+  readonly stagingBase: number;
+  readonly stagingBytes: number;
+  /**
+   * Present when the instance derived its host imports from `tokens`, so a
+   * caller can read `resolvedCount` without holding the capabilities itself.
+   */
+  readonly capabilities?: ForkModuleHostCapabilities;
 }
 
 export interface InstantiateForkModuleOptions {
@@ -59,7 +79,14 @@ export interface InstantiateForkModuleOptions {
   readonly reserve: (size: number) => number;
   /** Included in every thrown message, so a failure names the process. */
   readonly label: string;
-  /** The host functions. Omitted, each is a trapping stub. */
+  /**
+   * The handle registry. Given this, BOTH host functions are derived from it
+   * together, which is the point: wiring `resolve_externref` while leaving
+   * reference identity a trapping stub is a mistake a caller should not be able
+   * to make, and both earlier call sites made it.
+   */
+  readonly tokens?: ForkExternrefResolver;
+  /** Explicit host functions, overriding `tokens`. Omitted, each traps. */
   readonly hostImports?: Partial<ForkModuleHostImports>;
   /** @deprecated The module owns its transit table; supplying one is a no-op. */
   readonly transitTable?: WebAssembly.Table;
@@ -67,6 +94,18 @@ export interface InstantiateForkModuleOptions {
 
 /** The shadow stack reserved above the module's static footprint. */
 const SHADOW_STACK_BYTES = 1024 * 1024;
+
+/**
+ * The staging slab reserved above the shadow stack.
+ *
+ * A tuning choice, not a correctness boundary: the module's own internal
+ * scratch is 64 KiB, and a staging request larger than this slab falls back to
+ * the growing channel mmap. Sized well above that internal scratch while
+ * staying small against the module's ~4 MiB static footprint.
+ */
+const STAGING_SLAB_BYTES = 256 * 1024;
+
+const WASM_PAGE_BYTES = 65536;
 
 /** `dylink.0` subsection id for the memory/table sizing record. */
 const WASM_DYLINK_MEM_INFO = 1;
@@ -156,8 +195,16 @@ export function instantiateForkModule(
   void options.transitTable; // deprecated; the module owns its transit table
 
   const info = readDylinkMemInfo(module, label);
-  const regionBytes =
-    alignUp(info.memorySize, info.memoryAlign) + SHADOW_STACK_BYTES;
+  // Layout, low to high: the module's static/BSS footprint, then the shadow
+  // stack, then the staging slab. `__stack_pointer` starts at the TOP of the
+  // shadow stack and grows DOWN into it, bounded below by the static footprint
+  // -- so it can never reach the staging slab above it, and never leaves the
+  // region at all.
+  const staticBytes = alignUp(info.memorySize, info.memoryAlign);
+  const stackTopOffset = staticBytes + SHADOW_STACK_BYTES;
+  const stagingOffset =
+    Math.ceil(stackTopOffset / WASM_PAGE_BYTES) * WASM_PAGE_BYTES;
+  const regionBytes = stagingOffset + STAGING_SLAB_BYTES;
   const memoryBase = reserve(regionBytes);
 
   if (memoryBase + regionBytes > memory.buffer.byteLength) {
@@ -168,18 +215,23 @@ export function instantiateForkModule(
     );
   }
 
-  const functionCatalog = new WebAssembly.Table({
-    element: "anyfunc",
-    initial: 0,
-  });
-  const driveTable = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
-  // `anyref`, NOT `externref`: the static-root binder holds GC-hierarchy
-  // values, and `any` and `extern` are disjoint roots, so the wrong element
-  // type is rejected at instantiation.
-  const staticRootCatalog = new WebAssembly.Table({
-    element: "anyref",
-    initial: 0,
-  });
+  // `anyref`, NOT `externref`, for the static-root catalog: the binder holds
+  // GC-hierarchy values, and `any` and `extern` are disjoint roots, so the
+  // wrong element type is rejected at instantiation.
+  const emptyTable = (element: "anyfunc" | "anyref"): WebAssembly.Table =>
+    new WebAssembly.Table({ element, initial: 0 });
+  const functionCatalog = emptyTable("anyfunc");
+  const driveTable = emptyTable("anyfunc");
+  const staticRootCatalog = emptyTable("anyref");
+
+  const capabilities =
+    options.tokens !== undefined
+      ? createForkModuleHostCapabilities({ tokens: options.tokens })
+      : undefined;
+  const resolved: Partial<ForkModuleHostImports> = {
+    ...(capabilities?.imports ?? {}),
+    ...(hostImports ?? {}),
+  };
 
   const instance = new WebAssembly.Instance(module, {
     env: {
@@ -191,7 +243,7 @@ export function instantiateForkModule(
       // The shadow stack grows DOWN from the top of the reserved region.
       __stack_pointer: new WebAssembly.Global(
         { value: "i32", mutable: true },
-        memoryBase + regionBytes,
+        memoryBase + stackTopOffset,
       ),
       __memory_base: new WebAssembly.Global(
         { value: "i32", mutable: false },
@@ -202,10 +254,9 @@ export function instantiateForkModule(
       __wpk_fork_drive_table: driveTable,
       __wpk_fork_static_root_catalog: staticRootCatalog,
       resolve_externref:
-        hostImports?.resolve_externref ??
-        (() => trap(label, "resolve_externref")),
+        resolved.resolve_externref ?? (() => trap(label, "resolve_externref")),
       __wpk_fork_host_ref_identity:
-        hostImports?.__wpk_fork_host_ref_identity ??
+        resolved.__wpk_fork_host_ref_identity ??
         (() => trap(label, "__wpk_fork_host_ref_identity")),
     },
   });
@@ -228,5 +279,8 @@ export function instantiateForkModule(
     functionCatalog,
     driveTable,
     staticRootCatalog,
+    stagingBase: memoryBase + stagingOffset,
+    stagingBytes: STAGING_SLAB_BYTES,
+    capabilities,
   };
 }

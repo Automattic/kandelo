@@ -70,6 +70,7 @@ import {
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
   WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
+  WPK_FORK_REFERENCE_TRANSACTION_OWNER,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
@@ -138,7 +139,6 @@ import {
   decodeSegmentedForkReferenceTransaction,
   type DecodedSegmentedForkReferenceTransaction,
 } from "./fork-reference-segments";
-import { FORK_REFERENCE_TRANSACTION_OWNER_ID } from "./fork-reference-wire";
 import {
   forkGcCodecProviderFromInstance,
   readForkGcCodecDescriptor,
@@ -3670,7 +3670,10 @@ export async function centralizedWorkerMain(
             );
           },
           label: `pid=${pid}: fork-module`,
-          resolveExternref: forkModuleHostCapabilities.imports.resolve_externref,
+          // BOTH host functions, not just the resolver. Passing only
+          // `resolve_externref` left `__wpk_fork_host_ref_identity` a trapping
+          // stub, which a GC capture reaches.
+          hostImports: forkModuleHostCapabilities.imports,
         });
         // Publish this worker's co-resident fork-module region so the kernel
         // host can hand a COPIED fork child the SAME base to reuse (above). A
@@ -4436,7 +4439,12 @@ export async function centralizedWorkerMain(
         const records = childArena.recordViews();
         decodedChildReferences = decodeSegmentedForkReferenceTransaction(
           records,
-          FORK_REFERENCE_TRANSACTION_OWNER_ID,
+          // From the GENERATOR, not a hand-maintained TypeScript twin.
+          // `fork-reference-wire` re-declared this value beside
+          // `crates/shared`'s `WPK_FORK_REFERENCE_TRANSACTION_OWNER`, which the
+          // ABI generator already emits -- the knowledge-beside-a-generator
+          // defect three censuses in this campaign have found.
+          WPK_FORK_REFERENCE_TRANSACTION_OWNER,
         );
         const modules = new Map<number, WebAssembly.Module>([[0, module]]);
         for (const library of childDylinkState) {
@@ -6753,8 +6761,9 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork-module`,
             ),
           label: `pid=${pid} tid=${tid}: fork-module`,
-          resolveExternref: (handle) =>
-            threadExternrefTokens!.materialize(handle),
+          // The registry itself, so reference identity is derived alongside
+          // the resolver instead of being left a trapping stub.
+          tokens: threadExternrefTokens!,
         });
         // STORE #2: on this path the thread registry is created BEFORE the
         // fork-module (unlike the process path), and its `enableModuleBacking`

@@ -936,3 +936,47 @@ All three perturbations now fail.
 The original test is left as it is. Its assertions are weak, not wrong, and
 rewriting a tracked spec is a larger decision than adding a sharper one beside
 it.
+
+## §18 — The consumer's own call sites closed three gaps
+
+Type-checking `worker-main.ts` against the new modules named three things §17's
+implementation had missed, none of which the tracked spec covers:
+
+**`stagingBase` / `stagingBytes`.** A fixed staging slab INSIDE the reserved
+region, for pre-fork catalog scratch and GC-codec staging. Its reason is a fork
+invariant, recorded at the call site: a growing channel mmap would permanently
+enlarge the shared process memory, and a fork-from-thread child clones that
+memory, so the child would observe a different size than its parent. A request
+larger than the slab falls back to the channel mmap, whose growth that path does
+not assert against — so the size is a tuning choice, not a correctness boundary.
+
+The region layout is now, low to high: static/BSS, shadow stack, staging slab.
+`__stack_pointer` starts at the TOP of the shadow stack and grows DOWN into it,
+bounded below by the static footprint, so it can reach neither the slab above
+nor guest memory below.
+
+**Both host functions, from one input.** Both `instantiateForkModule` call sites
+in `worker-main.ts` passed only `resolveExternref`, which would have left
+`__wpk_fork_host_ref_identity` a TRAPPING STUB — reached by any GC capture. The
+options now take `tokens` (the registry) and derive both imports together, so
+wiring one without the other is not expressible. Both call sites were rewired.
+
+**`FORK_REFERENCE_TRANSACTION_OWNER_ID` retired.** A hand-maintained TypeScript
+constant sitting beside `crates/shared`'s
+`WPK_FORK_REFERENCE_TRANSACTION_OWNER`, which the ABI generator already emits
+into `host/src/generated/abi.ts` (both are 1). `worker-main.ts` now imports the
+generated one, and `fork-reference-wire` is the first of the 27 attic'd modules
+fully retired. This is the knowledge-beside-a-generator defect three censuses in
+this campaign have found.
+
+The attic'd-module contract is now **24 modules / 66 symbols** (from 27 / 72):
+one retired, and two provided by §15 and §17.
+
+### The ceiling was hit and NOT raised
+
+Adding the slab took `forkTypeScript` to 253 against its ceiling of 250. The
+fix was to remove real duplication — three near-identical `WebAssembly.Table`
+constructions became one `emptyTable` helper — bringing it to **249**. No
+behaviour changed and no ceiling moved. 250 was approved as headroom for the
+module-facing half; that half is now done at 249, so the ceiling should be
+banked to 249 once the platform half's own ceiling exists to grow into.

@@ -108,6 +108,68 @@ describe("fork-module placement", () => {
     );
   });
 
+  it("puts the staging slab inside the region and ABOVE the shadow stack", () => {
+    // The slab exists so staging never grows the shared process memory: a
+    // fork-from-thread child clones that memory and must observe its parent's
+    // exact size. If the stack could grow into the slab, staged bytes would be
+    // corrupted by any deep call instead.
+    const memory = sharedMemory(512);
+    const base = 16 * 1024 * 1024;
+    const fm = instantiateForkModule({
+      module,
+      memory,
+      ptrWidth: 4,
+      reserve: () => base,
+      label: "placement-test",
+    });
+
+    expect(fm.stagingBytes).toBeGreaterThan(0);
+    expect(fm.stagingBase).toBeGreaterThan(fm.memoryBase);
+    expect(fm.stagingBase + fm.stagingBytes).toBeLessThanOrEqual(
+      fm.memoryBase + fm.regionBytes,
+    );
+
+    const view = new DataView(memory.buffer);
+    view.setUint32(fm.stagingBase, 0x5ab5ab00, true);
+    view.setUint32(fm.stagingBase + fm.stagingBytes - 4, 0x5ab5ab01, true);
+
+    (fm.exports.fm_set_format as (w: number, p: number) => void)(4, 0);
+    (fm.exports.fm_stats as (field: number) => bigint)(0);
+    (fm.exports.fm_last_errno as () => number)();
+
+    expect(view.getUint32(fm.stagingBase, true)).toBe(0x5ab5ab00);
+    expect(view.getUint32(fm.stagingBase + fm.stagingBytes - 4, true)).toBe(
+      0x5ab5ab01,
+    );
+  });
+
+  it("derives BOTH host functions from a token registry, never just the resolver", () => {
+    // Wiring `resolve_externref` while leaving reference identity a trapping
+    // stub is a mistake a caller should not be able to make. Both earlier
+    // worker-main call sites made it.
+    const value = { live: true };
+    const fm = instantiateForkModule({
+      module,
+      memory: sharedMemory(512),
+      ptrWidth: 4,
+      reserve: () => 16 * 1024 * 1024,
+      label: "placement-test",
+      tokens: {
+        materialize: (handle: number) => {
+          if (handle !== 7) throw new RangeError(`no handle ${handle}`);
+          return value;
+        },
+      },
+    });
+    expect(fm.capabilities).toBeDefined();
+    expect(fm.capabilities!.imports.resolve_externref(7)).toBe(value);
+    expect(fm.capabilities!.resolvedCount).toBe(1);
+    const a = {};
+    const id = fm.capabilities!.imports.__wpk_fork_host_ref_identity;
+    expect(id(a)).toBe(id(a));
+    expect(id(a)).not.toBe(id({}));
+  });
+
   it("exposes the host-supplied tables so catalogs can be published into them", () => {
     const fm = instantiateForkModule({
       module,
