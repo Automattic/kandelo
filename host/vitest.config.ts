@@ -68,6 +68,23 @@ export default defineConfig({
     // Fork-heavy files launch their own process workers. Keep local runs
     // parallel, but serialize CI files so guest timeouts measure the runtime
     // behavior under test instead of runner oversubscription.
+    // STOPGAP (lane T, T6). Vitest's default testTimeout is 5s
+    // (`resolved.testTimeout ??= ... : 5e3`), and every test in
+    // test/fork-instrument-coverage.test.ts costs 8.4-9.6s measured on an idle
+    // machine, so all 41 exceeded it deterministically -- on any machine, under
+    // any load. That file alone carried 41 of the suite's 49 timeouts.
+    //
+    // This is a stopgap, not a fix. The real question is why a fixture that
+    // forks and prints costs 8.5s; the 14% spread between fastest and slowest
+    // points at fixed per-test setup (`runCentralizedProgram` stands up a
+    // kernel per test) rather than the fixtures doing different work. That is
+    // T7, and it is worth more than this line.
+    //
+    // 30s is ~3x the measured worst case, leaving room for CI's maxWorkers: 1.
+    // Do NOT read this as licence for slower tests: raise T7's priority
+    // instead. Unrelated to the 10s `runCentralizedProgram` budget in that
+    // file, which bounds the GUEST PROGRAM's run, not the test's wall clock.
+    testTimeout: 30_000,
     teardownTimeout: 60_000,
     // Vitest 4 removed poolOptions.forks.maxForks; maxWorkers is the current
     // top-level equivalent.

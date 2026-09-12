@@ -6,7 +6,36 @@ Lane T carried one open question: **41 of 49 suite timeouts live in this
 single file — is that one defect or forty?** Until it was answered the
 lane's estimate was "unknown until T5".
 
-## The answer: neither
+## CORRECTION (2026-09-12, during T6)
+
+**The root cause stated below is wrong, and the error is kept rather than
+edited out.** This census blamed the harness's 10,000 ms
+`runCentralizedProgram` budget and called the file "marginal — 15% of
+headroom, sinks under load."
+
+Implementing T6 found the real binding limit: **Vitest's default
+`testTimeout` is 5,000 ms** — `resolved.testTimeout ??= resolved.browser
+.enabled ? 15e3 : 5e3` in the installed vitest 4.1.11 — and
+**`host/vitest.config.ts` never set it.** Against an 8.4–9.6 s job that is
+not marginal, it is **deterministic**: every test exceeded it on every
+machine under any load.
+
+The two clocks are different things and the census conflated them. The
+harness's 10,000 ms bounds **the guest program's run** ("Program timed out
+after Xms"); Vitest's bounds **the test's wall clock**, which includes the
+per-test kernel instantiation that dominates the 8.5 s.
+
+**What survives:** the measurements (8,409 / 8,506 / 9,573 ms), the finding
+that all 41 pass when given room, and the conclusion that this is one cause
+rather than forty. **What does not:** "marginal", "15% headroom", and
+"sinks under load". It was always over.
+
+**Why the error is instructive:** the census measured carefully and then
+attributed the failure to the first timeout it found in the test file,
+without checking whether a second, lower one applied. A number in the file
+you are reading is not automatically the number that binds.
+
+## The answer as originally written: neither
 
 It is **a timeout budget set 15% above the measured cost of the work.**
 
@@ -74,10 +103,10 @@ measure.
 
 ## Increments
 
-- **T5 — this diagnosis.** Done.
-- **T6 — raise the budget to un-wedge the suite**, as a stopgap, and say
-  in the commit that it is a stopgap. A 10 s budget on an 8.5 s job is not
-  a meaningful guard; it is a coin flip.
+- **T5 — this diagnosis.** Done, and partly wrong; see the correction above.
+- **T6 — set `testTimeout` in `host/vitest.config.ts`. DONE**, as an
+  explicit stopgap. Not the harness's 10 s budget, which was never the
+  binding limit.
 - **T7 — measure where the 8.5 s goes.** If it is per-test kernel
   instantiation, amortising it across the file is worth more than the
   timeout change and would cut ~6 minutes from one file.
@@ -99,6 +128,8 @@ T6 is an hour. T7 is the lane.
 - **Where the 8.5 s actually goes.** The flat distribution points at fixed
   setup; nobody has profiled it. That is T7 and it is the substance.
 - **Whether the 8 non-`fork-instrument` timeouts share this cause.** They
-  were not run.
+  were not run — and with the true cause known (a 5 s default against slow
+  tests) this is now much more likely than when the census was written. Any
+  test in the suite costing over 5 s was failing for the same reason.
 - **What the file costs under CI's machine**, as opposed to this one. The
   margin measured here is a best case.

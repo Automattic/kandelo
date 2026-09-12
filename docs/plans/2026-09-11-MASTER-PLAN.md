@@ -1275,7 +1275,20 @@ directions and both close the item.
 ## T5 diagnosis — COMPLETE (`docs/plans/2026-09-11-lane-t5-census.md`)
 
 **41 of 49 suite timeouts live in `fork-instrument-coverage.test.ts`, and the
-answer is neither one defect nor forty: the budget is 15% above the cost.**
+answer is one cause, not forty: Vitest's default `testTimeout` of 5,000 ms
+against an 8.4–9.6 s job.**
+
+**T6 is DONE** — `host/vitest.config.ts` now sets `testTimeout: 30_000` as an
+explicit stopgap.
+
+**The T5 census got the root cause wrong and the correction is recorded in it.**
+It blamed the harness's 10,000 ms `runCentralizedProgram` budget and called the
+file "marginal, sinks under load". The binding limit was Vitest's 5 s default,
+which `host/vitest.config.ts` never set — so the failures were **deterministic**,
+not load-dependent. The two clocks differ: the harness's bounds the *guest
+program's run*, Vitest's bounds the *test's wall clock*, which includes the
+per-test kernel instantiation that dominates. **A number in the file you are
+reading is not automatically the number that binds.**
 
 At `--testTimeout=20000` on a quiet machine: **41 passed, 2 expected fail, 8
 skipped, exit 0.** Nothing in the file is broken.
