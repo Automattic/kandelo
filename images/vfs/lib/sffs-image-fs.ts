@@ -98,7 +98,19 @@ export class SffsImageFs {
     rootMode = 0o755,
   ): SffsImageFs {
     // No import object: the module has no import section.
-    const instance = new WebAssembly.Instance(new WebAssembly.Module(moduleBytes));
+    //
+    // `moduleBytes.buffer` rather than the view: since TypeScript 5.7 a
+    // `Uint8Array<ArrayBufferLike>` is not assignable to `BufferSource`, and
+    // `WebAssembly.Module` wants the buffer. Caught the first time anything
+    // type-checked this directory.
+    const instance = new WebAssembly.Instance(
+      new WebAssembly.Module(
+        moduleBytes.buffer.slice(
+          moduleBytes.byteOffset,
+          moduleBytes.byteOffset + moduleBytes.byteLength,
+        ) as ArrayBuffer,
+      ),
+    );
     const fs = new SffsImageFs(instance.exports as unknown as ModuleExports);
     fs.exports.sm_reset();
     fs.check(fs.exports.sm_init_root(rootMode, 0, 0), "init root", "/");
