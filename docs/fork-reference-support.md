@@ -128,10 +128,11 @@ constructed child.
   JS-only `this.nodes` array — empty in module-capture mode — so any
   reference-bearing exception threw "fork exception reference payloads
   entry N names missing recipe M". It now sources those ids against the
-  MODULE builder (`readModuleRecipeIds` feeding `fm_capture_append_vector`,
-  whose Rust `ReferenceGraphBuilder::append_vector` validates each id
-  against the builder's node count and returns `EINVAL` for a genuinely
-  missing recipe), so the shared engine reconstructs the payload and the
+  MODULE builder (`readModuleRecipeIds` feeding the module's vector
+  builder, whose Rust `ReferenceGraphBuilder::append_vector` validates
+  each id against the builder's node count and returns `EINVAL` for a
+  genuinely missing recipe), so the shared engine reconstructs the
+  payload and the
   parent keeps its original live references. Proven on V8 by
   `host/test/catch-ref-fresh-worker.test.ts` ("reconstructs
   reference-bearing catches through the module (default)"), which asserts

@@ -97,6 +97,19 @@ const importObject = {
     // a stub returning a fresh unique object per call satisfies the
     // reference-returning import signature.
     resolve_externref: (_handle) => ({}),
+    // `__wpk_fork_host_ref_identity(anyref) -> i32`: a stable integer per
+    // distinct GC reference. Wasm can COMPARE references but cannot HASH one,
+    // so a reference cannot key a map inside the module; the host can. On a
+    // real JavaScript host this is a WeakMap; here a Map suffices because the
+    // values under test are i31s, which are primitives at this boundary.
+    __wpk_fork_host_ref_identity: (() => {
+      const ids = new Map();
+      let next = 1;
+      return (value) => {
+        if (!ids.has(value)) ids.set(value, next++);
+        return ids.get(value);
+      };
+    })(),
   },
 };
 

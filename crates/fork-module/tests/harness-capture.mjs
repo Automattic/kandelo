@@ -70,6 +70,19 @@ const importObject = {
     __memory_base: new WebAssembly.Global({ value: "i32", mutable: false }, MODULE_BASE),
     __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, TABLE_BASE),
     resolve_externref: (_handle) => ({}),
+    // `__wpk_fork_host_ref_identity(anyref) -> i32`: a stable integer per
+    // distinct GC reference. Wasm can COMPARE references but cannot HASH one,
+    // so a reference cannot key a map inside the module; the host can. On a
+    // real JavaScript host this is a WeakMap; here a Map suffices because the
+    // values under test are i31s, which are primitives at this boundary.
+    __wpk_fork_host_ref_identity: (() => {
+      const ids = new Map();
+      let next = 1;
+      return (value) => {
+        if (!ids.has(value)) ids.set(value, next++);
+        return ids.get(value);
+      };
+    })(),
   },
 };
 
@@ -83,9 +96,6 @@ for (const name of [
   "fm_capture_claim_gc",
   "fm_capture_gated_placeholder",
   "fm_capture_define_gc",
-  "fm_capture_begin_vector",
-  "fm_capture_append_vector",
-  "fm_capture_finish_vector",
   "fm_capture_validate",
   "fm_capture_serialize",
   "fm_capture_serialized_len",
@@ -206,12 +216,20 @@ assert.equal(x.fm_capture_intern(K_STATIC_ROOT, 3, 7), rId, "static root dedups"
 
 // Build the field vectors first (the module reads them internally at define).
 function buildVector(ids) {
-  const h = x.fm_capture_begin_vector();
-  assert.ok(h >= 0, "begin_vector");
+  // The GUEST path is the only vector builder the module exposes: begin
+  // declares how many appends will follow, and finish refuses to intern a
+  // vector whose appends did not match that count. There is deliberately no
+  // unguarded `fm_capture_*_vector` twin -- a second builder without the
+  // count discipline could intern a SHORT vector, and the child would then
+  // reconstruct a frame with references silently missing.
+  const h = x.__wpk_fork_ref_vector_begin(ids.length);
+  assert.ok(h >= 0, `vector_begin errno=${lastErrno()}`);
   for (const id of ids) {
-    assert.equal(x.fm_capture_append_vector(h, id), 0, "append_vector");
+    x.__wpk_fork_ref_vector_append(h, id);
   }
-  return x.fm_capture_finish_vector(h);
+  const ordinal = x.__wpk_fork_ref_vector_finish(h);
+  assert.ok(ordinal >= 1, `vector_finish errno=${lastErrno()}`);
+  return ordinal;
 }
 // struct 1 -> array 2 (cycle), leaf 7 (alias); scalars read from memory.
 const structFields = buildVector([aId, leafId]);
@@ -502,8 +520,12 @@ function i31Minter() {
   const A = mk(41);
   const B = mk(42);
 
-  // Claim and publish A exactly as the guest does: claim, then table.set at
-  // recipe + 1 on the next instruction.
+  // Mirror the emitted sequence exactly. The generator stages the value in slot
+  // 0, calls lookup, and on a miss calls claim with the value STILL THERE --
+  // slot 0 is cleared only after the payload is encoded. Claim reads it to bind
+  // the identity, so a test that claimed without staging would be testing a
+  // sequence the guest never emits.
+  transit.set(0, A);
   const ra = x.__wpk_fork_ref_gc_claim(0);
   transit.set(ra + 1, A);
 
@@ -512,6 +534,7 @@ function i31Minter() {
   transit.set(0, B);
   assert.equal(x.__wpk_fork_ref_gc_lookup(0), 0, "an unseen value is reported new");
 
+  transit.set(0, B);
   const rb = x.__wpk_fork_ref_gc_claim(0);
   transit.set(rb + 1, B);
   transit.set(0, B);
@@ -523,6 +546,18 @@ function i31Minter() {
   // slot must report "new" rather than trapping, so the guest claims instead.
   transit.set(0, null);
   assert.equal(x.__wpk_fork_ref_gc_lookup(0), 0, "a null candidate is new, not a trap");
+
+  // Claiming the SAME object twice would give the child two objects where the
+  // parent had one -- a fork-only identity split, and silent. The generator
+  // never does it (lookup hits first), which is exactly why the guard has to be
+  // here rather than relying on the caller.
+  transit.set(0, A);
+  assert.equal(
+    x.__wpk_fork_ref_gc_claim(0),
+    -1,
+    "claiming an already-bound identity is rejected, not silently re-claimed",
+  );
+  assert.equal(lastErrno(), EINVAL, "and reports EINVAL");
 }
 
 // The process-owned fork-unwind TAG, now minted by the module rather than by

@@ -94,10 +94,10 @@
     },
     "forkModuleEntryPoints": {
       "measure": "pub extern \"C\" fn fm_* declared in crates/fork-module/src/lib.rs",
-      "ceiling": 55,
+      "ceiling": 54,
       "slack": 2,
       "target": 5,
-      "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow. SCOPE, made explicit 2026-09-12: this counts HOST-CALLED fm_* entries only. Exports the GUEST imports are named __wpk_fork_* and are deliberately not counted here -- they are a fixed ABI the guest declares, not a surface to minimise, and they are tracked by forkGuestImportsUnserved instead. The 62 -> 55 step was a RECLASSIFICATION, not a deletion: seven reference-feed exports were renamed from fm_ref_* to the guest names they serve. Zero exports were removed. Expect this number to stay flat while the guest ABI migrates."
+      "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow. SCOPE, made explicit 2026-09-12: this counts HOST-CALLED fm_* entries only. Exports the GUEST imports are named __wpk_fork_* and are deliberately not counted here -- they are a fixed ABI the guest declares, not a surface to minimise, and they are tracked by forkGuestImportsUnserved instead. The 62 -> 55 step was a RECLASSIFICATION, not a deletion: seven reference-feed exports were renamed from fm_ref_* to the guest names they serve. Zero exports were removed. The 55 -> 54 step WAS a deletion, banked 2026-09-12: fm_capture_begin_vector / fm_capture_append_vector / fm_capture_finish_vector were an unguarded duplicate of the guest builder (__wpk_fork_ref_vector_begin/append/finish) with no production caller, so they were removed and the harness routed onto the guest path; two GC-identity helpers were added in the same span, netting -1. KNOWN OVER-COUNT: the regex cannot see who calls a function, so it counts fm_gc_identity_find and fm_gc_identity_claim, which NO host calls -- they exist only because the injected wasm shim holds the reference and Rust holds the map, so the shim must call back into Rust. By this entry's declared scope the host-called figure is 52. The measure is left deliberately unnarrowed: rewriting it to exclude them would be weakening a check, and that is the maintainer's call, not the measure's."
     },
     "parseShebangReferences": {
       "measure": "references to parseShebang in host/src",

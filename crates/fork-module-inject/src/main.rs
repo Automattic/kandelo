@@ -31,12 +31,9 @@
 //! import it reads.
 
 use anyhow::{anyhow, bail, Context, Result};
-use walrus::ir::{
-    AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, RefCast, RefTest, UnaryOp,
-};
+use walrus::ir::{AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, UnaryOp};
 use walrus::{
-    AbstractHeapType, ExportItem, FunctionBuilder, FunctionId, HeapType, ImportKind, Module, RefType,
-    ValType,
+    ExportItem, FunctionBuilder, FunctionId, ImportKind, Module, RefType, ValType,
 };
 
 // -- GC drive-shim injection (Phase 6 item 3b) --------------------------------
@@ -95,12 +92,18 @@ const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
 /// The injected anyref-table growth primitive the Rust side calls.
 const TRANSIT_GROW_EXPORT: &str = "fm_transit_grow";
 
-/// The guest-facing fresh-GC claim, and the Rust helper it wraps.
+/// The guest-facing fresh-GC claim.
 const GC_CLAIM_EXPORT: &str = "__wpk_fork_ref_gc_claim";
-const CLAIM_GC_HELPER_EXPORT: &str = "fm_capture_claim_gc";
 
 /// The guest-facing GC identity probe.
 const GC_LOOKUP_EXPORT: &str = "__wpk_fork_ref_gc_lookup";
+
+/// The host import that gives a GC reference a stable integer identity, and the
+/// two Rust helpers that map it. Wasm can COMPARE references but cannot HASH
+/// one, so a reference cannot key a map inside the module; the host can.
+const HOST_REF_IDENTITY_IMPORT: &str = "__wpk_fork_host_ref_identity";
+const GC_IDENTITY_FIND_HELPER: &str = "fm_gc_identity_find";
+const GC_IDENTITY_CLAIM_HELPER: &str = "fm_gc_identity_claim";
 
 /// The process-owned fork-unwind transport tag.
 const UNWIND_TAG_EXPORT: &str = "__wpk_fork_unwind";
@@ -281,6 +284,22 @@ fn inject(module: &mut Module) -> Result<()> {
 /// find-or-add (mirroring `fork-instrument/src/legacy_dlopen.rs`) keeps the two
 /// passes order-independent and declares the import exactly once. Rust cannot
 /// declare a reference-returning import, which is exactly why it lives here.
+/// Find or add `env.__wpk_fork_host_ref_identity(anyref) -> i32`.
+fn import_host_ref_identity(module: &mut Module) -> FunctionId {
+    for import in module.imports.iter() {
+        if import.module == IMPORT_MODULE && import.name == HOST_REF_IDENTITY_IMPORT {
+            if let ImportKind::Function(id) = import.kind {
+                return id;
+            }
+        }
+    }
+    let ty = module
+        .types
+        .add(&[ValType::Ref(RefType::ANYREF)], &[ValType::I32]);
+    let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_REF_IDENTITY_IMPORT, ty);
+    id
+}
+
 fn import_resolve_externref(module: &mut Module) -> FunctionId {
     let params = [ValType::I32];
     let results = [ValType::Ref(RefType::EXTERNREF)];
@@ -1098,8 +1117,10 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
     {
         bail!("module already exports {GC_CLAIM_EXPORT}");
     }
-    let claim_helper = exported_function(module, CLAIM_GC_HELPER_EXPORT)?;
+    let claim_helper = exported_function(module, GC_IDENTITY_CLAIM_HELPER)?;
     let grow = exported_function(module, TRANSIT_GROW_EXPORT)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let identity = import_host_ref_identity(module);
 
     let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
     let slot = module.locals.add(ValType::I32);
@@ -1113,7 +1134,15 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
             },
             |_ok| {},
         );
-        body.call(claim_helper).local_set(recipe);
+        // The value is STILL in the staging slot here -- the generator clears
+        // slot 0 only after the payload is encoded -- so claim can bind the
+        // identity rather than merely allocate a recipe. Binding is what makes
+        // a later lookup hit, which is what terminates a cyclic graph.
+        body.local_get(slot)
+            .table_get(transit_table)
+            .call(identity)
+            .call(claim_helper)
+            .local_set(recipe);
         body.local_get(recipe)
             .i32_const(0)
             .binop(BinaryOp::I32LtS)
@@ -1144,59 +1173,35 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
     Ok(())
 }
 
-/// Inject `__wpk_fork_ref_gc_lookup(slot) -> recipe`: return the recipe an
-/// equal GC value was already claimed under, or 0 if this value is new.
+/// Inject `__wpk_fork_ref_gc_lookup(slot) -> recipe`: the recipe an equal GC
+/// value was already claimed under, or 0 if this value is new.
 ///
-/// # Why the module can do this at all
+/// # Why identity comes from the host
 ///
-/// GC values ARE comparable in wasm: `ref.eq` validates on `eqref`, which
-/// covers struct, array and i31. (It does NOT validate on `funcref`,
-/// `externref` or bare `anyref` — measured against V8 with a passing control —
-/// which is exactly why funcref and externref identity stay host imports and
-/// this one does not.) An internalized externref is likewise not comparable,
-/// which the drive shim above already notes.
+/// GC values ARE comparable in wasm -- `ref.eq` validates on `eqref` -- so the
+/// module CAN answer this itself, and did, by scanning every value published so
+/// far. What wasm cannot do is HASH a reference: there is no `ref.hash`, so a
+/// reference cannot key a map, and the scan was the only in-module algorithm.
+/// O(n) per lookup, O(n^2) over a capture.
 ///
-/// # Why it is a scan
+/// `env.__wpk_fork_host_ref_identity` returns a stable integer per distinct
+/// reference and Rust maps it, which is O(1) amortised. It is an OPTIMISATION,
+/// not a capability floor, and `docs/fork-host-imports.md` says so. On
+/// JavaScript it is a `WeakMap`; a wasmtime embedder has rooted references with
+/// real identity, so it is not a JS-only mechanism.
 ///
-/// The transit table IS the record: `claim` hands out recipe R and the guest
-/// publishes the value at `R + 1` on the next instruction, so every previously
-/// claimed value is already in the table at a known slot. Finding a match is
-/// therefore a walk of `[2, table.size)`.
+/// # Why this is correctness, not deduplication for size
 ///
-/// **This is O(n) per lookup and so O(n^2) over a capture with n distinct GC
-/// objects, and wasm offers nothing better**: there is no `ref.hash`, so a
-/// reference cannot key a map inside the module. The alternative is a host
-/// import handing back a stable identity per reference — which is what the
-/// set-aside TypeScript could do, because JavaScript can key a `WeakMap` by
-/// object identity. That would be a THIRD host import on a floor the maintainer
-/// approved at two, so it is not taken unilaterally; correctness first, and the
-/// complexity is recorded rather than hidden. No claim is made here about what
-/// n is in practice, because it has not been measured.
+/// Without it a cyclic object graph never terminates: the generator publishes
+/// identity BEFORE recursing into fields precisely so the walk back finds it.
 ///
-/// # Why this is correctness, not an optimisation
-///
-/// Without it a cyclic object graph never terminates. The generator publishes
-/// identity before recursing into fields precisely so the walk back finds it —
-/// "publishing the source identity before recursive fields is what makes
-/// aliases and cycles terminate deterministically".
-///
-/// # What is load-bearing here, and what only looks like it
-///
-/// Perturbation found that two things written as guards are early-outs that
-/// change nothing observable, and they are described honestly rather than
-/// removed (each still saves a full scan):
-///
-/// * **starting the scan at slot 2** skips slot 1, which is recipe 0 -- the
-///   canonical null recipe, never published. Starting at 1 instead is
-///   indistinguishable, because the per-candidate null check already skips it.
-///   It is NOT a self-match guard: the candidate is staged at slot 0 and the
-///   scan starts at 1 or above either way.
-/// * **the early null-target return** saves a scan that would find nothing:
-///   a null target is skipped against every candidate by the candidate null
-///   check, so removing it yields the same answer, slower.
-///
-/// The one step that is load-bearing is converting a matched SLOT back to its
-/// RECIPE (`slot - 1`). Returning the slot instead fails immediately.
+/// ```wat
+/// (func (export "__wpk_fork_ref_gc_lookup") (param $slot i32) (result i32)
+///   (local $v anyref)
+///   (local.set $v (table.get $transit (local.get $slot)))
+///   (if (ref.is_null (local.get $v)) (then (return (i32.const 0))))
+///   (call $fm_gc_identity_find (call $host_ref_identity (local.get $v))))
+/// ```
 fn inject_gc_lookup(module: &mut Module) -> Result<()> {
     if module
         .exports
@@ -1206,104 +1211,59 @@ fn inject_gc_lookup(module: &mut Module) -> Result<()> {
         bail!("module already exports {GC_LOOKUP_EXPORT}");
     }
     let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
-
-    let anyref = ValType::Ref(RefType::ANYREF);
-    // `RefTest`/`RefCast` are not `Copy`, so build one per use site.
-    let eq_test = || RefTest {
-        nullable: true,
-        heap_type: HeapType::Abstract(AbstractHeapType::Eq),
-    };
-    let eq_cast = || RefCast {
-        nullable: true,
-        heap_type: HeapType::Abstract(AbstractHeapType::Eq),
-    };
+    let find = exported_function(module, GC_IDENTITY_FIND_HELPER)?;
+    let identity = import_host_ref_identity(module);
 
     let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
     let slot = module.locals.add(ValType::I32);
-    let target = module.locals.add(anyref);
-    let candidate = module.locals.add(anyref);
-    let index = module.locals.add(ValType::I32);
-    let size = module.locals.add(ValType::I32);
+    let value = module.locals.add(ValType::Ref(RefType::ANYREF));
     {
         let mut body = builder.func_body();
         body.local_get(slot)
             .table_get(transit_table)
-            .local_set(target);
-        // A null or non-eq candidate can never match: report "new" rather than
-        // trapping, so the guest simply claims a fresh recipe.
-        body.local_get(target).ref_is_null().if_else(
+            .local_set(value);
+        // A null staging slot is "new", not an error: the guest then claims,
+        // which is what lets a cycle terminate rather than trap.
+        body.local_get(value).ref_is_null().if_else(
             None,
             |null| {
                 null.i32_const(0).return_();
             },
             |_| {},
         );
-        body.local_get(target)
-            .instr(eq_test())
-            .unop(UnaryOp::I32Eqz)
-            .if_else(
-                None,
-                |not_eq| {
-                    not_eq.i32_const(0).return_();
-                },
-                |_| {},
-            );
-        body.table_size(transit_table).local_set(size);
-        body.i32_const(2).local_set(index);
-        body.block(None, |done| {
-            let done_id = done.id();
-            done.loop_(None, |lp| {
-                let lp_id = lp.id();
-                lp.local_get(index)
-                    .local_get(size)
-                    .binop(BinaryOp::I32GeU)
-                    .br_if(done_id);
-                lp.local_get(index)
-                    .table_get(transit_table)
-                    .local_set(candidate);
-                lp.local_get(candidate)
-                    .ref_is_null()
-                    .unop(UnaryOp::I32Eqz)
-                    .if_else(
-                        None,
-                        |live| {
-                            live.local_get(candidate).instr(eq_test()).if_else(
-                                None,
-                                |comparable| {
-                                    comparable
-                                        .local_get(candidate)
-                                        .instr(eq_cast())
-                                        .local_get(target)
-                                        .instr(eq_cast())
-                                        .ref_eq()
-                                        .if_else(
-                                            None,
-                                            |hit| {
-                                                // slot = recipe + 1
-                                                hit.local_get(index)
-                                                    .i32_const(1)
-                                                    .binop(BinaryOp::I32Sub)
-                                                    .return_();
-                                            },
-                                            |_| {},
-                                        );
-                                },
-                                |_| {},
-                            );
-                        },
-                        |_| {},
-                    );
-                lp.local_get(index)
-                    .i32_const(1)
-                    .binop(BinaryOp::I32Add)
-                    .local_set(index);
-                lp.br(lp_id);
-            });
-        });
-        body.i32_const(0);
+        body.local_get(value).call(identity).call(find);
     }
     let shim = builder.finish(vec![slot], &mut module.funcs);
     module.exports.add(GC_LOOKUP_EXPORT, shim);
+    Ok(())
+}
+
+/// Inject the process-owned fork-unwind TAG and export it as
+/// `__wpk_fork_unwind`.
+///
+/// The guest imports `env.__wpk_fork_unwind` as a `tag () -> ()` -- the private
+/// Wasm-EH transport the instrumented capture path throws to escape a nested
+/// call chain. It was minted in JavaScript, which made every host responsible
+/// for creating one and handing it over.
+///
+/// It does not have to be. A wasm module can DEFINE a tag, export it, throw it
+/// and catch it, and the export arrives in JavaScript as a real
+/// `WebAssembly.Tag` -- verified against V8 before this was written. Rust cannot
+/// declare a tag, which is the only reason this lives in the injector.
+///
+/// The type is `() -> ()`: the transport carries no payload. Taken from the
+/// guest binary's own import section, not from a comment.
+fn inject_unwind_tag(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == UNWIND_TAG_EXPORT)
+    {
+        bail!("module already exports {UNWIND_TAG_EXPORT}");
+    }
+    let ty = module.types.add(&[], &[]);
+    let tag = module.tags.add(ty);
+    module.exports.add(UNWIND_TAG_EXPORT, tag);
     Ok(())
 }
 
@@ -1318,47 +1278,6 @@ fn exported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
         ExportItem::Table(id) => Ok(id),
         _ => bail!("{name} export is not a table"),
     }
-}
-
-/// Inject the process-owned fork-unwind TAG and export it as
-/// `__wpk_fork_unwind`.
-///
-/// # Why this stops being a host object
-///
-/// The guest imports `env.__wpk_fork_unwind` as a `tag () -> ()` -- the private
-/// Wasm-EH transport the instrumented capture path throws to escape a nested
-/// call chain. It was minted in JavaScript (`new WebAssembly.Tag({parameters:
-/// []})`), which made every host responsible for creating one and handing it to
-/// the guest.
-///
-/// It does not have to be. A wasm module can DEFINE a tag, export it, throw it
-/// and catch it, and the export arrives in JavaScript as a real
-/// `WebAssembly.Tag` -- verified directly against V8 before writing this:
-///
-/// ```text
-/// exports: __wpk_fork_unwind:tag, boom:function, catches:function
-/// tag is a WebAssembly.Tag: true
-/// module catches its own throw: true
-/// ```
-///
-/// So the module mints it and the host wires guest import <- module export,
-/// exactly as it already does for the transit table. Rust cannot declare a tag,
-/// which is the only reason this lives in the injector rather than in `lib.rs`.
-///
-/// The type is `() -> ()`: the transport carries no payload. Confirmed from the
-/// guest binary's own import section (`tag () -> ()`), not from a comment.
-fn inject_unwind_tag(module: &mut Module) -> Result<()> {
-    if module
-        .exports
-        .iter()
-        .any(|export| export.name == UNWIND_TAG_EXPORT)
-    {
-        bail!("module already exports {UNWIND_TAG_EXPORT}");
-    }
-    let ty = module.types.add(&[], &[]);
-    let tag = module.tags.add(ty);
-    module.exports.add(UNWIND_TAG_EXPORT, tag);
-    Ok(())
 }
 
 /// Resolve an exported function by name, failing loud rather than letting a

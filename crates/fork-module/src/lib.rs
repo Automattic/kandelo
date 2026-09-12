@@ -1392,6 +1392,28 @@ mod wasm {
     // reads (no further reset occurs on the parent path).
     static CAPTURE_ARMED: AtomicU32 = AtomicU32::new(0);
 
+    /// Host-assigned reference identity -> recipe, for the current capture.
+    ///
+    /// Wasm can COMPARE two GC references (`ref.eq` validates on `eqref`) but
+    /// cannot HASH one: there is no `ref.hash`, so a reference cannot key a map
+    /// inside the module and the only in-module algorithm is a linear scan of
+    /// every value published so far -- O(n) per lookup, O(n^2) over a capture.
+    /// The host hands back a stable small integer per distinct reference and
+    /// this maps it, which is O(1) amortised.
+    ///
+    /// Per-CAPTURE, so bump-backed and reclaimed with the fork is correct here
+    /// -- unlike the dirty-page set, which records mutations made long before
+    /// any fork and therefore cannot live in the bump.
+    struct IdentityCell(UnsafeCell<Option<BTreeMap<u32, u32>>>);
+    // SAFETY: single-threaded per worker, as `state()`.
+    unsafe impl Sync for IdentityCell {}
+    static GC_IDENTITY: IdentityCell = IdentityCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn gc_identity() -> &'static mut Option<BTreeMap<u32, u32>> {
+        unsafe { &mut *GC_IDENTITY.0.get() }
+    }
+
     /// In-flight guest reference-vector: `(handle + 1, promised, appended)`.
     /// Zero in slot 0 means no vector is open.
     ///
@@ -1798,6 +1820,9 @@ mod wasm {
     fn reset_bump_heap() {
         abandon_resident(state());
         abandon_resident(capture_state());
+        // Bump-backed like the capture builder, so it is abandoned rather than
+        // dropped: its `BTreeMap` nodes live in memory the reset reclaims.
+        abandon_resident(gc_identity());
         // A capture that trapped or aborted mid-encode leaves its staging frames
         // on the scratch stack. Reclaim them with the bump, or the next fork in
         // this worker starts with a stack that never comes back down.
@@ -5088,43 +5113,6 @@ mod wasm {
         capture_ok_void(assembled)
     }
 
-    /// Open a reference-vector builder, returning its handle (`>= 0`).
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_begin_vector() -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.begin_vector()),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// Append a recipe id to an open vector builder. Returns `0` or `-1`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_append_vector(handle: u32, recipe_id: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_void(g.append_vector(handle, recipe_id)),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
-    /// Finish an open vector builder, interning it and returning its stable
-    /// ordinal (`>= 1`; identical vectors dedup to one ordinal).
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_finish_vector(handle: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.finish_vector(handle)),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
-    }
-
     /// Read entry `index` of interned reference vector `ordinal` from the RESIDENT
     /// capture builder (the graph `fm_capture_*` is still building/has built this
     /// fork), returning the recipe id or `-1` on out-of-bounds. This is the
@@ -5359,6 +5347,50 @@ mod wasm {
             wasm_intr::unreachable();
         }
         SCRATCH_TOP.store(top - need, Ordering::Relaxed);
+    }
+
+    /// Recipe already bound to this host-assigned reference identity, or 0.
+    ///
+    /// Called by the injected `__wpk_fork_ref_gc_lookup` shim, which resolves
+    /// the identity through the host import first. Rust holds the map because
+    /// Rust can hold a map; wasm holds the reference because only wasm can.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_identity_find(identity: u32) -> i32 {
+        set_ok();
+        gc_identity()
+            .as_ref()
+            .and_then(|map| map.get(&identity))
+            .map_or(0, |recipe| *recipe as i32)
+    }
+
+    /// Claim a fresh recipe and bind it to this reference identity.
+    ///
+    /// The bind is what makes a later `fm_gc_identity_find` hit, which is what
+    /// terminates a cyclic object graph: the generator publishes identity
+    /// BEFORE recursing into fields precisely so the walk back finds it.
+    ///
+    /// Re-binding an identity already claimed is `EINVAL`: it would mean the
+    /// same object was claimed twice, giving the child two objects where the
+    /// parent had one -- a fork-only identity split, and silent.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_identity_claim(identity: u32) -> i32 {
+        let recipe = match capture_builder() {
+            Ok(g) => capture_ok_id(g.claim_gc()),
+            Err(e) => {
+                set_err(e);
+                return -1;
+            }
+        };
+        if recipe < 0 {
+            return recipe;
+        }
+        let map = gc_identity().get_or_insert_with(BTreeMap::new);
+        if map.insert(identity, recipe as u32).is_some() {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        set_ok();
+        recipe
     }
 
     /// Guest-facing `env.__wpk_fork_ref_gc_i31(payload) -> recipe`.

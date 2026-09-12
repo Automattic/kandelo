@@ -722,6 +722,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "walrus",
+ "wasmparser 0.247.0",
 ]
 
 [[package]]
