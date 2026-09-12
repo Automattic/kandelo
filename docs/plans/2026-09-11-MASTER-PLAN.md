@@ -229,20 +229,41 @@ can continue, which has happened in every lane that has run so far.
 
 ## Suite baseline — what "tests pass" is worth, measured 2026-09-12
 
-**The full host suite is at 65 failing files / 50 failing tests**, and the
-shape of that number matters more than the number.
+**The full host suite is at 35 failing files / 69 failing tests** after
+`./run.sh setup` rebuilt a coherent `source-only-v1` tier. Before that rebuild
+it was 65 files / 50 tests.
 
-**39 of the 65 fail at collection with one identical cause:** `Package
-artifact closure is incomplete: no single provenance tier contains every
-accepted artifact, and tiers will not be mixed`. That is the resolver working
-correctly — refusing to serve a mixture — against an incoherent `source-only-v1`
-tier. It is provisioning state, not lane defects, and it needs the local-build
-engine; `scripts/build-programs.sh` does **not** clear it (measured: identical
-65/50 before and after a full program rebuild).
+**Read those two numbers together or they mislead.** Files fell 65 → 35 because
+31 files stopped failing at *collection*; tests rose 50 → 69 because those files
+now actually run, and some of their individual tests fail. Fewer broken files,
+more visible failures — the suite got more honest, not worse.
 
-The remaining 26 files carry 50 real failures in the classes the plan already
-names: the `vi.fn()` spawn call-count mismatches, kernel-worker ingress
-initialisation, and timing assertions.
+**39 of the original 65 failed at collection with one identical cause:**
+`Package artifact closure is incomplete: no single provenance tier contains
+every accepted artifact, and tiers will not be mixed`. That is the resolver
+working correctly — refusing to serve a mixture — against an incoherent
+`source-only-v1` tier.
+
+**Provisioning, not lane defects, and confirmed by fixing it.**
+`scripts/build-programs.sh` does *not* clear it (measured: identical 65/50
+before and after a full program rebuild). `./run.sh setup`, which drives the
+local-build engine, cleared **31 files**.
+
+The remaining 35 files carry 69 failures in the classes the plan already names:
+`vi.fn()` spawn call-count mismatches, kernel-worker ingress initialisation,
+PHP startup warnings, and timing assertions.
+
+### One "new" failure that is measurement noise, not a regression
+
+The post-setup run flagged `test/wasm64.test.ts` as newly failing, with
+vitest's generic `STACK_TRACE_ERROR`. **It passes in isolation** — 3 tests,
+~8.2–8.7 s each.
+
+That run overlapped with `./run.sh setup` finishing. **H-7 applies to the
+campaign's own measurements, not just to performance claims:** a suite number
+taken while a package build is saturating the machine is not a clean reading,
+and this one was not. The honest statement is that 35/69 is an approximate
+baseline taken under unknown load, not a precise figure.
 
 ### Why this is recorded as a hazard
 
@@ -254,8 +275,8 @@ accumulating those green lines could reasonably infer a green suite, and the
 suite is not green.
 
 **Before attributing any failure to a lane, check it against this baseline.**
-The 2026-09-12 measurement is: 65 files, 50 tests, 39 of them one provisioning
-cause. A lane that lands and leaves those numbers unchanged has introduced
+The 2026-09-12 measurement is: **35 files, 69 tests**, after a coherent tier
+rebuild — and taken under load, so treat it as approximate. A lane that lands and leaves those numbers unchanged has introduced
 nothing; a lane that moves them has done something, in one direction or the
 other.
 
