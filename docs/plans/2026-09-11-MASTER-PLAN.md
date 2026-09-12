@@ -2681,6 +2681,48 @@ import the TypeScript filesystem**.
 
 ## What this lane is — as corrected by the census
 
+> **CORRECTION 2026-09-12 — "overwhelmingly recipes" is right about most of
+> these files and wrong about the two biggest.** The census reached that
+> conclusion by measuring IMPORTERS, not by measuring what the files do.
+> Measured by parse/verify density:
+>
+> | File | Lines | `digest`/`sha256`/`validate`/`Tar`/`Zip`/path-normalise sites |
+> |---|---|---|
+> | `staged-product-inputs.ts` | 1,975 | **50** |
+> | `vfs-product-builder-contract.ts` | 952 | **55** |
+> | `wordpress-preinstall.ts` | 921 | **0** |
+> | `shell-vfs-build.ts` | 870 | 9 |
+> | `build-lamp-vfs-image.ts` | 591 | 1 |
+>
+> `wordpress-preinstall.ts` proves the recipe claim exactly — 921 lines of
+> product logic with no parsing in it. **`staged-product-inputs.ts` disproves it
+> for the largest file under `images/`**, and it is LARGER than the recipe this
+> lane holds up as its example. Its functions are `materializeTarEntries`,
+> `materializeZipSource`, `commonArchiveRoot`, `stripArchiveRoot`,
+> `normalizedArchiveComponents`, `readRepositoryPathBundle`,
+> `assertExactInputInventory` — archive extraction, path-traversal defence and
+> integrity verification **of untrusted input**. That is mechanism, not product
+> configuration, and the kernel already has `crates/runtime-core/src/zip.rs`.
+>
+> **This is lane W's defect in a different directory.** `sessionKernelFormatParsers`
+> targets 0 for "hand-written parsers of kernel-emitted formats... the kernel
+> holds this data structured and the UI re-derives it with nothing binding the
+> two". Here a TypeScript builder re-derives archive structure and integrity
+> that a Rust reader already knows how to compute.
+>
+> **It also disposes of an open scope question rather than answering it.** Three
+> pre-existing type errors were found by the new `images/` typecheck config, and
+> the question raised was whether fixing them is in lane Y's scope. Two of the
+> three are in this file, and one of them is `kind` staying `unknown` while a
+> repository bundle entry is validated — **an unvalidated-input hole in
+> integrity-checking code**. The answer is not to fix them in place. It is that
+> the code they are in is a port target.
+>
+> **Not scheduled here.** Sizing this as an increment, and deciding whether it
+> belongs to lane Y or to a lane of its own, is the maintainer's call — it is
+> ~2,900 lines of parsing and verification that this lane's charter currently
+> says stays in TypeScript.
+
 **Not a line-reduction lane.** The 13,502 lines are overwhelmingly *recipes*:
 which packages go in the LAMP image, how WordPress is preinstalled, what dinit
 services MariaDB declares. That is product configuration and it stays. The old
