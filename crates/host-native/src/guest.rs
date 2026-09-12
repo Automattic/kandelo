@@ -6136,13 +6136,13 @@ pub(crate) fn instantiate_fork_module(
         fm_gc_plan_count: fm_func!("fm_gc_plan_count": () => i32),
         fm_drive_execute: fm_func!("fm_drive_execute": (u32, u32) => ()),
         fm_drive_table_base: fm_func!("fm_drive_table_base": u32 => i32),
-        fm_ref_vector_get: fm_func!("fm_ref_vector_get": (u32, u32) => i32),
-        fm_ref_gc_route: fm_func!("fm_ref_gc_route": (u32, u32) => i32),
-        fm_ref_gc_payload_len: fm_func!("fm_ref_gc_payload_len": (u32, u32, u32) => i32),
-        fm_ref_gc_load: fm_func!("fm_ref_gc_load": (u32, u32, u32, u32, u32, u32, u32) => i32),
-        fm_ref_exn_route: fm_func!("fm_ref_exn_route": (u32, u32) => i32),
-        fm_ref_exn_load: fm_func!("fm_ref_exn_load": (u32, u32, u32, u32, u32, u32, u32, u32) => i32),
-        fm_ref_exn_cache_index: fm_func!("fm_ref_exn_cache_index": u32 => i32),
+        fm_ref_vector_get: fm_func!("__wpk_fork_ref_vector_get": (u32, u32) => i32),
+        fm_ref_gc_route: fm_func!("__wpk_fork_ref_gc_route": (u32, u32) => i32),
+        fm_ref_gc_payload_len: fm_func!("__wpk_fork_ref_gc_payload_len": (u32, u32, u32) => i32),
+        fm_ref_gc_load: fm_func!("__wpk_fork_ref_gc_load": (u32, u32, u32, u32, u32, u32, u32) => i32),
+        fm_ref_exn_route: fm_func!("__wpk_fork_ref_exn_route": (u32, u32) => i32),
+        fm_ref_exn_load: fm_func!("__wpk_fork_ref_exn_load": (u32, u32, u32, u32, u32, u32, u32, u32) => i32),
+        fm_ref_exn_cache_index: fm_func!("__wpk_fork_ref_exn_cache_index": u32 => i32),
         fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
         fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
         fm_externref_handle: fm_func!("fm_externref_handle": u32 => i32),
@@ -7291,25 +7291,30 @@ fn spawn_guest_thread(
             // externref_typed`) that bypasses this real module export for a
             // gated fork's own placeholder recipe ids, then falls through to
             // exactly this same `decode_funcref` export for everything else.
-            let flips: [(&str, wasmtime::Func); 8] = [
-                (
-                    wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
-                    decode_funcref,
-                ),
-                (wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET, *fm.fm_ref_vector_get.func()),
-                (wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE, *fm.fm_ref_gc_route.func()),
-                (
-                    wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
-                    *fm.fm_ref_gc_payload_len.func(),
-                ),
-                (wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD, *fm.fm_ref_gc_load.func()),
-                (wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ROUTE, *fm.fm_ref_exn_route.func()),
-                (wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOAD, *fm.fm_ref_exn_load.func()),
-                (
-                    wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
-                    *fm.fm_ref_exn_cache_index.func(),
-                ),
-            ];
+            // The seven reference-feed imports are now exported by the
+            // fork-module under the GUEST'S OWN NAMES, so there is nothing to
+            // map: look each up by the name the guest asked for and define it
+            // under that same name. `decode_funcref` stays explicit because it
+            // is wrapped (see above), not because its name differs.
+            let mut flips: Vec<(&str, wasmtime::Func)> = vec![(
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
+                decode_funcref,
+            )];
+            for name in [
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET,
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD,
+                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ROUTE,
+                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOAD,
+                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
+            ] {
+                let Some(f) = fm.instance.get_func(&mut store, name) else {
+                    eprintln!("fork-module missing expected export {name}");
+                    return;
+                };
+                flips.push((name, f));
+            }
             for (name, f) in flips {
                 if guest_declares(name) {
                     if let Err(e) = linker.define(&mut store, "env", name, f) {

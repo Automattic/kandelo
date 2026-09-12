@@ -4182,19 +4182,19 @@ mod wasm {
 
     /// `__wpk_fork_ref_vector_get(ordinal, index) -> recipe_id`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_vector_get(ordinal: u32, index: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_vector_get(ordinal: u32, index: u32) -> i32 {
         ref_vector_get_impl(ordinal, index)
     }
 
     /// `__wpk_fork_ref_gc_route(recipe_id, expected_activation) -> layout|0|-1`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_gc_route(recipe_id: u32, expected_activation: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_gc_route(recipe_id: u32, expected_activation: u32) -> i32 {
         ref_gc_route_impl(recipe_id, expected_activation)
     }
 
     /// `__wpk_fork_ref_gc_payload_len(recipe_id, activation, layout) -> len`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_gc_payload_len(
+    pub extern "C" fn __wpk_fork_ref_gc_payload_len(
         recipe_id: u32,
         expected_activation: u32,
         expected_layout_id: u32,
@@ -4205,7 +4205,7 @@ mod wasm {
     /// `__wpk_fork_ref_gc_load(recipe_id, activation, type, layout, kind, dst,
     /// len) -> vector_ordinal|0`. `dst` is an absolute guest byte offset (`ptr`).
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_gc_load(
+    pub extern "C" fn __wpk_fork_ref_gc_load(
         recipe_id: u32,
         module_activation: u32,
         type_ordinal: u32,
@@ -4227,7 +4227,7 @@ mod wasm {
 
     /// `__wpk_fork_ref_exn_route(recipe_id, expected_activation) -> layout|-1`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_exn_route(recipe_id: u32, expected_activation: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_exn_route(recipe_id: u32, expected_activation: u32) -> i32 {
         ref_exn_route_impl(recipe_id, expected_activation)
     }
 
@@ -4235,7 +4235,7 @@ mod wasm {
     /// scalar_len, ref_ids_dst, ref_count) -> 1`. Both `dst` args are absolute
     /// guest byte offsets (`ptr`).
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_exn_load(
+    pub extern "C" fn __wpk_fork_ref_exn_load(
         recipe_id: u32,
         module_activation: u32,
         tag_ordinal: u32,
@@ -4259,7 +4259,7 @@ mod wasm {
 
     /// `__wpk_fork_ref_exn_cache_index(recipe_id) -> index`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_exn_cache_index(recipe_id: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_exn_cache_index(recipe_id: u32) -> i32 {
         ref_exn_cache_index_impl(recipe_id)
     }
 
@@ -4938,7 +4938,7 @@ mod wasm {
     /// PARENT's own post-fork replay read: after the parent seals, its frame
     /// rewind asks which recipe ids each frame's reference vector holds so it can
     /// hand back the ORIGINAL live values (kept host-side in `capturedValues`, and
-    /// in the module-owned transit table). Unlike `fm_ref_vector_get` — which
+    /// in the module-owned transit table). Unlike `__wpk_fork_ref_vector_get` — which
     /// reads a DECODED transaction a child reconstructs from the wire — this reads
     /// the live capture builder directly, so the parent never re-decodes its own
     /// graph and never reconstructs (its live references keep their identity by

@@ -94,10 +94,10 @@
     },
     "forkModuleEntryPoints": {
       "measure": "pub extern \"C\" fn fm_* declared in crates/fork-module/src/lib.rs",
-      "ceiling": 62,
+      "ceiling": 55,
       "slack": 2,
       "target": 5,
-      "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow."
+      "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow. SCOPE, made explicit 2026-09-12: this counts HOST-CALLED fm_* entries only. Exports the GUEST imports are named __wpk_fork_* and are deliberately not counted here -- they are a fixed ABI the guest declares, not a surface to minimise, and they are tracked by forkGuestImportsUnserved instead. The 62 -> 55 step was a RECLASSIFICATION, not a deletion: seven reference-feed exports were renamed from fm_ref_* to the guest names they serve. Zero exports were removed. Expect this number to stay flat while the guest ABI migrates."
     },
     "parseShebangReferences": {
       "measure": "references to parseShebang in host/src",
@@ -192,7 +192,7 @@
     },
     "forkGuestImportsUnserved": {
       "measure": "canonical fork imports in the crates/shared ProgramArtifactImport table that crates/fork-module does not export under the same name",
-      "ceiling": 40,
+      "ceiling": 33,
       "slack": 0,
       "target": 0,
       "why": "The guest declares 46 fork imports. Each one the fork-module exports VERBATIM can be wired with a nameless loop -- host-native already does this for the five frame imports. Each one exported under a different spelling (fm_ref_gc_route for __wpk_fork_ref_gc_route) forces a mapping table back into the host, which is the hand-maintained-knowledge-beside-a-generator defect three censuses in this campaign have found. Target 0 is the point at which the JS host layer is pure wiring."
