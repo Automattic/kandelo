@@ -288,34 +288,66 @@ difference between 46 and 65 has not been attributed. The two runs on
 against this session's changes being the cause — but it is not the same as
 having measured the earlier commit.
 
-## Open decisions — work is blocked on these, not on effort
+## Authorised but NOT YET BUILT — do not lose these
 
-Three items reached a point where the next step is a trade the maintainer
-should make, and each is recorded where the lane describes it.
+**1. Lane G — the `itimerval` guard. AUTHORISED 2026-09-12, not written.**
 
-**1. Lane G — `itimerval`.** The last of fifteen layout modules. It is
-deliberately *not* a musl-struct mirror: wasm32 musl translates its public
-32-byte time64 struct to the kernel's historical four-`long` time32 record, so
-asserting them equal is false by design. Either a different guard at the
-translation site, or a recorded exemption that makes the lane's target 1
-instead of 0. **Driving the gate to 0 with an assert that happens to pass would
-be worse than leaving it at 1.**
+The question I put to the maintainer was wrong. I described `itimerval` as a
+"deviation from musl". **It is not a deviation.**
+`libc/musl/src/signal/setitimer.c` is upstream musl, unmodified:
 
-**2. Lane L — L2's pointer authority.** Kernel exports mark pointers three ways:
-`*mut u8`, bare `usize`, and plain `u32`. A type-based extraction agrees with
-the hand-written table on 40 of 52 entries and cannot see the other 12. Options:
-an explicit const table in `crates/shared`; changing every export to take
-`*mut u8` so the type *is* the authority (invasive); or a name heuristic
-(**not recommended** — a gate that is confidently wrong is worse than the
-hand-maintained table it replaces).
+```c
+if (sizeof(time_t) > sizeof(long)) {
+    long old32[4];
+    int r = __syscall(SYS_setitimer, which, ((long[]){is, ius, vs, vus}), old32);
+}
+return syscall(SYS_setitimer, which, new, old);
+```
 
-**3. Lane G — G7 and the compat classifier.** Extending the ABI snapshot from 6
-to 15 layout modules is purely additive (8 keys added, 0 removed, 0 changed) and
-`--classify-compat` still rejects it as a breaking section change requiring an
-`ABI_VERSION` bump, which the standing constraint forbids. Either relax the
-classifier for additive keys, or accept that the snapshot records 6 of 15 while
-the generated header now guards 14. **The two ABI artifacts currently disagree
-about what the ABI includes.**
+That is musl's standard time32/time64 compatibility path for **any** platform
+whose `time_t` is wider than its `long`. wasm32 has 4-byte `long` and 8-byte
+`time_t`, so musl sends `long[4]`; wasm64 has both at 8 and sends its native
+struct. Kandelo's kernel accepts exactly what upstream musl sends — the Linux
+`SYS_setitimer` ABI for 32-bit-`long` platforms. The layout module documents
+**musl's** behaviour, not a Kandelo choice, and "historical" refers to the
+Linux syscall's own time32 heritage.
+
+**So neither "guard at the translation site" nor "exempt" was the right
+framing.** The honest guard is an ordinary assert:
+`ITIMERVAL_WASM32_SIZE == 4 * sizeof(long)`, with the `*_INDEX` constants as
+the `long[4]` positions. 16 = 4x4 on wasm32 and 32 = 4x8 on wasm64 are both
+consistent with that. **Lane G reaches 0 and closes.**
+
+## Resolved, recorded so the earlier claims are not believed
+
+**2. Lane L — L-D2 is REFUTED. My L1 census was wrong.**
+
+L1 filed L-D2 as "the scratch pointer table is hand-maintained and nothing
+checks it". **Something does.**
+`host/test/kernel-scratch-contract.test.ts` parses `crates/kernel/src/wasm_api.rs`,
+extracts each export's pointer positions, and compares them against the
+TypeScript table, failing on disagreement. It additionally enforces that a raw
+pointer parameter carries the `_ptr` suffix and that every pointer is followed
+by an explicit length or capacity.
+
+That also explains why my naive type-only extraction saw 40 of 52: the real
+contract recognises `_ptr`-suffixed `usize`/`u32` parameters as pointers. The
+convention **is** enforced — by that test.
+
+**L2 therefore needs no maintainer decision and no new authority**, and the
+three options I presented were answering a question that did not exist.
+
+**A real defect remains, and it is a different one.** Two of that file's eight
+tests fail, and they are not the pointer-role assertions: `publishes only gated
+exports and package-private raw authority` (4 items) and `admits only reviewed
+kernel-memory views, writes, and allocator calls` (12 items). Those are
+allowlist assertions about unreviewed kernel-memory access. Already on the
+filed-defects list; **not** L-D2.
+
+**3. Lane G — G7. DONE**, and the relaxation was smaller than the question
+implied: `classify_additive_object_by_key` already existed and served
+`marshalled_structs`, `syscall_arg_descriptors` and `vfs_metadata`.
+`process_native_layouts` was simply falling through to the catch-all.
 
 ## Standing hazards — these are not lane-specific
 

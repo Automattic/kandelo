@@ -100,8 +100,27 @@ and the JS host has an entire ownership type system for exactly this.
 **This is census outcome 3: not floor, and not permission to keep the
 gap.**
 
-**L-D2 — the scratch pointer table is 35 exports wider than the generated
-ABI list.** `KERNEL_SCRATCH_EXPORT_NAMES` names **55** kernel exports and
+**L-D2 — REFUTED 2026-09-12. Keep reading, but do not act on it.**
+
+This census filed L-D2 as a hand-maintained table with nothing checking
+it. **`host/test/kernel-scratch-contract.test.ts` checks it**: it parses
+`crates/kernel/src/wasm_api.rs`, extracts each export's pointer
+positions, and fails if they disagree with the TypeScript table. It also
+enforces the `_ptr` suffix on raw-pointer parameters and requires every
+pointer to be followed by an explicit length or capacity.
+
+The census did not look for a test. It observed that the table was
+hand-written, compared its 55 names against the generated
+`HOST_ADAPTER_*_KERNEL_EXPORTS` lists, found a 20-name overlap, and
+concluded from the mismatch that nothing was checking it. **The two lists
+serve different purposes and their disagreement was never evidence of an
+unguarded table.**
+
+What follows below is the original text, kept so the error is legible
+rather than tidied away.
+
+**L-D2 (as originally filed) — the scratch pointer table is 35 exports
+wider than the generated ABI list.** `KERNEL_SCRATCH_EXPORT_NAMES` names **55** kernel exports and
 records which argument positions of each are pointers, by hand.
 `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS` (78) and its optional companion (8)
 are generated from Rust by `dump_abi.rs`. **The two lists overlap on only
