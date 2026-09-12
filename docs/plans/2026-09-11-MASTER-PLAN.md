@@ -78,7 +78,7 @@ lands — those are marked.
 | **X** process and exec | **2–5 d** | medium | Blocked on one panic with a precise bisect. Once found, the repoint is a one-commit reapply. |
 | **H** browser + curation | **3–6 d** | medium | The browser pass is short if provisioning holds; curation of ~370 commits into ~14 is a day or two with `commit-tree`. |
 | **K** `kernel-worker.ts` | **30–60 d** | low *(K1 done)* | One class holds 29,975 lines across 522 methods. Decomposition, not migration — `host-native` dispatches the same 85 syscalls. The census clarified the shape but found nothing making it smaller. |
-| **L** host↔kernel plumbing (V4) | **10–20 d** | **unknown until L1** | 5,853 lines holding two real invariants. `crates/host-native` is the existence proof for what the floor actually is, and nobody has compared against it. |
+| **L** host↔kernel plumbing | **6–12 d** | medium *(L1 done)* | Not 5,853 lines a host must reproduce — `host-native` wrote a layout struct and one helper. The work is unifying duplicated knowledge: one layout, one bounds rule, a generated pointer table. |
 | **E** Node/browser peers | **4–8 d** | medium *(E1 done)* | The consolidation already happened for the pair that mattered: 72 shared lifecycle members via a factory. What is left is unifying 43 duplicated message types and a 21-item audit. |
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
@@ -98,8 +98,10 @@ lane V.** `memoryFsTypeScript` cannot reach 0 while `images/vfs/scripts`
 imports `memory-fs.ts`, so any schedule that runs V to completion before Y is
 wrong on its face.
 
-**The nine lanes added on 2026-09-11 add 88–177 agent-days to the campaign**,
-against 93–180 for the eleven that preceded them — they very nearly double it. That is the honest scale of what the plan
+**The whole campaign now stands at 162–319 agent-days across 20 lanes.** The
+nine lanes added on 2026-09-11 were first scoped at 88–177; after their censuses
+they are **71–143**, because five of them shrank and none grew. The censuses
+cost roughly a day in total. That is the honest scale of what the plan
 was previously not counting, and it is a floor like every other number here.
 
 **For PR #1350 specifically**, what remains is **H** (browser plus curation,
@@ -1757,6 +1759,31 @@ The short version, because it changes how this plan should be read: of
 fork lane.** Outside `host/src` there are a further 14,091 TypeScript lines of
 VFS image builders, 25,658 lines of shell plus 9,729 of TS/MJS build automation,
 and 5,360 lines of `web-libs` session contracts, none of it claimed either.
+
+**All seven first-increment censuses have now run** — L1, Y1, E1, R1, W1, U1,
+K1, plus V6 — and their results are folded into the lanes above. Six of the
+eight **overturned the lane they were meant to confirm**, which is the single
+strongest argument in this file for censusing before dispatching:
+
+| Census | What it overturned |
+|---|---|
+| **L1** | Target was 1,500; derived **3,600**. The premise — "lines a wasmtime host must reproduce" — was wrong; `host-native` wrote a layout struct and one helper. |
+| **Y1** | Gate measured lines; the 13,502 are **recipes that stay**. Replaced with an importer count. Rust side already nearly sufficient. |
+| **E1** | "70% divergent" conflated *different jobs* with *drifted copies*. The consolidation had **already happened** via a `createProcessLifecycle` factory (72 shared members, not the 10 reported). |
+| **R1** | Not a 4,020-line resolver migration: `host-native`'s equivalent is **ten lines**. The duplication is **eight path literals**. |
+| **W1** | Found a **third population** the lane missed — hand-written `/proc` parsers — plus a syscall table 96 entries short of the generated one. |
+| **U1** | Gate measured size, the axis the lane's own text calls wrong. Tier-1 subset is **3–6 d** of the 12–25. |
+| **K1** | Framing wrong — not "a second syscall table"; the 85 dispatched syscalls need host services and `host-native` dispatches them too. **But the 12,000 target survived**, validated against `guest.rs`'s 13,577. |
+| **V6** | Five of six consumers need only **constants**; one needs the filesystem. Days, not weeks, for five of six. |
+
+**One pattern recurred across three censuses and is now the campaign's most
+common defect shape:** ABI knowledge reaching TypeScript by hand while a
+generator already exists for its neighbours — **L-D2** (scratch pointer table,
+35 exports wider than the generated list), **W-D1** (syscall names, 137 hand
+entries against 233 generated), **V-D1** (no generated errno table at all).
+Lane G owns the generator; these are its customers.
+
+---
 
 The survey named seven clusters. **Six became the lanes above and one turned
 out not to be a lane at all**, which is the survey's most useful result:
