@@ -4,6 +4,22 @@
 this and supplies the tests. Written so lane V does not have to re-derive what
 lane Y measured while hitting it.
 
+> **SUPERSEDED IN PART, 2026-09-12.** The maintainer then directed lane V to be
+> worked in the same worktree, and the open question below — *"the design
+> decision is the payload"* — has been **answered and landed**. The answer is
+> in the master plan under **V4 — the identity contract**: a field is
+> first-class when the kernel ACTS on it and payload when the kernel only
+> CARRIES it, so the archive linkage became SDEF fields (v2) rather than
+> payload bytes. The rest of this document — the defect, the locations, why it
+> is not derived-build-only, the held-out trials, the two tests that assert the
+> damage — is still accurate and still the definition of done.
+>
+> One thing this document got wrong: it says the mechanical part is "calling
+> `create_deferred_file` from those two arms instead of stubbing". That is true
+> for the ARCHIVE-MEMBER arm. It is **not** true for `BaseSource::Host`, where
+> the kernel holds no URL and no identity that survives renumbering — see the
+> master plan's items 2 and 3.
+
 ## The defect, in one sentence
 
 `rootfs::export_image_read` turns every deferred file into a zero-length

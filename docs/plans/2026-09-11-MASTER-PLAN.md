@@ -1061,8 +1061,9 @@ not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
-**Status: partly characterized. V1–V3 landed; V4 blocked on a decision made;
-V5 designed and building. The 12,000-line finding below is NOT yet
+**Status: V1–V3 landed. V4 DECIDED 2026-09-12 and its record shape landed;
+three items remain, listed under "V4 — the identity contract" below. V7 and V8
+are done and V-D1 is closed. V5 designed and building. The 12,000-line finding below is NOT yet
 characterized and must not be dispatched until it is.**
 
 ## End state
@@ -1133,6 +1134,78 @@ its own.
 **Neither requires a filesystem implementation.** `sharedfs-vendor.ts` is not
 the floor; it is a second implementation of a format the kernel owns.
 
+## V4 — the identity contract. DECIDED AND PARTLY LANDED 2026-09-12.
+
+**Worked in the lane-Y worktree** (`/Users/brandon/kandelo-lane-y`, branch
+`brandonpayton/lane-y-image-writer`) at the maintainer's direction, because the
+two lanes meet exactly here: lane Y holds the failing tests that define done.
+
+**The decision, and the argument for it.** A deferred file in an exported image
+has to say where its bytes are. SDEF — the in-body section built to be an
+image's one description of its deferred files — carried strictly LESS than the
+section it replaces: `klzy` records which lazy archive backs a file and which
+member within it; SDEF recorded only inode, real size and an opaque payload. A
+section that cannot say *archive 7, member `usr/bin/php`* cannot replace KLZY,
+and the image keeps two descriptions — the exact defect SDEF exists to kill.
+
+So the payload question the handoff posed (`docs/plans/2026-09-12-v4-identity-contract-handoff.md`)
+is answered **neither** by sharing KLZY's producer format **nor** by inventing a
+fresh payload encoding. It is answered by moving the line:
+
+> **A field is first-class when the kernel ACTS on it, and payload when the
+> kernel only CARRIES it.**
+
+The kernel acts on the archive id and the member path — it needs both to fetch
+the right archive and extract the right member — exactly as it acts on the
+inode and the size. So SDEF v2 carries them as typed, checked fields. The fetch
+URL, transport, integrity digest, activation mode and atomic-group seal stay in
+the payload and are still never inspected. **Burying the linkage in the payload
+would not have preserved the courier property, it would have destroyed it**,
+because the kernel would then have had to parse the payload to fetch anything.
+
+The linkage is all-or-nothing in both directions, refused by the encoder, by
+the decoder independently (an image can arrive from a shared link), and by
+`create_deferred_file` at the call.
+
+**`VERSION` 1 → 2**, and not for a deployed artifact: nothing has ever emitted
+this section outside its own tests, no fixture carries it, and `SDEF` appears
+zero times in `abi/snapshot.json` — **so this is not an ABI snapshot change and
+needs no `dump-abi`.** The bump makes a kernel built before the change reject
+the section instead of misreading it, and the misreading is demonstrated rather
+than asserted: the test builds one byte string that is valid under both layouts
+and means different things under each.
+
+**Landed:** `0ee47010d` on the lane branch — the record shape, eleven
+perturbation trials all killing, `xtask vfs-image describe` now genuinely
+carrier-blind.
+
+**Still open in V4, in order:**
+
+1. **The export emits records instead of stubs.** The two arms of
+   `build_export_image` in `rootfs.rs`. The **archive-member** arm needs no
+   further decision: `InodeKind::LazyMember` already holds `archive_id`,
+   `source_path` and `size`, which is now exactly what a record takes. This is
+   the arm that matters most — it is not derived-build-only.
+2. **The `BaseSource::Host` arm needs the loader to retain payloads.** Measured
+   2026-09-12: **the kernel does not hold a URL for a host-backed base file.**
+   `load_image_inner` reads KLZY, which has no payload field, and records the
+   blob id as the SOURCE image's inode number. Inode numbers are not identity
+   across a rewrite — the export renumbers — so this arm cannot be closed by
+   reconstructing identity. The loader must READ the SDEF section it was given
+   and keep each payload, so the export can re-emit it under the new inode.
+3. **`load_image_inner` accepts SDEF in KLZY's place.** Today it *refuses* an
+   image that declares no KLZY section, and **there is no KLZY encoder in
+   Rust** — `klzy.rs` is a decoder only. So an exported image is not loadable
+   by the kernel that wrote it. The choice is: write a KLZY encoder for a
+   format the campaign is retiring, or let SDEF be the linkage source it was
+   extended to be. **The second**, which is also what makes the KLZY-versus-JSON
+   gate unrepresentable rather than merely unused.
+
+**Gap 9, found while doing this: there is no Rust KLZY encoder.** Recorded here
+because it is the fact that decides item 3 above, and because the container
+writer (`sffs_container.rs`) takes `kernel_lazy` as a REQUIRED section — so
+today nothing can fill it from Rust.
+
 ## Increments
 
 - **V6 — census the six consumers. DONE** —
@@ -1153,10 +1226,14 @@ the floor; it is a second implementation of a format the kernel owns.
 it does NOT block deleting `sharedfs-vendor.ts`.** V7–V10 can run in parallel
 with lane Y.
 
-**V-D1 — there is no generated errno table.** `ENOENT`, `ENOSPC`, `EROFS` and
-`EEXIST` are hand-written in `sharedfs-vendor.ts`, and `exec-target.ts` declares
-its own `EAGAIN`, `EFBIG`, `EIO`, `ENOEXEC`. Errno numbers are ABI, and unlike
-their neighbours they have no generator. Same class as L-D2 and W-D1.
+**V-D1 — CLOSED. Verified 2026-09-12: `host/src/generated/abi.ts` exports an
+`ERRNO` table.** The census recorded there was none and that adding one to
+`dump_abi.rs` would unblock V7; it exists, so V7 needed no ABI regeneration.
+**V7 and V8 are also done** — only `memory-fs.ts` still imports
+`sharedfs-vendor.ts` from `host/src/`, the other five consumers are repointed,
+and `SFSError` has a home in `host/src/vfs/vfs-errors.ts`. That leaves V9
+(after lane Y, per the maintainer) and V10 as this lane's TypeScript-side work,
+and V4 as the part that can move now.
 
 **Already-present drift:** `memory-fs.ts` imports `OPEN_FLAGS` from
 `generated/abi` at line 20 **and** `O_CREAT` from `sharedfs-vendor` at line 31,
