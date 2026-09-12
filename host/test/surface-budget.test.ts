@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -580,12 +580,133 @@ const MEASURED: Record<string, () => number> = {
       .filter((b) => /mode = "4755"/.test(b) && !/install = "eager"/.test(b))
       .length;
   },
-  forkModuleEntryPoints: () =>
-    countMatches(
-      "crates/fork-module/src/lib.rs",
-      /^\s*pub (unsafe )?extern "C" fn fm_/,
-    ),
+  forkModuleHostDriveEntries: () => forkModuleEntries().hostCalled,
+  forkModuleInjectorHelpers: () => forkModuleEntries().injectorOnly,
+  forkModuleEntriesWithoutProductionCaller: () =>
+    forkModuleEntries().noProductionCaller,
 };
+
+/**
+ * Source with COMMENTS removed and string literals KEPT.
+ *
+ * Both halves matter for caller classification. A doc comment naming an entry
+ * is not a caller -- mentioning `fm_gc_identity_find` in a comment in
+ * `host/src` once moved it from injector-only to host-called, which is the
+ * whole classification being wrong from one sentence of prose. String literals
+ * must SURVIVE, because `crates/host-native` binds its drive surface by name
+ * inside one (`fm_func!("fm_parent_begin_capture": ...)`), so stripping
+ * strings would hide every real caller it has.
+ *
+ * Quote tracking exists only so a `//` inside a string does not open a
+ * comment; the contents are passed through untouched. Covers Rust `///` and
+ * `//!` doc comments by the same `//` rule.
+ */
+function stripComments(source: string): string {
+  let out = "";
+  let inBlock = false;
+  let inLine = false;
+  let quote: string | null = null;
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLine) {
+      if (ch === "\n") {
+        inLine = false;
+        out += ch;
+      }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === "*" && next === "/") {
+        inBlock = false;
+        i += 1;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      out += ch;
+      if (ch === "\\") {
+        if (next !== undefined) out += next;
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      inLine = true;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      inBlock = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Classify every `fm_*` entry the fork-module declares by WHO CALLS IT.
+ *
+ * One ceiling over all of them could not mean anything, because they move for
+ * opposite reasons: host-called entries should FALL as the drive API coarsens,
+ * injector-only helpers RISE as each shim-backed guest import lands, and
+ * entries with no production caller should fall to zero. A single number mixed
+ * all three and blocked work it had no bearing on.
+ *
+ * No host constructs an `fm_*` name dynamically (checked 2026-09-12), so
+ * matching by name is sound here.
+ */
+function forkModuleEntries(): {
+  hostCalled: number;
+  injectorOnly: number;
+  noProductionCaller: number;
+} {
+  const lib = readFileSync(
+    join(repoRoot, "crates/fork-module/src/lib.rs"),
+    "utf8",
+  );
+  const names = [
+    ...lib.matchAll(/^\s*pub (?:unsafe )?extern "C" fn (fm_[A-Za-z_0-9]+)/gm),
+  ].map((m) => m[1]);
+
+  const readAll = (dir: string, suffix: string): string => {
+    const root = join(repoRoot, dir);
+    return readdirSync(root)
+      .filter((f) => f.endsWith(suffix))
+      .map((f) => readFileSync(join(root, f), "utf8"))
+      .join("\n");
+  };
+  // PRODUCTION hosts only. `host/test` is deliberately excluded: an entry only
+  // a test reaches has no production caller, which is the H-1 signal the third
+  // bucket exists to hold.
+  const production = stripComments(
+    readAll("crates/host-native/src", ".rs") + readAll("host/src", ".ts"),
+  );
+  const injector = stripComments(
+    readFileSync(
+      join(repoRoot, "crates/fork-module-inject/src/main.rs"),
+      "utf8",
+    ),
+  );
+
+  let hostCalled = 0;
+  let injectorOnly = 0;
+  let noProductionCaller = 0;
+  for (const name of names) {
+    const re = new RegExp(`\\b${name}\\b`);
+    if (re.test(production)) hostCalled += 1;
+    else if (re.test(injector)) injectorOnly += 1;
+    else noProductionCaller += 1;
+  }
+  return { hostCalled, injectorOnly, noProductionCaller };
+}
 
 describe("campaign surface budget", () => {
   const surfaces = budget();

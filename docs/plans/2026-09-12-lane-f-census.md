@@ -424,85 +424,104 @@ surface budget — **not** by the fork Vitest suites. Filed as master-plan hazar
 H-9, because a suite that goes green against a module it never loaded is worse
 than one that fails.
 
-## §10 — What `forkModuleEntryPoints` counts, and the 23 with no production caller
+## §10 — The fork-module's `fm_*` entries, classified by caller
 
 Measured 2026-09-12 against `crates/fork-module/src/lib.rs`,
-`crates/fork-module-inject/src/main.rs`, `crates/host-native/src/*.rs`,
-`host/src/*.ts`, `host/test/*.ts` and `crates/fork-module/tests/*.mjs`. No host
-code constructs an `fm_*` name dynamically (checked), so a name grep is sound
-here.
+`crates/fork-module-inject/src/main.rs`, `crates/host-native/src/*.rs` and
+`host/src/*.ts`. No host constructs an `fm_*` name dynamically (checked), so
+matching by name is sound.
 
-**The measure is a regex for `pub extern "C" fn fm_*` in one file.** It counts
-definitions. It does not look at callers, and it deliberately excludes the
-`__wpk_fork_*` guest exports. Its `why` field says it counts *host-called*
-entries; it cannot enforce that.
+**Count callers, not mentions.** The first pass here matched raw text and was
+wrong: a doc comment naming an entry read as a caller. One sentence of prose in
+`host/src` moved `fm_gc_identity_find` out of the injector-only bucket and into
+the host-called one. The measure now strips comments first — and deliberately
+KEEPS string literals, because `crates/host-native` binds its entire drive
+surface by name inside one (`fm_func!("fm_parent_begin_capture": ...)`), so
+stripping strings would hide every real caller it has.
+
+The corrected split of the 54:
 
 | who calls it | count |
 |---|---|
-| production host (`crates/host-native`, `host/src`) | **27** |
-| the injector's own shims, nothing else | **4** |
-| tests only (`host/test`, `crates/fork-module/tests/*.mjs`) | **20** |
-| nothing at all | **3** |
+| a production host (`crates/host-native/src`, `host/src`) | **24** |
+| the injector's own shims, nothing else | **3** |
+| nothing in production — tests only, or nothing at all | **27** |
 
-The entry's purpose — "how many fine-grained calls force the host-side driver
-loops that make the TypeScript grow" — is served by the 27 alone.
+The earlier figures in this session (27 / 4 / 20 / 3) were mention-based and are
+superseded. The difference is not cosmetic: it moved four entries out of
+"host-called", including `fm_capture_claim_gc`, `fm_attach_child` and
+`fm_set_activation_exception_tags`, none of which any production host calls.
 
-### The four injector-only entries are not host surface
+### Why one ceiling over this could not work
 
-`fm_drive_bump`, `fm_capture_claim_gc`, `fm_gc_identity_find`,
-`fm_gc_identity_claim`. Each exists because the work is split across a boundary
-neither side can cross alone: **the injected wasm shim is the only thing that
-can hold a reference, and Rust is the only thing that can hold a map or a
-counter.** They are spelled as wasm exports only because the injector resolves
-its helpers by name (`exported_function`). A host never sees them. Adding more
-of them grows the host contract by **zero** — the correction recorded in the
-master plan's open decision 2.
+The old `forkModuleEntryPoints` counted `pub extern "C" fn fm_` declarations in
+one file. Its `why` said it counted host-called entries; a regex cannot enforce
+that. Worse, the populations move in OPPOSITE directions — host-called should
+fall as the drive API coarsens, injector-only rises as each shim-backed guest
+import lands, and the no-production-caller bucket should fall to zero. A single
+number blocked work it had no bearing on: adding an injector helper tripped a
+gate whose stated purpose was the host contract.
 
-### The uncalled entries are mostly the unwired half of multi-activation
+Split on 2026-09-12 by maintainer decision into `forkModuleHostDriveEntries`,
+`forkModuleInjectorHelpers` and `forkModuleEntriesWithoutProductionCaller`.
+Lane F's closure condition moved to the first of those, since the "3-5 coarse
+entries" goal was always about the host-called drive surface.
 
-This looked like H-1 at scale. It is mostly not. Sort the uncalled by signature
-and a pattern appears immediately: **`fm_frame_reserve/commit/peek/next`,
+**Test-only and never-called are ONE number on purpose.** Ratcheting test-only
+entries separately would reward DELETING TESTS to make a ceiling pass — a
+perverse incentive a ratchet must not create. Merged, the only ways down are
+the two that are actually wanted: wire an entry to a production caller, or
+delete the entry. Deleting its test moves it between sub-groups and changes
+nothing.
+
+### The injector-only three are not host surface
+
+`fm_drive_bump`, `fm_gc_identity_find`, `fm_gc_identity_claim`. Each exists
+because the work is split across a boundary neither side can cross alone: **the
+injected wasm shim is the only thing that can HOLD a reference, and Rust is the
+only thing that can hold a MAP or a counter.** They are spelled as wasm exports
+only because the injector resolves its helpers by name. A host never sees them.
+Ten more are expected as the remaining shim-backed guest imports land, which is
+why that surface carries a pre-authorized envelope of 15 rather than a
+measurement.
+
+### Most of the 27 are pending capability, not dead code
+
+Sort them by signature and a pattern appears: **`fm_frame_reserve/commit/peek/next`,
 `fm_resume_peek`, `fm_set_activation_resume_catalog` and
 `fm_activation_module_buffer` all take an explicit `activation_id`**, where the
 guest-facing `__wpk_fork_frame_*` counterparts call the IDENTICAL `*_impl`
 functions with `primary_activation()`.
 
 They are the multi-activation (dlopen fork) variants: a fork across N
-dynamically loaded libraries needs each activation's own resume catalog and its
-own frame cursor, because resume-slot numbering must match THAT activation's
-table by construction. Nothing wires them yet because no host drives a
-multi-activation fork yet.
+dynamically loaded libraries needs each activation's own resume catalog and
+frame cursor, because resume-slot numbering must match THAT activation's table
+by construction. Nothing wires them because no host drives a multi-activation
+fork yet. **That is pending capability and must not be deleted to bank a
+reduction** — the platform is meant to serve the whole possibility space of
+future guests, and arbitrary numbers of dynamically loaded libraries are inside
+it.
 
-**That is pending capability, not dead code, and it must not be deleted to bank
-a reduction.** The platform is meant to serve the whole possibility space of
-future guests, and arbitrary numbers of dynamically loaded libraries are
-squarely inside it.
+The `fm_capture_*` family is the other large group, reached only by
+`crates/fork-module/tests/*.mjs` and `host/test`. Its production caller is the
+TypeScript this lane set aside; it returns when stage 2 rewires capture.
 
-### `fm_abort` is the one that is neither — and it may be a live gap
+### `fm_abort` is neither, and may be a live gap
 
-`fm_abort()` takes no activation id. It calls `abort_impl()`, which is reachable
-from nowhere else, and which releases every channel-mapped fork chunk **without
-requiring the replay to have finished**. Its doc says it "mirrors the JS
-backend's `abort()` releasing the frame arena" — and the JS backend was deleted
-in Phase 4, so it mirrors something that no longer exists.
+`fm_abort()` takes no activation id. It calls `abort_impl()`, reachable from
+nowhere else, which releases every channel-mapped fork chunk **without
+requiring the replay to have finished**. Its doc says it mirrors the JS
+backend's `abort()` — and Phase 4 deleted that backend, so it mirrors something
+that no longer exists.
 
 The normal paths do release: `fm_parent_finish` reaches `finish_replay_impl`,
-and the abort flag reaches it through `finish_abort_impl`. `fm_abort` exists for
-the case where neither runs — a host that errors out mid-fork.
+and the abort flag reaches it through `finish_abort_impl`. `fm_abort` exists
+for the case where neither runs — a host that errors out mid-fork.
 
 **Open, NOT established:** whether `host-native` has such a path and therefore
 leaks fork chunks today, or whether every error route already funnels through
-`fm_parent_finish`. Settling it means tracing host-native's fork error handling,
-which this census did not do. It is the one entry in the uncalled set that
-should be resolved by answering a question rather than by wiring or deleting.
-
-### Consequence for any future ceiling
-
-A ceiling over all four populations cannot mean anything, because they move for
-different reasons: the 27 should fall, the 4 rise with each shim-backed import,
-the 20 fall only when tests are deleted, and the 3 are a question. **Set
-ceilings per population or not at all** — and settle the `fm_abort` question
-before counting it as anything.
+`fm_parent_finish`. Settling it means tracing host-native's fork error
+handling, which this census did not do.
 
 ## §11 — What the thin TypeScript layer has to do, measured
 

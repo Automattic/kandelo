@@ -99,13 +99,6 @@
       "target": 5,
       "why": "V4, the primary goal, and the half of it that had NO gate. EXPECTED_HOST_IMPORT_COUNT pins the KERNEL's obligation and has never let an import through unnoticed; the fork-module is a separate artifact with its own imports that every host must also satisfy, and nothing asserted them. An import was added to it on 2026-09-12 (env.__wpk_fork_host_ref_identity, maintainer-approved) and no ceiling moved -- precisely the shape this file's preamble says the ratchet exists to prevent. THE GOAL IS NOT A SMALL NUMBER FOR ITS OWN SAKE: it is that host responsibilities stay few, CLEARLY DEFINED, and THIN to implement, with the shared Wasm module doing everything else. This surface measures the 'few and clearly defined' half; the 'thin' half is measured by the TypeScript line surfaces above. SCOPE: the built artifact declares 10 import entries. Five are position-independent-code linking boilerplate any --pie side module has (env.memory, __indirect_function_table, __stack_pointer, __memory_base, __table_base), supplied mechanically by a host that knows nothing about fork; counting them would overstate the obligation and make the number move for non-fork reasons. They are pinned separately by EXPECTED_FORK_MODULE_PIC_IMPORT_COUNT. The five counted here are each a Wasm CAPABILITY FLOOR, not a design choice: resolve_externref (Wasm cannot manufacture an externref), __wpk_fork_host_ref_identity (ref.eq validates only on eqref, there is no ref.hash, and no cast rescues a host reference into the eq hierarchy), and the three reference-typed catalog/drive tables (Rust cannot declare or hold one). TARGET EQUALS CEILING because no entry has been shown reducible; if one ever is, both fall. The host-native test also asserts the NAMES, since a swap that keeps the count equal still changes what every host implements, and it compares every fork-module artifact on disk -- build-wasm.sh stages into local-binaries/ and host/wasm/ but the resolver reads local-binaries/source-only-v1/ FIRST, so a disagreement means a host would load something other than what was just built (master-plan H-9). That disagreement was real on this gate's first run."
     },
-    "forkModuleEntryPoints": {
-      "measure": "pub extern \"C\" fn fm_* declared in crates/fork-module/src/lib.rs",
-      "ceiling": 54,
-      "slack": 2,
-      "target": 5,
-      "why": "The inversion target is 3-5 coarse entries. 69 fine-grained ones are what force the host-side driver loops that make the TypeScript grow. SCOPE, made explicit 2026-09-12: this counts HOST-CALLED fm_* entries only. Exports the GUEST imports are named __wpk_fork_* and are deliberately not counted here -- they are a fixed ABI the guest declares, not a surface to minimise, and they are tracked by forkGuestImportsUnserved instead. The 62 -> 55 step was a RECLASSIFICATION, not a deletion: seven reference-feed exports were renamed from fm_ref_* to the guest names they serve. Zero exports were removed. The 55 -> 54 step WAS a deletion, banked 2026-09-12: fm_capture_begin_vector / fm_capture_append_vector / fm_capture_finish_vector were an unguarded duplicate of the guest builder (__wpk_fork_ref_vector_begin/append/finish) with no production caller, so they were removed and the harness routed onto the guest path; two GC-identity helpers were added in the same span, netting -1. KNOWN OVER-COUNT: the regex cannot see who calls a function, so it counts fm_gc_identity_find and fm_gc_identity_claim, which NO host calls -- they exist only because the injected wasm shim holds the reference and Rust holds the map, so the shim must call back into Rust. By this entry's declared scope the host-called figure is 52. The measure is left deliberately unnarrowed: rewriting it to exclude them would be weakening a check, and that is the maintainer's call, not the measure's."
-    },
     "parseShebangReferences": {
       "measure": "references to parseShebang in host/src",
       "ceiling": 12,
@@ -125,42 +118,42 @@
       "ceiling": 26495,
       "slack": 400,
       "target": 9700,
-      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 32718 -> 26495, target 12000 -> 9700. Same code, a measure that counts implementation."
+      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job — fork, exec, clone, the blocking-retry pump — in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 32718 -> 26495, target 12000 -> 9700. Same code, a measure that counts implementation."
     },
     "unguardedLayoutModules": {
       "measure": "process_layout modules whose C-side _Static_asserts are not anchored to a generated KANDELO_ macro",
       "ceiling": 1,
       "slack": 0,
       "target": 0,
-      "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' \u2014 WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it \u2014 two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
+      "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' — WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it — two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
     },
     "kernelHostImportTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/kernel.ts",
       "ceiling": 3822,
       "slack": 150,
       "target": 2100,
-      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction \u2014 4,774 x (40/72) \u2014 a consequence of the lane succeeding rather than an independent goal, and it is not a measurement. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 4774 -> 3822, target 2650 -> 2100. Same code, a measure that counts implementation."
+      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction — 4,774 x (40/72) — a consequence of the lane succeeding rather than an independent goal, and it is not a measurement. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 4774 -> 3822, target 2650 -> 2100. Same code, a measure that counts implementation."
     },
     "hostKernelPlumbingTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
       "ceiling": 4734,
       "slack": 150,
       "target": 2900,
-      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 5853 -> 4734, target 3600 -> 2900. Same code, a measure that counts implementation."
+      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge — one process-memory layout, one bounds-check rule, and a generated scratch pointer table. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 5853 -> 4734, target 3600 -> 2900. Same code, a measure that counts implementation."
     },
     "imageBuilderFilesystemImporters": {
       "measure": "files under images/ importing host/src/vfs/memory-fs or sharedfs-vendor",
       "ceiling": 36,
       "slack": 0,
       "target": 0,
-      "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes \u2014 which packages go in the LAMP image, how WordPress is preinstalled \u2014 and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done."
+      "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes — which packages go in the LAMP image, how WordPress is preinstalled — and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done."
     },
     "hostPeerDuplicateDeclarations": {
       "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
       "ceiling": 29,
       "slack": 0,
       "target": 29,
-      "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons \u2014 vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."
+      "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons — vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."
     },
     "artifactTierPathSpellings": {
       "measure": "independent production spellings of the local-binaries/source-only-v1 tier path",
@@ -188,14 +181,14 @@
       "ceiling": 14,
       "slack": 0,
       "target": 6,
-      "why": "Lane U, set by the U1 census. Replaces two line-count surfaces that measured size \u2014 the axis the lane's own text says is wrong \u2014 and would have been satisfied by rewriting loud, harmless test runners. This counts the tier that can silently produce a wrong artifact. The archetype is build-step-input-hash.sh: a content-identity cache-key primitive written in shell, consumed by build-host.sh, build-rootfs.sh AND tools/xtask/src/local_build.rs, and mirroring a second shell script that folds the same logic. The repo has already served a stale kernel from a cache key that omitted an input. Target is 6, not 0: release verification and CI deployment checks legitimately compute digests in shell and fail loudly."
+      "why": "Lane U, set by the U1 census. Replaces two line-count surfaces that measured size — the axis the lane's own text says is wrong — and would have been satisfied by rewriting loud, harmless test runners. This counts the tier that can silently produce a wrong artifact. The archetype is build-step-input-hash.sh: a content-identity cache-key primitive written in shell, consumed by build-host.sh, build-rootfs.sh AND tools/xtask/src/local_build.rs, and mirroring a second shell script that folds the same logic. The repo has already served a stale kernel from a cache key that omitted an input. Target is 6, not 0: release verification and CI deployment checks legitimately compute digests in shell and fail loudly."
     },
     "kernelWorkerClassMethods": {
       "measure": "methods declared in class CentralizedKernelWorker",
       "ceiling": 522,
       "slack": 10,
       "target": 150,
-      "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration \u2014 the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
+      "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration — the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
     },
     "forkGuestImportsUnserved": {
       "measure": "canonical fork imports in the crates/shared ProgramArtifactImport table that crates/fork-module does not export under the same name",
@@ -210,11 +203,32 @@
       "slack": 0,
       "target": 0,
       "why": "A real fork-instrumented guest imports 51 env.__wpk_fork_* entries; the canonical ProgramArtifactImport table declares the 46 that are FUNCTIONS, because that struct carries params/results and cannot describe a table, global or tag. The other five were therefore invisible to forkGuestImportsUnserved. Counted separately because serving one is different work: a table or tag is DEFINED and exported by the module rather than implemented. __wpk_fork_ref_gc_transit and __wpk_fork_unwind are already served this way."
+    },
+    "forkModuleHostDriveEntries": {
+      "measure": "fm_* entries in crates/fork-module/src/lib.rs that a PRODUCTION host calls (crates/host-native/src, host/src)",
+      "ceiling": 24,
+      "slack": 2,
+      "target": 5,
+      "why": "The inversion target is 3-5 coarse entries, and THIS is the number that target was always about: how many fine-grained calls a host must make, which is what forces the host-side driver loops that make the TypeScript grow. Measured in host-native, the export side costs one line per entry (one `fm_func!` each), so coarsening 24 to 5 saves about 19 lines -- real, but far less per unit than reducing the IMPORT obligation, which is `forkModuleHostImports`. Split out of the old `forkModuleEntryPoints` on 2026-09-12 by maintainer decision. That entry counted `pub extern \"C\" fn fm_` DEFINITIONS in one file and so mixed four populations moving in opposite directions; it blocked work it had no bearing on, because adding an injector-only helper tripped a gate whose stated purpose was the host contract. Exports are not imports: see `forkModuleHostImports` for what a host must actually implement. Census: docs/plans/2026-09-12-lane-f-census.md section 10."
+    },
+    "forkModuleInjectorHelpers": {
+      "measure": "fm_* entries called ONLY by crates/fork-module-inject (an injected wasm shim), never by a host",
+      "ceiling": 15,
+      "slack": 12,
+      "target": 15,
+      "why": "Internal implementation, NOT host surface. Each exists because the work is split across a boundary neither side can cross alone: the injected wasm shim is the only thing that can HOLD a reference, and Rust is the only thing that can hold a MAP or a counter. The shim calls the host import to turn its reference into an integer, then calls into Rust with that integer. A host never sees these, so they add nothing a host must implement. Currently 3: fm_drive_bump, fm_gc_identity_find, fm_gc_identity_claim. CEILING 15 IS A PRE-AUTHORIZED ENVELOPE, not a measurement: ten of the eighteen remaining guest imports each need one of these (seven read a reference-typed table slot, two must THROW so the guest's try_table catches the exnref, one is externref in and out), so this surface is EXPECTED to rise to about 15 as they land. Slack 12 is what lets 3 pass today without the ceiling being wrong. Exceeding 15 is a decision, not a rounding. Unlike every other entry here this one is not trying to reach zero -- the floor is however many such boundaries exist."
+    },
+    "forkModuleEntriesWithoutProductionCaller": {
+      "measure": "fm_* entries no production host and no injector shim calls -- reached only by tests, or by nothing",
+      "ceiling": 27,
+      "slack": 0,
+      "target": 0,
+      "why": "H-1 at scale: dead floor reads as complete. 27 of 54 entries are reached only by host/test, crates/fork-module/tests/*.mjs, or nothing at all. WHY THE TEST-ONLY AND NEVER-CALLED GROUPS ARE ONE NUMBER: ratcheting test-only entries separately would reward DELETING TESTS to make a ceiling pass, which is a perverse incentive a ratchet must not create. Merged, the only ways down are the two that are actually wanted -- wire an entry to a production caller, or delete the entry. Deleting its test moves it from test-only to never-called and changes nothing. NOT ALL OF THIS IS DEAD, and it must not be deleted to bank a reduction: fm_frame_{reserve,commit,peek,next}, fm_resume_peek, fm_set_activation_resume_catalog and fm_activation_module_buffer all take an explicit activation_id, where the guest-facing __wpk_fork_frame_* counterparts call the IDENTICAL *_impl with primary_activation(). They are the multi-activation (dlopen fork) variants -- a fork across N dynamically loaded libraries needs each activation's own resume catalog and frame cursor, because resume-slot numbering must match that activation's table by construction. Pending capability, not dead code. fm_abort is the one that is neither, and may be a live gap: it releases fork chunks without requiring the replay to have finished, its abort_impl is reachable from nowhere else, and its doc says it mirrors the JS backend's abort() -- which Phase 4 deleted. Whether host-native has an error route that leaks chunks is NOT established. COUNTED BY CALLER, NOT BY MENTION: the measure strips comments first. Without that, a doc comment naming an entry read as a caller -- one sentence of prose in host/src moved fm_gc_identity_find out of the injector-only bucket -- while string literals are deliberately KEPT, because host-native binds its drive surface by name inside one. Census: section 10."
     }
   },
   "lanes": {
     "F": {
-      "title": "fork control flow \u2014 invert, do not port",
+      "title": "fork control flow — invert, do not port",
       "status": "open",
       "closure": [
         {
@@ -222,7 +236,7 @@
           "atMost": 2500
         },
         {
-          "surface": "forkModuleEntryPoints",
+          "surface": "forkModuleHostDriveEntries",
           "atMost": 5
         },
         {
@@ -233,7 +247,7 @@
       "why": "Inversion is done when the host calls a handful of coarse entries and no longer drives the sequence. Each fine-grained fm_* entry leaves a host-side seeding loop behind, so the entry count and the TypeScript line count fall together or neither has moved."
     },
     "V": {
-      "title": "VFS image \u2014 one implementation of SFFS",
+      "title": "VFS image — one implementation of SFFS",
       "status": "open",
       "closure": [
         {
@@ -248,7 +262,7 @@
       "why": "The block filesystem is implemented twice at near-identical size. The lane closes when the TypeScript copy is gone, not when the Rust one works."
     },
     "I": {
-      "title": "host import surface \u2014 V4",
+      "title": "host import surface — V4",
       "status": "open",
       "closure": [
         {
@@ -348,7 +362,7 @@
       "whyExempt": "Deprioritized by the maintainer, who asked to push implementation further before paying the cost of browser verification. Characterizing it now would plan work nobody intends to start."
     },
     "K": {
-      "title": "kernel-worker.ts \u2014 one god class every lane contends for",
+      "title": "kernel-worker.ts — one god class every lane contends for",
       "status": "open",
       "closure": [
         {
@@ -360,10 +374,10 @@
           "atMost": 150
         }
       ],
-      "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service \u2014 worker creation, Atomics.wait blocking, shared memory \u2014 and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
+      "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service — worker creation, Atomics.wait blocking, shared memory — and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
     },
     "G": {
-      "title": "ABI binding drift \u2014 14/15 layout modules anchored to generated constants",
+      "title": "ABI binding drift — 14/15 layout modules anchored to generated constants",
       "status": "open",
       "closure": [
         {
@@ -388,7 +402,7 @@
       "whyExempt": "Dead code has no capability boundary to describe; the floor question belongs to whichever lane owns the subsystem each module was written for."
     },
     "L": {
-      "title": "Host-kernel plumbing \u2014 what a wasmtime host writes beyond the imports",
+      "title": "Host-kernel plumbing — what a wasmtime host writes beyond the imports",
       "status": "open",
       "closure": [
         {
@@ -396,10 +410,10 @@
           "atMost": 3600
         }
       ],
-      "why": "Goal V1 more than V4, which the L1 census established: a new host's burden here is already near zero \u2014 host-native proves it \u2014 but the same knowledge exists twice and the second copy was made by transcription (47 comments in host-native cite host/src/*.ts). Two transcribed copies drift and host #3 transcribes a third."
+      "why": "Goal V1 more than V4, which the L1 census established: a new host's burden here is already near zero — host-native proves it — but the same knowledge exists twice and the second copy was made by transcription (47 comments in host-native cite host/src/*.ts). Two transcribed copies drift and host #3 transcribes a third."
     },
     "E": {
-      "title": "Node/browser peer divergence \u2014 shared types unified to the audited floor",
+      "title": "Node/browser peer divergence — shared types unified to the audited floor",
       "status": "closed",
       "closure": [
         {
@@ -407,10 +421,10 @@
           "atMost": 29
         }
       ],
-      "why": "Goal V1. CLOSED 2026-09-12 at the floor the E3 audit derived. The consolidation was already largely done before the lane started \u2014 the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory \u2014 and what remained was 36 duplicated protocol declarations, now unified. The floor of 29 is 21 worker-entry declarations that are legitimately per-host (4 module-state lets, 17 platform differences), 6 genuinely-different protocol types, and 2 message unions. No category-three divergence was ever found: no bug one host fixed and the other did not."
+      "why": "Goal V1. CLOSED 2026-09-12 at the floor the E3 audit derived. The consolidation was already largely done before the lane started — the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory — and what remained was 36 duplicated protocol declarations, now unified. The floor of 29 is 21 worker-entry declarations that are legitimately per-host (4 module-state lets, 17 platform differences), 6 genuinely-different protocol types, and 2 message unions. No category-three divergence was ever found: no bug one host fixed and the other did not."
     },
     "R": {
-      "title": "Binary and artifact resolution \u2014 one declaration of the tier order",
+      "title": "Binary and artifact resolution — one declaration of the tier order",
       "status": "closed",
       "closure": [
         {
@@ -429,7 +443,7 @@
           "atMost": 0
         }
       ],
-      "why": "Goal V3, and a hard prerequisite for lane V. The Y1 census found the Rust side already covers nearly the whole builder contract across sffs_write.rs, sffs.rs and sffs_deferred.rs; the gaps are six image-level operations and three policy assertions, not a filesystem. Not a line-reduction lane \u2014 a decoupling lane."
+      "why": "Goal V3, and a hard prerequisite for lane V. The Y1 census found the Rust side already covers nearly the whole builder contract across sffs_write.rs, sffs.rs and sffs_deferred.rs; the gaps are six image-level operations and three policy assertions, not a filesystem. Not a line-reduction lane — a decoupling lane."
     },
     "W": {
       "title": "web-libs session contracts a new host consumes",
@@ -444,7 +458,7 @@
           "atMost": 0
         }
       ],
-      "why": "Goals V1 and V2. The W1 census found three populations, not two: the host contract, the browser product surface that stays, and a third the lane missed \u2014 hand-written parsers of kernel-emitted /proc formats plus a hand-maintained syscall table that is 96 entries short of the generated one and disagrees with it on two names."
+      "why": "Goals V1 and V2. The W1 census found three populations, not two: the host contract, the browser product surface that stays, and a third the lane missed — hand-written parsers of kernel-emitted /proc formats plus a hand-maintained syscall table that is 96 entries short of the generated one and disagrees with it on two names."
     },
     "U": {
       "title": "Build automation in shell and MJS",
