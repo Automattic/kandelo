@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/shared",
     "crates/runtime-core",
+    "crates/sffs-module",
     "crates/fork-codec",
     "crates/dylink",
     "crates/dylink-module",
