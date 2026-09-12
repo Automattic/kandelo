@@ -48,6 +48,49 @@ Not "every lane finished". #1350 ships when:
 - the host suite's failures are each attributed to a named cause;
 - conformance has no campaign-caused regression, stated with evidence.
 
+## Lane worktrees — where the work happens
+
+**This file lives in exactly one place**, which is what lets the top of this
+document claim to be the single authority. Verified 2026-09-12 across the
+campaign's worktrees: `/Users/brandon/kandelo-abi44-reconcile` (branch
+`brandonpayton/rust-first-abi44-reconcile`) carries it, and
+`/Users/brandon/kandelo-epoll`, which holds PR #1350's head
+`brandonpayton/epoll-kernel-route`, does not. **Plan edits land in the plan
+worktree. Nothing else does.**
+
+**Lane implementation happens in a dedicated worktree per lane**, on its own
+branch, never in the plan worktree and never on
+`brandonpayton/epoll-kernel-route`. Two reasons, both already paid for: parallel
+lanes pushing forward-only to one branch collide, and a lane that changes cached
+artifact bytes poisons a shared cache every other worktree reads — which is the
+exact hazard `run.sh`'s `KANDELO_SOURCE_CACHE_ROOT` documentation describes.
+
+| Lane | Worktree | Branch | Started |
+|---|---|---|---|
+| **Y** image builders | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
+
+**Provisioning a lane worktree is not the same as rebuilding one.** A fresh
+worktree inherits no sysroots, no `local-binaries/` and no `node_modules` —
+hours before the first line of lane work, as `CLAUDE.md` says outright. The
+lane Y worktree was instead seeded from the plan worktree with `/bin/cp -c -R`
+(APFS clonefile — copy-on-write, so the bytes are shared until something writes
+them; note that GNU `cp` from the dev shell is first on `PATH` and does **not**
+support `-c`, so the system binary must be named explicitly). The eight built
+production images came across with **identical SHA-256 digests, verified**.
+
+That last point is not convenience, it is correctness for this lane: those
+images are lane Y's before-picture, and rebuilding from scratch the baseline you
+are about to compare against is circular.
+
+**Set the cache roots worktree-local in a lane worktree.** Two are
+user-settable and both are on `scripts/dev-shell.sh`'s `--keep` list precisely
+because stripping them once made the override *silently ineffective*:
+`KANDELO_SOURCE_CACHE_ROOT` and `WASM_POSIX_BINARY_CACHE_ROOT`. A third name,
+`WASM_POSIX_SOURCE_ONLY_CACHE_ROOT`, appears in `tools/xtask/src/build_deps.rs`
+but is **derived by xtask from the cache base and exported to build scripts**,
+not set by hand — recorded here so the next reader does not set it and believe
+it did something.
+
 ## Sequencing decision — 2026-09-12
 
 **PR #1350 sits unmerged. Lanes are worked one at a time until the campaign is
@@ -191,7 +234,7 @@ lands — those are marked.
 | **K** `kernel-worker.ts` | **30–60 d** | low *(K1 done)* | One class holds 29,975 lines across 522 methods. Decomposition, not migration — `host-native` dispatches the same 85 syscalls. The census clarified the shape but found nothing making it smaller. |
 | **L** host↔kernel plumbing | **6–12 d** | medium *(L1 done)* | Not 5,853 lines a host must reproduce — `host-native` wrote a layout struct and one helper. The work is unifying duplicated knowledge: one layout, one bounds rule, a generated pointer table. |
 | **E** Node/browser peers | **0–0 d** | CLOSED 2026-09-12 | Landed in five increments. 65 → 29 duplicate declarations, the floor E3 derived by reading every candidate. |
-| **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
+| **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, and a repoint of 36 files that is **half one-line type changes and half V5's production cutover** — not mechanical. The bar is decoded equivalence across the built image corpus, not byte equality; see the lane. **Blocks lane V, and is what gives V5 a production caller.** |
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **0–0 d** | CLOSED 2026-09-12 | Landed 2026-09-12 in four increments. One shared constant; the writer and both readers derive from it. |
@@ -1937,10 +1980,23 @@ from `Sffs::geometry`), image metadata get/set, lazy-archive import/export,
 operations and three assertions**, against a lane scoped as though the whole
 filesystem needed rebuilding.
 
+**`rebaseToNewFileSystem` was a census open question and is now answered by
+reading it** (`host/src/vfs/memory-fs.ts:4319`): it changes an image's
+**capacity**, by snapshotting to a quiescent source and full-tree-copying into
+a freshly created filesystem with a new `maxByteLength`, re-importing lazy
+entries and lazy archives on the way. It is a capacity operation, not a format
+one.
+
 The lane text previously said three builders "write the format directly". **That
 was wrong.** Only two files reach past `MemoryFileSystem` into
 `sharedfs-vendor.ts`, and only for the constants `ENOENT`, `SFSError`, `S_IFMT`
 and `S_IFREG`.
+
+**And as of 2026-09-12 even that is stale, in the good direction:** no file
+under `images/` imports `sharedfs-vendor` at all. Commit `c39d9d150` repointed
+the last two at the `vfs-errors.ts` leaf and generated `FILE_MODES`, which
+closes Y6 before the lane started. Every one of the 36 the gate counts is a
+`memory-fs` import.
 
 ## Increments
 
@@ -1950,10 +2006,59 @@ and `S_IFREG`.
   image path cannot skip them.
 - **Y4 — one bridge** the builders call instead of `MemoryFileSystem`, exposing
   the 24 methods over the Rust implementation.
-- **Y5 — repoint 36 files.** Mechanical once Y4 exists.
-- **Y6 — replace the four `sharedfs-vendor` constants** with generated ABI
-  constants.
+- **Y5 — repoint the 36 files. NOT mechanical, and not a like-for-like
+  repoint** — see "Y5 is V5's production cutover" below.
+- **Y6 — replace the four `sharedfs-vendor` constants. ALREADY DONE**, by
+  commit `c39d9d150` ("VFS: Generate errno and give the five constant-only
+  consumers a leaf to import") — lane V's V7 landing. Verified 2026-09-12:
+  **no file under `images/` imports `sharedfs-vendor` at all** any more.
+  `dinit-image-helpers.ts` and `staged-product-inputs.ts` take `ENOENT` and
+  `SFSError` from the `host/src/vfs/vfs-errors.ts` leaf, and `S_IFMT`/`S_IFREG`
+  from generated `FILE_MODES`. **Lane Y therefore needs no `dump-abi` run and no
+  ABI regeneration**: those constants are already in `host/src/generated/abi.ts`
+  at lines 569, 572 and 1415.
 - **The recipes are not touched**, and that is the point.
+
+### Y5 is V5's production cutover, not a repoint — 2026-09-12
+
+**The two writers already disagree about the image format, deliberately, and
+lane Y is what resolves it.** Lane V's **V5** moves deferred-file metadata out
+of the trailing JSON sections and into the body, as an SDEF section addressed by
+a hidden inode. Verified in the tree:
+
+* the **Rust** writer has it — `crates/runtime-core/src/sffs_deferred.rs`, the
+  superblock field at `sffs_write.rs:69`, the section stored as an ordinary
+  unlinked inode's data so no path lookup can see it;
+* the **TypeScript** writer does not know the section exists — zero occurrences
+  of `SDEF` anywhere under `host/src/vfs/` — and still emits the JSON trailer
+  (`VFS_IMAGE_FLAG_HAS_LAZY`, `lazyLen`, `serializeLazyEntries` at
+  `memory-fs.ts:4336`).
+
+So **repointing the builders onto the Rust writer is what gives V5 a production
+caller.** Until that happens V5 is Rust that ships no image — hazard H-1's exact
+shape, in a campaign that has already found six dead floors. Y and V5 are one
+piece of work; a schedule treating them as independent either ships a dead V5 or
+migrates the builders twice.
+
+The discarded alternative, recorded so it is not re-proposed: teach the
+TypeScript writer SDEF first so both sides match, then repoint. That builds a
+new feature into the file the campaign is deleting.
+
+**A half-migrated corpus still boots**, which is what keeps per-image landing
+safe: both readers are live — `klzy::decode_kernel_lazy_linkage` via
+`rootfs.rs:1613` for the JSON trailer, `sffs_deferred::decode` via
+`sffs.rs:528` for SDEF.
+
+### What Y5 actually costs — half of it is one line each
+
+**18 of the 36 importers use `import type` and never call the class.** Measured
+2026-09-12. They include `wordpress-preinstall.ts` — the 921-line recipe this
+lane holds up as product logic — plus `build-wp`, `build-lamp`,
+`build-node-vfs`, `demo-login.ts` and `kandelo-demo-config.ts`. For those the
+coupling is the **interface type**, not the implementation, and each repoints by
+changing one import once the bridge exposes an equivalent type. The other ~18
+carry the real call sites, and `vfs-image-helpers.ts` is the funnel through
+which all of them reach the format.
 
 ## Acceptance evidence
 
@@ -1961,9 +2066,46 @@ and `S_IFREG`.
 on. Set by the census, and the census's own ceiling was corrected by the gate
 on its first run (it reported 36 against a hand-counted 34).
 
-The format evidence is byte equality: **nine production images must build
-byte-identically** through the Rust writer before the TypeScript path is
-removed — the corpus lane C already used for the lazy-identity gate.
+**The format evidence is decoded EQUIVALENCE, not byte equality. This replaces
+the previous bar, and the replacement is the point — 2026-09-12.**
+
+The previous bar, stated twice in this section, was "nine production images must
+build byte-identically" and "byte equality is the only acceptable bar". **It is
+unachievable by construction, and it was never reconciled against V5 two lanes
+up in this same file.** A V5 image carries its deferred metadata in the body;
+a TypeScript image carries it in a JSON trailer. Byte equality between them
+cannot hold for any image containing deferred files — and lane V measured that
+at 65 deferred files in the base image, 79 in a derived one, which is
+effectively the whole corpus. Worse, enforcing it would pin the new writer to
+the format V5 exists to replace: a gate that locks in the defect.
+
+**The bar is instead that the two images decode to the same thing:**
+
+- **namespace** — every path, file type, mode, uid/gid, hardlink graph, symlink
+  target and normalized mtime identical;
+- **resident content** — byte-identical per file;
+- **deferred set** — the same paths, the same real sizes, the same opaque
+  payloads (fetch URL, transport, integrity digest, activation mode,
+  atomic-group seal), read from the JSON trailer on one side and SDEF on the
+  other;
+- **image metadata** — same `version`, `kernelAbi`, `createdBy`;
+- **and the image boots.**
+
+That is *stronger* than byte equality in the dimension that matters. It names
+the failure lane V actually measured — deferred files surviving as zero-byte
+regular files with no URL — which a byte comparison catches only by accident.
+
+**Byte equality survives where it is still real**, and must not be relaxed
+there: the four cross-language fixtures in `crates/runtime-core/src/testdata/`,
+and any image with zero deferred files.
+
+**Build the differ before the cutover.** That is lane V's own hazard about gates
+shaped to pass, and it binds harder here because the format moves underneath.
+
+**The corpus is eight images, not nine, until someone names the ninth.** Built
+and present at `local-binaries/source-only-v1/programs/wasm32/`: shell,
+kandelo-sdk, nginx, nginx-php, mariadb-test, node-vfs, wordpress, lamp. The
+"nine" was inherited from the census, not counted.
 
 ## Known hazards
 
@@ -1971,14 +2113,15 @@ removed — the corpus lane C already used for the lazy-identity gate.
   wrong.
 - **A builder that silently produces a different image** is the worst outcome,
   because images are validated by running them and a subtly wrong image fails
-  somewhere unrelated. Byte equality is the only acceptable bar.
+  somewhere unrelated. The bar for "different" is the equivalence decode above.
 - **The three policy assertions are the most likely thing to be silently
-  dropped.** They live inside `serializeImage` today, and nobody has checked
-  whether a test would notice their absence.
-- **Byte-identical output may require changes to the Rust writer's block
-  allocation order.** Four cross-language fixtures suggest it is achievable;
-  nine whole images is a much larger claim.
-
+  dropped.** They live inside `serializeImage`
+  (`images/vfs/scripts/vfs-image-helpers.ts:444`), and nobody has checked
+  whether a test would notice their absence. Y2's first act is to perturb each
+  one and report what, if anything, goes red.
+- **Do not re-derive the retired byte-equality bar.** It reads like rigour, and
+  it is the one bar this lane cannot meet. Anyone reaching for it has not read
+  V5.
 ---
 
 # LANE W — `web-libs` session contracts
