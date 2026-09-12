@@ -95,6 +95,15 @@ pub extern "C" fn sm_alloc(len: usize) -> usize {
     // A zero-length request must still round-trip: the builders write empty
     // files, and "empty" must not be indistinguishable from "allocation
     // failed". One byte is cheaper than a second convention.
+    //
+    // NOT MUTATION-TESTABLE, and recorded rather than left as a permanent red.
+    // Removing this `max` makes the call `alloc_zeroed(Layout(0, 1))`, which
+    // Rust defines as UNDEFINED BEHAVIOUR rather than as returning null -- and
+    // the platform allocator here hands back a unique non-null pointer for a
+    // zero-size request anyway. So the mutant produces no observable wrong
+    // value for a test to catch. A trial for it survives every time, and
+    // "fixing" that by writing a test that happens to pass would be worse than
+    // saying so here.
     let size = core::cmp::max(len, 1);
     let Ok(layout) = core::alloc::Layout::from_size_align(size, 1) else {
         return 0;
@@ -334,8 +343,44 @@ mod tests {
     #[test]
     fn a_zero_length_allocation_is_not_a_null_pointer_case() {
         // The builders write empty files; the ABI must not confuse "empty" with
-        // "failed".
+        // "failed". The ASSERTION is the test -- an earlier version called
+        // sm_alloc(0) and freed it without checking the pointer, so a version
+        // returning null passed it. Mutation testing caught that.
         let ptr = sm_alloc(0);
+        assert_ne!(ptr, 0, "an empty buffer is a valid buffer, not a failure");
         unsafe { sm_free(ptr, 0) };
+    }
+
+    /// chown must clear the set-user-ID bit when asked, and that flag is not
+    /// bookkeeping: it is what stops a builder that re-owns a setuid binary
+    /// from leaving it setuid to the new owner. Lane S exists because
+    /// setuid-root binaries in these images are security-relevant.
+    ///
+    /// Added after a mutant that made sm_chown ignore clear_setid survived the
+    /// whole suite.
+    #[test]
+    fn chown_clears_setuid_when_asked_and_leaves_it_otherwise() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+
+        // Not cleared unless requested.
+        assert_eq!(with_path(b"/keep", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        assert_eq!(with_path(b"/keep", |p, l| unsafe { sm_chmod(p, l, 0o4755) }), 0);
+        assert_eq!(with_path(b"/keep", |p, l| unsafe { sm_chown(p, l, 1, 1, 0) }), 0);
+        assert_eq!(
+            rootfs::lstat(b"/keep").expect("keep").st_mode & 0o7777,
+            0o4755,
+            "clear_setid = 0 must leave the set-user-ID bit alone",
+        );
+
+        // Cleared when requested.
+        assert_eq!(with_path(b"/drop", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        assert_eq!(with_path(b"/drop", |p, l| unsafe { sm_chmod(p, l, 0o4755) }), 0);
+        assert_eq!(with_path(b"/drop", |p, l| unsafe { sm_chown(p, l, 1, 1, 1) }), 0);
+        assert_eq!(
+            rootfs::lstat(b"/drop").expect("drop").st_mode & 0o7777,
+            0o0755,
+            "clear_setid = 1 must drop the set-user-ID bit",
+        );
     }
 }
