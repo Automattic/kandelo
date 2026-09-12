@@ -1604,6 +1604,36 @@ mod wasm {
         offset: AtomicUsize::new(0),
     };
 
+    /// Transient exchange storage for the guest's recursive payload codecs.
+    ///
+    /// `fork-instrument` reserves a staging buffer before encoding an
+    /// aggregate's payloads and releases it after `define`, strictly nested:
+    /// reserve, recurse, define, release. So this is a LIFO STACK, not a bump —
+    /// and it is deliberately NOT the module bump heap above, which never
+    /// reclaims (`dealloc` is a no-op). Routing scratch through the bump would
+    /// make a deep object graph consume the same 4 MiB the capture builder
+    /// needs, and never give it back until the next fork.
+    ///
+    /// **Exhaustion and misuse TRAP rather than returning an error, because the
+    /// generator does not check.** The emitted code is
+    /// `call scratch_reserve ; local.set $staging` followed directly by writes
+    /// through `$staging`; there is no null test. A 0 return would therefore be
+    /// written through as an address, corrupting low guest memory. A trap is the
+    /// truthful failure — the same choice the drive shim's post-allocate
+    /// integrity guard makes.
+    const SCRATCH_SIZE: usize = 64 * 1024;
+
+    #[repr(C, align(16))]
+    struct ScratchCell(UnsafeCell<[u8; SCRATCH_SIZE]>);
+    // SAFETY: single-threaded per worker, exactly as HeapCell above.
+    unsafe impl Sync for ScratchCell {}
+    static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new([0u8; SCRATCH_SIZE]));
+    static SCRATCH_TOP: AtomicUsize = AtomicUsize::new(0);
+
+    fn scratch_align(len: usize) -> usize {
+        (len.wrapping_add(15)) & !15
+    }
+
     /// Clear a resident bump-backed static WITHOUT running its `Drop`.
     ///
     /// This is the reclaim primitive for the module's resident fork statics
@@ -1656,6 +1686,10 @@ mod wasm {
     fn reset_bump_heap() {
         abandon_resident(state());
         abandon_resident(capture_state());
+        // A capture that trapped or aborted mid-encode leaves its staging frames
+        // on the scratch stack. Reclaim them with the bump, or the next fork in
+        // this worker starts with a stack that never comes back down.
+        SCRATCH_TOP.store(0, Ordering::Relaxed);
         CAPTURE_ARMED.store(0, Ordering::Relaxed);
         // SAFETY: single-threaded per worker; only one fork drives these at a time.
         unsafe {
@@ -4962,6 +4996,46 @@ mod wasm {
     /// the live capture builder directly, so the parent never re-decodes its own
     /// graph and never reconstructs (its live references keep their identity by
     /// construction). Requires an active capture session.
+    /// Guest-facing `env.__wpk_fork_ref_scratch_reserve(len) -> ptr`.
+    ///
+    /// Hands back `len` bytes of transient exchange storage, 16-byte aligned.
+    /// The pointer is a guest linear-memory address because the module is
+    /// co-resident in the guest's memory — its BSS lives at `__memory_base`
+    /// inside that same memory, which is what lets the guest write through the
+    /// result directly.
+    ///
+    /// Traps on exhaustion. See `SCRATCH_SIZE` for why an error return is not
+    /// available: the generator does not check this result.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_scratch_reserve(len: usize) -> usize {
+        let need = scratch_align(len);
+        let top = SCRATCH_TOP.load(Ordering::Relaxed);
+        let next = match top.checked_add(need) {
+            Some(next) if next <= SCRATCH_SIZE => next,
+            _ => wasm_intr::unreachable(),
+        };
+        SCRATCH_TOP.store(next, Ordering::Relaxed);
+        (SCRATCH.0.get() as usize).wrapping_add(top)
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_scratch_release(ptr, len)`.
+    ///
+    /// Pops the stack. The release must name the TOP frame: the generator emits
+    /// reserve/release strictly nested around a recursive encode, so a release
+    /// that does not match the top means the nesting the whole scheme assumes
+    /// has been violated, and continuing would hand the next reserve a region
+    /// that overlaps a live one. That is silent capture corruption, so it traps.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_scratch_release(ptr: usize, len: usize) {
+        let need = scratch_align(len);
+        let base = SCRATCH.0.get() as usize;
+        let top = SCRATCH_TOP.load(Ordering::Relaxed);
+        if need > top || ptr != base.wrapping_add(top - need) {
+            wasm_intr::unreachable();
+        }
+        SCRATCH_TOP.store(top - need, Ordering::Relaxed);
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_gc_i31(payload) -> recipe`.
     ///
     /// The ONE member of the GC capture family that carries no reference at

@@ -100,6 +100,8 @@ for (const name of [
   "__wpk_fork_ref_gc_claim",
   "__wpk_fork_ref_gc_lookup",
   "__wpk_fork_unwind",
+  "__wpk_fork_ref_scratch_reserve",
+  "__wpk_fork_ref_scratch_release",
   "__wpk_fork_ref_gc_transit",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -542,6 +544,60 @@ function i31Minter() {
       env: { __wpk_fork_unwind: new WebAssembly.Tag({ parameters: ["i32"] }) },
     }),
     "a tag of the wrong arity does not satisfy the guest import",
+  );
+}
+
+// Transient exchange storage for the guest's recursive payload codecs.
+// `fork-instrument` emits reserve / recurse / define / release strictly nested,
+// so this is a LIFO stack, and a release that does not name the top frame means
+// the nesting the scheme assumes has been violated.
+{
+  const a = x.__wpk_fork_ref_scratch_reserve(32);
+  assert.ok(a > 0, "reserve returns a guest address");
+  assert.equal(a % 16, 0, "and it is 16-byte aligned");
+  const b = x.__wpk_fork_ref_scratch_reserve(48);
+  assert.ok(b >= a + 32, "a nested reserve is DISJOINT from the outer one");
+
+  // The guest writes through these addresses directly, so they must be real
+  // linear memory it can touch.
+  const mem = new Uint8Array(memory.buffer);
+  mem[a] = 0xa5;
+  mem[b] = 0x5a;
+  assert.equal(mem[a], 0xa5, "the outer frame is writable");
+  assert.equal(mem[b], 0x5a, "the inner frame is writable and separate");
+
+  // LIFO: releasing the inner frame first is correct and reuses its space.
+  x.__wpk_fork_ref_scratch_release(b, 48);
+  assert.equal(
+    x.__wpk_fork_ref_scratch_reserve(48),
+    b,
+    "releasing the top frame returns its space",
+  );
+  x.__wpk_fork_ref_scratch_release(b, 48);
+  x.__wpk_fork_ref_scratch_release(a, 32);
+  assert.equal(
+    x.__wpk_fork_ref_scratch_reserve(32),
+    a,
+    "unwinding the whole stack returns to the base",
+  );
+  x.__wpk_fork_ref_scratch_release(a, 32);
+
+  // Out-of-order release is silent capture corruption if allowed through.
+  const outer = x.__wpk_fork_ref_scratch_reserve(32);
+  x.__wpk_fork_ref_scratch_reserve(16);
+  assert.throws(
+    () => x.__wpk_fork_ref_scratch_release(outer, 32),
+    /unreachable/i,
+    "releasing a frame that is not the top traps",
+  );
+
+  // Exhaustion traps too. The generator does not null-check the reserve result
+  // -- it writes straight through the returned address -- so returning 0 would
+  // corrupt low guest memory instead of failing.
+  assert.throws(
+    () => x.__wpk_fork_ref_scratch_reserve(1 << 20),
+    /unreachable/i,
+    "a reserve larger than the scratch stack traps rather than returning 0",
   );
 }
 

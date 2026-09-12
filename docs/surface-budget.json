@@ -192,7 +192,7 @@
     },
     "forkGuestImportsUnserved": {
       "measure": "canonical fork imports in the crates/shared ProgramArtifactImport table that crates/fork-module does not export under the same name",
-      "ceiling": 27,
+      "ceiling": 25,
       "slack": 0,
       "target": 0,
       "why": "The guest declares 46 fork imports. Each one the fork-module exports VERBATIM can be wired with a nameless loop -- host-native already does this for the five frame imports. Each one exported under a different spelling (fm_ref_gc_route for __wpk_fork_ref_gc_route) forces a mapping table back into the host, which is the hand-maintained-knowledge-beside-a-generator defect three censuses in this campaign have found. Target 0 is the point at which the JS host layer is pure wiring."
