@@ -307,23 +307,47 @@ pub unsafe extern "C" fn sm_write_file(
     }
 }
 
-/// Size in bytes of the record [`sm_lstat`] writes.
+/// Size in bytes of the record [`sm_lstat`] writes: six little-endian `u64`s.
 ///
-/// Queried rather than hardcoded on the TypeScript side. The layout is the
-/// GENERATED ABI one (`process_layout::stat`), the same record the syscall
-/// wire uses, so the module and its caller cannot disagree about it -- and a
-/// caller that baked in a number would be a second, hand-maintained copy of
-/// ABI knowledge, which is this campaign's most frequently rediscovered
-/// defect (L-D2, W-D1, V-D1).
+/// Queried rather than hardcoded, so a caller never bakes in a number this
+/// module could change.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm_stat_size() -> usize {
-    wasm_posix_shared::process_layout::stat::SIZE as usize
+    6 * 8
 }
 
-/// `lstat` a path, writing the generated stat record into `out`.
+/// Field order of the [`sm_lstat`] record. Six `u64`s, little-endian:
 ///
-/// Does not follow a final symlink, which is what the builders need: they
-/// inspect the link, not its target.
+/// | offset | field |
+/// |---|---|
+/// | 0  | ino |
+/// | 8  | mode |
+/// | 16 | nlink |
+/// | 24 | uid |
+/// | 32 | gid |
+/// | 40 | size |
+///
+/// # Why this is NOT the generated ABI stat layout
+///
+/// The obvious move is to serialize through `process_wire::write_stat`, which
+/// writes the generated `process_layout::stat` record the syscall wire uses --
+/// one authority, no second spelling. That is what this did first.
+///
+/// **It cannot work, because the generated layout is not exported to
+/// TypeScript.** `host/src/generated/abi.ts` carries
+/// `STRUCT_SIZE_WASM_STAT = 88` and no field offsets for it, so a TypeScript
+/// bridge has nothing to decode with and would have to hand-copy the offsets
+/// -- which is the hand-maintained-ABI-knowledge defect (L-D2, W-D1, V-D1)
+/// this lane has been careful not to add a fourth instance of.
+///
+/// So the record here is deliberately a SMALL, MODULE-PRIVATE one. It is not
+/// ABI: it crosses only between this module and its bridge, both built
+/// together from one source tree, and the module's build key covers it. Six
+/// fields in a fixed order is a contract two files can hold correctly; 88
+/// bytes of kernel stat layout copied by hand is not.
+///
+/// If the generator later emits `process_layout::stat` offsets to TypeScript,
+/// switching back is right and this comment is the reason to.
 ///
 /// # Safety
 /// Both ranges must describe readable/writable memory of the stated length.
@@ -339,14 +363,22 @@ pub unsafe extern "C" fn sm_lstat(
         Ok(stat) => stat,
         Err(e) => return err(e),
     };
-    if out_ptr == 0 {
+    if out_ptr == 0 || out_len < sm_stat_size() {
         return err(Errno::EINVAL);
     }
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-    match runtime_core::process_wire::write_stat(out, &stat) {
-        Ok(()) => 0,
-        Err(e) => err(e),
+    let fields: [u64; 6] = [
+        stat.st_ino,
+        stat.st_mode as u64,
+        stat.st_nlink as u64,
+        stat.st_uid as u64,
+        stat.st_gid as u64,
+        stat.st_size,
+    ];
+    for (i, value) in fields.iter().enumerate() {
+        out[i * 8..i * 8 + 8].copy_from_slice(&value.to_le_bytes());
     }
+    0
 }
 
 /// Read a symlink's target into `out`. Returns the byte count, or a negative
@@ -739,12 +771,9 @@ mod tests {
         assert_eq!(st.st_mode & 0o7777, 0o600, "a replace sets the mode too");
     }
 
-    /// The stat record the module writes is the GENERATED ABI layout, decoded
-    /// here at the same offsets a caller would use -- not at offsets this test
-    /// invents, which would only prove the module agrees with the test.
+    /// The six-field record decodes at the documented offsets.
     #[test]
-    fn lstat_writes_the_generated_stat_layout() {
-        use wasm_posix_shared::process_layout::stat as L;
+    fn lstat_writes_the_documented_record() {
         sm_reset();
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
         assert_eq!(
@@ -756,27 +785,22 @@ mod tests {
         assert_eq!(with_path(b"/f", |p, l| unsafe { sm_chown(p, l, 3, 4, 0) }), 0);
 
         let size = sm_stat_size();
-        assert_eq!(size, L::SIZE as usize, "the queried size is the generated one");
+        assert_eq!(size, 48, "six u64 fields");
         let out = sm_alloc(size);
         assert_ne!(out, 0);
         let rc = with_path(b"/f", |p, l| unsafe { sm_lstat(p, l, out, size) });
         assert_eq!(rc, 0);
 
         let bytes = unsafe { core::slice::from_raw_parts(out as *const u8, size) };
-        let u32_at = |off: u32| {
-            let o = off as usize;
-            u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
-        };
-        let u64_at = |off: u32| {
-            let o = off as usize;
+        let at = |i: usize| {
             let mut v = [0u8; 8];
-            v.copy_from_slice(&bytes[o..o + 8]);
+            v.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
             u64::from_le_bytes(v)
         };
-        assert_eq!(u32_at(L::MODE_OFFSET) & 0o7777, 0o640);
-        assert_eq!(u32_at(L::UID_OFFSET), 3);
-        assert_eq!(u32_at(L::GID_OFFSET), 4);
-        assert_eq!(u64_at(L::SIZE_OFFSET), 5);
+        assert_eq!(at(1) & 0o7777, 0o640, "mode at field 1");
+        assert_eq!(at(3), 3, "uid at field 3");
+        assert_eq!(at(4), 4, "gid at field 4");
+        assert_eq!(at(5), 5, "size at field 5");
         unsafe { sm_free(out, size) };
     }
 
