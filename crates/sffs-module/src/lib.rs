@@ -129,6 +129,25 @@ pub unsafe extern "C" fn sm_free(ptr: usize, len: usize) {
     unsafe { alloc::alloc::dealloc(ptr as *mut u8, layout) };
 }
 
+// ACCEPTED SURVIVING MUTANTS
+//
+// Mutation testing (`xtask perturb`) treats a surviving mutant as a failure,
+// which is right: nearly always it means a missing test. Two mutants in this
+// module survive for a reason no test can remove, and they are listed here so
+// the next person neither ignores the gate nor writes a test that passes by
+// accident:
+//
+//   1. `sm_alloc` dropping its `max(len, 1)`. The mutation makes the call
+//      `alloc_zeroed(Layout(0, 1))`, which Rust defines as UNDEFINED
+//      BEHAVIOUR rather than as returning null, and this platform's allocator
+//      returns a unique non-null pointer for a zero-size request anyway. There
+//      is no observable wrong value.
+//   2. `sm_write_file` treating any `Ok` as success. The short-write branch is
+//      unreachable because `rootfs::write` never returns a short count; the
+//      check defends a contract, not an input.
+//
+// Every other mutant tried against this module has been killed.
+
 /// Negative errno, the module's single failure convention.
 fn err(e: Errno) -> i32 {
     -(e as i32)
@@ -236,6 +255,15 @@ pub unsafe extern "C" fn sm_chown(path_ptr: usize, path_len: usize, uid: u32, gi
 /// reported as EIO rather than as a byte count: a builder has no partial-write
 /// recovery, and returning "wrote 40 of 900 bytes" to a caller with no way to
 /// resume would turn a clear failure into a corrupt image.
+///
+/// **That branch is unreachable today, and kept deliberately.**
+/// `rootfs::write` returns `Ok(buf.len())` or an error -- never a short count
+/// -- so no input reaches it, and a mutant that treats any `Ok` as success
+/// survives the suite. It stays because it defends a CONTRACT rather than an
+/// input: `write` returns `usize`, and a future change that made it short-write
+/// would otherwise turn a truncated file into a silent success. Recorded here
+/// so the surviving mutant is a known, explained one rather than an
+/// unexplained red that trains someone to ignore the gate.
 ///
 /// # Why the byte source is unreachable here, which is not the same as loud
 ///
