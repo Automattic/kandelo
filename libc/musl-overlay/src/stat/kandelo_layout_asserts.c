@@ -293,3 +293,35 @@ _Static_assert(major(KANDELO_PROCESS_DEV_VECTOR_MAKEDEV)
 _Static_assert(minor(KANDELO_PROCESS_DEV_VECTOR_MAKEDEV)
 	       == KANDELO_PROCESS_DEV_VECTOR_MINOR,
 	"dev minor drifted from crates/shared/src/process_layout.rs");
+
+/* --- itimerval: the kernel-facing record, NOT musl's public struct ---
+ *
+ * Asserting `sizeof(struct itimerval)` here would be WRONG, and the campaign
+ * plan spent a decision on believing otherwise. musl's own setitimer.c takes
+ * the `sizeof(time_t) > sizeof(long)` branch on wasm32 and sends
+ * `(long[]){is, ius, vs, vus}` instead of the public 32-byte time64 struct.
+ * That is upstream musl's standard time32/time64 path for any target whose
+ * `long` is narrower than its `time_t`, not a Kandelo deviation: the kernel
+ * accepts exactly what musl sends, which is the Linux SYS_setitimer ABI for
+ * such platforms.
+ *
+ * So the guardable fact is the shape of THAT record: four native `long`s,
+ * with the *_INDEX constants naming positions in it. On wasm64 musl skips the
+ * translation and sends its native record, which is four 8-byte values -- the
+ * same four-slot shape, so one assert covers both.
+ */
+#if __SIZEOF_POINTER__ == 8
+#define KANDELO_NATIVE_ITIMERVAL_SIZE KANDELO_PROCESS_ITIMERVAL_WASM64_SIZE
+#else
+#define KANDELO_NATIVE_ITIMERVAL_SIZE KANDELO_PROCESS_ITIMERVAL_WASM32_SIZE
+#endif
+_Static_assert(KANDELO_NATIVE_ITIMERVAL_SIZE == 4 * sizeof(long),
+	"itimerval record must be four native longs -- see musl setitimer.c");
+_Static_assert(KANDELO_PROCESS_ITIMERVAL_INTERVAL_SEC_INDEX == 0
+	       && KANDELO_PROCESS_ITIMERVAL_INTERVAL_USEC_INDEX == 1
+	       && KANDELO_PROCESS_ITIMERVAL_VALUE_SEC_INDEX == 2
+	       && KANDELO_PROCESS_ITIMERVAL_VALUE_USEC_INDEX == 3,
+	"itimerval slot order must match musl's (long[]){is, ius, vs, vus}");
+_Static_assert(KANDELO_PROCESS_ITIMERVAL_WASM32_SIZE == 4 * 4
+	       && KANDELO_PROCESS_ITIMERVAL_WASM64_SIZE == 4 * 8,
+	"itimerval sizes must stay four times the target's long width");

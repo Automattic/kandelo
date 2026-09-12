@@ -239,7 +239,7 @@ lands — those are marked.
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **0–0 d** | CLOSED 2026-09-12 | Landed 2026-09-12 in four increments. One shared constant; the writer and both readers derive from it. |
-| **G** ABI binding drift | **1–2 d** | high *(14/15 done)* | Blocked only on the `itimerval` decision. The rest landed: 103 constants emitted, 68 asserts, every batch perturbation-tested. |
+| **G** ABI binding drift | **0–0 d** | CLOSED 2026-09-12 | All 15 modules anchored, snapshot records all 15. 109 constants, 71 asserts, every batch perturbation-tested. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
 **Serial total is not the useful number** — these run in parallel lanes. The
@@ -1535,8 +1535,8 @@ god class while nothing improves.**
 
 # LANE G — ABI binding drift
 
-**Status: 14 of 15 modules anchored. `unguardedLayoutModules` 14 → 1.
-BLOCKED on one maintainer decision (`itimerval`, below).**
+**Status: CLOSED 2026-09-12. All 15 layout modules anchored;
+`unguardedLayoutModules` 14 → 0.**
 
 ## What this lane is — as corrected while doing it
 
@@ -1602,9 +1602,9 @@ anticipate — see `itimerval` below.
 
 ## Acceptance evidence
 
-`unguardedLayoutModules` reaches **1** — `itimerval`, pending the decision
-above. Every other module asserts musl's own definition against the generated
-constant, and the snapshot records all fifteen.
+`unguardedLayoutModules` reaches **0**. Every module asserts musl's own
+definition against the generated constant, and the snapshot records all
+fifteen.
 
 Every batch was shown to fail before being trusted (H-2), including on the
 field that motivated the lane: changing `statx::DEV_MINOR_OFFSET` produces
@@ -1627,8 +1627,12 @@ crates/shared/src/process_layout.rs`.
 - **The compile reads the SYSROOT header, not the overlay.** After `dump-abi`,
   `scripts/build-musl.sh` must run before any assert test means anything. One
   perturbation test was invalid for exactly this reason.
-- **`itimerval` is the one module still unanchored**, and the reason is in the
-  open-decisions section: it is not a musl-struct mirror.
+- **`itimerval` is guarded differently from the rest, and the difference
+  matters.** It is not a mirror of musl's public `struct itimerval`, so the
+  assert is on the shape of the kernel-facing record — four native `long`s —
+  rather than on a struct. Anyone "fixing" it later to assert
+  `sizeof(struct itimerval)` would be reintroducing the error the plan spent a
+  decision on.
 
 ---
 
