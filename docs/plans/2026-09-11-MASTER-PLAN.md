@@ -1295,14 +1295,28 @@ them. **It must be closed before Y5**, or the cutover trades a measured
 integrity property for a format improvement and nobody notices until something
 is fetched.
 
-The shape is not decided here. The obvious move is a payload on the archive
-declaration, mirroring the per-file record; the reason not to do it reflexively
-is that it is the same "who stores the fetch descriptor" question lane S was
-deferred on, and the maintainer's ruling there was *"I only want the problem
-fixed for the new Rust-based FS which is not completed yet."* This is that
-filesystem, so the ruling now points at doing it — but it is lane S's call
-whether the digest requirement becomes mandatory at the same time, and that is
-a scope question, not a coding one.
+**HALF CLOSED, 2026-09-12** — `10b744a2a`, "An archive's fetch description has
+somewhere to live". SDEF v4 gives each archive declaration an opaque payload,
+carried through load and export exactly as a deferred file's is, and it reaches
+the kernel through `sm_register_lazy_file` alongside the archive's length (no
+new entry point; host surface still 19).
+
+**The half deliberately left open is lane S's.** Giving the declaration a
+payload is a format capability and lane V's to decide. Whether a producer MUST
+supply a digest is policy, and the maintainer deferred that. So an archive with
+an empty descriptor is a representable state and a test says so: **the
+capability exists, the requirement does not.** Lane S can now make the
+requirement without first inventing somewhere to put the answer — which was the
+thing its deferral handoff said it lacked.
+
+**Y5 is no longer blocked by this.** A builder repointed onto the Rust writer
+can carry its archives' digests through.
+
+**One thing for lane S to know:** an image described by `KLZY` yields an EMPTY
+descriptor, because KLZY has no field for one. So a derived build whose base
+came from a KLZY image cannot re-emit what it never received. That is honest
+rather than invented, and it is another reason the producer side (V5/Y5) has to
+land before any mandatory-digest rule would be satisfiable.
 
 ## What is left in lane V
 
@@ -2893,9 +2907,10 @@ argument", and two entries were declined while building this — the archive
 length rides in `sm_register_lazy_file` and the container in
 `sm_export_image_read`.
 
-**What Y5 now needs before it can repoint anything: gap 10** (below). Closing it
-first is the difference between a cutover and a silent loss of archive
-integrity.
+~~What Y5 now needs before it can repoint anything: gap 10.~~ **Gap 10's format
+half closed the same day** (`10b744a2a`), so an archive's digest has somewhere
+to live and Y5 is not blocked by it. What remains of gap 10 is lane S's policy
+call, which does not block the cutover — it depends on it.
 
 **A caveat recorded rather than tidied:** the bridge's POSIX-shaped handle APIs
 (`open`/`read`/`close`/`opendir`/`closedir`/`readdir`) serve only the two
