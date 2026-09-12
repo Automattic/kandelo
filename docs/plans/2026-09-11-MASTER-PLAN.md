@@ -1728,9 +1728,22 @@ directories, crash safety net, local exec resolution), plus 18 browser-only and
   trailing doc comment. **Size deltas are not evidence of divergence**; reading
   the declarations is.
 
-- **E5 — the 18 protocol types with identical bodies but divergent doc
-  comments.** The only remaining mergeable duplication in this lane. Needs a
-  judgement per type about whose comment survives, which is why E2 left them.
+- **E5 — DONE 2026-09-12. 16 more interfaces shared; 48 → 32.**
+
+  **E2 under-captured.** Its extraction regex had an optional leading
+  doc-comment group that could swallow the *previous* declaration's comment,
+  so blocks that were byte-identical compared as different. `PipeReadMessage`
+  is the plainest case: identical in both files, missed by E2.
+
+  Re-extracted by brace-matching the declaration itself rather than
+  regex-matching a block: **17 byte-identical declarations**, of which 16 moved.
+  `ExportRootfsImageMessage`'s two doc comments say the same thing and the
+  browser's is strictly more informative, so that one survived.
+
+  **3 remain above the floor of 29:** `ProcEventMessage` (a union, not an
+  interface — excluded deliberately after a first attempt orphaned half of it),
+  `HttpRequestMessage` and `WriteVfsFileMessage` (identical bodies, genuinely
+  different inline comments).
 - **E4 — leave `*-kernel-host.ts` alone and record why**, so a later pass does
   not "discover" the divergence and try to merge it.
 

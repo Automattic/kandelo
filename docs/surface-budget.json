@@ -130,7 +130,7 @@
     },
     "hostPeerDuplicateDeclarations": {
       "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
-      "ceiling": 48,
+      "ceiling": 32,
       "slack": 0,
       "target": 29,
       "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons \u2014 vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."

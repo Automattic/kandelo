@@ -149,3 +149,110 @@ export interface LazyDownloadMessage {
   type: "lazy_download";
   event: LazyDownloadEvent;
 }
+
+export interface AppendStdinDataMessage {
+  type: "append_stdin_data";
+  pid: number;
+  data: Uint8Array;
+}
+
+export interface DestroyMessage {
+  type: "destroy";
+  requestId: number;
+}
+
+/**
+ * Serialize the quiescent worker-owned root filesystem.
+ *
+ * This deliberately captures only the `/` image backend. Scratch and device
+ * mounts are boot-scoped and are recreated by the host on the next boot.
+ */
+export interface ExportRootfsImageMessage {
+  type: "export_rootfs_image";
+  requestId: number;
+}
+
+export interface InjectConnectionMessage {
+  type: "inject_connection";
+  requestId: number;
+  pid: number;
+  fd: number;
+  peerAddr: [number, number, number, number];
+  peerPort: number;
+}
+
+export interface PickListenerTargetMessage {
+  type: "pick_listener_target";
+  requestId: number;
+  port: number;
+}
+
+export interface PipeCloseReadMessage {
+  type: "pipe_close_read";
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeCloseWriteMessage {
+  type: "pipe_close_write";
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeIsWriteOpenMessage {
+  type: "pipe_is_write_open";
+  requestId: number;
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeReadMessage {
+  type: "pipe_read";
+  requestId: number;
+  pid: number;
+  pipeIdx: number;
+}
+
+export interface PipeWriteMessage {
+  type: "pipe_write";
+  requestId: number;
+  pid: number;
+  pipeIdx: number;
+  data: Uint8Array;
+}
+
+export interface PtyResizeMessage {
+  type: "pty_resize";
+  pid: number;
+  rows: number;
+  cols: number;
+}
+
+export interface PtyWriteMessage {
+  type: "pty_write";
+  pid: number;
+  data: Uint8Array;
+}
+
+export interface SetStdinDataMessage {
+  type: "set_stdin_data";
+  pid: number;
+  data: Uint8Array;
+}
+
+export interface TerminateProcessMessage {
+  type: "terminate_process";
+  requestId: number;
+  pid: number;
+  status: number;
+}
+
+export interface WakeBlockedReadersMessage {
+  type: "wake_blocked_readers";
+  pipeIdx: number;
+}
+
+export interface WakeBlockedWritersMessage {
+  type: "wake_blocked_writers";
+  pipeIdx: number;
+}
