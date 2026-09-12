@@ -48,6 +48,117 @@ Not "every lane finished". #1350 ships when:
 - the host suite's failures are each attributed to a named cause;
 - conformance has no campaign-caused regression, stated with evidence.
 
+## Sequencing decision — 2026-09-12
+
+**PR #1350 sits unmerged. Lanes are worked one at a time until the campaign is
+through.** The maintainer's reasoning: nothing is currently broken that needs
+the PR.
+
+**Measured, not assumed:** at the time of the decision the branch was **1,133
+commits ahead of `main` and 0 behind**, with **0 files touched by both** —
+`main` had not moved in the 8 days since the fork. The usual cost of a
+long-lived branch is accumulating merge risk, and here there was nothing to
+accumulate against.
+
+**The condition on that, which must be re-checked rather than assumed:** the
+cost stays near zero only while `main` stays still. The branch changes **825
+files**; if anyone starts landing to `main`, that surface becomes the dominant
+risk and shipping moves back up the priority list.
+
+A second benefit of not shipping yet: the curation commits do not have to
+narrate progress toward a goal the censuses just measured at **160–315
+agent-days**. Writing that story now would be the overselling the maintainer
+warned against.
+
+### Priority order — cheap × leverage, not cheap alone
+
+1. **T6** — lane **T (test hygiene)** timeout stopgap. One hour. Every lane runs
+   the suite and T5 showed it is a coin flip under load.
+2. **Lane G (ABI binding drift)** — 3–6 d, and **the highest-leverage cheap
+   lane**. Three censuses found the same defect shape — hand-written ABI
+   knowledge beside a generator: **L-D2** (scratch pointer table), **W-D1**
+   (syscall names), **V-D1** (no errno table). G owns the generator, so doing it
+   converts L2, W2 and V7 from work into consumption.
+3. **Lane R (binary and artifact resolution)** — 2–4 d, cheapest lane, and its
+   defect already cost 39 of 53 `host-native` tests.
+4. **The generator's customers, now cheap:** W2 (lane **W**, web-libs session
+   contracts), V7+V8 (lane **V**, one implementation of SFFS — V6 proved they do
+   not need lane Y), L2 (lane **L**, host↔kernel plumbing).
+5. **E2** — lane **E (Node/browser peer divergence)**: unify the 43 duplicated
+   protocol message types. Type-level and mechanical, so it cannot change
+   runtime behaviour.
+
+**Not taken early despite being cheap:** lane **D (dead Rust floors)** — cheap
+but its hazard is deleting something with a caller nobody found, so cheap is not
+safe. Lane **X (process and exec)** — "2–5 d blocked on one panic" is cheap only
+if the bisect lands. Lane **H (browser + curation)** — deprioritized, and
+curation should wait until there is something worth narrating.
+
+**Explicitly last:** lanes **K (kernel-worker.ts god class)**, **F (fork
+control-flow inversion)**, **I (host import surface)**, **M (shared mapping,
+deferred)** — 80–160 days between them, and nothing about doing them sooner
+makes them cheaper.
+
+### Decided: do NOT split `kernel-worker.ts` as a prelude
+
+The question was whether to factor the god class apart first so lanes could be
+worked separately. **No**, on measured grounds:
+
+**None of the seven near-term items touches `kernel-worker.ts`.** T6, G, R, W2,
+V7, L2 and E2 have **zero references** to it between them. The contention
+argument K1 raised applies to *parallel* work; serial work has none by
+definition.
+
+Three further reasons:
+
+- **K1 named its own blocker.** 436 of the 522 methods — 17,958 lines — were
+  never read. Splitting first means doing the least-understood work first.
+- **The only detector is currently a coin flip.** T5 measured an 8.5 s job
+  against a 10 s budget, so a refactor with no functional change would be
+  validated by a suite that goes red under load anyway. **T6 must precede any
+  lane K work in any ordering.**
+- **Moving code inside that file shifts V8 parse and compile for unrelated
+  functions** (the select A/B). A split would contaminate any performance claim
+  made during it.
+
+**The split is the entry cost of the F/I/K tier, not a global prelude**, and it
+is paid when those lanes are reached — by which point the 436 methods will have
+been read. Their dependence on the file is real and measured: lane **F (fork
+control-flow inversion)** has **115** fork references in it, lane **X (process
+and exec)** 45, lane **I (host import surface)** 16, **V9** 9.
+
+**A happier reading of the same data:** the cheap lanes are cheap partly
+*because* they sit outside the god class. They are leaf and generator work, so
+real lanes close without ever entering the hard file.
+
+## Release readiness for #1350 — a known, unclosed gap
+
+Recorded so it is not rediscovered. **`What "done" means for PR #1350` above
+states four criteria and measures none of them**, while every lane in this file
+carries a gate that fails out loud. That asymmetry exists because the surface
+budget was pointed at lanes rather than at the release.
+
+Worse: **the only two lanes exempt from characterization are H and M** — and
+lane **H (browser + curation)** *is* the remaining #1350 work. The exemption is
+right for the browser half, which the maintainer deprioritized. **It is wrong
+for curation**, which the maintainer explicitly required to precede shipping and
+to avoid overselling. The most specific instruction given about #1350 currently
+shelters under a deprioritization that was about something else.
+
+**This is deliberately not a 21st lane.** Lanes are shaped around a subject that
+shrinks; release readiness cuts across all 20, closes once, and has no surface.
+The right shape when it is built:
+
+1. **Split lane H** — browser (exemption stands) from curation (full
+   characterization, including how "do not oversell" is checked rather than
+   hoped).
+2. **Make the four release criteria measured** in `host/test/surface-budget.test.ts`.
+3. **Add a per-lane "what of this lane is in #1350" fact**, so readiness is
+   *derived* from 20 lane facts instead of asserted in prose.
+
+Deferred by the sequencing decision above: with #1350 sitting, this is not on
+the critical path. It becomes urgent the moment shipping does.
+
 ## Estimates — and the bias they must be read against
 
 **Unit: agent-days.** One agent-day is one focused agent working one day on a
