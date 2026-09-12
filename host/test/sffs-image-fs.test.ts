@@ -227,7 +227,7 @@ describe("SffsImageFs", () => {
     const here = fs.lstat("/usr/here");
     expect(here.deferred).toBe(false);
     expect(here.size).toBe(5);
-    expect(fs.isDeferred("/usr/here")).toBe(false);
+    expect(fs.isPathDeferred("/usr/here")).toBe(false);
 
     const there = fs.lstat("/usr/there");
     expect(there.deferred).toBe(true);
@@ -236,9 +236,9 @@ describe("SffsImageFs", () => {
     // big a deferred file is must not have to fetch it first.
     expect(there.size).toBe(99_999);
     expect(there.archiveId).toBe(3);
-    expect(fs.isDeferred("/usr/there")).toBe(true);
+    expect(fs.isPathDeferred("/usr/there")).toBe(true);
 
-    expect(() => fs.isDeferred("/nope")).toThrow(/ENOENT/);
+    expect(() => fs.isPathDeferred("/nope")).toThrow(/ENOENT/);
   });
 
   it("refuses one archive declared with two different lengths", () => {

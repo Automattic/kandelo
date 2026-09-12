@@ -53,4 +53,35 @@ export interface VfsImageFilesystem {
     length: number,
   ): number;
   unlink(path: string): void;
+
+  /**
+   * Whether `path` is backed by a lazy archive or tree.
+   *
+   * Half of the question recipes actually ask, which is "are these bytes
+   * here?" — the other half is [`getLazyEntry`]. They are separate here
+   * because `MemoryFileSystem` answers them separately, and collapsing them
+   * would silently drop a case: `isPathDeferred` alone misses a URL-backed
+   * single lazy file, which is precisely the case lane S's defect is about.
+   *
+   * The assertions built on this are product requirements — "dinit must be
+   * resident before service boot", "the login program must be eager" — and
+   * asking them was the only reason those recipes needed a filesystem
+   * IMPLEMENTATION rather than this interface.
+   */
+  isPathDeferred(path: string): boolean;
+
+  /**
+   * A registered per-file lazy entry for `path`, or `null`.
+   *
+   * **Deliberately `unknown`.** Every caller null-checks it and none reads a
+   * field, so the interface grants exactly that. Typing it richly would drag
+   * `MemoryFileSystem`'s `LazyFileEntry` in and make this a second name for
+   * the class rather than a description of what a recipe needs.
+   *
+   * An implementation with ONE notion of deferred — the Rust bridge, where a
+   * deferred file is a deferred file whether an archive or a URL stands behind
+   * it — reports everything through `isPathDeferred` and returns `null` here.
+   * That is not a stub: the union the recipes compute comes out identical.
+   */
+  getLazyEntry(path: string): unknown;
 }

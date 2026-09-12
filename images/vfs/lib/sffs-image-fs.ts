@@ -463,8 +463,21 @@ export class SffsImageFs {
    * The fetch URL is deliberately absent. Nothing reads one through this path,
    * and it lives in the deferred payload the kernel carries without reading.
    */
-  isDeferred(path: string): boolean {
+  isPathDeferred(path: string): boolean {
     return this.lstat(path).deferred;
+  }
+
+  /**
+   * Always `null`: this filesystem has one notion of deferred, not two.
+   *
+   * `MemoryFileSystem` splits the question across a per-inode lazy registry
+   * and a lazy archive backing, so its callers compute the union by hand. Here
+   * a deferred file is a deferred file whether an archive or a URL stands
+   * behind it, and `isPathDeferred` already reports both — so the union those
+   * callers compute comes out identical against this implementation.
+   */
+  getLazyEntry(_path: string): unknown {
+    return null;
   }
 
   /**
