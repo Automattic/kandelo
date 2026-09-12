@@ -137,7 +137,7 @@
     },
     "artifactTierPathSpellings": {
       "measure": "independent production spellings of the local-binaries/source-only-v1 tier path",
-      "ceiling": 6,
+      "ceiling": 1,
       "slack": 0,
       "target": 1,
       "why": "Lane R, set by the R1 census. Replaces a line-count surface that would be satisfied by deleting policy that is not duplicated and untouched by fixing the duplication that is. host-native's equivalent of the 4,020-line TypeScript resolver is ten lines; what duplicates is the tier list and its order, spelled 8 times across the writer (xtask local-build, 7) and both readers. The drift already cost 39 of 53 host-native tests against a tree where the build had just succeeded."
@@ -369,8 +369,8 @@
       "why": "Goal V1. The E1 census found the consolidation already largely done: the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory, not the '10 symbols' previously reported. What remains is 43 duplicated protocol message types and a 21-item audit. No category-three findings \u2014 no bug one host fixed and the other did not \u2014 which lowers the lane's urgency."
     },
     "R": {
-      "title": "Binary and artifact resolution in the host",
-      "status": "open",
+      "title": "Binary and artifact resolution \u2014 one declaration of the tier order",
+      "status": "closed",
       "closure": [
         {
           "surface": "artifactTierPathSpellings",

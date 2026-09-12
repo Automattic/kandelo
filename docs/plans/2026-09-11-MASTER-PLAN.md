@@ -194,7 +194,7 @@ lands — those are marked.
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
-| **R** binary resolution | **2–4 d** | medium-high *(R1 done)* | One shared constant and four consumers, not a resolver migration. The 4,020-line file is policy nobody duplicates. |
+| **R** binary resolution | **0–0 d** | CLOSED 2026-09-12 | Landed 2026-09-12 in four increments. One shared constant; the writer and both readers derive from it. |
 | **G** ABI binding drift | **1–2 d** | high *(14/15 done)* | Blocked only on the `itimerval` decision. The rest landed: 103 constants emitted, 68 asserts, every batch perturbation-tested. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
@@ -209,7 +209,7 @@ lane V.** `memoryFsTypeScript` cannot reach 0 while `images/vfs/scripts`
 imports `memory-fs.ts`, so any schedule that runs V to completion before Y is
 wrong on its face.
 
-**The whole campaign now stands at 160–315 agent-days across 20 lanes.** The
+**The whole campaign stands at 156–307 agent-days across 20 lanes**, with lane R closed and lane G at 14/15. The
 nine lanes added on 2026-09-11 were first scoped at 88–177; after their censuses
 they are **71–143**, because five of them shrank and none grew. The censuses
 cost roughly a day in total. That is the honest scale of what the plan
@@ -1619,77 +1619,76 @@ per-host instances of a shared concept.
 
 # LANE R — binary and artifact resolution
 
-**Status: R1 census COMPLETE — `docs/plans/2026-09-11-lane-r1-census.md`.
-The lane is real, but it is not the lane that was written. Gate replaced.**
+**Status: CLOSED (2026-09-12). `artifactTierPathSpellings` 8 → 1.**
 
-## What this lane is — as corrected by the census
+## What this lane was — as corrected by the R1 census
 
-**`host-native`'s equivalent of the 4,020-line TypeScript resolver is ten
-lines**: a four-entry `ARTIFACT_TIERS` list and a first-existing-tier lookup.
-The other 4,010 lines are policy the native host does not use — per-tier
-identity, package closure, candidate expansion, source-only projection
-authority — and that policy is **not duplicated anywhere**.
+Not a resolver migration. `host-native`'s equivalent of the 4,020-line
+TypeScript resolver was **ten lines**; the other 4,010 are policy the native
+host does not use and nobody duplicates. **What duplicated was the tier list
+and its order**, spelled eight times across the writer and both readers.
 
-So the lane is not a resolver migration. **What duplicates is the tier list and
-its order**, and it is spelled **eight times** across the writer and both
-readers: `tools/xtask/src/local_build.rs` (7), `crates/host-native/src/lib.rs`
-(2), `host/src/binary-tiers.ts` (1), `tools/xtask/src/build_deps.rs` (1).
+**The drift was not hypothetical.** After a `./run.sh setup` that exited 0,
+`local-binaries/source-only-v1/kernel.wasm` was built that afternoon and
+exported `kernel_thread_parent_tid_target`; `local-binaries/kernel.wasm` was a
+seven-hour-old symlink that did not. `cargo test -p host-native` failed **39 of
+53** against a tree where the build had just succeeded.
 
-**The drift already cost a measured failure.** `host-native`'s own comment
-records that after a `./run.sh setup` that exited 0,
-`local-binaries/source-only-v1/kernel.wasm` was fresh while
-`local-binaries/kernel.wasm` was a seven-hour-old symlink, and `cargo test -p
-host-native` **failed 39 of 53** with a missing export against a tree where the
-build had just succeeded.
+And the right fix had already been applied once *within* TypeScript —
+`host/src/binary-tiers.ts` exists because a hand-maintained second copy "drifted
+in both directions" — then stopped at the language boundary.
 
-**And the right fix was already applied once, then stopped at the language
-boundary.** `host/src/binary-tiers.ts` exists because TypeScript itself had two
-copies that, in its own words, "drifted in both directions". Rust then made a
-third.
+## End state — reached
 
-## End state
-
-One declaration of the tier roots and their order, in `crates/shared`,
-generated into TypeScript the way ABI constants already are. The writer and both
-readers consume it. `binary-resolver.ts`'s policy is untouched.
+`crates/shared/src/artifact_tiers.rs` is the single authority. The writer
+(`xtask local-build`) and both readers derive from it; the TypeScript side via
+generated `ARTIFACT_TIERS` in `host/src/generated/abi.ts`.
 
 ## The floor
 
-Reading bytes from the host's own filesystem — Node `fs` in one host, fetch or
-OPFS in the other. That is a byte-fetch, not a resolution policy.
-
-**`binary-resolver.ts`'s 4,010 lines of policy are not floor and not lane R
-work either.** They are simply not duplicated. The census establishes only
-that; whether they are right-sized is a different question this lane does not
-ask.
+Reading bytes from the host's own filesystem — Node `fs` in one host,
+fetch/OPFS in the other. `binary-resolver.ts`'s 4,010 lines of policy are not
+floor and were **not** lane R work: they are not duplicated, and the census said
+so explicitly.
 
 ## Increments
 
-- **R1 — census.** Done.
-- **R2 — one declaration of the tier roots and order** in `crates/shared`,
-  generated into TypeScript. `binary-tiers.ts` becomes the generated consumer.
-- **R3 — `xtask` writes to the shared constant**, closing the writer/reader
-  split that caused the 39-of-53 failure.
-- **R4 — `host-native` consumes it**; `ARTIFACT_TIERS` is deleted.
+- **R1 — census.** Done; overturned the lane's scope.
+- **R2 — one declaration** in `crates/shared`, generated into TypeScript;
+  `binary-tiers.ts` consumes it. Done.
+- **R4 — `host-native` consumes it**; its four-literal `ARTIFACT_TIERS` and the
+  comment asking editors to "change `binaryCandidateTiers()` in the same commit"
+  are gone. Done.
+- **R3 — `xtask` writes to the shared constant.** Done, and this was the half
+  that mattered: the writer disagreeing with the readers is what produced the
+  incident.
 
 ## Acceptance evidence
 
-`artifactTierPathSpellings` reaches **1**. The regression this closes is
-concrete and already documented, so the decisive test is the one that would
-have caught it: a check that the path the build writes and the path the hosts
-read are the same constant, not two strings that happen to match.
+`artifactTierPathSpellings` reaches **1** — the authority itself.
+
+The decisive evidence is `cargo test -p host-native`: **60 passed, 0 failed**.
+That is the suite that failed 39 of 53 when the lists disagreed. Plus `cargo
+test -p xtask local_build` — 61 passed — and the host suite's binary-resolver
+tests.
+
+Tests changed shape as well as target: `host-native` used to assert its tier
+list equalled a literal copy of itself. It now asserts **the property the
+incident violated** — the tier a completed build writes is searched before the
+one that may hold a stale symlink.
 
 ## Known hazards
 
-- **Resolution feeds the build**, so a wrong answer is a stale-artifact bug that
-  presents as a kernel or package defect somewhere else entirely — which is
-  exactly how the `source-only-v1` incident presented.
-- **The seven `local_build.rs` spellings were counted by pattern, not read.**
-  R2 must read them; some may be different concepts that merely share a string.
-- **Only the source-only tier was counted.** `host/wasm` and the other two
-  tiers may have the same problem and were not measured.
-- **This lane is dev-and-build-time**, not on the wasmtime host's critical path.
-  It is cheap and provable, not urgent.
+- **Generated output is not an independent spelling.** Adding the authority
+  pushed the measure *up* to 9 until `host/src/generated/` was excluded;
+  counting generated files penalises the fix.
+- **R2 alone was not a reduction** (8 → 8). It changed which file is allowed to
+  spell the path. Saying so mattered: the number would otherwise have implied
+  progress that had not happened.
+- **Only the source-only tier was counted.** The other three tiers were not
+  measured for independent spellings, and the census said so.
+- **`binary-resolver.ts` is untouched and still 4,020 lines.** Whether that
+  policy is right-sized is a real question this lane deliberately did not ask.
 
 ---
 

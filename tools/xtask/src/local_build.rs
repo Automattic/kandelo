@@ -422,6 +422,18 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
 /// fast). Setting `KANDELO_SOURCE_CACHE_ROOT` to an absolute path gives a
 /// worktree its own isolated cache instead; leaving it unset shares the
 /// machine-wide default. See `docs/agent-guidance/packages-and-builds.md`.
+/// The tier a completed local build publishes into, rooted at `base`.
+///
+/// Derived from `crates/shared/src/artifact_tiers.rs` rather than spelled here,
+/// because this is the WRITER and the two hosts are the readers. When the three
+/// disagreed, `local-binaries/kernel.wasm` (a seven-hour-old symlink) shadowed
+/// the freshly written `local-binaries/source-only-v1/kernel.wasm`, and
+/// `cargo test -p host-native` failed 39 of 53 against a tree where the build
+/// had just succeeded.
+fn source_only_output_root(base: &Path) -> PathBuf {
+    base.join(wasm_posix_shared::artifact_tiers::SOURCE_ONLY_TIER.relative_path)
+}
+
 fn default_source_cache_root() -> Result<PathBuf, String> {
     resolve_source_cache_root(
         std::env::var_os("KANDELO_SOURCE_CACHE_ROOT"),
@@ -725,7 +737,7 @@ fn run_bootstrap_step(
         "engine" => run_aggregate(LocalBuildRunArgsV1 {
             set: repo.join("packages/sets/local-supported.toml"),
             source_cache_root: default_source_cache_root()?,
-            output_root: repo.join("local-binaries/source-only-v1"),
+            output_root: source_only_output_root(repo),
             products,
             jobs,
             rebuild,
@@ -1561,7 +1573,7 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
 
     let compiled_cache_root =
         plan_canonical_source_only_cache_roots(&default_source_cache_root()?, None)?.compiled;
-    let output_root = repo.join("local-binaries/source-only-v1");
+    let output_root = source_only_output_root(&repo);
 
     let mut removed_paths = Vec::new();
     for cleaned in &removal {
@@ -7015,7 +7027,7 @@ materialization = "lazy"
     #[test]
     fn l5_passes_for_a_fresh_projected_fork_module() {
         let temp = tempfile::TempDir::new().unwrap();
-        let output_root = temp.path().join("local-binaries/source-only-v1");
+        let output_root = source_only_output_root(temp.path());
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"fork-module-bytes-fresh";
         fs::write(output_root.join("fork_module32.wasm"), bytes).unwrap();
@@ -7039,7 +7051,7 @@ materialization = "lazy"
         // The manifest was built for an OLD closure key; the current source
         // resolves to a different one -> stale-vs-source.
         let temp = tempfile::TempDir::new().unwrap();
-        let output_root = temp.path().join("local-binaries/source-only-v1");
+        let output_root = source_only_output_root(temp.path());
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"fork-module-bytes";
         fs::write(output_root.join("fork_module32.wasm"), bytes).unwrap();
@@ -7071,7 +7083,7 @@ materialization = "lazy"
         // stale vs source) but the staged bytes differ from what the manifest
         // declares, so the pinned-projection resolver would reject the member.
         let temp = tempfile::TempDir::new().unwrap();
-        let output_root = temp.path().join("local-binaries/source-only-v1");
+        let output_root = source_only_output_root(temp.path());
         fs::create_dir_all(&output_root).unwrap();
         let staged = b"the-actually-staged-newer-bytes";
         fs::write(output_root.join("fork_module32.wasm"), staged).unwrap();
