@@ -664,6 +664,34 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-11 — a mutant can be detected by HANGING, and an unbounded harness waits
+  forever.** Measured 2026-09-12: a trial making the image export ignore its
+  offset and always restart left a test's drain loop with no end condition. The
+  test span growing a buffer, `xtask perturb` waited on it for **eighteen
+  minutes** and would have waited indefinitely, and the run's remaining trials
+  never started.
+
+  Two things made it hard to see. Spec commands end in `>/dev/null 2>&1` so a
+  green run stays quiet — the same redirection swallows whatever a hung command
+  is saying about itself. And killing the wrapper shell is not enough: when this
+  was diagnosed by hand, the shell's `cargo` and the test binary under it were
+  still running and still allocating after the shell was gone.
+
+  **Fixed on both sides**, because either alone leaves half the defect. The
+  harness bounds every command and kills the whole PROCESS GROUP on timeout; a
+  verifier that does not answer is a kill, reported separately as "detected by
+  HANGING rather than failing" and **failing the run**, because a test that
+  hangs costs the whole run's wall clock and says nothing about what broke.
+  And the tests terminate on their own: the drain loops are bounded far above
+  any image they build, so the bound can only be hit by non-termination.
+
+  The same mutation went from eighteen minutes to **failing in 7 seconds**.
+
+  **What this means for every lane:** "0 survived" is only trustworthy if the
+  run FINISHED. A perturbation run that is still going is not a weaker result
+  than a green one, it is no result — and before this fix it could be neither
+  for an unbounded time.
+
 - **H-10 — `npx vitest` from the repo root does NOT run the repo's vitest.**
   There is no root `node_modules/vitest`, so npx fetches an unpinned version
   from the registry: measured 2026-09-12, the root form ran **5.0.0** while
