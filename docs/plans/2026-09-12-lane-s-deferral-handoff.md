@@ -1,0 +1,196 @@
+# Lane S — deferral and handoff
+
+**Status: DEFERRED by the maintainer, 2026-09-12. Nothing landed.**
+
+**The decision, in the maintainer's words:** *"I only want the problem fixed
+for the new Rust-based FS which is not completed yet."*
+
+This file is the handoff that deferral requires. It exists so the next person
+does not re-derive what was already measured, and does not rebuild a fix in the
+layer the campaign is deleting.
+
+## The defect, restated
+
+`images/rootfs/PACKAGES.toml` sets `default_install = "lazy"`. Three packages
+are `mode = "4755", uid = 0` — setuid root. `login` opts out with
+`install = "eager"`; **`sudo` and `sudo-lite` do not.**
+
+`scripts/generate-rootfs-package-manifest.mjs` emits those two as
+`<path> f 4755 0 0 lazy_url=… lazy_size=…`. **Mode preserved; URL and size the
+only attributes; no digest anywhere.** `LazyFileEntry` in
+`host/src/vfs/memory-fs.ts` carries no integrity field either — the lazy
+*archive* and *tree* types do, and `assertLazyIntegrity` already exists to
+check them.
+
+So two setuid-root binaries are fetched at run time by URL with **length as the
+only check**. Bytes of the same length from a substituting host, a poisoned
+cache or a network position execute as root inside the guest. HTTPS is
+transport security, not artifact integrity, and a third-party host is under no
+obligation to use it.
+
+## Why this was deferred rather than fixed
+
+The fix was built, and it worked. It was **~46 code lines in
+`host/src/vfs/memory-fs.ts`** — which is the 8,501-line TypeScript filesystem
+lane V exists to delete, budgeted at `memoryFsTypeScript` with a target of 0.
+
+Spending 46 lines to harden a file scheduled for deletion buys a real security
+property for however long that file survives, and buys a second implementation
+to throw away. The maintainer chose the Rust side. **That is a scheduling
+decision, not a downgrade of the defect:** the defect is real, verified, and
+still open.
+
+**It is off the critical path in one specific sense and not in another.** The
+bytes are served from the same origin as the page in every shipping
+configuration today, so the substituting-host case is not currently reachable
+without an attacker who already controls that origin. It becomes reachable the
+moment a deferred file is served from a third-party host or a mirror — which
+lazy references exist to permit.
+
+## Measurements — do not re-derive these
+
+All taken 2026-09-12 against the built corpus in
+`local-binaries/source-only-v1/programs/wasm32/`.
+
+**The nine production images, restored with the reference implementation
+applied:**
+
+| image | deferred files | with digest | set-ID deferred files |
+|---|---|---|---|
+| `rootfs.vfs` | 65 | 0 | 2 |
+| `shell.vfs.zst` | 79 | 0 | 2 |
+| `wordpress.vfs.zst` | 79 | 0 | 2 |
+| `lamp.vfs.zst` | 79 | 0 | 2 |
+| `nginx-php-vfs.vfs.zst` | 79 | 0 | 2 |
+| `nginx-vfs.vfs.zst` | 79 | 0 | 2 |
+| `node-vfs.vfs.zst` | 79 | 0 | 2 |
+| `kandelo-sdk.vfs.zst` | 0 | 0 | 0 |
+| `mariadb-test.vfs.zst` | 0 | 0 | 0 |
+
+**9 of 9 restored; 0 refused.** That is lane C's lazy-identity property and the
+reference implementation preserved it, because it *demotes* rather than
+refuses (below).
+
+The two set-ID deferred files are the same two in every image that has any:
+`/usr/bin/sudo` and `/usr/bin/sudo-lite`, both `4755`. **The blast radius of
+any fix that changes their handling is exactly those two paths**, and two of
+the nine images are unaffected entirely.
+
+## The design that was built and reverted
+
+Kept here because the shape survives the language. The reference
+implementation is not in git; it was 547 diff lines across eight files plus one
+new 340-line test.
+
+**Producer (host-independent, survives into the Rust world unchanged):**
+
+1. `scripts/generate-rootfs-package-manifest.mjs` emits `lazy_sha256=<64 hex>`
+   on both lazy branches. The `--resolved-output-map` branch already *has* the
+   digest — `resolved.sha256`, validated against the reference — and simply
+   was not writing it. The binaries-dir branch reads the artifact it is
+   deferring and hashes it; `createHash` was already imported.
+2. `tools/mkrootfs/src/manifest.ts` accepts `lazy_sha256=`, rejecting anything
+   that is not 64 lowercase hex digits, and rejecting the field without
+   `lazy_url=`. **Lowercase and exact length matter:** an uppercase or
+   truncated digest compares unequal for bytes that are in fact correct, which
+   reads as tampering and is not.
+
+**Consumer (what the Rust filesystem has to own):**
+
+3. The digest rides on the deferred-file record beside the URL and size,
+   through registration, image save, image restore and export.
+4. **Verification happens where the bytes land.** In the TypeScript version the
+   right seam turned out to be `fetchLazyBytes`, which *already* asserts
+   `details.integrity` on both its buffered and streamed branches for archives
+   and trees, and already declines to retry an integrity failure. Passing
+   `integrity` for a URL-backed file made verification structural rather than a
+   second mechanism beside the first. **The Rust equivalent should look for the
+   same property:** one verification point that a deferred fetch cannot reach
+   the filesystem without passing.
+5. **A refusal must not be `EAGAIN`.** The kernel parks and retries on it, so a
+   file failing verification would hang its reader forever. The TypeScript path
+   gets this right by construction — a rejected preparation becomes `EIO` in
+   `guardSynchronousLazyAccess` — and it was pinned by a test that drives the
+   real park-and-retry loop rather than awaiting the promise, because awaiting
+   consumes the settled preparation and cannot observe what a retrying reader
+   sees.
+6. **Set-ID is not honoured on bytes nothing can check.** Two different
+   answers, deliberately:
+   - **At registration, refuse.** A producer describing a deferred setuid file
+     holds the bytes it is describing and can hash them, so this is a defect in
+     the producer, not an artifact inherited from elsewhere.
+   - **At restore, demote** — strip `S_ISUID | S_ISGID` from the stub and leave
+     everything else alone. Refusing would reject images that are otherwise
+     entirely valid, including every image built before the digest existed, and
+     "this image will not boot" is a far larger claim than the defect supports.
+     The property owed is narrow: unverified bytes must not run with
+     credentials the caller does not have. The file still fetches and still
+     executes; `stat` reports the mode it really has.
+   - Demotion must cover **every hard-linked name** of the inode: the bytes are
+     the same bytes, so the credentials must be the same credentials.
+   - In the TypeScript version `chmod` touches `ctime` only and never
+     `INO_DATA_SEQUENCE`, so demotion did not disturb the inode identity the
+     caller had just matched. **The Rust filesystem needs the same property or
+     an explicit re-stat**, or the later materialisation will fail to find its
+     own stub.
+
+**Forbidding setuid + deferred is still not available** — production depends on
+the combination.
+
+## Two findings the next person needs
+
+**1. The lane's own gate can be satisfied without verifying anything.**
+`setuidLazyWithoutDigest` in `host/test/surface-budget.test.ts` greps the
+emitter for `lazy_sha256=|lazy_digest=` and returns 0 if it finds either. So
+**landing the producer half alone drives the gate to 0 and marks lane S
+closed** while nothing on earth checks the digest — a recorded digest nobody
+verifies is exactly hazard H-2, a guard that cannot fail. That is the specific
+reason the producer half was not landed on its own during the pause.
+
+Whoever picks this up should **re-point the gate at the consumer**, not the
+emitter: measure that deferred bytes are verified, or that no set-ID deferred
+file exists without a digest in the built images. The current measure is a
+proxy for the fix rather than the fix.
+
+**2. `assertLazyIntegrity` is a no-op when integrity is absent.** Its first
+line is `if (expected === undefined) return;`. Archives and trees therefore
+have the *shape* of an integrity check without necessarily having one. Whether
+any lazy archive member ships set-ID was not measured; the corpus above counts
+only URL-backed deferred files. **This is unexamined surface, not a cleared
+one.**
+
+## What unblocks this
+
+S2's blocker, verified rather than assumed:
+
+- **The kernel already receives the bytes.** `host_fetch_deferred(kind, id,
+  offset, dest)` hands a URL-backed deferred file's bytes to the kernel by
+  inode. The seam exists.
+- **The kernel cannot learn the expected digest.** The image's kernel-facing
+  section is `KLZY`, and `crates/runtime-core/src/klzy.rs` says outright that
+  integrity digests deliberately stay in the host-side JSON. Adding one means
+  changing `VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared/src/lib.rs` — ABI
+  surface, requiring a snapshot regeneration — for a section **V5 retires
+  anyway**.
+- **SDEF is the intended home and is already shaped for it.**
+  `crates/runtime-core/src/sffs_deferred.rs` exists, decodes and encodes, and
+  its own header names *"fetch URL, transport, integrity digest, activation
+  mode, atomic-group seal"* as the opaque payload the kernel carries but never
+  inspects. **It has no production caller yet.** Giving it one is V5, which
+  lane Y gates.
+
+**So lane S resumes when SDEF has a production caller**, and its increments
+then become: put the digest in the SDEF payload, verify in the kernel, and
+demote set-ID in the Rust filesystem. The producer half above is a prerequisite
+either way and can land with it.
+
+## Acceptance evidence when it resumes
+
+Unchanged in substance, with one addition forced by finding 1:
+
+- a tampered byte stream **of the correct length** is refused — length already
+  passes today, so nothing weaker demonstrates anything;
+- the refusal is `EIO` and reaches a *retrying* reader as `EIO`;
+- a set-ID deferred file with no digest does not execute set-ID;
+- the nine production images still restore with **0 refused**;
+- and the gate measures the verification, not the emission.

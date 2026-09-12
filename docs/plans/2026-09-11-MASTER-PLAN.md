@@ -68,6 +68,11 @@ exact hazard `run.sh`'s `KANDELO_SOURCE_CACHE_ROOT` documentation describes.
 | Lane | Worktree | Branch | Started |
 |---|---|---|---|
 | **Y** image builders | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
+| **S** setuid integrity *(deferred)* | `/Users/brandon/kandelo-lane-s` | `brandonpayton/lane-s-setuid-integrity` | 2026-09-12, from `002149196` |
+
+**The lane S worktree holds one commit and it is not lane S's.** The lane was
+deferred mid-flight; what survives on that branch is the code-line budget
+change below, which is campaign-wide rather than lane work.
 | **F** fork inversion | `/Users/brandon/kandelo-lane-f` | `brandonpayton/lane-f-fork-inversion` | 2026-09-12, from `052e7e9e6` |
 
 **Provisioning a lane worktree is not the same as rebuilding one.** A fresh
@@ -227,7 +232,7 @@ lands — those are marked.
 | **V** VFS / one SFFS | **8–16 d** | medium *(V6 done)* | Five of six consumers need only constants; V7–V8 are 1–3 d. V9 — `memory-fs.ts` dropping `SharedFS` — is the remainder and is genuinely large at 8,501 lines. |
 | **P** platform honesty | **10–15 d** | medium | Five independent instances. `st_rdev` is ABI-adjacent on the stat wire; the UI trio is smaller but one item is a product decision, not an engineering one. |
 | **T** test hygiene | **3–6 d** | medium *(T5 done)* | Neither one defect nor forty: a 10 s budget on an 8.5 s job. All 41 pass at 20 s. The lane is now "why does a fork fixture cost 8.5 s", not "debug 40 tests". |
-| **S** setuid integrity | **5–10 d** | medium | S1 is 1–2 d — the verifier already exists and the emitter already imports `createHash`. S2 needs a sha256 in the kernel and should land with the SDEF record. |
+| **S** setuid integrity | **3–6 d** *(DEFERRED)* | medium | Re-estimated after building the fix and reverting it. The producer half is hours. The consumer half is ~46 lines of logic wherever it lives, and the maintainer deferred it to the Rust filesystem, so it is now **blocked behind V5, which is blocked behind lane Y** — its cost is small but it cannot start. |
 | **C** conformance | **4–7 d** | medium | C1 is a runner-contract change; C2 is following through on two XFAIL'd gaps. The 8 remaining failures are all harness. |
 | **B** build truthfulness | **4–7 d** | medium | Reconciling the cheap path with the freshness gate is a decision plus a day; stamping the fixtures is the larger half. |
 | **X** process and exec | **2–5 d** | medium | Blocked on one panic with a precise bisect. Once found, the repoint is a one-commit reapply. |
@@ -254,16 +259,17 @@ lane V.** `memoryFsTypeScript` cannot reach 0 while `images/vfs/scripts`
 imports `memory-fs.ts`, so any schedule that runs V to completion before Y is
 wrong on its face.
 
-**The whole campaign stands at 153–302 agent-days across 20 lanes**, with lane R closed, lane G at 14/15, and lane F revised down by 3–5 days after its census found the coarse entries already built. The
+**The whole campaign stands at 151–298 agent-days across 20 lanes**, with lane R closed, lane G at 14/15, lane S deferred behind V5, and lane F revised down by 3–5 days after its census found the coarse entries already built. The
 nine lanes added on 2026-09-11 were first scoped at 88–177; after their censuses
 they are **71–143**, because five of them shrank and none grew. The censuses
 cost roughly a day in total. That is the honest scale of what the plan
 was previously not counting, and it is a floor like every other number here.
 
 **For PR #1350 specifically**, what remains is **H** (browser plus curation,
-3–6 d) and whatever of **T**, **X**, **C**, **B** and **S** the maintainer
-wants inside it rather than after — a further **8–20 d** if all five go in,
-**3–6 d** if only H does.
+3–6 d) and whatever of **T**, **X**, **C** and **B** the maintainer wants
+inside it rather than after — a further **5–14 d** if all four go in,
+**3–6 d** if only H does. **S is no longer a candidate**: it was deferred to
+the Rust filesystem on 2026-09-12 and cannot land before V5.
 
 **What would make these wrong in the optimistic direction**, since that is the
 direction they have always been wrong: a census turning up a second
@@ -313,7 +319,7 @@ baseline taken under unknown load, not a precise figure.
 ### Why this is recorded as a hazard
 
 **Every "tests pass" claim in this campaign so far has been a narrow-suite
-claim.** `host/test/surface-budget.test.ts` at 79 passing, or 296 tests across
+claim.** `host/test/surface-budget.test.ts` at 89 passing, or 296 tests across
 11 VFS files, says nothing about the other 390 files. That is not wrong — a
 narrow claim for a narrow change is correct practice — but a reader
 accumulating those green lines could reasonably infer a green suite, and the
@@ -332,6 +338,61 @@ difference between 46 and 65 has not been attributed. The two runs on
 **identical** failure sets with **no newly failing files**, which is evidence
 against this session's changes being the cause — but it is not the same as
 having measured the earlier commit.
+
+## The surface budget counts CODE lines — changed 2026-09-12
+
+**Every line-count ceiling in `docs/surface-budget.json` is now code lines, not
+`wc -l`.** Blank lines and comment lines do not count; a line carrying code and
+a trailing comment does. Landed on `brandonpayton/lane-s-setuid-integrity` as
+`Build: Budget code lines, not comment lines`.
+
+**Why, in the maintainer's words:** *"All we care about is code lines not
+comment lines."* The old measure put the budget in direct conflict with
+`CLAUDE.md`, which says documentation is part of the platform contract: a
+change that explained itself cost the same budget as one that did not, so the
+cheapest way past a ceiling was to explain less. The budget exists to measure
+how much host behaviour a second host would have to reproduce, and nobody
+reimplementing `memory-fs.ts` in Rust has to reproduce its doc comments.
+
+**This is not a relaxation, and the difference matters to every lane.** Each
+ceiling was rebaselined to the code-line count of its file exactly as it stood,
+so the ratchet holds at the same point in the new unit. `slack` and `target`
+were scaled by each surface's own comment ratio, so neither the banking
+threshold nor the campaign's goal moves in real terms — the non-zero targets
+are **unit conversions** of the figures lanes F, K and L derived, not
+re-derivations of them.
+
+| surface | was (`wc -l`) | now (code) | target was → now |
+|---|---|---|---|
+| `forkTypeScript` | 24,726 | 19,804 | 2,500 → 2,000 |
+| `workerMainTypeScript` | 7,499 | 5,958 | 3,000 → 2,400 |
+| `sffsTypeScript` | 3,716 | 3,047 | 0 → 0 |
+| `memoryFsTypeScript` | 8,501 | 7,473 | 0 → 0 |
+| `kernelWorkerTypeScript` | 32,718 | 26,495 | 12,000 → 9,700 |
+| `kernelHostImportTypeScript` | 4,774 | 3,822 | 2,650 → 2,100 |
+| `hostKernelPlumbingTypeScript` | 5,853 | 4,734 | 3,600 → 2,900 |
+
+**Prose figures elsewhere in this file are still `wc -l`** — "8,501 in
+`memory-fs.ts`", "12,253 lines", "29,975 lines across 522 methods" — because
+they describe file sizes, which have not changed. Only the *budget* changed
+unit. Do not compare one against the other.
+
+**The counter is not a regex, and that was necessary.** A naive scanner reading
+`const s = "/*";` opens a block comment that never closes and silently stops
+counting the rest of the file — a measurement failure shaped exactly like a
+reduction. It tracks strings, refuses to return a count for text ending inside
+a block comment (silent across all of `host/src`), and ends a string at end of
+line: carrying a template literal across lines instead dropped 25 lines of real
+code, the expressions inside `${...}` interpolations.
+
+**Perturbed seven ways, each run and each failing (H-2):** string awareness
+removed (kills the string test, *via* the unterminated-block guard firing —
+the exact catastrophic mode); blank lines counted (11 tests, `forkTypeScript`
+reads 24,764); line comments counted (8 tests, `kernelWorkerTypeScript` reads
+28,696); block comments counted (10 tests, and the unterminated-block guard
+goes quiet); the unterminated-block guard removed; the template reset reverted
+(the interpolation test, 4 against 5); and any ceiling lowered by 1, which the
+ratchet catches.
 
 ## Open decisions — blocked on a judgement, not on effort
 
@@ -1022,7 +1083,23 @@ mutation proved were otherwise dead, and they reach them by construction.
 
 # LANE S — setuid lazy references are fetched without integrity
 
-**Status: characterized, small, dispatchable. Security-relevant.**
+**Status: DEFERRED by the maintainer 2026-09-12, handoff written at
+`docs/plans/2026-09-12-lane-s-deferral-handoff.md`. Nothing landed. The defect
+is unfixed and still real.**
+
+**The decision:** *"I only want the problem fixed for the new Rust-based FS
+which is not completed yet."* The fix was built and worked, and it was ~46 code
+lines in `host/src/vfs/memory-fs.ts` — the TypeScript filesystem lane V exists
+to delete, budgeted at `memoryFsTypeScript` with a target of 0. Hardening a
+file scheduled for deletion buys the property for as long as that file lives
+and buys a second implementation to throw away. **This is a scheduling call,
+not a downgrade of the defect.**
+
+**Read the handoff before touching this lane.** It carries the measured
+corpus, the design that was built and reverted, and two findings this section
+does not repeat — including that **the lane's own gate can be driven to 0
+without verifying anything**, so "close lane S" is currently reachable by
+editing the emitter alone.
 
 ## The defect, fully verified
 
@@ -1042,6 +1119,17 @@ cache or a network position execute as root inside the guest. HTTPS is
 transport security, not artifact integrity, and a third-party host is under no
 obligation to use it.
 
+## Measured 2026-09-12, against all nine production images
+
+**9 of 9 restore; 0 refused** — lane C's lazy-identity property, preserved by a
+fix that demotes rather than refuses. Seven of the nine carry deferred files
+(65 in the base image, 79 in each derived one) and **not one of the 619 carries
+a digest**. The set-ID ones are the same two everywhere: `/usr/bin/sudo` and
+`/usr/bin/sudo-lite`, both `4755`. Two images carry no deferred files at all.
+
+**The blast radius of any fix is exactly those two paths.** That is smaller
+than the lane's framing implied and is worth knowing before scheduling it.
+
 ## The floor
 
 The host performs the fetch — the network is its own. **Verification is not
@@ -1054,17 +1142,28 @@ V4 creates by making new hosts cheap to write.
 Deferred bytes are verified against a digest recorded with the reference, and
 the setuid bit is not honoured on unverified bytes.
 
-## Increments
+## Increments, as they stand after the deferral
 
-- **S1 — host-side digest, cheap.** `createHash` is already imported in the
-  emitter, and **`assertLazyIntegrity(data, kind, integrity)` already exists**
-  and is called in three places for archives and trees. Emit the digest, carry
-  it, call the existing verifier. **Belongs in lane V's SDEF record, not in
-  JSON we are about to delete.**
-- **S2 — kernel-side verification.** The kernel verifies the bytes it is handed,
-  which makes a substituting *host* detectable rather than trusted. Needs a
-  sha256 in the kernel; lands with V5, where the kernel parses the record
-  anyway.
+- **S1 — producer half. Built, reverted, NOT landed.** The emitter records
+  `lazy_sha256=`, the mkrootfs grammar carries it. This half is
+  host-independent and survives into the Rust world unchanged, so it lands
+  *with* the Rust consumer rather than before it — landing it alone drives the
+  gate to 0 while nothing checks the digest, which is H-2 exactly.
+- **S2 — the whole fix, in Rust.** Verification and set-ID demotion belong to
+  the new filesystem. **Blocked on a production caller for SDEF**, verified
+  rather than assumed:
+  - the kernel already *receives* the bytes —
+    `host_fetch_deferred(kind, id, offset, dest)` serves a URL-backed deferred
+    file by inode, so the seam exists;
+  - it cannot learn the expected digest, because `KLZY` deliberately excludes
+    integrity (`crates/runtime-core/src/klzy.rs` says so outright) and adding
+    it means changing `VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared` — ABI
+    surface, snapshot regeneration — **for a section V5 retires anyway**;
+  - `crates/runtime-core/src/sffs_deferred.rs` is the intended home and already
+    names *"integrity digest"* as part of the opaque payload it carries. **It
+    has no production caller.** Giving it one is V5, which lane Y gates.
+
+  **So lane S resumes behind V5, which resumes behind lane Y.**
 
 ## Acceptance evidence
 
@@ -1072,6 +1171,11 @@ the setuid bit is not honoured on unverified bytes.
 stream of the correct length is refused. The second half matters: a digest
 that is recorded and never checked is a guard that cannot fail (H-2), and
 length already passes today.
+
+**And the gate itself has to move.** As written it greps the emitter for
+`lazy_sha256=`, which measures emission rather than verification — see the
+handoff. A lane cannot be closed by a measurement its fix does not have to
+satisfy.
 
 ## Known hazards
 
