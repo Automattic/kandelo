@@ -608,6 +608,8 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     gid: u32,
     ino: u64,
     archive_bytes: u64,
+    archive_payload_ptr: usize,
+    archive_payload_len: usize,
 ) -> i32 {
     // The archive's length is declared HERE rather than through an entry point
     // of its own. A member is useless without it -- fetching one member means
@@ -616,7 +618,21 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     // archive has no length, without costing the host another export to
     // implement. Re-declaring the same length is a no-op; a different one is
     // EINVAL, because one archive with two lengths has no correct reading.
-    if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {
+    //
+    // `archive_payload` is the archive's own fetch description -- URL,
+    // transport, integrity digest -- carried opaquely like a file's. It rides
+    // here for the same reason the length does. Empty is allowed: whether a
+    // producer MUST supply a digest is lane S's question, and answering it in
+    // this ABI would decide it by accident.
+    let archive_payload: &[u8] = if archive_payload_len == 0 {
+        b""
+    } else {
+        if archive_payload_ptr == 0 {
+            return err(Errno::EINVAL);
+        }
+        unsafe { slice(archive_payload_ptr, archive_payload_len) }
+    };
+    if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {
         return err(e);
     }
     ok_or_errno(rootfs::insert_lazy_file(
@@ -1194,7 +1210,7 @@ mod tests {
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0)
         });
         assert_eq!(rc, 0);
 

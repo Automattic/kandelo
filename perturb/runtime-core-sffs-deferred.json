@@ -82,22 +82,22 @@
     },
     {
       "name": "decoder accepts archive id zero",
-      "scope": "    for index in 0..archive_count as usize {",
-      "scope_end": "\n    }\n",
+      "scope": "    let mut at = HEADER_SIZE as usize;\n    for _ in 0..archive_count {",
+      "scope_end": "\n        at = end;\n    }\n",
       "find": "        if archive_id == 0 {\n            return Err(Errno::EINVAL);\n        }",
       "replace": ""
     },
     {
       "name": "decoder lets archive ids repeat or descend",
-      "scope": "    for index in 0..archive_count as usize {",
-      "scope_end": "\n    }\n",
+      "scope": "    let mut at = HEADER_SIZE as usize;\n    for _ in 0..archive_count {",
+      "scope_end": "\n        at = end;\n    }\n",
       "find": "            if archive_id <= previous {\n                return Err(Errno::EINVAL);\n            }",
       "replace": ""
     },
     {
       "name": "decoder trusts the archive count without bounding it",
       "scope": "    let archive_count = r_u32(bytes, 12)?;",
-      "scope_end": "\n    let table_len",
+      "scope_end": "\n    let mut archives",
       "find": "    if archive_count > MAX_ARCHIVES {\n        return Err(Errno::EINVAL);\n    }",
       "replace": ""
     },
@@ -109,11 +109,46 @@
       "replace": "    let mut offset = HEADER_SIZE as usize;"
     },
     {
-      "name": "the version stays at 2, so a v2 reader misreads the archive count",
+      "name": "the archive descriptor is dropped on the way out",
+      "scope": "    for archive in archives {\n        let payload_len = archive.payload.len() as u32;",
+      "scope_end": "\n    }\n",
+      "find": "        out.extend_from_slice(&archive.payload);",
+      "replace": ""
+    },
+    {
+      "name": "the archive table is walked with a fixed stride again",
+      "scope": "    let mut at = HEADER_SIZE as usize;\n    for _ in 0..archive_count {",
+      "scope_end": "\n        at = end;\n    }\n",
+      "find": "        at = end;",
+      "replace": "        at += ARCHIVE_ENTRY_SIZE as usize;"
+    },
+    {
+      "name": "the archive descriptor cap is dropped in the encoder",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        if archive.payload.len() > MAX_PAYLOAD_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "the archive descriptor cap is dropped in the decoder",
+      "scope": "    let mut at = HEADER_SIZE as usize;\n    for _ in 0..archive_count {",
+      "scope_end": "\n        at = end;\n    }\n",
+      "find": "        let payload_len = r_u32(bytes, at + 16)?;\n        if payload_len > MAX_PAYLOAD_LEN {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": "        let payload_len = r_u32(bytes, at + 16)?;"
+    },
+    {
+      "name": "archive entry padding is not canonical",
+      "scope": "    let mut at = HEADER_SIZE as usize;\n    for _ in 0..archive_count {",
+      "scope_end": "\n        at = end;\n    }\n",
+      "find": "        if entry_size < unpadded || entry_size - unpadded >= 4 {",
+      "replace": "        if entry_size < unpadded {"
+    },
+    {
+      "name": "the version stays at 3, so a v3 reader misreads the archive table",
       "scope": "pub const VERSION",
       "scope_end": "\n",
-      "find": "pub const VERSION: u16 = 3;",
-      "replace": "pub const VERSION: u16 = 2;"
+      "find": "pub const VERSION: u16 = 4;",
+      "replace": "pub const VERSION: u16 = 3;"
     }
   ]
 }

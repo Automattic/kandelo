@@ -56,6 +56,7 @@ interface ModuleExports {
     p: number, pl: number, archiveId: number, s: number, sl: number,
     size: bigint, mode: number, uid: number, gid: number, ino: bigint,
     archiveBytes: bigint,
+    archivePayload: number, archivePayloadLen: number,
   ): number;
   sm_set_image_metadata(p: number, pl: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
@@ -402,18 +403,29 @@ export class SffsImageFs {
     gid?: number;
     ino: number;
     archiveBytes: number;
+    /**
+     * The archive's own fetch description — URL, transport, integrity digest.
+     * Carried opaquely and never parsed. Optional here because whether a
+     * producer must supply one is a policy question this bridge does not
+     * answer; an image whose archives carry none is a real state, and a
+     * visible one.
+     */
+    archiveDescriptor?: Uint8Array;
   }): void {
+    const descriptor = args.archiveDescriptor ?? new Uint8Array(0);
     this.withPath(args.path, (p, pl) =>
       this.withPath(args.sourcePath, (s, sl) =>
-        this.check(
-          this.exports.sm_register_lazy_file(
-            p, pl, args.archiveId, s, sl,
-            BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
-            BigInt(args.archiveBytes),
-          ),
-          "registerLazyFile",
-          args.path,
-        )));
+        this.withBytes(descriptor, (d, dl) =>
+          this.check(
+            this.exports.sm_register_lazy_file(
+              p, pl, args.archiveId, s, sl,
+              BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
+              BigInt(args.archiveBytes),
+              dl === 0 ? 0 : d, dl,
+            ),
+            "registerLazyFile",
+            args.path,
+          ))));
   }
 
   /**

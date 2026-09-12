@@ -331,6 +331,11 @@ struct ImageGeometry {
 /// archive), `directory` holds the parsed central directory, and `members`
 /// caches each member's inflated bytes on first read of that member.
 struct ArchiveEntry {
+    /// The archive's own fetch description, retained from the image that
+    /// declared it so an export can re-emit it. Empty when the image carried
+    /// none — `KLZY` has no field for one, so an image described that way
+    /// always yields empty here.
+    payload: Vec<u8>,
     size: u64,
     raw: Option<Vec<u8>>,
     directory: Option<Vec<crate::zip::ZipEntry>>,
@@ -1270,17 +1275,34 @@ pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
 /// one would decide a fetch bound by declaration order. An already-populated
 /// entry keeps its fetched bytes — this declares a length, it does not reset an
 /// archive.
-pub fn declare_archive(archive_id: u32, bytes: u64) -> Result<(), Errno> {
+pub fn declare_archive(archive_id: u32, bytes: u64, payload: &[u8]) -> Result<(), Errno> {
     if archive_id == 0 {
         return Err(Errno::EINVAL);
     }
-    ROOTFS.with(|state| match state.archives.get(&archive_id) {
-        Some(existing) if existing.size == bytes => Ok(()),
+    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
+        Some(existing) if existing.size == bytes => {
+            // The length agrees, so this is a re-declaration. A payload that
+            // arrives with it is kept, so a caller that declares the archive
+            // once per member need not carry the descriptor on every call —
+            // but a DIFFERENT non-empty payload is a conflict for the same
+            // reason a different length is.
+            if !payload.is_empty() {
+                if !existing.payload.is_empty() && existing.payload != payload {
+                    return Err(Errno::EINVAL);
+                }
+                existing.payload = payload.to_vec();
+            }
+            Ok(())
+        }
         Some(_) => Err(Errno::EINVAL),
         None => {
             state.archives.insert(
                 archive_id,
                 ArchiveEntry {
+                    payload: payload.to_vec(),
                     size: bytes,
                     raw: None,
                     directory: None,
@@ -1437,6 +1459,8 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
                 state.archives.insert(
                     archive_id,
                     ArchiveEntry {
+                        // The v3 manifest has no field for one.
+                        payload: Vec::new(),
                         size: archive_size,
                         raw: None,
                         directory: None,
@@ -1736,7 +1760,7 @@ where
     // the older one keeps this change from altering how any existing image
     // loads.
     let mut lazy_files: BTreeMap<u32, DeferredEntry> = BTreeMap::new();
-    let mut lazy_archives: Vec<(u32, u64)> = Vec::new();
+    let mut lazy_archives: Vec<(u32, u64, Vec<u8>)> = Vec::new();
     match klzy_span {
         Some((offset, len)) => {
             let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
@@ -1761,7 +1785,11 @@ where
                 );
             }
             for archive in &linkage.archives {
-                lazy_archives.push((archive.archive_id, archive.archive_bytes));
+                // KLZY has no field for an archive's fetch description, so an
+                // image described that way carries none. Exporting it would
+                // therefore emit an archive with no descriptor -- honest, and
+                // visible, rather than invented.
+                lazy_archives.push((archive.archive_id, archive.archive_bytes, Vec::new()));
             }
         }
         None => {
@@ -1780,7 +1808,11 @@ where
                 );
             }
             for archive in &section.archives {
-                lazy_archives.push((archive.archive_id, archive.bytes));
+                lazy_archives.push((
+                    archive.archive_id,
+                    archive.bytes,
+                    archive.payload.clone(),
+                ));
             }
         }
     }
@@ -1919,10 +1951,11 @@ where
     // Archive table: every lazy archive the image declares, with the total byte
     // length `ensure_archive_member` needs to bound its whole-archive fetch.
     ROOTFS.with(|state| {
-        for &(archive_id, archive_bytes) in &lazy_archives {
+        for (archive_id, archive_bytes, payload) in lazy_archives.drain(..) {
             state.archives.insert(
                 archive_id,
                 ArchiveEntry {
+                    payload,
                     size: archive_bytes,
                     raw: None,
                     directory: None,
@@ -3797,10 +3830,15 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 // behaviour we want, but the export should not have built an
                 // image it cannot finish.
                 if !declared_archives.contains(&archive_id) {
-                    let bytes = ROOTFS
-                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))
+                    let (bytes, payload) = ROOTFS
+                        .with(|state| {
+                            state
+                                .archives
+                                .get(&archive_id)
+                                .map(|entry| (entry.size, entry.payload.clone()))
+                        })
                         .ok_or(Errno::EIO)?;
-                    writer.declare_lazy_archive(archive_id, bytes)?;
+                    writer.declare_lazy_archive(archive_id, bytes, &payload)?;
                     declared_archives.insert(archive_id);
                 }
                 // The payload is empty on purpose. It is the HOST's fetch
@@ -4170,6 +4208,7 @@ mod tests {
             state.archives.insert(
                 archive_id,
                 ArchiveEntry {
+                    payload: Vec::new(),
                     size,
                     raw: None,
                     directory: None,
@@ -6012,7 +6051,8 @@ mod tests {
         ))
         .expect("mkfs");
         let root = w.root();
-        w.declare_lazy_archive(3, 8_000_000).expect("declare");
+        w.declare_lazy_archive(3, 8_000_000, b"sha256:feed")
+            .expect("declare");
         w.create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", url)
             .expect("url-backed");
         w.create_deferred_file(root, b"php", 0o755, 4_242, 3, b"usr/bin/php", b"")
@@ -6043,7 +6083,7 @@ mod tests {
         // breaks this.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
         mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
-        declare_archive(3, 8_000_000).expect("declare archive");
+        declare_archive(3, 8_000_000, b"sha256:abc").expect("declare archive");
         insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2)
             .expect("archive member");
         write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
@@ -6066,6 +6106,15 @@ mod tests {
             (3, b"usr/bin/php".to_vec()),
         );
         assert_eq!(archive_size(3), Some(8_000_000));
+
+        // Gap 10: the archive's own fetch description survives too. Without it
+        // the round trip would preserve everything EXCEPT the integrity data
+        // every production image's archives carry -- a loss that shows up only
+        // when something is fetched.
+        let carried = ROOTFS.with(|state| {
+            state.archives.get(&3).map(|entry| entry.payload.clone())
+        });
+        assert_eq!(carried.as_deref(), Some(&b"sha256:abc"[..]));
 
         // And the ordinary file is still ordinary -- not swept up as deferred.
         assert_eq!(lstat(b"/etc-ish").expect("stat").st_size, 14);
@@ -6096,6 +6145,11 @@ mod tests {
             (3, b"usr/bin/php".to_vec()),
         );
         assert_eq!(archive_size(3), Some(8_000_000));
+        // And its descriptor, which KLZY has no field for and SDEF does.
+        assert_eq!(
+            ROOTFS.with(|state| state.archives.get(&3).map(|e| e.payload.clone())),
+            Some(b"sha256:feed".to_vec()),
+        );
     }
 
     #[test]
@@ -6259,7 +6313,7 @@ mod tests {
         // Declaring the length makes the same tree exportable, so the refusal
         // above is the missing length and not something else about the tree.
         reset_image_export();
-        declare_archive(3, 8_000_000).expect("declare");
+        declare_archive(3, 8_000_000, b"").expect("declare");
         let exported = drain_export(8192, &mut no_bytes());
         let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
         assert_eq!(

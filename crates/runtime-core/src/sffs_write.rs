@@ -1066,8 +1066,20 @@ impl SffsWriter {
     /// Declaring the same id twice is an error rather than a silent overwrite:
     /// two lengths for one archive is a writer bug, and the reader would have
     /// no way to tell which was meant.
-    pub fn declare_lazy_archive(&mut self, archive_id: u32, bytes: u64) -> Result<(), Errno> {
+    /// `payload` is the archive's own fetch description — URL, transport,
+    /// integrity digest — carried opaquely, exactly as a deferred file's is.
+    /// Pass `b""` when the caller has none; whether it SHOULD have one is a
+    /// producer policy question this layer does not answer.
+    pub fn declare_lazy_archive(
+        &mut self,
+        archive_id: u32,
+        bytes: u64,
+        payload: &[u8],
+    ) -> Result<(), Errno> {
         if archive_id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
             return Err(Errno::EINVAL);
         }
         if self
@@ -1078,7 +1090,11 @@ impl SffsWriter {
             return Err(Errno::EINVAL);
         }
         self.deferred_archives
-            .push(crate::sffs_deferred::DeferredArchive { archive_id, bytes });
+            .push(crate::sffs_deferred::DeferredArchive {
+                archive_id,
+                bytes,
+                payload: payload.to_vec(),
+            });
         Ok(())
     }
 
@@ -2337,7 +2353,7 @@ mod tests {
         // record that says a file is deferred but not where its bytes are.
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
-        w.declare_lazy_archive(7, 8_000_000).expect("declare archive 7");
+        w.declare_lazy_archive(7, 8_000_000, b"").expect("declare archive 7");
         let deferred = w
             .create_deferred_file(root, b"php", 0o755, 99_999, 7, b"usr/bin/php", b"")
             .expect("deferred");
@@ -2389,10 +2405,10 @@ mod tests {
     #[test]
     fn one_archive_cannot_be_declared_with_two_lengths() {
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
-        w.declare_lazy_archive(7, 100).expect("first declaration");
-        assert_eq!(w.declare_lazy_archive(7, 200), Err(Errno::EINVAL));
+        w.declare_lazy_archive(7, 100, b"").expect("first declaration");
+        assert_eq!(w.declare_lazy_archive(7, 200, b""), Err(Errno::EINVAL));
         // And an archive id of zero is the "no archive" sentinel, not an id.
-        assert_eq!(w.declare_lazy_archive(0, 100), Err(Errno::EINVAL));
+        assert_eq!(w.declare_lazy_archive(0, 100, b""), Err(Errno::EINVAL));
     }
 
     #[test]
