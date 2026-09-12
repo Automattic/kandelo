@@ -5982,6 +5982,26 @@ mod tests {
     }
 
     /// Stream a whole export out through the public cursor, in `chunk`-sized
+    /// A drain loop stops when the export returns 0, which is correct until a
+    /// defect stops it returning 0 — and a mutation trial did exactly that in
+    /// the sibling module, making the export ignore its offset and restart
+    /// forever. The test span growing a buffer instead of failing, and the
+    /// perturbation harness waited eighteen minutes on it (H-11).
+    ///
+    /// The bound is far above any image these tests build, so it can only be
+    /// hit by non-termination, and it names the cause rather than just failing.
+    /// Applied here because the same trial class exists in
+    /// `perturb/runtime-core-rootfs-export.json`: no trial hangs these today,
+    /// and a test that CAN hang eventually will be.
+    fn assert_not_spinning(drained: usize) {
+        const SANE_LIMIT: usize = 4 * 1024 * 1024;
+        assert!(
+            drained <= SANE_LIMIT,
+            "the export is not advancing: {drained} bytes drained from a tiny image, \
+             so some chunk is being served again instead of the next one",
+        );
+    }
+
     /// reads, exactly as the host will.
     fn drain_export<F>(chunk: usize, byte_source: &mut F) -> Vec<u8>
     where
@@ -5997,6 +6017,7 @@ mod tests {
             }
             out.extend_from_slice(&buf[..n]);
             offset += n as i64;
+            assert_not_spinning(out.len());
         }
         out
     }
@@ -6017,6 +6038,7 @@ mod tests {
             }
             out.extend_from_slice(&buf[..n]);
             offset += n as i64;
+            assert_not_spinning(out.len());
         }
         out
     }
