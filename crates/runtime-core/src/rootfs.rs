@@ -4351,10 +4351,23 @@ mod tests {
         chown(b"/usr/bin/hello", 1, 1, true).unwrap();
         assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777, 0o0755);
 
-        symlink(b"../lib/x", b"/usr/bin/newlink", 0, 0).unwrap();
+        symlink(b"../lib/x", b"/usr/bin/newlink", 7, 8).unwrap();
         let mut buf = [0u8; 32];
         let n = readlink(b"/usr/bin/newlink", &mut buf).unwrap();
         assert_eq!(&buf[..n], b"../lib/x");
+        // A symlink's OWN metadata, which nothing asserted before: mutation
+        // testing showed `symlink` could hand out any mode and the whole suite
+        // stayed green. Modes were checked for directories and files and never
+        // for a symlink. It matters beyond tidiness -- VFS image builders
+        // create symlinks in bulk (the shipped shell image carries thousands),
+        // so an unasserted mode is a silent difference in a published image.
+        let st = lstat(b"/usr/bin/newlink").unwrap();
+        assert_eq!(
+            st.st_mode & 0o7777,
+            0o777,
+            "a symlink is lrwxrwxrwx; its mode is not the creator's umask business",
+        );
+        assert_eq!((st.st_uid, st.st_gid), (7, 8), "symlink ownership comes from the caller");
         assert_eq!(symlink(b"y", b"/usr/bin/newlink", 0, 0).unwrap_err(), Errno::EEXIST);
     }
 
