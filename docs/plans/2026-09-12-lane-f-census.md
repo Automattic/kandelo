@@ -715,3 +715,96 @@ shrinking, not as new fork TypeScript.
 
 **This is a proposal, not a change.** A target is a campaign goal; the number in
 `docs/surface-budget.json` is unchanged pending the maintainer's call.
+
+## §14 — `dylink.0` is not the first section, in three of four side modules
+
+Found while writing stage 2's first module. `parseDylinkSection`
+(`host/src/dylink-artifact.ts`) returns **null** for `fork_module32.wasm`,
+because the WebAssembly dynamic-linking convention requires `dylink.0` to be
+the module's first section and the parser enforces that.
+
+Measured across the built PIC side modules:
+
+| artifact | `dylink.0` position |
+|---|---|
+| `wasi_module32.wasm` | 0 of 10 — first, conformant |
+| `fork_module32.wasm` | **13 of 14 — last** |
+| `dylink_module32.wasm` | **absent** |
+| `wasm_artifact_module32.wasm` | **absent** |
+
+**It is not the injector.** The pre-injection
+`target/wasm32-unknown-unknown/release/fork_module.wasm` already carries it at
+position 13, so `fork-module-inject`'s walrus round trip preserves position
+faithfully; the placement comes from the link step. Neither
+`crates/fork-module/build-wasm.sh` nor the injector writes the section.
+
+**What it costs today:** a host cannot read the fork-module's `memorySize` /
+`tableSize` through the repo's own parser, so PIC placement sizing has to come
+from somewhere else. It also made a new test pass for the WRONG reason — the
+withheld-capability assertion threw on the missing section before reaching
+instantiation, which is H-2 exactly (a guard that cannot fail is not a guard).
+That test no longer depends on the section.
+
+**Not diagnosed here:** whether the two modules with no `dylink.0` at all are
+built `--pie` and should have one, and whether anything in the loader path
+silently tolerates its absence. That is a dynamic-linking question rather than
+a fork one, and it is recorded so it is not lost, not claimed as understood.
+
+## §15 — Stage 2, first module: measured at 65 code lines
+
+`host/src/fork-module-host-capabilities.ts` implements the host FUNCTION
+obligations in one place shared by both JS hosts, with the reason each one
+cannot move into Wasm written beside it.
+
+**Measured: 65 code lines** (`forkTypeScript`'s own measure). Against §13's
+estimate of ~250 for the whole module-facing half, that leaves ~185 for
+`fork-module-instance` — PIC placement, region reservation and table wiring —
+which is consistent with the native host spending 125 there. The estimate is
+tracking.
+
+### Three corrections the work forced
+
+**It owns two imports, not five.** The first draft put the three
+reference-typed tables here. That was wrong: `fork-module-instance` owns the
+region reservation and already exposes them to `worker-main.ts` as
+`functionCatalog` / `driveTable` / `staticRootCatalog`, so putting them here
+would have split table ownership across two modules for no reason. The split
+is: functions here, tables with the instance that reserves the region.
+
+**The static-root catalog is an `anyref` table, not `externref`.** The GC
+(`any`) and `extern` hierarchies are disjoint roots, so the wrong one is
+rejected at instantiation with "imported table does not match the expected
+type". The first draft asserted `externref` in a comment. The instantiation
+test caught it.
+
+**`resolve_externref` must THROW, not return null.** The first draft returned a
+null sentinel for an unknown handle. That is wrong, and the repository already
+knew it: the pre-existing M2 test
+(`host/test/fork-module-host-capabilities.test.ts`) pins exactly this —
+"propagates a truthful RangeError for an invalid handle instead of a soft
+failure sentinel". A sentinel would let a replay continue with a reference it
+never restored. The same test pins `resolvedCount` as proof-of-use, which the
+draft also lacked. Both are now implemented and asserted.
+
+**How the last one was found is worth recording.** The new test file was
+created with a shell redirect over a path that was already a tracked, 67-line
+test — without reading it first. It was recovered with `git checkout` and is
+untouched; the new assertions live in
+`host/test/fork-module-host-obligation.test.ts` instead. Had it not been
+recovered, the RangeError and `resolvedCount` decisions would have been lost
+silently along with the file that pinned them. Look at the target before
+writing over it.
+
+### What the completeness proof is
+
+Instantiating the real artifact with these capabilities, the three tables and
+PIC placement, and nothing else. A missing import is a `LinkError` naming it,
+so the test cannot pass while under-serving the module. It loads
+`local-binaries/fork_module32.wasm` by explicit path, not through the resolver,
+for the H-9 reason.
+
+**BLOCKED ON A CEILING.** `forkTypeScript` has ceiling 0, because this lane
+moved all fork TypeScript to the attic. The measure now reads 65. The growth is
+the work the maintainer asked for, but raising a ceiling is the one thing the
+lane brief forbids outright, so the file is written, tested and NOT committed
+pending that call.
