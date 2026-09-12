@@ -2763,10 +2763,41 @@ import the TypeScript filesystem**.
 > integrity-checking code**. The answer is not to fix them in place. It is that
 > the code they are in is a port target.
 >
-> **Not scheduled here.** Sizing this as an increment, and deciding whether it
-> belongs to lane Y or to a lane of its own, is the maintainer's call — it is
-> ~2,900 lines of parsing and verification that this lane's charter currently
-> says stays in TypeScript.
+> **DECIDED BY THE MAINTAINER 2026-09-12: they become Rust tools.** *"If they
+> require an ability to parse the VFS images, they will have to use rust now, so
+> maybe they should just be rust-based tools."*
+>
+> **What they actually are**, since "parse/verify density" said how they behave
+> and not what they are for:
+>
+> * **`vfs-product-builder-contract.ts`** (952 lines) — the contract for a
+>   REPRODUCIBLE product build. Product identity, target ABI, exact source
+>   pinning by git SHA and sha256, input descriptors, and the canonical
+>   published URL form
+>   (`.../products/<id>/sha256-<hash>/<name>-<n>.vfs.zst?sha256=…&bytes=…`).
+> * **`staged-product-inputs.ts`** (1,975 lines) — the executor.
+>   `buildStagedPlatformRootfs`, `buildStagedBrowserMainShell`,
+>   `buildStagedSdkOrTestProduct` and siblings resolve declared inputs, verify
+>   each against its digest, extract tar/zip archives into the image, and assert
+>   an exact input inventory. Eight `build-*.sh` scripts call them.
+>
+> Together they are **the supply-chain layer of VFS image production**: pin by
+> digest, verify, extract, publish content-addressed. That is a stronger reason
+> to move them than "they parse images" — **they are the integrity boundary for
+> image production**, the same family as lane S's unverified setuid bytes, and
+> integrity checks written in the layer being deleted are checks with a
+> shelf life.
+>
+> **It also moves lane Y's own gate.** Both files import `MemoryFileSystem` as a
+> VALUE, and `staged-product-inputs.ts` is one of the seven middle-of-graph
+> files that made the type-only repoint fail as a connected component. Porting
+> them removes importers directly AND unblocks the repoint, rather than trading
+> one for the other.
+>
+> **Shape:** an `xtask` verb, per the standing preference that new tools default
+> to Rust with a thin shell wrapper. The `build-*.sh` scripts keep invoking it;
+> what moves is the parsing, verification and extraction, not the decision about
+> which products exist.
 
 **Not a line-reduction lane.** The 13,502 lines are overwhelmingly *recipes*:
 which packages go in the LAMP image, how WordPress is preinstalled, what dinit
