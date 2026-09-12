@@ -1,5 +1,6 @@
 import type { DemoGuideConfig, DemoIngestConfig } from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
+import { SESSION_SYSCALL_NAMES } from "./generated/syscall-names";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -2513,52 +2514,26 @@ function humanSize(n: number): string {
 }
 
 /**
- * Resolve a raw syscall number to a printable name. Falls through to
- * `syscall_<nr>` for any number not in the table — the table is hand-
- * maintained against `crates/shared/src/lib.rs:Syscall`, so a brand-new
- * syscall would show up as `syscall_NNN` until the name is added.
+ * Resolve a raw syscall number to a printable name.
+ *
+ * The table is GENERATED from `crates/shared` into
+ * `./generated/syscall-names.ts` by `cargo xtask dump-abi`. It replaced a
+ * hand-maintained `SYSCALL_NAMES_LOCAL` that had 137 entries against the
+ * generator's 233: **96 syscalls rendered here as `syscall_NNN`**, and two
+ * names were simply wrong (129 said `statfs` where the ABI says `statfs64`,
+ * 130 `fstatfs` vs `fstatfs64`).
+ *
+ * The old comment justified the copy by saying importing `kernel-worker`
+ * would drag Node-only imports into UI bundles. That was true, and the fix is
+ * not to import from `host/` — kandelo-session deliberately does not — but to
+ * generate the table here too. `dump-abi` already writes ten such files.
+ *
+ * Falls through to `syscall_<nr>` for a number the ABI does not name, which
+ * now means genuinely unknown rather than "nobody added it yet".
  */
 function syscallNumberName(nr: number): string {
-  return SYSCALL_NAMES_LOCAL[nr] ?? `syscall_${nr}`;
+  return SESSION_SYSCALL_NAMES[nr] ?? `syscall_${nr}`;
 }
-
-// Hardcoded shim of the most common syscalls. The authoritative table
-// lives in host/src/kernel-worker.ts:SYSCALL_NAMES. We duplicate the
-// common subset here to keep kandelo-session from importing the heavyweight
-// kernel-worker module (which transitively pulls in Node-only imports).
-const SYSCALL_NAMES_LOCAL: Record<number, string> = {
-  1: "open", 2: "close", 3: "read", 4: "write", 5: "lseek", 6: "fstat",
-  7: "dup", 8: "dup2", 9: "pipe", 10: "fcntl", 11: "stat", 12: "lstat",
-  13: "mkdir", 14: "rmdir", 15: "unlink", 16: "rename", 17: "link",
-  18: "symlink", 19: "readlink", 20: "chmod", 21: "chown", 22: "access",
-  23: "getcwd", 24: "chdir", 25: "opendir", 26: "readdir", 27: "closedir",
-  28: "getpid", 29: "getppid", 30: "getuid", 31: "geteuid", 32: "getgid",
-  33: "getegid", 34: "exit", 35: "kill", 36: "sigaction", 37: "sigprocmask",
-  38: "raise", 39: "alarm", 40: "clock_gettime", 41: "nanosleep",
-  42: "isatty", 43: "getenv", 44: "setenv", 45: "unsetenv",
-  46: "mmap", 47: "munmap", 48: "brk", 49: "mprotect",
-  50: "socket", 51: "bind", 52: "listen", 53: "accept", 54: "connect",
-  55: "send", 56: "recv", 57: "shutdown", 58: "getsockopt", 59: "setsockopt",
-  60: "poll", 61: "socketpair", 62: "sendto", 63: "recvfrom",
-  64: "pread", 65: "pwrite", 66: "time", 67: "gettimeofday", 68: "usleep",
-  69: "openat", 70: "tcgetattr", 71: "tcsetattr", 72: "ioctl",
-  73: "signal", 74: "umask", 75: "uname", 76: "sysconf",
-  77: "dup3", 78: "pipe2", 79: "ftruncate", 80: "fsync", 81: "writev",
-  82: "readv", 83: "getrlimit", 84: "setrlimit", 85: "truncate",
-  86: "fdatasync", 87: "fchmod", 88: "fchown", 89: "getpgrp",
-  90: "setpgid", 91: "getsid", 92: "setsid", 93: "fstatat",
-  94: "unlinkat", 95: "mkdirat", 96: "renameat", 97: "faccessat",
-  98: "fchmodat", 99: "fchownat", 100: "linkat", 101: "symlinkat",
-  102: "readlinkat", 103: "select", 104: "setuid", 105: "setgid",
-  106: "seteuid", 107: "setegid", 108: "getrusage", 109: "realpath",
-  110: "sigsuspend", 111: "pause", 112: "pathconf", 113: "fpathconf",
-  114: "getsockname", 115: "getpeername", 116: "rewinddir", 117: "telldir",
-  118: "seekdir", 122: "getdents64", 123: "clock_getres", 124: "clock_nanosleep",
-  125: "utimensat", 126: "mremap", 127: "fchdir", 128: "madvise",
-  129: "statfs", 130: "fstatfs", 131: "setresuid", 132: "getresuid",
-  133: "setresgid", 134: "getresgid", 135: "getgroups", 136: "setgroups",
-  137: "sendmsg", 138: "recvmsg", 139: "wait4", 140: "getaddrinfo",
-};
 
 // ── KernelProcessSnapshot → ProcessInfo ───────────────────────────────────
 

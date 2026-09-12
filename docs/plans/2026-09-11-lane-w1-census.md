@@ -56,6 +56,31 @@ reason:
 > importing the heavyweight kernel-worker module (which transitively pulls
 > in Node-only imports).
 
+## CORRECTION (2026-09-12, during W2)
+
+**This census's recommendation was wrong in one respect**, found while
+implementing it. The census said the copy's stated blocker "does not
+apply" because the generated table is a leaf module with no Node-only
+imports, and concluded the fix was to import it.
+
+The technical claim is true. **The architectural one is not.**
+`kandelo-session` deliberately does not depend on `host/` **at all** — it
+redefines host types structurally, with comments saying "so this file
+doesn't depend on host/'s wire types" and "so kandelo-session doesn't
+drag the concrete class into UI bundles". Importing
+`host/src/generated/abi.ts` would have crossed a boundary the codebase
+maintains on purpose, for one table.
+
+The fix landed instead as a **third option the census did not consider**:
+generate a small `SESSION_SYSCALL_NAMES` module into
+`web-libs/kandelo-session/src/generated/` as well. `dump-abi` already
+writes ten files; this is the eleventh. No `host/` dependency, no hand
+maintenance, correct data.
+
+**The lesson:** "the stated reason does not hold" is not the same as
+"there is no reason". The census checked the reason given in the comment
+and stopped there.
+
 **Two things are wrong with that.**
 
 First, `kernel-worker.ts:SYSCALL_NAMES` is not authoritative — it is

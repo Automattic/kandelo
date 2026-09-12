@@ -144,7 +144,7 @@
     },
     "sessionHandMaintainedSyscallNames": {
       "measure": "entries in SYSCALL_NAMES_LOCAL in web-libs/kandelo-session/src/kernel-host.ts",
-      "ceiling": 137,
+      "ceiling": 0,
       "slack": 0,
       "target": 0,
       "why": "Lane W, set by the W1 census. A hand-maintained syscall-name table sitting beside a generated one: ABI_SYSCALL_NAMES has 233 entries, this copy has 137. 96 syscalls render in the UI as syscall_NNN, and 2 names actively disagree (129 statfs vs statfs64, 130 fstatfs vs fstatfs64). The comment justifying the copy cites avoiding a heavyweight kernel-worker import, but the generated table lives in host/src/generated/abi.ts, a leaf module with no Node-only imports."
