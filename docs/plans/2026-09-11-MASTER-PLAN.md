@@ -195,7 +195,7 @@ lands — those are marked.
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **2–4 d** | medium-high *(R1 done)* | One shared constant and four consumers, not a resolver migration. The 4,020-line file is policy nobody duplicates. |
-| **G** ABI binding drift | **3–6 d** | medium | Nine layout modules to cover plus the bare literals behind `statx`. The generator is ours end to end. |
+| **G** ABI binding drift | **~1 d left** | high *(14/15 done)* | Blocked only on the `itimerval` decision. The rest landed: 103 constants emitted, 68 asserts, every batch perturbation-tested. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
 **Serial total is not the useful number** — these run in parallel lanes. The
@@ -1188,46 +1188,90 @@ god class while nothing improves.**
 
 # LANE G — ABI binding drift
 
-**Status: characterized. Small, and it is the mechanism behind a defect already
-found.**
+**Status: 14 of 15 modules anchored. `unguardedLayoutModules` 14 → 1.
+BLOCKED on one maintainer decision (`itimerval`, below).**
+
+## What this lane is — as corrected while doing it
+
+The lane was written as "extend `render_process_layouts_header` from 6 modules
+to 15", with a gate counting modules the header *delivers*. **That gate could
+have gone to 0 while guarding nothing**, because a `#define` hands C a number
+and does not check that C's own struct agrees.
+
+The real defect was subtler: `bits/stat.h` already had 8 asserts, but they
+compared musl against **hand-written literals** (`== 112`, `== 32`) while the
+same file said in prose "The complete layout MUST match
+`crates/shared/src/process_layout.rs`". Two sources agreeing by convention —
+the campaign's recurring shape.
 
 ## End state
 
-Every `process_layout` module the C side depends on reaches C through the
-generated header, and each emitted constant carries a `_Static_assert` against
-the musl definition — so a constant that drifts fails the build instead of
-producing a plausible wrong answer. The header is the delivery mechanism; the
-assert is what makes it a gate, and G1 is not done until both exist.
+Every layout module's C-side facts are asserted against the **generated**
+constants, so changing the Rust authority fails the C build. The pattern is the
+one `libc/glue/channel_syscall.c` already used for `siginfo_t`.
 
 ## The floor
 
 None. The generator, the layouts and the headers are all ours.
 
-## Increments
+**But not every module is a musl-struct mirror**, which the lane did not
+anticipate — see `itimerval` below.
 
-- **G1 — extend `render_process_layouts_header`** from the 6 modules it imports
-  (`iovec`, `msghdr`, `cmsghdr`, `multicast_group_request`, `rt_sigqueueinfo`,
-  `sigevent`) to all 15. The other 9 — `sigaltstack`, `itimerval`, `mq_attr`,
-  `statfs`, `sysinfo`, `stat`, `dev`, `statx`, `sched_param` — reach C as bare
-  literals or not at all.
-- **G2 — move the remaining bare literals into layout modules.** `statx`'s
-  offsets were numeric literals in `wasm_api.rs` with no constant anywhere.
+## What landed
+
+- **G1 — `stat`**, re-anchored from literals to macros; coverage 8 → 14 facts.
+- **G2 — `iovec`, `msghdr`, `cmsghdr`, `sigevent`** in `channel_syscall.c`.
+- **G3 — `statx`, `statfs`, `sysinfo`, `mq_attr`, `sigaltstack`,
+  `sched_param`** in a new `libc/musl-overlay/src/stat/kandelo_layout_asserts.c`,
+  which lands in `libc.a` so `build-musl.sh` verifies it.
+- **G4 — `multicast_group_request` and `dev`**, the latter via a round-trip
+  vector since it is three `const fn`s, not offsets.
+
+103 constants emitted; 68 asserts.
 
 ## Acceptance evidence
 
-`unguardedLayoutModules` reaches **0**. Demonstrated by perturbing one offset
-and watching the C side fail to compile — a static assert nobody has seen fail
-is a guard that cannot fail (H-2).
+`unguardedLayoutModules` reaches **1**, not 0 — see below.
+
+Every batch was shown to fail before being trusted (H-2), including on the
+field that motivated the lane: changing `statx::DEV_MINOR_OFFSET` produces
+`static assertion failed … stx_dev_minor … drifted from
+crates/shared/src/process_layout.rs`.
+
+## BLOCKED — a decision for the maintainer
+
+**`itimerval` cannot be anchored the way the others were, by design.** Its doc:
+wasm32 musl "deliberately translates its public 32-byte time64 `struct
+itimerval` to the kernel's historical four-`long` time32 record". Its constants
+are `*_INDEX` wire slots, not struct offsets, so
+`sizeof(struct itimerval) == ..._WASM32_SIZE` is **false on purpose**.
+
+Driving the gate to 0 by writing an assert that happens to pass would be worse
+than leaving it at 1. Two honest options:
+
+1. **A different guard** — assert the wire record's shape at the site that
+   performs the translation, rather than against musl's public struct.
+2. **A recorded exemption** with the reason, and the lane's target becomes 1.
 
 ## Known hazards
 
-- **The snapshot gate does not cover this and will report green.** `xtask
-  dump-abi` captures syscall numbers, kernel exports and generated constants —
-  not struct offsets. This is the documented "necessary but not sufficient"
-  case, and reading a green snapshot as coverage is how the gap survived.
-- **`statx` is the proven instance**: `stx_dev_minor` was never written and the
-  "major" was the low 32 bits rather than the major half, so even a small
-  device number reassembled wrongly. Nothing objected.
+- **Three measurement errors in this lane were found by exercising guards, not
+  reading them**: the gate counted delivery; a retracted claim that no asserts
+  existed (`bits/stat.h` had 8, missed because they use `__builtin_offsetof`);
+  and a `dev` test vector so sparse that the mask perturbation it was meant to
+  catch produced an identical value.
+- **`sched_param` is only partially covered.** Six sporadic-server offsets live
+  inside musl's `__reserved2` with no portable member name. The module counts as
+  anchored while those six are unchecked, and the assert file says so.
+- **`channel_syscall.c` is not in `libc.a`.** It is compiled per-program, so a
+  clean `build-musl.sh` does not exercise its asserts — including the
+  pre-existing `siginfo_t` ones.
+- **The compile reads the SYSROOT header, not the overlay.** After `dump-abi`,
+  `scripts/build-musl.sh` must run before any assert test means anything. One
+  perturbation test was invalid for exactly this reason.
+- **The ABI snapshot builder (`process_native_layouts`) still records only the
+  original six modules**, so the committed drift-detection artifact has the same
+  hole the header had. Not addressed here.
 
 ---
 
