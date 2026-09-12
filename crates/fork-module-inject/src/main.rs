@@ -89,6 +89,9 @@ const DRIVE_BUMP_HELPER_EXPORT: &str = "fm_drive_bump";
 /// the guest's import name/element type exactly.
 const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
 
+/// The injected anyref-table growth primitive the Rust side calls.
+const TRANSIT_GROW_EXPORT: &str = "fm_transit_grow";
+
 /// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
 /// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
 /// The guest's own `__wpk_fork_static_root_catalog` is a harvest EXPORT cleared
@@ -912,6 +915,7 @@ fn main() -> Result<()> {
     inject(&mut module).context("injecting __wpk_fork_ref_decode_funcref")?;
     inject_decode_externref(&mut module).context("injecting __wpk_fork_ref_decode_externref")?;
     inject_drive_execute(&mut module).context("injecting fm_drive_execute")?;
+    inject_transit_grow(&mut module).context("injecting fm_transit_grow")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     std::fs::write(&output, &out_bytes).with_context(|| format!("writing {output}"))?;
@@ -922,6 +926,99 @@ fn main() -> Result<()> {
          {DRIVE_TABLE_IMPORT}, {STATIC_ROOT_CATALOG_IMPORT}, {RESOLVE_EXTERNREF_IMPORT}}})",
         out_bytes.len()
     );
+    Ok(())
+}
+
+/// Inject `fm_transit_grow(needed) -> i32`: ensure the module-owned
+/// `(ref null any)` GC transit table holds at least `needed` slots, and return
+/// its size afterwards (or `-1` if it could not be grown).
+///
+/// # Why this cannot be Rust
+///
+/// `table.size` and `table.grow` are the instructions, and Rust/LLVM emits
+/// neither — and `table.grow` on an `anyref` table additionally needs a
+/// `ref.null any` init value Rust has no type for. The module OWNS this table
+/// (`inject_drive_execute` defines and exports it), so growing it is its own
+/// job, not the host's.
+///
+/// # Why it is needed
+///
+/// `fork-instrument`'s GC codec publishes a captured value at `recipe + 1`:
+///
+/// ```wat
+/// (i32.const 0) (call $claim)                       ;; -> recipe
+/// (table.set $transit (i32.add (local.get $recipe) (i32.const 1)) (local.get $value))
+/// ```
+///
+/// so `claim` must leave room for `recipe + 1` BEFORE it returns — the
+/// generator states it: "claim grows the process-owned transit table through
+/// recipe+1 before returning". Without this primitive the guest's very next
+/// instruction traps on an out-of-bounds `table.set`.
+///
+/// ```wat
+/// (func (export "fm_transit_grow") (param $needed i32) (result i32)
+///   (if (i32.gt_s (local.get $needed) (table.size $transit))
+///     (then
+///       (if (i32.lt_s (table.grow $transit (ref.null any)
+///                       (i32.sub (local.get $needed) (table.size $transit)))
+///                     (i32.const 0))
+///         (then (return (i32.const -1))))))
+///   (table.size $transit))
+/// ```
+fn inject_transit_grow(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == TRANSIT_GROW_EXPORT)
+    {
+        bail!("module already exports {TRANSIT_GROW_EXPORT}");
+    }
+
+    // The transit table is module-owned and exported by `inject_drive_execute`,
+    // so this pass must run after it. Resolve by export rather than by
+    // threading the id through: a missing table is a loud failure here instead
+    // of a shim that silently grows the wrong table.
+    let transit = module
+        .exports
+        .iter()
+        .find(|export| export.name == TRANSIT_TABLE_IMPORT)
+        .ok_or_else(|| anyhow!("module does not export {TRANSIT_TABLE_IMPORT}"))?;
+    let transit_table = match transit.item {
+        ExportItem::Table(id) => id,
+        _ => bail!("{TRANSIT_TABLE_IMPORT} export is not a table"),
+    };
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    let needed = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(needed)
+            .table_size(transit_table)
+            .binop(BinaryOp::I32GtS)
+            .if_else(
+                None,
+                |grow| {
+                    grow.ref_null(RefType::ANYREF)
+                        .local_get(needed)
+                        .table_size(transit_table)
+                        .binop(BinaryOp::I32Sub)
+                        .table_grow(transit_table)
+                        .i32_const(0)
+                        .binop(BinaryOp::I32LtS)
+                        .if_else(
+                            None,
+                            |failed| {
+                                failed.i32_const(-1).return_();
+                            },
+                            |_ok| {},
+                        );
+                },
+                |_already| {},
+            );
+        body.table_size(transit_table);
+    }
+    let shim = builder.finish(vec![needed], &mut module.funcs);
+    module.exports.add(TRANSIT_GROW_EXPORT, shim);
     Ok(())
 }
 

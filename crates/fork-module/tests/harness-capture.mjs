@@ -96,6 +96,8 @@ for (const name of [
   "__wpk_fork_ref_vector_append",
   "__wpk_fork_ref_vector_finish",
   "__wpk_fork_ref_gc_i31",
+  "fm_transit_grow",
+  "__wpk_fork_ref_gc_transit",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
 }
@@ -412,6 +414,30 @@ x.fm_capture_begin();
     x.__wpk_fork_ref_gc_i31(-7),
     x.fm_capture_intern(K_I31, -7, 0),
     "gc_i31 shares the recipe space with the host-facing intern entry",
+  );
+}
+
+// The injected anyref-table growth primitive (`fm_transit_grow`).
+//
+// `fork-instrument`'s GC codec publishes a captured value at `recipe + 1`
+// IMMEDIATELY after `claim` returns, so claim has to leave room first -- the
+// generator says so: "claim grows the process-owned transit table through
+// recipe+1 before returning". Rust emits neither `table.size` nor `table.grow`,
+// and `table.grow` on an anyref table needs a `ref.null any` Rust has no type
+// for, so this is injected wasm.
+{
+  const transit = x.__wpk_fork_ref_gc_transit;
+  const grow = x.fm_transit_grow;
+  const before = transit.length;
+  assert.equal(grow(before + 7), before + 7, "grow returns the size it reached");
+  assert.equal(transit.length, before + 7, "the table actually grew");
+  assert.equal(grow(1), before + 7, "a smaller request returns the current size");
+  assert.equal(transit.length, before + 7, "and never shrinks the table");
+  assert.equal(grow(0), before + 7, "a zero request is a no-op, not a trap");
+  assert.equal(
+    transit.get(before + 6),
+    null,
+    "grown slots are null-initialised and readable",
   );
 }
 
