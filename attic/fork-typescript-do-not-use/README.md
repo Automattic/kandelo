@@ -1,8 +1,23 @@
 # Set aside — do NOT import, do NOT reuse
 
-These 39 files are the host-side fork implementation as it stood at commit
+These files are the host-side fork implementation as it stood at commit
 `312d27ce9`. They were moved here deliberately, and **the build is expected to
 be broken** while they sit here.
+
+**This snapshot SHRINKS, by design.** A file is deleted from it the moment its
+replacement lands, because the lane's goal is that the original implementation
+is deleted and not merely bypassed. So the set here is whatever has not been
+replaced yet, not a complete copy of `312d27ce9`, and imports between the files
+that remain may dangle. That is expected: nothing here is compiled
+(`host/tsconfig.json` includes only `src`) and nothing here is a specification.
+
+Deleted so far, with what replaced each:
+
+| file | replaced by |
+|---|---|
+| `fork-module-host-capabilities.ts` | `host/src/fork-module-host-capabilities.ts` — the two host functions, with the Wasm capability floor recorded beside each |
+| `fork-module-instance.ts` | `host/src/fork-module-instance.ts` — region reservation, PIC placement, the three reference-typed tables, the staging slab |
+| `fork-reference-wire.ts` | nothing: its one live symbol was a hand-maintained twin of `crates/shared`'s `WPK_FORK_REFERENCE_TRANSACTION_OWNER`, which the ABI generator already emits |
 
 ## Why
 
