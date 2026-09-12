@@ -406,6 +406,82 @@ pub unsafe extern "C" fn sm_read_file(
     }
 }
 
+/// List a directory's entries as a length-prefixed pack: for each entry, a
+/// little-endian `u32` name length followed by that many name bytes.
+///
+/// Returns the number of bytes written, or a negative errno. **Call it with
+/// `out_len == 0` to learn the size required**, then allocate and call again;
+/// the required size is returned as a positive count with nothing written.
+///
+/// # Why a snapshot, and not an opendir/readdir/closedir handle
+///
+/// The builders loop with `opendir`/`readdir`/`closedir`, and the bridge will
+/// still present exactly that -- but in TypeScript, over one snapshot. Keeping
+/// the handle on the TypeScript side means no directory-iterator lifetime
+/// crosses the module boundary, so a builder that throws mid-loop cannot leak
+/// one, and the module needs three fewer entry points.
+///
+/// The cost is holding a directory's names at once. Image directories are
+/// bounded in the thousands, and the alternative -- a handle whose lifetime
+/// spans arbitrary caller code -- trades a bounded allocation for an unbounded
+/// class of leak. Worth stating rather than leaving as an implicit limit.
+///
+/// Names are length-prefixed rather than delimited because a POSIX name may
+/// contain any byte except `/` and NUL, so no separator is safe.
+///
+/// # Safety
+/// Both ranges must describe readable/writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_read_dir(
+    path_ptr: usize,
+    path_len: usize,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    let path = unsafe { slice(path_ptr, path_len) };
+    let handle = match rootfs::opendir(path) {
+        Ok(handle) => handle,
+        Err(e) => return err(e),
+    };
+
+    let mut names: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut name_buf = alloc::vec![0u8; 256];
+    loop {
+        match rootfs::readdir(handle, &mut name_buf) {
+            Ok(Some((_ino, _kind, len))) => names.push(name_buf[..len].to_vec()),
+            Ok(None) => break,
+            Err(e) => {
+                rootfs::closedir(handle).ok();
+                return err(e);
+            }
+        }
+    }
+    rootfs::closedir(handle).ok();
+
+    let required: usize = names.iter().map(|n| 4 + n.len()).sum();
+    if out_len == 0 {
+        // Size query. A caller allocating from this must not assume the tree
+        // is unchanged between calls; nothing mutates it mid-build, which is
+        // why the two-call shape is safe HERE and would not be in general.
+        return required as i32;
+    }
+    if out_len < required {
+        return err(Errno::ERANGE);
+    }
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    let mut at = 0usize;
+    for name in &names {
+        out[at..at + 4].copy_from_slice(&(name.len() as u32).to_le_bytes());
+        at += 4;
+        out[at..at + name.len()].copy_from_slice(name);
+        at += name.len();
+    }
+    at as i32
+}
+
 /// # Safety
 /// `path_ptr`/`path_len` must describe a readable range.
 #[unsafe(no_mangle)]
@@ -692,6 +768,88 @@ mod tests {
             "a base file's bytes are unreachable here; returning zeroes would be a silent lie, got {rc}",
         );
         unsafe { sm_free(buf, 16) };
+    }
+
+    /// Decode the length-prefixed pack the way the bridge will.
+    fn unpack(ptr: usize, len: usize) -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
+        let mut out = alloc::vec::Vec::new();
+        let mut at = 0usize;
+        while at + 4 <= bytes.len() {
+            let n = u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+                as usize;
+            at += 4;
+            out.push(bytes[at..at + n].to_vec());
+            at += n;
+        }
+        out
+    }
+
+    #[test]
+    fn read_dir_lists_entries_and_sizes_itself() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/d", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        for name in [&b"/d/one"[..], &b"/d/two"[..], &b"/d/three"[..]] {
+            assert_eq!(
+                with_two(name, b"x", |pp, pl, cp, cl| unsafe { sm_write_file(pp, pl, 0o644, cp, cl) }),
+                0
+            );
+        }
+
+        // Size query first, exactly as the bridge will.
+        let required = with_path(b"/d", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
+        assert!(required > 0, "a size query must report the bytes needed, got {required}");
+        let expected: i32 = (4 + 3) + (4 + 3) + (4 + 5); // one, two, three
+        assert_eq!(required, expected, "4-byte prefix plus each name");
+
+        let buf = sm_alloc(required as usize);
+        let n = with_path(b"/d", |p, l| unsafe { sm_read_dir(p, l, buf, required as usize) });
+        assert_eq!(n, required);
+
+        let mut names = unpack(buf, n as usize);
+        names.sort();
+        assert_eq!(names, alloc::vec![b"one".to_vec(), b"three".to_vec(), b"two".to_vec()]);
+        unsafe { sm_free(buf, required as usize) };
+    }
+
+    /// A buffer smaller than the pack is refused, not truncated. A truncated
+    /// pack decodes as a SHORTER DIRECTORY rather than as an error, so the
+    /// caller would silently miss files -- in an image builder, that is a
+    /// missing binary nobody notices until something runs.
+    #[test]
+    fn read_dir_refuses_a_buffer_that_would_truncate() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/d", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        assert_eq!(
+            with_two(b"/d/file", b"x", |pp, pl, cp, cl| unsafe { sm_write_file(pp, pl, 0o644, cp, cl) }),
+            0
+        );
+        let required = with_path(b"/d", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
+        let buf = sm_alloc(required as usize);
+        let rc = with_path(b"/d", |p, l| unsafe {
+            sm_read_dir(p, l, buf, (required - 1) as usize)
+        });
+        assert!(rc < 0, "an undersized buffer must fail rather than truncate, got {rc}");
+        unsafe { sm_free(buf, required as usize) };
+    }
+
+    #[test]
+    fn read_dir_on_an_empty_directory_is_empty_not_an_error() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/empty", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        let required = with_path(b"/empty", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
+        assert_eq!(required, 0, "an empty directory needs no bytes, and is not a failure");
+    }
+
+    #[test]
+    fn read_dir_on_a_missing_path_is_an_error() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        let rc = with_path(b"/nope", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
+        assert!(rc < 0, "a missing directory must be an error, not an empty listing, got {rc}");
     }
 
     #[test]
