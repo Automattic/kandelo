@@ -3235,6 +3235,54 @@ measured across all four call sites — and it lives in the deferred payload the
 kernel carries without reading. Building an accessor for it would be a floor
 nobody stands on (H-1).
 
+### What the repoint actually costs, measured per file — 2026-09-12
+
+**The importer count can reach 12 of 36.** Repointing the 24 files whose
+measured method usage fits `VfsImageFilesystem` takes
+`imageBuilderFilesystemImporters` from **36 to 12**. It does not COMPILE at that
+point — the repointed files pass the interface into helpers still typed
+concretely — but the reachable floor is now a number rather than a guess.
+
+**The twelve that block it, and exactly what each needs.** Everything not in the
+interface, by file:
+
+| File | Needs |
+|---|---|
+| `vfs-image-helpers.ts` | `saveImage`, `statfs`, `symlink`, `opendir`/`readdir`/`closedir` |
+| `shell-vfs-build.ts` | `saveImage`, `setImageMetadata`, `getImageMetadata`, `statfs`, `registerLazyFile`, `rebaseToNewFileSystem`, `verifyImportedLazyAtomicGroupSeals` |
+| `package-shell-vfs-build.ts` | the same set |
+| `build-php-test-vfs-image.ts` | `getImageMetadata`, `rebaseToNewFileSystem`, `statfs`, `symlink`, `verifyImportedLazyAtomicGroupSeals` |
+| `build-source-rootfs-shell-image.ts` | `exportLazyArchiveEntries`, `readlink`, `verifyImportedLazyAtomicGroupSeals` |
+| `source-rootfs-shell-overlay.ts` | `exportLazyArchiveEntries`, `registerLazyFile` |
+| `shell-lazy-archives.ts` | `registerLazyArchiveFromEntries` |
+| `shell-rootfs-restore.ts` | `verifyImportedLazyAtomicGroupSeals` |
+| `opcache-prewarm.ts` | `saveImage` |
+| `build-perl-vfs-image.ts` | `registerLazyFile` |
+| `build-node-zip.ts` | `readlink`, `opendir`/`readdir`/`closedir` |
+| `staged-product-inputs.ts` | (the port target) |
+
+**Read by what it would take, that list is three groups, not twelve problems:**
+
+* **The bridge ALREADY has them** — `symlink`, `readlink`,
+  `opendir`/`readdir`/`closedir`, `registerLazyFile`, `setImageMetadata`. The
+  interface can declare these today and stay honest. This alone unblocks
+  `build-node-zip` and `build-perl-vfs-image`.
+* **The bridge is missing them and they are small** — `statfs`
+  (`Sffs::statfs` exists in Rust and is not exposed), `getImageMetadata`
+  (`sffs::metadata_section` exists), and `saveImage`, whose BYTES come from
+  `exportImage()` while the zstd and the file write stay host floor.
+* **Already retired by this campaign** — `rebaseToNewFileSystem`,
+  `exportLazyArchiveEntries`, `registerLazyArchiveFromEntries`,
+  `verifyImportedLazyAtomicGroupSeals`. These are host-side lazy-archive
+  producer metadata that the Rust path carries opaquely. The files using them
+  keep the concrete type until their own disposition is settled — and one of
+  them, `staged-product-inputs.ts`, is already a port target.
+
+**So the next increment is not another repoint attempt.** It is growing the
+interface to what the bridge already implements, then adding `statfs`,
+`getImageMetadata` and a `saveImage` shape to the bridge. The repoint becomes
+mechanical once the interface can honestly describe what a builder does.
+
 ### The predicate the recipes need is one, not two — and it cannot live in `memory-fs.ts`
 
 **Measured 2026-09-12, second repoint attempt.** The recipes that ask "are these
