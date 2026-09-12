@@ -3049,6 +3049,37 @@ mean those files work against the Rust writer — the object passed to them is
 still a `MemoryFileSystem` until the value-side call sites move. Low coupling is
 not migratability, and the budget number must not be read as though it were.
 
+### Taking option (b): the bridge gets the capability, the interface stays honest
+
+**Decided in-lane 2026-09-12.** Of the two options below, (b) is not a scope
+change — it is the lane's stated end state, and (a) is the shortcut that would
+move the budget number without making anything migratable. Doing (b) is doing
+the lane. The maintainer question that remains open is a different one: the
+three pre-existing type errors in builder scripts (see the typecheck config).
+
+**First capability: deferred-ness.** Two of the four recipes calling
+`getLazyEntry`/`isPathDeferred` use the result only as a boolean, one reads
+`size`, one reads inode identity. Those are real product assertions — *dinit
+must be resident before service boot*, *the login program must be eager* — and
+they were the only reason those recipes needed the IMPLEMENTATION rather than
+an interface.
+
+**It went into the stat record, not a new entry point, and that choice is the
+point.** Adding `sm_lazy_info` would have made it the module's twentieth entry
+point one increment after `sffsModuleEntryPoints` was banked at nineteen.
+Raising a ceiling you set yourself, immediately, is exactly the shape the budget
+exists to catch. The better design was available and is also more honest:
+whether a file's bytes are present is METADATA ABOUT THE FILE, which is what
+`lstat` reports — and `size` there was already the real length of a deferred
+file rather than its stub, so the record was half-answering the question.
+`sm_stat_size()` makes the record's length discoverable, so widening it costs
+the bridge nothing. **Surface stays at 19.**
+
+The fetch URL is deliberately not exposed. Nothing reads one through this path —
+measured across all four call sites — and it lives in the deferred payload the
+kernel carries without reading. Building an accessor for it would be a floor
+nobody stands on (H-1).
+
 ### The repoint is one connected component, not a file-at-a-time pass. ATTEMPTED AND REVERTED 2026-09-12.
 
 The tier table above is right about what each file NEEDS and wrong about what
