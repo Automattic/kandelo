@@ -55,6 +55,7 @@ interface ModuleExports {
   sm_register_lazy_file(
     p: number, pl: number, archiveId: number, s: number, sl: number,
     size: bigint, mode: number, uid: number, gid: number, ino: bigint,
+    archiveBytes: bigint,
   ): number;
 }
 
@@ -381,6 +382,14 @@ export class SffsImageFs {
     return [ptr, bytes.byteLength];
   }
 
+  /**
+   * Register a file whose bytes live in a lazy archive.
+   *
+   * `archiveBytes` is the archive's TOTAL length, not the member's. Fetching
+   * one member means fetching the archive, and the kernel bounds that read, so
+   * a member cannot be registered without it. Declaring the same archive twice
+   * with the same length is a no-op; a different length is an error.
+   */
   registerLazyFile(args: {
     path: string;
     archiveId: number;
@@ -390,6 +399,7 @@ export class SffsImageFs {
     uid?: number;
     gid?: number;
     ino: number;
+    archiveBytes: number;
   }): void {
     this.withPath(args.path, (p, pl) =>
       this.withPath(args.sourcePath, (s, sl) =>
@@ -397,6 +407,7 @@ export class SffsImageFs {
           this.exports.sm_register_lazy_file(
             p, pl, args.archiveId, s, sl,
             BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
+            BigInt(args.archiveBytes),
           ),
           "registerLazyFile",
           args.path,

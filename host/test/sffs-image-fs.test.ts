@@ -140,10 +140,34 @@ describe("SffsImageFs", () => {
       size: 99_999,
       mode: 0o755,
       ino: 40,
+      archiveBytes: 8_000_000,
     });
     const st = fs.lstat("/usr/big");
     expect(st.size).toBe(99_999);
     expect(st.mode & 0o7777).toBe(0o755);
+  });
+
+  it("refuses one archive declared with two different lengths", () => {
+    // The member's size and the ARCHIVE's size are different numbers, and the
+    // second is what bounds the fetch. Two lengths for one archive would make
+    // that bound depend on registration order, so it is refused rather than
+    // resolved.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    const member = (ino: number, archiveBytes: number) => ({
+      path: `/usr/m${ino}`,
+      archiveId: 3,
+      sourcePath: `members/m${ino}`,
+      size: 10,
+      mode: 0o644,
+      ino,
+      archiveBytes,
+    });
+    fs.registerLazyFile(member(40, 8_000_000));
+    // The same length again is a no-op, so a builder may register many members
+    // of one archive without tracking whether it has declared it.
+    expect(() => fs.registerLazyFile(member(41, 8_000_000))).not.toThrow();
+    expect(() => fs.registerLazyFile(member(42, 9_000_000))).toThrow(/EINVAL/);
   });
 
   it("survives an allocation large enough to grow the module's memory", () => {

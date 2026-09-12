@@ -72,6 +72,20 @@
       "scope_end": "\n            }\n",
       "find": "                    &payload,\n                )?",
       "replace": "                    b\"\",\n                )?"
+    },
+    {
+      "name": "the export never declares the archive its records point into",
+      "scope": "                if !declared_archives.contains(&archive_id) {",
+      "scope_end": "\n                }\n",
+      "find": "                    writer.declare_lazy_archive(archive_id, bytes)?;",
+      "replace": ""
+    },
+    {
+      "name": "the export invents an archive length instead of using the loaded one",
+      "scope": "                if !declared_archives.contains(&archive_id) {",
+      "scope_end": "\n                }\n",
+      "find": "                    let bytes = ROOTFS\n                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))\n                        .ok_or(Errno::EIO)?;",
+      "replace": "                    let bytes = ROOTFS\n                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))\n                        .unwrap_or(0);"
     }
   ]
 }

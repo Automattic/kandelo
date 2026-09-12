@@ -32,13 +32,6 @@
       "replace": ""
     },
     {
-      "name": "version is not bumped, so a stale reader misreads v2 as v1",
-      "scope": "pub const VERSION",
-      "scope_end": "\n",
-      "find": "pub const VERSION: u16 = 2;",
-      "replace": "pub const VERSION: u16 = 1;"
-    },
-    {
       "name": "encoder writes the payload before the member path",
       "scope": "pub fn encode(",
       "scope_end": "\n}\n",
@@ -58,6 +51,69 @@
       "scope_end": "\n}\n",
       "find": "        let unpadded = RECORD_HEADER_SIZE\n            .checked_add(source_path_len)\n            .and_then(|n| n.checked_add(payload_len))\n            .ok_or(Errno::EINVAL)?;",
       "replace": "        let unpadded = RECORD_HEADER_SIZE\n            .checked_add(payload_len)\n            .ok_or(Errno::EINVAL)?;"
+    },
+    {
+      "name": "encoder accepts a record naming an undeclared archive",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        if record.archive_id != 0 && !declared(record.archive_id) {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "decoder accepts a record naming an undeclared archive",
+      "scope": "pub fn decode(",
+      "scope_end": "\n}\n",
+      "find": "        if archive_id != 0\n            && archives\n                .binary_search_by_key(&archive_id, |a| a.archive_id)\n                .is_err()\n        {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "encoder lets one archive be declared twice",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "            if archive.archive_id <= previous {\n                return Err(Errno::EINVAL);\n            }",
+      "replace": "            if archive.archive_id < previous {\n                return Err(Errno::EINVAL);\n            }"
+    },
+    {
+      "name": "encoder accepts archive id zero, the no-archive sentinel",
+      "scope": "pub fn encode(",
+      "scope_end": "\n}\n",
+      "find": "        if archive.archive_id == 0 {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "decoder accepts archive id zero",
+      "scope": "    for index in 0..archive_count as usize {",
+      "scope_end": "\n    }\n",
+      "find": "        if archive_id == 0 {\n            return Err(Errno::EINVAL);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "decoder lets archive ids repeat or descend",
+      "scope": "    for index in 0..archive_count as usize {",
+      "scope_end": "\n    }\n",
+      "find": "            if archive_id <= previous {\n                return Err(Errno::EINVAL);\n            }",
+      "replace": ""
+    },
+    {
+      "name": "decoder trusts the archive count without bounding it",
+      "scope": "    let archive_count = r_u32(bytes, 12)?;",
+      "scope_end": "\n    let table_len",
+      "find": "    if archive_count > MAX_ARCHIVES {\n        return Err(Errno::EINVAL);\n    }",
+      "replace": ""
+    },
+    {
+      "name": "records are read from where they sat before the table existed",
+      "scope": "    let mut offset = records_start;",
+      "scope_end": "\n",
+      "find": "    let mut offset = records_start;",
+      "replace": "    let mut offset = HEADER_SIZE as usize;"
+    },
+    {
+      "name": "the version stays at 2, so a v2 reader misreads the archive count",
+      "scope": "pub const VERSION",
+      "scope_end": "\n",
+      "find": "pub const VERSION: u16 = 3;",
+      "replace": "pub const VERSION: u16 = 2;"
     }
   ]
 }

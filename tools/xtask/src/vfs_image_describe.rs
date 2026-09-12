@@ -49,6 +49,12 @@ pub struct ImageDescription {
     pub hardlink_groups: BTreeMap<u32, Vec<String>>,
     /// Deferred files normalised across whichever carrier describes them.
     pub deferred: Vec<Deferred>,
+    /// The lazy archives the image declares, as `archive_id -> bytes`. Part of
+    /// the description because an archive's length bounds the fetch that
+    /// materialises its members: two images whose trees match but whose archive
+    /// lengths differ are not interchangeable, and an equivalence bar that
+    /// cannot see the difference is answering a different question.
+    pub archives: BTreeMap<u32, u64>,
     pub deferred_carrier: &'static str,
 }
 
@@ -169,7 +175,7 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
 
     // Deferred set first: an entry's digest depends on knowing whether it is
     // deferred, and asking the image twice would let the two answers drift.
-    let (deferred_by_ino, carrier) = read_deferred(&fs, &image)?;
+    let (deferred_by_ino, archives, carrier) = read_deferred(&fs, &image)?;
 
     let mut entries = Vec::new();
     let mut by_ino: BTreeMap<u32, Vec<String>> = BTreeMap::new();
@@ -215,6 +221,7 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
         entries,
         hardlink_groups,
         deferred,
+        archives,
         deferred_carrier: carrier,
     })
 }
@@ -244,8 +251,9 @@ fn spell_source_path(bytes: &[u8]) -> String {
 fn read_deferred<S: sffs::BlockSource>(
     fs: &Sffs<S>,
     image: &[u8],
-) -> Result<(BTreeMap<u32, Deferred>, &'static str), String> {
+) -> Result<(BTreeMap<u32, Deferred>, BTreeMap<u32, u64>, &'static str), String> {
     let mut out = BTreeMap::new();
+    let mut archives = BTreeMap::new();
 
     if let Some(section) = fs.deferred_section().map_err(|e| format!("SDEF: {e:?}"))? {
         for record in &section.records {
@@ -264,7 +272,10 @@ fn read_deferred<S: sffs::BlockSource>(
                 },
             );
         }
-        return Ok((out, "sdef"));
+        for archive in &section.archives {
+            archives.insert(archive.archive_id, archive.bytes);
+        }
+        return Ok((out, archives, "sdef"));
     }
 
     if let Some(section) = sffs::kernel_lazy_section(image).map_err(|e| format!("KLZY: {e:?}"))? {
@@ -289,10 +300,13 @@ fn read_deferred<S: sffs::BlockSource>(
                 },
             );
         }
-        return Ok((out, "klzy"));
+        for archive in &linkage.archives {
+            archives.insert(archive.archive_id, archive.archive_bytes);
+        }
+        return Ok((out, archives, "klzy"));
     }
 
-    Ok((out, "none"))
+    Ok((out, archives, "none"))
 }
 
 fn walk<S: sffs::BlockSource>(
@@ -458,6 +472,22 @@ fn report_difference(a: &ImageDescription, b: &ImageDescription) {
     for path in pb.keys() {
         if !pa.contains_key(path) {
             eprintln!("only in B: {path}");
+        }
+    }
+    if a.archives != b.archives {
+        for (id, bytes) in &a.archives {
+            match b.archives.get(id) {
+                None => eprintln!("archive {id}: only in A ({bytes} bytes)"),
+                Some(other) if other != bytes => {
+                    eprintln!("archive {id}: {bytes} vs {other} bytes")
+                }
+                Some(_) => {}
+            }
+        }
+        for id in b.archives.keys() {
+            if !a.archives.contains_key(id) {
+                eprintln!("archive {id}: only in B");
+            }
         }
     }
     if a.deferred.len() != b.deferred.len() {

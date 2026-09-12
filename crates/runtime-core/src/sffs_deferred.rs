@@ -54,6 +54,20 @@
 //! authorises nothing. The format already does exactly this for symlink
 //! targets, and storing a target confers no authority over what it resolves to.
 //!
+//! # The archive table, and the field it deliberately drops
+//!
+//! A record that names an archive is useless without the archive's LENGTH: the
+//! kernel fetches a whole archive to extract one member, and needs the length
+//! to bound that read. So the section declares every archive it references,
+//! once, as `archive_id -> bytes`, and refuses a record naming one it did not
+//! declare.
+//!
+//! [`crate::klzy`] also carries a `mount_prefix` per archive. **This does not**,
+//! because the kernel never reads it — measured, not assumed: the only thing in
+//! the tree that touches `mount_prefix` is a test fixture BUILDING a KLZY
+//! section. Carrying a field no consumer reads is how a format acquires
+//! obligations nobody can later justify removing.
+//!
 //! # Why the archive linkage is a field and not payload bytes
 //!
 //! This section exists to become an image's ONE description of its deferred
@@ -85,13 +99,16 @@ use wasm_posix_shared::Errno;
 
 /// "SDEF", little-endian.
 pub const MAGIC: [u8; 4] = *b"SDEF";
-/// Version 2 adds the archive linkage. There is no version 1 image anywhere —
-/// nothing has ever emitted this section outside its own tests — so the bump
-/// does not exist for compatibility with a deployed artifact. It exists so a
-/// kernel built before the linkage landed REJECTS a section it would otherwise
-/// misread as v1, whose records are eight bytes shorter. A stale binary should
-/// fail loudly rather than silently read an archive member as a URL-backed file.
-pub const VERSION: u16 = 2;
+/// Version 2 added the per-file archive linkage; version 3 added the archive
+/// TABLE those records point into. There is no v1 or v2 image anywhere —
+/// nothing has ever emitted this section outside its own tests — so neither
+/// bump exists for compatibility with a deployed artifact. They exist so a
+/// kernel built before each change REJECTS a section it would otherwise
+/// misread: v1 records are eight bytes shorter, and a v2 reader would read v3's
+/// archive count as the reserved field it requires to be zero. A stale binary
+/// should fail loudly rather than silently read an archive member as a
+/// URL-backed file.
+pub const VERSION: u16 = 3;
 pub const HEADER_SIZE: u16 = 16;
 /// `record_size | ino | size | archive_id | source_path_len | payload_len` —
 /// the fixed part of one record.
@@ -108,6 +125,10 @@ pub const MAX_PAYLOAD_LEN: u32 = 64 * 1024;
 /// A member path inside an archive. `PATH_MAX`, for the same reason the other
 /// two caps exist: a corrupt length field must be cheap to reject.
 pub const MAX_SOURCE_PATH_LEN: u32 = 4096;
+/// One archive-table entry: `archive_id | bytes`.
+pub const ARCHIVE_ENTRY_SIZE: u32 = 12;
+/// Far past any real image; the largest today declares a handful.
+pub const MAX_ARCHIVES: u32 = 1 << 16;
 
 /// One deferred file, as the section describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,10 +149,30 @@ pub struct DeferredRecord {
     pub payload: Vec<u8>,
 }
 
-/// A decoded section. Records are ordered by `ino` and each `ino` appears once.
+/// One lazy archive the section declares: the id records point at, and the
+/// archive's total byte length, which is what bounds a whole-archive fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredArchive {
+    pub archive_id: u32,
+    pub bytes: u64,
+}
+
+/// A decoded section. Archives are ordered by `archive_id` and records by
+/// `ino`; each appears once, and every record's archive is declared.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeferredSection {
+    pub archives: Vec<DeferredArchive>,
     pub records: Vec<DeferredRecord>,
+}
+
+impl DeferredSection {
+    /// The declared byte length of `archive_id`, if the section declares it.
+    pub fn archive_bytes(&self, archive_id: u32) -> Option<u64> {
+        self.archives
+            .binary_search_by_key(&archive_id, |a| a.archive_id)
+            .ok()
+            .map(|i| self.archives[i].bytes)
+    }
 }
 
 impl DeferredSection {
@@ -177,10 +218,23 @@ fn r_u64(bytes: &[u8], offset: usize) -> Result<u64, Errno> {
 /// Records must already be sorted by `ino` with no duplicates; that is the
 /// writer's job and a violation is a writer bug, so it is reported rather than
 /// silently repaired.
-pub fn encode(records: &[DeferredRecord]) -> Result<Vec<u8>, Errno> {
-    if records.len() > MAX_RECORDS as usize {
+pub fn encode(archives: &[DeferredArchive], records: &[DeferredRecord]) -> Result<Vec<u8>, Errno> {
+    if records.len() > MAX_RECORDS as usize || archives.len() > MAX_ARCHIVES as usize {
         return Err(Errno::EINVAL);
     }
+    let mut previous_archive: Option<u32> = None;
+    for archive in archives {
+        if archive.archive_id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if let Some(previous) = previous_archive {
+            if archive.archive_id <= previous {
+                return Err(Errno::EINVAL);
+            }
+        }
+        previous_archive = Some(archive.archive_id);
+    }
+    let declared = |id: u32| archives.iter().any(|a| a.archive_id == id);
     let mut previous: Option<u32> = None;
     for record in records {
         if record.ino == 0 {
@@ -204,6 +258,12 @@ pub fn encode(records: &[DeferredRecord]) -> Result<Vec<u8>, Errno> {
         if (record.archive_id == 0) != record.source_path.is_empty() {
             return Err(Errno::EINVAL);
         }
+        // A record pointing at an archive the section never declared has no
+        // length to bound a fetch with, so it is not a record — it is a
+        // dangling reference.
+        if record.archive_id != 0 && !declared(record.archive_id) {
+            return Err(Errno::EINVAL);
+        }
     }
 
     let mut out = Vec::new();
@@ -211,7 +271,12 @@ pub fn encode(records: &[DeferredRecord]) -> Result<Vec<u8>, Errno> {
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&HEADER_SIZE.to_le_bytes());
     out.extend_from_slice(&(records.len() as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    out.extend_from_slice(&(archives.len() as u32).to_le_bytes());
+
+    for archive in archives {
+        out.extend_from_slice(&archive.archive_id.to_le_bytes());
+        out.extend_from_slice(&archive.bytes.to_le_bytes());
+    }
 
     for record in records {
         let payload_len = record.payload.len() as u32;
@@ -257,10 +322,43 @@ pub fn decode(bytes: &[u8]) -> Result<DeferredSection, Errno> {
     if record_count > MAX_RECORDS {
         return Err(Errno::EINVAL);
     }
-    // Reserved fields are checked rather than ignored, so a later version that
-    // gives this field meaning cannot be silently misread by this one.
-    if r_u32(bytes, 12)? != 0 {
+    let archive_count = r_u32(bytes, 12)?;
+    if archive_count > MAX_ARCHIVES {
         return Err(Errno::EINVAL);
+    }
+
+    // The archive table sits between the header and the records. Its size is
+    // fixed, so it is bounded before a byte of it is read.
+    let table_len = (archive_count as usize)
+        .checked_mul(ARCHIVE_ENTRY_SIZE as usize)
+        .ok_or(Errno::EINVAL)?;
+    let records_start = (HEADER_SIZE as usize)
+        .checked_add(table_len)
+        .ok_or(Errno::EINVAL)?;
+    if records_start > bytes.len() {
+        return Err(Errno::EINVAL);
+    }
+    let mut archives = Vec::new();
+    archives.reserve(archive_count as usize);
+    let mut previous_archive: Option<u32> = None;
+    for index in 0..archive_count as usize {
+        let at = HEADER_SIZE as usize + index * ARCHIVE_ENTRY_SIZE as usize;
+        let archive_id = r_u32(bytes, at)?;
+        if archive_id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        // Strictly ascending, so `archive_bytes` can binary-search and a
+        // duplicate declaration cannot give one id two lengths.
+        if let Some(previous) = previous_archive {
+            if archive_id <= previous {
+                return Err(Errno::EINVAL);
+            }
+        }
+        previous_archive = Some(archive_id);
+        archives.push(DeferredArchive {
+            archive_id,
+            bytes: r_u64(bytes, at + 4)?,
+        });
     }
 
     let mut records = Vec::new();
@@ -268,13 +366,13 @@ pub fn decode(bytes: &[u8]) -> Result<DeferredSection, Errno> {
     // bounded by what the section could possibly hold, so a large count in a
     // short section cannot make this allocate.
     let smallest_record = RECORD_HEADER_SIZE as usize;
-    let remaining = bytes.len() - HEADER_SIZE as usize;
+    let remaining = bytes.len() - records_start;
     if (record_count as usize).saturating_mul(smallest_record) > remaining {
         return Err(Errno::EINVAL);
     }
     records.reserve(record_count as usize);
 
-    let mut offset = HEADER_SIZE as usize;
+    let mut offset = records_start;
     let mut previous: Option<u32> = None;
     for _ in 0..record_count {
         let record_size = r_u32(bytes, offset)?;
@@ -307,6 +405,16 @@ pub fn decode(bytes: &[u8]) -> Result<DeferredSection, Errno> {
         // The same rule `encode` enforces, checked independently rather than
         // trusted: this section can arrive from a shared link.
         if (archive_id == 0) != (source_path_len == 0) {
+            return Err(Errno::EINVAL);
+        }
+        // Checked independently of the encoder: a dangling archive reference
+        // in a section that arrived from a shared link is exactly the shape
+        // that would otherwise reach the fetch path with no length bound.
+        if archive_id != 0
+            && archives
+                .binary_search_by_key(&archive_id, |a| a.archive_id)
+                .is_err()
+        {
             return Err(Errno::EINVAL);
         }
         let payload_len = r_u32(bytes, offset + 24)?;
@@ -348,7 +456,7 @@ pub fn decode(bytes: &[u8]) -> Result<DeferredSection, Errno> {
     if offset != bytes.len() {
         return Err(Errno::EINVAL);
     }
-    Ok(DeferredSection { records })
+    Ok(DeferredSection { archives, records })
 }
 
 #[cfg(test)]
@@ -376,6 +484,38 @@ mod tests {
         }
     }
 
+    /// Where the first record begins: past the header AND past however many
+    /// archive-table entries the section declares. Derived, because adding the
+    /// table moved this and two tests that hardcoded `HEADER_SIZE` went on
+    /// passing while poking at the archive table instead of the record they
+    /// meant to corrupt.
+    fn records_at(section: &[u8]) -> usize {
+        let archive_count = u32::from_le_bytes(section[12..16].try_into().expect("4 bytes"));
+        HEADER_SIZE as usize + archive_count as usize * ARCHIVE_ENTRY_SIZE as usize
+    }
+
+    /// Encode with an archive table DERIVED from the records. Tests that are
+    /// about record fields should not have to restate the archives those
+    /// records name; tests that are about the table itself call `encode`
+    /// directly, below.
+    fn enc(records: &[DeferredRecord]) -> Result<Vec<u8>, Errno> {
+        let mut ids: Vec<u32> = records
+            .iter()
+            .map(|r| r.archive_id)
+            .filter(|id| *id != 0)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let archives: Vec<DeferredArchive> = ids
+            .into_iter()
+            .map(|archive_id| DeferredArchive {
+                archive_id,
+                bytes: 4096,
+            })
+            .collect();
+        encode(&archives, records)
+    }
+
     /// An archive-member record: the linkage half this format gained in v2.
     fn member(ino: u32, size: u64, archive_id: u32, source_path: &[u8]) -> DeferredRecord {
         DeferredRecord {
@@ -394,7 +534,7 @@ mod tests {
             record(7, 0, b""),
             record(9, u64::MAX, &[0xffu8; 300]),
         ];
-        let encoded = encode(&records).expect("encode");
+        let encoded = enc(&records).expect("encode");
         let decoded = decode(&encoded).expect("decode");
         assert_eq!(decoded.records, records);
         assert_eq!(decoded.get(7).unwrap().size, 0);
@@ -404,7 +544,7 @@ mod tests {
 
     #[test]
     fn an_empty_section_round_trips() {
-        let encoded = encode(&[]).expect("encode");
+        let encoded = enc(&[]).expect("encode");
         assert_eq!(encoded.len(), HEADER_SIZE as usize);
         assert!(decode(&encoded).expect("decode").is_empty());
     }
@@ -421,7 +561,7 @@ mod tests {
                 payload: b"https://example/x".to_vec(),
             },
         ];
-        let decoded = decode(&encode(&records).expect("encodes")).expect("decodes");
+        let decoded = decode(&enc(&records).expect("encodes")).expect("decodes");
         assert_eq!(decoded.records, records);
         // The linkage is reachable by inode, which is how the loader will use
         // it: find the record for the inode the walk is standing on.
@@ -438,7 +578,7 @@ mod tests {
         // the archive, exactly as it does for the payload.
         let hostile: &[u8] = b"../\xff\x00etc/shadow";
         let records = vec![member(2, 1, 9, hostile)];
-        let decoded = decode(&encode(&records).expect("encodes")).expect("decodes");
+        let decoded = decode(&enc(&records).expect("encodes")).expect("decodes");
         assert_eq!(decoded.records[0].source_path, hostile);
     }
 
@@ -452,7 +592,7 @@ mod tests {
             source_path: Vec::new(),
             payload: Vec::new(),
         }];
-        assert_eq!(encode(&no_path), Err(Errno::EINVAL));
+        assert_eq!(enc(&no_path), Err(Errno::EINVAL));
 
         // A member with no archive to extract it from.
         let no_archive = vec![DeferredRecord {
@@ -462,17 +602,20 @@ mod tests {
             source_path: b"a".to_vec(),
             payload: Vec::new(),
         }];
-        assert_eq!(encode(&no_archive), Err(Errno::EINVAL));
+        assert_eq!(enc(&no_archive), Err(Errno::EINVAL));
 
         // And the decoder refuses both byte-shapes independently, because a
         // section can arrive from somewhere our encoder never touched. Built by
         // encoding a valid member and then clearing one half of the pair.
-        let mut bytes = encode(&[member(2, 1, 4, b"m")]).expect("encodes");
-        let archive_id_at = HEADER_SIZE as usize + ARCHIVE_ID_AT;
+        let mut bytes = enc(&[member(2, 1, 4, b"m")]).expect("encodes");
+        let archive_id_at = records_at(&bytes) + ARCHIVE_ID_AT;
         bytes[archive_id_at..archive_id_at + 4].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(decode(&bytes), Err(Errno::EINVAL));
 
-        let mut bytes = encode(&[record(2, 1, b"")]).expect("encodes");
+        let mut bytes = enc(&[record(2, 1, b"")]).expect("encodes");
+        // Its own offset: this section declares no archives, so its records
+        // start somewhere else than the one above.
+        let archive_id_at = records_at(&bytes) + ARCHIVE_ID_AT;
         bytes[archive_id_at..archive_id_at + 4].copy_from_slice(&4u32.to_le_bytes());
         assert_eq!(decode(&bytes), Err(Errno::EINVAL));
     }
@@ -480,12 +623,12 @@ mod tests {
     #[test]
     fn refuses_an_oversized_source_path_rather_than_allocating_for_it() {
         let too_long = vec![b'x'; MAX_SOURCE_PATH_LEN as usize + 1];
-        assert_eq!(encode(&[member(2, 1, 4, &too_long)]), Err(Errno::EINVAL));
+        assert_eq!(enc(&[member(2, 1, 4, &too_long)]), Err(Errno::EINVAL));
 
         // At the cap it is accepted, so the refusal above is the cap and not an
         // off-by-one that would reject a legal path.
         let at_cap = vec![b'x'; MAX_SOURCE_PATH_LEN as usize];
-        let encoded = encode(&[member(2, 1, 4, &at_cap)]).expect("cap is inclusive");
+        let encoded = enc(&[member(2, 1, 4, &at_cap)]).expect("cap is inclusive");
         assert_eq!(decode(&encoded).expect("decodes").records[0].source_path, at_cap);
 
         // A length field past the cap is refused by the decoder. Mutation
@@ -495,68 +638,255 @@ mod tests {
         // This builds what only the cap can reject — a record that is fully
         // present, correctly framed and correctly padded, whose single fault is
         // that its member path is one byte over the cap.
+        // Mutation caught this a SECOND time after the archive table landed:
+        // the record named archive 4 while the section declared none, so the
+        // dangling-archive rule rejected it and the cap was again unreached.
+        // Every other rule this record could break is now satisfied on purpose.
         let source_path_len = MAX_SOURCE_PATH_LEN + 1;
         let record_size = (RECORD_HEADER_SIZE + source_path_len).next_multiple_of(4);
         let mut section = Vec::new();
         section.extend_from_slice(&MAGIC);
         section.extend_from_slice(&VERSION.to_le_bytes());
         section.extend_from_slice(&HEADER_SIZE.to_le_bytes());
-        section.extend_from_slice(&1u32.to_le_bytes());
-        section.extend_from_slice(&0u32.to_le_bytes());
+        section.extend_from_slice(&1u32.to_le_bytes()); // one record
+        section.extend_from_slice(&1u32.to_le_bytes()); // one archive
+        section.extend_from_slice(&4u32.to_le_bytes()); // archive 4, declared
+        section.extend_from_slice(&4096u64.to_le_bytes());
+        let records_start = section.len();
         section.extend_from_slice(&record_size.to_le_bytes());
         section.extend_from_slice(&2u32.to_le_bytes()); // ino
         section.extend_from_slice(&1u64.to_le_bytes()); // size
-        section.extend_from_slice(&4u32.to_le_bytes()); // archive_id: linkage is whole
+        section.extend_from_slice(&4u32.to_le_bytes()); // archive_id: declared above
         section.extend_from_slice(&source_path_len.to_le_bytes());
         section.extend_from_slice(&0u32.to_le_bytes()); // payload_len
-        section.resize(HEADER_SIZE as usize + record_size as usize, b'x');
+        section.resize(records_start + record_size as usize, b'x');
         assert_eq!(
             section.len(),
-            HEADER_SIZE as usize + record_size as usize,
-            "the record is fully present, not truncated"
+            records_start + record_size as usize,
+            "the record is fully present, not truncated",
         );
         assert_eq!(decode(&section), Err(Errno::EINVAL));
+
+        // The proof that nothing ELSE rejects it: the same section with a legal
+        // member path decodes. Without this the test could go on passing for a
+        // third unrelated reason.
+        let legal_len = MAX_SOURCE_PATH_LEN;
+        let legal_size = (RECORD_HEADER_SIZE + legal_len).next_multiple_of(4);
+        let mut legal = section[..records_start].to_vec();
+        legal.extend_from_slice(&legal_size.to_le_bytes());
+        legal.extend_from_slice(&2u32.to_le_bytes());
+        legal.extend_from_slice(&1u64.to_le_bytes());
+        legal.extend_from_slice(&4u32.to_le_bytes());
+        legal.extend_from_slice(&legal_len.to_le_bytes());
+        legal.extend_from_slice(&0u32.to_le_bytes());
+        legal.resize(records_start + legal_size as usize, b'x');
+        assert_eq!(
+            decode(&legal).expect("only the cap was wrong").records[0]
+                .source_path
+                .len(),
+            legal_len as usize,
+        );
     }
 
     #[test]
-    fn a_version_one_section_is_refused_rather_than_silently_reinterpreted() {
-        // The version field is the ONLY thing separating the two record
-        // layouts, and most v1 sections would fail v2's framing anyway — which
-        // is why the first version of this test passed with the check removed.
+    fn the_archive_table_round_trips_and_is_reachable_by_id() {
+        let archives = alloc::vec![
+            DeferredArchive { archive_id: 3, bytes: 1_024 },
+            DeferredArchive { archive_id: 9, bytes: 8_000_000 },
+        ];
+        let records = alloc::vec![member(2, 10, 3, b"a"), member(5, 20, 9, b"b/c")];
+        let decoded = decode(&encode(&archives, &records).expect("encodes")).expect("decodes");
+        assert_eq!(decoded.archives, archives);
+        assert_eq!(decoded.records, records);
+        assert_eq!(decoded.archive_bytes(3), Some(1_024));
+        assert_eq!(decoded.archive_bytes(9), Some(8_000_000));
+        assert_eq!(decoded.archive_bytes(4), None, "an id it never declared");
+    }
+
+    #[test]
+    fn a_record_naming_an_undeclared_archive_is_refused_by_both_halves() {
+        let declared = alloc::vec![DeferredArchive { archive_id: 3, bytes: 1 }];
+        let dangling = alloc::vec![member(2, 10, 4, b"a")];
+        assert_eq!(encode(&declared, &dangling), Err(Errno::EINVAL));
+
+        // The decoder checks it independently: an image can arrive from a
+        // shared link, and a dangling reference is precisely the shape that
+        // would otherwise reach the fetch path with no length to bound it.
+        let mut bytes = encode(&declared, &alloc::vec![member(2, 10, 3, b"a")]).expect("encodes");
+        let archive_id_at = records_at(&bytes) + ARCHIVE_ID_AT;
+        bytes[archive_id_at..archive_id_at + 4].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(decode(&bytes), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn archive_ids_must_be_nonzero_and_strictly_ascending() {
+        let zero = alloc::vec![DeferredArchive { archive_id: 0, bytes: 1 }];
+        assert_eq!(encode(&zero, &[]), Err(Errno::EINVAL), "0 is the no-archive sentinel");
+
+        let descending = alloc::vec![
+            DeferredArchive { archive_id: 9, bytes: 1 },
+            DeferredArchive { archive_id: 3, bytes: 1 },
+        ];
+        assert_eq!(encode(&descending, &[]), Err(Errno::EINVAL));
+
+        let duplicate = alloc::vec![
+            DeferredArchive { archive_id: 3, bytes: 1 },
+            DeferredArchive { archive_id: 3, bytes: 2 },
+        ];
+        assert_eq!(
+            encode(&duplicate, &[]),
+            Err(Errno::EINVAL),
+            "one archive with two lengths has no correct reading",
+        );
+
+        // The decoder enforces both independently, which is what lets
+        // `archive_bytes` binary-search.
+        let good = encode(
+            &alloc::vec![
+                DeferredArchive { archive_id: 3, bytes: 1 },
+                DeferredArchive { archive_id: 9, bytes: 1 },
+            ],
+            &[],
+        )
+        .expect("encodes");
+        let second = HEADER_SIZE as usize + ARCHIVE_ENTRY_SIZE as usize;
+        let mut out_of_order = good.clone();
+        out_of_order[second..second + 4].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(decode(&out_of_order), Err(Errno::EINVAL), "duplicate");
+        let mut zeroed = good.clone();
+        zeroed[HEADER_SIZE as usize..HEADER_SIZE as usize + 4]
+            .copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(decode(&zeroed), Err(Errno::EINVAL), "zero id");
+    }
+
+    #[test]
+    fn the_archive_cap_bounds_a_section_large_enough_to_hold_the_table() {
+        // Mutation testing caught the obvious version of this doing nothing:
+        // overwriting the count in a SHORT section makes the "table does not
+        // fit" check fire first, so deleting the cap changed no outcome — the
+        // same H-5 shape as the payload and member-path caps before it.
         //
-        // These bytes are the case that matters: a section that is VALID under
-        // both layouts and means something different under each. As v1 it is
-        // one deferred file with a 12-byte opaque payload and no archive. Read
-        // as v2 it is a deferred file backed by archive 12 at member "abcd" —
-        // a fetch from a place the writer never named. Nothing but the version
-        // field distinguishes them, so this is what the field is worth.
+        // This builds what only the cap can reject: a section that really is
+        // long enough to hold the table it declares, with ascending nonzero
+        // ids so no per-entry rule can turn it away either. The count being one
+        // past the cap is its single fault.
+        let build = |archive_count: u32| -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&MAGIC);
+            out.extend_from_slice(&VERSION.to_le_bytes());
+            out.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes()); // no records
+            out.extend_from_slice(&archive_count.to_le_bytes());
+            for id in 1..=archive_count {
+                out.extend_from_slice(&id.to_le_bytes());
+                out.extend_from_slice(&4096u64.to_le_bytes());
+            }
+            out
+        };
+
+        let over = build(MAX_ARCHIVES + 1);
+        assert_eq!(
+            over.len(),
+            HEADER_SIZE as usize + (MAX_ARCHIVES as usize + 1) * ARCHIVE_ENTRY_SIZE as usize,
+            "the table is fully present, not truncated",
+        );
+        assert_eq!(decode(&over), Err(Errno::EINVAL));
+
+        // At the cap the same shape is accepted, so the refusal above is the
+        // cap rather than an off-by-one turning away a legal section.
+        assert_eq!(
+            decode(&build(MAX_ARCHIVES))
+                .expect("the cap is inclusive")
+                .archives
+                .len(),
+            MAX_ARCHIVES as usize,
+        );
+    }
+
+    #[test]
+    fn a_table_that_does_not_fit_the_section_is_refused_before_it_is_read() {
+        // A different rule from the cap: a count well inside the cap whose
+        // table the section is too short to contain. Refused on the section's
+        // own length, without the count being used to reserve anything.
+        let mut bytes = enc(&[record(2, 1, b"x")]).expect("encodes");
+        bytes[12..16].copy_from_slice(&1_000u32.to_le_bytes());
+        assert_eq!(decode(&bytes), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn a_section_with_no_archives_is_byte_identical_to_one_from_before_the_table() {
+        // The table costs nothing when unused: the count field is the u32 that
+        // was reserved, and an empty table writes no bytes. That is what makes
+        // adding it safe for the URL-backed images that have no archives.
+        let records = alloc::vec![record(2, 10, b"u")];
+        let with_empty_table = encode(&[], &records).expect("encodes");
+        assert_eq!(
+            with_empty_table.len(),
+            HEADER_SIZE as usize + (RECORD_HEADER_SIZE as usize + 1).next_multiple_of(4),
+            "header + one record, and not one byte of table",
+        );
+    }
+
+    #[test]
+    fn every_version_but_this_one_is_refused() {
+        // The version field is what separates layouts whose records are
+        // different widths, so a reader must refuse anything it was not written
+        // for rather than parse it as its own. Asserted against a section this
+        // encoder produced, so the only thing changed is the version.
+        let good = enc(&[record(2, 10, b"abcd")]).expect("encode");
+        assert!(decode(&good).is_ok(), "the unmodified section decodes");
+        for wrong in [0u16, 1, 2, VERSION + 1, u16::MAX] {
+            let mut bytes = good.clone();
+            bytes[4..6].copy_from_slice(&wrong.to_le_bytes());
+            assert_eq!(
+                decode(&bytes),
+                Err(Errno::EINVAL),
+                "version {wrong} must be refused, not parsed as {VERSION}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_version_one_section_cannot_be_reinterpreted_as_this_one() {
+        // Version 1 had no archive linkage and a 20-byte record header, so its
+        // payload-length field sits where this version reads an archive id.
+        // Under v2 that WAS a clean misread -- the bytes below decoded as a
+        // fetch from archive 12 at member "abcd", from a section that named no
+        // archive at all -- and only the version check stood in the way.
+        //
+        // Version 3 closes it a second time and by construction: a record may
+        // not name an archive the section did not declare, and a v1 section
+        // declares none. Recorded because it is the kind of property that is
+        // easy to lose in a later edit without noticing what it was doing.
         let payload: [u8; 12] = [
-            4, 0, 0, 0, // becomes source_path_len under v2
-            0, 0, 0, 0, // becomes payload_len under v2
-            b'a', b'b', b'c', b'd', // becomes the member path under v2
+            4, 0, 0, 0, // v2/v3 would read: source_path_len
+            0, 0, 0, 0, // v2/v3 would read: payload_len
+            b'a', b'b', b'c', b'd', // v2/v3 would read: the member path
         ];
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&MAGIC);
         bytes.extend_from_slice(&1u16.to_le_bytes()); // VERSION 1
         bytes.extend_from_slice(&HEADER_SIZE.to_le_bytes());
         bytes.extend_from_slice(&1u32.to_le_bytes()); // one record
-        bytes.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // v1 reserved / v3 archive_count
         bytes.extend_from_slice(&32u32.to_le_bytes()); // record_size: 20 + 12
         bytes.extend_from_slice(&2u32.to_le_bytes()); // ino
         bytes.extend_from_slice(&10u64.to_le_bytes()); // size
-        bytes.extend_from_slice(&12u32.to_le_bytes()); // v1 payload_len / v2 archive_id
+        bytes.extend_from_slice(&12u32.to_le_bytes()); // v1 payload_len / v3 archive_id
         bytes.extend_from_slice(&payload);
 
         assert_eq!(decode(&bytes), Err(Errno::EINVAL), "refused as a v1 section");
 
-        // And the reinterpretation this refuses is real, not hypothetical: the
-        // same bytes with only the version field changed decode cleanly into
-        // that different meaning.
-        let mut as_v2 = bytes.clone();
-        as_v2[4..6].copy_from_slice(&VERSION.to_le_bytes());
-        let misread = decode(&as_v2).expect("well-formed as v2");
-        assert_eq!(misread.records[0].archive_id, 12);
-        assert_eq!(misread.records[0].source_path, b"abcd");
+        // And with the version corrected, it is STILL refused -- by the
+        // dangling-archive rule, since archive 12 was never declared. The
+        // misread is now unrepresentable rather than merely guarded against.
+        let mut as_current = bytes.clone();
+        as_current[4..6].copy_from_slice(&VERSION.to_le_bytes());
+        assert_eq!(
+            decode(&as_current),
+            Err(Errno::EINVAL),
+            "a record naming an undeclared archive is refused on its own",
+        );
     }
 
     #[test]
@@ -564,14 +894,14 @@ mod tests {
         // The payload is opaque, so bytes that would break any structured
         // parser must survive untouched.
         let hostile: &[u8] = b"{\"url\": \x00\xff\x80 not json at all \n\r\0";
-        let encoded = encode(&[record(2, 1, hostile)]).expect("encode");
+        let encoded = enc(&[record(2, 1, hostile)]).expect("encode");
         let decoded = decode(&encoded).expect("decode");
         assert_eq!(decoded.get(2).unwrap().payload, hostile);
     }
 
     #[test]
     fn rejects_every_framing_violation() {
-        let good = encode(&[record(2, 1, b"x"), record(3, 2, b"yy")]).expect("encode");
+        let good = enc(&[record(2, 1, b"x"), record(3, 2, b"yy")]).expect("encode");
 
         let mut bad_magic = good.clone();
         bad_magic[0] ^= 0xff;
@@ -607,31 +937,32 @@ mod tests {
 
     #[test]
     fn rejects_a_zero_or_out_of_order_inode() {
-        let mut zero = encode(&[record(2, 1, b"x")]).expect("encode");
-        zero[HEADER_SIZE as usize + INO_AT..HEADER_SIZE as usize + INO_AT + 4]
+        let mut zero = enc(&[record(2, 1, b"x")]).expect("encode");
+        let ino_at = records_at(&zero) + INO_AT;
+        zero[ino_at..ino_at + 4]
             .copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(decode(&zero), Err(Errno::EINVAL), "inode 0");
 
         // Descending and duplicate inode numbers are both rejected, which is
         // what makes `get` a binary search rather than a scan.
-        let mut descending = encode(&[record(2, 1, b"x"), record(3, 1, b"y")]).expect("encode");
+        let mut descending = enc(&[record(2, 1, b"x"), record(3, 1, b"y")]).expect("encode");
         // Derived from the section, not hardcoded: a record-layout change must
         // not leave this test silently poking at the wrong field and passing.
         let first_record_size =
-            u32::from_le_bytes(descending[HEADER_SIZE as usize..HEADER_SIZE as usize + 4]
+            u32::from_le_bytes(descending[records_at(&descending)..records_at(&descending) + 4]
                 .try_into()
                 .expect("4 bytes")) as usize;
-        let second = HEADER_SIZE as usize + first_record_size;
+        let second = records_at(&descending) + first_record_size;
         descending[second + INO_AT..second + INO_AT + 4].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(decode(&descending), Err(Errno::EINVAL), "descending");
 
-        let mut duplicate = encode(&[record(2, 1, b"x"), record(3, 1, b"y")]).expect("encode");
+        let mut duplicate = enc(&[record(2, 1, b"x"), record(3, 1, b"y")]).expect("encode");
         duplicate[second + INO_AT..second + INO_AT + 4].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(decode(&duplicate), Err(Errno::EINVAL), "duplicate");
 
-        assert_eq!(encode(&[record(0, 1, b"x")]), Err(Errno::EINVAL), "encode 0");
+        assert_eq!(enc(&[record(0, 1, b"x")]), Err(Errno::EINVAL), "encode 0");
         assert_eq!(
-            encode(&[record(3, 1, b"x"), record(2, 1, b"y")]),
+            enc(&[record(3, 1, b"x"), record(2, 1, b"y")]),
             Err(Errno::EINVAL),
             "encode unsorted"
         );
@@ -639,32 +970,33 @@ mod tests {
 
     #[test]
     fn rejects_a_record_whose_length_fields_disagree() {
-        let good = encode(&[record(2, 1, b"payload")]).expect("encode");
+        let good = enc(&[record(2, 1, b"payload")]).expect("encode");
 
         let mut payload_past_record = good.clone();
-        payload_past_record[HEADER_SIZE as usize + PAYLOAD_LEN_AT..HEADER_SIZE as usize + PAYLOAD_LEN_AT + 4]
+        let at = records_at(&payload_past_record) + PAYLOAD_LEN_AT;
+        payload_past_record[at..at + 4]
             .copy_from_slice(&1000u32.to_le_bytes());
         assert_eq!(decode(&payload_past_record), Err(Errno::EINVAL));
 
         let mut unaligned = good.clone();
-        unaligned[HEADER_SIZE as usize..HEADER_SIZE as usize + 4]
+        let size_at = records_at(&unaligned);
+        unaligned[size_at..size_at + 4]
             .copy_from_slice(&29u32.to_le_bytes());
         assert_eq!(decode(&unaligned), Err(Errno::EINVAL), "unaligned size");
 
         let mut undersized = good.clone();
-        undersized[HEADER_SIZE as usize..HEADER_SIZE as usize + 4]
+        let size_at = records_at(&undersized);
+        undersized[size_at..size_at + 4]
             .copy_from_slice(&4u32.to_le_bytes());
         assert_eq!(decode(&undersized), Err(Errno::EINVAL), "below the header");
 
         // Over-padding is refused so a section has exactly one encoding.
         let mut overpadded = good.clone();
-        let size = u32::from_le_bytes([
-            overpadded[HEADER_SIZE as usize],
-            overpadded[HEADER_SIZE as usize + 1],
-            overpadded[HEADER_SIZE as usize + 2],
-            overpadded[HEADER_SIZE as usize + 3],
-        ]);
-        overpadded[HEADER_SIZE as usize..HEADER_SIZE as usize + 4]
+        let size_at = records_at(&overpadded);
+        let size = u32::from_le_bytes(
+            overpadded[size_at..size_at + 4].try_into().expect("4 bytes"),
+        );
+        overpadded[size_at..size_at + 4]
             .copy_from_slice(&(size + 4).to_le_bytes());
         overpadded.extend_from_slice(&[0, 0, 0, 0]);
         assert_eq!(decode(&overpadded), Err(Errno::EINVAL), "over-padded");
@@ -673,12 +1005,13 @@ mod tests {
     #[test]
     fn refuses_an_oversized_payload_rather_than_allocating_for_it() {
         let huge = vec![0u8; MAX_PAYLOAD_LEN as usize + 1];
-        assert_eq!(encode(&[record(2, 1, &huge)]), Err(Errno::EINVAL));
+        assert_eq!(enc(&[record(2, 1, &huge)]), Err(Errno::EINVAL));
 
         // And a section that CLAIMS one, without carrying it, is refused
         // before the claim is used to size anything.
-        let mut claim = encode(&[record(2, 1, b"x")]).expect("encode");
-        claim[HEADER_SIZE as usize + PAYLOAD_LEN_AT..HEADER_SIZE as usize + PAYLOAD_LEN_AT + 4]
+        let mut claim = enc(&[record(2, 1, b"x")]).expect("encode");
+        let at = records_at(&claim) + PAYLOAD_LEN_AT;
+        claim[at..at + 4]
             .copy_from_slice(&(MAX_PAYLOAD_LEN + 1).to_le_bytes());
         assert_eq!(decode(&claim), Err(Errno::EINVAL));
     }

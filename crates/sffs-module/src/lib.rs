@@ -581,7 +581,18 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     uid: u32,
     gid: u32,
     ino: u64,
+    archive_bytes: u64,
 ) -> i32 {
+    // The archive's length is declared HERE rather than through an entry point
+    // of its own. A member is useless without it -- fetching one member means
+    // fetching the archive, and that read has to be bounded -- so taking it
+    // alongside the member makes it impossible to register a member whose
+    // archive has no length, without costing the host another export to
+    // implement. Re-declaring the same length is a no-op; a different one is
+    // EINVAL, because one archive with two lengths has no correct reading.
+    if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {
+        return err(e);
+    }
     ok_or_errno(rootfs::insert_lazy_file(
         unsafe { slice(path_ptr, path_len) },
         archive_id,
@@ -1081,7 +1092,7 @@ mod tests {
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000)
         });
         assert_eq!(rc, 0);
 
@@ -1135,6 +1146,16 @@ mod tests {
         // rewrite: nothing guarantees it matches the number it was registered
         // under.
         assert_eq!(section.len(), 1, "one deferred file, one record");
+
+        // And the archive's own length is carried forward, from the table this
+        // kernel loaded rather than invented. Without it a consumer of the
+        // exported image knows which archive to fetch but not how much of it to
+        // read, which is the same defect as losing the linkage entirely.
+        assert_eq!(
+            section.archive_bytes(3),
+            Some(8_000_000),
+            "the exported section declares the archive its record points into",
+        );
     }
 
     #[test]

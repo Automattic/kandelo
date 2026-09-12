@@ -233,6 +233,10 @@ pub struct SffsWriter {
     blocks: BTreeMap<u32, BlockContent>,
     dir_indexes: BTreeMap<u32, Vec<FreeSlot>>,
     deferred: Vec<crate::sffs_deferred::DeferredRecord>,
+    /// Archives the deferred records may point at. Declared separately from the
+    /// records because an archive's LENGTH is per-archive, not per-member, and
+    /// because a record naming an undeclared archive must be refusable.
+    deferred_archives: Vec<crate::sffs_deferred::DeferredArchive>,
 }
 
 fn w32(buf: &mut [u8], off: usize, value: u32) {
@@ -337,6 +341,7 @@ impl SffsWriter {
             blocks: BTreeMap::new(),
             dir_indexes: BTreeMap::new(),
             deferred: Vec::new(),
+            deferred_archives: Vec::new(),
         };
 
         for b in 0..data_start {
@@ -1055,6 +1060,28 @@ impl SffsWriter {
     /// by somebody else.
     ///
     /// `payload` is never interpreted. See [`crate::sffs_deferred`].
+    /// Declare a lazy archive that deferred records may point into, with the
+    /// total byte length that bounds a whole-archive fetch.
+    ///
+    /// Declaring the same id twice is an error rather than a silent overwrite:
+    /// two lengths for one archive is a writer bug, and the reader would have
+    /// no way to tell which was meant.
+    pub fn declare_lazy_archive(&mut self, archive_id: u32, bytes: u64) -> Result<(), Errno> {
+        if archive_id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if self
+            .deferred_archives
+            .iter()
+            .any(|a| a.archive_id == archive_id)
+        {
+            return Err(Errno::EINVAL);
+        }
+        self.deferred_archives
+            .push(crate::sffs_deferred::DeferredArchive { archive_id, bytes });
+        Ok(())
+    }
+
     /// `archive_id`/`source_path` are the kernel-facing linkage: which lazy
     /// archive backs the file and which member within it. Pass `0` and `b""`
     /// for a file fetched standalone, where `payload` is the only way to find
@@ -1107,7 +1134,9 @@ impl SffsWriter {
         // order gets a correct image instead of a rejected one.
         let mut records = core::mem::take(&mut self.deferred);
         records.sort_by_key(|record| record.ino);
-        let section = crate::sffs_deferred::encode(&records)?;
+        let mut archives = core::mem::take(&mut self.deferred_archives);
+        archives.sort_by_key(|archive| archive.archive_id);
+        let section = crate::sffs_deferred::encode(&archives, &records)?;
 
         let ino = self.inode_alloc()?;
         let now = self.now_ms;
@@ -2308,6 +2337,7 @@ mod tests {
         // record that says a file is deferred but not where its bytes are.
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
+        w.declare_lazy_archive(7, 8_000_000).expect("declare archive 7");
         let deferred = w
             .create_deferred_file(root, b"php", 0o755, 99_999, 7, b"usr/bin/php", b"")
             .expect("deferred");
@@ -2328,10 +2358,41 @@ mod tests {
         assert_eq!(record.archive_id, 7);
         assert_eq!(record.source_path, b"usr/bin/php");
         assert_eq!(record.size, 99_999);
+        // The archive's length rides in the section too, because fetching one
+        // member means fetching the archive, and that read has to be bounded.
+        assert_eq!(
+            fs.deferred_section()
+                .expect("read section")
+                .expect("section present")
+                .archive_bytes(7),
+            Some(8_000_000),
+        );
 
         // The body still holds a zero-length stub: the point is to describe the
         // bytes, not to materialize them.
         assert_eq!(fs.stat_ino(deferred).expect("stat").size, 0);
+    }
+
+    #[test]
+    fn a_member_of_an_undeclared_archive_cannot_be_finished_into_an_image() {
+        // A record pointing at an archive with no declared length is a dangling
+        // reference: something would have to fetch an archive without knowing
+        // how much to read. Refused at `finish`, which is the first moment the
+        // writer can see the whole section.
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_deferred_file(root, b"php", 0o755, 99_999, 7, b"usr/bin/php", b"")
+            .expect("the record itself is well-formed");
+        assert_eq!(w.finish().err(), Some(Errno::EINVAL));
+    }
+
+    #[test]
+    fn one_archive_cannot_be_declared_with_two_lengths() {
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        w.declare_lazy_archive(7, 100).expect("first declaration");
+        assert_eq!(w.declare_lazy_archive(7, 200), Err(Errno::EINVAL));
+        // And an archive id of zero is the "no archive" sentinel, not an id.
+        assert_eq!(w.declare_lazy_archive(0, 100), Err(Errno::EINVAL));
     }
 
     #[test]

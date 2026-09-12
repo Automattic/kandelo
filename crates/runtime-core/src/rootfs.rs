@@ -1256,6 +1256,36 @@ pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
     })
 }
 
+/// Declare a lazy archive's total byte length, so the kernel can bound the
+/// whole-archive fetch a member of it will need.
+///
+/// Idempotent when the length agrees, and `EINVAL` when it does not: one
+/// archive with two lengths has no correct reading, and silently keeping either
+/// one would decide a fetch bound by declaration order. An already-populated
+/// entry keeps its fetched bytes — this declares a length, it does not reset an
+/// archive.
+pub fn declare_archive(archive_id: u32, bytes: u64) -> Result<(), Errno> {
+    if archive_id == 0 {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| match state.archives.get(&archive_id) {
+        Some(existing) if existing.size == bytes => Ok(()),
+        Some(_) => Err(Errno::EINVAL),
+        None => {
+            state.archives.insert(
+                archive_id,
+                ArchiveEntry {
+                    size: bytes,
+                    raw: None,
+                    directory: None,
+                    members: BTreeMap::new(),
+                },
+            );
+            Ok(())
+        }
+    })
+}
+
 /// The size (in bytes) of archive `archive_id` as recorded in a v3 manifest's
 /// trailing archive table, or `None` if no such archive was registered.
 /// Consumed by the byte-serving path (Increment 3b-wiring.2, `fetch_archive`).
@@ -3613,6 +3643,10 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     // Overlay arena index -> the SFFS inode it became, so the second and later
     // names for a hard-linked inode become a `link` rather than a second copy.
     let mut emitted: BTreeMap<u32, u32> = BTreeMap::new();
+    // Archives already declared to the writer, so one is declared once however
+    // many of its members the tree holds.
+    let mut declared_archives: alloc::collections::BTreeSet<u32> =
+        alloc::collections::BTreeSet::new();
 
     let root_idx = ROOTFS.with(|state| state.root).ok_or(Errno::EIO)?;
     let root_sffs = writer.root();
@@ -3692,6 +3726,19 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 source_path,
                 size,
             } => {
+                // Declare the archive before the first record that points into
+                // it. The length comes from the archive table this kernel
+                // loaded; without it the record would be a dangling reference
+                // and `encode` would refuse the whole section — which is the
+                // behaviour we want, but the export should not have built an
+                // image it cannot finish.
+                if !declared_archives.contains(&archive_id) {
+                    let bytes = ROOTFS
+                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))
+                        .ok_or(Errno::EIO)?;
+                    writer.declare_lazy_archive(archive_id, bytes)?;
+                    declared_archives.insert(archive_id);
+                }
                 // The payload is empty on purpose. It is the HOST's fetch
                 // description, and an archive member has none of its own: the
                 // archive carries the transport, and the two fields beside this
@@ -5807,6 +5854,43 @@ mod tests {
         assert_eq!(record.size, 45_000, "the real size, not the stub's");
         assert_eq!(record.archive_id, 0, "fetched standalone, not from an archive");
         assert!(record.source_path.is_empty(), "and so with no member path");
+    }
+
+    #[test]
+    fn exporting_a_member_of_an_archive_with_no_known_length_fails_loudly() {
+        let _guard = TestGuard::acquire();
+        // `insert_lazy_file` places a member; nothing here declares how long
+        // archive 3 is. The export must refuse rather than declare it as zero
+        // bytes — a consumer would then know which archive to fetch and be told
+        // to read none of it, which is a silently empty file wearing the shape
+        // of a correct one.
+        //
+        // Not reachable through the module bridge, which takes the archive's
+        // length alongside the member for exactly this reason. It is reachable
+        // here, and this is the layer that has to refuse.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        insert_lazy_file(b"/big", 3, b"members/big.bin", 99_999, 0o644, 0, 0, 2)
+            .expect("the member itself is well-formed");
+
+        let mut buf = alloc::vec![0u8; 8192];
+        assert_eq!(
+            export_image_read(0, &mut buf, &mut no_bytes()).unwrap_err(),
+            Errno::EIO,
+        );
+
+        // Declaring the length makes the same tree exportable, so the refusal
+        // above is the missing length and not something else about the tree.
+        reset_image_export();
+        declare_archive(3, 8_000_000).expect("declare");
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        assert_eq!(
+            fs.deferred_section()
+                .expect("decodes")
+                .expect("section")
+                .archive_bytes(3),
+            Some(8_000_000),
+        );
     }
 
     #[test]
