@@ -80,7 +80,7 @@ lands — those are marked.
 | **K** `kernel-worker.ts` | **30–60 d** | **unknown until K1** | The largest single file in the repo, 32,718 lines with 515 `SYS_` references. Plausibly the largest lane in the campaign, and no census has run. |
 | **L** host↔kernel plumbing (V4) | **10–20 d** | **unknown until L1** | 5,853 lines holding two real invariants. `crates/host-native` is the existence proof for what the floor actually is, and nobody has compared against it. |
 | **E** Node/browser peers | **10–20 d** | **unknown until E1** | ~70% divergence across three pairs. The classification *is* the work; `process-lifecycle.ts` proves the mechanism. |
-| **Y** image builders (V3) | **10–20 d** | **unknown until Y1** | 13,502 lines, and byte-identical output for nine production images is the bar. **Blocks lane V.** |
+| **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **15–30 d** | low | 25,658 lines of shell plus 10,921 of TS/MJS. Ranked last: none of it is host API surface. |
 | **W** `web-libs` contracts | **4–8 d** | medium | Small and mostly a split: the host contract leaves, the browser product surface stays. |
 | **R** binary resolution | **4–8 d** | medium | Bounded, and the duplication is already provable against `host-native`'s own resolver. |
@@ -1422,72 +1422,95 @@ deliberate, recorded decision rather than a silent pick.
 
 # LANE Y — VFS image builders write the image format in TypeScript
 
-**Status: characterized. This is goal V3 stated directly, and it is a hard
-prerequisite for lane V.**
+**Status: Y1 census COMPLETE — `docs/plans/2026-09-11-lane-y1-census.md`.
+The gate was measuring the wrong thing and has been replaced.**
 
-`images/vfs/scripts/*.ts` — **13,502 lines**. Largest:
-`staged-product-inputs.ts` (1,973), `vfs-product-builder-contract.ts` (952),
-`wordpress-preinstall.ts` (921), `shell-vfs-build.ts` (870),
-`build-source-rootfs-shell-image.ts` (813).
+`images/vfs/scripts/*.ts` — 13,502 lines, and **36 files under `images/`
+import the TypeScript filesystem**.
 
-## What this lane is
+## What this lane is — as corrected by the census
 
-The builders that produce every VFS image. **They write images through
-`host/src/vfs/memory-fs.ts`** — `images/vfs/scripts/vfs-image-helpers.ts`
-imports it directly — which means the image format is written by the same
-TypeScript filesystem lane V is deleting.
+**Not a line-reduction lane.** The 13,502 lines are overwhelmingly *recipes*:
+which packages go in the LAMP image, how WordPress is preinstalled, what dinit
+services MariaDB declares. That is product configuration and it stays. The old
+`imageBuilderTypeScript` target of 2,000 invited deleting exactly the wrong
+lines — `wordpress-preinstall.ts` is 921 lines of product logic with nothing to
+do with the format.
+
+The lane is **decoupling**: goal V3 (one implementation of the format) and
+unblocking lane V, which cannot delete `memory-fs.ts` while 36 files import it.
+
+The builders need a real filesystem, not a tree-builder — **24 distinct
+`MemoryFileSystem` methods**, led by `chmod` (31 calls), `stat` (17), `chown`
+(17), `getLazyEntry` (10). But they touch the SFFS format at exactly **one
+point**: every builder funnels through `saveImage` → `serializeImage` →
+`fs.saveImage()`.
 
 ## End state
 
-Images are produced by the Rust writer that already exists. **Goal V3 — an ABI
-change cannot break an image — is achieved by construction**, because the
-kernel and the builder share one implementation of the format rather than
-agreeing to match.
+Images are produced by the Rust writer. Goal V3 is achieved by construction,
+because the kernel and the builder share one implementation of the format
+rather than agreeing to match. The recipes are untouched.
 
 ## The floor
 
-Deciding *what goes in* an image is product configuration and stays: which
-packages, which demo metadata, which lazy archives, WordPress preinstall steps.
-**Writing the format is not floor**, and a Rust SFFS writer already exists —
-`sffs_write.rs`, 2,387 lines, live via `kernel_rootfs_export_tree` and pinned
-to the TypeScript one by four byte-level cross-language fixtures.
+Deciding *what goes in* an image is product configuration and stays.
 
-The split this lane draws: builders keep the *recipe*, the writer owns the
-*format*.
+**Writing the format is not floor, and the Rust side is nearly there already.**
+`sffs_write.rs`, `sffs.rs` and `sffs_deferred.rs` between them already cover
+`chmod`→`set_mode`, `chown`→`set_owner`, `symlink`, `mkdir`, `create_file`,
+`create_deferred_file`, `link`, `set_times`, `stat`→`stat_ino`,
+`readdir`→`read_dir`, `readlink`→`read_link`, `read`→`read_at`, and deferred
+inspection.
+
+**The genuine gaps are image-level, not filesystem-level**: `statfs` (derivable
+from `Sffs::geometry`), image metadata get/set, lazy-archive import/export,
+`rebaseToNewFileSystem`, `unlink`, plus three policy assertions
+(`assertNoStaleWasmArtifacts`, headroom, capacity) and zstd compression. **Six
+operations and three assertions**, against a lane scoped as though the whole
+filesystem needed rebuilding.
+
+The lane text previously said three builders "write the format directly". **That
+was wrong.** Only two files reach past `MemoryFileSystem` into
+`sharedfs-vendor.ts`, and only for the constants `ENOENT`, `SFSError`, `S_IFMT`
+and `S_IFREG`.
 
 ## Increments
 
-- **Y1 — census the format-touching builders.** `dinit-image-helpers.ts`,
-  `staged-product-inputs.ts` and `vfs-image-helpers.ts` reference the format
-  directly; the rest reach it through those. Establish which need the format
-  and which only need a directory tree.
-- **Y2 — route image writing through the Rust writer**, via the export it
-  already has plus whatever Y1 shows is missing.
-- **Y3 — cut the `memory-fs.ts` import.** This is the increment **lane V is
-  blocked on**: `memoryFsTypeScript` cannot reach 0 while `images/` imports it.
-- **Y4 — the recipe layer stays TypeScript** and is explicitly named as product
-  configuration, so it is not mistaken for residue later.
+- **Y1 — census.** Done.
+- **Y2 — close the six image-level gaps** in Rust.
+- **Y3 — move the three policy assertions** to sit with the writer, so a new
+  image path cannot skip them.
+- **Y4 — one bridge** the builders call instead of `MemoryFileSystem`, exposing
+  the 24 methods over the Rust implementation.
+- **Y5 — repoint 36 files.** Mechanical once Y4 exists.
+- **Y6 — replace the four `sharedfs-vendor` constants** with generated ABI
+  constants.
+- **The recipes are not touched**, and that is the point.
 
 ## Acceptance evidence
 
-`imageBuilderTypeScript` reaches **2,000**. Provisional; Y1 sets the real
-number.
+`imageBuilderFilesystemImporters` reaches **0** — the fact lane V is blocked
+on. Set by the census, and the census's own ceiling was corrected by the gate
+on its first run (it reported 36 against a hand-counted 34).
 
-The format evidence is byte equality: every production image must build
-byte-identically through the Rust writer before the TypeScript path is removed
-— the same standard lane V's four cross-language fixtures already set, applied
-to whole images rather than fixtures. **Nine production images exist and all
-nine must pass**, the corpus lane C already used for the lazy-identity gate.
+The format evidence is byte equality: **nine production images must build
+byte-identically** through the Rust writer before the TypeScript path is
+removed — the corpus lane C already used for the lazy-identity gate.
 
 ## Known hazards
 
-- **Lane V cannot close without this lane**, and the master plan did not say so
-  until now. Any schedule that puts V before Y is wrong.
-- **A builder that silently produces a different image** is the worst outcome
-  here, because images are validated by running them and a subtly wrong image
-  fails somewhere unrelated. Byte equality is the only acceptable bar.
-- **`wordpress-preinstall.ts` (921 lines) is product logic, not format logic**,
-  and a line-count target invites deleting the wrong 921 lines.
+- **Lane V cannot close without this lane.** Any schedule putting V before Y is
+  wrong.
+- **A builder that silently produces a different image** is the worst outcome,
+  because images are validated by running them and a subtly wrong image fails
+  somewhere unrelated. Byte equality is the only acceptable bar.
+- **The three policy assertions are the most likely thing to be silently
+  dropped.** They live inside `serializeImage` today, and nobody has checked
+  whether a test would notice their absence.
+- **Byte-identical output may require changes to the Rust writer's block
+  allocation order.** Four cross-language fixtures suggest it is achievable;
+  nine whole images is a much larger claim.
 
 ---
 

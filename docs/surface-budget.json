@@ -142,13 +142,6 @@
       "target": 500,
       "why": "Lane R. Artifact resolution over local-binaries/ and binaries/ \u2014 priority order, legacy-fork-artifact staleness, package candidates. The largest body in host/src with zero WebAssembly, SharedArrayBuffer or postMessage references. Partial Rust already exists in crates/host-native and tools/xtask. Target is not 0 because a host must still read its own filesystem. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
     },
-    "imageBuilderTypeScript": {
-      "measure": "line count of images/vfs/scripts/*.ts",
-      "ceiling": 13502,
-      "slack": 300,
-      "target": 2000,
-      "why": "Lane Y, and goal V3 directly. The builders that produce VFS images write them through host/src/vfs/memory-fs.ts \u2014 the TypeScript filesystem lane V is deleting \u2014 so an ABI change can still break an image, and lane V cannot finish while they depend on it. A Rust SFFS writer already exists (sffs_write.rs, 2,387 lines, live via kernel_rootfs_export_tree). **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
     "webLibsSessionTypeScript": {
       "measure": "line count of web-libs/kandelo-session/src/*.ts",
       "ceiling": 5360,
@@ -169,6 +162,13 @@
       "slack": 300,
       "target": 4000,
       "why": "Lane U's TypeScript and MJS half. Includes generate-rootfs-package-manifest.mjs, the emitter lane S already indicted for shipping sudo setuid-root as a lazy ref with no integrity digest. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
+    },
+    "imageBuilderFilesystemImporters": {
+      "measure": "files under images/ importing host/src/vfs/memory-fs or sharedfs-vendor",
+      "ceiling": 36,
+      "slack": 0,
+      "target": 0,
+      "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes \u2014 which packages go in the LAMP image, how WordPress is preinstalled \u2014 and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done."
     }
   },
   "lanes": {
@@ -384,11 +384,11 @@
       "status": "open",
       "closure": [
         {
-          "surface": "imageBuilderTypeScript",
-          "atMost": 2000
+          "surface": "imageBuilderFilesystemImporters",
+          "atMost": 0
         }
       ],
-      "why": "Goal V3 directly: ABI changes can break images because the builders write them through the TypeScript filesystem. Also a hard prerequisite for lane V \u2014 memory-fs.ts cannot be deleted while images/vfs/scripts imports it."
+      "why": "Goal V3, and a hard prerequisite for lane V. The Y1 census found the Rust side already covers nearly the whole builder contract across sffs_write.rs, sffs.rs and sffs_deferred.rs; the gaps are six image-level operations and three policy assertions, not a filesystem. Not a line-reduction lane \u2014 a decoupling lane."
     },
     "W": {
       "title": "web-libs session contracts a new host consumes",

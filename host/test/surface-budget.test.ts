@@ -163,7 +163,19 @@ const MEASURED: Record<string, () => number> = {
       "host/src/node-kernel-protocol.ts",
     ]),
   binaryResolverTypeScript: () => lineCount(["host/src/binary-resolver.ts"]),
-  imageBuilderTypeScript: () => lineCount(["images/vfs/scripts/*.ts"]),
+  imageBuilderFilesystemImporters: () =>
+    Number.parseInt(
+      execFileSync(
+        "/bin/sh",
+        [
+          "-c",
+          "grep -rl -E 'from \"[^\"]*(memory-fs|sharedfs-vendor)\"' "
+            + "--include='*.ts' images/ | wc -l",
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      ).trim(),
+      10,
+    ),
   webLibsSessionTypeScript: () =>
     lineCount(["web-libs/kandelo-session/src/*.ts"]),
   buildAutomationShell: () =>
