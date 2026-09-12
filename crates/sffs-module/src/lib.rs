@@ -307,6 +307,105 @@ pub unsafe extern "C" fn sm_write_file(
     }
 }
 
+/// Size in bytes of the record [`sm_lstat`] writes.
+///
+/// Queried rather than hardcoded on the TypeScript side. The layout is the
+/// GENERATED ABI one (`process_layout::stat`), the same record the syscall
+/// wire uses, so the module and its caller cannot disagree about it -- and a
+/// caller that baked in a number would be a second, hand-maintained copy of
+/// ABI knowledge, which is this campaign's most frequently rediscovered
+/// defect (L-D2, W-D1, V-D1).
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_stat_size() -> usize {
+    wasm_posix_shared::process_layout::stat::SIZE as usize
+}
+
+/// `lstat` a path, writing the generated stat record into `out`.
+///
+/// Does not follow a final symlink, which is what the builders need: they
+/// inspect the link, not its target.
+///
+/// # Safety
+/// Both ranges must describe readable/writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_lstat(
+    path_ptr: usize,
+    path_len: usize,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    let path = unsafe { slice(path_ptr, path_len) };
+    let stat = match rootfs::lstat(path) {
+        Ok(stat) => stat,
+        Err(e) => return err(e),
+    };
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    match runtime_core::process_wire::write_stat(out, &stat) {
+        Ok(()) => 0,
+        Err(e) => err(e),
+    }
+}
+
+/// Read a symlink's target into `out`. Returns the byte count, or a negative
+/// errno.
+///
+/// # Safety
+/// Both ranges must describe readable/writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_readlink(
+    path_ptr: usize,
+    path_len: usize,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    let path = unsafe { slice(path_ptr, path_len) };
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    match rootfs::readlink(path, out) {
+        Ok(n) => n as i32,
+        Err(e) => err(e),
+    }
+}
+
+/// Read file bytes at `offset` into `out`. Returns the byte count, or a
+/// negative errno.
+///
+/// A caller reading a whole file sizes `out` from [`sm_lstat`]'s `st_size`
+/// rather than guessing, and a short return means end of file rather than an
+/// error -- the same contract POSIX `read` has, so a builder's loop is the one
+/// it already knows how to write.
+///
+/// # Safety
+/// Both ranges must describe readable/writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_read_file(
+    path_ptr: usize,
+    path_len: usize,
+    offset: i64,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    let path = unsafe { slice(path_ptr, path_len) };
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    // The byte source is EIO for the same reason as in `sm_write_file`: this
+    // module has no host blob store, so a BASE file's bytes are unreachable
+    // here. Unlike the write path, this one CAN reach it -- reading a base
+    // file is exactly the case -- so the failure is real and loud rather than
+    // unreachable. A derived build must wire a real source.
+    match rootfs::read_file_at(path, offset, out, |_req, _dst| Err(Errno::EIO)) {
+        Ok(n) => n as i32,
+        Err(e) => err(e),
+    }
+}
+
 /// # Safety
 /// `path_ptr`/`path_len` must describe a readable range.
 #[unsafe(no_mangle)]
@@ -488,6 +587,111 @@ mod tests {
         let st = rootfs::lstat(b"/f").expect("f exists");
         assert_eq!(st.st_size, 5, "the longer original must be truncated away");
         assert_eq!(st.st_mode & 0o7777, 0o600, "a replace sets the mode too");
+    }
+
+    /// The stat record the module writes is the GENERATED ABI layout, decoded
+    /// here at the same offsets a caller would use -- not at offsets this test
+    /// invents, which would only prove the module agrees with the test.
+    #[test]
+    fn lstat_writes_the_generated_stat_layout() {
+        use wasm_posix_shared::process_layout::stat as L;
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(
+            with_two(b"/f", b"12345", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o640, cp, cl)
+            }),
+            0
+        );
+        assert_eq!(with_path(b"/f", |p, l| unsafe { sm_chown(p, l, 3, 4, 0) }), 0);
+
+        let size = sm_stat_size();
+        assert_eq!(size, L::SIZE as usize, "the queried size is the generated one");
+        let out = sm_alloc(size);
+        assert_ne!(out, 0);
+        let rc = with_path(b"/f", |p, l| unsafe { sm_lstat(p, l, out, size) });
+        assert_eq!(rc, 0);
+
+        let bytes = unsafe { core::slice::from_raw_parts(out as *const u8, size) };
+        let u32_at = |off: u32| {
+            let o = off as usize;
+            u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]])
+        };
+        let u64_at = |off: u32| {
+            let o = off as usize;
+            let mut v = [0u8; 8];
+            v.copy_from_slice(&bytes[o..o + 8]);
+            u64::from_le_bytes(v)
+        };
+        assert_eq!(u32_at(L::MODE_OFFSET) & 0o7777, 0o640);
+        assert_eq!(u32_at(L::UID_OFFSET), 3);
+        assert_eq!(u32_at(L::GID_OFFSET), 4);
+        assert_eq!(u64_at(L::SIZE_OFFSET), 5);
+        unsafe { sm_free(out, size) };
+    }
+
+    /// A buffer too small for the record is refused rather than partially
+    /// filled: a half-written stat is worse than no stat, because it looks
+    /// like data.
+    #[test]
+    fn lstat_refuses_an_undersized_buffer() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        let size = sm_stat_size();
+        let out = sm_alloc(size);
+        let rc = with_path(b"/", |p, l| unsafe { sm_lstat(p, l, out, size - 1) });
+        assert!(rc < 0, "an undersized buffer must fail, got {rc}");
+        unsafe { sm_free(out, size) };
+    }
+
+    #[test]
+    fn readlink_and_read_file_return_byte_counts() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(
+            with_two(b"/data", b"hello world", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o644, cp, cl)
+            }),
+            0
+        );
+        let rc = with_two(b"/link", b"data", |lp, ll, tp, tl| unsafe {
+            sm_symlink(tp, tl, lp, ll, 0, 0)
+        });
+        assert_eq!(rc, 0);
+
+        let buf = sm_alloc(32);
+        let n = with_path(b"/link", |p, l| unsafe { sm_readlink(p, l, buf, 32) });
+        assert_eq!(n, 4);
+        let target = unsafe { core::slice::from_raw_parts(buf as *const u8, 4) };
+        assert_eq!(target, b"data");
+
+        let n = with_path(b"/data", |p, l| unsafe { sm_read_file(p, l, 0, buf, 32) });
+        assert_eq!(n, 11);
+        let body = unsafe { core::slice::from_raw_parts(buf as *const u8, 11) };
+        assert_eq!(body, b"hello world");
+
+        // Reading past the end returns 0, not an error -- POSIX read's
+        // contract, so a builder's loop terminates the way it expects.
+        let n = with_path(b"/data", |p, l| unsafe { sm_read_file(p, l, 11, buf, 32) });
+        assert_eq!(n, 0);
+        unsafe { sm_free(buf, 32) };
+    }
+
+    /// Reading a BASE file is the case the write path could not reach: its
+    /// bytes live in a host blob this module has no access to, so the failure
+    /// is real rather than unreachable, and must be loud.
+    #[test]
+    fn reading_a_base_file_fails_loudly_rather_than_returning_zeroes() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        rootfs::insert_base_file(b"/base.bin", 42, 16, 0o644, 0, 0, 7).expect("insert base");
+        let buf = sm_alloc(16);
+        let rc = with_path(b"/base.bin", |p, l| unsafe { sm_read_file(p, l, 0, buf, 16) });
+        assert!(
+            rc < 0,
+            "a base file's bytes are unreachable here; returning zeroes would be a silent lie, got {rc}",
+        );
+        unsafe { sm_free(buf, 16) };
     }
 
     #[test]
