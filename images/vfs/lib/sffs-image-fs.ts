@@ -29,9 +29,14 @@ export interface SffsStat {
   mode: number;
   uid: number;
   gid: number;
+  /** The file's REAL length, whether or not its bytes are in the image. */
   size: number;
   ino: number;
   nlink: number;
+  /** True when the image describes these bytes but does not contain them. */
+  deferred: boolean;
+  /** The archive backing a deferred file, or 0 when it is fetched standalone. */
+  archiveId: number;
 }
 
 interface ModuleExports {
@@ -230,6 +235,8 @@ export class SffsImageFs {
         uid: field(STAT_FIELD.UID),
         gid: field(STAT_FIELD.GID),
         size: field(STAT_FIELD.SIZE),
+        deferred: field(STAT_FIELD.DEFERRED) !== 0,
+        archiveId: field(STAT_FIELD.ARCHIVE_ID),
       };
     } finally {
       this.exports.sm_free(out, size);
@@ -441,6 +448,26 @@ export class SffsImageFs {
   }
 
   /**
+   * Whether `path`'s bytes are in the image.
+   *
+   * Replaces the two questions builder recipes asked the TypeScript filesystem
+   * — `isPathDeferred` and `getLazyEntry(...) !== null` — which are real
+   * product assertions ("dinit must be resident before service boot", "the
+   * login program must be eager") and were the only reason those recipes
+   * needed the implementation rather than an interface.
+   *
+   * Read from the stat record rather than a call of its own: whether a file's
+   * bytes are present is metadata about the file, and `size` there is already
+   * its real length whether or not it is deferred.
+   *
+   * The fetch URL is deliberately absent. Nothing reads one through this path,
+   * and it lives in the deferred payload the kernel carries without reading.
+   */
+  isDeferred(path: string): boolean {
+    return this.lstat(path).deferred;
+  }
+
+  /**
    * Metadata the exported image will declare: the builder's statements about
    * its own artifact (`version`, `kernelAbi`, `createdBy`).
    *
@@ -526,6 +553,8 @@ const STAT_FIELD = {
   UID: 3,
   GID: 4,
   SIZE: 5,
+  DEFERRED: 6,
+  ARCHIVE_ID: 7,
 } as const;
 
 function defaultModuleBytes(): Uint8Array {

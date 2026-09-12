@@ -207,6 +207,40 @@ describe("SffsImageFs", () => {
     );
   });
 
+  it("answers whether a path's bytes are in the image", () => {
+    // The question builder recipes ask: "is this resident?" They asked it of
+    // the TypeScript filesystem, which is the only reason they needed the
+    // implementation rather than an interface.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.writeFile("/usr/here", new TextEncoder().encode("bytes"), 0o644);
+    fs.registerLazyFile({
+      path: "/usr/there",
+      archiveId: 3,
+      sourcePath: "members/big.bin",
+      size: 99_999,
+      mode: 0o755,
+      ino: 40,
+      archiveBytes: 8_000_000,
+    });
+
+    const here = fs.lstat("/usr/here");
+    expect(here.deferred).toBe(false);
+    expect(here.size).toBe(5);
+    expect(fs.isDeferred("/usr/here")).toBe(false);
+
+    const there = fs.lstat("/usr/there");
+    expect(there.deferred).toBe(true);
+    expect(there.ino).toBe(40);
+    // The REAL size, not the zero-length stub in the body. A recipe asking how
+    // big a deferred file is must not have to fetch it first.
+    expect(there.size).toBe(99_999);
+    expect(there.archiveId).toBe(3);
+    expect(fs.isDeferred("/usr/there")).toBe(true);
+
+    expect(() => fs.isDeferred("/nope")).toThrow(/ENOENT/);
+  });
+
   it("refuses one archive declared with two different lengths", () => {
     // The member's size and the ARCHIVE's size are different numbers, and the
     // second is what bounds the fetch. Two lengths for one archive would make

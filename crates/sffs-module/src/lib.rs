@@ -319,10 +319,10 @@ pub unsafe extern "C" fn sm_write_file(
 /// module could change.
 #[unsafe(no_mangle)]
 pub extern "C" fn sm_stat_size() -> usize {
-    6 * 8
+    8 * 8
 }
 
-/// Field order of the [`sm_lstat`] record. Six `u64`s, little-endian:
+/// Field order of the [`sm_lstat`] record. Eight `u64`s, little-endian:
 ///
 /// | offset | field |
 /// |---|---|
@@ -332,6 +332,29 @@ pub extern "C" fn sm_stat_size() -> usize {
 /// | 24 | uid |
 /// | 32 | gid |
 /// | 40 | size |
+/// | 48 | deferred (0 or 1) |
+/// | 56 | archive_id (0 when not backed by an archive) |
+///
+/// # Why deferred-ness is a stat field and not an entry point of its own
+///
+/// Builder recipes ask two questions the TypeScript filesystem answered and
+/// this module could not: `isPathDeferred(path)` and
+/// `getLazyEntry(path) !== null`. They are real product assertions -- "dinit
+/// must be resident before service boot", "the login program must be eager" --
+/// and they were the only reason those recipes needed the IMPLEMENTATION
+/// rather than an interface.
+///
+/// Adding `sm_lazy_info` would have answered them and made this the module's
+/// twentieth entry point, one increment after `sffsModuleEntryPoints` was
+/// banked at nineteen. Raising a ceiling you set yourself, immediately, is the
+/// shape the budget exists to catch — and the better design was available:
+/// whether a file's bytes are present is METADATA ABOUT THE FILE, which is
+/// what `lstat` reports. `size` here is already the real length of a deferred
+/// file rather than its zero-length stub, so the record was half-answering the
+/// question already.
+///
+/// The record's length is discoverable through [`sm_stat_size`], so growing it
+/// costs the bridge nothing: it already asks rather than assuming.
 ///
 /// # Why this is NOT the generated ABI stat layout
 ///
@@ -373,13 +396,22 @@ pub unsafe extern "C" fn sm_lstat(
         return err(Errno::EINVAL);
     }
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-    let fields: [u64; 6] = [
+    // `lazy_info` walks the same path a second time. Cheap, and it keeps
+    // `lstat` reporting exactly what `rootfs::lstat` says rather than
+    // assembling a stat from two sources that could disagree.
+    let (deferred, _ino, _size, archive_id) = match rootfs::lazy_info(path) {
+        Ok(info) => info,
+        Err(e) => return err(e),
+    };
+    let fields: [u64; 8] = [
         stat.st_ino,
         stat.st_mode as u64,
         stat.st_nlink as u64,
         stat.st_uid as u64,
         stat.st_gid as u64,
         stat.st_size,
+        u64::from(deferred),
+        u64::from(archive_id),
     ];
     for (i, value) in fields.iter().enumerate() {
         out[i * 8..i * 8 + 8].copy_from_slice(&value.to_le_bytes());
@@ -844,7 +876,7 @@ mod tests {
         assert_eq!(with_path(b"/f", |p, l| unsafe { sm_chown(p, l, 3, 4, 0) }), 0);
 
         let size = sm_stat_size();
-        assert_eq!(size, 48, "six u64 fields");
+        assert_eq!(size, 64, "eight u64 fields");
         let out = sm_alloc(size);
         assert_ne!(out, 0);
         let rc = with_path(b"/f", |p, l| unsafe { sm_lstat(p, l, out, size) });
@@ -860,6 +892,8 @@ mod tests {
         assert_eq!(at(3), 3, "uid at field 3");
         assert_eq!(at(4), 4, "gid at field 4");
         assert_eq!(at(5), 5, "size at field 5");
+        assert_eq!(at(6), 0, "not deferred, at field 6");
+        assert_eq!(at(7), 0, "no archive, at field 7");
         unsafe { sm_free(out, size) };
     }
 
@@ -1275,6 +1309,53 @@ mod tests {
             Some(8_000_000),
             "the exported section declares the archive its record points into",
         );
+    }
+
+    #[test]
+    fn the_stat_record_says_whether_a_files_bytes_are_present() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        assert_eq!(
+            with_two(b"/usr/here", b"bytes", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o644, cp, cl)
+            }),
+            0
+        );
+        let rc = with_two(b"/usr/there", b"members/big.bin", |pp, pl, sp, sl| unsafe {
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0)
+        });
+        assert_eq!(rc, 0);
+
+        let size = sm_stat_size();
+        assert_eq!(size, 64, "eight u64s, and the bridge asks rather than assumes");
+        let read = |path: &[u8]| -> alloc::vec::Vec<u64> {
+            let buf = sm_alloc(size);
+            assert_eq!(with_path(path, |p, l| unsafe { sm_lstat(p, l, buf, size) }), 0);
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+            let out: alloc::vec::Vec<u64> = (0..8)
+                .map(|i| {
+                    u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8 bytes"))
+                })
+                .collect();
+            unsafe { sm_free(buf, size) };
+            out
+        };
+
+        let here = read(b"/usr/here");
+        assert_eq!(here[6], 0, "written through the ABI, so its bytes are here");
+        assert_eq!(here[5], 5);
+        assert_eq!(here[7], 0, "and no archive behind it");
+
+        let there = read(b"/usr/there");
+        assert_eq!(there[6], 1, "registered lazy, so its bytes are not");
+        assert_eq!(there[0], 40, "the inode it was registered under");
+        assert_eq!(
+            there[5], 99_999,
+            "the REAL size, not the zero-length stub -- a recipe asking how big \
+             a deferred file is must not have to fetch it first",
+        );
+        assert_eq!(there[7], 3, "and which archive backs it");
     }
 
     #[test]

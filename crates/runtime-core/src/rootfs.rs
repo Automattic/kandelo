@@ -1247,6 +1247,42 @@ pub fn insert_lazy_file(
     })
 }
 
+/// What a builder needs to know about whether `path`'s bytes are in the image.
+///
+/// `(deferred, ino, size, archive_id)`. `deferred` is false for an ordinary
+/// file, in which case the other fields still describe it — a caller asking
+/// "is this resident?" gets its answer without a second call.
+///
+/// **The fields are the ones something reads, not the ones the old TypeScript
+/// registry happened to expose.** Measured across the four recipes that call
+/// `getLazyEntry`/`isPathDeferred`: two use the result only as a boolean, one
+/// reads `size`, one reads inode identity. `url` is not here because nothing
+/// reads it through this path — it lives in the deferred payload, opaque, and
+/// building an accessor for it would be a floor nobody stands on.
+pub fn lazy_info(path: &[u8]) -> Result<(bool, u64, u64, u32), Errno> {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        let inode = state.get(idx).ok_or(Errno::ENOENT)?;
+        Ok(match &inode.kind {
+            InodeKind::LazyMember {
+                archive_id, size, ..
+            } => (true, inode.ino, *size, *archive_id),
+            // A base file whose bytes the host fetches: deferred, with no
+            // archive behind it.
+            InodeKind::BaseRegular {
+                size,
+                source: BaseSource::Host,
+                ..
+            } => (true, inode.ino, *size, 0),
+            InodeKind::BaseRegular { size, .. } => (false, inode.ino, *size, 0),
+            InodeKind::Regular(data) => (false, inode.ino, data.len() as u64, 0),
+            _ => (false, inode.ino, 0, 0),
+        })
+    })
+}
+
 /// The `(archive_id, source_path)` of a lazy-file placeholder at `path`. Used
 /// by the byte-serving path (Increment 3b-wiring.2) to resolve which archive
 /// to fetch and which member within it to extract; exposed now as an accessor
