@@ -140,8 +140,30 @@ pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
     image.get(start..end).ok_or(Errno::EINVAL)
 }
 
-const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES: u32 = 1 << 1;
-const VFS_IMAGE_FLAG_HAS_METADATA: u32 = 1 << 2;
+/// Container flag bits.
+///
+/// These are ABI: they are written by `host/src/vfs/memory-fs.ts` and read
+/// here, and a reader that disagrees about a bit walks the trailer to the
+/// wrong offset. They live together so the writer in
+/// [`crate::sffs_container`] and the readers below cannot drift; two of them
+/// were previously private to this file and two existed only in TypeScript.
+///
+/// `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY` is deliberately NOT redefined here -- it
+/// already has a home in `wasm_posix_shared::abi`, and a second definition is
+/// the drift this grouping exists to prevent.
+pub const VFS_IMAGE_FLAG_HAS_LAZY: u32 = 1 << 0;
+pub const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES: u32 = 1 << 1;
+pub const VFS_IMAGE_FLAG_HAS_METADATA: u32 = 1 << 2;
+pub const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES: u32 = 1 << 3;
+
+/// Container header: magic(4) | version(4) | flags(4) | body length(4).
+pub const VFSI_HEADER_SIZE: usize = VFSI_HEADER;
+
+/// The container magic, for the writer.
+pub const VFSI_CONTAINER_MAGIC: u32 = VFSI_MAGIC;
+
+/// The container version this repository writes and reads.
+pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
 
 /// Byte span of the image's kernel-facing lazy-linkage section ("KLZY"), or
 /// `None` when the image does not declare one.

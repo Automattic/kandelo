@@ -141,3 +141,61 @@ every estimate so far has been larger than filed.
 order agrees between the writers for a real image (the four cross-language
 fixtures say it does for four small trees); and what the `.vfs.zst` container
 should look like after V5, which is a lane V question lane Y will hit first.
+
+---
+
+## CORRECTION 2026-09-12 — section 4 asked the wrong question
+
+Section 4 above offered three substrates and recommended making `tmpfs.rs`
+instantiable. The maintainer's response exposed two errors in the framing, and
+they are worth more than the recommendation was.
+
+**Error 1: "give `SffsWriter` read-back and `unlink`" was never a real option,
+and listing it implied the append-only property was an oversight.** It is
+load-bearing, and the writer's own header says so: `lamp.vfs` is 249 MiB and
+"the kernel cannot hold an image in linear memory", so the writer never
+materializes file content — a data block carrying file bytes is recorded as a
+*reference* into a `ContentSource` and resolved only when `SffsImage::read_at`
+reaches it. It is a streaming one-pass layout emitter, and that shape is what
+lets W-3's streaming emission layer on top without redesigning the layout pass.
+**`SffsWriter` is the serializer, not the working tree**, and making it mutable
+would fight the reason it exists.
+
+**Error 2: the substrate was not missing. It was dormant, and I did not look
+for it.** Nothing in Rust mutates an SFFS image in place — `sffs.rs` has no
+write path at all. The kernel's model is an immutable SFFS base plus a mutable
+overlay, and **Phase 5 already built both halves**:
+
+* `crates/runtime-core/src/tmpfs.rs` — mutable, empty-start.
+* `crates/runtime-core/src/rootfs.rs`, **5,813 lines** — "in-kernel overlay for
+  the image-backed root filesystem `/`": immutable base layer, mutable overlay
+  with copy-on-write on first write, whiteouts, POSIX unlink-while-open.
+
+Its header still says directory mutation "lands in Increment 2b-ii". **The
+header is stale**; verified present: `unlink`, `rmdir`, `mkdir`, `chmod`,
+`chown`, `rename`, `symlink`, `link`, `utimensat`, `truncate`, `write`,
+`statfs`, `readdir`.
+
+**They map onto the builders' two modes exactly.** `MemoryFileSystem.create`
+(fresh tree) → `tmpfs.rs`. `MemoryFileSystem.fromImage` (derive from a base
+image) → `rootfs.rs`'s overlay — which is precisely what
+`shell-rootfs-restore.ts` and `package-shell-vfs-build.ts` do.
+
+**Decision (maintainer, 2026-09-12): reuse Phase 5's filesystems.** No fourth
+filesystem is written; the campaign's stated defect is that SFFS exists twice,
+and a builder-only filesystem would make it four. Lane Y becomes Phase 5's
+**first production caller** — 7,537 lines currently ship behind
+`TMPFS_ENABLED` / `ROOTFS_ENABLED` defaulting to false, which is hazard H-1 at
+scale.
+
+Accepted costs: both stores are `static` singletons and need an instance handle
+before one process can hold two filesystems, which a derived build does; and
+lane Y is now coupled to the Phase 5 cutover's timing.
+
+**The method lesson, which is the reusable part:** gap 8 was found by reading
+`SffsWriter`'s API surface and noticing what was absent. Absence in one module
+is not absence in the repository, and I filed a decision before searching for
+an existing implementation. The campaign's own H-8 says a coupling score
+selects files to open and never classifies one; this is the same error in the
+other direction — an API gap selects a question to ask, and never settles that
+the thing is unbuilt.
