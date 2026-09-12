@@ -370,11 +370,34 @@ all. The kernel's model is an immutable SFFS base plus a mutable overlay, and
   `rename`, `symlink`, `link`, `utimensat`, `truncate`, `write`, `statfs`,
   `readdir`.
 
-**And they map onto the builders' two modes exactly:**
-`MemoryFileSystem.create` (fresh tree) → `tmpfs.rs`;
-`MemoryFileSystem.fromImage` (derive from a base image) → `rootfs.rs`'s
-overlay, which is what `shell-rootfs-restore.ts` and
-`package-shell-vfs-build.ts` do.
+**CORRECTION 2026-09-12, before any code was written.** The decision was
+presented with the mapping "`MemoryFileSystem.create` (fresh tree) → `tmpfs.rs`;
+`MemoryFileSystem.fromImage` → `rootfs.rs`". **The `tmpfs.rs` half was wrong.**
+
+`tmpfs.rs` is not a general filesystem. It is the SCRATCH-MOUNT filesystem,
+with its mount table compiled in: `SCRATCH_MOUNTS` lists seven prefixes
+(`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`),
+and `owns_path` is a prefix predicate over exactly those. A builder writing
+`/usr/bin/ls` is simply not a path it serves.
+
+**`rootfs.rs` serves both modes**, and the checks that matter are:
+
+* it owns any absolute path — `owns_path(b"/usr/bin/ls")`, `owns_path(b"/")`
+  and `owns_path(b"/etc/passwd")` are all true, asserted by its own tests;
+* it needs no image — `root: None` at construction, created on first use, and
+  `image: Option<ImageGeometry>` is `None` until one is loaded. A fresh tree is
+  the empty-base case of the same overlay;
+* mutations do not gate on path ownership. `owns_path` appears at exactly one
+  internal site, `statfs`, which is read-only. So a `RootfsState` driven
+  directly can create `/tmp` and `/srv` — **which it must**, because all seven
+  tmpfs-owned prefixes are present in the shipped shell image, measured with
+  `xtask vfs-image describe`.
+
+**Consequences:** the substrate is `rootfs.rs` alone, `tmpfs.rs` is untouched by
+lane Y, and the refactor is **64 sites rather than 93**. The `statfs` gate is
+the one op a builder cannot reuse as-is — it returns a placeholder
+`RAMFS_MAGIC` "reconciled at cutover", so the census's geometry-derived
+`statfs` is still owed.
 
 **The decision, and what it costs.** Lane Y's bridge sits on those two.
 No fourth filesystem is written — the campaign's stated defect is that SFFS
