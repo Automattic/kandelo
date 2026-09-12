@@ -101,11 +101,11 @@
       "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
     },
     "unguardedLayoutModules": {
-      "measure": "process_layout modules the generated musl header does not cover",
-      "ceiling": 9,
-      "slack": 9,
+      "measure": "process_layout modules with no _Static_assert against musl in the generated assert header",
+      "ceiling": 15,
+      "slack": 0,
       "target": 0,
-      "why": "render_process_layouts_header covers 6 of 15 layout modules, so most of the struct offsets the C side depends on have nothing checking them against musl. That is how statx came to write half a device number with no gate objecting."
+      "why": "Lane G. **The measure was corrected on 2026-09-12, while implementing G1, because the original one could be gamed.** It counted modules the generated header DELIVERS to C as #defines, so extending render_process_layouts_header to all 15 would have taken it to 0 while nothing was actually guarded \u2014 hazard H-2 exactly. The generated header carries 96 #defines and **zero _Static_asserts**, and no struct-layout assert exists anywhere in libc, so all 15 modules are unguarded, not 9. A #define hands C a number; it does not check that C's own struct agrees. The established pattern to follow is kandelo_channel_scalars.h, which includes the musl header it validates and emits #error on absence plus _Static_assert on drift. statx is the proven instance: stx_dev_minor was never written and the major was the low 32 bits, and nothing objected."
     },
     "kernelHostImportTypeScript": {
       "measure": "line count of host/src/kernel.ts",

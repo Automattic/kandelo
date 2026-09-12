@@ -128,43 +128,34 @@ const MEASURED: Record<string, () => number> = {
   },
   // Layout modules the C side depends on, minus the ones the generated header
   // gives a static assert. The remainder can drift from musl silently.
+  // Layout modules with no _Static_assert against musl. A #define hands C a
+  // number; it does not check that C's own struct agrees. The original measure
+  // counted modules the header DELIVERS, which could be satisfied by emitting
+  // more #defines while nothing was guarded (H-2).
   unguardedLayoutModules: () => {
     const layouts = readFileSync(
       join(repoRoot, "crates/shared/src/process_layout.rs"),
       "utf8",
     );
-    const declared = new Set(
-      [...layouts.matchAll(/^pub mod ([a-z_]+)/gm)].map((m) => m[1]!),
-    );
-    // The generated musl header only covers the modules the emitter imports;
-    // anything else can drift from musl with nothing objecting.
-    const emitter = readFileSync(
-      join(repoRoot, "tools/xtask/src/dump_abi.rs"),
-      "utf8",
-    );
-    const useList = emitter.match(
-      /fn render_process_layouts_header[\s\S]*?use shared::process_layout::\{([^}]*)\}/,
-    );
-    if (!useList) {
-      throw new Error(
-        "render_process_layouts_header no longer imports process_layout modules by name; " +
-          "update the unguardedLayoutModules measure to match the new emitter shape.",
+    const declared = [
+      ...layouts.matchAll(/^pub mod ([a-z_]+)/gm),
+    ].map((m) => m[1]!);
+    let asserts = "";
+    try {
+      asserts = readFileSync(
+        join(
+          repoRoot,
+          "libc/musl-overlay/include/bits/kandelo_process_layout_asserts.h",
+        ),
+        "utf8",
       );
+    } catch {
+      return declared.length; // header absent: nothing is guarded
     }
-    const covered = new Set(
-      useList[1]!
-        .split(",")
-        .map((name) => name.trim())
-        .filter((name) => name.length > 0),
-    );
-    for (const name of covered) {
-      if (!declared.has(name)) {
-        throw new Error(
-          `render_process_layouts_header imports unknown layout module "${name}"`,
-        );
-      }
-    }
-    return declared.size - covered.size;
+    return declared.filter(
+      (name) =>
+        !new RegExp(`KANDELO_LAYOUT_${name.toUpperCase()}_`).test(asserts),
+    ).length;
   },
   kernelHostImportTypeScript: () => lineCount(["host/src/kernel.ts"]),
   hostKernelPlumbingTypeScript: () =>
