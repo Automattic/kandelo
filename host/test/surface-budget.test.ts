@@ -305,6 +305,68 @@ const MEASURED: Record<string, () => number> = {
     }
     return declared.filter((name) => !asserted.has(name)).length;
   },
+  // Fork imports the guest declares that the fork-module does NOT yet export
+  // under the SAME name.
+  //
+  // # Why verbatim names, and why this is the definition of "done"
+  //
+  // `crates/shared/src/lib.rs` carries the canonical fork ABI as a table of
+  // `ProgramArtifactImport { name, params, results }`. That table is the
+  // contract -- not the host implementation, which is why it survived the host
+  // TypeScript being set aside.
+  //
+  // When the fork-module exports an import under the guest's OWN name, wiring
+  // the two together is a loop with no per-import knowledge in it:
+  //
+  //     for (const name of names) env[name] = forkModule.exports[name];
+  //
+  // `crates/host-native` already does exactly this for the five frame imports.
+  // Every name the module exports under a DIFFERENT spelling (`fm_ref_gc_route`
+  // for `__wpk_fork_ref_gc_route`) forces a mapping table back into the host,
+  // and a hand-maintained mapping beside a generated contract is the defect
+  // three separate censuses in this campaign have already found.
+  //
+  // So this counts what stands between here and a host layer that is pure
+  // wiring. It reaches 0 when the module serves the whole guest fork ABI.
+  forkGuestImportsUnserved: () => {
+    const shared = readFileSync(
+      join(repoRoot, "crates/shared/src/lib.rs"),
+      "utf8",
+    );
+    const constants = new Map<string, string>();
+    for (const m of shared.matchAll(
+      /pub const (WPK_FORK_[A-Z0-9_]+): &str =\s*"([^"]+)"/g,
+    )) {
+      constants.set(m[1], m[2]);
+    }
+    const canonical = new Set<string>();
+    for (const m of shared.matchAll(
+      /ProgramArtifactImport\s*\{\s*module:\s*[A-Z_0-9]+,\s*name:\s*([A-Z_0-9]+),/g,
+    )) {
+      canonical.add(constants.get(m[1]) ?? m[1]);
+    }
+    const served = new Set<string>();
+    const lib = readFileSync(
+      join(repoRoot, "crates/fork-module/src/lib.rs"),
+      "utf8",
+    );
+    for (const m of lib.matchAll(
+      /pub (?:unsafe )?extern "C" fn ([A-Za-z_0-9]+)/g,
+    )) {
+      served.add(m[1]);
+    }
+    // Names the walrus pass injects are exports too: Rust cannot emit a
+    // reference-returning function or a `call_indirect`, so those exports exist
+    // only after injection and are just as real to the guest.
+    const injected = readFileSync(
+      join(repoRoot, "crates/fork-module-inject/src/main.rs"),
+      "utf8",
+    );
+    for (const m of injected.matchAll(/"(__wpk_fork[a-z_0-9]+|fm_[a-z_0-9]+)"/g)) {
+      served.add(m[1]);
+    }
+    return [...canonical].filter((name) => !served.has(name)).length;
+  },
   kernelHostImportTypeScript: () => codeLineCount(["host/src/kernel.ts"]),
   hostKernelPlumbingTypeScript: () =>
     codeLineCount([

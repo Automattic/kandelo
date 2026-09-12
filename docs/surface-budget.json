@@ -189,6 +189,13 @@
       "slack": 10,
       "target": 150,
       "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration \u2014 the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
+    },
+    "forkGuestImportsUnserved": {
+      "measure": "canonical fork imports in the crates/shared ProgramArtifactImport table that crates/fork-module does not export under the same name",
+      "ceiling": 40,
+      "slack": 0,
+      "target": 0,
+      "why": "The guest declares 46 fork imports. Each one the fork-module exports VERBATIM can be wired with a nameless loop -- host-native already does this for the five frame imports. Each one exported under a different spelling (fm_ref_gc_route for __wpk_fork_ref_gc_route) forces a mapping table back into the host, which is the hand-maintained-knowledge-beside-a-generator defect three censuses in this campaign have found. Target 0 is the point at which the JS host layer is pure wiring."
     }
   },
   "lanes": {
