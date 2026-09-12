@@ -376,3 +376,50 @@ lane is landing now.
    is the wire churn better spent on the capture family?
 5. **The seal pair** (§6): I judged the structural guarantee worth more than the
    entry. If the maintainer disagrees, it is a one-commit collapse.
+
+---
+
+## 9. What landed on this branch, and what it did not
+
+Added 2026-09-12, after the census above was written and acted on.
+
+| commit | change | `forkModuleEntryPoints` |
+|---|---|---|
+| `4a7f02a3d` | this census (F1) | 69 |
+| `2839b1810` | delete `fm_add_activation_{,borrowed_}child_replay` — no caller in either host (F0-r) | 69 -> 67 |
+| `4e7e7e867` | fold `fm_attach_borrowed_child` into `fm_attach_child` — identical bodies (F2) | 67 -> 66 |
+| `413c54a41` | budget measures CODE lines, not total lines; seven surfaces re-baselined | — |
+| `cc903919e` | `fm_capture_intern(kind, a, b)` replaces four; `fm_parent_replay(abort)` replaces two (F2) | 66 -> 62 |
+
+**Lane F is NOT closed and this is not close to closing it.** Its budget
+condition is `forkModuleEntryPoints <= 5`, `forkTypeScript <= 2000` and
+`workerMainTypeScript <= 2400`. The measured state is **62**, **19,791** and
+**5,958**. Seven entries is about a tenth of the entry-point distance and the
+TypeScript surfaces did not move at all, because collapsing marshalling
+wrappers is not where those lines are.
+
+**What remains, in the order the census argues for:**
+
+1. **The 17-entry `fm_capture_*` family.** The intern *leaves* are folded; the
+   capture WALK is still host-driven — `fork-capture-session.ts` decides what to
+   intern, in what order, and when to claim and define a GC aggregate. Moving
+   the walk is the single largest remaining item and is most of the lane's
+   estimate.
+2. **The 8 `fm_set_*` seeds into one descriptor push.** Scope §5 called this
+   "S, low risk, pure setup". It is the cheapest item left.
+3. **F5 — `kernel_exit` as a tagged exception** (§7), which closes F-D2 and
+   dissolves the entry/catch half of the floor. Scoped, not built, and possibly
+   lane P's rather than lane F's (open decision 2).
+4. **F-D1 — bring `host-native` onto the coarse entries.** Until it does,
+   `fm_begin_reference_replay` and `fm_build_gc_plan` cannot be deleted.
+
+**One measurement caveat that must travel with all of the above.** The fork
+Vitest suites resolve the module from `local-binaries/source-only-v1/`, which
+`crates/fork-module/build-wasm.sh` does not write — it stages into
+`local-binaries/`. `./run.sh local-build` re-projects the tier, and on this
+machine it failed on one package node, which blocked the projection. So the
+commits above are validated by the two V8 harnesses (which load the built bytes
+directly), the wasm32/wasm64 builds, `cargo check -p host-native` and the
+surface budget — **not** by the fork Vitest suites. Filed as master-plan hazard
+H-9, because a suite that goes green against a module it never loaded is worse
+than one that fails.
