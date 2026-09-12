@@ -1175,17 +1175,31 @@ the section instead of misreading it, and the misreading is demonstrated rather
 than asserted: the test builds one byte string that is valid under both layouts
 and means different things under each.
 
-**Landed:** `0ee47010d` on the lane branch — the record shape, eleven
-perturbation trials all killing, `xtask vfs-image describe` now genuinely
-carrier-blind.
+**Landed on the lane branch, in order:**
+
+* **The record shape** (`0ee47010d`, "SDEF carries the archive linkage, so it
+  can replace KLZY") — SDEF v2, eleven perturbation trials all killing,
+  `xtask vfs-image describe` now genuinely carrier-blind. Mutation testing
+  found four of the tests written for it wrong before the claim was made.
+* **The archive-member export arm** (`af6bf8207`, "The export describes archive
+  members instead of emptying them") — `build_export_image` now calls
+  `create_deferred_file` with the linkage it already held, so a 99,999-byte
+  member exports as a stub plus a record carrying its real size, archive and
+  member path instead of as an empty file. Four further trials, 0 survived.
+  **This is the arm that blocked publishing ANY image**, fresh or derived.
+
+  Lane Y's test that pinned the damage was inverted rather than deleted, so a
+  regression reads as "the damage is back".
+
+  **The two trials held out in `perturb/deferred-until-v4.json` were re-run and
+  BOTH STILL SURVIVE — correctly.** They are about the export's byte SOURCE,
+  and a deferred member is described rather than read, so this arm never
+  reaches it. Do not read "V4 is landing" as "the held-out trials should now
+  kill": they become killable at item 2 below, and the spec says so.
 
 **Still open in V4, in order:**
 
-1. **The export emits records instead of stubs.** The two arms of
-   `build_export_image` in `rootfs.rs`. The **archive-member** arm needs no
-   further decision: `InodeKind::LazyMember` already holds `archive_id`,
-   `source_path` and `size`, which is now exactly what a record takes. This is
-   the arm that matters most — it is not derived-build-only.
+1. ~~The archive-member arm.~~ **DONE**, above.
 2. **The `BaseSource::Host` arm needs the loader to retain payloads.** Measured
    2026-09-12: **the kernel does not hold a URL for a host-backed base file.**
    `load_image_inner` reads KLZY, which has no payload field, and records the
