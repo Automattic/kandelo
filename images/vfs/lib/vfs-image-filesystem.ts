@@ -84,4 +84,20 @@ export interface VfsImageFilesystem {
    * That is not a stub: the union the recipes compute comes out identical.
    */
   getLazyEntry(path: string): unknown;
+
+  symlink(target: string, path: string): void;
+  readlink(path: string): string;
+
+  /**
+   * Directory iteration, POSIX-shaped: a handle, entries, a close.
+   *
+   * An entry is `{ name }` and nothing else, because that is all any recipe
+   * reads — twelve call sites, every one of them `.name`, none of them `type`
+   * or `ino`. `MemoryFileSystem.readdir` returns a richer `DirEntry` and
+   * satisfies this structurally; declaring the richer shape would oblige every
+   * implementation to produce fields no caller wants.
+   */
+  opendir(path: string): number;
+  readdir(handle: number): { name: string } | null;
+  closedir(handle: number): void;
 }
