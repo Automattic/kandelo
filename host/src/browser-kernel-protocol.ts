@@ -34,6 +34,9 @@ export type {
   TerminateProcessMessage,
   WakeBlockedReadersMessage,
   WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
@@ -69,6 +72,9 @@ import type {
   TerminateProcessMessage,
   WakeBlockedReadersMessage,
   WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -240,15 +246,6 @@ export interface ReadVfsFileMessage {
   includeMode?: boolean;
 }
 
-export interface WriteVfsFileMessage {
-  type: "write_vfs_file";
-  requestId: number;
-  /** Normalized absolute guest path whose parent already exists. */
-  path: string;
-  data: Uint8Array;
-  mode: number;
-}
-
 export interface UnlinkVfsFileMessage {
   type: "unlink_vfs_file";
   requestId: number;
@@ -304,18 +301,6 @@ export interface RegisterLazyArchivesMessage {
   type: "register_lazy_archives";
   requestId?: number;
   entries: SerializedLazyArchiveEntry[];
-}
-
-/** Send an HTTP request to a server running in the kernel and wait for the
- *  response. Reply arrives as a `response` message whose `result` is an
- *  {@link HttpResponse}. */
-export interface HttpRequestMessage {
-  type: "http_request";
-  requestId: number;
-  port: number;
-  request: HttpRequest;
-  timeoutMs?: number;
-  maxResponseBytes?: number;
 }
 
 /**
@@ -476,17 +461,6 @@ export interface FbForgetGenerationMessage {
   pid: number;
   generation: number;
 }
-
-/**
- * Posted whenever the kernel forks, execs, or spawns. The main thread
- * uses this to refresh Inspector-style views without polling. `kind ===
- * "exit"` is delivered via the existing ExitMessage instead; we don't
- * duplicate it here. Spawn events always carry the authoritative parent pid;
- * exec events preserve process identity and do not.
- */
-export type ProcEventMessage =
-  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
-  | { type: "proc_event"; kind: "exec"; pid: number };
 
 /**
  * Number of service-worker preview requests currently being served through

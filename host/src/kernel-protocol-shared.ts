@@ -256,3 +256,39 @@ export interface WakeBlockedWritersMessage {
   type: "wake_blocked_writers";
   pipeIdx: number;
 }
+
+/** Send an HTTP request to a server running in the kernel and wait for the
+ *  response. Reply arrives as a `response` message whose `result` is an
+ *  {@link HttpResponse}, or with `error` set if no listener was found. */
+export interface HttpRequestMessage {
+  type: "http_request";
+  requestId: number;
+  /** Port the in-kernel server is listening on. */
+  port: number;
+  request: HttpRequest;
+  /** Optional timeout in ms (default 60_000). */
+  timeoutMs?: number;
+  /** Optional raw response byte ceiling. */
+  maxResponseBytes?: number;
+}
+
+/** Create or replace one regular file through the worker-owned VFS. */
+export interface WriteVfsFileMessage {
+  type: "write_vfs_file";
+  requestId: number;
+  /** Normalized absolute guest path whose parent already exists. */
+  path: string;
+  data: Uint8Array;
+  mode: number;
+}
+
+/**
+ * Posted whenever the kernel forks, execs, or spawns. The main thread
+ * uses this to refresh Inspector-style views without polling. `kind ===
+ * "exit"` is delivered via the existing ExitMessage instead; we don't
+ * duplicate it here. Spawn events always carry the authoritative parent pid;
+ * exec events preserve process identity and do not.
+ */
+export type ProcEventMessage =
+  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
+  | { type: "proc_event"; kind: "exec"; pid: number };

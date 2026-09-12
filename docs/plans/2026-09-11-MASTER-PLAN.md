@@ -190,7 +190,7 @@ lands — those are marked.
 | **H** browser + curation | **3–6 d** | medium | The browser pass is short if provisioning holds; curation of ~370 commits into ~14 is a day or two with `commit-tree`. |
 | **K** `kernel-worker.ts` | **30–60 d** | low *(K1 done)* | One class holds 29,975 lines across 522 methods. Decomposition, not migration — `host-native` dispatches the same 85 syscalls. The census clarified the shape but found nothing making it smaller. |
 | **L** host↔kernel plumbing | **6–12 d** | medium *(L1 done)* | Not 5,853 lines a host must reproduce — `host-native` wrote a layout struct and one helper. The work is unifying duplicated knowledge: one layout, one bounds rule, a generated pointer table. |
-| **E** Node/browser peers | **4–8 d** | medium *(E1 done)* | The consolidation already happened for the pair that mattered: 72 shared lifecycle members via a factory. What is left is unifying 43 duplicated message types and a 21-item audit. |
+| **E** Node/browser peers | **0–0 d** | CLOSED 2026-09-12 | Landed in five increments. 65 → 29 duplicate declarations, the floor E3 derived by reading every candidate. |
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **12–25 d** | low *(U1 done)* | Ranked last: none of it is host API surface. But the tier-1 subset (U2+U3) is **3–6 d** and carries nearly all the risk reduction; the census recommends not doing the rest. |
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
@@ -1666,7 +1666,9 @@ table must reproduce the current hand-written one exactly before it replaces it.
 
 # LANE E — Node and browser peers that drifted
 
-**Status: E1 census COMPLETE — `docs/plans/2026-09-11-lane-e1-census.md`.
+**Status: CLOSED 2026-09-12** at the floor the E3 audit derived — `hostPeerDuplicateDeclarations` 65 → **29**.
+
+**E1 census COMPLETE — `docs/plans/2026-09-11-lane-e1-census.md`.
 Much smaller than the lane claimed. Gate replaced.**
 
 ## What this lane is — as corrected by the census
@@ -1740,10 +1742,18 @@ directories, crash safety net, local exec resolution), plus 18 browser-only and
   `ExportRootfsImageMessage`'s two doc comments say the same thing and the
   browser's is strictly more informative, so that one survived.
 
-  **3 remain above the floor of 29:** `ProcEventMessage` (a union, not an
-  interface — excluded deliberately after a first attempt orphaned half of it),
-  `HttpRequestMessage` and `WriteVfsFileMessage` (identical bodies, genuinely
-  different inline comments).
+- **E6 — the last three. DONE 2026-09-12; the lane closes here at 29.**
+
+  `ProcEventMessage` needed a union-aware capture: a type alias terminates at a
+  `;` at **brace depth 0**, and its members contain their own. Two earlier
+  attempts cut at the first inner semicolon and orphaned half the union; `tsc`
+  caught both.
+
+  `HttpRequestMessage` took Node's version whole — it is strictly richer, adding
+  "or with `error` set if no listener was found" plus three field comments.
+  `WriteVfsFileMessage` **merged** the two: Node's leading doc describes the
+  message, the browser's inline comment describes the `path` field, and they are
+  complementary rather than competing.
 - **E4 — leave `*-kernel-host.ts` alone and record why**, so a later pass does
   not "discover" the divergence and try to merge it.
 

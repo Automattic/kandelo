@@ -130,7 +130,7 @@
     },
     "hostPeerDuplicateDeclarations": {
       "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
-      "ceiling": 32,
+      "ceiling": 29,
       "slack": 0,
       "target": 29,
       "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons \u2014 vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."
@@ -358,15 +358,15 @@
       "why": "Goal V1 more than V4, which the L1 census established: a new host's burden here is already near zero \u2014 host-native proves it \u2014 but the same knowledge exists twice and the second copy was made by transcription (47 comments in host-native cite host/src/*.ts). Two transcribed copies drift and host #3 transcribes a third."
     },
     "E": {
-      "title": "Node/browser peer divergence in the kernel host and worker entries",
-      "status": "open",
+      "title": "Node/browser peer divergence \u2014 shared types unified to the audited floor",
+      "status": "closed",
       "closure": [
         {
           "surface": "hostPeerDuplicateDeclarations",
-          "atMost": 12
+          "atMost": 29
         }
       ],
-      "why": "Goal V1. The E1 census found the consolidation already largely done: the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory, not the '10 symbols' previously reported. What remains is 43 duplicated protocol message types and a 21-item audit. No category-three findings \u2014 no bug one host fixed and the other did not \u2014 which lowers the lane's urgency."
+      "why": "Goal V1. CLOSED 2026-09-12 at the floor the E3 audit derived. The consolidation was already largely done before the lane started \u2014 the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory \u2014 and what remained was 36 duplicated protocol declarations, now unified. The floor of 29 is 21 worker-entry declarations that are legitimately per-host (4 module-state lets, 17 platform differences), 6 genuinely-different protocol types, and 2 message unions. No category-three divergence was ever found: no bug one host fixed and the other did not."
     },
     "R": {
       "title": "Binary and artifact resolution \u2014 one declaration of the tier order",

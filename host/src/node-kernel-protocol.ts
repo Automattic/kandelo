@@ -34,6 +34,9 @@ export type {
   TerminateProcessMessage,
   WakeBlockedReadersMessage,
   WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
@@ -69,6 +72,9 @@ import type {
   TerminateProcessMessage,
   WakeBlockedReadersMessage,
   WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -211,34 +217,10 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
-/** Create or replace one regular file through the worker-owned VFS. */
-export interface WriteVfsFileMessage {
-  type: "write_vfs_file";
-  requestId: number;
-  path: string;
-  data: Uint8Array;
-  mode: number;
-}
-
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
   programBytes: ArrayBuffer | null;
-}
-
-/** Send an HTTP request to a server running in the kernel and wait for the
- *  response. Reply arrives as a `response` message whose `result` is an
- *  {@link HttpResponse}, or with `error` set if no listener was found. */
-export interface HttpRequestMessage {
-  type: "http_request";
-  requestId: number;
-  /** Port the in-kernel server is listening on. */
-  port: number;
-  request: HttpRequest;
-  /** Optional timeout in ms (default 60_000). */
-  timeoutMs?: number;
-  /** Optional raw response byte ceiling. */
-  maxResponseBytes?: number;
 }
 
 export type MainToKernelMessage =
@@ -292,16 +274,6 @@ export interface ResolveExecRequestMessage {
   requestId: number;
   path: string;
 }
-
-/**
- * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
- * browser-side ProcEventMessage. Exit events come via the existing
- * ExitMessage; we don't duplicate them here. Spawn events always carry the
- * authoritative parent pid; exec events preserve process identity and do not.
- */
-export type ProcEventMessage =
-  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
-  | { type: "proc_event"; kind: "exec"; pid: number };
 
 export type KernelToMainMessage =
   | ReadyMessage
