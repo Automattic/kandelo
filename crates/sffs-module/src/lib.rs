@@ -1055,6 +1055,46 @@ mod tests {
     ///
     /// It emits a container now. The assertions are inverted rather than
     /// deleted, so the question this test was written to answer stays answered.
+    /// Drain the whole exported container.
+    ///
+    /// **Bounded on purpose.** These loops were written to stop when the export
+    /// returns 0, which is correct until a defect stops it returning 0 — and a
+    /// mutation trial did exactly that, making the export ignore its offset and
+    /// restart forever. The test span for eighteen minutes growing a buffer
+    /// instead of failing, and the mutation harness waited on it because
+    /// nothing bounded either side.
+    ///
+    /// A test that hangs is worse than one that fails: it costs the whole run
+    /// and says nothing about what broke. The cap is far above any image these
+    /// tests build, so it can only be hit by non-termination.
+    fn drain_export() -> alloc::vec::Vec<u8> {
+        const CHUNK: usize = 64 * 1024;
+        // These images are kilobytes. A megabyte means the export is not
+        // advancing.
+        const SANE_LIMIT: usize = 4 * 1024 * 1024;
+        let buf = sm_alloc(CHUNK);
+        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, CHUNK) };
+            assert!(n >= 0, "export failed at offset {offset}: {n}");
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            image.extend_from_slice(got);
+            offset += n as i64;
+            assert!(
+                image.len() <= SANE_LIMIT,
+                "the export is not advancing: {} bytes drained from a tiny image, so \
+                 some chunk is being served again instead of the next one",
+                image.len(),
+            );
+        }
+        unsafe { sm_free(buf, CHUNK) };
+        image
+    }
+
     #[test]
     fn the_export_emits_a_whole_container_not_a_bare_body() {
         sm_reset();
@@ -1067,21 +1107,7 @@ mod tests {
             0
         );
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "export failed at offset {offset}: {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
         assert!(!image.is_empty(), "the export must produce bytes");
 
         // The decisive check: these bytes are a container, so a bare mount
@@ -1122,21 +1148,7 @@ mod tests {
             0
         );
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "export failed at offset {offset}: {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
 
         assert_eq!(
             runtime_core::sffs::metadata_section(&image)
@@ -1148,20 +1160,7 @@ mod tests {
 
         // Clearing it removes the section rather than leaving an empty one.
         assert_eq!(unsafe { sm_set_image_metadata(0, 0) }, 0);
-        let buf = sm_alloc(chunk);
-        let mut cleared: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0);
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            cleared.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let cleared = drain_export();
         assert!(runtime_core::sffs::metadata_section(&cleared).expect("walk").is_none());
     }
 
@@ -1191,21 +1190,7 @@ mod tests {
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
         rootfs::insert_base_file(b"/base.bin", 42, 4096, 0o644, 0, 0, 9).expect("insert base");
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "the export completes; it does not consult the base bytes. got {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
 
         let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
         let fs = runtime_core::sffs::Sffs::mount(body).expect("mount the exported image");
@@ -1253,21 +1238,7 @@ mod tests {
         assert_eq!(st.st_size, 99_999, "the manifest size is authoritative pre-fetch");
         assert_eq!(st.st_mode & 0o7777, 0o755);
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "the export completes, which is the problem. got {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
 
         let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
         let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");

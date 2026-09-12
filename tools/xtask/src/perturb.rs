@@ -26,8 +26,10 @@
 //! is not covered. That is a result worth failing the run for, so surviving
 //! mutants set a non-zero exit rather than printing a line nobody reads.
 
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -35,6 +37,27 @@ use serde::Deserialize;
 struct Spec {
     /// Repo-relative path of the file to mutate.
     file: String,
+    /// Seconds a `build` or `verify` command may run before the mutant is
+    /// declared non-terminating. Default [`DEFAULT_TIMEOUT_SECS`].
+    ///
+    /// # Why this exists
+    ///
+    /// A mutation can break behaviour by making the verifier HANG rather than
+    /// fail, and one did: "export ignores the offset and always restarts" made
+    /// a test's drain loop never see its end condition, so it span forever
+    /// growing a buffer. The harness waited on it for eighteen minutes and
+    /// would have waited indefinitely, because nothing bounded the wait.
+    ///
+    /// Worse, the reason was invisible. Spec commands end in `>/dev/null 2>&1`
+    /// so a green run stays quiet, which also swallows whatever the hung
+    /// command was saying about itself.
+    ///
+    /// A verifier that never answers has not stayed green, so a timeout counts
+    /// as a KILL — but it is reported separately, because it means the TEST
+    /// should be made to fail fast rather than hang, and that is a real defect
+    /// in the test rather than a curiosity about the mutant.
+    #[serde(default)]
+    timeout_secs: Option<u64>,
     /// Shell command whose exit status decides whether a mutation was caught.
     verify: String,
     /// Optional command that must SUCCEED for the mutation to be considered
@@ -162,6 +185,54 @@ fn revert(root: &Path, file: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Long enough for a cold workspace rebuild, short enough that a hang is
+/// noticed within one coffee rather than one afternoon.
+const DEFAULT_TIMEOUT_SECS: u64 = 900;
+
+/// What a bounded command did.
+enum Ran {
+    Exited(bool),
+    TimedOut,
+}
+
+/// Run `command` under `root`, giving up after `timeout`.
+///
+/// The child is put in its OWN PROCESS GROUP and the whole group is killed on
+/// timeout. Killing just the `sh` would leave the interesting part alive:
+/// when this was diagnosed by hand, the shell's cargo and the test binary
+/// under it were still running and still allocating.
+fn run_bounded(root: &Path, command: &str, timeout: Duration) -> Result<Ran, String> {
+    let mut child = Command::new("sh")
+        .current_dir(root)
+        .args(["-c", command])
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("spawn: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait().map_err(|e| format!("wait: {e}"))? {
+            Some(status) => return Ok(Ran::Exited(status.success())),
+            None => {
+                if Instant::now() >= deadline {
+                    // Negative pid: the group, not just the shell.
+                    let pgid = child.id() as i32;
+                    unsafe {
+                        libc_kill(-pgid, 9);
+                    }
+                    let _ = child.wait();
+                    return Ok(Ran::TimedOut);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let spec_path = args
         .first()
@@ -177,6 +248,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         )
         .trim(),
     );
+    let timeout = Duration::from_secs(spec.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
+    let mut timed_out: Vec<String> = Vec::new();
     let target = root.join(&spec.file);
     require_tracked_and_clean(&root, &spec.file)?;
     println!("precondition: {} is tracked and clean", spec.file);
@@ -191,12 +264,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         println!("  mutation applied");
         if let Some(build) = &spec.build {
-            let built = Command::new("sh")
-                .current_dir(&root)
-                .args(["-c", build])
-                .status()
-                .map_err(|e| format!("build: {e}"))?;
-            if !built.success() {
+            let built = match run_bounded(&root, build, timeout)? {
+                Ran::Exited(ok) => ok,
+                Ran::TimedOut => {
+                    revert(&root, &spec.file)?;
+                    println!(
+                        "  TIMEOUT — the BUILD did not finish in {}s. Not a verdict about \
+                         the mutation.",
+                        timeout.as_secs()
+                    );
+                    timed_out.push(trial.name.clone());
+                    continue;
+                }
+            };
+            if !built {
                 revert(&root, &spec.file)?;
                 println!(
                     "  INVALID — the mutation does not compile, so a non-zero verifier \
@@ -206,15 +287,25 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 continue;
             }
         }
-        let status = Command::new("sh")
-            .current_dir(&root)
-            .args(["-c", &spec.verify])
-            .status()
-            .map_err(|e| format!("verify: {e}"))?;
+        let ran = run_bounded(&root, &spec.verify, timeout)?;
         // Revert BEFORE reporting, so a panic in reporting cannot leave the
         // tree mutated.
         revert(&root, &spec.file)?;
-        if status.success() {
+        let status = match ran {
+            Ran::Exited(ok) => ok,
+            Ran::TimedOut => {
+                println!(
+                    "  killed by TIMEOUT — the verifier did not answer in {}s. The mutation \
+                     was detected, but by hanging rather than failing: fix the TEST to \
+                     terminate.",
+                    timeout.as_secs()
+                );
+                timed_out.push(trial.name.clone());
+                println!("  reverted and verified against tracked content");
+                continue;
+            }
+        };
+        if status {
             println!("  SURVIVED — the verifier stayed green. This behaviour is not covered.");
             survived.push(trial.name.clone());
         } else {
@@ -224,10 +315,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     println!(
-        "\n{} trial(s), {} survived, {} invalid",
+        "\n{} trial(s), {} survived, {} invalid, {} timed out",
         spec.trials.len(),
         survived.len(),
-        invalid.len()
+        invalid.len(),
+        timed_out.len()
     );
     let mut problems = Vec::new();
     if !survived.is_empty() {
@@ -240,6 +332,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
         problems.push(format!(
             "invalid mutants (do not compile, so their result means nothing): {}",
             invalid.join(", ")
+        ));
+    }
+    if !timed_out.is_empty() {
+        // A failure, not a pass with a note. The mutation WAS detected, but a
+        // test that hangs instead of failing is a defect in the test: it costs
+        // the whole run's wall clock and tells you nothing about what broke.
+        problems.push(format!(
+            "mutants detected by HANGING rather than failing — fix the tests so they \
+             terminate: {}",
+            timed_out.join(", ")
         ));
     }
     if problems.is_empty() {
