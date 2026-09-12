@@ -1,3 +1,8 @@
+import {
+  ENOENT,
+  SFSError,
+} from "../../../host/src/vfs/vfs-errors";
+import { FILE_MODES } from "../../../host/src/generated/abi";
 /**
  * Helpers for adding a dinit-based init system to a VFS image. Used by
  * service-demo build scripts to bake `/sbin/dinit`, `/etc/dinit.d/boot`,
@@ -24,12 +29,6 @@ import {
   tryResolveBinary,
   findRepoRoot,
 } from "../../../host/src/binary-resolver";
-import {
-  ENOENT,
-  SFSError,
-  S_IFMT,
-  S_IFREG,
-} from "../../../host/src/vfs/sharedfs-vendor";
 
 const REPO_ROOT = findRepoRoot();
 
@@ -73,7 +72,7 @@ function residentRegularFile(
     if (error instanceof SFSError && error.code === ENOENT) return "missing";
     throw error;
   }
-  if ((stat.mode & S_IFMT) !== S_IFREG) {
+  if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
     throw new Error(`${path} exists but is not a regular file`);
   }
   return "resident";
@@ -100,7 +99,7 @@ function residentDinitBinaryState(
     if (error instanceof SFSError && error.code === ENOENT) return "missing";
     throw error;
   }
-  if ((stat.mode & S_IFMT) !== S_IFREG || (stat.mode & 0o111) === 0) {
+  if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG || (stat.mode & 0o111) === 0) {
     throw new Error(
       `${path} exists in the shell base but is not a regular executable`,
     );

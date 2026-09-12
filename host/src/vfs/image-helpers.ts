@@ -1,3 +1,6 @@
+import {
+  EEXIST,
+} from "./vfs-errors";
 /**
  * Pure VFS-image construction helpers — operate on a MemoryFileSystem in
  * memory. No host-disk I/O. Safe to use anywhere a memfs exists: build
@@ -8,7 +11,6 @@
  */
 import { OPEN_FLAGS } from "../generated/abi";
 import type { MemoryFileSystem } from "./memory-fs";
-import { EEXIST } from "./sharedfs-vendor";
 
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;

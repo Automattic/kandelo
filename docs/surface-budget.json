@@ -53,7 +53,7 @@
     },
     "sffsTypeScript": {
       "measure": "line count of host/src/vfs/sharedfs-vendor.ts",
-      "ceiling": 3752,
+      "ceiling": 3716,
       "slack": 100,
       "target": 0,
       "why": "The SFFS block filesystem is implemented twice: 3,752 lines here against 3,727 in sffs.rs + sffs_write.rs + sffs_deferred.rs, same superblock geometry, same allocators, same magic. Target is zero because one of the two must go and the kernel owns the format."

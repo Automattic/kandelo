@@ -1,14 +1,11 @@
-import { MemoryFileSystem } from "./memory-fs";
-import { FILE_MODES } from "../generated/abi";
 import {
   ENOENT,
   ENOSPC,
-  O_CREAT,
-  O_RDONLY,
-  O_TRUNC,
-  O_WRONLY,
   SFSError,
-} from "./sharedfs-vendor";
+} from "./vfs-errors";
+import { OPEN_FLAGS } from "../generated/abi";
+import { MemoryFileSystem } from "./memory-fs";
+import { FILE_MODES } from "../generated/abi";
 
 const { S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } = FILE_MODES;
 
@@ -27,7 +24,7 @@ function readFile(
   size: number,
 ): Uint8Array {
   const bytes = new Uint8Array(size);
-  const fd = fs.open(path, O_RDONLY, 0);
+  const fd = fs.open(path, OPEN_FLAGS.O_RDONLY, 0);
   let offset = 0;
   try {
     while (offset < bytes.length) {
@@ -61,7 +58,7 @@ function writeFile(
   uid: number,
   gid: number,
 ): void {
-  const fd = fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+  const fd = fs.open(path, OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC, mode);
   let offset = 0;
   try {
     while (offset < bytes.length) {

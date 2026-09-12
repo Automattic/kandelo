@@ -1,3 +1,7 @@
+import {
+  ENOENT,
+  SFSError,
+} from "./vfs-errors";
 import { createHash } from "node:crypto";
 import { FILE_MODES } from "../generated/abi";
 
@@ -18,7 +22,6 @@ import {
   parsePackageDeferredZipTreeSpec,
   type PackageDeferredZipTreeSpec,
 } from "./package-deferred-tree-contract";
-import { ENOENT, SFSError } from "./sharedfs-vendor";
 export {
   parsePackageDeferredZipTreeSpec,
   type PackageDeferredZipTreeSpec,

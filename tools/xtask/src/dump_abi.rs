@@ -4142,6 +4142,26 @@ fn render_ts_module() -> String {
         shared::trap_signal::signal_exit_status(0)
     ));
 
+    // Errno values, POSITIVE as POSIX and `shared::Errno` define them.
+    //
+    // V-D1: these had no generator while their neighbours (open flags, mode
+    // bits, syscall names) had one, so `host/src/vfs/sharedfs-vendor.ts` and
+    // `host/src/exec-target.ts` each hand-wrote the subset they needed.
+    //
+    // Consumers that follow the negated-errno convention must negate
+    // explicitly; see `host/src/vfs/vfs-errors.ts`. Emitting the POSIX sign
+    // and negating at one visible place beats baking a second convention into
+    // the generated table.
+    out.push_str("export const ERRNO = {\n");
+    for value in 1u32..=256 {
+        if let Some(errno) = shared::Errno::from_u32(value) {
+            // `Debug` is the variant name; ENOTSUP aliases EOPNOTSUPP, so the
+            // canonical name for a shared value appears once.
+            out.push_str(&format!("  {:?}: {value},\n", errno));
+        }
+    }
+    out.push_str("} as const;\n\n");
+
     out.push_str("export const ABI_SYSCALL_NAMES: Record<number, string> = {\n");
     for (number, name) in all_syscall_log_names() {
         out.push_str(&format!("  {number}: {name:?},\n"));
