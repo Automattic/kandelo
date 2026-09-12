@@ -888,3 +888,51 @@ NOTIFICATION plus a range: it says which owner's range changed so the next
   ownership protocol behind `mutation_begin`/`abort`, and what
   `state_owned(owner)` must answer are not, and reading the attic further for
   those would be reading the orchestration the maintainer set aside.
+
+## §17 — Stage 2, the placement half: 166 code lines, and three guards that were not guards
+
+`host/src/fork-module-instance.ts` reserves the module's region, derives the
+position-independent-code globals from its own `dylink.0` sizing, creates the
+three reference-typed tables, and instantiates. Placement cannot move into the
+module: a side module does not choose where it is placed, and `__memory_base` /
+`__table_base` are imports by construction.
+
+**166 code lines**, bringing the module-facing half to **231** against the
+estimate of 250 in §13 — within 8%. The half is now essentially complete, so
+`forkTypeScript`'s ceiling of 250 should be banked to the real figure once the
+consumers are rewired and it stops moving.
+
+### It reads `dylink.0` through `customSections`, not `parseDylinkSection`
+
+`parseDylinkSection` requires the section to be the module's FIRST, which the
+convention does say — and this module's is the last of fourteen (§14), so that
+reader returns null for it. `WebAssembly.Module.customSections` finds a section
+by name wherever it sits. That is what lets placement work against the artifact
+as actually built, and it is presumably why nothing noticed the section's
+position until now.
+
+### Three existing assertions passed for the wrong reason
+
+`host/test/fork-module-instance.test.ts` is a tracked 203-line spec and the new
+implementation passed all six of its tests on the first run. But perturbing the
+implementation showed three of its guards were not guards:
+
+| perturbation | expected to fail | actually |
+|---|---|---|
+| accept a module with no `dylink.0` | "not a PIC side module" | **passed** — the parser fell through and threw "dylink.0 carries no memory-info subsection", which still matches the test's `/dylink/i` |
+| delete the region-fits-in-memory check | "region exceeds memory" | **passed** — `WebAssembly.Instance` threw on its own with a message containing "memory", which still matches `/region\|memory/i` |
+| seed `__stack_pointer` at the region BASE instead of its top | nothing | **passed** — no assertion covered stack direction at all |
+
+The first two are loose regexes satisfied by an unrelated throw. The third had
+no coverage: the suite's existing sentinel sits at offset 4096, megabytes below
+the reserved base, so a shadow stack growing DOWN from the base would write
+into live guest memory and land nowhere near it.
+
+`host/test/fork-module-placement.test.ts` pins all three by their own failure —
+the specific message each guard produces, and a guard word placed immediately
+BELOW the region base, where a downward-growing stack lands on its first spill.
+All three perturbations now fail.
+
+The original test is left as it is. Its assertions are weak, not wrong, and
+rewriting a tracked spec is a larger decision than adding a sharper one beside
+it.
