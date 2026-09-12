@@ -571,6 +571,22 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-10 — `npx vitest` from the repo root does NOT run the repo's vitest.**
+  There is no root `node_modules/vitest`, so npx fetches an unpinned version
+  from the registry: measured 2026-09-12, the root form ran **5.0.0** while
+  `cd host && npx vitest` ran the project's pinned **4.1.11**. Both worktrees
+  carry 4.1.11 in `host/node_modules`.
+
+  This is the same shape as `dev-shell.sh` stripping `RUSTFLAGS` (recorded in
+  `crates/sffs-module/build-wasm.sh`): a command that looks like it uses
+  project state and quietly does not. It produced no wrong answer here — lane Y
+  ran surface-budget checks both ways and both reported 79 passing — but a
+  version-dependent difference would have been invisible, and "the gate passes"
+  would have been a claim about a harness the repo does not pin.
+
+  **Run suite checks as `cd host && npx vitest …`.** The root form reaches past
+  the repository's own dependency and over the network.
+
 - **H-9 — a mutation that survives is usually a missing test, and occasionally
   a property the technique cannot reach. Say which.** Lane Y ran ~40 mutation
   trials through `xtask perturb` and found three genuine categories of
