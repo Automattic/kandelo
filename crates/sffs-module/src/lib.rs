@@ -145,6 +145,12 @@ pub unsafe extern "C" fn sm_free(ptr: usize, len: usize) {
 //   2. `sm_write_file` treating any `Ok` as success. The short-write branch is
 //      unreachable because `rootfs::write` never returns a short count; the
 //      check defends a contract, not an input.
+//   3. `sm_write_file`'s byte source returning zeroes instead of EIO. That
+//      source is never called: this entry point always truncates and writes
+//      from offset 0, so prior contents are never needed, for a base file or
+//      any other. Unreachable by construction -- see the entry point's own
+//      docs, which say the same thing after an earlier version claimed the
+//      opposite and a test disproved it.
 //
 // Every other mutant tried against this module has been killed.
 

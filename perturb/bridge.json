@@ -1,0 +1,34 @@
+{
+  "file": "images/vfs/lib/sffs-image-fs.ts",
+  "verify": "cd host && npx vitest run test/sffs-image-fs.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the memory view is cached instead of taken fresh",
+      "scope": "  private get mem(): Uint8Array {",
+      "scope_end": "\n  }\n",
+      "find": "    return new Uint8Array(this.exports.memory.buffer);",
+      "replace": "    this.cachedMem ??= new Uint8Array(this.exports.memory.buffer);\n    return this.cachedMem;"
+    },
+    {
+      "name": "a negative errno is not thrown",
+      "scope": "  private check(rc: number",
+      "scope_end": "\n  }\n",
+      "find": "    if (rc < 0) throw new SffsImageError(-rc, operation, path);",
+      "replace": ""
+    },
+    {
+      "name": "readdir ignores the length prefix",
+      "scope": "  readdir(path: string): string[] {",
+      "scope_end": "\n  }\n",
+      "find": "        const len = view.getUint32(at, true);",
+      "replace": "        const len = 4;"
+    },
+    {
+      "name": "clearSetid is never passed through",
+      "scope": "  chown(path: string",
+      "scope_end": "\n  }\n",
+      "find": "clearSetid ? 1 : 0",
+      "replace": "0"
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+{
+  "file": "crates/sffs-module/src/lib.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "errno returned positive instead of negative",
+      "scope": "fn err(e: Errno) -> i32 {",
+      "scope_end": "\n}\n",
+      "find": "    -(e as i32)",
+      "replace": "    e as i32"
+    },
+    {
+      "name": "chown ignores the clear_setid flag",
+      "scope": "pub unsafe extern \"C\" fn sm_chown",
+      "scope_end": "\n}\n",
+      "find": "        clear_setid != 0,",
+      "replace": "        false,"
+    },
+    {
+      "name": "chown swaps uid and gid",
+      "scope": "pub unsafe extern \"C\" fn sm_chown",
+      "scope_end": "\n}\n",
+      "find": "        uid,\n        gid,",
+      "replace": "        gid,\n        uid,"
+    },
+    {
+      "name": "symlink ownership comes from nowhere",
+      "scope": "pub unsafe extern \"C\" fn sm_symlink",
+      "scope_end": "\n}\n",
+      "find": "        uid,\n        gid,",
+      "replace": "        0,\n        0,"
+    },
+    {
+      "name": "reset does not actually reset",
+      "scope": "pub extern \"C\" fn sm_reset",
+      "scope_end": "\n}\n",
+      "find": "    rootfs::reset();",
+      "replace": ""
+    },
+    {
+      "name": "writes never truncate",
+      "scope": "pub unsafe extern \"C\" fn sm_write_file",
+      "scope_end": "\n}\n",
+      "find": "content, mode, true,",
+      "replace": "content, mode, false,"
+    },
+    {
+      "name": "mode is ignored on write",
+      "scope": "pub unsafe extern \"C\" fn sm_write_file",
+      "scope_end": "\n}\n",
+      "find": "content, mode, true,",
+      "replace": "content, 0o644, true,"
+    },
+    {
+      "name": "stat size reports the wrong field count",
+      "scope": "pub extern \"C\" fn sm_stat_size",
+      "scope_end": "\n}\n",
+      "find": "    6 * 8",
+      "replace": "    5 * 8"
+    },
+    {
+      "name": "lstat follows the final symlink",
+      "scope": "pub unsafe extern \"C\" fn sm_lstat",
+      "scope_end": "\n}\n",
+      "find": "    let stat = match rootfs::lstat(path) {",
+      "replace": "    let stat = match rootfs::stat(path) {"
+    },
+    {
+      "name": "read_file ignores the offset",
+      "scope": "pub unsafe extern \"C\" fn sm_read_file",
+      "scope_end": "\n}\n",
+      "find": "rootfs::read_file_at(path, offset, out,",
+      "replace": "rootfs::read_file_at(path, 0, out,"
+    },
+    {
+      "name": "read_file invents zeroes for unreachable base bytes",
+      "scope": "pub unsafe extern \"C\" fn sm_read_file",
+      "scope_end": "\n}\n",
+      "find": "|_req, _dst| Err(Errno::EIO))",
+      "replace": "|_req, _dst| Ok(_dst.len()))"
+    },
+    {
+      "name": "readlink returns success regardless of length",
+      "scope": "pub unsafe extern \"C\" fn sm_readlink",
+      "scope_end": "\n}\n",
+      "find": "        Ok(n) => n as i32,",
+      "replace": "        Ok(_n) => 0,"
+    },
+    {
+      "name": "an undersized buffer truncates instead of failing",
+      "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+      "scope_end": "\n}\n",
+      "find": "    if out_len < required {\n        return err(Errno::ERANGE);\n    }",
+      "replace": ""
+    },
+    {
+      "name": "a missing directory reports an empty listing",
+      "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+      "scope_end": "\n}\n",
+      "find": "        Err(e) => return err(e),\n    };",
+      "replace": "        Err(_) => return 0,\n    };"
+    },
+    {
+      "name": "the length prefix is dropped",
+      "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+      "scope_end": "\n}\n",
+      "find": "    let required: usize = names.iter().map(|n| 4 + n.len()).sum();",
+      "replace": "    let required: usize = names.iter().map(|n| n.len()).sum();"
+    },
+    {
+      "name": "entries stop after the first",
+      "scope": "pub unsafe extern \"C\" fn sm_read_dir",
+      "scope_end": "\n}\n",
+      "find": "            Ok(Some((_ino, _kind, len))) => names.push(name_buf[..len].to_vec()),",
+      "replace": "            Ok(Some((_ino, _kind, len))) => { names.push(name_buf[..len].to_vec()); break; }"
+    },
+    {
+      "name": "export ignores the offset and always restarts",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "rootfs::export_image_read(offset, out, &mut source)",
+      "replace": "rootfs::export_image_read(0, out, &mut source)"
+    },
+    {
+      "name": "export reports a negative errno as a byte count",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "        Err(e) => err(e),",
+      "replace": "        Err(_e) => 0,"
+    },
+    {
+      "name": "export silently invents base bytes",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO)",
+      "replace": "|_req: rootfs::ByteReq, _dst: &mut [u8]| Ok(_dst.len())"
+    }
+  ]
+}

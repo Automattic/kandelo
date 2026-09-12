@@ -1,0 +1,41 @@
+{
+  "file": "crates/runtime-core/src/image_policy.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "byte limit compared with <= instead of <  (off-by-one at the boundary)",
+      "scope": "pub fn check_headroom",
+      "scope_end": "\n}\n",
+      "find": "if free_bytes < headroom.minimum_free_bytes ||",
+      "replace": "if free_bytes <= headroom.minimum_free_bytes ||"
+    },
+    {
+      "name": "inode limit never checked",
+      "scope": "pub fn check_headroom",
+      "scope_end": "\n}\n",
+      "find": "|| st.f_ffree < headroom.minimum_free_inodes",
+      "replace": ""
+    },
+    {
+      "name": "free bytes computed without the block size",
+      "scope": "pub fn check_headroom",
+      "scope_end": "\n}\n",
+      "find": "let free_bytes = st.f_bfree.saturating_mul(st.f_frsize as u64);",
+      "replace": "let free_bytes = st.f_bfree;"
+    },
+    {
+      "name": "capacity accepts anything at or above the profile (range, not equality)",
+      "scope": "pub fn check_capacity",
+      "scope_end": "\n}\n",
+      "find": "if actual_bytes != expected_bytes {",
+      "replace": "if actual_bytes < expected_bytes {"
+    },
+    {
+      "name": "capacity check never fails",
+      "scope": "pub fn check_capacity",
+      "scope_end": "\n}\n",
+      "find": "if actual_bytes != expected_bytes {",
+      "replace": "if false {"
+    }
+  ]
+}
