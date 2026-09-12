@@ -565,3 +565,75 @@ write stage 2 against the floor list, measure it, and set the target from that
 — and to retire 2000 now, because it describes a design the reversal replaced.
 What can be said already is that 2000 is roughly an order of magnitude above
 the half of the work that has been measured.
+
+## §12 — The contract stage 2 must satisfy, derived from the consumers
+
+The reversal moved 39 fork TypeScript files to `attic/fork-typescript-do-not-use/`
+and broke the host build, as the maintainer expected. The attic is not a
+specification and is not read. But the surviving host code still *imports* from
+those modules, and those imports are a specification: they say exactly what the
+remaining host needs, with none of the attic's internals.
+
+Measured by parsing `host/src/*.ts` import clauses (brace-bounded — an earlier
+unbounded parse in this session ran across adjacent import statements and
+inflated the total roughly fivefold, attributing `./constants` symbols to
+`vfork-lifetime`; that number was wrong and is not used here):
+
+| module | symbols | consumers | imported names |
+|---|---|---|---|
+| `fork-activation-registry` | 6 | 1 | `ForkActivationReferenceReplayImports`, `ForkActivationRegistration`, `ForkActivationRegistry`, `ForkActivationTableReplication`, `buildForkActivationStateImports`, `forkActivationRegistrationFromInstance` |
+| `fork-exception-provider` | 6 | 1 | `ForkExceptionBroker`, `ForkExceptionProvider`, `ForkExceptionReferenceReplayImports`, `buildForkExceptionImports`, `forkExceptionProviderFromInstance`, `readForkExceptionCodecDescriptor` |
+| `fork-module-state` | 5 | 1 | `ForkModuleStateArena`, `computeForkModuleTemplateId`, `computeForkModuleTemplateIdSync`, `readForkModuleStateDescriptor`, `readForkModuleStateRoot` |
+| `fork-unwind-transport` | 5 | 1 | `FORK_UNWIND_TAG_IMPORT_MODULE`, `FORK_UNWIND_TAG_IMPORT_NAME`, `createForkUnwindTag`, `isForkUnwindException`, `requireForkUnwindTag` |
+| `vfork-lifetime` | 5 | 4 | `VforkAddressSpaceBusyError`, `VforkExactCompletionReason`, `VforkLifetime`, `VforkLifetimeCoordinator`, `VforkLifetimeDisposition` |
+| `fork-continuation` | 4 | 2 | `ContinuationAllocationError`, `readForkContinuationAnchor`, `readLinkedFrameFormat`, `writeForkContinuationAnchor` |
+| `fork-host-import-runtime` | 4 | 5 | `ForkHostImportOwnerRuntime`, `ForkHostImportOwnerWorker`, `ForkHostImportWorkerInit`, `ForkHostImportWorkerRuntime` |
+| `fork-imported-globals` | 4 | 1 | `ForkImportedGlobalCapture`, `ForkImportedGlobalPlanner`, `ForkWasmImports`, `PreparedForkParentActivation` |
+| `fork-gc-codec` | 3 | 1 | `ForkGcCodecProvider`, `forkGcCodecProviderFromInstance`, `readForkGcCodecDescriptor` |
+| `fork-module-instance` | 3 | 1 | `ForkModuleExports`, `ForkModuleInstance`, `instantiateForkModule` |
+| `fork-process-continuation` | 3 | 1 | `ForkActivationContinuation`, `ForkBorrowedReplayWorkspaceRequirements`, `ForkProcessContinuationCoordinator` |
+| `fork-reference-broker` | 3 | 4 | `ForkExternrefGeneration`, `ForkExternrefTokenCache`, `ForkExternrefTokenRecipeProvider` |
+| `fork-replay-gate` | 3 | 4 | `ForkReplayGateCoordinator`, `observeForkReplayWorker`, `waitForForkReplayCommit` |
+| `fork-module-backend` | 2 | 1 | `FORK_MODULE_RESUME_CATALOG_CAP`, `ForkModuleContinuationBackend` |
+| `fork-module-host-capabilities` | 2 | 1 | `ForkModuleHostCapabilities`, `createForkModuleHostCapabilities` |
+| `fork-reference-segments` | 2 | 1 | `DecodedSegmentedForkReferenceTransaction`, `decodeSegmentedForkReferenceTransaction` |
+| `fork-resume-catalog` | 2 | 1 | `forkResumeTargetsFromInstance`, `readForkResumeCatalog` |
+| `fork-anyref-transit` | 1 | 1 | `ForkAnyrefTransitTable` |
+| `fork-early-reference-provider` | 1 | 1 | `ForkEarlyChildReferenceProvider` |
+| `fork-externref-import-mailbox` | 1 | 2 | `ForkExternrefImportWake` |
+| `fork-externref-process-owner` | 1 | 3 | `ForkExternrefProcessOwner` |
+| `fork-mechanism-trace` | 1 | 3 | `sampleProcessMemoryStats` |
+| `fork-module-trampoline` | 1 | 1 | `ForkModuleTrampolines` |
+| `fork-reference-capture-module` | 1 | 1 | `ForkReferenceCaptureModule` |
+| `fork-reference-wire` | 1 | 1 | `FORK_REFERENCE_TRANSACTION_OWNER_ID` |
+| `fork-table-snapshot` | 1 | 1 | `ForkTableSnapshot` |
+| `vfork-workspace` | 1 | 1 | `BorrowedVforkWorkspace` |
+
+Consumers, by how many attic'd modules each still imports:
+
+* `host/src/worker-main.ts` — 23
+* `host/src/process-lifecycle.ts` — 7
+* `host/src/browser-kernel-worker-entry.ts` — 6
+* `host/src/node-kernel-worker-entry.ts` — 6
+* `host/src/kernel-worker.ts` — 2
+* `host/src/worker-protocol.ts` — 2
+
+**27 modules, 72 imported symbols, 6 consumer files.**
+
+### What this means for scoping
+
+`worker-main.ts` is the dominant consumer. Most of the 27 modules are imported
+by it alone, which is consistent with it being the fork orchestration site.
+
+**Not all 27 should be replaced.** The lane's whole premise is that capture and
+replay logic belongs in the Rust module, so several of these — the reference
+codec, the GC codec, the segment decoder, the capture module — describe work the
+fork-module now does. For those the correct action is to delete the CALL SITE,
+not to write a TypeScript shim behind the same name. Others are genuine host
+floor and need a thin implementation: the module instance, the host
+capabilities, the import runtime, the externref broker and process owner.
+
+Deciding which is which per module is the next step, and it is the step that
+decides how much TypeScript stage 2 actually is. What can be said now is that
+the contract is **72 symbols**, not 39 files — the surface is far smaller than
+the code that used to sit behind it.
