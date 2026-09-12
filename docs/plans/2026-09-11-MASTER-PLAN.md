@@ -596,52 +596,148 @@ path they were told not to run. Only the local-build engine stamps.
 
 ---
 
-# LANE P — platform honesty
+# LANE P — platform honesty: does the platform do what it claims?
 
-**Status: NOT CHARACTERIZED. Do not dispatch.** Findings below are evidence,
-not a plan; each needs an end state, increments and acceptance before anyone
-builds.
+**Status: CHARACTERIZED.**
 
-Every item here is the platform-values contract's own prohibition — presenting
-capability or state that does not exist:
+## What this lane is
 
-- **Six of twelve `MountSource` kinds have no implementation**, yet are offered
-  in a config dropdown, allow-listed as untrusted input, and displayed as
-  `gitfs` / `casfs` / `cryptfs`.
-- **`web-libs/kandelo-session` reports the requested boot descriptor as machine
-  state** in the production Inspector UI, while the kernel has a real
-  `/proc/mounts`.
-- **`MountConfig.readonly` renders as `ro` and gates nothing.**
-- **16 declared-but-unimplemented surfaces, four of which contradict
-  `docs/posix-status.md`.**
-- **`st_rdev` is zero for every device node** through `stat`, `fstat`, `lstat`
-  and `statx` alike — `process_wire.rs` calls it "unsupported" and requires it
-  zero-initialised, so this is a declared gap rather than an oversight, and
-  closing it is ABI-adjacent work on the stat wire.
+Not a subsystem — a **class of defect**, which is why it never became a lane.
+It is the platform-values contract's own prohibition: *do not present
+capability, state, or conformance that does not exist.* Instances live in the
+UI, in mount configuration, in the POSIX surface and in the documentation, and
+each looked like someone else's problem.
+
+## End state
+
+Every capability the platform offers is implemented, every state it displays is
+read from the system rather than from the request that created it, and every
+POSIX surface it declares either works or reports the correct failure. Where a
+gap remains it is **visible as a gap** — which the contract permits and
+silence does not.
+
+## The instances, each already evidenced
+
+| instance | why it is this lane |
+|---|---|
+| **Six of twelve `MountSource` kinds have no implementation** — yet are offered in a config dropdown, allow-listed as untrusted input, and displayed as `gitfs` / `casfs` / `cryptfs` | offering capability that does not exist |
+| **`web-libs/kandelo-session` reports the requested boot descriptor as machine state** in the production Inspector UI, while the kernel has a real `/proc/mounts` | displaying the request as the reality |
+| **`MountConfig.readonly` renders as `ro` and gates nothing** | displaying an enforcement that is not enforced |
+| **16 declared-but-unimplemented surfaces, four contradicting `docs/posix-status.md`** | documentation promising what the implementation does not do |
+| **`st_rdev` is zero for every device node** through `stat`, `fstat`, `lstat` and `statx` | a declared field that is never written; `process_wire.rs` calls it "unsupported" and requires it zero-filled, so this is a declared gap rather than an oversight |
+
+## Increments
+
+- **P1 — the UI trio**: read mount state from `/proc/mounts`, make `readonly`
+  either gate or stop rendering, and remove the unimplemented `MountSource`
+  kinds from the dropdown *or* implement them. Removing an option is a product
+  change; say so and get a ruling rather than deciding it inside the lane.
+- **P2 — reconcile `docs/posix-status.md`** against the four contradictions.
+  Documentation that overstates is worse than none, because it is trusted.
+- **P3 — `st_rdev`**, which is ABI-adjacent work on the stat wire.
+
+## Acceptance evidence
+
+For each instance: a test that fails against the current behaviour before the
+fix, demonstrated failing. **This lane is especially exposed to guards that
+assert nothing** — "the UI shows mount state" passes trivially if the assertion
+is weak, and the existing defect is precisely that the UI shows *something*
+plausible.
+
+## Known hazard
+
+**Removing an offered capability is user-visible.** `gitfs` / `casfs` /
+`cryptfs` appearing in a dropdown may be somebody's expectation even though
+nothing implements them. Deleting the option and implementing the mount are
+both defensible; quietly leaving it is not.
 
 ---
 
 # LANE I — host import surface
 
-**Status: NOT CHARACTERIZED. Do not dispatch.** This lane is V4 itself and
-deserves the most careful characterization of any of them.
+**Status: CHARACTERIZED. This lane is V4 itself.**
 
-Evidence gathered, not yet a plan:
+## The surface, grouped by what a new host would actually have to write
 
-- **27 of 72 host imports are deciding or mis-shaped.** An import that *decides*
-  is policy in the host, which every new host must then re-implement correctly
-  or silently not.
+72 functions plus `env.memory`, counted from the built artifact:
+
+| group | count | what it is |
+|---|---|---|
+| **Filesystem** | **28** | `openat`, `read`, `write`, `pread`, `pwrite`, `seek`, `close`, `fstat`, `fstatat`, `fstatfs`, `fsync`, `ftruncate`, `readdir`, `mkdirat`, `unlinkat`, `renameat`, `linkat`, `symlinkat`, `readlinkat`, `fchmod`, `fchmodat`, `fchown`, `fchownat`, `utimensat`, `fpathconf`, `append`, `append_position` |
+| **Graphics** | **~22** | 10 `gl_*`, 6 `kms_*`, 4 `gbm_*`, plus framebuffer bind/unbind and `fb_write` |
+| **Network** | **~12** | 7 `net_*`, 3 `udp_*`, `getaddrinfo`, `network_local_address` |
+| **Everything else** | **10** | `clock_gettime`, `getrandom`, `waitpid`, `futex_wake`, `set_alarm`, `set_posix_timer`, `proc_read_bytes`, `proc_write_bytes`, `image_read`, `fetch_deferred` |
+
+## End state, and the observation that defines it
+
+**A new host should implement bytes and capabilities, never POSIX semantics.**
+
+That is not a slogan; it is what the grouping shows. **28 of 72 imports are
+POSIX filesystem operations** — and the kernel already implements POSIX
+filesystem semantics in Rust for tmpfs, rootfs and SFFS. Those 28 exist so the
+*host* can serve the same semantics for host-backed mounts (Node `fs`, OPFS).
+So a wasmtime author today must implement `fchownat` and `utimensat` and
+`fpathconf` correctly, in the right order, with the right errnos — for a
+filesystem the kernel could drive itself if the host handed it bytes.
+
+A host-backed mount needs roughly **six**: open, read, write, close, stat,
+readdir. The kernel owns path resolution, permissions, link semantics,
+timestamps and errno choice — it already does, for every other mount.
+**That is ~22 imports removed and a materially easier new host.**
+
+The same shape is visible in graphics: `host_gl_submit` already exists, which
+means batching is already the model. A command-buffer submit collapses much of
+the 10 `gl_*` calls; the `kms_*` and `gbm_*` groups are worth the same question.
+
+**Target: 72 → ~40 conservatively, ~25 if both collapses land.** The budget
+records 40; treat that as the ceiling to beat, not the goal.
+
+## The floor — imports that must exist
+
+Anything the kernel physically cannot do inside Wasm: reading real bytes from a
+host filesystem or network, the clock, randomness, presenting pixels, waking a
+worker. **The floor is a capability, never a decision.** An import that decides
+is policy in the host, and every new host must then re-implement that policy
+correctly or silently not — which is the defect below.
+
+## Known defects, each already evidenced
+
+- **27 of 72 imports decide or are mis-shaped.** An import that decides is the
+  V4 anti-pattern in its purest form.
 - **`host_waitpid` is implemented four times**, and the JS copy is dead.
-- **17 further duplicated authorities, three already drifting** — including
+- **17 duplicated authorities, three already drifting** — including
   `host-native` discarding `clock_id`, which makes `CLOCK_MONOTONIC`
-  non-monotonic **on the conformance host**.
-- **Five further dead Rust floors.**
+  **non-monotonic on the conformance host**. That one is a correctness defect
+  in the instrument we measure conformance with, and should be fixed ahead of
+  the lane's structural work.
 
-The reduction pattern that works is on the record: `host_blob_read` and
-`host_fetch_archive` were one capability split across two id namespaces that
-genuinely overlap, and collapsed into `host_fetch_deferred(kind, …)`. Two
-independent reductions composed to 73 only because **both measured the built
-artifact** rather than reporting the pin.
+## Increments
+
+- **I1 — fix the drifted authorities**, `clock_id` first. Correctness, not
+  structure; do not wait for the rest.
+- **I2 — retire the dead duplicates**, `host_waitpid`'s JS copy first.
+- **I3 — collapse the filesystem group** from POSIX operations to a byte
+  interface, moving semantics into the kernel that already implements them
+  elsewhere. The largest single reduction available anywhere in the campaign.
+- **I4 — the same question for graphics**, starting from the fact that
+  `host_gl_submit` shows batching is already accepted.
+
+## Acceptance evidence
+
+The import count measured **from the built artifact**, never the pin — and the
+budget ceiling lowered in the same commit. Two independent reductions composed
+correctly earlier in this campaign *only* because both measured; had either
+reported `EXPECTED_HOST_IMPORT_COUNT`, the merge would have shipped a pin
+disagreeing with the kernel.
+
+## Known hazards
+
+- **The entry-versus-function trap has caught four agents.** 72 functions reads
+  as 73 entries because `env.memory` is an entry. Say which you counted.
+- **A collapse must not become a dispatcher.** `host_fetch_deferred(kind, …)`
+  worked because two capabilities genuinely overlapped. Merging unrelated calls
+  behind one entry with a switch is the same surface wearing a smaller number,
+  and the budget would not notice.
 
 ---
 
