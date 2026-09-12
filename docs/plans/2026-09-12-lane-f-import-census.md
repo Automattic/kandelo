@@ -142,12 +142,55 @@ Note the asymmetry, which halves the surface:
 per-lookup crossing that a bulk seed replaces: the host fills an externref table
 once, the module does `table.get`. That converts a hot import into cold setup.
 
-**Challenge to even the identity floor, which the maintainer should rule on:**
-identity is only needed because the guest hands over a reference *value*. If
-`fork-instrument` were changed to carry the ordinal alongside the value at each
-encode site, the comparison disappears. That is an instrumentation redesign and
-an ABI change, not a Wasm limit — so the honest statement is *"given today's
-instrumentation, this needs the host."*
+**A challenge I raised and then had to withdraw — RETRACTED 2026-09-12.**
+
+I suggested that if `fork-instrument` carried the ordinal alongside the value at
+each encode site, the comparison would disappear and the irreducible count would
+go to zero. **That was wrong twice over, and the maintainer caught the first
+reason before I did: it would grow the stack frame.**
+
+**Reason 1 — it costs a local per live reference, which this design forbids on
+measured grounds.** `docs/fork-instrumentation.md` states the invariant as a
+stack-depth requirement, not a space optimisation, and gives the numbers from the
+PR #701 V8 reproducer — an instrumented recursive function's surviving call
+depth against its declared local count:
+
+| declared locals | surviving recursive calls |
+|---|---|
+| 4 | 9,959 |
+| 8 | 8,536 |
+| 12 | 6,639 |
+
+About **-415 calls per added local on average, and worsening** (-356/local from
+4 to 8, -474/local from 8 to 12). Hence: *"ABI 43 does not add a generated local
+or linked-frame field per live reference, recipe, catch arm, or catch region."*
+
+**It is enforced, not just documented.**
+`crates/fork-instrument/tests/switch_dispatch.rs` asserts that 32
+reference-bearing catch arms produce **identical** generated local counts to 1
+(`assert_eq!(many_arms, one_arm)`), and that the linked-frame payload stays
+**16 bytes** in both cases. Carrying a per-reference ordinal fails both.
+
+Today a live reference costs **zero locals and zero frame bytes**: the frame owns
+only the reference-vector ordinal in its existing `+12` header word, and the
+recipes live in the process transaction arena, outside every native activation.
+
+**Reason 2 — it would not remove the import anyway.** The statically-known case
+is already handled and never reaches this path:
+`crates/fork-instrument/src/static_reference_catalog.rs` harvests statically
+initialised references once at instantiation. So the encode calls that remain are
+precisely the ones with *dynamic* provenance — a funcref from a `table.get` whose
+index is dead by unwind time, or one that arrived as a parameter. Those are
+exactly the cases an ordinal cannot be carried for without a local, or without a
+signature change that adds a parameter (which is a local) at every call site.
+
+**So the identity floor stands, and it is not an artefact of the instrumentation
+design — the instrumenter already avoids it everywhere it can.** The two
+functions in the final list are irreducible.
+
+The static path still needs the host, but in the shape already on the list as
+cold setup rather than a live import: the harvest function's output is recorded
+by the host as weak object-to-ordinal mappings.
 
 ### 3.5 Instantiation wiring — required, but not an implementation.
 
@@ -195,7 +238,7 @@ spans two workers; no module call can span them.
 
 ---
 
-**Total: 2 functions, 5 wiring entries, 2 setup loops.** Against 51 guest fork
+**Total: 2 functions, 5 wiring entries, 2 setup loops** — and the instrumentation challenge that might have removed the 2 is withdrawn on stack-frame grounds (see 3.4). Against 51 guest fork
 imports served by TypeScript today, and 44 of those 51 provably serveable by Rust
 with no host involvement at all.
 
