@@ -2833,7 +2833,7 @@ the assertions Y3 already moved to Rust, plus their two private helpers:
 | `assertVfsImageHeadroom` | `statfs` | **now Rust** |
 | `assertNoStaleWasmArtifacts` | `isPathDeferred` | **now Rust** |
 | `walkAndWrite` | `symlink` `chmod` | genuinely needed, **both present** |
-| `serializeImage` | `saveImage` | genuinely needed, **blocked on V4** |
+| `serializeImage` | `saveImage` | genuinely needed, ~~blocked on V4~~ **UNBLOCKED 2026-09-12 — V4 is closed** |
 
 So ten of the thirteen exist only to serve TypeScript the Rust assertions
 replace. **This stopped three unnecessary module entry points from being
@@ -2844,8 +2844,12 @@ declined earlier and nearly repeated here.
 
 **Consequence for the lane:** the independent work remaining is smaller than it
 looked, and so is the unblocked portion. `chmod` and `symlink` exist; the rest
-routes through `saveImage`, which waits on lane V. **Y5 cannot start before
-V4.**
+routes through `saveImage`, which waited on lane V. ~~Y5 cannot start before
+V4.~~ **V4 CLOSED 2026-09-12, so Y5's blocker is gone** — an image the Rust
+writer produces is now one the kernel loads back, deferred files intact. What
+`saveImage` still needs is the container write itself: `sffs_container.rs`
+exists and the export produces a body, but nothing yet joins them behind a
+builder-facing call.
 
 **A caveat recorded rather than tidied:** the bridge's POSIX-shaped handle APIs
 (`open`/`read`/`close`/`opendir`/`closedir`/`readdir`) serve only the two
@@ -2923,20 +2927,35 @@ are recorded only in host-side JSON, so accepting it "would silently build a
 tree where every deferred file reports size 0 — a wrong tree that looks like a
 right one."
 
-Two consequences, and they are the reason this correction matters rather than
-being a citation fix:
+Two consequences were drawn from that, and **BOTH ARE NOW OBSOLETE — V4 closed
+them the same day, 2026-09-12.** Left in place with their retraction rather than
+deleted, because the first of them is a constraint a reader would otherwise
+carefully preserve:
 
-* **A Rust-written image must still emit KLZY to boot at all.** The container
+* ~~A Rust-written image must still emit KLZY to boot at all. The container
   writer (gap 7) therefore cannot treat KLZY as V5 residue to drop; emitting
-  SDEF *instead* produces an image the kernel rejects.
-* **Per-image landing is still safe, but for a different reason than stated.**
-  Not "both readers are live" — rather, the Rust writer keeps emitting KLZY, so
-  every image stays readable by the kernel that exists. The safety comes from
-  the writer, not from dual readers.
+  SDEF *instead* produces an image the kernel rejects.~~ **FALSE SINCE
+  `4d0395357`.** `load_image_inner` reads SDEF as a linkage source when an image
+  declares no KLZY, and `ContainerSections::kernel_lazy` is now an `Option`. A
+  Rust-written image emitting SDEF alone boots. **Do not add KLZY emission to
+  the container writer to satisfy this.**
+* ~~Per-image landing is safe because the Rust writer keeps emitting KLZY.~~
+  It is safe for a better reason now: an image may carry either description, and
+  one carrying both is read from KLZY, so nothing about how an existing image
+  loads changes.
 
-**V5 is therefore incomplete on both sides, and lane Y only closes the writer
-half.** Wiring the SDEF read path is lane V's, and until it lands SDEF is
-carried but not consulted. Any plan that treats Y5 as "V5 done" is wrong.
+~~V5 is therefore incomplete on both sides, and lane Y only closes the writer
+half. Wiring the SDEF read path is lane V's.~~ **The read path landed** —
+`load_image_inner` consults SDEF, `Sffs::deferred_section` has production
+callers, and the round trip is tested end to end
+(`an_image_the_kernel_exported_is_one_the_kernel_can_load`). SDEF is no longer
+"carried but not consulted".
+
+**What remains true, and is the point of this section:** V5 still has no
+production WRITER. The TypeScript builders still emit the JSON trailer, and
+repointing them onto the Rust writer is what gives V5 a production caller. Y5
+is still V5's production cutover. What changed is that the cutover got simpler —
+the Rust side no longer has to keep emitting a section it is trying to retire.
 
 ### What Y5 actually costs — half of it is one line each
 
