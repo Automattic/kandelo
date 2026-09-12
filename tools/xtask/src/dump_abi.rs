@@ -669,7 +669,8 @@ fn render_marshal_header() -> String {
 
 fn render_process_layouts_header() -> String {
     use shared::process_layout::{
-        cmsghdr, iovec, msghdr, multicast_group_request, rt_sigqueueinfo, sigevent, stat,
+        cmsghdr, iovec, mq_attr, msghdr, multicast_group_request, rt_sigqueueinfo,
+        sched_param, sigaltstack, sigevent, stat, statfs, statx, sysinfo,
     };
 
     format!(
@@ -780,6 +781,110 @@ fn render_process_layouts_header() -> String {
          #define KANDELO_PROCESS_STAT_BLKSIZE_OFFSET {stat_blksize}u\n\
          #define KANDELO_PROCESS_STAT_BLOCKS_OFFSET {stat_blocks}u\n\
          \n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_SIZE {sigaltstack_wasm32_size}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_SP_OFFSET {sigaltstack_wasm32_sp_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_FLAGS_OFFSET {sigaltstack_wasm32_flags_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM32_STACK_SIZE_OFFSET {sigaltstack_wasm32_stack_size_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_SIZE {sigaltstack_wasm64_size}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_SP_OFFSET {sigaltstack_wasm64_sp_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_FLAGS_OFFSET {sigaltstack_wasm64_flags_offset}u\n\
+         #define KANDELO_PROCESS_SIGALTSTACK_WASM64_STACK_SIZE_OFFSET {sigaltstack_wasm64_stack_size_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_SIZE {mq_attr_wasm32_size}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_FLAGS_OFFSET {mq_attr_wasm32_flags_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_MAXMSG_OFFSET {mq_attr_wasm32_maxmsg_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_MSGSIZE_OFFSET {mq_attr_wasm32_msgsize_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM32_CURMSGS_OFFSET {mq_attr_wasm32_curmsgs_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_SIZE {mq_attr_wasm64_size}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_FLAGS_OFFSET {mq_attr_wasm64_flags_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_MAXMSG_OFFSET {mq_attr_wasm64_maxmsg_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_MSGSIZE_OFFSET {mq_attr_wasm64_msgsize_offset}u\n\
+         #define KANDELO_PROCESS_MQ_ATTR_WASM64_CURMSGS_OFFSET {mq_attr_wasm64_curmsgs_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_SIZE {statfs_wasm32_size}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_TYPE_OFFSET {statfs_wasm32_type_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BSIZE_OFFSET {statfs_wasm32_bsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BLOCKS_OFFSET {statfs_wasm32_blocks_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BFREE_OFFSET {statfs_wasm32_bfree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_BAVAIL_OFFSET {statfs_wasm32_bavail_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FILES_OFFSET {statfs_wasm32_files_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FFREE_OFFSET {statfs_wasm32_ffree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FSID_OFFSET {statfs_wasm32_fsid_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_NAMELEN_OFFSET {statfs_wasm32_namelen_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FRSIZE_OFFSET {statfs_wasm32_frsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_FLAGS_OFFSET {statfs_wasm32_flags_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM32_SPARE_OFFSET {statfs_wasm32_spare_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_SIZE {statfs_wasm64_size}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_TYPE_OFFSET {statfs_wasm64_type_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BSIZE_OFFSET {statfs_wasm64_bsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BLOCKS_OFFSET {statfs_wasm64_blocks_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BFREE_OFFSET {statfs_wasm64_bfree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_BAVAIL_OFFSET {statfs_wasm64_bavail_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FILES_OFFSET {statfs_wasm64_files_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FFREE_OFFSET {statfs_wasm64_ffree_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FSID_OFFSET {statfs_wasm64_fsid_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_NAMELEN_OFFSET {statfs_wasm64_namelen_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FRSIZE_OFFSET {statfs_wasm64_frsize_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_FLAGS_OFFSET {statfs_wasm64_flags_offset}u\n\
+         #define KANDELO_PROCESS_STATFS_WASM64_SPARE_OFFSET {statfs_wasm64_spare_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_SIZE {sysinfo_wasm32_size}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_UPTIME_OFFSET {sysinfo_wasm32_uptime_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_LOADS_OFFSET {sysinfo_wasm32_loads_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_TOTALRAM_OFFSET {sysinfo_wasm32_totalram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_FREERAM_OFFSET {sysinfo_wasm32_freeram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_SHAREDRAM_OFFSET {sysinfo_wasm32_sharedram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_BUFFERRAM_OFFSET {sysinfo_wasm32_bufferram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_TOTALSWAP_OFFSET {sysinfo_wasm32_totalswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_FREESWAP_OFFSET {sysinfo_wasm32_freeswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_PROCS_OFFSET {sysinfo_wasm32_procs_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_TOTALHIGH_OFFSET {sysinfo_wasm32_totalhigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_FREEHIGH_OFFSET {sysinfo_wasm32_freehigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_MEM_UNIT_OFFSET {sysinfo_wasm32_mem_unit_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM32_RESERVED_OFFSET {sysinfo_wasm32_reserved_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_SIZE {sysinfo_wasm64_size}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_UPTIME_OFFSET {sysinfo_wasm64_uptime_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_LOADS_OFFSET {sysinfo_wasm64_loads_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_TOTALRAM_OFFSET {sysinfo_wasm64_totalram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_FREERAM_OFFSET {sysinfo_wasm64_freeram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_SHAREDRAM_OFFSET {sysinfo_wasm64_sharedram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_BUFFERRAM_OFFSET {sysinfo_wasm64_bufferram_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_TOTALSWAP_OFFSET {sysinfo_wasm64_totalswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_FREESWAP_OFFSET {sysinfo_wasm64_freeswap_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_PROCS_OFFSET {sysinfo_wasm64_procs_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_TOTALHIGH_OFFSET {sysinfo_wasm64_totalhigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_FREEHIGH_OFFSET {sysinfo_wasm64_freehigh_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_MEM_UNIT_OFFSET {sysinfo_wasm64_mem_unit_offset}u\n\
+         #define KANDELO_PROCESS_SYSINFO_WASM64_RESERVED_OFFSET {sysinfo_wasm64_reserved_offset}u\n\
+         #define KANDELO_PROCESS_STATX_SIZE {statx_size}u\n\
+         #define KANDELO_PROCESS_STATX_MASK_OFFSET {statx_mask_offset}u\n\
+         #define KANDELO_PROCESS_STATX_BLKSIZE_OFFSET {statx_blksize_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATTRIBUTES_OFFSET {statx_attributes_offset}u\n\
+         #define KANDELO_PROCESS_STATX_NLINK_OFFSET {statx_nlink_offset}u\n\
+         #define KANDELO_PROCESS_STATX_UID_OFFSET {statx_uid_offset}u\n\
+         #define KANDELO_PROCESS_STATX_GID_OFFSET {statx_gid_offset}u\n\
+         #define KANDELO_PROCESS_STATX_MODE_OFFSET {statx_mode_offset}u\n\
+         #define KANDELO_PROCESS_STATX_INO_OFFSET {statx_ino_offset}u\n\
+         #define KANDELO_PROCESS_STATX_SIZE_FIELD_OFFSET {statx_size_field_offset}u\n\
+         #define KANDELO_PROCESS_STATX_BLOCKS_OFFSET {statx_blocks_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATTRIBUTES_MASK_OFFSET {statx_attributes_mask_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATIME_SEC_OFFSET {statx_atime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_ATIME_NSEC_OFFSET {statx_atime_nsec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_BTIME_SEC_OFFSET {statx_btime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_CTIME_SEC_OFFSET {statx_ctime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_CTIME_NSEC_OFFSET {statx_ctime_nsec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_MTIME_SEC_OFFSET {statx_mtime_sec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_MTIME_NSEC_OFFSET {statx_mtime_nsec_offset}u\n\
+         #define KANDELO_PROCESS_STATX_RDEV_MAJOR_OFFSET {statx_rdev_major_offset}u\n\
+         #define KANDELO_PROCESS_STATX_RDEV_MINOR_OFFSET {statx_rdev_minor_offset}u\n\
+         #define KANDELO_PROCESS_STATX_DEV_MAJOR_OFFSET {statx_dev_major_offset}u\n\
+         #define KANDELO_PROCESS_STATX_DEV_MINOR_OFFSET {statx_dev_minor_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SIZE {sched_param_size}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_PRIORITY_OFFSET {sched_param_priority_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_MAX_REPL_OFFSET {sched_param_ss_max_repl_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_REPL_PERIOD_SEC_OFFSET {sched_param_ss_repl_period_sec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_REPL_PERIOD_NSEC_OFFSET {sched_param_ss_repl_period_nsec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_INIT_BUDGET_SEC_OFFSET {sched_param_ss_init_budget_sec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_INIT_BUDGET_NSEC_OFFSET {sched_param_ss_init_budget_nsec_offset}u\n\
+         #define KANDELO_PROCESS_SCHED_PARAM_SS_LOW_PRIORITY_OFFSET {sched_param_ss_low_priority_offset}u\n\
+         \n\
          #define KANDELO_SELECT_FD_SETSIZE {fd_setsize}u\n\
          #define KANDELO_SELECT_FD_SET_BYTES {fd_set_bytes}u\n\
          \n\
@@ -880,6 +985,109 @@ fn render_process_layouts_header() -> String {
         stat_rdev = stat::RDEV_OFFSET,
         stat_blksize = stat::BLKSIZE_OFFSET,
         stat_blocks = stat::BLOCKS_OFFSET,
+        sigaltstack_wasm32_size = sigaltstack::WASM32_SIZE,
+        sigaltstack_wasm32_sp_offset = sigaltstack::WASM32_SP_OFFSET,
+        sigaltstack_wasm32_flags_offset = sigaltstack::WASM32_FLAGS_OFFSET,
+        sigaltstack_wasm32_stack_size_offset = sigaltstack::WASM32_STACK_SIZE_OFFSET,
+        sigaltstack_wasm64_size = sigaltstack::WASM64_SIZE,
+        sigaltstack_wasm64_sp_offset = sigaltstack::WASM64_SP_OFFSET,
+        sigaltstack_wasm64_flags_offset = sigaltstack::WASM64_FLAGS_OFFSET,
+        sigaltstack_wasm64_stack_size_offset = sigaltstack::WASM64_STACK_SIZE_OFFSET,
+        mq_attr_wasm32_size = mq_attr::WASM32_SIZE,
+        mq_attr_wasm32_flags_offset = mq_attr::WASM32_FLAGS_OFFSET,
+        mq_attr_wasm32_maxmsg_offset = mq_attr::WASM32_MAXMSG_OFFSET,
+        mq_attr_wasm32_msgsize_offset = mq_attr::WASM32_MSGSIZE_OFFSET,
+        mq_attr_wasm32_curmsgs_offset = mq_attr::WASM32_CURMSGS_OFFSET,
+        mq_attr_wasm64_size = mq_attr::WASM64_SIZE,
+        mq_attr_wasm64_flags_offset = mq_attr::WASM64_FLAGS_OFFSET,
+        mq_attr_wasm64_maxmsg_offset = mq_attr::WASM64_MAXMSG_OFFSET,
+        mq_attr_wasm64_msgsize_offset = mq_attr::WASM64_MSGSIZE_OFFSET,
+        mq_attr_wasm64_curmsgs_offset = mq_attr::WASM64_CURMSGS_OFFSET,
+        statfs_wasm32_size = statfs::WASM32_SIZE,
+        statfs_wasm32_type_offset = statfs::WASM32_TYPE_OFFSET,
+        statfs_wasm32_bsize_offset = statfs::WASM32_BSIZE_OFFSET,
+        statfs_wasm32_blocks_offset = statfs::WASM32_BLOCKS_OFFSET,
+        statfs_wasm32_bfree_offset = statfs::WASM32_BFREE_OFFSET,
+        statfs_wasm32_bavail_offset = statfs::WASM32_BAVAIL_OFFSET,
+        statfs_wasm32_files_offset = statfs::WASM32_FILES_OFFSET,
+        statfs_wasm32_ffree_offset = statfs::WASM32_FFREE_OFFSET,
+        statfs_wasm32_fsid_offset = statfs::WASM32_FSID_OFFSET,
+        statfs_wasm32_namelen_offset = statfs::WASM32_NAMELEN_OFFSET,
+        statfs_wasm32_frsize_offset = statfs::WASM32_FRSIZE_OFFSET,
+        statfs_wasm32_flags_offset = statfs::WASM32_FLAGS_OFFSET,
+        statfs_wasm32_spare_offset = statfs::WASM32_SPARE_OFFSET,
+        statfs_wasm64_size = statfs::WASM64_SIZE,
+        statfs_wasm64_type_offset = statfs::WASM64_TYPE_OFFSET,
+        statfs_wasm64_bsize_offset = statfs::WASM64_BSIZE_OFFSET,
+        statfs_wasm64_blocks_offset = statfs::WASM64_BLOCKS_OFFSET,
+        statfs_wasm64_bfree_offset = statfs::WASM64_BFREE_OFFSET,
+        statfs_wasm64_bavail_offset = statfs::WASM64_BAVAIL_OFFSET,
+        statfs_wasm64_files_offset = statfs::WASM64_FILES_OFFSET,
+        statfs_wasm64_ffree_offset = statfs::WASM64_FFREE_OFFSET,
+        statfs_wasm64_fsid_offset = statfs::WASM64_FSID_OFFSET,
+        statfs_wasm64_namelen_offset = statfs::WASM64_NAMELEN_OFFSET,
+        statfs_wasm64_frsize_offset = statfs::WASM64_FRSIZE_OFFSET,
+        statfs_wasm64_flags_offset = statfs::WASM64_FLAGS_OFFSET,
+        statfs_wasm64_spare_offset = statfs::WASM64_SPARE_OFFSET,
+        sysinfo_wasm32_size = sysinfo::WASM32_SIZE,
+        sysinfo_wasm32_uptime_offset = sysinfo::WASM32_UPTIME_OFFSET,
+        sysinfo_wasm32_loads_offset = sysinfo::WASM32_LOADS_OFFSET,
+        sysinfo_wasm32_totalram_offset = sysinfo::WASM32_TOTALRAM_OFFSET,
+        sysinfo_wasm32_freeram_offset = sysinfo::WASM32_FREERAM_OFFSET,
+        sysinfo_wasm32_sharedram_offset = sysinfo::WASM32_SHAREDRAM_OFFSET,
+        sysinfo_wasm32_bufferram_offset = sysinfo::WASM32_BUFFERRAM_OFFSET,
+        sysinfo_wasm32_totalswap_offset = sysinfo::WASM32_TOTALSWAP_OFFSET,
+        sysinfo_wasm32_freeswap_offset = sysinfo::WASM32_FREESWAP_OFFSET,
+        sysinfo_wasm32_procs_offset = sysinfo::WASM32_PROCS_OFFSET,
+        sysinfo_wasm32_totalhigh_offset = sysinfo::WASM32_TOTALHIGH_OFFSET,
+        sysinfo_wasm32_freehigh_offset = sysinfo::WASM32_FREEHIGH_OFFSET,
+        sysinfo_wasm32_mem_unit_offset = sysinfo::WASM32_MEM_UNIT_OFFSET,
+        sysinfo_wasm32_reserved_offset = sysinfo::WASM32_RESERVED_OFFSET,
+        sysinfo_wasm64_size = sysinfo::WASM64_SIZE,
+        sysinfo_wasm64_uptime_offset = sysinfo::WASM64_UPTIME_OFFSET,
+        sysinfo_wasm64_loads_offset = sysinfo::WASM64_LOADS_OFFSET,
+        sysinfo_wasm64_totalram_offset = sysinfo::WASM64_TOTALRAM_OFFSET,
+        sysinfo_wasm64_freeram_offset = sysinfo::WASM64_FREERAM_OFFSET,
+        sysinfo_wasm64_sharedram_offset = sysinfo::WASM64_SHAREDRAM_OFFSET,
+        sysinfo_wasm64_bufferram_offset = sysinfo::WASM64_BUFFERRAM_OFFSET,
+        sysinfo_wasm64_totalswap_offset = sysinfo::WASM64_TOTALSWAP_OFFSET,
+        sysinfo_wasm64_freeswap_offset = sysinfo::WASM64_FREESWAP_OFFSET,
+        sysinfo_wasm64_procs_offset = sysinfo::WASM64_PROCS_OFFSET,
+        sysinfo_wasm64_totalhigh_offset = sysinfo::WASM64_TOTALHIGH_OFFSET,
+        sysinfo_wasm64_freehigh_offset = sysinfo::WASM64_FREEHIGH_OFFSET,
+        sysinfo_wasm64_mem_unit_offset = sysinfo::WASM64_MEM_UNIT_OFFSET,
+        sysinfo_wasm64_reserved_offset = sysinfo::WASM64_RESERVED_OFFSET,
+        statx_size = statx::SIZE,
+        statx_mask_offset = statx::MASK_OFFSET,
+        statx_blksize_offset = statx::BLKSIZE_OFFSET,
+        statx_attributes_offset = statx::ATTRIBUTES_OFFSET,
+        statx_nlink_offset = statx::NLINK_OFFSET,
+        statx_uid_offset = statx::UID_OFFSET,
+        statx_gid_offset = statx::GID_OFFSET,
+        statx_mode_offset = statx::MODE_OFFSET,
+        statx_ino_offset = statx::INO_OFFSET,
+        statx_size_field_offset = statx::SIZE_FIELD_OFFSET,
+        statx_blocks_offset = statx::BLOCKS_OFFSET,
+        statx_attributes_mask_offset = statx::ATTRIBUTES_MASK_OFFSET,
+        statx_atime_sec_offset = statx::ATIME_SEC_OFFSET,
+        statx_atime_nsec_offset = statx::ATIME_NSEC_OFFSET,
+        statx_btime_sec_offset = statx::BTIME_SEC_OFFSET,
+        statx_ctime_sec_offset = statx::CTIME_SEC_OFFSET,
+        statx_ctime_nsec_offset = statx::CTIME_NSEC_OFFSET,
+        statx_mtime_sec_offset = statx::MTIME_SEC_OFFSET,
+        statx_mtime_nsec_offset = statx::MTIME_NSEC_OFFSET,
+        statx_rdev_major_offset = statx::RDEV_MAJOR_OFFSET,
+        statx_rdev_minor_offset = statx::RDEV_MINOR_OFFSET,
+        statx_dev_major_offset = statx::DEV_MAJOR_OFFSET,
+        statx_dev_minor_offset = statx::DEV_MINOR_OFFSET,
+        sched_param_size = sched_param::SIZE,
+        sched_param_priority_offset = sched_param::PRIORITY_OFFSET,
+        sched_param_ss_max_repl_offset = sched_param::SS_MAX_REPL_OFFSET,
+        sched_param_ss_repl_period_sec_offset = sched_param::SS_REPL_PERIOD_SEC_OFFSET,
+        sched_param_ss_repl_period_nsec_offset = sched_param::SS_REPL_PERIOD_NSEC_OFFSET,
+        sched_param_ss_init_budget_sec_offset = sched_param::SS_INIT_BUDGET_SEC_OFFSET,
+        sched_param_ss_init_budget_nsec_offset = sched_param::SS_INIT_BUDGET_NSEC_OFFSET,
+        sched_param_ss_low_priority_offset = sched_param::SS_LOW_PRIORITY_OFFSET,
         fd_setsize = shared::select::FD_SETSIZE,
         fd_set_bytes = shared::select::FD_SET_BYTES,
     )
