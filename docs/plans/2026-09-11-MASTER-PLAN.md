@@ -1298,8 +1298,42 @@ anticipate — see `itimerval` below.
 - **G6 — `sched_param`'s six `__reserved2` offsets**, which no portable member
   name can reach; needs either a Kandelo-side struct to take `offsetof` against
   or a documented exemption.
-- **G7 — the ABI snapshot builder** (`process_native_layouts`) still records
-  only the original six modules.
+- **G7 — BLOCKED on an ABI-policy decision. Attempted and reverted 2026-09-12.**
+
+  `process_native_layouts()` records six of the fifteen layout modules, so the
+  committed snapshot — the campaign's drift-detection artifact — has the same
+  hole the generated C header had. `statx` is among the nine missing, and its
+  unrecorded offsets are how `stx_dev_minor` came to be never written.
+
+  Extending it to all fifteen works and is **purely additive**: 8 new top-level
+  keys, **0 removed, 0 changed**, verified by diffing the regenerated snapshot
+  against the old one.
+
+  **But `xtask dump-abi --classify-compat` rejects it:**
+
+  ```
+  abi: breaking/incompatible snapshot change: changed top-level section
+       "process_native_layouts"
+  xtask dump-abi: snapshot changes require ABI_VERSION bump
+  ```
+
+  The classifier treats *any* change to a top-level section as breaking,
+  including adding coverage. That collides with the standing constraint that
+  **there are no further `ABI_VERSION` bumps — everything stays under ABI 44**.
+
+  The change was reverted rather than left failing the check. Three ways
+  forward, all maintainer decisions:
+
+  1. **Teach the classifier that additive keys are compatible.** Correct in
+     principle — adding a field nobody read cannot break a consumer — but it
+     relaxes the ABI gate, and that gate is deliberately strict.
+  2. **Bump `ABI_VERSION`.** Forbidden by the standing constraint.
+  3. **Leave the snapshot at six modules** and accept that the drift artifact
+     covers under half of what it names.
+
+  **Option 3 is the status quo and it is the one with a real cost:** the header
+  now guards 14 of 15 modules, but the snapshot still records 6, so the two
+  ABI artifacts disagree about what the ABI includes.
 
 ## Acceptance evidence
 
