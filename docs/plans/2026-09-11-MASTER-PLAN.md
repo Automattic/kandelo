@@ -288,6 +288,35 @@ difference between 46 and 65 has not been attributed. The two runs on
 against this session's changes being the cause — but it is not the same as
 having measured the earlier commit.
 
+## Open decisions — work is blocked on these, not on effort
+
+Three items reached a point where the next step is a trade the maintainer
+should make, and each is recorded where the lane describes it.
+
+**1. Lane G — `itimerval`.** The last of fifteen layout modules. It is
+deliberately *not* a musl-struct mirror: wasm32 musl translates its public
+32-byte time64 struct to the kernel's historical four-`long` time32 record, so
+asserting them equal is false by design. Either a different guard at the
+translation site, or a recorded exemption that makes the lane's target 1
+instead of 0. **Driving the gate to 0 with an assert that happens to pass would
+be worse than leaving it at 1.**
+
+**2. Lane L — L2's pointer authority.** Kernel exports mark pointers three ways:
+`*mut u8`, bare `usize`, and plain `u32`. A type-based extraction agrees with
+the hand-written table on 40 of 52 entries and cannot see the other 12. Options:
+an explicit const table in `crates/shared`; changing every export to take
+`*mut u8` so the type *is* the authority (invasive); or a name heuristic
+(**not recommended** — a gate that is confidently wrong is worse than the
+hand-maintained table it replaces).
+
+**3. Lane G — G7 and the compat classifier.** Extending the ABI snapshot from 6
+to 15 layout modules is purely additive (8 keys added, 0 removed, 0 changed) and
+`--classify-compat` still rejects it as a breaking section change requiring an
+`ABI_VERSION` bump, which the standing constraint forbids. Either relax the
+classifier for additive keys, or accept that the snapshot records 6 of 15 while
+the generated header now guards 14. **The two ABI artifacts currently disagree
+about what the ABI includes.**
+
 ## Standing hazards — these are not lane-specific
 
 - **H-1 — a dead floor reads as complete.** Rust that has never executed, with
