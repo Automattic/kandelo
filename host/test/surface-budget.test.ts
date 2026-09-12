@@ -192,6 +192,19 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
+  // The fork-module is a SEPARATE artifact with its own imports, every one of
+  // which a host must satisfy. `hostImportFunctions` above covers only the
+  // kernel, so this half of the host obligation had no gate at all until
+  // 2026-09-12. Read from the same constant the host-native test asserts
+  // against every fork-module artifact on disk, so this number cannot drift
+  // from the built bytes.
+  forkModuleHostImports: () =>
+    Number.parseInt(
+      /EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
+        readFileSync(join(repoRoot, "crates/host-native/src/lib.rs"), "utf8"),
+      )?.[1] ?? "-1",
+      10,
+    ),
   memoryFsTypeScript: () => codeLineCount(["host/src/vfs/memory-fs.ts"]),
   kernelWorkerTypeScript: () => codeLineCount(["host/src/kernel-worker.ts"]),
   // 91.6% of kernel-worker.ts is one class. A line gate alone permits
