@@ -2497,10 +2497,40 @@ tree and export a mountable image, but any image containing deferred content —
 which is every production image — loses it at serialization. Tests pin both
 failure modes.
 
-**Unblocked meanwhile:** the TypeScript bridge can be written and tested
-against the non-export entry points. It cannot produce a real image until the
-serialization question is answered, so that is the pacing constraint rather
-than effort.
+**The bridge is built** (`images/vfs/lib/sffs-image-fs.ts`), and measuring what
+it must actually present produced the most useful correction of the increment.
+
+**The helper funnel needs THREE methods, not thirteen.** Every filesystem call
+in `vfs-image-helpers.ts` sits in one of six functions, and four of them are
+the assertions Y3 already moved to Rust, plus their two private helpers:
+
+| function | methods | status |
+|---|---|---|
+| `readVfsBytes` | `stat` `open` `read` `close` | helper for the artifact assertion — **now Rust** |
+| `walkVfsFiles` | `opendir` `readdir` `lstat` `closedir` | same — **now Rust** |
+| `assertVfsImageHeadroom` | `statfs` | **now Rust** |
+| `assertNoStaleWasmArtifacts` | `isPathDeferred` | **now Rust** |
+| `walkAndWrite` | `symlink` `chmod` | genuinely needed, **both present** |
+| `serializeImage` | `saveImage` | genuinely needed, **blocked on V4** |
+
+So ten of the thirteen exist only to serve TypeScript the Rust assertions
+replace. **This stopped three unnecessary module entry points from being
+built** — `stat`, `statfs` and `isPathDeferred` were queued as "the unblocked
+remainder" and are not needed at all. That is the same mistake as porting
+lazy-archive import/export into JSON the campaign is deleting, which lane Y
+declined earlier and nearly repeated here.
+
+**Consequence for the lane:** the independent work remaining is smaller than it
+looked, and so is the unblocked portion. `chmod` and `symlink` exist; the rest
+routes through `saveImage`, which waits on lane V. **Y5 cannot start before
+V4.**
+
+**A caveat recorded rather than tidied:** the bridge's POSIX-shaped handle APIs
+(`open`/`read`/`close`/`opendir`/`closedir`/`readdir`) serve only the two
+helpers above, so they were justified by a measurement that counted
+soon-to-be-deleted callers. They are cheap, tested and mutation-checked, and
+`saveImage`'s eventual shape may want them — so they stay, but they are not
+load-bearing for the funnel.
 
 ## Increments
 
