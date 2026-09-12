@@ -227,6 +227,46 @@ and the superseded fork reference engine); a "floor" turning out to be real
 after all; or a defect found while working that has to be fixed before the lane
 can continue, which has happened in every lane that has run so far.
 
+## Suite baseline — what "tests pass" is worth, measured 2026-09-12
+
+**The full host suite is at 65 failing files / 50 failing tests**, and the
+shape of that number matters more than the number.
+
+**39 of the 65 fail at collection with one identical cause:** `Package
+artifact closure is incomplete: no single provenance tier contains every
+accepted artifact, and tiers will not be mixed`. That is the resolver working
+correctly — refusing to serve a mixture — against an incoherent `source-only-v1`
+tier. It is provisioning state, not lane defects, and it needs the local-build
+engine; `scripts/build-programs.sh` does **not** clear it (measured: identical
+65/50 before and after a full program rebuild).
+
+The remaining 26 files carry 50 real failures in the classes the plan already
+names: the `vi.fn()` spawn call-count mismatches, kernel-worker ingress
+initialisation, and timing assertions.
+
+### Why this is recorded as a hazard
+
+**Every "tests pass" claim in this campaign so far has been a narrow-suite
+claim.** `host/test/surface-budget.test.ts` at 79 passing, or 296 tests across
+11 VFS files, says nothing about the other 390 files. That is not wrong — a
+narrow claim for a narrow change is correct practice — but a reader
+accumulating those green lines could reasonably infer a green suite, and the
+suite is not green.
+
+**Before attributing any failure to a lane, check it against this baseline.**
+The 2026-09-12 measurement is: 65 files, 50 tests, 39 of them one provisioning
+cause. A lane that lands and leaves those numbers unchanged has introduced
+nothing; a lane that moves them has done something, in one direction or the
+other.
+
+**What has NOT been established:** the baseline before this session's work. The
+suite was recorded at 46 failing files earlier in the campaign, and the
+difference between 46 and 65 has not been attributed. The two runs on
+2026-09-12 differ only in whether programs had been rebuilt, and produced
+**identical** failure sets with **no newly failing files**, which is evidence
+against this session's changes being the cause — but it is not the same as
+having measured the earlier commit.
+
 ## Standing hazards — these are not lane-specific
 
 - **H-1 — a dead floor reads as complete.** Rust that has never executed, with
