@@ -497,6 +497,50 @@ instance handle before one process can hold two filesystems — and a derived
 build holds two, a base and a target. And lane Y is now coupled to the Phase 5
 cutover's timing.
 
+**2. Lane F — the `forkModuleEntryPoints` ceiling now blocks every remaining
+guest import. OPEN, raised 2026-09-12.**
+
+The measure counts `pub extern "C" fn fm_*` in `crates/fork-module/src/lib.rs`,
+and its own `why` field says it counts **host-called** entries only. The regex
+cannot see callers, so it cannot enforce that. Two of the 54 it counts —
+`fm_gc_identity_find` and `fm_gc_identity_claim` — are called by nothing but an
+injected wasm shim inside the same module. The host-called figure is **52**.
+
+This is not a rounding complaint. Ten of the eighteen remaining guest imports
+each need an injected shim backed by a new `fm_*` helper, for the same reason
+those two exist: **the shim is the only thing that can hold a reference, and
+Rust is the only thing that can hold a map.** That is about **+11 against a
+ceiling of 54**, so the tranche cannot land without a decision, and the brief
+forbids the lane owner from raising a ceiling on their own judgement.
+
+Three coherent routes:
+
+* **A — raise the ceiling to ~65.** Honest and simple, but it inverts the
+  ratchet's direction and leaves the number conflating two unlike things.
+* **B — narrow the measure to its declared scope** (host-called only). Makes
+  the number mean what the entry already says it means, and the tranche lands
+  inside a ceiling of 52. It is still a weakening of a check, which is why it
+  is the maintainer's call and not the lane's.
+* **C — split the surface.** Keep `forkModuleEntryPoints` for host-called
+  entries and add a separately-ceilinged `forkModuleInternalHelpers` for
+  injector-only ones. **Nothing is weakened, both numbers become honest, and
+  the internal helpers keep a ratchet of their own.** This is the lane's
+  recommendation.
+
+Note that route C needs a measure that can tell the two apart. The injector
+looks its helpers up by name (`exported_function`), so the set is enumerable
+from `crates/fork-module-inject/src/main.rs` — the same file
+`forkGuestImportsUnserved` already reads to find injected exports.
+
+**3. Lane F — the table-mutation journal has no defined format. OPEN, raised
+2026-09-12.**
+
+`__wpk_fork_module_state_table_mutation_commit(owner, start, count)` carries no
+values, yet `reconcile()` must bring pthread table replicas coherent. The ABI
+defines no journal format, so the five `module_state_table_*` imports cannot be
+served without one being chosen. This blocks the mutation group specifically;
+it is independent of decision 2.
+
 ## Authorised but NOT YET BUILT — do not lose these
 
 **1. Lane G — the `itimerval` guard. AUTHORISED 2026-09-12, not written.**
@@ -905,6 +949,49 @@ not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
 - **F5 (new) — `kernel_exit` as a tagged exception.** Scoped in census §7,
   not built. Closes F-D2 and dissolves the entry/catch half of the floor. See
   the open decision below: it may belong to lane P, not here.
+- **F6 (new) — the inversion, worked from the guest's import list.** The lane
+  was re-scoped 2026-09-12: set the fork TypeScript aside
+  (`attic/fork-typescript-do-not-use/`, which is **not** a specification) and
+  implement everything in the module, serving the guest's own imports. The
+  measure is `forkGuestImportsUnserved` — canonical fork imports the module
+  does not export under the same name — now **18 of 46**, with
+  `forkGuestObjectImportsUnserved` at 3 of 5.
+
+  **Landed on `brandonpayton/lane-f-fork-inversion`** (worktree
+  `/Users/brandon/kandelo-lane-f`):
+
+  * GC-reference identity. The module imports one new host function,
+    `env.__wpk_fork_host_ref_identity(anyref) -> i32`, taking module imports
+    9 -> 10 — maintainer-approved, and the only host-contract growth in the
+    lane so far. `gc_lookup`/`gc_claim` moved off an O(n) scan onto it.
+    **Why a host import at all:** `ref.eq` validates only on `eqref`, there is
+    no `ref.hash`, and no cast rescues a host reference into the eq hierarchy,
+    so deciding whether two references are the same object is the one question
+    Wasm cannot answer for itself. Proven by hand-encoded modules on V8 with a
+    passing `eqref` control — an earlier wat2wasm attempt had a control that
+    also failed, and was discarded.
+  * `__wpk_fork_ref_exn_define` served. The one `define` in the family needing
+    nothing but guest linear memory, because the exception codec stages scalars
+    and payload recipe ids into a single scratch span before the call. 19 -> 18.
+  * The unguarded `fm_capture_*_vector` twin **deleted** — no production caller,
+    and it would intern a SHORT vector where the guest-facing trio refuses to.
+    `forkModuleEntryPoints` 55 -> 54, banked.
+  * **A capture-correctness defect fixed in `ReferenceGraphBuilder::define_gc`.**
+    It removed the pending-placeholder marker on ENTRY, then ran four checks
+    that can each reject. `claim_gc` publishes the id early by pushing a
+    ZEROED `Struct`, so a rejected define left that empty struct behind with
+    nothing marking it: `validate()` sealed clean and **the child rebuilt an
+    empty object where the parent had a populated one**, with no error on the
+    path. This reached the long-standing `fm_capture_define_gc` GC path too.
+
+  **Blocked on open decisions 2 and 3 above.** Every one of the remaining 18
+  imports needs one of them. The breakdown in `docs/surface-budget.json` is
+  grounded — read at each emission site in `crates/fork-instrument`, not
+  inferred from signatures — and records which need a shim, which must THROW
+  (the emitter puts `unreachable` after the call, so returning normally is a
+  bug), and that `encode_funcref` is the one remaining import that grows the
+  host contract, because funcref is not a subtype of anyref and the approved
+  identity import cannot serve it.
 
 ## Acceptance evidence
 
