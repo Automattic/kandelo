@@ -482,6 +482,41 @@ pub unsafe extern "C" fn sm_read_dir(
     at as i32
 }
 
+/// Stream the built image's bytes at `offset` into `out`. Returns the byte
+/// count, 0 at end of image, or a negative errno.
+///
+/// Calling at offset 0 BUILDS the image from the current tree; later offsets
+/// stream from that build. So a caller reads from 0 upward and must not
+/// interleave mutations, or it will stream a plan describing a tree that has
+/// since changed.
+///
+/// # Why streaming rather than "give me the image"
+///
+/// `lamp.vfs` is 249 MiB. The writer never materializes file content -- a data
+/// block carrying file bytes is a reference resolved as it is read -- so an
+/// entry point returning one buffer would undo the property that lets a 249
+/// MiB image be emitted without holding 249 MiB. This is lane V's V3 shape,
+/// reused rather than re-solved.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_len: usize) -> i32 {
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    // Base content is unreachable here for the same reason as elsewhere in this
+    // module: no host blob store. A fresh build has no base files, so this is
+    // not consulted; a derived build must supply a real source before it can
+    // export base-backed content.
+    let mut source = |_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO);
+    match rootfs::export_image_read(offset, out, &mut source) {
+        Ok(n) => n as i32,
+        Err(e) => err(e),
+    }
+}
+
 /// # Safety
 /// `path_ptr`/`path_len` must describe a readable range.
 #[unsafe(no_mangle)]
@@ -850,6 +885,53 @@ mod tests {
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
         let rc = with_path(b"/nope", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
         assert!(rc < 0, "a missing directory must be an error, not an empty listing, got {rc}");
+    }
+
+    /// What does the export actually emit -- the raw SFFS body, or the whole
+    /// VFSI container? Measured rather than assumed, because the answer decides
+    /// whether the bridge must wrap the bytes before writing a .vfs file.
+    #[test]
+    fn the_export_emits_a_mountable_sffs_body() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        assert_eq!(
+            with_two(b"/usr/hello", b"hi", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o644, cp, cl)
+            }),
+            0
+        );
+
+        let chunk = 64 * 1024;
+        let buf = sm_alloc(chunk);
+        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
+            assert!(n >= 0, "export failed at offset {offset}: {n}");
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            image.extend_from_slice(got);
+            offset += n as i64;
+        }
+        unsafe { sm_free(buf, chunk) };
+        assert!(!image.is_empty(), "the export must produce bytes");
+
+        // The decisive check: mount what came out. If this is a container the
+        // mount fails, and the bridge would need to unwrap first.
+        let fs = runtime_core::sffs::Sffs::mount(image.clone())
+            .expect("the export emits a mountable SFFS body, not a wrapped container");
+
+        // And the tree that comes back is the tree that was built.
+        let ino = fs.resolve(b"/usr/hello", true).expect("resolve /usr/hello");
+        let st = fs.stat_ino(ino).expect("stat");
+        assert_eq!(st.mode & 0o7777, 0o644);
+        assert_eq!(st.size, 2);
+        let mut back = [0u8; 2];
+        fs.read_at(ino, 0, &mut back).expect("read");
+        assert_eq!(&back, b"hi", "the exported image carries the content written through the ABI");
     }
 
     #[test]
