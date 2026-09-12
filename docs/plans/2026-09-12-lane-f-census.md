@@ -980,3 +980,46 @@ constructions became one `emptyTable` helper — bringing it to **249**. No
 behaviour changed and no ceiling moved. 250 was approved as headroom for the
 module-facing half; that half is now done at 249, so the ceiling should be
 banked to 249 once the platform half's own ceiling exists to grow into.
+
+## §19 — §13's triage is not reliable enough to delete from
+
+§13 sorted the 27 attic'd modules into "the module does this now, delete the
+call site" and "genuine host floor, write it thin". That sort was done from
+module names, symbol names and what the fork-module now exports. Probing three
+of them against their actual call sites found two were in the wrong bucket.
+
+**`fork-early-reference-provider` — filed Category A on the grounds that the F0
+census found it unreachable.** What F0 found unreachable was the module's
+270-line internal data feed, made dead by the `fm_ref_*` import flip. The CLASS
+is not unreachable: `earlyChildReferences` appears at 13 sites in
+`worker-main.ts` across roughly a thousand lines, as a fallback
+(`earlyChildReferences ?? activationRegistry.currentReferences()`), as a
+lifecycle object (constructed, `abort()`ed, nulled on two paths) and as a gate
+(`if (!importedStatePlanner || !earlyChildReferences)`). Deleting the call site
+means knowing what drives those paths instead. That is orchestration knowledge.
+
+**`fork-anyref-transit` — filed Category A because the injector now makes the
+module OWN and export the transit table.** Owning the table is not the same as
+SIZING it. The wrapper carries `ensureRecipeSlot(recipeId)`, which grows the
+table so a recipe id has a slot rather than letting `table.grow` trap, plus
+`clear` / `get` / `set` / `clearSlot`. `CLAUDE.md` names "anyref-transit
+`Table.grow` sizing" as part of the irreducible host floor, which puts this in
+Category B.
+
+It may not stay there — the injector already emits an `fm_transit_grow` pass,
+so the growth could plausibly move into the module. But `CLAUDE.md` says floor
+and the module has the primitive, and which of those wins is a design decision,
+not something to settle while deleting a call site.
+
+**The correction that matters is not the two entries; it is the method.** A
+triage by name and export is a hypothesis. Each entry needs its call sites read
+before anything is deleted, and reading them is the same orchestration knowledge
+the platform half needs. So Category A is NOT the mechanical, unblocked deletion
+work §13 implied, and this section supersedes that characterisation. The
+individual A/B guesses are left in §13 as hypotheses, not as a plan.
+
+**What IS unblocked** is the other direction entirely: the ten guest imports
+that need an injected shim backed by a new `fm_*` helper. That is Rust and
+injector work with no TypeScript and no attic, the mutation group's format
+question is settled (§16), and `forkModuleInjectorHelpers` now carries a
+pre-authorized envelope of 15 against 3 used.
