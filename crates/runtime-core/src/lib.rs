@@ -26,6 +26,7 @@ pub mod fork;
 pub mod guest_ptr;
 pub mod hostdir;
 pub mod hostname;
+pub mod image_policy;
 pub mod ipc;
 pub mod ipc_wire;
 pub mod klzy;
