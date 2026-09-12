@@ -313,6 +313,7 @@ pub const SFFS_SUPER_MAGIC: u32 = 0x5346_4653;
 pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
 pub(crate) const SB_FREE_BLOCKS: u64 = 20;
 pub(crate) const SB_FREE_INODES: u64 = 24;
+pub(crate) const SB_MAX_SIZE_BLOCKS: u64 = 68;
 /// Inode holding the deferred-file section, or 0. See
 /// [`crate::sffs_deferred`] for the section, and the writer's own
 /// `SB_DEFERRED_INODE` for why a consistency checker must read this field
@@ -392,6 +393,27 @@ impl<S: BlockSource> Sffs<S> {
         let mut raw = [0u8; INODE_SIZE];
         self.source.read_exact_at(self.inode_offset(ino), &mut raw)?;
         Ok(raw)
+    }
+
+    /// The image's encoded GROWTH CEILING in bytes -- how large this
+    /// filesystem was built to be allowed to become, which is not how large it
+    /// currently is.
+    ///
+    /// Product images are published against a profile ("this demo's VFS may
+    /// grow to 512 MiB"), and the ceiling is baked into the superblock at
+    /// build time. A published image carrying the wrong ceiling boots and runs
+    /// and then fails later, when something tries to grow it past a limit
+    /// nobody meant to set -- which is why it is checked at publication.
+    ///
+    /// Clamped up to the body's own length, exactly as
+    /// `SharedFS.inspectImageCapacity` does. An image whose recorded ceiling is
+    /// SMALLER than the bytes it already occupies has a ceiling that is not
+    /// merely wrong but unusable, and both readers agree to report the real
+    /// floor rather than a number the filesystem has already exceeded.
+    pub fn growth_ceiling_bytes(&self) -> Result<u64, Errno> {
+        let max_blocks = source_u32(&self.source, SB_MAX_SIZE_BLOCKS).map_err(container_errno)?;
+        let configured = (max_blocks as u64).saturating_mul(BLOCK_SIZE as u64);
+        Ok(configured.max(self.source.len()))
     }
 
     /// `statfs` for a mounted image, read from its own superblock.

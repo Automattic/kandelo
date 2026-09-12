@@ -56,6 +56,11 @@ pub struct ImageDescription {
 pub struct Container {
     pub flags: u32,
     pub body_bytes: u64,
+    /// The encoded growth ceiling. Part of the description because it is a
+    /// published property of the artifact -- two images with identical trees
+    /// but different ceilings are not interchangeable, and the equivalence bar
+    /// must not call them equal.
+    pub growth_ceiling_bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -187,7 +192,13 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
     deferred.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok(ImageDescription {
-        container: Container { flags, body_bytes: body_len },
+        container: Container {
+            flags,
+            body_bytes: body_len,
+            growth_ceiling_bytes: fs
+                .growth_ceiling_bytes()
+                .map_err(|e| format!("{}: growth ceiling: {e:?}", path.display()))?,
+        },
         entries,
         hardlink_groups,
         deferred,
@@ -373,6 +384,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
 /// dump. A diff of two 30,000-entry images that prints everything is not a
 /// diagnosis.
 fn report_difference(a: &ImageDescription, b: &ImageDescription) {
+    if a.container.growth_ceiling_bytes != b.container.growth_ceiling_bytes {
+        eprintln!(
+            "growth ceiling: {} vs {} bytes",
+            a.container.growth_ceiling_bytes, b.container.growth_ceiling_bytes
+        );
+    }
     if a.container.flags != b.container.flags {
         eprintln!(
             "container flags: {:#x} vs {:#x}",

@@ -50,6 +50,11 @@ pub enum PolicyViolation {
         free_inodes: u64,
         required_inodes: u64,
     },
+    /// The image's encoded growth ceiling is not the one its product profile
+    /// declares. Not a range check: an image built to grow LARGER than its
+    /// profile is as wrong as one built smaller, because the profile is what
+    /// the product was sized and tested against.
+    Capacity { actual_bytes: u64, expected_bytes: u64 },
 }
 
 impl PolicyViolation {
@@ -71,6 +76,7 @@ impl PolicyViolation {
                     out.push("free inodes");
                 }
             }
+            PolicyViolation::Capacity { .. } => out.push("growth ceiling"),
         }
         out
     }
@@ -107,6 +113,25 @@ pub fn check_headroom<S: BlockSource>(
             free_inodes: st.f_ffree,
             required_inodes: headroom.minimum_free_inodes,
         });
+    }
+    Ok(())
+}
+
+/// Require an image's encoded growth ceiling to be exactly the one its product
+/// profile declares.
+///
+/// Equality, not a minimum. An image built to grow larger than its profile is
+/// as wrong as one built smaller: the profile is the size the product was
+/// tested against, and a quietly roomier image is a difference nobody reviewed.
+pub fn check_capacity<S: BlockSource>(
+    fs: &Sffs<S>,
+    expected_bytes: u64,
+) -> Result<(), PolicyViolation> {
+    let actual_bytes = fs
+        .growth_ceiling_bytes()
+        .map_err(|_| PolicyViolation::Capacity { actual_bytes: 0, expected_bytes })?;
+    if actual_bytes != expected_bytes {
+        return Err(PolicyViolation::Capacity { actual_bytes, expected_bytes });
     }
     Ok(())
 }
@@ -182,6 +207,42 @@ mod tests {
         )
         .expect_err("both limits breached");
         assert_eq!(err.breached(), alloc::vec!["free bytes", "free inodes"]);
+    }
+
+    #[test]
+    fn the_encoded_growth_ceiling_is_accepted_when_it_matches() {
+        let fs = mount();
+        let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
+        assert_eq!(check_capacity(&fs, ceiling), Ok(()));
+    }
+
+    /// Both directions, because the check is equality and a range check would
+    /// pass the roomier image silently.
+    #[test]
+    fn a_ceiling_that_differs_either_way_is_refused() {
+        let fs = mount();
+        let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
+        for wrong in [ceiling - 1, ceiling + 1] {
+            let err = check_capacity(&fs, wrong).expect_err("mismatch must fail");
+            assert_eq!(err.breached(), alloc::vec!["growth ceiling"]);
+            assert_eq!(
+                err,
+                PolicyViolation::Capacity { actual_bytes: ceiling, expected_bytes: wrong },
+                "the violation must carry both numbers so a caller can name them",
+            );
+        }
+    }
+
+    /// The ceiling never reads below the bytes the image already occupies.
+    #[test]
+    fn the_ceiling_is_clamped_up_to_the_body_length() {
+        let fs = mount();
+        let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
+        let st = fs.statfs().expect("statfs");
+        assert!(
+            ceiling >= st.f_blocks * st.f_bsize as u64,
+            "a ceiling below the current size would be a limit already exceeded",
+        );
     }
 
     #[test]
