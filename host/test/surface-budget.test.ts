@@ -107,9 +107,13 @@ function budget(): Record<string, Surface> {
  * character is the known limit, and it costs at most a line either way.
  */
 function codeLineCount(globs: string[]): number {
+  // `|| true`: a glob matching nothing makes `ls` exit non-zero, and
+  // execFileSync THROWS on a non-zero exit -- so a surface that reaches zero
+  // would fail its own measurement instead of reporting 0. An empty surface is
+  // the goal state for several of these, so it has to be measurable.
   const listed = execFileSync(
     "/bin/sh",
-    ["-c", `ls ${globs.join(" ")} 2>/dev/null`],
+    ["-c", `ls ${globs.join(" ")} 2>/dev/null || true`],
     { cwd: repoRoot, encoding: "utf8" },
   )
     .split("\n")

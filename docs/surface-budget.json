@@ -59,10 +59,10 @@
   "surfaces": {
     "forkTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/fork-*.ts and host/src/vfork-*.ts",
-      "ceiling": 19791,
+      "ceiling": 0,
       "slack": 200,
       "target": 2000,
-      "why": "The Rust-First contract says this shrinks toward the floor and does not grow. It grew 23,246 -> 26,113 across the campaign. The target assumes inversion to 3-5 coarse fm_* entries, which collapses transport rather than only orchestration; deletion alone cannot reach it. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 24726 -> 19796, target 2500 -> 2000. Same code, a measure that counts implementation."
+      "why": "The Rust-First contract says this shrinks toward the floor and does not grow. It grew 23,246 -> 26,113 across the campaign. The target assumes inversion to 3-5 coarse fm_* entries, which collapses transport rather than only orchestration; deletion alone cannot reach it. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 24726 -> 19796, target 2500 -> 2000. Same code, a measure that counts implementation. SET ASIDE 2026-09-12: all 39 dedicated fork TypeScript files were moved to attic/fork-typescript-do-not-use/ so fork capture and replay can be built in the Rust fork-module from first principles. The ceiling is banked at 0, BELOW the target, deliberately: any TypeScript that comes back must be argued for one file at a time against a raise, rather than fitting silently under a headroom the old implementation left behind. Fork logic still inline in worker-main.ts, process-lifecycle.ts and kernel-worker.ts is NOT counted here and did not move."
     },
     "workerMainTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/worker-main.ts",
