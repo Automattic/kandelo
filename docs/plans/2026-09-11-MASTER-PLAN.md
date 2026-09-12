@@ -1274,6 +1274,36 @@ still open breaks it.
 decodes only. **RESOLVED WITHOUT WRITING ONE** — item 3 made SDEF the linkage
 source instead, so no encoder is needed for a format the campaign is retiring.
 
+**Gap 10 — an archive's own fetch descriptor has nowhere to live in a
+Rust-written image. Found 2026-09-12 while wiring the container export.**
+
+A deferred FILE record carries an opaque payload — its URL, transport, digest.
+A deferred ARCHIVE declaration carries only `archive_id -> bytes`. And the Rust
+container export emits `archive_json: None`, because the archive JSON is
+host-side producer metadata the kernel has no business assembling.
+
+So an image the Rust path writes today declares its archives' LENGTHS and
+nothing else about them. **That silently drops the one integrity property lane
+S measured as universally present**: "Every lazy archive group in all nine
+production images carries a digest ... not one of their 7,467 members is
+set-ID." Lane S's defect is about URL-backed single files precisely BECAUSE the
+archive path already had digests. A Rust-written image would lose them.
+
+**Not a live regression** — no production builder goes through the Rust export
+yet — which is exactly why it is recorded now rather than after Y5 repoints
+them. **It must be closed before Y5**, or the cutover trades a measured
+integrity property for a format improvement and nobody notices until something
+is fetched.
+
+The shape is not decided here. The obvious move is a payload on the archive
+declaration, mirroring the per-file record; the reason not to do it reflexively
+is that it is the same "who stores the fetch descriptor" question lane S was
+deferred on, and the maintainer's ruling there was *"I only want the problem
+fixed for the new Rust-based FS which is not completed yet."* This is that
+filesystem, so the ruling now points at doing it — but it is lane S's call
+whether the digest requirement becomes mandatory at the same time, and that is
+a scope question, not a coding one.
+
 ## What is left in lane V
 
 * **V5 — the producer side.** The format is done; the TypeScript writers must
