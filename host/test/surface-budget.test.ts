@@ -186,7 +186,24 @@ const MEASURED: Record<string, () => number> = {
     }
     return total;
   },
-  binaryResolverTypeScript: () => lineCount(["host/src/binary-resolver.ts"]),
+  // Independent spellings of the artifact tier path across the writer
+  // (xtask local-build) and both readers. Drift here already cost 39 of 53
+  // host-native tests against a tree where the build had just succeeded.
+  artifactTierPathSpellings: () =>
+    Number.parseInt(
+      execFileSync(
+        "/bin/sh",
+        [
+          "-c",
+          "grep -rn -E '\"local-binaries/source-only-v1\"|\"local-binaries\",[[:space:]]*\"source-only-v1\"' "
+            + "--include='*.ts' --include='*.rs' --include='*.mjs' "
+            + "host/src crates/host-native/src crates/shared/src tools/xtask/src scripts 2>/dev/null "
+            + "| grep -vE '\\b(test|tests)\\b' | wc -l",
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      ).trim(),
+      10,
+    ),
   imageBuilderFilesystemImporters: () =>
     Number.parseInt(
       execFileSync(

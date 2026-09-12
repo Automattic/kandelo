@@ -83,7 +83,7 @@ lands — those are marked.
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
 | **U** build automation | **15–30 d** | low | 25,658 lines of shell plus 10,921 of TS/MJS. Ranked last: none of it is host API surface. |
 | **W** `web-libs` contracts | **4–8 d** | medium | Small and mostly a split: the host contract leaves, the browser product surface stays. |
-| **R** binary resolution | **4–8 d** | medium | Bounded, and the duplication is already provable against `host-native`'s own resolver. |
+| **R** binary resolution | **2–4 d** | medium-high *(R1 done)* | One shared constant and four consumers, not a resolver migration. The 4,020-line file is policy nobody duplicates. |
 | **G** ABI binding drift | **3–6 d** | medium | Nine layout modules to cover plus the bare literals behind `statx`. The generator is ours end to end. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
@@ -1348,71 +1348,77 @@ per-host instances of a shared concept.
 
 # LANE R — binary and artifact resolution
 
-**Status: characterized. Small, bounded, and the duplication is already
-provable.**
+**Status: R1 census COMPLETE — `docs/plans/2026-09-11-lane-r1-census.md`.
+The lane is real, but it is not the lane that was written. Gate replaced.**
 
-`binary-resolver.ts` — **4,020 lines**.
+## What this lane is — as corrected by the census
 
-## What this lane is
+**`host-native`'s equivalent of the 4,020-line TypeScript resolver is ten
+lines**: a four-entry `ARTIFACT_TIERS` list and a first-existing-tier lookup.
+The other 4,010 lines are policy the native host does not use — per-tier
+identity, package closure, candidate expansion, source-only projection
+authority — and that policy is **not duplicated anywhere**.
 
-Resolving a packaged artifact — Wasm executable, side module, VFS image,
-archive, declared runtime data file — out of `local-binaries/` or `binaries/`,
-with a priority order, legacy-fork-artifact staleness rules and package
-candidates.
+So the lane is not a resolver migration. **What duplicates is the tier list and
+its order**, and it is spelled **eight times** across the writer and both
+readers: `tools/xtask/src/local_build.rs` (7), `crates/host-native/src/lib.rs`
+(2), `host/src/binary-tiers.ts` (1), `tools/xtask/src/build_deps.rs` (1).
 
-It is the **largest body in `host/src` with zero `WebAssembly.`,
-`SharedArrayBuffer`/`Atomics.` or `postMessage` references**: essentially no
-engine coupling at all.
+**The drift already cost a measured failure.** `host-native`'s own comment
+records that after a `./run.sh setup` that exited 0,
+`local-binaries/source-only-v1/kernel.wasm` was fresh while
+`local-binaries/kernel.wasm` was a seven-hour-old symlink, and `cargo test -p
+host-native` **failed 39 of 53** with a missing export against a tree where the
+build had just succeeded.
+
+**And the right fix was already applied once, then stopped at the language
+boundary.** `host/src/binary-tiers.ts` exists because TypeScript itself had two
+copies that, in its own words, "drifted in both directions". Rust then made a
+third.
 
 ## End state
 
-One resolver, in Rust, consulted by both hosts. The TypeScript that remains
-reads bytes from the host's own filesystem and nothing else decides *which*
-bytes.
+One declaration of the tier roots and their order, in `crates/shared`,
+generated into TypeScript the way ABI constants already are. The writer and both
+readers consume it. `binary-resolver.ts`'s policy is untouched.
 
 ## The floor
 
-Reading files from the host's filesystem — Node `fs` in one host, fetch/OPFS in
-the other. That is a byte-fetch, not a resolution policy.
+Reading bytes from the host's own filesystem — Node `fs` in one host, fetch or
+OPFS in the other. That is a byte-fetch, not a resolution policy.
 
-**The duplication is already visible.** `crates/host-native` resolves
-`local-binaries/` itself, and its source records a specific incident in the
-process: paths named `local-binaries/` alone while the resolver consults
-`local-binaries/source-only-v1/` first, so a run exited 0 against a file that
-was not the one intended. **Two resolvers with different precedence is exactly
-the failure mode this lane closes**, and it has already produced a wrong answer
-once.
+**`binary-resolver.ts`'s 4,010 lines of policy are not floor and not lane R
+work either.** They are simply not duplicated. The census establishes only
+that; whether they are right-sized is a different question this lane does not
+ask.
 
 ## Increments
 
-- **R1 — diff the two precedence orders**, TypeScript against `host-native`,
-  and write down every case where they disagree. The incident above says at
-  least one disagreement is real.
-- **R2 — one resolver in Rust**, with the precedence rules as data and the
-  disagreements from R1 resolved deliberately rather than by whichever host is
-  asked.
-- **R3 — the hosts call it** and keep only byte-fetch.
+- **R1 — census.** Done.
+- **R2 — one declaration of the tier roots and order** in `crates/shared`,
+  generated into TypeScript. `binary-tiers.ts` becomes the generated consumer.
+- **R3 — `xtask` writes to the shared constant**, closing the writer/reader
+  split that caused the 39-of-53 failure.
+- **R4 — `host-native` consumes it**; `ARTIFACT_TIERS` is deleted.
 
 ## Acceptance evidence
 
-`binaryResolverTypeScript` reaches **500** — not 0, because a host still reads
-its own filesystem. Provisional; R1 sets the real number.
-
-The decisive evidence is a differential test: for a corpus of resolution
-requests, the TypeScript and Rust resolvers must agree on every answer before
-the TypeScript is deleted, and the R1 disagreements must each appear as a
-deliberate, recorded decision rather than a silent pick.
+`artifactTierPathSpellings` reaches **1**. The regression this closes is
+concrete and already documented, so the decisive test is the one that would
+have caught it: a check that the path the build writes and the path the hosts
+read are the same constant, not two strings that happen to match.
 
 ## Known hazards
 
-- **`binary-resolver.ts` imports `vfs/memory-fs.ts`**, so it is coupled to lane
-  V even though its own coupling score is zero. The zero measures what the file
-  touches directly, not what it imports (H-8).
-- **Resolution feeds the build**, so a wrong answer here is a stale-artifact
-  bug that presents as a kernel or package defect somewhere else entirely —
-  which is how the `source-only-v1` incident presented.
-- **This lane is dev-and-build-time**, so it is not on the wasmtime host's
-  critical path in the way lane L is. It is cheap and provable, not urgent.
+- **Resolution feeds the build**, so a wrong answer is a stale-artifact bug that
+  presents as a kernel or package defect somewhere else entirely — which is
+  exactly how the `source-only-v1` incident presented.
+- **The seven `local_build.rs` spellings were counted by pattern, not read.**
+  R2 must read them; some may be different concepts that merely share a string.
+- **Only the source-only tier was counted.** `host/wasm` and the other two
+  tiers may have the same problem and were not measured.
+- **This lane is dev-and-build-time**, not on the wasmtime host's critical path.
+  It is cheap and provable, not urgent.
 
 ---
 

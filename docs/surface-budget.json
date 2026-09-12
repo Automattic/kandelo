@@ -128,13 +128,6 @@
       "target": 3600,
       "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
     },
-    "binaryResolverTypeScript": {
-      "measure": "line count of host/src/binary-resolver.ts",
-      "ceiling": 4020,
-      "slack": 150,
-      "target": 500,
-      "why": "Lane R. Artifact resolution over local-binaries/ and binaries/ \u2014 priority order, legacy-fork-artifact staleness, package candidates. The largest body in host/src with zero WebAssembly, SharedArrayBuffer or postMessage references. Partial Rust already exists in crates/host-native and tools/xtask. Target is not 0 because a host must still read its own filesystem. **This target is provisional.** The lane's floor has not been established, so the number restates the lane's end state rather than reporting a measured floor. The census named as the lane's first increment is what sets the real number, and when it runs this target is revised in the open with its evidence attached \u2014 never quietly relaxed."
-    },
     "webLibsSessionTypeScript": {
       "measure": "line count of web-libs/kandelo-session/src/*.ts",
       "ceiling": 5360,
@@ -169,6 +162,13 @@
       "slack": 0,
       "target": 12,
       "why": "Lane E, set by the E1 census. Replaces a line-count surface that was unreachable: the kernel-host pair shares exactly one name and is two different jobs, not a drifted copy, so it will never shrink. This counts actual duplication \u2014 43 protocol message types declared twice, 21 same-named worker-entry declarations, 1 in kernel-host. Target is 12, not 0, because a few (kernelWorker, port, maxPages, lifecycle) are legitimately per-host instances of a shared concept."
+    },
+    "artifactTierPathSpellings": {
+      "measure": "independent production spellings of the local-binaries/source-only-v1 tier path",
+      "ceiling": 8,
+      "slack": 0,
+      "target": 1,
+      "why": "Lane R, set by the R1 census. Replaces a line-count surface that would be satisfied by deleting policy that is not duplicated and untouched by fixing the duplication that is. host-native's equivalent of the 4,020-line TypeScript resolver is ten lines; what duplicates is the tier list and its order, spelled 8 times across the writer (xtask local-build, 7) and both readers. The drift already cost 39 of 53 host-native tests against a tree where the build had just succeeded."
     }
   },
   "lanes": {
@@ -373,11 +373,11 @@
       "status": "open",
       "closure": [
         {
-          "surface": "binaryResolverTypeScript",
-          "atMost": 500
+          "surface": "artifactTierPathSpellings",
+          "atMost": 1
         }
       ],
-      "why": "Goal V4. The largest wholly-uncoupled body in host/src. A second host reimplements artifact resolution today, and partial Rust already exists in host-native and xtask."
+      "why": "Goal V1. Not a resolver migration: host-native reimplemented ten lines, not 4,020. The tier list and its order are spelled 8 times across the writer and both readers, and that drift has already produced a measured failure. The right fix was already applied once inside TypeScript (binary-tiers.ts) and stopped at the language boundary."
     },
     "Y": {
       "title": "VFS image builders write the image format in TypeScript",
