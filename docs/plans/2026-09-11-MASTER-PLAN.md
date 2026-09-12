@@ -3049,6 +3049,49 @@ mean those files work against the Rust writer — the object passed to them is
 still a `MemoryFileSystem` until the value-side call sites move. Low coupling is
 not migratability, and the budget number must not be read as though it were.
 
+### The repoint is one connected component, not a file-at-a-time pass. ATTEMPTED AND REVERTED 2026-09-12.
+
+The tier table above is right about what each file NEEDS and wrong about what
+that implies, and the difference was only visible by doing it. Measured with the
+new `images/tsconfig.typecheck.json`:
+
+| What was tried | Errors under `images/` |
+|---|---|
+| baseline, nothing changed | **3** (all pre-existing, named in the config) |
+| repoint the 13 type-only files | **79** |
+| ...also repoint all 14 files declaring `MemoryFileSystem` in a signature | **45** |
+| ...then revert the 7 whose bodies need the omitted methods | **191** |
+
+A repointed file passes its `VfsImageFilesystem` to a helper still declaring
+`MemoryFileSystem`, and that does not compile. Widening the pass to every file
+with such a signature improves it, and the residue is 7 files whose BODIES call
+`saveImage`, `getLazyEntry`, `isPathDeferred` or the archive-entry helpers.
+**Cutting the component at those 7 makes it worse, not better** — they sit in
+the middle of the call graph, not at its edge, so the files that call them break
+instead.
+
+So there is no ordering that lands this incrementally at file granularity. The
+choice is:
+
+* **(a) Widen the interface** to include `saveImage`, `getLazyEntry`,
+  `isPathDeferred` and the archive-entry helpers. Everything compiles at once
+  and the budget number falls — but the interface is then a second NAME for
+  `MemoryFileSystem` rather than a description of what a recipe needs, which is
+  H-8 exactly: the count moves and nothing is migratable.
+* **(b) Give the bridge those capabilities first**, so the interface is honest,
+  then repoint the whole component in one change.
+
+**(b) is the lane's stated end state and (a) is the shortcut that would satisfy
+the gate without satisfying the goal.** It is recorded as a maintainer decision
+rather than taken, because "make the number move now" versus "keep the number
+honest and land later" is a scope call, and the gate it affects is this lane's
+acceptance evidence.
+
+What landed from the attempt: the typecheck config, the
+`VfsImageFilesystem` interface, and one real type error it caught in the bridge.
+The repoint itself was reverted — `images/` is back to its 3 pre-existing
+errors.
+
 ## Acceptance evidence
 
 `imageBuilderFilesystemImporters` reaches **0** — the fact lane V is blocked
