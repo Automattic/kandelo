@@ -61,6 +61,16 @@ pub struct Container {
     /// but different ceilings are not interchangeable, and the equivalence bar
     /// must not call them equal.
     pub growth_ceiling_bytes: u64,
+    /// The image's metadata section, verbatim when it is UTF-8.
+    ///
+    /// The equivalence bar names image metadata (version, kernelAbi,
+    /// createdBy) as one of its dimensions, and until now the describer did
+    /// not read it -- so two images differing only in the kernel ABI they
+    /// declare would have compared equal. Carried as text rather than a digest
+    /// because it is small and a reader diagnosing a mismatch wants to see
+    /// which field moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -198,6 +208,9 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
             growth_ceiling_bytes: fs
                 .growth_ceiling_bytes()
                 .map_err(|e| format!("{}: growth ceiling: {e:?}", path.display()))?,
+            metadata: sffs::metadata_section(&image)
+                .map_err(|e| format!("{}: metadata section: {e:?}", path.display()))?
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
         },
         entries,
         hardlink_groups,
@@ -388,6 +401,13 @@ fn report_difference(a: &ImageDescription, b: &ImageDescription) {
         eprintln!(
             "growth ceiling: {} vs {} bytes",
             a.container.growth_ceiling_bytes, b.container.growth_ceiling_bytes
+        );
+    }
+    if a.container.metadata != b.container.metadata {
+        eprintln!(
+            "image metadata differs:\n  A: {}\n  B: {}",
+            a.container.metadata.as_deref().unwrap_or("<none>"),
+            b.container.metadata.as_deref().unwrap_or("<none>")
         );
     }
     if a.container.flags != b.container.flags {

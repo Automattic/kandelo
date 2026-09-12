@@ -165,6 +165,67 @@ pub const VFSI_CONTAINER_MAGIC: u32 = VFSI_MAGIC;
 /// The container version this repository writes and reads.
 pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
 
+/// Byte span of the image's metadata section, or `None` when it declares none.
+///
+/// # Why the bytes stay opaque
+///
+/// The metadata is JSON with an open shape: `version`, an optional
+/// `kernelAbi`, an optional `createdBy`, and -- explicitly -- any further key,
+/// "to preserve forwards compatibility for future signed/provenance fields".
+///
+/// A Rust reader that parsed it into a struct and re-serialized would silently
+/// drop every field it did not know about, which is the opposite of what an
+/// open shape is for. And teaching the kernel crate to parse JSON to read
+/// three fields it does not act on would buy a parser's attack surface for
+/// nothing. So this hands back the bytes and lets whoever cares interpret
+/// them, exactly as the deferred section hands back an opaque payload.
+pub fn metadata_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
+    let (sab_offset, sab_len) = sffs_span(source)?;
+    let flags = source_u32(source, 8).map_err(container_errno)?;
+    if flags & VFS_IMAGE_FLAG_HAS_METADATA == 0 {
+        return Ok(None);
+    }
+
+    let mut offset = sab_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
+    let skip_section = |offset: &mut u64| -> Result<(), Errno> {
+        let len = source_u32(source, *offset).map_err(container_errno)? as u64;
+        *offset = offset
+            .checked_add(4)
+            .and_then(|value| value.checked_add(len))
+            .ok_or(Errno::EINVAL)?;
+        if *offset > source.len() {
+            return Err(Errno::EINVAL);
+        }
+        Ok(())
+    };
+    // The lazy-file JSON section is unconditional; the archive section is
+    // flagged and precedes metadata.
+    skip_section(&mut offset)?;
+    if flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0 {
+        skip_section(&mut offset)?;
+    }
+
+    let len = source_u32(source, offset).map_err(container_errno)? as u64;
+    let start = offset.checked_add(4).ok_or(Errno::EINVAL)?;
+    let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+    if end > source.len() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(Some((start, len)))
+}
+
+/// Slice form of [`metadata_span`] for a resident image.
+pub fn metadata_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
+    let Some((offset, len)) = metadata_span(&image)? else {
+        return Ok(None);
+    };
+    let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+    let end = start
+        .checked_add(usize::try_from(len).map_err(|_| Errno::EINVAL)?)
+        .ok_or(Errno::EINVAL)?;
+    image.get(start..end).map(Some).ok_or(Errno::EINVAL)
+}
+
 /// Byte span of the image's kernel-facing lazy-linkage section ("KLZY"), or
 /// `None` when the image does not declare one.
 ///
@@ -714,6 +775,59 @@ pub struct SffsDirent {
 mod tests {
     use super::*;
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+
+    /// The metadata section round-trips through the container writer, at every
+    /// combination of the OPTIONAL sections that precede it.
+    ///
+    /// That matters more than a single happy path: the section is found by
+    /// walking past the lazy JSON and, conditionally, the archive JSON. A walk
+    /// that forgets one conditional still works whenever that section is
+    /// absent, so only the combinations expose it.
+    #[test]
+    fn metadata_section_round_trips_behind_every_optional_section() {
+        use crate::sffs_container::{wrap, ContainerSections};
+        let meta: &[u8] = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
+        let body: &[u8] = b"body bytes, not a real filesystem";
+        for archive in [None, Some(&b"[archive json]"[..])] {
+            for lazy in [&b""[..], &b"{\"lazy\":1}"[..]] {
+                let image = wrap(
+                    body,
+                    &ContainerSections {
+                        lazy_json: lazy,
+                        archive_json: archive,
+                        metadata_json: Some(meta),
+                        kernel_lazy: b"KLZY",
+                    },
+                )
+                .expect("wrap");
+                assert_eq!(
+                    metadata_section(&image).expect("metadata"),
+                    Some(meta),
+                    "metadata must be found with lazy={lazy:?} archive={archive:?}",
+                );
+                // And the KLZY walk must still land correctly alongside it.
+                assert_eq!(kernel_lazy_section(&image).expect("klzy"), Some(&b"KLZY"[..]));
+            }
+        }
+    }
+
+    /// An image that declares no metadata reports none, rather than reading
+    /// whichever bytes happen to follow.
+    #[test]
+    fn metadata_section_is_absent_when_the_flag_is_clear() {
+        use crate::sffs_container::{wrap, ContainerSections};
+        let image = wrap(
+            b"body",
+            &ContainerSections {
+                lazy_json: b"{}",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: b"KLZY",
+            },
+        )
+        .expect("wrap");
+        assert_eq!(metadata_section(&image).expect("metadata"), None);
+    }
 
     /// The ceiling is the CONFIGURED maximum, asserted against a literal.
     ///
