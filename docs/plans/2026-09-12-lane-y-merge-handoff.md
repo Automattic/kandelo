@@ -87,6 +87,17 @@ banked at its measured value of 19 rather than left to grow unwatched.
   gate.** It found four type errors in code nothing was checking; one was this
   lane's and is fixed, three remain. A gate with a baseline of three cannot
   detect the fourth.
+
+  Verified inert, so it carries no merge risk: nothing auto-discovers it, and
+  the only workflow watching a tsconfig watches `host/tsconfig.json`. **When
+  the three are gone, wire it the way `host` already does** — `host/package.json`
+  has `"typecheck": "tsc -p tsconfig.typecheck.json"`, so the matching script
+  is the natural home rather than a new mechanism.
+
+  Run it with `./host/node_modules/.bin/tsc`, not `npx tsc` from the repository
+  root: the root form prints "This is not the tsc command you are looking for"
+  and exits non-zero having checked nothing, which reads like a failure with no
+  errors. Same shape as H-10.
 * **The two biggest builder files are not recipes.** `staged-product-inputs.ts`
   (1,975 lines, 50 parse/verify sites) and `vfs-product-builder-contract.ts`
   (952 lines, 55) do archive extraction, path-traversal defence and integrity
