@@ -97,6 +97,7 @@ for (const name of [
   "__wpk_fork_ref_vector_finish",
   "__wpk_fork_ref_gc_i31",
   "fm_transit_grow",
+  "__wpk_fork_ref_gc_claim",
   "__wpk_fork_ref_gc_transit",
 ]) {
   assert.ok(exportNames.has(name), `module must export ${name}`);
@@ -438,6 +439,32 @@ x.fm_capture_begin();
     transit.get(before + 6),
     null,
     "grown slots are null-initialised and readable",
+  );
+}
+
+// The guest-facing fresh-GC claim. `fork-instrument` publishes the claimed
+// value at `recipe + 1` on the instruction AFTER this returns, so the claim has
+// to have grown the transit table by then or the guest traps out of bounds.
+{
+  const transit = x.__wpk_fork_ref_gc_transit;
+  const a = x.__wpk_fork_ref_gc_claim(0);
+  assert.ok(a >= 1, "gc_claim returns a recipe id");
+  assert.ok(
+    transit.length > a + 1,
+    `gc_claim left room to publish at recipe+1 (size ${transit.length}, recipe ${a})`,
+  );
+  const b = x.__wpk_fork_ref_gc_claim(0);
+  assert.notEqual(b, a, "each claim is a FRESH identity, never deduped");
+  assert.ok(transit.length > b + 1, "and the table keeps up with each claim");
+  // The publish the guest performs next must be in bounds.
+  transit.set(b + 1, null);
+  // The generator has one call site and it always passes slot 0. A non-zero
+  // slot means the emitted shape changed, and claiming anyway would build the
+  // graph against an assumption that no longer holds.
+  assert.throws(
+    () => x.__wpk_fork_ref_gc_claim(1),
+    /unreachable/i,
+    "gc_claim traps on a slot the generator never emits",
   );
 }
 

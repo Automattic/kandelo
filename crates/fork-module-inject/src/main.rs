@@ -92,6 +92,10 @@ const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
 /// The injected anyref-table growth primitive the Rust side calls.
 const TRANSIT_GROW_EXPORT: &str = "fm_transit_grow";
 
+/// The guest-facing fresh-GC claim, and the Rust helper it wraps.
+const GC_CLAIM_EXPORT: &str = "__wpk_fork_ref_gc_claim";
+const CLAIM_GC_HELPER_EXPORT: &str = "fm_capture_claim_gc";
+
 /// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
 /// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
 /// The guest's own `__wpk_fork_static_root_catalog` is a harvest EXPORT cleared
@@ -916,8 +920,22 @@ fn main() -> Result<()> {
     inject_decode_externref(&mut module).context("injecting __wpk_fork_ref_decode_externref")?;
     inject_drive_execute(&mut module).context("injecting fm_drive_execute")?;
     inject_transit_grow(&mut module).context("injecting fm_transit_grow")?;
+    inject_gc_claim(&mut module).context("injecting __wpk_fork_ref_gc_claim")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
+    // Validate before writing. An injected function with a bad local index or a
+    // type mismatch produces bytes walrus is happy to emit and every consumer
+    // rejects, and without this check the artifact is written and STAGED before
+    // anything tries to instantiate it -- so the first symptom is a harness or a
+    // host failing on a module that was already published. That happened while
+    // adding the GC claim shim: `finish` was handed a non-parameter local, and
+    // the result was "invalid local index: 1" at instantiation time, long after
+    // the build reported success.
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&out_bytes)
+        .with_context(|| {
+            format!("injected module failed validation before writing {output}")
+        })?;
     std::fs::write(&output, &out_bytes).with_context(|| format!("writing {output}"))?;
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
@@ -1020,6 +1038,113 @@ fn inject_transit_grow(module: &mut Module) -> Result<()> {
     let shim = builder.finish(vec![needed], &mut module.funcs);
     module.exports.add(TRANSIT_GROW_EXPORT, shim);
     Ok(())
+}
+
+/// Inject `__wpk_fork_ref_gc_claim(slot) -> recipe`: the guest-facing fresh-GC
+/// claim.
+///
+/// # Why this is injected rather than Rust
+///
+/// The Rust side already has the interesting half — `fm_capture_claim_gc`
+/// allocates a fresh identity in `fork_codec::ReferenceGraphBuilder`. What it
+/// cannot do is the other half: `fork-instrument` publishes the claimed value
+/// into the transit table at `recipe + 1` on the instruction AFTER this returns,
+/// so the table has to be big enough first, and Rust emits no `table.grow`.
+///
+/// This is the same shape as `__wpk_fork_ref_decode_funcref`: an injected
+/// wrapper doing the one wasm-only step around a Rust helper that does the
+/// thinking. Rust cannot call an injected function (it does not exist when Rust
+/// compiles), so the wrapper has to be the outer layer, not the inner one.
+///
+/// # The slot argument
+///
+/// The generator has exactly ONE call site and it passes `0`
+/// (`module_gc_codec.rs`: `constant_i32(instrs, 0); call(claim)`), because the
+/// value is sitting in transit slot 0 at that moment. Claim itself does not read
+/// it — the guest publishes the value afterwards, which is what makes the
+/// transit table the record and lets a later lookup find it. A non-zero slot
+/// would mean the emitted shape changed, so it traps rather than quietly
+/// claiming against an assumption that no longer holds.
+///
+/// ```wat
+/// (func (export "__wpk_fork_ref_gc_claim") (param $slot i32) (result i32)
+///   (local $recipe i32)
+///   (if (local.get $slot) (then (unreachable)))          ;; contract violation
+///   (local.set $recipe (call $fm_capture_claim_gc))
+///   (if (i32.lt_s (local.get $recipe) (i32.const 0))
+///     (then (return (local.get $recipe))))               ;; propagate the errno
+///   (if (i32.lt_s (call $fm_transit_grow
+///                   (i32.add (local.get $recipe) (i32.const 2)))
+///                 (i32.const 0))
+///     (then (return (i32.const -1))))                     ;; could not grow
+///   (local.get $recipe))
+/// ```
+fn inject_gc_claim(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == GC_CLAIM_EXPORT)
+    {
+        bail!("module already exports {GC_CLAIM_EXPORT}");
+    }
+    let claim_helper = exported_function(module, CLAIM_GC_HELPER_EXPORT)?;
+    let grow = exported_function(module, TRANSIT_GROW_EXPORT)?;
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    let slot = module.locals.add(ValType::I32);
+    let recipe = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(slot).if_else(
+            None,
+            |bad| {
+                bad.unreachable();
+            },
+            |_ok| {},
+        );
+        body.call(claim_helper).local_set(recipe);
+        body.local_get(recipe)
+            .i32_const(0)
+            .binop(BinaryOp::I32LtS)
+            .if_else(
+                None,
+                |failed| {
+                    failed.local_get(recipe).return_();
+                },
+                |_ok| {},
+            );
+        body.local_get(recipe)
+            .i32_const(2)
+            .binop(BinaryOp::I32Add)
+            .call(grow)
+            .i32_const(0)
+            .binop(BinaryOp::I32LtS)
+            .if_else(
+                None,
+                |failed| {
+                    failed.i32_const(-1).return_();
+                },
+                |_ok| {},
+            );
+        body.local_get(recipe);
+    }
+    let shim = builder.finish(vec![slot], &mut module.funcs);
+    module.exports.add(GC_CLAIM_EXPORT, shim);
+    Ok(())
+}
+
+/// Resolve an exported function by name, failing loud rather than letting a
+/// later pass wire up a shim that calls nothing.
+fn exported_function(module: &Module, name: &str) -> Result<FunctionId> {
+    let export = module
+        .exports
+        .iter()
+        .find(|export| export.name == name)
+        .ok_or_else(|| anyhow!("module does not export {name}"))?;
+    match export.item {
+        ExportItem::Function(id) => Ok(id),
+        _ => bail!("{name} export is not a function"),
+    }
 }
 
 #[cfg(test)]
