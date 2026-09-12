@@ -1343,6 +1343,19 @@ anticipate — see `itimerval` below.
   `breaking/incompatible snapshot change: changed process_native_layouts entry
   "iovec"` and demands a bump.
 
+## Acceptance evidence
+
+`unguardedLayoutModules` reaches **1** — `itimerval`, pending the decision
+above. Every other module asserts musl's own definition against the generated
+constant, and the snapshot records all fifteen.
+
+Every batch was shown to fail before being trusted (H-2), including on the
+field that motivated the lane: changing `statx::DEV_MINOR_OFFSET` produces
+`static assertion failed … stx_dev_minor … drifted from
+crates/shared/src/process_layout.rs`.
+
+## Known hazards
+
 - **Three measurement errors in this lane were found by exercising guards, not
   reading them**: the gate counted delivery; a retracted claim that no asserts
   existed (`bits/stat.h` had 8, missed because they use `__builtin_offsetof`);
@@ -1357,9 +1370,8 @@ anticipate — see `itimerval` below.
 - **The compile reads the SYSROOT header, not the overlay.** After `dump-abi`,
   `scripts/build-musl.sh` must run before any assert test means anything. One
   perturbation test was invalid for exactly this reason.
-- **The ABI snapshot builder (`process_native_layouts`) still records only the
-  original six modules**, so the committed drift-detection artifact has the same
-  hole the header had. Not addressed here.
+- **`itimerval` is the one module still unanchored**, and the reason is in the
+  open-decisions section: it is not a musl-struct mirror.
 
 ---
 
