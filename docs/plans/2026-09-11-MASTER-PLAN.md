@@ -2535,11 +2535,19 @@ load-bearing for the funnel.
 ## Increments
 
 - **Y1 — census.** Done.
-- **Y2 — close the six image-level gaps** in Rust.
-- **Y3 — move the three policy assertions** to sit with the writer, so a new
-  image path cannot skip them.
-- **Y4 — one bridge** the builders call instead of `MemoryFileSystem`, exposing
-  the 24 methods over the Rust implementation.
+- **Y2 — close the six image-level gaps. DONE 2026-09-12**, and four of the six
+  were retired rather than built — see the status table above. Gap 7 (the VFSI
+  container writer, which the census missed and which sits upstream of the
+  others) was built.
+- **Y3 — move the three policy assertions. DONE 2026-09-12.** All three sit
+  with the writer in `crates/runtime-core/src/image_policy.rs`, each perturbed
+  until it failed. `check_capacity` is cross-verified against the TypeScript
+  reader on three shipped images.
+- **Y4 — one bridge. BUILT, blocked at serialization.** A zero-import
+  `crates/sffs-module` plus `images/vfs/lib/sffs-image-fs.ts`. Note the
+  measured correction: the funnel needs **three** methods, not the 24 the
+  census counted — see above. `saveImage` is the only one missing, and it waits
+  on V4.
 - **Y5 — repoint the 36 files. NOT mechanical, and not a like-for-like
   repoint** — see "Y5 is V5's production cutover" below.
 - **Y6 — replace the four `sharedfs-vendor` constants. ALREADY DONE**, by
