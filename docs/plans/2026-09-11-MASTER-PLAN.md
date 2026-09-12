@@ -2876,10 +2876,26 @@ declined earlier and nearly repeated here.
 looked, and so is the unblocked portion. `chmod` and `symlink` exist; the rest
 routes through `saveImage`, which waited on lane V. ~~Y5 cannot start before
 V4.~~ **V4 CLOSED 2026-09-12, so Y5's blocker is gone** — an image the Rust
-writer produces is now one the kernel loads back, deferred files intact. What
-`saveImage` still needs is the container write itself: `sffs_container.rs`
-exists and the export produces a body, but nothing yet joins them behind a
-builder-facing call.
+writer produces is now one the kernel loads back, deferred files intact.
+
+~~What `saveImage` still needs is the container write itself.~~ **DONE the same
+day** — `2ccb80699`, "The export emits a whole image, not a filesystem with no
+wrapper". `sm_export_image_read` streams the whole VFSI container rather than a
+bare SFFS body, and `SffsImageFs.exportImage()` drains it. Building the
+container host-side would have made the host a second author of the format,
+which is the defect V4 just spent four increments collapsing, in a new place.
+
+**`sffsModuleEntryPoints` is now a banked surface at 19.** Its target is
+deliberately NOT 0, unlike `forkModuleEntryPoints`: these are distinct
+filesystem operations a builder performs, not fine-grained steps of one
+operation a coarse entry could replace. The target is "does not grow without an
+argument", and two entries were declined while building this — the archive
+length rides in `sm_register_lazy_file` and the container in
+`sm_export_image_read`.
+
+**What Y5 now needs before it can repoint anything: gap 10** (below). Closing it
+first is the difference between a cutover and a silent loss of archive
+integrity.
 
 **A caveat recorded rather than tidied:** the bridge's POSIX-shaped handle APIs
 (`open`/`read`/`close`/`opendir`/`closedir`/`readdir`) serve only the two
