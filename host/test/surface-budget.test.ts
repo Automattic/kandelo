@@ -103,6 +103,29 @@ const MEASURED: Record<string, () => number> = {
     ),
   memoryFsTypeScript: () => lineCount(["host/src/vfs/memory-fs.ts"]),
   kernelWorkerTypeScript: () => lineCount(["host/src/kernel-worker.ts"]),
+  // 91.6% of kernel-worker.ts is one class. A line gate alone permits
+  // shuffling code between methods of the same god class; this does not.
+  kernelWorkerClassMethods: () => {
+    const lines = readFileSync(
+      join(repoRoot, "host/src/kernel-worker.ts"),
+      "utf8",
+    ).split("\n");
+    const start = lines.findIndex((l) =>
+      /^export class CentralizedKernelWorker/.test(l),
+    );
+    if (start < 0) return 0;
+    let count = 0;
+    for (let i = start + 1; i < lines.length; i += 1) {
+      if (/^\}/.test(lines[i]!) && i > start + 10) break;
+      if (
+        /^  (?:private |public |protected |static |readonly |async |\*)*[A-Za-z_$#][\w$]*\s*[(<]/
+          .test(lines[i]!)
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  },
   // Layout modules the C side depends on, minus the ones the generated header
   // gives a static assert. The remainder can drift from musl silently.
   unguardedLayoutModules: () => {

@@ -77,7 +77,7 @@ lands — those are marked.
 | **B** build truthfulness | **4–7 d** | medium | Reconciling the cheap path with the freshness gate is a decision plus a day; stamping the fixtures is the larger half. |
 | **X** process and exec | **2–5 d** | medium | Blocked on one panic with a precise bisect. Once found, the repoint is a one-commit reapply. |
 | **H** browser + curation | **3–6 d** | medium | The browser pass is short if provisioning holds; curation of ~370 commits into ~14 is a day or two with `commit-tree`. |
-| **K** `kernel-worker.ts` | **30–60 d** | **unknown until K1** | The largest single file in the repo, 32,718 lines with 515 `SYS_` references. Plausibly the largest lane in the campaign, and no census has run. |
+| **K** `kernel-worker.ts` | **30–60 d** | low *(K1 done)* | One class holds 29,975 lines across 522 methods. Decomposition, not migration — `host-native` dispatches the same 85 syscalls. The census clarified the shape but found nothing making it smaller. |
 | **L** host↔kernel plumbing (V4) | **10–20 d** | **unknown until L1** | 5,853 lines holding two real invariants. `crates/host-native` is the existence proof for what the floor actually is, and nobody has compared against it. |
 | **E** Node/browser peers | **4–8 d** | medium *(E1 done)* | The consolidation already happened for the pair that mattered: 72 shared lifecycle members via a factory. What is left is unifying 43 duplicated message types and a 21-item audit. |
 | **Y** image builders (V3) | **8–15 d** | medium *(Y1 done)* | Six image-level gaps, one bridge, a mechanical repoint of 36 files. Byte-identical output for nine production images is the bar and the expensive part. **Blocks lane V.** |
@@ -970,52 +970,89 @@ disagreeing with the kernel.
 
 ---
 
-# LANE K — `kernel-worker.ts`, the host's second syscall table
+# LANE K — `kernel-worker.ts`, one god class every lane contends for
 
-**Status: characterized. Never previously named as a lane, and it is the file
-every other lane queues behind.**
+**Status: K1 census COMPLETE — `docs/plans/2026-09-11-lane-k1-census.md`.
+The lane's framing was wrong; its target survived.**
+
+## What this lane is — as corrected by the census
+
+**Not "the host's second syscall table."** 85 distinct `SYS_` constants are
+dispatched at 86 sites, out of 233 in the ABI — and reading the handlers shows
+why: `handleFork`, `handleClone`, `handleSpawn`, `handleExecveat`,
+`handleSelect`, `handlePselect6`, `handleFutex`, `handleIpcShmat`,
+`handleBlockingRetry`. **These are exactly the syscalls needing a host
+service** — creating a worker, blocking on `Atomics.wait`, sharing memory. The
+kernel cannot create its own workers, and **`crates/host-native` dispatches the
+same set** through the same exports. Both hosts must do this.
+
+**The defect is shape, not duplication.** 91.6% of the file is one class:
+
+| | Lines |
+|---|---|
+| `class CentralizedKernelWorker` | **29,975** (522 methods) |
+| 37 other top-level functions | 2,743 |
+
+`#handleSyscallInner` alone is **2,149 lines**. Every lane that touches the host
+contends for this one file, and no boundary inside it can be enforced.
 
 ## End state
 
-The host worker transports syscalls and does not interpret them. Syscall
-identity, argument shape and dispatch belong to the kernel, which already owns
-them for every call it serves itself.
+The responsibilities the census found — syscall dispatch, process/worker
+lifecycle, blocking and wakeup, channel and memory IO, virtual networking — are
+separate modules with enforceable boundaries, and the host does the same job in
+something like the space the native host needs for it.
 
-## The floor
+## The floor — and the number that makes the lane
 
-The worker must own the **channel**: reading a request out of shared memory,
-entering the kernel, writing the reply, and the retry/park machinery around a
-blocking call. That is transport. **Knowing what `SYS_IOCTL` means is not.**
+Dispatching the 85 host-service syscalls is floor. Both hosts do it.
+
+**What is not floor is the cost.** `host-native`'s `guest.rs` does the same
+job — fork, exec, clone, the blocking-retry pump — in **13,577 lines**, against
+29,975. **That ratio is the lane's whole argument.**
+
+It also validates the target: 12,000 was guessed as "roughly a third", and the
+native host independently lands at 13,577. **This is the only lane whose
+provisional target survived its census.**
 
 ## Increments
 
-- **K1 — census the 515 `SYS_` references.** Which are transport (size a
-  buffer, choose a scratch path) and which are semantics (decide an argument's
-  meaning, pick an errno)? The second group is the lane.
-- **K2 — retire the semantic cases**, starting with any that duplicate a
-  decision the kernel already makes. Two dispatch-table defects this campaign
-  found — `setsockopt` and `ioctl` each taking the sixth channel word as a
-  pointer width — were *kernel*-side, but they were invisible partly because
-  the host carries a parallel understanding of the same calls.
-- **K3 — split what remains.** A 32,718-line file is a contention point and a
-  measurement hazard in its own right.
+- **K1 — census.** Done.
+- **K2 — split the class** along the boundaries the census found; they are
+  already visible in the method names.
+- **K3 — decide the test-authority question.** `#createTestAuthority` is 1,459
+  lines and the three test-scaffolding methods total 1,577, shipping in the
+  production class. It is a deliberate pattern, not debris, and `kernel.ts`
+  carries the same one — so this is a trade to decide deliberately, not a defect
+  to fix silently.
+- **K4 — `#handleSyscallInner` is the single densest unit** and should be
+  table-driven, with the table generated from the same ABI source lane G and
+  L-D2 point at.
+- **K5 — measure against `guest.rs`** as each piece lands; it is the only
+  evidence for what the job actually costs.
 
 ## Acceptance evidence
 
-`kernelWorkerTypeScript` falls to **12,000** in the budget. Per increment, the
-host suite stays green — this file is the syscall hot path, so a regression
-here is not subtle.
+`kernelWorkerTypeScript` reaches **12,000** — census-validated against
+`guest.rs`, no longer provisional. `kernelWorkerClassMethods` reaches **150**
+from 522: **a line gate alone permits shuffling code between methods of the same
+god class while nothing improves.**
 
 ## Known hazards
 
-- **Contention.** Lane F's A5, lane X's spawn work and the wait-path lane all
-  live here. Two agents in this file produce a merge that compiles by luck.
-- **It is a measurement hazard.** Moving code inside a file this size shifts V8
-  parse and compile for unrelated functions — visible in the select A/B, where
-  untouched metrics scattered up to +1.94 µs with identical arms.
-- **`CLAUDE.md` names known-bad optimizations here** — syscall argument-count
-  tables, classification sets, cached `DataView`s, conditional debug logging.
-  Do not reintroduce them while restructuring.
+- **The 436 methods the census could not classify — 17,958 lines — are the
+  majority of the class and the largest unknown in the whole plan.** They fell
+  into no name-based bucket and were not read. Any K2 schedule built without
+  reading them is built on sand.
+- **Moving code inside this file shifts V8 parse and compile for unrelated
+  functions**, which was visible in the select A/B. Performance claims about
+  this lane need the whole-suite treatment (H-7).
+- **None of the 85 dispatched syscalls was proven to need a host service.** They
+  were classified by handler name and the blocking protocol. A K2 that deletes a
+  handler on this census's authority would be over-reading it.
+- **`guest.rs` is not a port.** It is the same responsibility in another
+  language and may omit behavior the browser host needs, so the ratio is an
+  argument, not a specification.
 
 ---
 

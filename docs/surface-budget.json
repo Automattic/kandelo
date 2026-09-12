@@ -98,7 +98,7 @@
       "ceiling": 32718,
       "slack": 400,
       "target": 12000,
-      "why": "The single largest file in the host and the one every lane contends for. 515 SYS_ references live here, so syscall knowledge the kernel owns is mirrored in the host. Its size is also a measurement hazard: moving code inside it shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
+      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
     },
     "unguardedLayoutModules": {
       "measure": "process_layout modules the generated musl header does not cover",
@@ -169,6 +169,13 @@
       "slack": 0,
       "target": 6,
       "why": "Lane U, set by the U1 census. Replaces two line-count surfaces that measured size \u2014 the axis the lane's own text says is wrong \u2014 and would have been satisfied by rewriting loud, harmless test runners. This counts the tier that can silently produce a wrong artifact. The archetype is build-step-input-hash.sh: a content-identity cache-key primitive written in shell, consumed by build-host.sh, build-rootfs.sh AND tools/xtask/src/local_build.rs, and mirroring a second shell script that folds the same logic. The repo has already served a stale kernel from a cache key that omitted an input. Target is 6, not 0: release verification and CI deployment checks legitimately compute digests in shell and fail loudly."
+    },
+    "kernelWorkerClassMethods": {
+      "measure": "methods declared in class CentralizedKernelWorker",
+      "ceiling": 522,
+      "slack": 10,
+      "target": 150,
+      "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration \u2014 the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
     }
   },
   "lanes": {
@@ -311,15 +318,19 @@
       "whyExempt": "Deprioritized by the maintainer, who asked to push implementation further before paying the cost of browser verification. Characterizing it now would plan work nobody intends to start."
     },
     "K": {
-      "title": "kernel-worker.ts \u2014 the host's second syscall table",
+      "title": "kernel-worker.ts \u2014 one god class every lane contends for",
       "status": "open",
       "closure": [
         {
           "surface": "kernelWorkerTypeScript",
           "atMost": 12000
+        },
+        {
+          "surface": "kernelWorkerClassMethods",
+          "atMost": 150
         }
       ],
-      "why": "The file is 32,718 lines and holds 515 SYS_ references. Syscall dispatch knowledge belongs to the kernel; a host that mirrors it is a second authority that drifts, and every lane queues behind this file."
+      "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service \u2014 worker creation, Atomics.wait blocking, shared memory \u2014 and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
     },
     "G": {
       "title": "ABI binding drift \u2014 generated headers cover under half the layouts",
