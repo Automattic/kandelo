@@ -76,10 +76,16 @@ a map, so the in-module algorithm is linear, O(n) per lookup and O(n^2) over a
 capture. This import buys O(1) by letting the host hand back a stable id.
 
 **It is an optimisation, not a capability floor, and it should be described that
-way.** It was accepted deliberately: Kandelo is a generic platform meant to
-support managed languages, even though **no guest that ships today emits Wasm-GC
-values at all** — measured: 0 of 78 built guest binaries contain a struct or
-array type, and everything exercising that path is a test double.
+way.** It was accepted deliberately, for the whole possibility space of future
+guests rather than for what runs today.
+
+A measurement exists and is recorded as a FACT, not as a reason: 0 of 78 built
+guest binaries contain a Wasm-GC struct or array type, and everything exercising
+that path today is a test double. **That bounds nothing.** Kandelo is a generic
+platform; the absence of a caller today is not an argument against building the
+capability, and it was twice offered as one before the maintainer ruled
+otherwise. The measurement is useful only for judging urgency and for knowing
+what is exercised by tests versus by programs.
 
 `env.resolve_externref` is the replay direction: handle back to the live value.
 It is listed as a function because that is what a host writes today. It could
@@ -137,20 +143,44 @@ its failure mode is a silently torn table capture when one pthread forks while
 another is mid-mutation. No test in the fork-module harness could catch that: the
 harness is single-threaded by construction.
 
-**Three ways this could go, and it is a decision rather than a derivation:**
+**DECIDED 2026-09-12: design the shared-memory protocol and move all four into
+the module.** Shared linear memory is a `SharedArrayBuffer`, so the exchange is
+wasm atomics over a control block every worker of the process already agrees on
+— the same thing the `Atomics` API does from JavaScript.
 
-1. **Design the shared-memory protocol** (a published-range log plus the lock,
-   both in linear memory, with atomics) and move all four into the module. Most
-   faithful to the lane's goal; the riskiest to get wrong, and untestable with
-   the current harness.
-2. **Leave the four in the host.** Then they belong on the list above as four
-   more host-implemented functions, taking it from 4 functions to 8 — and a
-   complete native host has to implement a concurrency protocol, not just
-   plumbing.
-3. **Establish that the boundary is narrower than it looks** — pthread-shared
-   mutable tables may be rare or absent in shipping guests, exactly as Wasm-GC
-   values turned out to be. That is measurable before anything is designed, and
-   it is the cheapest next step.
+A third option was offered and was wrong: "measure whether pthread-shared
+mutable tables occur in shipping guests, and narrow the boundary if they do
+not." **Whether a guest uses a feature today does not bound what the platform
+must provide.** That reasoning was offered twice — here and for Wasm-GC identity
+— and rejected both times. It is recorded so it is not offered a third.
 
-Option 3 first is the same move that collapsed the GC-identity question: measure
-whether the path has any production caller before designing for it.
+The rejected alternative worth keeping in view is leaving all four in the host:
+that would put them on the list above, taking it from 4 host functions to 8, and
+would make a complete native host implement a concurrency protocol rather than
+plumbing. Moving them into the module is what keeps the host contract plumbing.
+
+### The control block
+
+`__wpk_fork_module_state_table_generation_addr` today points at a single `i64`
+generation word. It becomes the base of a small block the host allocates in
+shared linear memory — still ONE allocation for the host, now sized:
+
+| offset | type | meaning |
+|---|---|---|
+| `+0` | i64 | generation, bumped on every publish |
+| `+8` | i32 | writer lock (0 free) |
+| `+12` | u32 | reserved |
+| `+16` | u32 | ring head — a monotonically increasing record index |
+| `+20` | u32 | ring capacity in records |
+| `+24` | … | ring of 32-byte records: `(i64 generation, u32 owner, u32 pad, u64 start, u64 count)` |
+
+Each worker keeps its OWN depth counter and last-applied index in module-local
+state — the fork-module's BSS is per-worker — so only the 0→1 and 1→0 lock
+transitions touch the shared word, and a nested mutation does not deadlock
+against itself.
+
+**Ring overflow is fail-SAFE, not fail-loud.** A reconciler that has fallen
+further behind than the ring is deep cannot know which ranges it missed, so it
+marks every page of every owner dirty. That over-approximates the sparse overlay
+— a larger capture, never a wrong one — which is the only direction that is safe
+to guess in.
