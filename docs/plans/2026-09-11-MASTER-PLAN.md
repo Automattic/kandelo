@@ -322,6 +322,41 @@ deletes 318 of them.** The Rust writer is already live via
 increments, acceptance — exactly as this file requires. It is plausibly larger
 than the fork lane.
 
+## The floor — what stays in TypeScript
+
+**Two things, and neither is the filesystem.** The host must *fetch* deferred
+bytes, because the network lives there — CORS, CSP, a service worker, or no
+network at all are host facts the kernel cannot know. And the host must read
+bytes from host-backed mounts (Node `fs`, OPFS), because those filesystems are
+its own.
+
+**Neither requires a filesystem implementation.** `sharedfs-vendor.ts` is not
+the floor; it is a second implementation of a format the kernel owns.
+
+## Increments
+
+- **V6 — census the six consumers.** `rootfs-overlay.ts`, `memory-fs.ts`,
+  `image-helpers.ts`, `package-deferred-tree.ts` and two image scripts hold the
+  TypeScript filesystem up. For each: what does it actually need — a mounted
+  tree, a byte range, a directory listing — and can the kernel serve it?
+  **This is the deliverable that decides whether the rest is weeks or days**,
+  and nobody has done it.
+- **V7 — serve those needs from the kernel**, through the export the writer
+  already has (`kernel_rootfs_export_tree`) plus whatever the census shows is
+  missing.
+- **V8 — delete `sharedfs-vendor.ts`.** The lane closes here, not at V7.
+
+## Acceptance evidence
+
+`sffsTypeScript` reaches **0** in the budget. Nothing short of deletion counts:
+a TypeScript filesystem that is merely unused is the dead-floor pattern (H-1)
+with 3,752 lines in it.
+
+Per increment: the four byte-level cross-language fixtures keep passing
+unmodified, and the mutation campaign is re-run reporting which fixture kills
+which mutation — `sffs-slots` and `sffs-tail` exist to reach paths that
+mutation proved were otherwise dead, and they reach them by construction.
+
 ## Known hazards
 
 - **V4 would silently destroy every lazy file** if routed through
@@ -366,6 +401,13 @@ cache or a network position execute as root inside the guest. HTTPS is
 transport security, not artifact integrity, and a third-party host is under no
 obligation to use it.
 
+## The floor
+
+The host performs the fetch — the network is its own. **Verification is not
+the host's**: a kernel that trusts returned bytes cannot detect a substituting
+host, and "a new host might not take precautions" is exactly the threat model
+V4 creates by making new hosts cheap to write.
+
 ## End state
 
 Deferred bytes are verified against a digest recorded with the reference, and
@@ -382,6 +424,22 @@ the setuid bit is not honoured on unverified bytes.
   which makes a substituting *host* detectable rather than trusted. Needs a
   sha256 in the kernel; lands with V5, where the kernel parses the record
   anyway.
+
+## Acceptance evidence
+
+`setuidLazyWithoutDigest` reaches **0**, plus a test that a *tampered* byte
+stream of the correct length is refused. The second half matters: a digest
+that is recorded and never checked is a guard that cannot fail (H-2), and
+length already passes today.
+
+## Known hazards
+
+- **Verify where the bytes land, not where they are requested.** A digest
+  checked before the transport returns proves nothing about what arrived.
+- **`EAGAIN` must not be the refusal.** The kernel parks and retries on it, so
+  a file failing verification would hang its reader forever instead of failing.
+  `EIO` is the platform's settled answer for deferred bytes that will never
+  arrive.
 
 **Forbidding setuid + deferred is not available** — production depends on the
 combination.
@@ -429,6 +487,18 @@ neither documenting the other, with ~1.93 billion pairs of margin.
 
 **Status: partly characterized. B10's direction is settled; its blocker is not.**
 
+## End state
+
+The kernel decides what a spawn would run — script or binary, and which
+interpreter — and `parseShebang` no longer exists in the host. `posix_spawn`
+and `execve` give the same answer for the same file, which they do not today.
+
+## The floor
+
+The host still launches the worker and carries the syscall channel; that is
+lane F's floor and is shared, not duplicated. **Nothing about interpreting an
+executable's format is host work** — the kernel already owns `execve`.
+
 ## Where shebang belongs — settled
 
 `#!` is a **kernel** feature on Linux, the BSDs and macOS: `execve(2)` itself
@@ -468,6 +538,16 @@ inert, so the repoint is a one-commit reapply once the panic is understood.
   `docs/posix-status.md`, which is contract-compliant. Raising it is platform
   scope with no reported need.
 
+## Acceptance evidence
+
+`parseShebangReferences` reaches **0** in the budget, and the sortix exec
+expectations stay green across repetitions rather than one run. Additionally,
+`posix_spawn` and `execve` must agree on a directory interpreter — today they
+give `ENOENT` and `EISDIR` respectively, against POSIX's `EACCES`.
+
+**Every fix here needs wasm evidence**, not native: the probe's own native test
+covers the failing shape and passes.
+
 ## Known hazards
 
 - **The native harness is structurally blind here.**
@@ -484,6 +564,17 @@ inert, so the repoint is a one-commit reapply once the panic is understood.
 # LANE C — conformance
 
 **Status: characterized, near done.**
+
+## End state
+
+PR #1350 can state, with evidence, that it causes no conformance regression —
+and the statement rests on a **failing-file-set comparison**, never on totals.
+
+## The floor
+
+Tests that require a browser cannot run here; they belong to lane H. Everything
+else in the suite is expected to run, and a test that cannot run is a defect in
+provisioning rather than an exemption.
 
 ## Where it stands
 
@@ -510,6 +601,21 @@ timeouts to 5. **An explicit minimal program set — `sh` and `gencat` — would
 likely recover all eight** without reintroducing per-test closure resolution.
 Untried; it is a runner-contract decision.
 
+## Known hazards
+
+- **The merge-base cannot produce a comparable failing set.** Its runner lacks
+  `KANDELO_RUNNER_BUILTINS=explicit`, so every guest-executing test times out
+  and FAIL reads 0 **because nothing ran**. "It passed before" is not evidence
+  when "before" could not execute. Mechanism attribution plus repetition is the
+  substitute.
+- **`BUILTINS=explicit` is a trade, not a free win.** It took the suite from
+  1,352 timeouts to 5, and its cost is that five POSIX APIs needing `/bin/sh`
+  cannot be tested at all.
+- **A tally that matches the hypothesis is the most dangerous number here**
+  (H-4). Twice in one day a conformance tally matched what was being
+  investigated and was something else — a tree-shaken artifact reader, and a
+  missing `dylink_module32.wasm` whose first line said `fork: ENOMEM`.
+
 ## Increments
 
 - **C1 — the minimal builtin set**, recovering the 8.
@@ -531,6 +637,37 @@ repetition is the substitute, and it is what produced the numbers above.
 # LANE B — build and provisioning truthfulness
 
 **Status: partly landed, remainder characterized and dispatched.**
+
+## End state
+
+A build that cannot produce a usable artifact says so, in terms that name the
+cause rather than the symptom — and the documented provisioning path and the
+documented freshness gate agree with each other.
+
+## The floor
+
+None. Every defect in this lane is ours: our cache keys, our authority
+publication, our installer, our documentation. There is no host or Wasm limit
+anywhere in it.
+
+## Increments
+
+- **B1 — reconcile the cheap path with `verify-fresh`.** They are mutually
+  incompatible today: `install_local_binary` stages a kernel with no custom
+  sections, so the gate then refuses it and points the reader at the expensive
+  path they were told not to run. Either the installer stamps, or the cheap
+  path stops being documented. **Stamping was considered and rejected** — the
+  installer is handed a caller-supplied file and cannot know its provenance, so
+  a stamp there turns "cannot be verified" into "claims to have been verified".
+- **B2 — the fixtures are unstamped.** `build-programs.sh` builds through the
+  SDK, and only the local-build engine stamps, so every test fixture carries no
+  `kandelo.abi.contract`. Lane X's probe surfaced this by treating it as fatal.
+
+## Acceptance evidence
+
+`cargo xtask verify-fresh` exits 0 after following the documented provisioning
+path, whichever path that ends up being — today it does not, and that
+contradiction is the lane.
 
 ## Landed
 
@@ -744,6 +881,45 @@ disagreeing with the kernel.
 # LANE T — test hygiene
 
 **Status: characterized, blocked on a clean suite read.**
+
+## End state
+
+Every host-suite failure is attributed to a named cause. Not zero failures —
+attributed ones. A suite with 40 unexplained failures and a suite with 40
+explained ones are different artifacts, and only the second can gate a release.
+
+## The floor
+
+Browser-dependent tests cannot run here and belong to lane H. Everything else
+is expected to run.
+
+## Increments
+
+- **T5 — `fork-instrument-coverage.test.ts`.** 40 of its 51 cases time out at
+  5 s, reproduced **in isolation on a quiet machine**, so it is not contention.
+  One file carries 28% of the suite's failures. Establish whether the budget is
+  wrong or the instrumentation is broken before treating it as 40 defects.
+- **T6 — the remaining attributed groups**: 13 `vi.fn` spawn assertions (not
+  lane X's — verified by revert), 8 `Invalid source-only projection authority`,
+  6 PHP startup-warning mismatches, 4 kernel-init completions.
+- **T4 — the residue**, ~20 items, explicitly after T1–T3 because most should
+  vanish with them.
+
+## Acceptance evidence
+
+Unattributed failures reach **0**, with the attribution written down rather
+than held in a coordinator's head. The count itself is not the measure — a
+green suite that cannot run is worse than a red one that can (H-4).
+
+## Known hazards
+
+- **A suite that cannot run hides defects rather than reporting them.** Two
+  pre-existing dispatch-table bugs — `setsockopt` and `ioctl` both taking the
+  sixth channel word as a pointer width — were invisible at the merge-base
+  purely because every guest-executing test timed out there.
+- **Provisioning failures dominate and look like code failures.** Three
+  separate suite readings this session were invalid for provisioning reasons,
+  and each produced a plausible number that had to be withdrawn.
 
 T1 and T3 closed with B19/B23 and B21. T4 is ~20 residual items — 7 `vi.fn`
 stubs never called, 5 unreachable branches, assorted — explicitly sequenced

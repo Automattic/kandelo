@@ -28,7 +28,13 @@
     "",
     "CHECKLIST CLOSURE is weaker than a measurement and is labelled as such. A",
     "tick is self-reported. Its value is that the instances are enumerated, so a",
-    "lane cannot be closed by forgetting one."
+    "lane cannot be closed by forgetting one.",
+    "",
+    "CHARACTERIZATION is gated too. A lane must carry an End state, a floor, an",
+    "Increments list, Acceptance evidence and Known hazards before it is",
+    "dispatchable. A lane legitimately missing one declares `sectionsExempt` with",
+    "a reason -- because the failure this file exists to end is a status asserted",
+    "in prose that nothing checks, and that applies to its own sections first."
   ],
   "surfaces": {
     "forkTypeScript": {
@@ -134,7 +140,11 @@
         "mountConfigReadonlyEitherGatesOrStopsRendering": false,
         "posixStatusContradictionsReconciled": false,
         "stRdevWrittenForDeviceNodes": false
-      }
+      },
+      "sectionsExempt": [
+        "floor"
+      ],
+      "whyExempt": "A class of defect rather than a subsystem: there is no capability boundary to describe, so 'floor' has no meaning here."
     },
     "X": {
       "title": "process and exec",
@@ -168,7 +178,15 @@
       "title": "shared-mapping cutover",
       "status": "deferred",
       "closure": "manual",
-      "why": "Deferred by the maintainer out of #1350; resumes as a separate PR targeting its branch. Handoff at docs/plans/2026-09-11-lane-a-state-of-the-lane.md."
+      "why": "Deferred by the maintainer out of #1350; resumes as a separate PR targeting its branch. Handoff at docs/plans/2026-09-11-lane-a-state-of-the-lane.md.",
+      "sectionsExempt": [
+        "endState",
+        "floor",
+        "increments",
+        "acceptance",
+        "hazards"
+      ],
+      "whyExempt": "Deferred out of #1350. Its characterization lives whole in docs/plans/2026-09-11-lane-a-state-of-the-lane.md, written by the agent that did the diagnosis; duplicating it here would create the second authority this file exists to remove."
     },
     "B": {
       "title": "build and provisioning truthfulness",
@@ -186,7 +204,15 @@
       "title": "browser",
       "status": "open",
       "closure": "manual",
-      "why": "Deprioritized by the maintainer. Closure is a browser pass plus curation, both of which are judgement rather than measurement."
+      "why": "Deprioritized by the maintainer. Closure is a browser pass plus curation, both of which are judgement rather than measurement.",
+      "sectionsExempt": [
+        "endState",
+        "floor",
+        "increments",
+        "acceptance",
+        "hazards"
+      ],
+      "whyExempt": "Deprioritized by the maintainer, who asked to push implementation further before paying the cost of browser verification. Characterizing it now would plan work nobody intends to start."
     }
   }
 }

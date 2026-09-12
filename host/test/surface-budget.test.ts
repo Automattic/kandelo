@@ -273,3 +273,70 @@ describe("campaign lane closure", () => {
     });
   }
 });
+
+/**
+ * The plan's own rule, applied to the plan.
+ *
+ * The master plan states that a lane is not dispatchable until its section
+ * gives an end state, a floor, increments, acceptance evidence and known
+ * hazards. Nine of eleven lanes violated that rule while several described
+ * themselves as "characterized" — which is a status asserted in prose that
+ * nothing checked, the exact failure the file was written to end, reproduced
+ * inside it.
+ *
+ * A lane legitimately missing a section declares `sectionsExempt` in the
+ * budget with a reason. Declaring an exemption is a decision; being silently
+ * short is not.
+ */
+describe("master plan characterization", () => {
+  const { lanes } = readBudget();
+  const REQUIRED = [
+    ["endState", /^## End state/m],
+    ["floor", /^## (The floor|.*floor)/m],
+    ["increments", /^## Increments/m],
+    ["acceptance", /^## Acceptance/m],
+    ["hazards", /^## Known hazard/m],
+  ] as const;
+
+  const plan = readFileSync(
+    join(repoRoot, "docs/plans/2026-09-11-MASTER-PLAN.md"),
+    "utf8",
+  );
+  const sections = new Map<string, string>();
+  for (const block of plan.split(/^# LANE /m).slice(1)) {
+    sections.set(block.trim().charAt(0), block);
+  }
+
+  it("has a plan section for every lane in the budget", () => {
+    expect([...sections.keys()].sort()).toEqual(Object.keys(lanes).sort());
+  });
+
+  for (const [id, lane] of Object.entries(lanes)) {
+    const exempt = new Set((lane as { sectionsExempt?: string[] }).sectionsExempt ?? []);
+
+    it(`lane ${id} carries every section it has not exempted`, () => {
+      const body = sections.get(id) ?? "";
+      const missing = REQUIRED
+        .filter(([name, re]) => !exempt.has(name) && !re.test(body))
+        .map(([name]) => name);
+      expect(
+        missing,
+        `lane ${id} (${lane.title}) is missing: ${missing.join(", ")}.\n`
+          + `  The plan's own rule is that a lane is not dispatchable without `
+          + `these. If one genuinely does not apply, add it to `
+          + `sectionsExempt in docs/surface-budget.json with a reason — a `
+          + `declared exemption is a decision, and being silently short is how `
+          + `nine lanes came to call themselves characterized.`,
+      ).toEqual([]);
+    });
+
+    if ((lane as { sectionsExempt?: string[] }).sectionsExempt?.length) {
+      it(`lane ${id} says why it is exempt`, () => {
+        expect(
+          ((lane as { whyExempt?: string }).whyExempt ?? "").length,
+          `lane ${id} exempts sections without saying why`,
+        ).toBeGreaterThan(40);
+      });
+    }
+  }
+});
