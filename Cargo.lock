@@ -2904,6 +2904,7 @@ dependencies = [
  "flate2",
  "fork-instrument",
  "regex",
+ "runtime-core",
  "rustix",
  "serde",
  "serde_json",
