@@ -5438,6 +5438,50 @@ mod tests {
     /// must drop it. A `BaseSource::Image` node cannot outlive it — `reset()`
     /// drops both together — and this pins that they are cleared as one.
     #[test]
+    /// Release-and-recreate: a second build after `reset` must be
+    /// indistinguishable from the first.
+    ///
+    /// This is the property lane Y's builder substrate actually needs, and it
+    /// was an open question rather than a fact. The measured finding is that
+    /// no production builder path holds two live filesystems -- the one
+    /// apparent case builds sequentially and `rebaseToNewFileSystem` has only
+    /// test callers -- so the requirement is one live instance at a time with
+    /// an explicit teardown, NOT an instance handle threaded through every
+    /// call site.
+    ///
+    /// The tree is built with ALLOCATING operations on purpose. The existing
+    /// sample tree passes explicit inode numbers, so it would sail through a
+    /// `next_ino` counter that survived the reset; `mkdir` and `symlink` call
+    /// `alloc_ino`, so a leaked counter shows up immediately as different
+    /// inode numbers on the second pass.
+    #[test]
+    fn reset_gives_a_second_build_a_clean_slate() {
+        let _guard = TestGuard::acquire();
+        fn build() -> alloc::vec::Vec<(u64, u32, u32, u32)> {
+            insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+            mkdir(b"/a", 0o755, 1, 2).unwrap();
+            mkdir(b"/a/b", 0o700, 3, 4).unwrap();
+            symlink(b"../x", b"/a/link", 5, 6).unwrap();
+            [b"/a".as_ref(), b"/a/b".as_ref(), b"/a/link".as_ref()]
+                .iter()
+                .map(|p| {
+                    let st = lstat(p).unwrap();
+                    (st.st_ino, st.st_mode & 0o7777, st.st_uid, st.st_gid)
+                })
+                .collect()
+        }
+        let first = build();
+        reset();
+        let second = build();
+        assert_eq!(
+            first, second,
+            "a build after reset must not inherit inode numbers or metadata \
+             from the previous one -- sequential image builds in one process \
+             would otherwise differ for no reason the recipe explains",
+        );
+    }
+
+    #[test]
     fn reset_drops_the_image_geometry_with_the_tree() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
