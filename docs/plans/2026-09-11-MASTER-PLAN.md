@@ -2789,10 +2789,30 @@ one that may hold a stale symlink.
 
 # LANE Y — VFS image builders write the image format in TypeScript
 
-**Status 2026-09-12: Y1, Y2, Y3 and Y6 DONE. Y4 BUILT and no longer blocked —
-the bridge serializes a whole image. Y5 is the lane's remaining work and is
-one connected component, not the file-at-a-time pass this file first described.
-The gate was measuring the wrong thing and has been replaced.**
+**Status 2026-09-13: Y1, Y2, Y3, Y4 and Y6 DONE. Y5 is the lane's remaining
+work, and its acceptance number has moved twice: importers 36 -> 20 -> 11 -> 10,
+banked at every step. Ten files remain, and they do NOT divide by difficulty —
+they divide by what blocks them. Five wait on the atomic-seal check, one waits
+behind those, two are the supply-chain Rust port, one wants deferred-entry
+enumeration, and the funnel is last by construction.**
+
+**Read these before picking work**, because they are where this lane's
+remaining shape actually lives:
+
+* *"The remaining twenty, measured"* and *"Y5 MOVED AGAIN"* — what each
+  remaining file needs.
+* *"Every remaining Y5 blocker is the same decision wearing different clothes"*
+  — why the REPOINTS all wait on one product call, and *"CORRECTION: the seal
+  work is NOT blocked"* — why the CAPABILITY they wait for does not.
+* *"Who SEALS is a harder question than who verifies"* — the open design
+  decision, with its three candidates costed.
+
+**The bridge is no longer the bottleneck.** It loads an image, reports what the
+image declares, registers a whole lazy archive, follows symlinks, writes through
+a handle, and answers both halves of "are these bytes here?". Gaps 14 through 17
+are closed. The module is at twenty entry points, unchanged across three
+capability additions, because each was paid for by retiring a door rather than
+by raising the ceiling.
 
 The Y1 census is `docs/plans/2026-09-11-lane-y1-census.md`; the merge handoff
 for what has landed is `docs/plans/2026-09-12-lane-y-merge-handoff.md`. **Two
@@ -2802,7 +2822,8 @@ one line each. Both corrections are below, and both matter more than the
 increments they sit next to.
 
 `images/vfs/scripts/*.ts` — 13,502 lines, and **36 files under `images/`
-import the TypeScript filesystem**.
+imported the TypeScript filesystem when this lane opened. Ten do now**
+(2026-09-13), and `docs/surface-budget.json` holds the banked ceiling.
 
 ## What this lane is — as corrected by the census
 
