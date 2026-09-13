@@ -4035,6 +4035,43 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### Y5: 10 -> 7, by re-measuring rather than by building anything
+
+**2026-09-13.** The remaining ten were grouped as "five blocked on the seal, one
+behind those, two on the Rust port, one on enumeration, and the funnel". **Three
+of them were not blocked at all**, and finding that out cost one small static
+method rather than a decision.
+
+**Two wanted `readImageMetadata` and nothing else.**
+`vfs-product-builder-contract.ts` and `staged-product-inputs.ts` are callers
+holding image BYTES that want to know what they declare — a publication gate
+checking an artifact's ABI — rather than callers building a tree. The bridge
+answers by loading the image and reading what the loader kept. It loads rather
+than parsing the header host-side deliberately: a second reader of the container
+format in TypeScript is what **gap 11** warns about, and this runs at build time
+where the cost is milliseconds.
+
+**One was a type-only importer.** `wordpress-preinstall.ts` names
+`MemoryFileSystem` as a parameter type and hands its filesystem to exactly one
+function, which already calls nothing outside the interface. Widening that one
+signature freed it — **the signature's own file still needs the seal check for
+other functions, but a parameter type has no reason to wait for its
+neighbours.**
+
+**The lesson is about the bookkeeping, not the code.** The grouping was written
+when the interface was smaller, and it stayed true-sounding after it stopped
+being true. Three files sat in the "blocked" column because nobody re-measured
+what they actually call — and the measurement is a one-line loop over the
+interface's method names. **A blocked list is a claim with an expiry date.**
+
+**What remains is seven**, and the shape is now honest: four need the atomic-seal
+check (`shell-rootfs-restore`, `package-shell-vfs-build`,
+`build-source-rootfs-shell-image`, `shell-vfs-build`, `build-php-test`, of which
+three also want `rebaseToNewFileSystem` — which DISSOLVES into
+`setImageCapacity` the moment they can repoint), two need deferred-entry
+enumeration that only pays off once bases are `SDEF`, and the funnel is last by
+construction.
+
 ### Deleting a duplicate is a claim that needs proof, and twice it was false
 
 **2026-09-13.** With the Rust deciding, the TypeScript's copies could go —
