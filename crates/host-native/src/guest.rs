@@ -300,11 +300,17 @@ struct MountPoint {
     root_handle: Option<i64>,
 }
 
-/// `WasmDirent::d_type` values (crates/shared), a subset of Linux's `DT_*`.
-const DT_UNKNOWN: u32 = 0;
-const DT_DIR: u32 = 4;
-const DT_REG: u32 = 8;
-const DT_LNK: u32 = 10;
+/// `WasmDirent::d_type` values, asked of `crates/shared` rather than copied.
+///
+/// These were written out as `0`, `4`, `8`, `10` under a comment naming
+/// `crates/shared` as the source -- the same numbers stated twice with the
+/// citation attached, which is the shape this lane removes. `shared` declares
+/// all eight; this host maps four and answers `DT_UNKNOWN` for the rest,
+/// which POSIX allows and which is why only four are named here.
+const DT_UNKNOWN: u32 = wasm_posix_shared::dirent::DT_UNKNOWN;
+const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;
+const DT_REG: u32 = wasm_posix_shared::dirent::DT_REG;
+const DT_LNK: u32 = wasm_posix_shared::dirent::DT_LNK;
 /// Size of the `repr(C)` `WasmStat` the kernel reads back.
 ///
 /// Asked of the shared type rather than written down. These were `88` and
@@ -2836,6 +2842,9 @@ mod proc_bytes_tests {
         assert_eq!(WASM_STAT_SIZE, 88, "WasmStat");
         assert_eq!(WASM_STATFS_SIZE, 72, "WasmStatfs");
         assert_eq!(WASM_DIRENT_SIZE, 16, "WasmDirent");
+
+        // The dirent type values moved the same way, for the same reason.
+        assert_eq!((DT_UNKNOWN, DT_DIR, DT_REG, DT_LNK), (0, 4, 8, 10));
 
         // ...and the host's own serializers still fill exactly one record,
         // which is what makes the capacity above the right one to prove.

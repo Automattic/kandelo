@@ -1132,6 +1132,20 @@ behaviour-preserving rather than merely plausible. The statfs path is one of
 the five nothing executes, so a drift there would have been invisible; it
 cannot drift now.
 
+**The same search found four more, and the hunt is the point.** If three
+record sizes were transcribed, what else is? Every hardcoded constant in
+`guest.rs` was checked against what `crates/shared` declares, and the dirent
+TYPE values — `DT_UNKNOWN`, `DT_DIR`, `DT_REG`, `DT_LNK`, written out as 0, 4,
+8, 10 under a comment naming `crates/shared` — are the same shape. `shared`
+declares all eight in `pub mod dirent`; this host maps four and answers
+`DT_UNKNOWN` for everything else, which POSIX allows and which is why only
+four are named. They ask `shared` now.
+
+The other literals in that file are NOT this: channel status words and
+fork-coordination phases are host-side protocol with no shared declaration to
+drift from, and `KERNEL_MEMORY_MIN_PAGES` is this host's own choice. Seven
+transcriptions found, seven removed, and the rest checked rather than assumed.
+
 The dirent capacity was verified against the kernel before it was derived:
 `WasmDirent { d_ino: u64, d_type: u32, d_namlen: u32 }` is 16 bytes, the
 kernel passes `&mut dirent as *mut WasmDirent as *mut u8`, and the host writes

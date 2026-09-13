@@ -86,6 +86,13 @@
       "scope_end": "\n/// First host handle",
       "find": "const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStat>();",
       "replace": "const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStatfs>();"
+    },
+    {
+      "name": "L3: a dirent type is asked of the wrong shared constant",
+      "scope": "const DT_UNKNOWN",
+      "scope_end": "\n/// Size of the",
+      "find": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;",
+      "replace": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_BLK;"
     }
   ]
 }
