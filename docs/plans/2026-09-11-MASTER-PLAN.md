@@ -3737,6 +3737,41 @@ make deliberately when reached, not to slide past.**
 `registerLazyArchiveFromEntries` (1 call site) is the bulk form of the bridge's
 existing `registerArchiveMember` and needs no new capability.
 
+### The metadata read-back pays for itself by retiring a door that was never used alone
+
+**Decided 2026-09-13.** The maintainer approved a 21st entry point with the
+ceiling raised (*"1 is fine… try hard not to need 2 or 3 but take them if you
+need them"*). Trying hard first found something better, and the honest test for
+whether it is better — *would I do this if the budget did not exist?* — says yes.
+
+**What the builders actually need.** All six `getImageMetadata` call sites are
+VALIDATIONS, not inheritance: each reads `kernelAbi` (one also reads
+`abiSnapshotSha256`) to refuse a base whose ABI is not the one expected. So gap
+16's automatic carry-forward does not remove them — the builder genuinely needs
+the bytes back.
+
+**It hands back BYTES, and TypeScript parses them.** The kernel deliberately does
+not parse this JSON: `sffs.rs` says teaching the kernel crate to parse JSON for
+three fields it does not act on "would buy a parser's attack surface for
+nothing", and a Rust reader that parsed and re-serialized would silently drop
+every field it did not know. **This is not option 3.** TypeScript parsing a JSON
+document TypeScript authored is not TypeScript decoding the container layout —
+the latter is gap 11's hazard, the former is the metadata section working as
+designed.
+
+**And the 21st slot is paid for by folding `sm_init_root` into `sm_reset`.**
+Both bridge call sites of `sm_reset` are immediately followed by
+`sm_init_root`, and nothing anywhere resets without initialising a root — the
+module has no usable state between them, because a filesystem with no root fails
+every path operation. **Two doors for one transition**, which is exactly the
+redundancy that retired `sm_stat_size`.
+
+So: `sm_image_metadata` in, `sm_init_root` folded away, surface stays at 20 and
+the approved ceiling raise goes unused. **Recorded with its reasoning rather
+than only its result**, because "the budget prompted the look" and "the
+redundancy was real" are different claims, and only the second justifies the
+change.
+
 ### Capacity is a declared ceiling, never an allocation — maintainer, 2026-09-13
 
 > *"An image of capacity X should only take the size of its contents in memory
