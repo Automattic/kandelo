@@ -664,6 +664,28 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-13 — a checker can answer a weaker question than its name implies, and
+  the weaker answer looks exactly like the strong one.** Measured 2026-09-12.
+  `xtask vfs-image roundtrip` reads "does this image survive a round trip"; what
+  it actually does is load the image and compare the export's DECODED
+  DESCRIPTION against the loaded tree. That proves the decoder understands what
+  the export writes. It does not prove **the kernel can load back what the
+  kernel wrote** — and those came apart: every image with no deferred files was
+  refused by `load_image` as a stale artifact (gap 15), through a tool whose
+  whole job was round-tripping, reporting EQUIVALENT on the corpus the entire
+  time.
+
+  The tell was available and unread: the verb never fed its own output back in.
+  A round-trip checker that does not re-enter its output at the same door it
+  entered the first time is checking a transform, not a round trip.
+
+  **Distinct from H-5** (a check that answers a different question): there the
+  check is about the wrong subject; here it is about the right subject at the
+  wrong strength, which is harder to see because the name, the subject and the
+  output are all correct. **For every lane: for any checker phrased as "X
+  survives Y", write down which door the output re-enters, and if it re-enters
+  none, say what the check actually covers in its own help text.**
+
 - **H-12 — a perturbation trial stops anchoring when the code it quotes moves,
   and nothing notices.** A trial names the code it mutates by quoting it, so any
   edit to that code can leave the quote matching nothing — and a trial that
