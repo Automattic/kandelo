@@ -4914,6 +4914,29 @@ mod tests {
     }
 
     #[test]
+    fn chmod_cannot_smuggle_file_type_bits_into_a_permission_field() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // `inode.mode` holds PERMISSIONS; the file's type comes from its kind
+        // and is OR-ed in by `lstat`. So a mode arriving with type bits set
+        // must be narrowed, or a regular file can be made to report itself as
+        // a directory as well -- `S_IFDIR | S_IFREG` at once, which is not a
+        // type any caller can act on.
+        //
+        // Every existing chmod assertion masks the result with `& 0o7777`,
+        // the SAME mask the code applies, so removing the code's mask changed
+        // nothing any of them could see. A test that applies the transform it
+        // is checking cannot check it. Mutation testing is what said so.
+        chmod(b"/usr/bin/hello", S_IFDIR | 0o700).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!(
+            st.st_mode,
+            S_IFREG | 0o700,
+            "the file keeps its own type and takes only the permission bits",
+        );
+    }
+
+    #[test]
     fn chmod_chown_and_symlink_creation() {
         let _g = TestGuard::acquire();
         build_sample_tree();
@@ -6394,11 +6417,20 @@ mod tests {
             .to_vec(&crate::sffs_write::NoContent)
             .expect("materialize");
 
-        // A `KLZY` that mentions the member and NOT its archive, plus a header
-        // whose flags are written by hand because `ContainerSections::flags()`
-        // derives them from the sections present -- and the whole point is a
-        // header that disagrees with them.
-        let klzy = klzy_section(&[], &[(2, 4_242, 3, "usr/bin/php")]);
+        // A `KLZY` that describes NOTHING, which is what the legacy encoder
+        // emits for an image whose only lazy group it had to skip.
+        //
+        // The first version of this fixture put the MEMBER in `KLZY` while
+        // leaving its archive out, and the test passed without the guard --
+        // `decode_kernel_lazy_linkage` already refuses a record naming an
+        // undeclared archive, so a different check was doing the refusing and
+        // the test proved nothing about this one. The mutation is what said
+        // so. H-5, arriving through a fixture I wrote to test H-5's cousin.
+        //
+        // The header's flags are written by hand because
+        // `ContainerSections::flags()` derives them from the sections present,
+        // and the whole point is a header that disagrees with them.
+        let klzy = klzy_section(&[], &[]);
         let sections = crate::sffs_container::ContainerSections {
             lazy_json: b"",
             archive_json: None,
