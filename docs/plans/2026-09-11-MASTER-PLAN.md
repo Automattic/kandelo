@@ -1431,7 +1431,8 @@ lazy JSON sections are gone. **One implementation of SFFS, in Rust.**
 - **V3** — streamed emission. `export_image_read(offset, out, source)` is
   offset-addressable and never buffers content; a 2 MiB deferred file
   materialises exactly two blocks.
-- **V5 (in progress)** — deferred-file metadata moves **into the body** as an
+- **V5 (half closed 2026-09-13; remainder gated on V9)** — deferred-file
+  metadata moves **into the body** as an
   SDEF section addressed by a hidden inode, named from one superblock `u32`,
   costing zero bytes when absent. Parser is total, bounded and canonical.
 
@@ -1727,10 +1728,23 @@ is correct only for images it produced itself.
 
 ## What is left in lane V
 
-* **V5 — the producer side.** The format is done; the TypeScript writers must
-  emit SDEF and the JSON sections must retire. This closes the one limit V4
-  left: an image carrying no SDEF still loses its URL-backed files on export,
-  because there is nothing to retain from one.
+* **V5 — the producer side. HALF CLOSED 2026-09-13.** The format is done; the
+  TypeScript writers must emit SDEF and the JSON sections must retire.
+
+  **The limit V4 left is closed** — *"an image carrying no SDEF still loses its
+  URL-backed files on export, because there is nothing to retain from one."*
+  That is gap 21, which I had been tracking separately and had wrongly recorded
+  as blocked on the base rebuild; see its entry for the correction. A file that
+  IS deferred now re-exports as deferred whether or not the image it came from
+  said where its bytes live, which is exactly as informative as the input was.
+  So an image carrying no SDEF no longer loses its URL-backed files.
+
+  **What remains is the other half: `memory-fs.ts` is the last writer still
+  emitting the JSON sections rather than SDEF.** Every builder now reaches the
+  format through the module (lane Y closed), so the only images still produced
+  in the old shape are the ones `memory-fs.ts` writes — and retiring that writer
+  is V9/V10's work, not a separate task. **V5's remainder is therefore gated on
+  V9's `/dev/shm` decision**, not on anything of its own.
 * **V9 — `memory-fs.ts` stops using `SharedFS`. CENSUSED 2026-09-13 and
   REFRAMED** — `docs/plans/2026-09-13-lane-v9-census.md`. The 8,501-line figure
   counts host-owned duties that are not block operations (lazy transports, URL
