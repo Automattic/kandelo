@@ -106,13 +106,12 @@ Deriving it needs three audits — the process-memory allocator, the worker
 protocol's generatability, and the entry gate's size — none of which is lane
 L's remaining increments and none of which anyone has done.
 
-The lane measures **5,853 on its branch**, and 5,689 with the held TypeScript
-commit applied. The 165-line reduction is the whole of the duplicated layout
-computation — a hand-rolled LEB128 walk over the import section, the placement
-arithmetic, and the pthread-declaration rule — and it does not land until the
-projection deadlock below is decided. The Rust authority IS landed and
-`crates/host-native` uses it, so the two hosts no longer disagree about
-`__heap_base` even while the TypeScript still does its own arithmetic.
+The lane landed at **5,689** from 5,853. The 164-line reduction is the whole of
+the duplicated layout computation — a hand-rolled LEB128 walk over the import
+section, the placement arithmetic, and the pthread-declaration rule — all of
+which now exist once, in Rust, called by both hosts. It landed only after the
+maintainer took the projection-ordering fix below; until then it was held,
+because landing it wedged `./run.sh local-build`.
 
 ## L2 is declined, not blocked — and its recorded reason is wrong too
 

@@ -2467,19 +2467,19 @@ maintainer has held it pending a running web app.
 
 # LANE L — host↔kernel plumbing
 
-**Status: L4, L5 and L3's RUST HALF landed 2026-09-13 in
+**Status: L3, L4 and L5 all landed 2026-09-13 in
 `/Users/brandon/kandelo-lane-l` (`brandonpayton/lane-l-host-kernel-plumbing`).
-L2 is DECLINED rather than blocked. `hostKernelPlumbingTypeScript` still
-measures 5,853.**
+L2 is DECLINED rather than blocked. `hostKernelPlumbingTypeScript` 5,853 →
+**5,689**.**
 
-**The projection deadlock is DECIDED (maintainer, 2026-09-13): fix the xtask
-ordering.** L3's TypeScript half — `host/src/process-memory.ts` asking the
-shared Rust function, which is this lane's entire 164-line reduction — was held
+**The projection deadlock was DECIDED by the maintainer (2026-09-13): fix the
+xtask ordering — and that unblocked L3's TypeScript half**, which had been held
 on `brandonpayton/lane-l-typescript-layout-held` because landing it wedged
 `./run.sh local-build`. `local_build.rs` now stages the co-resident side
 modules into the tier before the scheduler runs, so a package build that
 resolves through the tier can see a module this build just rebuilt. See "the
-projection deadlock" under Known hazards for why that is safe.
+projection deadlock" under Known hazards for why that needs no atomicity
+trade.
 
 **The 3,600 target is not derived, and no number here replaces it.** The L1
 census raised the lane's target from a guessed 1,500 to a "derived" 3,600 and
@@ -2500,8 +2500,7 @@ made. **The campaign's own rule, applied to the campaign: an accepted cost is a
 claim, and claims get measured — including the ones in this section.**
 
 `kernel-scratch.ts` (2,491), `kernel-entry-gate.ts` (1,596), `process-memory.ts`
-(1,337; 1,173 with the held commit), `worker-protocol.ts` (429) — **5,853 on
-this branch, 5,689 with the held commit applied**.
+(1,337 → 1,173), `worker-protocol.ts` (429) — **5,853 → 5,689**.
 
 ## What this lane is — as corrected by the census
 
@@ -2589,7 +2588,7 @@ Genuine floor, confirmed against `host-native`:
   safety. **L2 is declined rather than blocked: nothing waits on a maintainer
   decision, and `KERNEL_SCRATCH_EXPORT_NAMES` stays.** L-D2 is closed as
   refuted, not open.
-- **L3 — one process-memory layout. RUST HALF LANDED; TypeScript half HELD.**
+- **L3 — one process-memory layout. BOTH HALVES LANDED.**
   `wasm_posix_shared::process_memory::compute_layout` is now the only
   description of a process address space, and `crates/host-native` calls it.
 
@@ -2608,8 +2607,16 @@ Genuine floor, confirmed against `host-native`:
 
   The TypeScript half reaches the same function through a new
   `wa_process_memory_layout` export and deletes 207 lines including a
-  hand-rolled LEB128 walk. It is on
-  `brandonpayton/lane-l-typescript-layout-held`; see the projection deadlock.
+  hand-rolled LEB128 walk — a third WebAssembly decoder in a host that already
+  had a Rust one. It landed once the projection-ordering fix cleared its way.
+
+  `heapBase` stays the CALLER's to supply. The replaced arithmetic read it from
+  its options and used the program only for the memory minimum and the pthread
+  declaration, so letting the module read `__heap_base` instead would have
+  quietly moved the authority — and six tests in
+  `host/test/process-memory.test.ts` place a layout from a heap base with no
+  program at all, which under that reading would have silently used the
+  fallback and still produced a plausible answer.
 - **L4 — one bounds-check rule. LANDED, with a stated limit.**
   `wasm_posix_shared::host_memory::checked_range` states the rule once and
   `checked_shared_range` calls it, losing the transcribed copy whose doc comment
@@ -2643,9 +2650,8 @@ Genuine floor, confirmed against `host-native`:
 
 ## Acceptance evidence
 
-`hostKernelPlumbingTypeScript` stands at **5,853** — unchanged, because the
-164-line reduction lives in the held TypeScript commit. The **target stays at
-3,600 as an acknowledged placeholder**, because nothing has derived one:
+`hostKernelPlumbingTypeScript` stands at **5,689**, banked. The **target stays
+at 3,600 as an acknowledged placeholder**, because nothing has derived one:
 attributing every line (`docs/plans/2026-09-13-lane-l-line-attribution.md`)
 gives 5,376 as the sum of what the census said stays, and three of those
 "stays" are unaudited claims — the process-memory allocator, the worker
