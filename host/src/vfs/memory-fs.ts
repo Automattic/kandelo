@@ -457,18 +457,8 @@ export interface VfsImageRestoreOptions {
 }
 
 /** Versioned, image-level declarations carried outside the guest file tree. */
-export interface VfsImageMetadata {
-  version: 1;
-  /**
-   * Exact kernel ABI this image expects when it carries ABI-bound artifacts
-   * such as wasm-posix user programs. Omit for data-only images.
-   */
-  kernelAbi?: number;
-  /** Free-form builder id, e.g. "mkrootfs 0.1.0" or a package script name. */
-  createdBy?: string;
-  /** Preserve forwards compatibility for future signed/provenance fields. */
-  [key: string]: unknown;
-}
+export type { VfsImageMetadata } from "./vfs-image-filesystem";
+import type { VfsImageMetadata } from "./vfs-image-filesystem";
 
 export interface VfsImageCapacity {
   /** Serialized SharedArrayBuffer length carried by the image. */

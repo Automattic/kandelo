@@ -1,8 +1,9 @@
+import type { VfsImageFilesystem } from "./vfs-image-filesystem";
 import {
   EEXIST,
 } from "./vfs-errors";
 /**
- * Pure VFS-image construction helpers — operate on a MemoryFileSystem in
+ * Pure VFS-image construction helpers — operate on a VfsImageFilesystem in
  * memory. No host-disk I/O. Safe to use anywhere a memfs exists: build
  * scripts, Node demos, browser demos, tests.
  *
@@ -10,14 +11,13 @@ import {
  * see scripts-side helpers.
  */
 import { OPEN_FLAGS } from "../generated/abi";
-import type { MemoryFileSystem } from "./memory-fs";
 
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 /** Write text content to a path in the memfs. Creates parent dirs implicitly via writeVfsBinary. */
 export function writeVfsFile(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   content: string,
   mode = 0o644,
@@ -27,7 +27,7 @@ export function writeVfsFile(
 
 /** Write binary content to a path in the memfs. */
 export function writeVfsBinary(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   data: Uint8Array,
   mode = 0o755,
@@ -63,7 +63,7 @@ function hasVfsErrorCode(error: unknown, code: number): boolean {
 
 /** mkdir, swallowing only EEXIST. */
 export function ensureDir(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   mode = 0o755,
 ): void {
@@ -76,7 +76,7 @@ export function ensureDir(
 
 /** mkdir -p — creates every missing component along the path. */
 export function ensureDirRecursive(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   mode = 0o755,
 ): void {
@@ -89,7 +89,7 @@ export function ensureDirRecursive(
 }
 
 /** symlink, swallowing only EEXIST. */
-export function symlink(fs: MemoryFileSystem, target: string, path: string): void {
+export function symlink(fs: VfsImageFilesystem, target: string, path: string): void {
   try {
     fs.symlink(target, path);
   } catch (error) {

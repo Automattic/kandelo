@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build-script helpers for VFS images. Pure memfs operations are re-exported
  * from host/src/vfs/image-helpers.ts so demo runtime code can share them.
@@ -64,7 +65,7 @@ export interface WalkOptions {
  * Returns the number of files written.
  */
 export function walkAndWrite(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   rootDir: string,
   mountPrefix: string,
   opts?: WalkOptions,
@@ -201,7 +202,7 @@ export function sourceDateEpochMilliseconds(
   return seconds * 1000;
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: VfsImageFilesystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -230,7 +231,7 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
  * those resources independently, so both reserves are part of the contract.
  */
 export function assertVfsImageHeadroom(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   headroom: VfsImageHeadroom,
   label: string,
 ): void {
@@ -243,12 +244,33 @@ export function assertVfsImageHeadroom(
     }
   }
 
-  const stats = fs.statfs("/");
-  const freeBytes = stats.bfree * stats.frsize;
+  // Prefer the filesystem that can JUDGE this, and compute it from the
+  // primitive for the one that cannot. The Rust bridge decides in the kernel;
+  // `MemoryFileSystem` can only report a `statfs`. The fallback is deleted
+  // along with that class, and this is its only call site.
+  let freeBytes: number;
+  let freeInodes: number;
+  if (fs.checkHeadroom) {
+    const verdict = fs.checkHeadroom(
+      headroom.minimumFreeBytes,
+      headroom.minimumFreeInodes,
+    );
+    freeBytes = verdict.freeBytes;
+    freeInodes = verdict.freeInodes;
+  } else if (fs.statfs) {
+    const stats = fs.statfs("/");
+    freeBytes = stats.bfree * stats.frsize;
+    freeInodes = stats.ffree;
+  } else {
+    throw new Error(
+      `${label} cannot report headroom: the filesystem offers neither a ` +
+        `headroom verdict nor statfs`,
+    );
+  }
   if (!Number.isSafeInteger(freeBytes) || freeBytes < 0) {
     throw new Error(`${label} reports an invalid free-byte count`);
   }
-  if (!Number.isSafeInteger(stats.ffree) || stats.ffree < 0) {
+  if (!Number.isSafeInteger(freeInodes) || freeInodes < 0) {
     throw new Error(`${label} reports an invalid free-inode count`);
   }
   const failures: string[] = [];
@@ -257,9 +279,9 @@ export function assertVfsImageHeadroom(
       `${freeBytes} free bytes remain; ${headroom.minimumFreeBytes} are required`,
     );
   }
-  if (stats.ffree < headroom.minimumFreeInodes) {
+  if (freeInodes < headroom.minimumFreeInodes) {
     failures.push(
-      `${stats.ffree} free inodes remain; ${headroom.minimumFreeInodes} are required`,
+      `${freeInodes} free inodes remain; ${headroom.minimumFreeInodes} are required`,
     );
   }
   if (failures.length > 0) {
@@ -288,7 +310,7 @@ export function assertVfsImageCapacity(
   }
 }
 
-function walkVfsFiles(fs: MemoryFileSystem, dir: string, out: string[] = []): string[] {
+function walkVfsFiles(fs: VfsImageFilesystem, dir: string, out: string[] = []): string[] {
   // WHY: this walk protects the artifact that will be published. A namespace
   // inspection failure is not an intentional omission and must stop the build.
   const dh = fs.opendir(dir);
@@ -380,7 +402,7 @@ function declaredWasmArtifactPolicies(
 }
 
 function assertNoStaleWasmArtifacts(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   kernelAbi: number,
   declarations: readonly VfsWasmArtifactPolicy[] = [],
 ): void {
@@ -442,7 +464,7 @@ function assertNoStaleWasmArtifacts(
 
 /** Validate and compress one image without publishing it to the host filesystem. */
 export async function serializeImage(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   artifactLabel: string,
   options: SaveImageOptions = {},
 ): Promise<SerializedVfsImage> {
@@ -505,7 +527,7 @@ export async function serializeImage(
 }
 
 export async function saveImage(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   outFile: string,
   options: SaveImageOptions = {},
 ): Promise<Uint8Array> {

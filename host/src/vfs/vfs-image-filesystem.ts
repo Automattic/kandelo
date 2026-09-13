@@ -1,7 +1,34 @@
-import type { HostFileOffset, StatResult } from "../../../host/src/types";
+import type { HostFileOffset, StatResult } from "../types";
+
+/**
+ * What an image says about itself: the builder's own statements, carried by the
+ * filesystem and read by nobody in between.
+ *
+ * Moved here from `memory-fs.ts` because it is a CONTRACT, not part of that
+ * implementation — thirteen builder recipes import it, and every one of them
+ * was counted as coupled to a filesystem it never touches. Same move and same
+ * reason as V8 giving `SFSError` a home in `vfs-errors.ts`.
+ */
+export interface VfsImageMetadata {
+  version: 1;
+  /**
+   * Exact kernel ABI this image expects when it carries ABI-bound artifacts
+   * such as wasm-posix user programs. Omit for data-only images.
+   */
+  kernelAbi?: number;
+  /** Free-form builder id, e.g. "mkrootfs 0.1.0" or a package script name. */
+  createdBy?: string;
+  /** Preserve forwards compatibility for future signed/provenance fields. */
+  [key: string]: unknown;
+}
 
 /**
  * The filesystem a VFS image builder recipe is handed.
+ *
+ * Lives in `host/src/vfs/` rather than under `images/` because the host's own
+ * helpers take it too, and a host module importing from `images/` would invert
+ * the dependency — `images/` consumes the host, not the other way round. Same
+ * home and same reason as `vfs-errors.ts`, which V8 gave `SFSError`.
  *
  * # Why this exists
  *
@@ -85,6 +112,7 @@ export interface VfsImageFilesystem {
    */
   getLazyEntry(path: string): unknown;
 
+  mkdir(path: string, mode: number): void;
   symlink(target: string, path: string): void;
   readlink(path: string): string;
 
