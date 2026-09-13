@@ -294,6 +294,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn a_mode_word_is_narrowed_to_permissions_before_it_reaches_the_filesystem() {
+        // Tested against `set_mode` directly, and NOT redundant with the
+        // extraction test below — that one cannot express this.
+        //
+        // The `zip` crate masks `unix_permissions` to 0o777 on write and ORs
+        // `S_IFREG` back in on read, so an archive built with it always reports
+        // `0o100755` and there is no way to round-trip a setuid bit through it.
+        // Archives are not only built with it. A zip's external attributes hold
+        // a full mode word, and one crafted elsewhere can carry `0o4755` —
+        // which `chmod` honours, because it ignores only the bits ABOVE
+        // `0o7777` and setuid is not one of them.
+        //
+        // So this is the test that keeps the narrowing honest, and it must not
+        // be deleted as duplicative of an end-to-end test that cannot reach it.
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("mode-unit");
+        let path = scratch.write("f", b"x");
+        set_mode(&path, 0o104755).expect("chmod");
+        let mode = fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o7777, 0o755, "permission bits only");
+        assert_eq!(mode & 0o4000, 0, "and never setuid, whatever the archive said");
+    }
+
+    #[test]
     fn an_archive_members_type_bits_never_reach_the_filesystem() {
         // A mode word carries type bits beside permissions, and `0o104755` is
         // a regular file that is also setuid. Handing the whole word to
