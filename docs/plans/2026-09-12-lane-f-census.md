@@ -1577,3 +1577,57 @@ tuned until it gave a wanted answer. The control was chosen because its result
 is independently known: the production fork-module imports an `anyref`-typed
 function and instantiates. Worth stating plainly, because "fix it until the
 control passes" is exactly what a tuned experiment also looks like.
+
+## §28b — Exception identity: the boundary, measured on both sides
+
+§28a settled that an `exnref` VALUE cannot reach a JS import. The other half is
+whether wasm can identify one itself. Probed with `wasm-tools 1.239.0`, using
+`validate --features all` rather than `parse` — parse alone ACCEPTS all of these
+and therefore discriminates nothing, which is the trap a control exists to
+catch. A positive AND a negative control were run beside them:
+
+| module | validates |
+|---|---|
+| `ref.eq (eqref, eqref)` — POSITIVE control | **VALID** |
+| `ref.eq (funcref, funcref)` — NEGATIVE control | invalid |
+| `ref.eq (exnref, exnref)` | **invalid** |
+| store an `exnref` into an `anyref` table | **invalid** |
+| `ref.cast eqref` from an `exnref` | **invalid** |
+
+So `exn` is a disjoint hierarchy in the same way `func` is: no comparison, no
+coercion into the eq hierarchy, no cast that rescues it. **Wasm cannot tell two
+exception references apart**, and per §28a neither can a JS host receive one to
+tell them apart on its behalf.
+
+### What still works, and it is enough for the important half
+
+A module-minted exception can carry its own identity in the tag payload.
+Probed end to end:
+
+```
+(tag $id (param i32))   throw $id -> try_table (catch_ref $id) -> payload
+payload 1 -> 1   payload 42 -> 42   payload 65535 -> 65535
+```
+
+So the mechanism that remains is: **the module mints, the module identifies.**
+An exception the module threw carries its recipe id in the payload and is
+recognised on catch with `catch_ref` against its own tag — which
+`inject_unwind_tag` already creates.
+
+### The consequence for `exn_claim` / `exn_lookup`
+
+Those two dedup an exception by identity so the same one caught twice gets one
+recipe. That is expressible for module-minted exceptions and **NOT expressible
+for foreign ones**, which the guest catches with `catch_all_ref` and which carry
+no payload the module may read.
+
+This is a genuine platform boundary, not an implementation gap, and it should be
+recorded as one rather than worked around. The honest options for a foreign
+exception are a fresh recipe per catch — correct unless the same foreign
+exception is captured twice in one fork, where it would split into two recipes,
+the exception-side analogue of the identity split §24's GC work exists to
+prevent — or a truthful refusal to capture it.
+
+Which of those is right is a maintainer decision, and it is the same SHAPE as
+the one the GC path already answered with a host import: there, the host could
+supply identity, so it did. Here it cannot, on either side. **Not started.**
