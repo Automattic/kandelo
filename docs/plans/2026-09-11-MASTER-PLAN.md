@@ -3737,6 +3737,43 @@ make deliberately when reached, not to slide past.**
 `registerLazyArchiveFromEntries` (1 call site) is the bulk form of the bridge's
 existing `registerArchiveMember` and needs no new capability.
 
+### Gap 17 — setting a capacity after a load wipes the metadata the load restored
+
+**Found 2026-09-13 while designing the read-back, and it is created by the
+interaction of two things that are each individually right.**
+
+`sm_set_image_options(capacity, ptr, len)` carries BOTH settings, because
+capacity and metadata are the same question — "what shape is this image" — and
+folding them kept the module at twenty entry points. The consequence is that
+setting one means re-sending the other, so the bridge keeps a `lastMetadata`
+replay buffer and `setImageCapacity` re-sends it.
+
+That is sound while the bridge is the only author of the metadata. **Gap 16
+made it false**: after a load, the KERNEL holds the base image's metadata and
+the bridge's replay buffer still holds `null`. So:
+
+1. `loadImage(base)` — the kernel now has the base's `kernelAbi`
+2. `setImageCapacity(X)` — the bridge replays `null`, and the kernel clears it
+
+**The recipes do exactly this pair.** `build-php-test` and the shell builders
+load a base and then size the derived image, which is the sequence that loses
+the declaration the very same session restored.
+
+**The fix belongs with the read-back**: after a load, refresh `lastMetadata`
+from the module, so the replay buffer means "what the module currently holds"
+rather than "what this bridge last sent". That is the only moment it can change
+behind the bridge's back, so it is the only moment it needs refreshing.
+
+**The alternative — a "leave it alone" signal distinct from "clear it" —** was
+rejected: clearing metadata is legitimate and must stay expressible, and a
+sentinel that makes one argument mean three things is the semantic-surface
+increase this campaign keeps warning about.
+
+**Worth noting how it was found.** Not by a test — by reading `lastMetadata`'s
+definition while designing something else and asking what it would answer after
+a load. A cache with one writer is safe until a second writer appears, and gap
+16 made the kernel that second writer.
+
 ### The metadata read-back pays for itself by retiring a door that was never used alone
 
 **Decided 2026-09-13.** The maintainer approved a 21st entry point with the
