@@ -18,7 +18,10 @@
  */
 
 import type { ForkModuleInstance } from "./fork-module-instance";
-import type { LinkedFrameFormatDescriptor } from "./fork-continuation";
+import {
+  ContinuationAllocationError,
+  type LinkedFrameFormatDescriptor,
+} from "./fork-continuation";
 
 /**
  * Field indices into the module's `fm_stats` array, in its order.
@@ -82,16 +85,33 @@ export interface ForkModuleBackendOptions {
 }
 
 export class ForkModuleContinuationBackend {
-  private readonly exports: Record<string, (...args: never[]) => unknown>;
   private readonly label: string;
   private didSetup = false;
 
-  constructor(private readonly options: ForkModuleBackendOptions) {
-    this.exports = options.instance.exports as Record<
+  /**
+   * Read lazily, so the capacity check below genuinely runs BEFORE any export is
+   * touched -- which is what lets a caller prove the boundary with a stand-in
+   * instance, and is what `fork-module-backend-coarse-failures` asserts.
+   */
+  private get exports(): Record<string, (...args: never[]) => unknown> {
+    return this.options.instance.exports as Record<
       string,
       (...args: never[]) => unknown
     >;
+  }
+
+  constructor(private readonly options: ForkModuleBackendOptions) {
     this.label = options.label ?? "fork-module backend";
+    // Checked HERE, not in `setup()`: it needs no module call, and a catalog
+    // over the cap is a fact about the guest that is knowable the moment this is
+    // constructed. The module sizes a static `[u32; CAP]` arena from the same
+    // number, so staging more would write past its end.
+    if (options.catalogOrdinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
+      throw new Error(
+        `${this.label}: a resume catalog of ${options.catalogOrdinals.length} ` +
+          `ordinals exceeds the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
+      );
+    }
   }
 
   /** The errno the last module call reported. */
@@ -133,12 +153,6 @@ export class ForkModuleContinuationBackend {
     // would be silently discarded -- the bug the module's own reset comment
     // records having been hit on real forks.
     const ordinals = this.options.catalogOrdinals;
-    if (ordinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
-      throw new Error(
-        `${this.label}: ${ordinals.length} resume ordinals exceed the module ` +
-          `cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
-      );
-    }
     const bytes = new Uint8Array(ordinals.length * 4);
     const view = new DataView(bytes.buffer);
     ordinals.forEach((ordinal, i) => view.setUint32(i * 4, ordinal >>> 0, true));
@@ -185,8 +199,9 @@ export class ForkModuleContinuationBackend {
   ): void {
     if (ordinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
       throw new Error(
-        `${this.label}: activation ${activationId} declares ${ordinals.length} ` +
-          `resume ordinals, over the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
+        `${this.label}: activation ${activationId}'s catalog of ` +
+          `${ordinals.length} ordinals exceeds the module cap ` +
+          `${FORK_MODULE_RESUME_CATALOG_CAP}`,
       );
     }
     const bytes = new Uint8Array(ordinals.length * 4);
@@ -232,6 +247,34 @@ export class ForkModuleContinuationBackend {
       at,
       bytes.length,
     );
+  }
+
+  /**
+   * Seal this fork's capture and serialize the child-inheritable journal image.
+   *
+   * A failure here is a TYPED `ContinuationAllocationError`, not a generic
+   * throw: the coordinator distinguishes "the module could not allocate" from
+   * every other failure, and a generic error at this point traps the worker
+   * instead of aborting the fork truthfully.
+   */
+  sealCaptureAndSerialize(): { readonly ptr: number; readonly len: number } {
+    const seal = this.exports.fm_parent_seal_capture as (base: number) => number;
+    const ptr = Number(seal(this.options.channelBase ?? 0));
+    const errno = this.lastErrno();
+    if (errno !== 0) {
+      throw new ContinuationAllocationError(
+        errno,
+        0,
+        `${this.label}: fm_parent_seal_capture failed with errno=${errno}`,
+      );
+    }
+    const len = Number((this.exports.fm_journal_image_len as () => number)());
+    if (!Number.isSafeInteger(ptr) || ptr <= 0 || !Number.isSafeInteger(len) || len <= 0) {
+      throw new Error(
+        `${this.label}: seal returned an invalid journal image (ptr ${ptr}, len ${len})`,
+      );
+    }
+    return { ptr, len };
   }
 
   /** Make a child's decoded reference graph resident for the accessors below. */

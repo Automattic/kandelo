@@ -11,12 +11,40 @@ import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabi
 import { ForkExternrefTokenCache } from "../src/fork-reference-broker";
 
 describe("createForkModuleHostCapabilities (M2)", () => {
-  it("returns exactly one import: resolve_externref", () => {
+  it("returns exactly the three imports a host must implement", () => {
+    // Pinned as a SET, and deliberately exact: this is the host obligation the
+    // campaign exists to keep small, so a fourth appearing silently is the thing
+    // to catch. Each was approved on its own evidence -- `resolve_externref`
+    // materializes a broker handle, and the two identity imports answer "are
+    // these the same reference?" for the `any` and `func` hierarchies, which wasm
+    // cannot do because `ref.eq` validates only on `eqref`.
     const tokens = new ForkExternrefTokenCache(1);
     const caps = createForkModuleHostCapabilities({ tokens });
 
-    expect(Object.keys(caps.imports)).toEqual(["resolve_externref"]);
+    expect(Object.keys(caps.imports).sort()).toEqual([
+      "__wpk_fork_host_func_identity",
+      "__wpk_fork_host_ref_identity",
+      "resolve_externref",
+    ]);
     expect(typeof caps.imports.resolve_externref).toBe("function");
+  });
+
+  it("gives functions and references SEPARATE identity numbering", () => {
+    // `funcref` and `anyref` are disjoint hierarchies, so a function and a GC
+    // object can never be the same value. Sharing one counter would couple two
+    // independent numberings and make a collision between them expressible.
+    const tokens = new ForkExternrefTokenCache(1);
+    const caps = createForkModuleHostCapabilities({ tokens });
+    const fn = () => undefined;
+    const obj = {};
+    expect(caps.imports.__wpk_fork_host_func_identity(fn)).toBe(
+      caps.imports.__wpk_fork_host_ref_identity(obj),
+    );
+    // Same number from two independent pools -- which is exactly why they must
+    // never be compared across hierarchies.
+    expect(caps.imports.__wpk_fork_host_func_identity(fn)).toBe(
+      caps.imports.__wpk_fork_host_func_identity(fn),
+    );
   });
 
   it("resolve_externref returns the SAME canonical token materialize() returns for that handle", () => {

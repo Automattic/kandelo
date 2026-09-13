@@ -3945,3 +3945,51 @@ RECOMMENDATION to the maintainer: leave the target at the ceiling, and let it
 fall as the port retires files -- each drop banked, as every other reduction in
 this file has been. The ratchet already prevents growth, which is the property
 that matters.
+
+## §77 — Two regressions in my own layer, and the baseline that would have caught them
+
+A full-suite run after the funcref and commit work found two test files failing
+that were not failing before: `fork-module-instance` and `fork-module-placement`.
+Both are tests of the thin layer I wrote. Both had been failing for hours.
+
+The cause was the same in both: `__wpk_fork_host_func_identity` was added to the
+module and bound in the HARNESSES and in host-native, but not in
+`fork-module-instance.ts`. The failure arrived as
+`LinkError: Import #10 ... requires a callable` -- an index, not a name.
+
+They survived because my gated runs used a HAND-PICKED list of test files. The
+list was shaped by what I expected to be affected, which is the same failure as
+`grep "^error"` missing `Error:` and `| grep && commit` gating on the wrong exit
+status. Three different mechanisms, one habit.
+
+**Three fixes, in increasing order of how much they matter.**
+
+The binding, obviously. Then a COMPLETENESS CHECK in `instantiateForkModule`:
+before instantiating, every `env` function the artifact imports must be bound, or
+the host fails naming the import. The guest side of that contract has been
+complete by construction since `buildForkGuestImports`; the module's own host
+obligation had no equivalent, so the two directions were held to different
+standards. Its first version ran AFTER instantiation, where the `LinkError` has
+already fired and a check can never speak -- caught by perturbing it.
+
+And the maintainer's answer: a pinned suite baseline.
+`host/test/expected-failures.json` lists the 203 test files that fail today,
+almost all because they import the attic'd cluster.
+`node host/test/suite-baseline.mjs` fails if any file OUTSIDE it fails, AND if
+any file inside it now passes without being removed -- the same both-directions
+ratchet `docs/surface-budget.json` uses, for the same reason: an unbanked
+improvement silently funds the next regression. Both directions perturbed.
+
+**Two smaller corrections fell out of the same run.**
+
+`fork-module-host-capabilities.test.ts` still asserted "exactly one import:
+resolve_externref" and had been failing since the anyref identity import landed,
+long before today. It now pins the three-import set exactly, because that set IS
+the host obligation this campaign exists to keep small.
+
+And `sealCaptureAndSerialize` came back into the backend. The rewrite's rule was
+"methods come back when a caller needs one", and I checked only `worker-main.ts`.
+A TEST is a caller: `fork-module-backend-coarse-failures` exercises that path to
+prove a failed seal raises a TYPED `ContinuationAllocationError` rather than a
+generic throw that traps the worker. Its absence from worker-main proved nothing,
+because worker-main's caller for it is in the attic'd cluster.

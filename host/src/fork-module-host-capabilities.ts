@@ -62,6 +62,16 @@ export interface ForkModuleHostImports {
    * integer and the module keys on that.
    */
   readonly __wpk_fork_host_ref_identity: (value: unknown) => number;
+  /**
+   * `__wpk_fork_host_func_identity(funcref) -> i32`: a stable integer per
+   * distinct function.
+   *
+   * The funcref twin of the line above, and needed for the same reason: wasm
+   * cannot compare two references. It is a SEPARATE pool because `funcref` and
+   * `anyref` are disjoint hierarchies -- a function and a GC object can never be
+   * the same value, so sharing one counter would only couple them.
+   */
+  readonly __wpk_fork_host_func_identity: (fn: unknown) => number;
 }
 
 export interface ForkModuleHostCapabilities {
@@ -85,7 +95,7 @@ export interface ForkModuleHostCapabilities {
  * `Map` keyed by value, which is correct precisely because equal i31 payloads
  * ARE the same reference.
  */
-function createReferenceIdentity() {
+function createReferenceIdentity(importName: string) {
   const objects = new WeakMap<object, number>();
   const primitives = new Map<unknown, number>();
   let next = 1;
@@ -98,7 +108,7 @@ function createReferenceIdentity() {
       // indistinguishable from another in the module's map -- a fork-only
       // identity collision, and silent. Fail at the call instead.
       throw new RangeError(
-        "__wpk_fork_host_ref_identity received a null reference: the guest " +
+        `${importName} received a null reference: the guest ` +
           "generator publishes identity only for values it claims, so this " +
           "is a missing null guard, not a capturable value",
       );
@@ -122,9 +132,10 @@ function createReferenceIdentity() {
 export function createForkModuleHostCapabilities(
   options: ForkModuleHostCapabilitiesOptions,
 ): ForkModuleHostCapabilities {
-  const identity = createReferenceIdentity();
+  const identity = createReferenceIdentity("__wpk_fork_host_ref_identity");
   const { tokens } = options;
   let resolved = 0;
+  const functionIdentity = createReferenceIdentity("__wpk_fork_host_func_identity");
   const imports: ForkModuleHostImports = {
     resolve_externref: (handle: number) => {
       const value = tokens.materialize(handle);
@@ -132,6 +143,13 @@ export function createForkModuleHostCapabilities(
       return value;
     },
     __wpk_fork_host_ref_identity: identity.identify,
+    // A separate pool: `funcref` and `anyref` are disjoint hierarchies, so a
+    // function and a GC object can never be the same value and sharing one
+    // counter would only couple two independent numberings.
+    // A SEPARATE pool from the reference one: `funcref` and `anyref` are
+    // disjoint hierarchies, so a function and a GC object can never be the same
+    // value and one counter would only couple two independent numberings.
+    __wpk_fork_host_func_identity: functionIdentity.identify,
   };
   return {
     imports,

@@ -93,16 +93,12 @@ describe("ForkModuleContinuationBackend coarse seal truthful failure", () => {
     const px = fm.exports as ForkModuleExports;
 
     const backend = new ForkModuleContinuationBackend({
-      exports: px,
-      driveTable: fm.driveTable,
+      instance: fm,
       memory,
       ptrWidth: 4,
       format: format(128),
       catalogOrdinals: CATALOG0,
       channelBase: CHANNEL_BASE,
-      reserveRegion: alloc.reserve,
-      releaseRegion: () => {},
-      pid: 1,
       label: "coarse-seal-fail",
     });
     backend.setup();
@@ -134,17 +130,13 @@ describe("ForkModuleContinuationBackend module-or-fatal capacity boundary", () =
       () =>
         new ForkModuleContinuationBackend({
           // The cap check runs in the constructor before any export is touched,
-          // so an empty exports stand-in is sufficient to prove the boundary.
-          exports: {} as unknown as ForkModuleExports,
-          driveTable: undefined as unknown as WebAssembly.Table,
+          // so an empty instance stand-in is sufficient to prove the boundary.
+          instance: {} as unknown as ForkModuleInstance,
           memory,
           ptrWidth: 4,
           format: format(128),
           catalogOrdinals: overCap,
           channelBase: CHANNEL_BASE,
-          reserveRegion: () => 0,
-          releaseRegion: () => {},
-          pid: 1,
           label: "module-or-fatal",
         }),
     ).toThrow(/exceeds the module cap/);

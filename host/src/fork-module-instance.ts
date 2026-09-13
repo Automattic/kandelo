@@ -238,8 +238,7 @@ export function instantiateForkModule(
     ...(hostImports ?? {}),
   };
 
-  const instance = new WebAssembly.Instance(module, {
-    env: {
+  const env: WebAssembly.ModuleImports = {
       memory,
       __indirect_function_table: new WebAssembly.Table({
         element: "anyfunc",
@@ -263,8 +262,26 @@ export function instantiateForkModule(
       __wpk_fork_host_ref_identity:
         resolved.__wpk_fork_host_ref_identity ??
         (() => trap(label, "__wpk_fork_host_ref_identity")),
-    },
-  });
+      __wpk_fork_host_func_identity:
+        resolved.__wpk_fork_host_func_identity ??
+        (() => trap(label, "__wpk_fork_host_func_identity")),
+  };
+  // BEFORE instantiating, because after it a missing binding has already
+  // surfaced as a `LinkError` naming an import INDEX. The guest side of this
+  // contract is complete by construction (`buildForkGuestImports`); this side
+  // was not, which is how an import added to the module reached this file's own
+  // tests as an unreadable link failure.
+  const unbound = WebAssembly.Module.imports(module)
+    .filter((i) => i.module === "env" && i.kind === "function")
+    .map((i) => i.name)
+    .filter((name) => !(name in (env as Record<string, unknown>)));
+  if (unbound.length > 0) {
+    throw new Error(
+      `${label}: the fork-module imports ${unbound.length} host function(s) ` +
+        `this host does not bind: ${unbound.join(", ")}`,
+    );
+  }
+  const instance = new WebAssembly.Instance(module, { env });
 
   const exports = instance.exports as ForkModuleExports;
   for (const name of FORK_MODULE_REQUIRED_EXPORTS) {
