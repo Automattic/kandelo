@@ -2984,3 +2984,66 @@ generation as one of the writes, and leaving the header's patch count unchanged.
 What remains for the mutation group is the lock protocol from §52 — a CAS on the
 control block's lock word, plus `memory.atomic.wait32` / `notify` as injected
 thunks — and wiring `begin`/`commit`/`abort` onto it.
+
+## §56 — The writer lock, and the maintainer's correction on allocation
+
+`table_mutation_begin` and `table_mutation_abort` are served.
+`forkGuestImportsUnserved` 8 -> 6.
+
+**The lock word is one protocol, not two implementations.** The module holds the
+same `Int32Array` word `worker-main.ts` holds, with the same encoding: `0` idle,
+`-1` the single writer, any positive value a count of concurrent readers. A
+module that invented its own encoding would deadlock against a host holding the
+same word. `core::sync::atomic` gives the compare-and-swap; the two operations
+Rust cannot emit -- `memory.atomic.wait32` and `memory.atomic.notify` -- are
+injected thunks, so they cost no host obligation.
+
+Blocking rather than spinning is not a nicety: the writer is held across guest
+bootstrap, relocation and constructor calls, so a spinning peer would burn a
+worker for the length of a `dlopen`.
+
+`begin` reconciles INSIDE the lock, because a mutation applied on top of a stale
+table would publish a patch describing slots the writer never saw. A `begin`
+whose reconcile fails releases the writer on the way out; keeping it would wedge
+every other worker in the process. `abort` refuses to release a writer this
+worker does not hold rather than forcing the word to idle -- two owners is worse
+than an error.
+
+**Where the harness stops.** It proves the module's NOTIFY with a real second
+thread parked in `Atomics.wait` on the same word: a release that forgot to
+notify passes every value-based assertion while leaving peers asleep forever,
+and only another thread can see that. It does NOT exercise the module's own
+blocking WAIT, because that means parking the main thread inside a wasm call
+where no timer can run -- a missed wake would hang forever instead of failing.
+Recorded as a gap rather than covered by a weaker assertion pretending to be it.
+
+## §57 — Allocation: I re-proposed a design this module already rejected
+
+I put three options to the maintainer for where `commit` gets storage for a new
+patch record, recommending a host-preallocated bounded arena.
+
+The maintainer chose dynamic allocation and asked "is there a reason we
+shouldn't do this? We already dynamically allocate for each stack frame during
+capture." That is exactly right, and better than I knew: `channel_mmap(channel_base,
+size)` is already in this module, issuing `SYS_MMAP` through the guest's own
+syscall channel, mirroring the JS `continuationMmap`. The comment above it says
+it REPLACED a fixed host-reserved arena so that "continuation depth is bounded
+only by available memory, and the host no longer reserves or threads a per-fork
+arena." My recommendation was that rejected design, proposed again.
+
+The maintainer then asked about a linked list: a pre-allocated area that usually
+suffices, with mmap beyond it. Right pattern, and for THIS case the format
+settles it -- the decoder enforces `MAX_TABLE_PATCH_RECORDS = 256` and
+`MAX_TABLE_PATCH_BYTES = 1 MiB` (`dylink_archive.rs:542`), so live patches are
+bounded no matter who allocates. Growth past the cap is not more storage, it is
+a CHECKPOINT: the header already carries `table_state_root` ("sealed table-state
+KFMS arena address, or 0 before the first checkpoint") and
+`table_checkpoint_generation`.
+
+So `commit` allocates one record per patch through `channel_mmap`, bounded by
+the wire format. Its only new input is the channel base, which its fixed
+signature `(owner, first_index, length)` cannot carry and a borrowed fork child
+cannot derive -- it uses its OWNER's control block, not its own channel. That
+rides on `fm_set_format` like the archive coordinates, so it stays zero new
+entries. The checkpoint path is out of this lane's scope and named here so the
+cap does not read as an unhandled limit.

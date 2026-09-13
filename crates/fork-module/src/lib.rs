@@ -213,6 +213,42 @@ mod wasm {
         /// catalog_slot]`, or to null when `clear` is non-zero.
         /// Injector-rewritten into a local thunk.
         fn __wpk_fork_table_apply(dest: u32, catalog_slot: u32, clear: u32);
+
+        /// `memory.atomic.wait32(addr, expected, timeout_ns) -> i32`.
+        /// Returns 0 "ok", 1 "not-equal", 2 "timed-out". `-1` timeout waits
+        /// forever. Injector-rewritten into a local thunk.
+        fn __wpk_fork_atomic_wait32(addr: u32, expected: i32, timeout_ns: i64) -> i32;
+
+        /// `memory.atomic.notify(addr, count) -> i32`, returning how many
+        /// waiters were woken. Injector-rewritten into a local thunk.
+        fn __wpk_fork_atomic_notify(addr: u32, count: u32) -> i32;
+    }
+
+    /// Block until the i32 at `addr` stops being `expected`.
+    ///
+    /// A spin would be correct and unacceptable: the archive writer holds the
+    /// lock across guest bootstrap and constructor calls, so a peer could spin
+    /// for the length of a `dlopen`.
+    fn atomic_wait32(addr: usize, expected: i32) -> i32 {
+        let Ok(addr) = u32::try_from(addr) else {
+            // A wasm64 address above 4 GiB. The thunk widens what it is given,
+            // so refusing here is honest rather than silently waiting on the
+            // wrong word.
+            return -1;
+        };
+        // SAFETY: after injection this is a local thunk performing one
+        // `memory.atomic.wait32` on the guest's shared memory, which traps on an
+        // unaligned or out-of-bounds address rather than reading elsewhere.
+        unsafe { __wpk_fork_atomic_wait32(addr, expected, -1) }
+    }
+
+    /// Wake every waiter on the i32 at `addr`.
+    fn atomic_notify(addr: usize) -> i32 {
+        let Ok(addr) = u32::try_from(addr) else {
+            return -1;
+        };
+        // SAFETY: as `atomic_wait32`.
+        unsafe { __wpk_fork_atomic_notify(addr, u32::MAX) }
     }
 
     /// Safe wrapper over the injector-wired table-write placeholder.
@@ -5675,6 +5711,125 @@ mod wasm {
                 _ => (slot as *const u64).read_unaligned(),
             }
         })
+    }
+
+    /// Byte offset of the archive reader/writer lock below the control address.
+    ///
+    /// DUPLICATED from `host/src/worker-main.ts` (`DLOPEN_LOCK_OFFSET_WASM32` /
+    /// `_WASM64`) for the reason `DLOPEN_HEAD_OFFSET_*` is, and pinned by the
+    /// same test.
+    const DLOPEN_LOCK_OFFSET_WASM32: usize = 20;
+    const DLOPEN_LOCK_OFFSET_WASM64: usize = 40;
+
+    /// Lock states. Zero is free, negative is the single writer, and any
+    /// positive value counts concurrent readers. These are the host's values,
+    /// not this module's: the word is ONE protocol shared by every participant
+    /// in the process, so a module that invented its own encoding would
+    /// deadlock against a host holding the same word.
+    const DLOPEN_LOCK_IDLE: i32 = 0;
+    const DLOPEN_LOCK_WRITER: i32 = -1;
+
+    /// The lock word as an atomic, or `EINVAL` when this worker has no archive.
+    fn archive_lock() -> Result<&'static AtomicI32, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        if control == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let offset = match format()?.pointer_width {
+            4 => DLOPEN_LOCK_OFFSET_WASM32,
+            8 => DLOPEN_LOCK_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
+        };
+        let addr = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        if addr % 4 != 0 || addr.checked_add(4).ok_or(Errno::EINVAL)? > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds- and alignment-checked above, in the guest's shared
+        // linear memory, which the module imports. The host writes this same
+        // word with `Atomics.compareExchange`, which is the same operation on
+        // the same bytes.
+        Ok(unsafe { &*(addr as *const AtomicI32) })
+    }
+
+    /// Take the exclusive archive writer, blocking until it is free.
+    fn acquire_archive_writer() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        loop {
+            match lock.compare_exchange(
+                DLOPEN_LOCK_IDLE,
+                DLOPEN_LOCK_WRITER,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                // Someone else holds it -- a writer, or one or more readers.
+                // Wait on the value we OBSERVED rather than on a constant: the
+                // wait is a no-op if it changed in between, which is exactly the
+                // race `memory.atomic.wait32`'s compare-and-block closes.
+                Err(observed) => {
+                    let addr = lock as *const AtomicI32 as usize;
+                    if atomic_wait32(addr, observed) < 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Release the exclusive archive writer and wake whoever is waiting.
+    ///
+    /// Fails loud rather than forcing the word to idle: not holding the writer
+    /// here means some other participant's view of the protocol is already
+    /// wrong, and stamping IDLE over it would hand the lock to two owners.
+    fn release_archive_writer() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        lock.compare_exchange(
+            DLOPEN_LOCK_WRITER,
+            DLOPEN_LOCK_IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| Errno::EPERM)?;
+        atomic_notify(lock as *const AtomicI32 as usize);
+        Ok(())
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_begin() -> i64`.
+    ///
+    /// Take the process writer, bring this worker up to the newest published
+    /// state, and report the generation it now reflects. Ownership stays live
+    /// until a commit or an abort releases it.
+    ///
+    /// Reconciling INSIDE the lock is the point: a mutation applied on top of a
+    /// stale table would publish a patch describing slots the writer never saw.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_mutation_begin() -> i64 {
+        if let Err(errno) = acquire_archive_writer() {
+            set_err(errno);
+            return -1;
+        }
+        let reached = __wpk_fork_module_state_table_reconcile();
+        if reached < 0 {
+            // Hold nothing on the way out. A failed begin that kept the writer
+            // would wedge every other worker in the process.
+            let _ = release_archive_writer();
+            // `reconcile` already set the errno that explains this.
+            return -1;
+        }
+        set_ok();
+        reached
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_abort()`.
+    ///
+    /// Release the writer after a guest mutation that changed nothing -- a
+    /// failed `dlopen`, or a `table.fill` of length zero.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_mutation_abort() {
+        match release_archive_writer() {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_table_reconcile() -> i64`.

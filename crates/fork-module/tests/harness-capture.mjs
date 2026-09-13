@@ -19,6 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
+import { Worker } from "node:worker_threads";
 
 const wasmPath = process.argv[2];
 if (!wasmPath) {
@@ -1435,6 +1436,121 @@ function i31Minter() {
     "a head whose header would run past memory is refused",
   );
   assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
+}
+
+// ---- The dylink archive writer lock ----------------------------------------
+//
+// The lock word is ONE protocol shared by every participant in the process --
+// the TypeScript host holds the same word with `Atomics.compareExchange`. So
+// these assertions check the module against the HOST's encoding (0 idle,
+// -1 writer, positive = reader count), not against an encoding of its own.
+{
+  const EPERM = 1;
+  const LOCK_OFFSET_WASM32 = 20;
+  const CONTROL = 64 * 1024;
+  const lockAddr = CONTROL - LOCK_OFFSET_WASM32;
+  assert.equal(lockAddr % 4, 0, "the lock word must be 4-byte aligned");
+  const lock = new Int32Array(memory.buffer, lockAddr, 1);
+
+  // No archive at all: there is no lock word to take, and that is an error
+  // rather than a silently ungoverned mutation.
+  x.fm_set_format(4, 0, 0, 0);
+  assert.equal(Number(x.__wpk_fork_module_state_table_mutation_begin()), -1);
+  assert.equal(lastErrno(), EINVAL, "a worker with no archive cannot begin");
+
+  // A real archive, unheld.
+  dv().setUint32(CONTROL - 12, 4096, true); // the published head
+  Atomics.store(lock, 0, 0);
+  x.fm_set_format(4, 0, CONTROL, 3);
+  const at = Number(x.__wpk_fork_module_state_table_mutation_begin());
+  assert.equal(lastErrno(), 0, `begin errno=${lastErrno()}`);
+  assert.ok(at > 0, `begin reports the generation it reached (${at})`);
+  assert.equal(
+    Atomics.load(lock, 0),
+    -1,
+    "begin leaves the WRITER value the host also writes",
+  );
+
+  x.__wpk_fork_module_state_table_mutation_abort();
+  assert.equal(lastErrno(), 0, "abort releases cleanly");
+  assert.equal(Atomics.load(lock, 0), 0, "and leaves the word idle");
+
+  // Releasing a writer this worker does not hold is refused, not forced. Two
+  // owners is worse than an error.
+  x.__wpk_fork_module_state_table_mutation_abort();
+  assert.equal(lastErrno(), EPERM, "abort without the writer is EPERM");
+  assert.equal(Atomics.load(lock, 0), 0, "and changes nothing");
+
+  // A failed begin holds nothing. Reconcile fails on a malformed head, and if
+  // begin kept the writer through that, every other worker would wedge.
+  dv().setUint32(CONTROL - 12, 4096 + 8, true);
+  x.fm_set_format(4, 0, CONTROL, 3);
+  assert.equal(Number(x.__wpk_fork_module_state_table_mutation_begin()), -1);
+  assert.equal(lastErrno(), EINVAL, "a begin whose reconcile fails reports it");
+  assert.equal(Atomics.load(lock, 0), 0, "and releases the writer it took");
+  dv().setUint32(CONTROL - 12, 4096, true);
+}
+
+// The module's NOTIFY actually wakes a blocked peer.
+//
+// Everything above checks the lock word's VALUES, which a release that forgot
+// to notify would satisfy perfectly while leaving every waiter asleep forever.
+// That needs a second thread to see, so this uses one: the worker blocks in
+// `Atomics.wait` on the same shared word, and the module's abort has to be what
+// wakes it.
+//
+// Only this direction is tested. Exercising the module's own blocking WAIT
+// would mean parking the main thread inside a wasm call, where no timer can
+// run -- a test that hangs forever instead of failing if the wake never
+// arrives. That path is covered by inspection and by the perturbations
+// recorded in docs/plans/2026-09-12-lane-f-census.md, not by this harness.
+{
+  const LOCK_OFFSET_WASM32 = 20;
+  const CONTROL = 64 * 1024;
+  const lock = new Int32Array(memory.buffer, CONTROL - LOCK_OFFSET_WASM32, 1);
+
+  dv().setUint32(CONTROL - 12, 4096, true);
+  Atomics.store(lock, 0, 0);
+  x.fm_set_format(4, 0, CONTROL, 3);
+  assert.ok(
+    Number(x.__wpk_fork_module_state_table_mutation_begin()) > 0,
+    "the writer is held before the peer waits on it",
+  );
+
+  const woken = await new Promise((resolve, reject) => {
+    const worker = new Worker(
+      `const { parentPort, workerData } = require("node:worker_threads");
+       const lock = new Int32Array(workerData.buffer, workerData.byteOffset, 1);
+       // -1 is the WRITER value the module just stored. Waiting on it blocks
+       // until someone stores something else AND notifies.
+       parentPort.postMessage(Atomics.wait(lock, 0, -1, 5000));`,
+      {
+        eval: true,
+        workerData: {
+          buffer: memory.buffer,
+          byteOffset: CONTROL - LOCK_OFFSET_WASM32,
+        },
+      },
+    );
+    worker.once("message", (result) => {
+      worker.terminate();
+      resolve(result);
+    });
+    worker.once("error", reject);
+    // The worker has to be parked in `Atomics.wait` BEFORE the release, or it
+    // would return "not-equal" and prove nothing about the notify. There is no
+    // event for "a thread is now blocked", so this gives it a moment.
+    setTimeout(() => {
+      x.__wpk_fork_module_state_table_mutation_abort();
+      assert.equal(lastErrno(), 0, "the release itself succeeded");
+    }, 200);
+  });
+  assert.equal(
+    woken,
+    "ok",
+    "the peer was WOKEN by the module's notify, not left to time out",
+  );
+  assert.equal(Atomics.load(lock, 0), 0, "and the lock is idle afterwards");
 }
 
 console.log("fork-module capture harness: all assertions passed");

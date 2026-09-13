@@ -31,7 +31,10 @@
 //! import it reads.
 
 use anyhow::{anyhow, bail, Context, Result};
-use walrus::ir::{AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, UnaryOp};
+use walrus::ir::{
+    AnyConvertExtern, AtomicNotify, AtomicWait, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg,
+    UnaryOp,
+};
 use walrus::{
     ExportItem, FunctionBuilder, FunctionId, ImportKind, Module, RefType, ValType,
 };
@@ -223,6 +226,11 @@ const FUNCTION_CATALOG_IMPORT: &str = "__wpk_fork_function_catalog";
 /// Placeholder the fork module declares for one funcref table write during a
 /// reconcile. Rewritten below into a local thunk; see `inject_table_apply_thunk`.
 const TABLE_APPLY_THUNK_IMPORT: &str = "__wpk_fork_table_apply";
+
+/// Placeholders for the two shared-memory atomics Rust cannot emit. Rewritten
+/// below into local thunks; see `inject_atomic_thunks`.
+const ATOMIC_WAIT_THUNK_IMPORT: &str = "__wpk_fork_atomic_wait32";
+const ATOMIC_NOTIFY_THUNK_IMPORT: &str = "__wpk_fork_atomic_notify";
 
 /// The guest's own indirect call table -- the table a reconcile writes into.
 /// Named by the wasm tool convention, not by anything Kandelo chose.
@@ -1002,6 +1010,7 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_encode into a thunk")?;
     inject_table_apply_thunk(&mut module)
         .context("rewriting __wpk_fork_table_apply into a thunk")?;
+    inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1403,6 +1412,73 @@ fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
         })
         .with_context(|| format!("rewriting {CAPTURE_WITNESS_THUNK_IMPORT} import into a thunk"))?;
     Ok(())
+}
+
+/// Rewrite the two shared-memory atomic placeholders into local thunks.
+///
+/// `core::sync::atomic` gives the module compare-and-swap on any guest address,
+/// which is most of a lock. What it cannot give is BLOCKING: `memory.atomic
+/// .wait32` and `memory.atomic.notify` have no Rust spelling, and a spin would
+/// burn a worker's CPU while the archive writer does I/O.
+///
+/// Both take the address as the guest's pointer type, so a wasm64 build widens
+/// the `u32` Rust declared -- the same widening `inject_table_apply_thunk` does
+/// for table indices, and caught the same way if it is missing.
+fn inject_atomic_thunks(module: &mut Module) -> Result<()> {
+    let memory = module
+        .memories
+        .iter()
+        .next()
+        .map(|m| m.id())
+        .ok_or_else(|| anyhow!("module has no linear memory"))?;
+    let is64 = module.memories.get(memory).memory64;
+    // A 4-byte atomic must be 4-byte aligned; `align` is the log2 of that.
+    let arg = MemArg { align: 4, offset: 0 };
+
+    if let Some(import_fn) = imported_func(module, ATOMIC_WAIT_THUNK_IMPORT) {
+        module
+            .replace_imported_func(import_fn, |(body, args)| {
+                let addr = args[0];
+                let expected = args[1];
+                let timeout = args[2];
+                body.local_get(addr);
+                if is64 {
+                    body.unop(UnaryOp::I64ExtendUI32);
+                }
+                body.local_get(expected)
+                    .local_get(timeout)
+                    .instr(AtomicWait { memory, arg, sixty_four: false });
+            })
+            .with_context(|| format!("rewriting {ATOMIC_WAIT_THUNK_IMPORT}"))?;
+    }
+
+    if let Some(import_fn) = imported_func(module, ATOMIC_NOTIFY_THUNK_IMPORT) {
+        module
+            .replace_imported_func(import_fn, |(body, args)| {
+                let addr = args[0];
+                let count = args[1];
+                body.local_get(addr);
+                if is64 {
+                    body.unop(UnaryOp::I64ExtendUI32);
+                }
+                body.local_get(count).instr(AtomicNotify { memory, arg });
+            })
+            .with_context(|| format!("rewriting {ATOMIC_NOTIFY_THUNK_IMPORT}"))?;
+    }
+    Ok(())
+}
+
+/// The imported function with this name, if the build declares it.
+fn imported_func(module: &Module, name: &str) -> Option<FunctionId> {
+    module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != name {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    })
 }
 
 /// Rewrite the table-write placeholder into a local thunk.

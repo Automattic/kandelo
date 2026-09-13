@@ -32,30 +32,27 @@ import {
  * `provenance_externref` reads a handle off a token and keys a map by object
  * identity; `encode_funcref` needs function equality, which no wasm instruction
  * provides on `funcref`; `table_state_owned` reports an election decided by
- * `WebAssembly.Table` object identity. The `table_mutation_*` trio is here for a
+ * `WebAssembly.Table` object identity. The `table_mutation_commit` is here for a
  * different reason -- it is implementable in wasm and not yet implemented, so it
- * is a to-do rather than a floor. The two `exn_*` throws must re-enter wasm
+ * is a to-do rather than a floor; its `begin` and `abort` siblings have already
+ * moved into the module. The two `exn_*` throws must re-enter wasm
  * throwing, which a host import cannot do from JavaScript.
  */
 export interface ForkGuestHostFloor {
   readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;
   readonly __wpk_fork_ref_encode_funcref: (fn: unknown) => number;
   readonly __wpk_fork_module_state_table_state_owned: (owner: number) => number;
-  readonly __wpk_fork_module_state_table_mutation_begin: () => bigint;
   readonly __wpk_fork_module_state_table_mutation_commit: (
     owner: number,
     firstIndex: bigint,
     length: bigint,
   ) => void;
-  readonly __wpk_fork_module_state_table_mutation_abort: () => void;
   readonly __wpk_fork_ref_exn_ingress_throw: (recipe: number) => void;
   readonly __wpk_fork_ref_exn_broker_throw_recipe: (recipe: number) => void;
 }
 
 /** The floor's member names, for callers that need to reason about the set. */
 export const FORK_GUEST_HOST_FLOOR_NAMES = [
-  "__wpk_fork_module_state_table_mutation_abort",
-  "__wpk_fork_module_state_table_mutation_begin",
   "__wpk_fork_module_state_table_mutation_commit",
   "__wpk_fork_module_state_table_state_owned",
   "__wpk_fork_ref_encode_funcref",

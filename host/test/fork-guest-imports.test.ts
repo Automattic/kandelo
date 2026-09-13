@@ -131,7 +131,7 @@ describe("fork guest imports", () => {
     // implementation, the host keeps running TypeScript nobody needs -- and
     // `forkGuestImportsUnserved` in docs/surface-budget.json would disagree with
     // this file. That is the drift this pins.
-    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(8);
+    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(6);
     expect([...FORK_GUEST_HOST_FLOOR_NAMES]).toEqual(
       [...FORK_GUEST_HOST_FLOOR_NAMES].sort(),
     );
