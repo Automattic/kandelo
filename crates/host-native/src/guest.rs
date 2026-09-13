@@ -103,19 +103,15 @@ const STATUS_PENDING: u32 = 1;
 const STATUS_COMPLETE: u32 = 2;
 
 // --- Process memory layout constants ----------------------------------------
-// Mirror of the ABI-generated `PROCESS_MEMORY_*` constants in
-// `host/src/generated/abi.ts` (the source of truth `computeProcessMemoryLayout`
-// consumes). They are TypeScript-generated today, so they are pinned here; if
-// they ever move into the shared Rust crate this block should import them.
-const WASM_PAGE_SIZE: usize = 65536;
-const DEFAULT_MAX_PAGES: usize = 16384;
-const DEFAULT_INITIAL_PAGES: usize = 17;
-/// When a guest exports no `__heap_base`, the control/channel region is placed
-/// at this fixed byte offset, matching `PROCESS_MEMORY_FALLBACK_BRK_BASE`.
-const FALLBACK_BRK_BASE: usize = 16_777_216;
-const MAIN_CHANNEL_PRIMARY_PAGE: usize = 1;
+// Imported from `wasm-posix-shared`, which owns them. They were previously
+// re-declared here as local literals with a comment saying they would be
+// imported "if they ever move into the shared Rust crate" — they were already
+// there, so this host carried a second copy of numbers that decide where a
+// process's syscall channel lives.
+const WASM_PAGE_SIZE: usize = wasm_posix_shared::process_memory::WASM_PAGE_SIZE as usize;
+const DEFAULT_MAX_PAGES: usize = wasm_posix_shared::process_memory::DEFAULT_MAX_PAGES as usize;
 /// `ceil(MIN_CHANNEL_SIZE / WASM_PAGE_SIZE)` — the channel spans this many pages.
-const CHANNEL_PAGES: usize = (MIN_CHANNEL_SIZE + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
+const CHANNEL_PAGES: usize = wasm_posix_shared::process_memory::CHANNEL_PAGES as usize;
 
 // Per-thread slot layout. These are ABI, owned by `wasm-posix-shared` and
 // consumed by every host through it -- they were previously re-declared here
@@ -172,54 +168,57 @@ pub(crate) struct ProcessLayout {
 
 impl ProcessLayout {
     /// `imported_min_pages` is the guest's imported `env.memory` minimum;
-    /// `guest_bytes` is the program itself, read for its pthread declaration.
+    /// `guest_bytes` is the program itself, read for `__heap_base` and its
+    /// pthread declaration.
+    ///
+    /// **The placement arithmetic is not here.** It is
+    /// `wasm_posix_shared::process_memory::compute_layout`, which the
+    /// TypeScript hosts reach through `wa_process_memory_layout`, so there is
+    /// one description of a process address space rather than one per host.
+    ///
+    /// This host previously ignored `__heap_base` entirely and always placed
+    /// control memory at `FALLBACK_BRK_BASE`, while the TypeScript hosts
+    /// placed it at the program's own heap base. For a program whose heap base
+    /// sits below 16 MiB that was merely a different address; for one linked
+    /// above it, this host put the syscall channel inside the program's own
+    /// static data. Asking the shared function closes both.
     fn compute(imported_min_pages: usize, guest_bytes: &[u8]) -> anyhow::Result<Self> {
-        let min_pages = DEFAULT_INITIAL_PAGES.max(imported_min_pages);
-        // No `__heap_base` export → fall back to the fixed control base, exactly
-        // like `heapBase ?? PROCESS_FALLBACK_BRK_BASE` in the TS host.
-        let first_free_byte = FALLBACK_BRK_BASE.max(min_pages * WASM_PAGE_SIZE);
-        let control_base_page = first_free_byte.div_ceil(WASM_PAGE_SIZE);
-        let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE;
-        let channel_offset = channel_page * WASM_PAGE_SIZE;
-        // Nothing follows the main control area. A pthread's control slot is
-        // placed by the kernel out of the process address space (`sys_clone` ->
-        // `kernel_thread_slot_addr`), so this host no longer carves an arena
-        // for them and brk starts directly above the main channel -- the same
-        // layout `computeProcessMemoryLayout` produces in the TypeScript hosts.
-        let control_end_page = channel_page + CHANNEL_PAGES;
-        let initial_pages = min_pages.max(control_end_page);
-        let brk_base = control_end_page * WASM_PAGE_SIZE;
-        let max_addr = DEFAULT_MAX_PAGES * WASM_PAGE_SIZE;
+        use wasm_posix_shared::process_memory as pm;
+
+        let declared = wasm_artifact::read_thread_slot_declaration(guest_bytes);
+        let thread_slot_count = pm::resolve_thread_slot_count(declared, pm::DEFAULT_THREAD_SLOTS)
+            .map_err(|value| {
+                anyhow::anyhow!("invalid process thread slot declaration: {value}")
+            })?;
+
+        let layout = pm::compute_layout(pm::LayoutRequest {
+            maximum_pages: pm::DEFAULT_MAX_PAGES,
+            imported_minimum_pages: u32::try_from(imported_min_pages).unwrap_or(u32::MAX),
+            requested_minimum_pages: 0,
+            heap_base: wasm_artifact::read_heap_base(guest_bytes),
+            thread_slot_count,
+        })
+        .map_err(|error| match error {
+            pm::LayoutError::MaximumPagesTooSmall { maximum_pages } => {
+                anyhow::anyhow!("invalid process maximum pages: {maximum_pages}")
+            }
+            pm::LayoutError::InitialPagesExceedMaximum {
+                initial_pages,
+                maximum_pages,
+            } => anyhow::anyhow!(
+                "initial pages {initial_pages} exceed process maximum {maximum_pages}"
+            ),
+        })?;
+
         Ok(Self {
-            initial_pages,
-            channel_offset,
-            brk_base,
-            max_addr,
-            thread_slot_count: resolve_thread_slot_count(guest_bytes)?,
+            initial_pages: layout.initial_pages as usize,
+            channel_offset: layout.channel_offset as usize,
+            brk_base: layout.brk_base as usize,
+            max_addr: layout.max_addr as usize,
+            thread_slot_count,
             pointer_width: wasm_artifact::detect_pointer_width(guest_bytes),
         })
     }
-}
-
-/// A program's declared concurrent-pthread ceiling.
-///
-/// `THREAD_SLOTS_USE_HOST_DEFAULT` (-1) and a missing declaration -- a binary
-/// predating the declaration -- both take the host default, matching
-/// `resolveProcessThreadSlotCount` in the TypeScript hosts. A declaration of 0
-/// (`THREAD_SLOTS_NONE`) is honoured as zero: such a program gets EAGAIN from
-/// the kernel for any `pthread_create`, which is the truthful answer, not an
-/// accident of how much room a host had.
-fn resolve_thread_slot_count(guest_bytes: &[u8]) -> anyhow::Result<u32> {
-    use wasm_posix_shared::process_memory::{
-        DEFAULT_THREAD_SLOTS, THREAD_SLOTS_USE_HOST_DEFAULT,
-    };
-    let declared = wasm_artifact::read_thread_slot_declaration(guest_bytes);
-    Ok(match declared {
-        None => DEFAULT_THREAD_SLOTS,
-        Some(THREAD_SLOTS_USE_HOST_DEFAULT) => DEFAULT_THREAD_SLOTS,
-        Some(value) if value >= 0 => value as u32,
-        Some(value) => anyhow::bail!("invalid process thread slot declaration: {value}"),
-    })
 }
 
 /// Captured host I/O for the process's stdout/stderr host pipes.
@@ -1111,23 +1110,23 @@ unsafe fn write_bytes(mem: &SharedMemory, off: usize, bytes: &[u8]) {
 /// fitting inside a live linear memory is the only thing an address can be
 /// checked for from outside the instance that owns it.
 ///
-/// Rejects, in order: a length the host cannot address; a null address with a
-/// positive length (mirroring `checkedWasmImportMemoryRange`'s
-/// `allowAddressZero: false` in the JS host, `host/src/kernel-scratch.ts`);
-/// and any end that overflows or exceeds `mem.data().len()`.
+/// **The rule is not written here.** It is
+/// `wasm_posix_shared::host_memory::checked_range`, which is also what
+/// `host/src/kernel-scratch.ts`'s corpus is checked against — this function
+/// used to restate the rule and name the TypeScript it was transcribed from,
+/// which is two descriptions of one contract.
+///
 /// `mem.data().len()` is read fresh on every call rather than cached, because
 /// a guest may `memory.grow` between calls.
 fn checked_shared_range(mem: &SharedMemory, addr: u64, len: u32) -> Option<usize> {
-    let len = len as usize;
-    let addr = usize::try_from(addr).ok()?;
-    if addr == 0 && len != 0 {
-        return None;
-    }
-    let end = addr.checked_add(len)?;
-    if end > mem.data().len() {
-        return None;
-    }
-    Some(addr)
+    wasm_posix_shared::host_memory::checked_range(
+        addr,
+        len as u64,
+        mem.data().len() as u64,
+        false,
+    )
+    .ok()
+    .and_then(|addr| usize::try_from(addr).ok())
 }
 
 /// Copy `len` bytes from guest process memory at `addr` into kernel memory at
@@ -2392,6 +2391,7 @@ mod proc_bytes_tests {
         assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 4), 0);
         assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 5), -14);
     }
+
 }
 
 #[cfg(test)]
