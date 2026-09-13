@@ -715,6 +715,28 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     // a derived export carries its base files' real bytes. A fresh build has no
     // base files and never consults this. Blob- and archive-backed content
     // remain unreachable: those are host transports this module does not have.
+    // SEAL HERE, at the export door, because this is the only way bytes leave
+    // the module. A builder cannot compute a cohort digest as it registers --
+    // that digest covers every member and the last one is not known until the
+    // archive set is complete -- so sealing has to happen after registration
+    // and before emission. A `finalise` call would fit there too, and could be
+    // forgotten; this cannot.
+    //
+    // Only at offset 0, which is where the export plan is built. A later chunk
+    // is reading a plan whose payloads are already sealed.
+    if offset == 0 {
+        let declared = rootfs::archive_payloads();
+        match seal::seal_cohorts(&declared) {
+            Ok(sealed) => {
+                for (archive_id, payload) in sealed {
+                    if let Err(e) = rootfs::set_archive_payload(archive_id, &payload) {
+                        return err(e);
+                    }
+                }
+            }
+            Err(e) => return err(e),
+        }
+    }
     let mut source = image_source;
     // The whole VFSI CONTAINER, not the bare SFFS body. A body is not an image:
     // nothing can find the filesystem inside it or the sections beside it. The
@@ -841,6 +863,11 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     archive_bytes: u64,
     archive_payload_ptr: usize,
     archive_payload_len: usize,
+    cohort_id_ptr: usize,
+    cohort_id_len: usize,
+    cohort_member_ptr: usize,
+    cohort_member_len: usize,
+    cohort_expected_count: u32,
 ) -> i32 {
     // The archive's length is declared HERE rather than through an entry point
     // of its own. A member is useless without it -- fetching one member means
@@ -888,6 +915,8 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         // why the merge came here too — wrapping an OMITTED description
         // produced a nine-byte envelope describing nothing, which the store
         // saw as a second, different description of one archive and refused.
+        let cohort_id = unsafe { slice(cohort_id_ptr, cohort_id_len) };
+        let cohort_member = unsafe { slice(cohort_member_ptr, cohort_member_len) };
         let existing = rootfs::archive_payload(archive_id).unwrap_or_default();
         let mut payload = match seal::decode(&existing) {
             Ok(payload) => payload,
@@ -898,6 +927,34 @@ pub unsafe extern "C" fn sm_register_lazy_file(
                 return err(Errno::EINVAL);
             }
             payload.descriptor = archive_payload.to_vec();
+        }
+        // The cohort declaration rides here for the same reason the length and
+        // the description do: a cohort MEMBER is an archive, and this is where
+        // an archive is named. It could have been an `sm_declare_cohort` of its
+        // own, which would have bought a tidier signature with a permanent
+        // entry in the builders' ABI -- and the budget record already argues
+        // this case for this call, for the archive length.
+        //
+        // An empty id means "not in a cohort", which is what nearly every
+        // archive is.
+        if !cohort_id.is_empty() {
+            let declared = (cohort_id, cohort_member, cohort_expected_count);
+            match payload.seal.cohort() {
+                // Members of one cohort must agree about the cohort. This is
+                // the same rule as the description's, and it compares
+                // membership rather than the whole seal so that declaring a
+                // member again after an export -- which turned the declaration
+                // into a SEAL -- is a no-op rather than a conflict.
+                Some(existing) if existing != declared => return err(Errno::EINVAL),
+                Some(_) => {}
+                None => {
+                    payload.seal = seal::SealState::Pending {
+                        id: cohort_id.to_vec(),
+                        member: cohort_member.to_vec(),
+                        expected_count: cohort_expected_count,
+                    }
+                }
+            }
         }
         // An archive with nothing to say keeps an EMPTY payload rather than an
         // envelope describing nothing. Empty already means "no description" at
@@ -1559,7 +1616,7 @@ mod tests {
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 
@@ -1624,7 +1681,7 @@ mod tests {
         // because the archive declaration it went through refuses id 0.
         let url: &[u8] = b"https://example.invalid/sudo#sha256:feedface";
         let rc = with_two(b"/usr/sudo", url, |pp, pl, up, ul| unsafe {
-            sm_register_lazy_file(pp, pl, 0, 0, 0, 99_999, 0o4755, 0, 0, 40, 0, up, ul)
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 99_999, 0o4755, 0, 0, 40, 0, up, ul, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0, "a standalone-fetch file registers");
 
@@ -1659,12 +1716,12 @@ mod tests {
     fn an_archive_member_and_a_standalone_file_can_share_one_image() {
         assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_two(b"/member", b"members/x", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
         let url: &[u8] = b"https://example.invalid/solo";
         let rc = with_two(b"/solo", url, |pp, pl, up, ul| unsafe {
-            sm_register_lazy_file(pp, pl, 0, 0, 0, 20, 0o644, 0, 0, 41, 0, up, ul)
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 20, 0o644, 0, 0, 41, 0, up, ul, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 
@@ -2270,7 +2327,8 @@ mod tests {
         let rc = unsafe {
             sm_register_lazy_file(
                 pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
-            )
+                     0, 0, 0, 0, 0,
+                )
         };
         unsafe { sm_free(pp, pl) };
         unsafe { sm_free(sp, sl) };
@@ -2278,6 +2336,203 @@ mod tests {
             unsafe { sm_free(dp, descriptor.len()) };
         }
         rc
+    }
+
+    /// Register a member of an archive that also DECLARES its cohort.
+    fn register_cohort_member(
+        path: &[u8],
+        archive_id: u32,
+        source: &[u8],
+        descriptor: &[u8],
+        cohort: &[u8],
+        member: &[u8],
+        expected_count: u32,
+    ) -> i32 {
+        let (pp, pl) = write_path(path);
+        let (sp, sl) = write_path(source);
+        let (dp, dl) = write_path(descriptor);
+        let (cp, cl) = write_path(cohort);
+        let (mp, ml) = write_path(member);
+        let rc = unsafe {
+            sm_register_lazy_file(
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, dl,
+                cp, cl, mp, ml, expected_count,
+            )
+        };
+        for (ptr, len) in [(pp, pl), (sp, sl), (dp, dl), (cp, cl), (mp, ml)] {
+            unsafe { sm_free(ptr, len) };
+        }
+        rc
+    }
+
+    /// A root with one directory, ready for archive members.
+    fn fresh_tree() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+    }
+
+    #[test]
+    fn a_declared_cohort_is_sealed_at_export_and_loads_back() {
+        // The producer half, end to end. A builder DECLARES membership and
+        // never computes a digest -- it cannot, because the cohort digest
+        // covers every member and the last one is not known while the first is
+        // being registered. The module completes the seal at the export door,
+        // and the verifier on the way back in accepts it.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/b", 2, b"b", b"{\"url\":\"https://x/b.zip\"}",
+                                   b"shell", b"docs", 2),
+            0,
+        );
+        let image = drain_export();
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(load_image_bytes(&image) > 0, "a sealed cohort authenticates");
+    }
+
+    #[test]
+    fn a_cohort_short_of_its_declared_count_is_refused_at_export() {
+        // The count is why `Pending` carries one. Deriving it from the pending
+        // members instead would seal a cohort of one that was meant to be two,
+        // every digest would agree, and the verifier would accept an image that
+        // can only activate partially -- which is the thing atomic activation
+        // exists to prevent.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        let buf = sm_alloc(4096);
+        assert_eq!(
+            unsafe { sm_export_image_read(0, buf, 4096) },
+            -(Errno::EINVAL as i32),
+            "the producer refuses to emit a cohort it cannot complete",
+        );
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn members_of_one_cohort_must_agree_about_its_size() {
+        // Believing either count would pick the answer by declaration order.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/b", 2, b"b", b"{\"url\":\"https://x/b.zip\"}",
+                                   b"shell", b"docs", 3),
+            0,
+        );
+        let buf = sm_alloc(4096);
+        assert_eq!(unsafe { sm_export_image_read(0, buf, 4096) }, -(Errno::EINVAL as i32));
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn two_archives_cannot_share_one_member_name() {
+        // The cohort identity is digested over the member NAMES, so two
+        // archives answering to one name make that identity ambiguous: the same
+        // bytes would describe two different sets of archives.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/b", 2, b"b", b"{\"url\":\"https://x/b.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        let buf = sm_alloc(4096);
+        assert_eq!(unsafe { sm_export_image_read(0, buf, 4096) }, -(Errno::EINVAL as i32));
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn export_recomputes_a_seal_rather_than_trusting_one_already_there() {
+        // The difference between "seal what is pending" and "re-seal every
+        // cohort", which is otherwise invisible: both produce identical bytes
+        // for a tree that was only ever registered.
+        //
+        // It becomes visible when a payload arrives ALREADY sealed and wrong --
+        // which is what a derived build sees, because loading a base image
+        // brings back its seals. Sealing only what is pending would emit that
+        // stale digest and build an image that fails its own verifier.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 1),
+            0,
+        );
+        // Overwrite the declaration with a SEALED payload whose cohort digest
+        // is nonsense, the way a stale or hand-edited one would be.
+        let descriptor: &[u8] = b"{\"url\":\"https://x/a.zip\"}";
+        let stale = seal::encode(&seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: seal::SealState::Sealed(seal::ArchiveSeal {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 1,
+                cohort_digest: [9u8; 32],
+                descriptor_digest: seal::sha256(descriptor),
+            }),
+        })
+        .expect("encode");
+        rootfs::set_archive_payload(1, &stale).expect("plant the stale seal");
+
+        let image = drain_export();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(
+            load_image_bytes(&image) > 0,
+            "the export recomputed the cohort instead of carrying the stale digest",
+        );
+    }
+
+    #[test]
+    fn a_cohort_may_be_declared_on_every_member_of_its_archive() {
+        // Registration is per file, membership is per archive, so a builder
+        // that names the cohort on each member is doing the ordinary thing.
+        // Declaring the same membership twice is a no-op, exactly as declaring
+        // the same length or the same description twice is.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 1),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/a2", 1, b"a2", b"", b"shell", b"tools", 1),
+            0,
+            "a second member may repeat its archive's cohort",
+        );
+    }
+
+    #[test]
+    fn one_archive_cannot_belong_to_two_cohorts() {
+        // The same rule as two descriptions, for the same reason: the image
+        // would otherwise activate according to whichever member happened to be
+        // registered last.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 1),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/a2", 1, b"a2", b"", b"desktop", b"tools", 1),
+            -(Errno::EINVAL as i32),
+        );
     }
 
     #[test]
@@ -2377,6 +2632,7 @@ mod tests {
             unsafe {
                 sm_register_lazy_file(
                     pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+                     0, 0, 0, 0, 0,
                 )
             },
             0,
@@ -2443,6 +2699,7 @@ mod tests {
             unsafe {
                 sm_register_lazy_file(
                     pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+                     0, 0, 0, 0, 0,
                 )
             },
             0,
@@ -2451,7 +2708,31 @@ mod tests {
         unsafe { sm_free(sp, sl) };
         unsafe { sm_free(dp, descriptor.len()) };
         rootfs::set_archive_payload(1, &payload).expect("seal the registered archive");
-        let image = drain_export();
+
+        // Emitted WITHOUT going through `sm_export_image_read`, and that is
+        // the point rather than a shortcut. The producer now re-seals at the
+        // export door, so it would refuse this cohort before writing a byte --
+        // an image whose seals do not authenticate is, by construction, one no
+        // honest producer emits. Reaching past the door is the only way to
+        // stand up the artifact a tampered image actually is, and what is
+        // under test here is the LOAD.
+        let image = {
+            let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            let mut chunk = alloc::vec![0u8; 64 * 1024];
+            let mut source = image_source;
+            let mut offset = 0i64;
+            loop {
+                let n = rootfs::export_container_read(offset, &mut chunk, &mut source)
+                    .expect("emit the tampered container");
+                if n == 0 {
+                    break;
+                }
+                image.extend_from_slice(&chunk[..n]);
+                offset += n as i64;
+                assert!(image.len() <= 4 * 1024 * 1024, "the export is not advancing");
+            }
+            image
+        };
 
         assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = load_image_bytes(&image);
@@ -2640,7 +2921,7 @@ mod tests {
             0
         );
         let rc = with_two(b"/usr/there", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 

@@ -87,9 +87,34 @@ pub enum SealState {
     /// Not part of an activation cohort.
     None,
     /// Declared by the producer; digests owed.
-    Pending { id: Vec<u8>, member: Vec<u8> },
+    ///
+    /// It carries the expected count even though export could COUNT the
+    /// pending members instead. That count is precisely what is wrong when a
+    /// producer forgets one: export would seal a cohort of two that was meant
+    /// to be three, every digest would agree, and the verifier would accept
+    /// it. A count derived from the members cannot catch a missing member.
+    Pending { id: Vec<u8>, member: Vec<u8>, expected_count: u32 },
     /// Completed at export.
     Sealed(ArchiveSeal),
+}
+
+impl SealState {
+    /// The cohort this payload names, as `(id, member, expected count)`.
+    ///
+    /// PENDING and SEALED answer the same way on purpose. Membership is what
+    /// the PRODUCER declared; the digests are what the module computed from it.
+    /// Export recomputes every cohort from this, so a re-export after adding a
+    /// member re-seals the members already sealed rather than leaving them
+    /// bound to the cohort digest of a group that no longer exists.
+    pub fn cohort(&self) -> Option<(&[u8], &[u8], u32)> {
+        match self {
+            SealState::None => None,
+            SealState::Pending { id, member, expected_count } => {
+                Some((id, member, *expected_count))
+            }
+            SealState::Sealed(seal) => Some((&seal.id, &seal.member, seal.expected_count)),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,10 +162,11 @@ pub fn encode(payload: &ArchivePayload) -> Result<Vec<u8>, Errno> {
             out.extend_from_slice(&seal.cohort_digest);
             out.extend_from_slice(&seal.descriptor_digest);
         }
-        SealState::Pending { id, member } => {
+        SealState::Pending { id, member, expected_count } => {
             out.push(2);
             put_bytes(&mut out, id)?;
             put_bytes(&mut out, member)?;
+            put_u32(&mut out, *expected_count);
         }
     }
     Ok(out)
@@ -208,7 +234,11 @@ pub fn decode(bytes: &[u8]) -> Result<ArchivePayload, Errno> {
             cohort_digest: r.digest()?,
             descriptor_digest: r.digest()?,
         }),
-        2 => SealState::Pending { id: r.bytes()?, member: r.bytes()? },
+        2 => SealState::Pending {
+            id: r.bytes()?,
+            member: r.bytes()?,
+            expected_count: r.u32()?,
+        },
         // A state this reader does not know. Refused rather than guessed,
         // because a reader that cannot tell whether a seal was OWED cannot
         // safely treat the archive as unsealed.
@@ -247,6 +277,100 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&hasher.finalize());
     out
+}
+
+/// Complete every declared activation cohort, turning declarations into seals.
+///
+/// Takes the archives as `(archive_id, payload bytes)` and returns the payloads
+/// that must replace them. Archives naming no cohort are absent from the
+/// result: this rewrites what it seals and nothing else.
+///
+/// # Why this recomputes rather than sealing what is pending
+///
+/// Sealing only `Pending` payloads looks equivalent and is not. A second export
+/// after adding a member would leave the members sealed by the first export
+/// bound to the OLD cohort digest, and the image would fail its own verifier
+/// with no visible cause. Recomputing every cohort from the membership both
+/// states carry has no such state, and makes exporting twice mean what
+/// exporting once means.
+///
+/// # Errno
+///
+/// `EINVAL` throughout, and deliberately not `EPERM`. Every failure here is the
+/// PRODUCER contradicting itself while building an image that does not exist
+/// yet — a cohort short of the count it declared, two members disagreeing about
+/// that count, one member name standing for two archives. None of them is a
+/// question about authenticity, which is what `EPERM` is reserved for.
+pub fn seal_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<Vec<(u32, Vec<u8>)>, Errno> {
+    // (id, expected_count, [(archive_id, member, descriptor, descriptor_digest)])
+    struct Cohort {
+        id: Vec<u8>,
+        expected_count: u32,
+        members: Vec<(u32, Vec<u8>, Vec<u8>, [u8; 32])>,
+    }
+    let mut cohorts: Vec<Cohort> = Vec::new();
+
+    for (archive_id, bytes) in archives {
+        let payload = decode(bytes)?;
+        let Some((id, member, expected_count)) = payload.seal.cohort() else {
+            continue;
+        };
+        let digest = sha256(&payload.descriptor);
+        let entry = (*archive_id, member.to_vec(), payload.descriptor.clone(), digest);
+        match cohorts.iter_mut().find(|cohort| cohort.id == id) {
+            None => cohorts.push(Cohort {
+                id: id.to_vec(),
+                expected_count,
+                members: alloc::vec![entry],
+            }),
+            Some(cohort) => {
+                // One cohort, one count. Two members disagreeing is a producer
+                // that changed its mind halfway, and believing either one would
+                // pick the answer by declaration order.
+                if cohort.expected_count != expected_count {
+                    return Err(Errno::EINVAL);
+                }
+                // A member name identifies an archive WITHIN the cohort, and
+                // the identity digest is taken over the names. Two archives
+                // sharing one would make the identity ambiguous.
+                if cohort.members.iter().any(|(_, name, _, _)| name == member) {
+                    return Err(Errno::EINVAL);
+                }
+                cohort.members.push(entry);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for cohort in cohorts.iter() {
+        if u32::try_from(cohort.members.len()).map_err(|_| Errno::EINVAL)?
+            != cohort.expected_count
+        {
+            return Err(Errno::EINVAL);
+        }
+        let mut identity: Vec<(Vec<u8>, [u8; 32])> = cohort
+            .members
+            .iter()
+            .map(|(_, member, _, digest)| (member.clone(), *digest))
+            .collect();
+        let cohort_digest = sha256(&cohort_identity(&cohort.id, &mut identity)?);
+        for (archive_id, member, descriptor, descriptor_digest) in cohort.members.iter() {
+            out.push((
+                *archive_id,
+                encode(&ArchivePayload {
+                    descriptor: descriptor.clone(),
+                    seal: SealState::Sealed(ArchiveSeal {
+                        id: cohort.id.clone(),
+                        member: member.clone(),
+                        expected_count: cohort.expected_count,
+                        cohort_digest,
+                        descriptor_digest: *descriptor_digest,
+                    }),
+                })?,
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// Authenticate every sealed activation cohort among a loaded image's archives.
@@ -586,7 +710,11 @@ mod tests {
         // the seal would have nothing left to finish.
         let declared = ArchivePayload {
             descriptor: b"{\"url\":\"https://x/tools.zip\"}".to_vec(),
-            seal: SealState::Pending { id: b"shell".to_vec(), member: b"tools".to_vec() },
+            seal: SealState::Pending {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 1,
+            },
         };
         let bytes = encode(&declared).expect("encode");
         assert_eq!(decode(&bytes).expect("decode"), declared);
@@ -600,7 +728,11 @@ mod tests {
         // that was never meant to be in a cohort is accepted.
         let pending = encode(&ArchivePayload {
             descriptor: b"{\"url\":\"https://x/tools.zip\"}".to_vec(),
-            seal: SealState::Pending { id: b"shell".to_vec(), member: b"tools".to_vec() },
+            seal: SealState::Pending {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 1,
+            },
         })
         .expect("encode");
         assert_eq!(verify_cohorts(&[(1, pending)]), Err(Errno::EPERM));

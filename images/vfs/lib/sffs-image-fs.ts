@@ -65,6 +65,9 @@ interface ModuleExports {
     size: bigint, mode: number, uid: number, gid: number, ino: bigint,
     archiveBytes: bigint,
     archivePayload: number, archivePayloadLen: number,
+    cohortId: number, cohortIdLen: number,
+    cohortMember: number, cohortMemberLen: number,
+    cohortExpectedCount: number,
   ): number;
   sm_set_image_options(capacityBytes: bigint, p: number, pl: number): number;
   sm_check_headroom(minBytes: bigint, minInodes: bigint, o: number, ol: number): number;
@@ -657,21 +660,47 @@ export class SffsImageFs {
      * URL-backed setuid binary belongs.
      */
     archiveDescriptor?: Uint8Array;
+    /**
+     * The activation cohort this ARCHIVE belongs to, if any.
+     *
+     * A cohort activates atomically: either every archive in it is fetched or
+     * none is. Declared here rather than through a call of its own because a
+     * cohort member IS an archive, and this is where an archive is named --
+     * the same reasoning that puts `archiveBytes` here.
+     *
+     * Declared, not computed. The cohort's digest covers every member, so it
+     * cannot be known while the first member is being registered; the module
+     * completes the seal when the image is exported. A builder that names the
+     * cohort on every member of an archive is doing the ordinary thing, and
+     * repeating the same membership is a no-op.
+     *
+     * `expectedCount` is how many ARCHIVES the cohort holds. It is declared
+     * rather than counted because a count taken from the archives that were
+     * registered cannot notice the one that was not.
+     */
+    cohort?: { id: string; member: string; expectedCount: number };
   }): void {
     const descriptor = args.archiveDescriptor ?? new Uint8Array(0);
+    const cohortId = args.cohort?.id ?? "";
+    const cohortMember = args.cohort?.member ?? "";
     this.withPath(args.path, (p, pl) =>
       this.withPath(args.sourcePath, (s, sl) =>
         this.withBytes(descriptor, (d, dl) =>
-          this.check(
-            this.exports.sm_register_lazy_file(
-              p, pl, args.archiveId, s, sl,
-              BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
-              BigInt(args.archiveBytes),
-              dl === 0 ? 0 : d, dl,
-            ),
-            "registerLazyFile",
-            args.path,
-          ))));
+          this.withPath(cohortId, (c, cl) =>
+            this.withPath(cohortMember, (m, ml) =>
+              this.check(
+                this.exports.sm_register_lazy_file(
+                  p, pl, args.archiveId, s, sl,
+                  BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
+                  BigInt(args.archiveBytes),
+                  dl === 0 ? 0 : d, dl,
+                  cl === 0 ? 0 : c, cl,
+                  ml === 0 ? 0 : m, ml,
+                  args.cohort?.expectedCount ?? 0,
+                ),
+                "registerLazyFile",
+                args.path,
+              ))))));
   }
 
   /**

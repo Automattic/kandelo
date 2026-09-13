@@ -85,8 +85,43 @@
    "name": "a pending declaration decodes as an absent seal",
    "scope": "fn decode",
    "scope_end": "\n}\n",
-   "find": "        2 => SealState::Pending { id: r.bytes()?, member: r.bytes()? },",
+   "find": "        2 => SealState::Pending {\n            id: r.bytes()?,\n            member: r.bytes()?,\n            expected_count: r.u32()?,\n        },",
    "replace": "        2 => SealState::None,"
+  },
+  {
+   "name": "a cohort already sealed is left as it is instead of recomputed",
+   "scope": "impl SealState {",
+   "scope_end": "\n}\n",
+   "find": "            SealState::Sealed(seal) => Some((&seal.id, &seal.member, seal.expected_count)),",
+   "replace": "            SealState::Sealed(_) => None,"
+  },
+  {
+   "name": "the producer seals a cohort short of its declared count",
+   "scope": "pub fn seal_cohorts",
+   "scope_end": "\n}\n",
+   "find": "        if u32::try_from(cohort.members.len()).map_err(|_| Errno::EINVAL)?\n            != cohort.expected_count\n        {\n            return Err(Errno::EINVAL);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "the producer lets members disagree about the cohort size",
+   "scope": "pub fn seal_cohorts",
+   "scope_end": "\n}\n",
+   "find": "                if cohort.expected_count != expected_count {",
+   "replace": "                if false {"
+  },
+  {
+   "name": "the producer lets two archives share one member name",
+   "scope": "pub fn seal_cohorts",
+   "scope_end": "\n}\n",
+   "find": "                if cohort.members.iter().any(|(_, name, _, _)| name == member) {",
+   "replace": "                if false {"
+  },
+  {
+   "name": "a pending declaration's count is dropped in the encoding",
+   "scope": "pub fn encode",
+   "scope_end": "\n}\n",
+   "find": "            put_u32(&mut out, *expected_count);",
+   "replace": "            put_u32(&mut out, 0);"
   }
  ]
 }

@@ -330,6 +330,56 @@ describe("SffsImageFs", () => {
     expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
   });
 
+  it("seals a declared activation cohort when the image is exported", () => {
+    // The builder DECLARES membership and computes nothing. It cannot: the
+    // cohort's digest covers every member, and the last member is not known
+    // while the first is being registered. The module completes the seal at
+    // the export door, and loading the image back is what proves it did --
+    // load refuses a cohort that does not authenticate.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    const encoder = new TextEncoder();
+    for (const [id, name] of [[3, "tools"], [4, "docs"]] as const) {
+      fs.registerArchiveMember({
+        path: `/opt/${name}`,
+        archiveId: id,
+        sourcePath: `members/${name}`,
+        size: 10,
+        mode: 0o644,
+        ino: 40 + id,
+        archiveBytes: 8_000_000,
+        archiveDescriptor: encoder.encode(`{"url":"https://x/${name}.zip"}`),
+        cohort: { id: "shell", member: name, expectedCount: 2 },
+      });
+    }
+    const image = fs.exportImage();
+
+    const back = SffsImageFs.create();
+    expect(() => back.loadImage(image)).not.toThrow();
+  });
+
+  it("refuses to export a cohort short of the count it declared", () => {
+    // The declared count is the defence against a forgotten member. Counting
+    // the members that WERE registered cannot notice the one that was not, so
+    // the producer would seal a cohort of one that was meant to be two, every
+    // digest would agree, and the image would activate partially -- which is
+    // the thing atomic activation exists to prevent.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    fs.registerArchiveMember({
+      path: "/opt/tools",
+      archiveId: 3,
+      sourcePath: "members/tools",
+      size: 10,
+      mode: 0o644,
+      ino: 43,
+      archiveBytes: 8_000_000,
+      archiveDescriptor: new TextEncoder().encode('{"url":"https://x/tools.zip"}'),
+      cohort: { id: "shell", member: "tools", expectedCount: 2 },
+    });
+    expect(() => fs.exportImage()).toThrow(/EINVAL/);
+  });
+
   it("survives an allocation large enough to grow the module's memory", () => {
     // The bridge takes a FRESH memory view on every access because sm_alloc can
     // grow linear memory and detach older views. A cached view is the classic

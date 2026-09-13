@@ -330,6 +330,27 @@
    "scope_end": "\n}\n",
    "find": "        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {\n            return err(e);\n        }",
    "replace": ""
+  },
+  {
+   "name": "the export door does not seal",
+   "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+   "scope_end": "\n}\n",
+   "find": "    if offset == 0 {\n        let declared = rootfs::archive_payloads();",
+   "replace": "    if false {\n        let declared = rootfs::archive_payloads();"
+  },
+  {
+   "name": "a cohort declared at registration is ignored",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if !cohort_id.is_empty() {",
+   "replace": "        if false {"
+  },
+  {
+   "name": "one archive may be declared in two different cohorts",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "                Some(existing) if existing != declared => return err(Errno::EINVAL),",
+   "replace": "                Some(existing) if existing != declared && false => return err(Errno::EINVAL),"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
