@@ -2429,3 +2429,51 @@ now go through one `inject_forwarding_drive_thunk`. The index arithmetic — the
 part that silently calls the wrong guest function when wrong — exists once.
 
 `forkGuestImportsUnserved` 10 -> 9, banked. Host obligation unchanged at 5.
+
+## §44 — The two must-throw entries: designed, deliberately not started
+
+`__wpk_fork_ref_exn_broker_throw_recipe` and `__wpk_fork_ref_exn_ingress_throw`
+are the last two of the exception group. Both are called INSIDE a `try_table`
+with `catch_all_ref` and are expected to THROW — the emitter puts `unreachable`
+after the call, so returning normally is a bug.
+
+### `exn_broker_throw_recipe` is the tractable one
+
+It is the exception mirror of §43: the recipe belongs to another activation, and
+that activation's codec is the one that can reconstruct and throw it. The guest
+already exports `__wpk_fork_ref_exn_throw_recipe`
+(`WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE`), so the shape is the one now used
+three times — reserve a drive slot, add a placeholder import, rewrite it with
+`inject_forwarding_drive_thunk`, and let the throw propagate back out through
+the `call_indirect` to the guest's own `try_table`.
+
+One piece is missing: the module must map a recipe to its owning activation.
+`reference_replay.rs` exposes `funcref_node` and `static_root_node`, which return
+targets carrying `module_activation`, but nothing equivalent for an exnref. That
+accessor is a small, testable fork-codec addition.
+
+### `exn_ingress_throw` is not
+
+Ingress is a FOREIGN exception entering the guest, and §28a/§28b established
+that a foreign exception cannot be identified by the module (no `ref.eq` on
+`exnref`, no cast into the eq hierarchy) or by a JS host (an `exnref` value
+cannot cross into a JS import). To throw one back the module would have to be
+holding it, which means having caught it — putting the module in the catch path
+rather than the callee.
+
+That is a larger change than the other three, and it may not be expressible at
+all on a JS host. It should be scoped on its own rather than folded in here.
+
+### Why this is recorded rather than built
+
+The capture-drive pattern is proven and this would follow it, but these two run
+exception control flow inside the fork's critical section — the region the
+master plan records as having TRAPPED OR HUNG two prior attempts under the
+`ABORT_UNWINDING` discipline. Three hand-encoded wasm stubs in this session were
+caught wrong by the assembler before they ran; a throwing stub plus a diverging
+`call_indirect` is where a mistake stops being a failed assertion and becomes a
+hang.
+
+The honest sequence is to start these fresh rather than at the end of a long
+run: the design above is complete enough to pick up directly, and the branch is
+green, pushed and at a clean boundary.
