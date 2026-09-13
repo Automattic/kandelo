@@ -2618,6 +2618,18 @@ a frozen `RustLentKernelDestination` token, and `crates/host-native` has that
 exact type for regions it ALLOCATES (`KernelScratch`) and no mirror for
 regions the kernel LENDS it.
 
+**Two callers swallow the new answer, and neither is lane L's.** Giving
+sixteen imports the ability to return `-EFAULT` means asking who reads it.
+Nine kernel callers propagate it (`i32_to_result(result)?`). Two do not, both
+for `host_clock_gettime` and both predating this change: an absolute-timer
+path uses `.unwrap_or((0, 0))`, turning a refusal into "now is the epoch"; and
+`crates/runtime-core/src/lib.rs` discards the `i32` and returns a zero `sec`.
+Neither is newly broken, and neither can fire in practice — both pointers are
+kernel stack locals, inside kernel memory by construction — but this change
+made them reachable, which is the honest way to say it. **The cost of proving
+a range on every import write is unmeasured**, including on the clock path the
+wait queue uses for deadlines; no benchmark was run and none is claimed.
+
 **"One rule" was then checked against the tree, not just the corpora.** The
 corpora pin the rule's answers; they cannot say whether some other site works
 it out for itself. L3: every `controlBase`/`channelOffset`/`brkBase`/`mmapBase`

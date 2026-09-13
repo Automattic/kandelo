@@ -1069,6 +1069,36 @@ import returns `i32`, and the two helpers that returned nothing
 (`write_wasm_statfs`, `write_wasm_stat_fields`) now return `Result<(), i32>`
 so their callers can answer.
 
+**Giving sixteen imports the ability to fail means asking who reads the
+answer.** That is the same question that found the blob-decode bug, turned on
+this lane's own change. Every converted import was traced to its kernel
+caller:
+
+* Nine propagate correctly — `i32_to_result(result)?` in
+  `crates/kernel/src/wasm_api.rs`, which is exactly what a new `-EFAULT`
+  needs.
+* **Two swallow it**, both for `host_clock_gettime`, and both predate this
+  change: `wasm_api.rs` reads an absolute timer's clock with
+  `.unwrap_or((0, 0))`, so a refusal becomes "now is the epoch" and an
+  absolute deadline turns into a far-future one; and
+  `crates/runtime-core/src/lib.rs` calls the raw import, ignores the `i32`
+  entirely, and returns a `sec` that is still zero.
+
+Neither is lane L's file and neither is newly broken — but this change made
+them reachable, which is the honest way to put it. **In practice the refusal
+cannot fire there**: both pointers are kernel stack locals, so their addresses
+are inside kernel memory by construction. That is the phrase this document
+distrusts, and here it is actually true — which is worth saying rather than
+leaving the reader to wonder whether the caveat is load-bearing.
+
+**The cost was not measured, and is not claimed to be free.** Every import
+write now proves a range before copying, including `host_clock_gettime`, which
+the wait queue calls for deadlines. The proof is a handful of integer
+comparisons. The platform's performance contract says "faster", "no
+regression" and "harmless" are claims when stated as facts, so: no benchmark
+was run for this change, and the per-call cost of the proof on the clock path
+is unmeasured.
+
 **What the class was, before it was fixed.**
 `checked_shared_range` has six call sites covering three functions —
 `KernelScratch::write` and both sides of `proc_copy_in`/`proc_copy_out`, the
