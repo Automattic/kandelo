@@ -3144,3 +3144,46 @@ about 150 call sites. The largest cluster --
 `ForkHostImportWorkerRuntime` (5) -- is import BUILDING, which is exactly what
 `buildForkGuestImports` plus this floor replace. That is the shape of the
 remaining migration: not a rewrite, a reconnection.
+
+## §60 — 286 lines of runtime wasm synthesis, emitted ahead of time instead
+
+The guest's five frame/resume imports are frozen at one argument; the module's
+exports take `(activation_id, arg)`, one shared implementation serving every
+activation. Something has to fold the id in.
+
+That something was `attic/fork-typescript-do-not-use/fork-module-trampoline.ts`:
+286 lines of TypeScript hand-assembling wasm opcodes to SYNTHESIZE a module per
+activation, at runtime, cached in a `Map`. Runtime code generation in the host is
+exactly what this campaign exists to remove, and it is the reason the "just port
+the trampolines" reading of the merge gate would have been the wrong move.
+
+`inject_activation_trampolines` emits all of them ahead of time: 64 activations
+(`ACTIVATION_CATALOG_MAX_ACTS`, the module's own cap, so a trampoline can never
+be asked for an activation the module would refuse) x 5 entries, in a
+module-owned funcref table exported as `__wpk_fork_activation_trampolines` and
+indexed `activation * 5 + slot`. Each body is three instructions. The host side
+becomes five `table.get` calls.
+
+Each trampoline's signature is built from its TARGET's type rather than from a
+restated table of guest signatures, so `frame_commit` returning nothing and
+`resume_peek` being `(i32) -> i32` come out right without this pass knowing
+that. `resume_peek` drops the guest's argument -- a diagnostic the module does
+not take -- and that asymmetry is inherited from the TypeScript, pinned by a
+test rather than left to be re-derived.
+
+**Tested where it can be.** Calling a trampoline reaches `fm_frame_reserve`,
+which allocates its arena with `SYS_MMAP` through the syscall channel, and the
+V8 harness has no kernel to service that -- a behavioural test there would
+assert errno 22 and prove nothing. So the harness checks shape only and says so,
+while `crates/fork-module-inject` checks the property exhaustively over all 320
+entries with walrus reading the emitted bodies: every entry folds the activation
+it is indexed by, and calls the export its slot names. Exhaustive rather than
+sampled because an off-by-one in the index math routes one activation's frames
+into another's arena -- silent corruption a spot check would miss. Perturbed
+until each failed: every entry folding activation 0, and two slots calling each
+other's export.
+
+**Budget.** `forkModuleEntriesWithoutProductionCaller` 26 -> 21, banked: the
+five frame entries had no production caller because the TypeScript that called
+them is in the attic, and the emitted trampolines are now that caller. This is
+the same migration §59 described, five entries at once.

@@ -36,7 +36,8 @@ use walrus::ir::{
     UnaryOp,
 };
 use walrus::{
-    ExportItem, FunctionBuilder, FunctionId, ImportKind, Module, RefType, ValType,
+    ConstExpr, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId, ImportKind,
+    Module, RefType, ValType,
 };
 
 // -- GC drive-shim injection (Phase 6 item 3b) --------------------------------
@@ -231,6 +232,19 @@ const TABLE_APPLY_THUNK_IMPORT: &str = "__wpk_fork_table_apply";
 /// below into local thunks; see `inject_atomic_thunks`.
 const ATOMIC_WAIT_THUNK_IMPORT: &str = "__wpk_fork_atomic_wait32";
 const ATOMIC_NOTIFY_THUNK_IMPORT: &str = "__wpk_fork_atomic_notify";
+
+/// Module-owned funcref table of per-activation frame/resume entry points,
+/// indexed `activation * TRAMPOLINE_SLOTS + slot`.
+const ACTIVATION_TRAMPOLINE_TABLE: &str = "__wpk_fork_activation_trampolines";
+
+/// Activations the table covers. Matches `ACTIVATION_CATALOG_MAX_ACTS` in
+/// `crates/fork-module`, which is the module's own cap on distinct activations,
+/// so a trampoline can never be asked for an activation the module would refuse.
+const TRAMPOLINE_ACTIVATIONS: u32 = 64;
+
+/// Entries per activation, in this fixed order: frame_reserve, frame_commit,
+/// frame_peek, frame_next, resume_peek.
+const TRAMPOLINE_SLOTS: u32 = 5;
 
 /// The guest's own indirect call table -- the table a reconcile writes into.
 /// Named by the wasm tool convention, not by anything Kandelo chose.
@@ -1011,6 +1025,8 @@ fn main() -> Result<()> {
     inject_table_apply_thunk(&mut module)
         .context("rewriting __wpk_fork_table_apply into a thunk")?;
     inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
+    inject_activation_trampolines(&mut module)
+        .context("emitting the per-activation frame trampolines")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1414,6 +1430,102 @@ fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
     Ok(())
 }
 
+/// Emit one frame/resume entry point per activation, ahead of time.
+///
+/// The guest's five frame imports are frozen at `(ptr)`, while the module's
+/// exports take `(activation_id, ptr)` -- one shared implementation serving
+/// every activation. Something has to fold the activation id in.
+///
+/// That something used to be 286 lines of TypeScript SYNTHESIZING a wasm module
+/// at runtime, per activation, by hand-assembling opcodes. Emitting them here
+/// instead costs 320 functions of three instructions each, and reduces the host
+/// to five `table.get` calls. Runtime code generation in the host is precisely
+/// what this campaign exists to remove.
+///
+/// `resume_peek` drops the guest's argument rather than forwarding it; it is a
+/// diagnostic the module does not take. That asymmetry is preserved from the
+/// TypeScript it replaces, not invented here.
+fn inject_activation_trampolines(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == ACTIVATION_TRAMPOLINE_TABLE)
+    {
+        bail!("module already exports {ACTIVATION_TRAMPOLINE_TABLE}");
+    }
+    let ptr_ty = if module
+        .memories
+        .iter()
+        .next()
+        .ok_or_else(|| anyhow!("module has no linear memory"))?
+        .memory64
+    {
+        ValType::I64
+    } else {
+        ValType::I32
+    };
+
+    // (shared export, forwards the guest's argument)
+    let targets: [(&str, bool); TRAMPOLINE_SLOTS as usize] = [
+        ("fm_frame_reserve", true),
+        ("fm_frame_commit", true),
+        ("fm_frame_peek", true),
+        ("fm_frame_next", true),
+        ("fm_resume_peek", false),
+    ];
+    let mut resolved = Vec::with_capacity(targets.len());
+    for (name, forwards) in targets {
+        resolved.push((exported_function(module, name)?, forwards));
+    }
+
+    let slots = TRAMPOLINE_ACTIVATIONS * TRAMPOLINE_SLOTS;
+    let table = module
+        .tables
+        .add_local(false, u64::from(slots), Some(u64::from(slots)), RefType::FUNCREF);
+    module.exports.add(ACTIVATION_TRAMPOLINE_TABLE, table);
+
+    let mut entries = Vec::with_capacity(slots as usize);
+    for activation in 0..TRAMPOLINE_ACTIVATIONS {
+        for (target, forwards) in &resolved {
+            // Every guest-facing frame import is `(ptr) -> ptr` except
+            // `frame_commit`, which returns nothing, and `resume_peek`, which is
+            // `(i32) -> i32`. Building from the TARGET's own type keeps this
+            // correct without restating any of those signatures here.
+            let target_ty = module.types.get(module.funcs.get(*target).ty());
+            let results: Vec<ValType> = target_ty.results().to_vec();
+            let params: Vec<ValType> = if *forwards {
+                vec![*target_ty
+                    .params()
+                    .get(1)
+                    .ok_or_else(|| anyhow!("frame export takes no forwarded argument"))?]
+            } else {
+                vec![ValType::I32]
+            };
+            let mut builder = FunctionBuilder::new(&mut module.types, &params, &results);
+            let arg = module.locals.add(params[0]);
+            {
+                let mut body = builder.func_body();
+                body.i32_const(activation as i32);
+                if *forwards {
+                    body.local_get(arg);
+                }
+                body.call(*target);
+            }
+            entries.push(builder.finish(vec![arg], &mut module.funcs));
+        }
+    }
+    let _ = ptr_ty;
+
+    module.elements.add(
+        ElementKind::Active {
+            table,
+            offset: ConstExpr::Value(walrus::ir::Value::I32(0)),
+        },
+        ElementItems::Functions(entries),
+    );
+    Ok(())
+}
+
 /// Rewrite the two shared-memory atomic placeholders into local thunks.
 ///
 /// `core::sync::atomic` gives the module compare-and-swap on any guest address,
@@ -1785,6 +1897,127 @@ mod tests {
         );
 
         module
+    }
+
+    /// The five shared frame/resume exports the trampoline pass folds an
+    /// activation id into, with the module's real argument order.
+    fn add_frame_exports(module: &mut Module) {
+        for name in ["fm_frame_reserve", "fm_frame_peek", "fm_frame_next"] {
+            add_stub_export(module, name, &[ValType::I32, ValType::I32], &[ValType::I32]);
+        }
+        add_stub_export(module, "fm_frame_commit", &[ValType::I32, ValType::I32], &[]);
+        add_stub_export(module, "fm_resume_peek", &[ValType::I32], &[ValType::I32]);
+    }
+
+    /// The `i32.const` an emitted trampoline body folds in, and the function it
+    /// then calls.
+    fn folded_activation(module: &Module, func: FunctionId) -> (i32, FunctionId) {
+        let local = match &module.funcs.get(func).kind {
+            walrus::FunctionKind::Local(local) => local,
+            _ => panic!("trampoline is not a local function"),
+        };
+        let instrs = local.block(local.entry_block());
+        let mut folded = None;
+        let mut called = None;
+        for (instr, _) in &instrs.instrs {
+            match instr {
+                walrus::ir::Instr::Const(c) => {
+                    if let walrus::ir::Value::I32(v) = c.value {
+                        folded = Some(v);
+                    }
+                }
+                walrus::ir::Instr::Call(call) => called = Some(call.func),
+                _ => {}
+            }
+        }
+        (
+            folded.expect("trampoline folds a constant"),
+            called.expect("trampoline calls a shared export"),
+        )
+    }
+
+    #[test]
+    fn every_trampoline_folds_the_activation_it_is_indexed_by() {
+        let mut module = fixture_module();
+        add_frame_exports(&mut module);
+        inject_activation_trampolines(&mut module).expect("trampolines inject");
+
+        let table = module
+            .exports
+            .iter()
+            .find(|e| e.name == ACTIVATION_TRAMPOLINE_TABLE)
+            .map(|e| match e.item {
+                ExportItem::Table(id) => id,
+                _ => panic!("{ACTIVATION_TRAMPOLINE_TABLE} is not a table"),
+            })
+            .expect("the table is exported");
+
+        let elements: Vec<FunctionId> = module
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Active { table: t, .. } if t == table))
+            .flat_map(|e| match &e.items {
+                ElementItems::Functions(ids) => ids.clone(),
+                _ => panic!("trampoline element is not a function list"),
+            })
+            .collect();
+        assert_eq!(
+            elements.len() as u32,
+            TRAMPOLINE_ACTIVATIONS * TRAMPOLINE_SLOTS,
+            "one entry per activation slot",
+        );
+
+        let targets = [
+            "fm_frame_reserve",
+            "fm_frame_commit",
+            "fm_frame_peek",
+            "fm_frame_next",
+            "fm_resume_peek",
+        ];
+        // Exhaustive, not spot-checked. An off-by-one in the index math, or a
+        // body that folded a fresh counter instead of its own index, routes one
+        // activation's frames into another's arena -- silent corruption that a
+        // single sampled entry would not catch.
+        for activation in 0..TRAMPOLINE_ACTIVATIONS {
+            for (slot, target) in targets.iter().enumerate() {
+                let index = (activation * TRAMPOLINE_SLOTS) as usize + slot;
+                let (folded, called) = folded_activation(&module, elements[index]);
+                assert_eq!(
+                    folded, activation as i32,
+                    "slot {index} must fold activation {activation}",
+                );
+                assert_eq!(
+                    called,
+                    exported_function(&module, target).unwrap(),
+                    "slot {index} must call {target}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_resume_peek_drops_the_guest_argument() {
+        let mut module = fixture_module();
+        add_frame_exports(&mut module);
+        inject_activation_trampolines(&mut module).expect("trampolines inject");
+        // The asymmetry is inherited from the TypeScript this replaced, so it is
+        // pinned rather than left to be re-derived: four entries forward the
+        // guest's argument, `resume_peek` drops it as a diagnostic the module
+        // does not take. Forwarding it would make the call arity wrong.
+        let frame_ty = module.types.get(
+            module
+                .funcs
+                .get(exported_function(&module, "fm_frame_reserve").unwrap())
+                .ty(),
+        );
+        assert_eq!(frame_ty.params().len(), 2, "frame exports take (act, arg)");
+        let resume_ty = module.types.get(
+            module
+                .funcs
+                .get(exported_function(&module, "fm_resume_peek").unwrap())
+                .ty(),
+        );
+        assert_eq!(resume_ty.params().len(), 1, "resume_peek takes (act) only");
     }
 
     /// Count every `any.convert_extern` instruction in a local function body.

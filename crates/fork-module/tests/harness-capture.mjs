@@ -1553,4 +1553,32 @@ function i31Minter() {
   assert.equal(Atomics.load(lock, 0), 0, "and the lock is idle afterwards");
 }
 
+// ---- Per-activation frame trampolines --------------------------------------
+//
+// The guest's five frame imports are frozen at one argument; the module's
+// exports take (activation_id, arg). These pre-emitted entry points fold the id
+// in, replacing 286 lines of TypeScript that SYNTHESIZED a wasm module per
+// activation at runtime.
+//
+// Only their SHAPE is checked here. Calling one reaches `fm_frame_reserve`,
+// which allocates its arena with `SYS_MMAP` through the syscall channel, and
+// this harness has no kernel to service that -- so a behavioural test would
+// assert errno 22 and prove nothing. That each entry folds the activation it is
+// indexed by is checked exhaustively, over all 320 of them, by
+// `every_trampoline_folds_the_activation_it_is_indexed_by` in
+// `crates/fork-module-inject`, where walrus can read the emitted bodies.
+{
+  const SLOTS = 5;
+  const trampolines = x.__wpk_fork_activation_trampolines;
+  assert.ok(trampolines instanceof WebAssembly.Table, "the table is exported");
+  assert.equal(trampolines.length, 64 * SLOTS, "one entry per activation slot");
+  for (const index of [0, 3 * SLOTS, 63 * SLOTS + 4]) {
+    assert.equal(
+      typeof trampolines.get(index),
+      "function",
+      `slot ${index} holds a callable entry point`,
+    );
+  }
+}
+
 console.log("fork-module capture harness: all assertions passed");
