@@ -42,10 +42,14 @@ import {
  * more: the module serves both, given the one host capability they needed
  * (`__wpk_fork_host_func_identity`).
  *
- * The two `exn_*` throws are here for a different reason, and it is not an
- * identity one: they must re-enter wasm THROWING a tagged exception. A
- * JavaScript import cannot -- a JS `throw` crosses back as a foreign exception
- * carrying the wrong tag, so an instrumented catch clause does not recognise it.
+ * The two `exn_*` throws are here for a different reason again, and it is NOT a
+ * capability limit. They must re-enter wasm throwing a tagged exception, and a
+ * JS `throw` cannot do that -- it crosses back as a foreign exception with the
+ * wrong tag. But the host import does not have to throw: it can call a guest
+ * EXPORT that throws, which is how `fork-exception-provider` implements both.
+ * They sit here because the maintainer deferred them to last. Census section
+ * 109 records that, and that the module could serve them the same way -- it
+ * already calls guest exports through its drive table.
  */
 export interface ForkGuestHostFloor {
   readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;

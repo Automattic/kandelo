@@ -72,20 +72,34 @@ export function createForkGuestHostFloor(
       return value;
     },
 
+    // NOT IMPLEMENTED HERE, and the reason is narrower than it once said.
+    //
+    // This file used to claim these two "must re-enter wasm THROWING a tagged
+    // exception, which a JavaScript import cannot do". The first half is true
+    // and the conclusion was wrong. A JS `throw` does cross back as a foreign
+    // exception with the wrong tag -- but the host import does not have to
+    // throw. `fork-exception-provider` in the attic implements both by CALLING
+    // A GUEST EXPORT that throws (`FORK_EXCEPTION_THROW_RECIPE_EXPORT`), and
+    // wasm raising its own tagged exception is exactly right.
+    //
+    // So these are implementable, and by the same route the module could serve
+    // them: it already calls guest exports through `__wpk_fork_drive_table`.
+    // They stay unimplemented because the MAINTAINER deferred them to last, not
+    // because they cannot be done. See census section 109.
     __wpk_fork_ref_exn_ingress_throw(recipe: number): void {
       throw new Error(
-        `${label}: __wpk_fork_ref_exn_ingress_throw(${recipe}) is not `
-          + `implemented. It must re-enter wasm THROWING a tagged exception, `
-          + `which a JavaScript import cannot do -- a JS throw crosses back as a `
-          + `foreign exception with the wrong tag. Deferred by maintainer `
-          + `decision; see docs/plans/2026-09-12-lane-f-census.md.`,
+        `${label}: __wpk_fork_ref_exn_ingress_throw(${recipe}) is not bound. `
+          + `It is implementable -- call the activation's exported thrower, as `
+          + `fork-exception-provider does -- and is deferred by maintainer `
+          + `decision, not by a capability limit. A host reaching this has `
+          + `replaced a working exception path with this floor.`,
       );
     },
 
     __wpk_fork_ref_exn_broker_throw_recipe(recipe: number): void {
       throw new Error(
         `${label}: __wpk_fork_ref_exn_broker_throw_recipe(${recipe}) is not `
-          + `implemented, for the reason __wpk_fork_ref_exn_ingress_throw is not.`,
+          + `bound, for the reason __wpk_fork_ref_exn_ingress_throw is not.`,
       );
     },
   };

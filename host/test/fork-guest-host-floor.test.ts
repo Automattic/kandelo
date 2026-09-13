@@ -103,12 +103,29 @@ describe("fork host identity floor", () => {
 
   it("fails loud on the two throws rather than silently doing nothing", () => {
     const { floor } = createForkGuestHostFloor(deps());
-    // These must re-enter wasm THROWING a tagged exception, which JavaScript
-    // cannot do. Returning quietly would let a fork replay continue past an
-    // exception it never delivered.
-    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(/not implemented/);
+    // Returning quietly would let a fork replay continue past an exception it
+    // never delivered, which is the failure this guards.
+    //
+    // The message says "not bound", not "not implemented", and the difference
+    // is the point. These ARE implementable: the import re-enters wasm by
+    // calling a guest EXPORT that throws (`fork-exception-provider` does
+    // exactly that), so wasm raises its own tagged exception and a JS `throw`
+    // -- which would arrive with the wrong tag -- never happens. They are
+    // unbound because the maintainer deferred them, not because a host cannot
+    // do it. Census section 109.
+    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(/not bound/);
     expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(1)).toThrow(
-      /not implemented/,
+      /not bound/,
     );
+    // And the message must not tell a reader it is impossible, which is what
+    // sent this lane's census down the wrong path once already.
+    let message = "";
+    try {
+      floor.__wpk_fork_ref_exn_ingress_throw(1);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toMatch(/cannot|impossible/i);
+    expect(message).toContain("deferred by maintainer decision");
   });
 });

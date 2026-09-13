@@ -5057,3 +5057,54 @@ I came within one edit of deleting a `WeakMap` as redundant. What stopped it was
 reading the file whose job I thought I was subsuming. That is the same habit that
 caught the election rule in section 95, and it has now paid twice: the argument
 for a piece of code is often in the piece of code, not in the interface.
+
+## §109 — The two `exn_*` throws are not impossible, and I had written that they were
+
+Preparing the env replacement meant finding who binds each of the 51 imports a
+real guest declares. Two of them -- `__wpk_fork_ref_exn_ingress_throw` and
+`__wpk_fork_ref_exn_broker_throw_recipe` -- I expected to find unbound, because
+this lane's floor says they cannot be implemented:
+
+> they must re-enter wasm THROWING a tagged exception, which a JavaScript import
+> cannot do -- a JS throw crosses back as a foreign exception with the wrong tag
+
+`buildForkExceptionImports` binds both. It does it like this:
+
+```ts
+const throwRecipe = requireFunction(instance.exports, FORK_EXCEPTION_THROW_RECIPE_EXPORT);
+...
+[FORK_EXCEPTION_BROKER_THROW_RECIPE_IMPORT]: (recipeId) => broker.throwRecipe(recipeId),
+```
+
+The host import does not throw. **It calls a guest EXPORT that throws.** Wasm
+raises its own tagged exception, the tag is right by construction, and the JS
+frame never throws anything. The premise was true -- a JS `throw` does arrive
+with the wrong tag -- and the conclusion drawn from it was false.
+
+Both files now say so, and the error message says "not bound" rather than "not
+implemented", with the implementation route named. A test asserts the message
+does NOT contain "cannot" or "impossible", because that word is what sent this
+lane's own record wrong, and a stub that argues its own impossibility is a
+particularly effective way to stop anyone checking.
+
+Two consequences.
+
+**They are implementable in the thin layer today**, in about four lines each:
+look up the activation's exported thrower, call it. They stay unimplemented
+because the MAINTAINER deferred them, which is a different and legitimate reason
+-- and one I should have been stating all along instead of the capability claim.
+
+**The module could serve them too.** It already calls guest exports through
+`__wpk_fork_drive_table` -- that is exactly what `bindActivationDrive` wires, and
+what `fm_drive_execute` does with a `call_indirect`. A throwing guest export is
+the same shape as the allocate/fill/materialize exports already driven that way.
+So `forkGuestImportsUnserved`'s target of 0 is reachable for these two, which the
+section 106 accounting assumed but could not yet argue.
+
+The pattern across sections 95, 105 and 108 repeats here with a new variant. In
+95 I wrote a replacement without reading the original. In 105 I read a claim and
+substituted a filename for its subject. In 108 the code I was about to subsume
+contained the argument against it. Here I wrote the impossibility claim MYSELF,
+in a file whose job is to hold arguments, and then read it back later as
+evidence. A comment is not evidence. The attic file it contradicted was four
+directories away the whole time.
