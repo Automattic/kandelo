@@ -52,7 +52,7 @@ interface ModuleExports {
   sm_chown(p: number, pl: number, uid: number, gid: number, clearSetid: number): number;
   sm_unlink(p: number, pl: number): number;
   sm_write_file(p: number, pl: number, mode: number, c: number, cl: number): number;
-  sm_stat_size(): number;
+  sm_load_image(ptr: number, len: number): number;
   sm_lstat(p: number, pl: number, o: number, ol: number): number;
   sm_readlink(p: number, pl: number, o: number, ol: number): number;
   sm_read_file(p: number, pl: number, offset: bigint, o: number, ol: number): number;
@@ -221,7 +221,10 @@ export class SffsImageFs {
   }
 
   lstat(path: string): SffsStat {
-    const size = this.exports.sm_stat_size();
+    // `out_len === 0` is the module's one size-probe convention, shared with
+    // `sm_read_dir` and `sm_check_headroom`. Queried rather than hardcoded, so
+    // nothing here bakes in a record length the module could change.
+    const size = this.exports.sm_lstat(0, 0, 0, 0);
     const out = this.exports.sm_alloc(size);
     if (out === 0) throw new Error("sffs-module: allocation failed");
     try {
@@ -694,6 +697,38 @@ export class SffsImageFs {
    * this. Compression and the file write stay here: those are host facilities,
    * and the floor this lane is reducing toward is host facilities only.
    */
+  /**
+   * Load a VFS image as the base layer, replacing whatever tree is present.
+   * Returns the number of entries the kernel inserted.
+   *
+   * This is what a DERIVED build starts from: the kernel mounts the image,
+   * walks it, and adopts its deferred linkage, so files the recipe never
+   * touches keep their real sizes and their lazy backing.
+   *
+   * **Ownership transfers on success and only on success.** The module keeps
+   * the buffer — a loaded image hands out nodes that are promises the kernel
+   * can come back for those bytes later, so freeing after the load would make
+   * every base file unreadable. It is not copied because `lamp.vfs` is 249 MiB
+   * and a copy would mean both resident at once in a 32-bit address space. On
+   * failure the module has not adopted it and this frees it, which is why the
+   * free lives in a `catch` rather than a `finally`.
+   */
+  loadImage(image: Uint8Array): number {
+    const ptr = this.exports.sm_alloc(image.byteLength);
+    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      this.mem.set(image, ptr);
+      return this.check(
+        this.exports.sm_load_image(ptr, image.byteLength),
+        "loadImage",
+        "",
+      );
+    } catch (error) {
+      this.exports.sm_free(ptr, image.byteLength);
+      throw error;
+    }
+  }
+
   exportImage(chunkBytes = 1 << 20): Uint8Array {
     const ptr = this.exports.sm_alloc(chunkBytes);
     if (ptr === 0) throw new Error("sffs-module: allocation failed");
@@ -731,10 +766,10 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Field order of the module's stat record: six little-endian `u64`s.
+ * Field order of the module's stat record: eight little-endian `u64`s.
  *
- * The module documents this layout and `sm_stat_size()` reports its length, so
- * nothing here hardcodes a byte count.
+ * The module documents this layout and answers its length when called with
+ * `out_len === 0`, so nothing here hardcodes a byte count.
  *
  * **This is deliberately not the generated ABI stat layout.** The obvious move
  * is to decode `process_layout::stat`, the record the syscall wire uses — one

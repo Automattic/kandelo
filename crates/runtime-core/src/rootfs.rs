@@ -3825,6 +3825,11 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         growable_to_bytes: u64::from(max_blocks) * 4096,
         now_ms: 0,
     })?;
+    // The kernel writes its deferred files into the body, so an export with
+    // none says so explicitly rather than staying silent — silence is what
+    // `load_image` refuses, and an image this kernel wrote must be one it can
+    // read back (gap 15).
+    writer.declare_deferred_section();
 
     let mut contents: Vec<ImageContent> = Vec::new();
     let mut skipped_special = 0u32;
@@ -6587,11 +6592,16 @@ mod tests {
         let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
         let ino = fs.resolve(b"/walked.bin", true).expect("the path survives");
         assert_eq!(fs.stat_ino(ino).expect("stat").size, 0);
-        assert!(
-            fs.deferred_section().expect("decodes").is_none(),
-            "no description in, no record out -- an empty payload must not become \
-             a deferred record that says nothing",
-        );
+        // The export always DECLARES a section, because an image that declares
+        // none is one `load_image` refuses (gap 15). So the claim here is that
+        // the section is EMPTY, not absent: no description in, no record out --
+        // an empty payload must not become a deferred record that says nothing.
+        let section = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the export always declares a section");
+        assert!(section.records.is_empty(), "no description in, no record out");
+        assert!(section.archives.is_empty());
     }
 
     #[test]
