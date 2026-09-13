@@ -2720,3 +2720,82 @@ protocol's exact shape, whether `table_state_owned` needs anything beyond
 decoded archive state, and whether a mutation can be published without
 re-encoding records that did not change. Each is a real question and none of
 them is answered by reading a comment.
+
+## §50 — Three of the eight are floor, and the reason is the same each time
+
+Applying the must-this-be-host question to the rest of §49's list gives the
+lane a visible end. Three entries are floor, and all three fail for one reason:
+**they require looking INSIDE a reference, or comparing two of them, and the
+module holds neither the objects nor a primitive that can.**
+
+### `__wpk_fork_ref_provenance_externref(externref) -> externref`
+
+The host body does three things, and every one of them reaches into the value:
+
+1. `typeof value !== "object" && typeof value !== "function"` — reject
+   primitives. Wasm cannot ask an `externref` what it is.
+2. `externrefs.tryEncode(value)` — read the handle off a self-describing
+   `ForkExternrefToken`. That is a property read on a JS object.
+3. `externrefProvenance.register(value, handle)` — store it in a WeakMap keyed
+   by the value's IDENTITY.
+
+This is exactly the floor the campaign already names: externref identity plus
+handle→externref materialization. It is where the floor was always going to be;
+this entry is not a gap, it is the floor being visible.
+
+### `__wpk_fork_ref_encode_funcref(funcref) -> i32`
+
+Given a `funcref`, produce a recipe — which means finding the function's
+ordinal in the merged catalog. The module IMPORTS that catalog, so it can read
+every slot. What it cannot do is compare: `ref.eq` validates only on `eqref`,
+and `funcref` is a disjoint hierarchy, so there is no instruction that answers
+"is this the same function as that one." The host's existing
+`__wpk_fork_host_ref_identity` cannot be widened to help, because it takes
+`anyref` and a wasm import has exactly one signature.
+
+So this needs a funcref-identity capability. It could be added as a new host
+import — but that trades one guest import the host serves for one host import
+the host must serve, both of them a one-line map lookup, and moves no logic.
+**Not worth doing**, and recorded so the next reader does not re-derive it.
+
+### `__wpk_fork_module_state_table_state_owned(owner) -> i32`
+
+This one surprised me, because the query itself is trivial: read a per-owner
+`stateOwner` flag. The module already serves its three sibling imports
+(`table_dirty_mark` / `_count` / `_page`) and already owns the dirty-page state
+they read.
+
+The flag is the problem, not the query. `bindTableCoordinates` elects the owner
+by grouping coordinates **by the identity of the `WebAssembly.Table` object** —
+a WeakMap keyed on the Table itself. Which `(activation, owner)` pairs name one
+PHYSICAL table is observable only by whoever holds those objects. Wasm has no
+`table.eq`, and the module does not import the activations' tables at all, so
+it cannot observe the aliasing even indirectly.
+
+The module could serve the query if the host seeded the election — but that is
+one new host seeding entry to remove one guest import, moving a boolean and no
+logic. Worse than the reconcile trade in §48, where the host entry bought three
+pieces of real logic. **Not worth doing.**
+
+### Where that leaves the lane
+
+| Remaining import | Verdict |
+|---|---|
+| `table_mutation_begin` | serveable (§49) |
+| `table_mutation_commit` | serveable (§49) |
+| `table_mutation_abort` | serveable (§49) |
+| `table_state_owned` | FLOOR — table object identity |
+| `ref_encode_funcref` | FLOOR — funcref identity |
+| `ref_provenance_externref` | FLOOR — externref introspection + identity |
+| `ref_exn_ingress_throw` | maintainer-deferred to last |
+| `ref_exn_broker_throw_recipe` | maintainer-deferred to last |
+
+So the reachable floor for `forkGuestImportsUnserved` is **5**, of which two are
+deferred by decision rather than by capability, and the remaining implementable
+work in this dimension is the three mutation entries.
+
+A note on how this was reached, because §47 is recent: each verdict above is
+from the host body's own statements or the wasm type system, not from a name or
+a comment. The two "not worth doing" verdicts are cost arguments, not capability
+ones — they are the maintainer's to overturn if the accounting is judged
+differently, and nothing about them is irreversible.
