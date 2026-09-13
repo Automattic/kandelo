@@ -150,6 +150,41 @@
       "scope_end": "\n}\n",
       "find": "        validate_reference_binds_digest(reference, &input.sha256, label)?;",
       "replace": "        let _ = reference;"
+    },
+    {
+      "name": "any kind of input may carry a package descriptor",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "        (Some(_), other) => {\n            return Err(format!(\"{label} descriptor is only valid for package outputs, not {other}\"))\n        }",
+      "replace": "        (Some(_), _other) => {}"
+    },
+    {
+      "name": "a descriptor's reference binds the input's digest rather than its own",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "        &descriptor.reference,\n        &descriptor.sha256,",
+      "replace": "        &descriptor.reference,\n        &input.sha256,"
+    },
+    {
+      "name": "a descriptor's path is never shape-checked",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    validate_repo_path_shape(&descriptor.path)\n        .map_err(|e| format!(\"{label} descriptor path: {e}\"))?;",
+      "replace": "    let _ = &descriptor.path;"
+    },
+    {
+      "name": "an input's path is never shape-checked",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "        validate_repo_path_shape(path)\n            .map_err(|e| format!(\"{label} path: {e}\"))?;",
+      "replace": "        let _ = path;"
+    },
+    {
+      "name": "a descriptor's digest is never checked",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    validate_sha256(&descriptor.sha256)\n        .map_err(|e| format!(\"{label} descriptor: {e}\"))?;",
+      "replace": "    let _ = &descriptor.sha256;"
     }
   ]
 }

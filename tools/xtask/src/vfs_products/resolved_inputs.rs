@@ -74,20 +74,33 @@ pub struct ResolvedInputV1 {
     //
     // `bytes` is read by the reference check — a reference names a digest AND a
     // length, and a length nothing compares against is a length that can lie.
-    // `descriptor` and `path` carry OCI-reference parsing and local-file
-    // resolution. Both are the remainder of this port, and this `allow` is
-    // removed by the increment that reads them. `reference` is no longer among
-    // them: every reference must bind its digest, whatever its scheme.
+    // `bytes` is read by the scheme-specific reference rules — a Pages URL
+    // carries the length as well as the digest, and a length nothing compares
+    // against is a length that can lie. Those rules are what remain of this
+    // port.
     #[allow(dead_code)]
     pub bytes: u64,
     #[serde(default)]
-    #[allow(dead_code)]
-    pub descriptor: Option<serde_json::Value>,
+    pub descriptor: Option<InputDescriptorV1>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub path: Option<String>,
     #[serde(default)]
     pub reference: Option<String>,
+}
+
+/// A package output's descriptor: the metadata file that describes it.
+///
+/// Declared with `deny_unknown_fields` for the same reason as everything else
+/// here — a key nobody recognises is a document from a producer this one does
+/// not understand.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputDescriptorV1 {
+    pub sha256: String,
+    #[allow(dead_code)]
+    pub bytes: u64,
+    pub path: String,
+    pub reference: String,
 }
 
 const INPUT_KINDS: [&str; 5] = [
@@ -288,6 +301,38 @@ fn validate_input(
     if let Some(reference) = &input.reference {
         validate_reference_binds_digest(reference, &input.sha256, label)?;
     }
+    if let Some(path) = &input.path {
+        // Shape only. Whether the file is THERE is the builder's question,
+        // asked where the file is read.
+        validate_repo_path_shape(path)
+            .map_err(|e| format!("{label} path: {e}"))?;
+    }
+
+    // A DESCRIPTOR BELONGS TO A PACKAGE OUTPUT AND NOTHING ELSE. Accepting one
+    // elsewhere would mean carrying package metadata for something that is not
+    // a package — metadata nothing validates against the thing it describes,
+    // because there is no package to describe.
+    match (&input.descriptor, input.kind.as_str()) {
+        (Some(_), "package-output") => {}
+        (Some(_), other) => {
+            return Err(format!("{label} descriptor is only valid for package outputs, not {other}"))
+        }
+        (None, _) => return Ok(()),
+    }
+    let descriptor = input.descriptor.as_ref().expect("matched Some above");
+    validate_sha256(&descriptor.sha256)
+        .map_err(|e| format!("{label} descriptor: {e}"))?;
+    validate_repo_path_shape(&descriptor.path)
+        .map_err(|e| format!("{label} descriptor path: {e}"))?;
+    // The descriptor's reference binds the DESCRIPTOR's digest, not the
+    // input's. They are different files: one is a package, the other is the
+    // metadata describing it, and a reference that bound the wrong one would
+    // fetch the wrong bytes and verify them happily.
+    validate_reference_binds_digest(
+        &descriptor.reference,
+        &descriptor.sha256,
+        &format!("{label} descriptor"),
+    )?;
     Ok(())
 }
 
@@ -578,6 +623,84 @@ mod tests {
             }));
             assert!(check(&value).is_err(), "{role}/{declared}/{effective} must be refused");
         }
+    }
+
+    fn descriptor(digest: &str) -> serde_json::Value {
+        serde_json::json!({
+            "sha256": digest,
+            "bytes": 40,
+            "path": "files/metadata.json",
+            "reference": format!("oci://example.invalid/meta@sha256:{digest}"),
+        })
+    }
+
+    #[test]
+    fn a_descriptor_belongs_to_a_package_output_and_nothing_else() {
+        let digest = "c".repeat(64);
+
+        let value = with_input(serde_json::json!({
+            "kind": "package-output",
+            "descriptor": descriptor(&digest),
+        }));
+        check(&value).expect("a package output may carry one");
+
+        // Anywhere else it is metadata describing nothing, which nothing can
+        // validate against the thing it claims to describe.
+        for kind in ["product-image", "source-archive", "toolchain-output", "repository-path"] {
+            let value = with_input(serde_json::json!({
+                "kind": kind,
+                "descriptor": descriptor(&digest),
+            }));
+            assert!(check(&value).is_err(), "{kind} must not carry a descriptor");
+        }
+    }
+
+    #[test]
+    fn a_descriptors_reference_binds_the_DESCRIPTORS_digest_not_the_inputs() {
+        // They are different files: one is a package, the other is the
+        // metadata describing it. A reference binding the input's digest would
+        // fetch the package when asked for the metadata, and verify it happily.
+        let descriptor_digest = "c".repeat(64);
+        let input_digest = "a".repeat(64);
+
+        let mut wrong = descriptor(&descriptor_digest);
+        wrong["reference"] =
+            serde_json::json!(format!("oci://example.invalid/meta@sha256:{input_digest}"));
+        let value = with_input(serde_json::json!({
+            "kind": "package-output",
+            "descriptor": wrong,
+        }));
+        assert!(check(&value).is_err(), "bound the wrong file's digest");
+    }
+
+    #[test]
+    fn a_descriptor_path_and_an_input_path_are_both_shape_checked() {
+        for patch in [
+            serde_json::json!({ "path": "files/../../escape" }),
+            serde_json::json!({ "path": "files\\escape" }),
+            serde_json::json!({
+                "kind": "package-output",
+                "descriptor": {
+                    "sha256": "c".repeat(64),
+                    "bytes": 40,
+                    "path": "../escape",
+                    "reference": format!("oci://x/y@sha256:{}", "c".repeat(64)),
+                },
+            }),
+        ] {
+            assert!(check(&with_input(patch.clone())).is_err(), "{patch}");
+        }
+    }
+
+    #[test]
+    fn a_descriptor_field_nobody_recognises_is_refused() {
+        let mut extra = descriptor(&"c".repeat(64));
+        extra["surprise"] = serde_json::json!("value");
+        let value = with_input(serde_json::json!({
+            "kind": "package-output",
+            "descriptor": extra,
+        }));
+        assert!(check(&value).is_err());
     }
 
     #[test]
