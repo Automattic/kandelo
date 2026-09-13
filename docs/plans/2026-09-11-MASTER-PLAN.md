@@ -2626,9 +2626,12 @@ path uses `.unwrap_or((0, 0))`, turning a refusal into "now is the epoch"; and
 `crates/runtime-core/src/lib.rs` discards the `i32` and returns a zero `sec`.
 Neither is newly broken, and neither can fire in practice — both pointers are
 kernel stack locals, inside kernel memory by construction — but this change
-made them reachable, which is the honest way to say it. **The cost of proving
-a range on every import write is unmeasured**, including on the clock path the
-wait queue uses for deadlines; no benchmark was run and none is claimed.
+made them reachable, which is the honest way to say it. **The cost was measured by frequency, not by a
+micro-benchmark**: a counter in `checked_shared_range` over the whole
+`host-native` suite — 70 tests that boot machines, spawn, exec, fork and run
+programs — reports 203 proofs in total, 34 of them from lane L's own unit
+tests. At that rate the per-call cost cannot matter. It says nothing about a
+WordPress boot or sustained syscall traffic, and is not offered as if it did.
 
 **"One rule" was then checked against the tree, not just the corpora.** The
 corpora pin the rule's answers; they cannot say whether some other site works

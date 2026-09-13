@@ -1091,13 +1091,25 @@ are inside kernel memory by construction. That is the phrase this document
 distrusts, and here it is actually true — which is worth saying rather than
 leaving the reader to wonder whether the caveat is load-bearing.
 
-**The cost was not measured, and is not claimed to be free.** Every import
-write now proves a range before copying, including `host_clock_gettime`, which
-the wait queue calls for deadlines. The proof is a handful of integer
-comparisons. The platform's performance contract says "faster", "no
-regression" and "harmless" are claims when stated as facts, so: no benchmark
-was run for this change, and the per-call cost of the proof on the clock path
-is unmeasured.
+**The cost is now measured, and the answer is that frequency settles it.**
+The claim to check was "these proofs are on a hot path". They are not, in
+anything this suite exercises. A counter in `checked_shared_range`, run over
+the whole `host-native` suite — 70 tests that boot machines, spawn, exec,
+fork, read directories and run programs to completion — reports **203 proofs
+in total**, of which 34 come from this lane's own unit tests. So roughly 169
+proofs cover every machine boot and process lifecycle in the suite.
+
+At that frequency the per-call cost of a few integer comparisons cannot
+matter, and no micro-benchmark of `checked_range` would add anything: the
+question was never how fast one proof is.
+
+**What this does NOT measure**, because the performance contract is explicit
+that a narrow check must not carry a broad claim: it says nothing about a
+WordPress boot, a PHP request storm, or any workload with sustained syscall
+traffic. It refutes "hot path" for everything the suite covers and no more.
+The instrumentation was temporary and is not in the tree; the counter and its
+two reporting tests were reverted, and the suite is byte-identical to before
+the measurement.
 
 **What the class was, before it was fixed.**
 `checked_shared_range` has six call sites covering three functions —
