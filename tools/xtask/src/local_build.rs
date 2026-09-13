@@ -2095,6 +2095,41 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         }
     }
 
+    // The side modules go into the tier NOW rather than at finalization,
+    // because a PACKAGE BUILD CAN RESOLVE THROUGH THE TIER while the scheduler
+    // is still running. `coreutils-docs` boots a kernel during its build, and a
+    // kernel boot reads artifacts through the standalone artifact-reader
+    // module; a package needing a `wa_*` entry point this build introduces
+    // cannot get it from a tier that is only refreshed after every package has
+    // built. That is a deadlock rather than a delay — the tier waits on the
+    // packages and the packages wait on the tier — and it presents as a stale
+    // artifact, which is what the reader's message says, so it does not look
+    // like an ordering problem to whoever hits it.
+    //
+    // Safe here precisely because `run_writes_to_tier` gated the retraction
+    // above. When it is true the published authority has just been withdrawn,
+    // so there is no live manifest for these bytes to contradict — which is the
+    // invariant the finalizer's own staging comment protects. When it is false
+    // the tier already carries these exact bytes
+    // (`coresident_side_module_projection_is_current` was true), so there is
+    // nothing to stage.
+    //
+    // This does not replace the finalizer's staging. That one runs under the
+    // publication lock with the manifest it belongs to; this only makes the
+    // bytes reachable sooner, and is idempotent with it.
+    if run_writes_to_tier {
+        let coresident: Vec<CoresidentSideModuleProjection> = CORESIDENT_SIDE_MODULES
+            .iter()
+            .map(|module| coresident_side_module_projection(&repo, module))
+            .collect::<Result<_, String>>()?;
+        with_source_only_program_projection_lock(&output_root, |_authority| {
+            for projection in &coresident {
+                stage_coresident_side_module_members(&repo, &output_root, projection)?;
+            }
+            Ok(())
+        })?;
+    }
+
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
