@@ -123,7 +123,7 @@
     },
     "hostKernelPlumbingTypeScript": {
       "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
-      "ceiling": 5853,
+      "ceiling": 5689,
       "slack": 150,
       "target": 3600,
       "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **The target is NOT derived, and neither 1,500, 3,600 nor 5,376 derives it** (docs/plans/2026-09-13-lane-l-line-attribution.md, 2026-09-13). 3,600 is kept as the standing placeholder: the L1 census called it derived, but its per-unit After column is smaller than the lines its own Findings table says stay - it planned process-memory.ts at 400 while the allocator and lease mechanics it said stay are 1,038 lines, and estimated kernel-scratch.ts's capacity system at 600 by counting OwnedKernelScratchRegion (326) alone when ActiveKernelScratchLease (877) and ActiveKernelScratchDataView (389) carry the same invariant (1,711 measured). Attributing every line gives 5,376 as the sum of what the census said stays, but three of those stays are themselves unaudited: the process-memory allocator (bookkeeping over numbers, not on a hot path), worker-protocol.ts (429 lines of interface declarations, which lane E generated from Rust for its peer pair), and kernel-entry-gate.ts's size. The ceiling stays at 5,853 because the 164-line reduction is NOT on this branch: it comes from host/src/process-memory.ts asking the shared Rust function, held on brandonpayton/lane-l-typescript-layout-held pending a maintainer decision about local-build's side-module projection order. Landing it here would bank a reduction the committed tree does not have."

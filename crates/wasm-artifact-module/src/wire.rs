@@ -157,6 +157,15 @@ impl<'a> Reader<'a> {
         Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    /// The peer of [`Writer::u64`], present so a reader can check a record
+    /// this module writes rather than only the ones it is sent.
+    pub fn u64(&mut self) -> Option<u64> {
+        let bytes = self.take(8)?;
+        Some(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
     pub fn str(&mut self) -> Option<&'a str> {
         let len = self.u32()? as usize;
         core::str::from_utf8(self.take(len)?).ok()

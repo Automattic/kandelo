@@ -374,6 +374,131 @@ pub extern "C" fn wa_read_facts(len: u32) -> i32 {
     }
 }
 
+/// Where this program's control memory goes, and the bounds that follow.
+///
+/// One call answers everything placement depends on — the imported memory's
+/// minimum, `__heap_base`, the pthread declaration — and then
+/// [`wasm_posix_shared::process_memory::compute_layout`] places it. That
+/// function is the ONE authority: `crates/host-native` calls it too, so the
+/// two hosts cannot drift apart on where a process's syscall channel lives.
+///
+/// Each fact is read by a narrow early-returning scan rather than by one full
+/// container walk. This is asked once per process launch, and walking every
+/// section of a 30 MB program to answer three questions would put that cost on
+/// the launch path — which the TypeScript this replaces did not.
+///
+/// The trailer carries the host's policy inputs, little-endian:
+/// `u32 maximum_pages`, `u32 requested_minimum_pages`,
+/// `u32 default_thread_slots`, `u8 has_explicit_thread_slots`,
+/// `u32 explicit_thread_slots`, `u8 has_heap_base`, `u64 heap_base`.
+///
+/// A caller may supply the heap base rather than let this module read it. That
+/// is not a way to disagree with a program about its own layout — it is for a
+/// caller that has already read the value, or that is placing a layout with no
+/// program at all, which the TypeScript host does in both cases.
+///
+/// A program that is not a readable container gets the same treatment as one
+/// with no `__heap_base` and no memory import: placement then rests entirely
+/// on host policy, which is what the TypeScript this replaces did. Refusing
+/// here instead would move an artifact-validity judgement into the allocator,
+/// where its caller has no way to report it as one.
+#[unsafe(no_mangle)]
+pub extern "C" fn wa_process_memory_layout(artifact_len: u32, request_len: u32) -> i32 {
+    use wasm_posix_shared::process_memory::{
+        compute_layout, resolve_thread_slot_count, LayoutError, LayoutRequest,
+    };
+
+    let Some(bytes) = artifact(artifact_len) else {
+        return fail("artifact length exceeds the bytes written to the input buffer");
+    };
+    let Some(request_bytes) = trailer(artifact_len, request_len) else {
+        return fail("layout-request length exceeds the bytes written to the input buffer");
+    };
+    let Some(mut reader) = Reader::versioned(request_bytes) else {
+        return fail("layout request does not carry this module's wire version");
+    };
+    let (
+        Some(maximum_pages),
+        Some(requested_minimum_pages),
+        Some(default_thread_slots),
+        Some(has_explicit_thread_slots),
+        Some(explicit_thread_slots),
+        Some(has_heap_base),
+        Some(requested_heap_base),
+    ) = (
+        reader.u32(),
+        reader.u32(),
+        reader.u32(),
+        reader.bool(),
+        reader.u32(),
+        reader.bool(),
+        reader.u64(),
+    ) else {
+        return fail("layout request is truncated");
+    };
+
+    let imported_minimum_pages =
+        wasm_artifact::facts::imported_memory_minimum_pages(bytes).unwrap_or(0);
+    let thread_slot_count = if has_explicit_thread_slots {
+        explicit_thread_slots
+    } else {
+        let declared = wasm_artifact::read_thread_slot_declaration(bytes);
+        match resolve_thread_slot_count(declared, default_thread_slots) {
+            Ok(count) => count,
+            Err(value) => {
+                return fail(&alloc::format!(
+                    "invalid process thread slot declaration: {value}"
+                ))
+            }
+        }
+    };
+
+    let layout = match compute_layout(LayoutRequest {
+        maximum_pages,
+        // A minimum above 2^32 pages cannot be honoured by any address space
+        // this ABI describes, so it is clamped into the request rather than
+        // wrapped — `compute_layout` then refuses it against the ceiling.
+        imported_minimum_pages: imported_minimum_pages.min(u32::MAX as u64) as u32,
+        requested_minimum_pages,
+        heap_base: if has_heap_base {
+            Some(requested_heap_base)
+        } else {
+            read_heap_base(bytes)
+        },
+        thread_slot_count,
+    }) {
+        Ok(layout) => layout,
+        Err(LayoutError::MaximumPagesTooSmall { maximum_pages }) => {
+            return fail(&alloc::format!(
+                "invalid process maximum pages: {maximum_pages}"
+            ))
+        }
+        Err(LayoutError::InitialPagesExceedMaximum {
+            initial_pages,
+            maximum_pages,
+        }) => {
+            return fail(&alloc::format!(
+                "initial pages {initial_pages} exceed process maximum {maximum_pages}"
+            ))
+        }
+    };
+
+    let mut writer = Writer::versioned();
+    writer.u32(layout.initial_pages);
+    writer.u32(layout.maximum_pages);
+    writer.u64(layout.control_base);
+    writer.u64(layout.control_end);
+    writer.u64(layout.channel_offset);
+    writer.u32(layout.channel_page);
+    writer.u64(layout.brk_base);
+    writer.u64(layout.mmap_base);
+    writer.u64(layout.brk_limit);
+    writer.u64(layout.max_addr);
+    writer.u32(layout.thread_slot_count);
+    publish(writer.into_bytes());
+    WA_OK
+}
+
 /// The complete ABI-epoch fork-artifact contract for this artifact.
 ///
 /// Separate from [`wa_read_facts`] because it is asked only of artifacts that
