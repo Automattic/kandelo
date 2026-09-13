@@ -212,7 +212,7 @@ pub const DRIVE_OP_ABORT_END: u32 = 12;
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 11;
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 12;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -251,6 +251,21 @@ pub const DRIVE_SLOT_ABORT_END: u32 = 9;
 /// unchanged; a single drive table can hold an activation's capture-begin,
 /// replay-begin, and every end target simultaneously.
 pub const DRIVE_SLOT_UNWIND_BEGIN: u32 = 10;
+
+/// Drive-table slot offset the host binds `__wpk_fork_ref_gc_encode_slot` into.
+///
+/// The CAPTURE-side counterpart to `DRIVE_OP_ALLOC`/`DRIVE_OP_FILL`. Everything
+/// else in this slice is replay: the module drives the guest to rebuild a graph.
+/// This one lets the module drive the guest to ENCODE one — stage a value in
+/// the anyref transit slot, call through here, and the guest's generated codec
+/// returns its recipe id.
+///
+/// Appended at offset 11 so every existing assignment is unchanged. Growing the
+/// slice is additive precisely because both sides derive their slots from
+/// `drive_table_base` rather than hardcoding the stride; the test below pins
+/// that every offset stays distinct and inside the slice, so a future addition
+/// that forgets to bump the count fails rather than aliasing another entry.
+pub const DRIVE_SLOT_GC_ENCODE: u32 = 11;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -834,14 +849,56 @@ mod tests {
     use alloc::vec;
 
     #[test]
+    /// Every drive slot is distinct and inside the per-activation slice.
+    ///
+    /// Exhaustive rather than pairwise on purpose. The `assert_ne!` pairs
+    /// elsewhere in this file check the collisions someone thought of; this
+    /// checks all of them, so ADDING a slot without bumping
+    /// `DRIVE_SLOTS_PER_ACTIVATION` fails here instead of silently aliasing
+    /// another activation's first entry.
+    #[test]
+    fn every_drive_slot_is_distinct_and_inside_the_slice() {
+        let slots = [
+            ("ALLOC", DRIVE_OP_ALLOC),
+            ("FILL", DRIVE_OP_FILL),
+            ("EXN", DRIVE_OP_EXN),
+            ("RESTORE", DRIVE_SLOT_RESTORE),
+            ("FINISH_RESTORE", DRIVE_SLOT_FINISH_RESTORE),
+            ("REWIND_BEGIN", DRIVE_SLOT_REWIND_BEGIN),
+            ("ABORT_BEGIN", DRIVE_SLOT_ABORT_BEGIN),
+            ("UNWIND_END", DRIVE_SLOT_UNWIND_END),
+            ("REWIND_END", DRIVE_SLOT_REWIND_END),
+            ("ABORT_END", DRIVE_SLOT_ABORT_END),
+            ("UNWIND_BEGIN", DRIVE_SLOT_UNWIND_BEGIN),
+            ("GC_ENCODE", DRIVE_SLOT_GC_ENCODE),
+        ];
+        for (name, offset) in slots {
+            assert!(
+                offset < DRIVE_SLOTS_PER_ACTIVATION,
+                "{name} at {offset} is outside the {DRIVE_SLOTS_PER_ACTIVATION}-slot slice, \
+                 so it would alias the next activation",
+            );
+        }
+        for (i, (a_name, a)) in slots.iter().enumerate() {
+            for (b_name, b) in &slots[i + 1..] {
+                assert_ne!(a, b, "{a_name} and {b_name} share slot {a}");
+            }
+        }
+        assert_eq!(
+            slots.len() as u32,
+            DRIVE_SLOTS_PER_ACTIVATION,
+            "a slot was added or removed without updating the count",
+        );
+    }
+
     fn drive_table_base_reserves_slots_per_activation() {
-        // Eleven slots per activation (ALLOC, FILL, EXN, RESTORE, FINISH_RESTORE,
-        // REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END, ABORT_END,
-        // UNWIND_BEGIN).
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 11);
+        // Twelve slots per activation (ALLOC, FILL, EXN, RESTORE,
+        // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,
+        // ABORT_END, UNWIND_BEGIN, GC_ENCODE).
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 12);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 11);
-        assert_eq!(drive_table_base(3), 33);
+        assert_eq!(drive_table_base(1), 12);
+        assert_eq!(drive_table_base(3), 36);
     }
 
     #[test]
@@ -1064,10 +1121,13 @@ mod tests {
 
     #[test]
     fn trivial_struct_plan_uses_the_activation_base_slots() {
-        // Activation 2 -> base 22 (11 slots/activation): ALLOC slot 22, FILL slot 23.
+        // DERIVED from `drive_table_base`, not hardcoded. The slice is allowed
+        // to grow, and this test hardcoded 22/23 until it did — which is the
+        // failure the contract's "every side derives its slots" rule exists to
+        // prevent, reproduced inside the file that states the rule.
         let plan = trivial_struct_plan(2, 9);
-        assert_eq!(plan[0].slot, 22);
-        assert_eq!(plan[1].slot, 23);
+        assert_eq!(plan[0].slot, drive_table_base(2) + DRIVE_OP_ALLOC);
+        assert_eq!(plan[1].slot, drive_table_base(2) + DRIVE_OP_FILL);
     }
 
     #[test]
@@ -1401,10 +1461,15 @@ mod tests {
                 (DRIVE_OP_FILL, drive_table_base(2) + DRIVE_OP_FILL, 1),
             ]
         );
-        // Activation 5's base (55) and activation 2's base (22) do not overlap
-        // (eleven slots per activation).
-        assert_eq!(drive_table_base(5), 55);
-        assert_eq!(drive_table_base(2), 22);
+        // Activation slices do not overlap. Stated as the invariant rather than
+        // as two literals, so growing `DRIVE_SLOTS_PER_ACTIVATION` cannot make
+        // this test wrong without making the invariant wrong.
+        assert_eq!(drive_table_base(5), 5 * DRIVE_SLOTS_PER_ACTIVATION);
+        assert_eq!(drive_table_base(2), 2 * DRIVE_SLOTS_PER_ACTIVATION);
+        assert!(
+            drive_table_base(2) + DRIVE_SLOTS_PER_ACTIVATION <= drive_table_base(5),
+            "activation 2's slice must end before activation 5's begins",
+        );
     }
 
     #[test]

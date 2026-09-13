@@ -2162,3 +2162,46 @@ A capture-side drive adds another guest call into that window, so the sequencing
 has to inherit that discipline rather than rediscover it.
 
 Scoped, not started.
+
+## §39 — F3 step 1: the capture drive slot, and two tests that hardcoded the stride
+
+`DRIVE_SLOT_GC_ENCODE = 11` is added and `DRIVE_SLOTS_PER_ACTIVATION` bumped
+11 -> 12. This is the socket §38 identified: the host binds the guest's
+`__wpk_fork_ref_gc_encode_slot` there, and the module reaches it by
+`call_indirect` exactly as it already reaches the eleven replay entries.
+
+Everything in that slice was replay — the module driving the guest to REBUILD a
+graph. This one is the first capture entry: stage a value in the anyref transit
+slot, call through, and the guest's generated codec returns its recipe id.
+
+### The contract's own rule caught two violations of it
+
+`drive_plan.rs` says growing the slice is additive "as long as every side
+derives its slots from `drive_table_base`". Bumping the count failed two tests
+that did not:
+
+* `trivial_struct_plan_uses_the_activation_base_slots` asserted literal slots 22
+  and 23 for activation 2.
+* the multi-activation test asserted `drive_table_base(5) == 55`.
+
+Both now derive — `drive_table_base(2) + DRIVE_OP_ALLOC`, and
+`5 * DRIVE_SLOTS_PER_ACTIVATION` plus an explicit non-overlap assertion. The
+file that states the rule contained the two places breaking it, which is worth
+recording: a rule written in a doc comment is not a guard.
+
+### An exhaustive guard replaces remembered pairs
+
+The distinctness checks here were `assert_ne!` PAIRS — they check the collisions
+someone thought of. `every_drive_slot_is_distinct_and_inside_the_slice` now
+checks all twelve: every offset inside the slice, every pair distinct, and the
+list length equal to the count.
+
+That last clause is the one that matters. Perturbed by adding the slot and
+NOT bumping the count — the exact mistake this kind of change invites — it
+fails with "GC_ENCODE at 11 is outside the 11-slot slice, so it would alias the
+next activation". Colliding it with an existing slot fails with "REWIND_BEGIN
+and GC_ENCODE share slot 5". Neither would have been caught by the pairwise
+checks, because neither pair was on the list.
+
+Nothing binds or calls the new slot yet: that is F3 step 2, the capture-side
+walk.
