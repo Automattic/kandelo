@@ -3886,6 +3886,38 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### The seal is a FIELD, not a payload — and the lane's own rule says so
+
+**Designed 2026-09-13.** The obvious place to put a seal is the `SDEF` payload:
+it is already opaque, already carried through load and export, and already the
+answer for a URL-backed file's identity. That is wrong, and the lane has already
+written down why.
+
+**The rule, from V4:** *a field is first-class when the kernel ACTS on it, and
+payload when the kernel only CARRIES it.* The payload is opaque precisely
+because the kernel is a courier for it — `sffs_deferred` never looks inside.
+
+**A seal the kernel VERIFIES is something the kernel acts on.** Putting it in
+the payload would force the kernel to parse the bytes it promises not to read,
+which is not a small inconsistency: it would make "opaque" a claim the format
+makes and the verifier breaks, and the next person to add a payload field would
+have no way to know which parts are truly opaque.
+
+So the seal becomes **first-class `SDEF` fields** — a descriptor digest on the
+record, and the cohort seal (`id`, `expected_count`, `cohort_digest`) on the
+archive declaration. That is an `SDEF` v4 → v5 format change, which is lane V's
+to make and is why the seal port is lane V work rather than a bridge method.
+
+**And it removes the JSON problem entirely.** With the digest a fixed 32-byte
+field and the cohort identity a defined byte layout rather than
+`JSON.stringify` output, there is no JavaScript serialiser to reproduce and no
+escaping rule to get subtly wrong. The canonical form is the format, which is
+the only place a canonical form is safe to live.
+
+**What stays payload:** the fetch description — the URL and whatever else
+locates the bytes. The kernel still only carries that, and the rule still
+holds for it.
+
 ### Y5 and V5 are the same work seen from two ends
 
 **Realised 2026-09-13.** Repointing a recipe onto `SffsImageFs` IS the producer
