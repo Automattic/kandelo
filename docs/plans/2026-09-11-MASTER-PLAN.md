@@ -3973,6 +3973,40 @@ part of `sm_load_image`, and the reason is not the entry-point budget:
 **What it costs:** a `no_std` sha2 in a module that has none, and a load that
 refuses an image whose seals do not authenticate. The second is the point.
 
+### Who SEALS is a harder question than who verifies, and it is scoped separately
+
+**Reached 2026-09-13 while staging the integration.** Verification is settled:
+consumer-side, inside the load, synchronous. Production is not, and the
+difference matters because a seal written in the wrong place gives two
+implementations of one canonical form — the exact hazard the byte layout was
+chosen to remove.
+
+Three candidates, with what each costs:
+
+* **The TypeScript bridge computes the digests.** Node has crypto, so it works
+  today. But then TS implements the canonical form the module also implements,
+  and the two can drift — which is the `JSON.stringify` problem reintroduced
+  from the other end, and against the standing preference that TS parsing or
+  writing a platform format is a PORT TARGET rather than a thing to extend.
+* **A `sm_seal_cohort` entry point** the builder calls after registering. Honest
+  and explicit, costs the 21st entry point, and is a call a builder can forget —
+  the same weakness the incumbent's separate `verify` has.
+* **The module seals at EXPORT**, with the builder only declaring which cohort
+  each archive belongs to. Nothing can be forgotten, there is one implementation
+  of the canonical form, and no entry point is added. The cost is that sealing
+  then happens inside the export path, which currently lives in `runtime-core`
+  while the payload is opaque THERE — so the seal would have to be composed
+  before the export, not during it.
+
+**The third is almost certainly right and is not obvious enough to land at the
+tail of a long session.** Recorded now so the next tick starts from the question
+rather than rediscovering it.
+
+**What IS self-contained, and lands first:** the payload codec and the cohort
+verifier, in the module, with tests. Both are needed by every candidate above,
+neither depends on choosing between them, and having the codec in hand makes the
+production decision concrete rather than speculative.
+
 ### Every remaining Y5 blocker is the same decision wearing different clothes
 
 **Concluded 2026-09-13, after checking what the next capability would actually
