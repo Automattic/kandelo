@@ -3886,6 +3886,54 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### The seal check cannot move before the producer does, and the reason is a carrier
+
+**Measured 2026-09-13, and it revises the plan I gave the maintainer.** I said I
+would port `verifyImportedLazyAtomicGroupSeals` into the Rust filesystem. That
+is still the right destination. **Doing it now would be building on the carrier
+this lane is retiring.**
+
+**Where the seal lives.** It is serialised into each lazy archive entry as
+`activation.atomicGroup` — `{id, expectedCount, cohortSha256, member,
+descriptorSha256}` — and those entries live in the image's **host-side lazy
+JSON**. That is the same section the describe tool names as holding "the URL and
+integrity fields", and it is the section `load_image` walks straight past. **So
+the kernel cannot see these seals at all**, and a Rust verifier would have
+nothing to verify.
+
+**What the check actually does**, once the async scaffolding is set aside:
+
+1. each member's `sha256(descriptorBytes)` must equal its sealed
+   `descriptorSha256` — "changed after sealing";
+2. `sha256(cohortIdentityBytes(id, members))` must equal the group's
+   `cohortSha256`.
+
+**And the cohort identity is `JSON.stringify`.** Literally: `JSON.stringify({
+schema: 1, id, members: [...sorted by member] })`, UTF-8 encoded. A Rust
+verifier of EXISTING images would have to reproduce JavaScript's
+`JSON.stringify` byte for byte — key order, escaping rules, non-ASCII handling —
+over member names that are archive paths and may contain anything. Get it
+subtly wrong and every sealed image fails to verify; get it wrong in the other
+direction and two different cohorts could agree.
+
+**That is a real hazard taken on for a format both sides are leaving.** When the
+producer emits `SDEF`, the seal travels as a deferred payload — the "somewhere
+to record a digest" that SDEF v4 created and that lane S's handoff points at —
+and the canonical form can be defined ONCE, in Rust, with no legacy encoding to
+match.
+
+**So the ordering is: seal port rides with V5, the producer cutover.** Not
+because it is hard, but because doing it first means writing a JavaScript JSON
+canonicaliser in a `no_std` kernel crate to verify seals the kernel will stop
+receiving.
+
+**One more thing the async scaffolding was hiding.** The verifier re-asserts its
+private snapshots against public state AFTER hashing, with the comment "hashing
+yields to host code". That whole defence is against `await`. A synchronous Rust
+digest removes not just the flight dedup and the state machine but the
+snapshot-versus-public reconciliation — which is the majority of the remaining
+complexity.
+
 ### The seal check is ten methods, and nine of them exist because the digest was async
 
 **Measured 2026-09-12, after the maintainer assigned the port to this lane, and
