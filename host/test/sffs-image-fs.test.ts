@@ -262,7 +262,11 @@ describe("SffsImageFs", () => {
     expect(there.archiveId).toBe(3);
     expect(fs.isPathDeferred("/usr/there")).toBe(true);
 
-    expect(() => fs.isPathDeferred("/nope")).toThrow(/ENOENT/);
+    // A path that is not there is not a DEFERRED file. This asserted a throw
+    // until a real caller disagreed: `residentDinitBinaryState` treats
+    // "missing" as one of its own outcomes, so throwing here made that branch
+    // unreachable. The filesystem this replaces answers `false` too.
+    expect(fs.isPathDeferred("/nope")).toBe(false);
   });
 
   it("registers a file fetched standalone, with no archive behind it", () => {

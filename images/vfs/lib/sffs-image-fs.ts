@@ -819,13 +819,25 @@ export class SffsImageFs {
    *   `/bin/coreutils` and failed on an undeclared dependency — a product
    *   build, not a test. The filesystem this replaces resolved the path, and
    *   this is the faithful port of it.
-   * A path that does not exist still THROWS, deliberately. A caller asking
-   * "is this already registered" about a path it got wrong should hear about
-   * the typo rather than a confident `false`. Callers for which absence is a
-   * legitimate answer say so at their own call site.
+   * A path that does not exist answers `false`, matching the filesystem this
+   * replaces. I first made it THROW, reasoning that a caller asking about a
+   * path it got wrong should hear about the typo — and a real caller settled
+   * it the other way: `residentDinitBinaryState` treats "missing" as one of
+   * its own outcomes and distinguishes it with `stat` a few lines later, so a
+   * throw here meant that branch could never be reached. The speculative typo
+   * lost to the concrete caller.
+   *
+   * The honest reading agrees: a path that is not there is not a DEFERRED
+   * file, and callers that care whether it exists ask that question directly.
+   * Only `ENOENT` is absorbed, so a broken tree still surfaces.
    */
   isPathDeferred(path: string): boolean {
-    return this.stat(path).deferred;
+    try {
+      return this.stat(path).deferred;
+    } catch (error) {
+      if ((error as { errno?: number }).errno === ERRNO.ENOENT) return false;
+      throw error;
+    }
   }
 
   /**
