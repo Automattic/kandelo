@@ -3886,6 +3886,45 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### Y5 and V5 are the same work seen from two ends
+
+**Realised 2026-09-13.** Repointing a recipe onto `SffsImageFs` IS the producer
+cutover for that recipe: the image it writes carries `SDEF` rather than
+host-side lazy JSON. So the nine recipes repointed today are nine producers
+cut over, and V5 is not a separate task waiting behind Y5 — it is Y5's other
+face.
+
+**Which makes the remaining eleven readable.** They divide by what blocks them,
+and only two are blocked on a capability:
+
+| blocked on | files |
+|---|---|
+| the seal check | `shell-vfs-build`, `package-shell-vfs-build`, `build-php-test`, `shell-rootfs-restore`, `build-source-rootfs-shell-image` |
+| one of those | `wordpress-preinstall`, which hands its filesystem to `shell-vfs-build` |
+| a Rust port | `staged-product-inputs`, `vfs-product-builder-contract` |
+| deferred-entry enumeration | `source-rootfs-shell-overlay` |
+| bulk archive registration | `shell-lazy-archives` |
+| nothing — it is last by construction | `vfs-image-helpers`, the funnel |
+
+**The funnel goes last and cannot go sooner.** Its two remaining
+`MemoryFileSystem` uses are the fallbacks it keeps FOR the files above —
+`statfs` where there is no headroom verdict, `readImageCapacity` where there is
+no `exportCapacityBytes`. Both are commented "deleted along with that class".
+It is the last importer precisely because it is the one everything passes
+through.
+
+**So the seal is the gate on five of eleven**, and the seal's own gate is a
+carrier. The path is: define the seal's place in an `SDEF` payload, have the
+bridge's register calls carry it, verify synchronously in Rust. New images get
+new seals; nothing needs JavaScript's `JSON.stringify` reproduced in Rust.
+
+**What that leaves open for the maintainer** is whether a derived build from an
+EXISTING, JSON-sealed base must still verify. `docs/agent-guidance/abi.md` says
+a stale artifact should fail loudly and be rebuilt rather than shimmed, which
+argues for rebuilding the shipped bases through the new producer — but it is a
+product call about what has to keep working, not a format call, so it is named
+here rather than assumed.
+
 ### The seal check cannot move before the producer does, and the reason is a carrier
 
 **Measured 2026-09-13, and it revises the plan I gave the maintainer.** I said I
