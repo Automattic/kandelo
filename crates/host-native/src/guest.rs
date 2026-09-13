@@ -2537,6 +2537,51 @@ mod proc_bytes_tests {
         );
     }
 
+    /// Nothing in this host may reach the scratch allocator except through
+    /// [`KernelScratch`].
+    ///
+    /// The type only carries capacity beside pointer for callers that USE
+    /// it. A site calling `kernel_alloc_scratch` directly gets a bare `i32`
+    /// back and then restates the length when it hands the region to a
+    /// kernel export — which is where the two can disagree, and which is how
+    /// this host looked before L5. Three sites were still doing exactly that
+    /// after the first pass: the two exec-target read chunks and the shebang
+    /// record buffer, each passing a hand-written constant beside a pointer.
+    ///
+    /// A source check rather than a type-level one because the allocator is
+    /// a plain `TypedFunc` the host receives from the kernel instance, so
+    /// there is nowhere to hang a private constructor.
+    /// `crates/kernel/src/wasm_api.rs` is guarded the same way, by
+    /// `host/test/kernel-scratch-contract.test.ts`.
+    #[test]
+    fn the_scratch_allocator_is_reached_only_through_the_capacity_type() {
+        let source = include_str!("guest.rs");
+        // Assembled rather than written, because this file is its own
+        // input: a literal needle would count ITSELF. The first run said
+        // "found 4" for two real call sites plus the two literals in this
+        // test, which is a guard reporting a violation it invented.
+        let needle = concat!("alloc_scratch", ".call(");
+        let calls = source.matches(needle).count();
+        assert_eq!(
+            calls, 2,
+            "every kernel_alloc_scratch call must go through KernelScratch, \
+             whose two constructors are its only permitted callers; found {calls}",
+        );
+
+        // ...and both of them ARE those constructors, so the count cannot be
+        // satisfied by two fresh bare call sites while the type goes unused.
+        for constructor in ["fn allocate(", "fn allocate_or_none("] {
+            let start = source.find(constructor).unwrap_or_else(|| {
+                panic!("{constructor} is gone; this check no longer means anything")
+            });
+            let body = &source[start..];
+            let end = body.find("\n    }\n").expect("constructor body ends");
+            assert!(
+                body[..end].contains(needle),
+                "{constructor} no longer allocates; the count is measuring something else",
+            );
+        }
+    }
     /// The other half: a capacity that does not fit the memory at all is
     /// refused even when the bytes being written would have.
     #[test]
@@ -11978,21 +12023,25 @@ fn handle_spawn(
     // `rollback_exec_target` (cancel THEN remove — N1-I3b Task 2's
     // target-retained branches), never the bare `rollback_spawned_child` the
     // earlier `prepare`-failure branch uses.
-    let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
-    if read_scratch <= 0 {
+    let Some(read_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        EXEC_TARGET_READ_CHUNK,
+    )?
+    else {
         rollback_exec_target(
             kernel_store, exec_target_cancel, remove_process, child_pid, token,
             "a scratch-allocation failure reading the exec target",
         );
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
-    }
+    };
     let program_bytes = match read_exec_target_bytes(
         kernel_store,
         kernel_mem,
         exec_target_size,
         exec_target_read,
-        read_scratch as u32,
-        EXEC_TARGET_READ_CHUNK,
+        read_scratch.ptr() as u32,
+        read_scratch.capacity(),
         child_pid,
         token,
     )? {
@@ -12664,18 +12713,22 @@ fn handle_exec_common(
         }
     };
 
-    let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
-    if read_scratch <= 0 {
+    let Some(read_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        EXEC_TARGET_READ_CHUNK,
+    )?
+    else {
         cancel_exec_target(kernel_store, exec_target_cancel, pid, token, "a scratch-allocation failure");
         return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOMEM).map(|()| None);
-    }
+    };
     let program_bytes = match read_exec_target_bytes(
         kernel_store,
         kernel_mem,
         exec_target_size,
         exec_target_read,
-        read_scratch as u32,
-        EXEC_TARGET_READ_CHUNK,
+        read_scratch.ptr() as u32,
+        read_scratch.capacity(),
         pid,
         token,
     )? {
@@ -13196,14 +13249,17 @@ fn apply_shebang(
     // record that does not fit is the kernel export's own `-EOVERFLOW`,
     // handled uniformly below via `ShebangError::Resolved`.
     const SHEBANG_RECORD_SCRATCH: u32 = 8192;
-    let out_scratch = alloc_scratch.call(&mut *kernel_store, SHEBANG_RECORD_SCRATCH)?;
-    if out_scratch <= 0 {
+    let Some(out_scratch) =
+        KernelScratch::allocate_or_none(&*alloc_scratch, &mut *kernel_store, SHEBANG_RECORD_SCRATCH)?
+    else {
         return Ok(Err(ShebangError::ScratchAlloc(libc_errno::ENOMEM)));
-    }
-    let out_ptr = out_scratch as u32;
+    };
+    let out_ptr = out_scratch.ptr() as u32;
 
-    let result =
-        resolve_fn.call(&mut *kernel_store, (owner_pid, token, out_ptr, SHEBANG_RECORD_SCRATCH))?;
+    let result = resolve_fn.call(
+        &mut *kernel_store,
+        (owner_pid, token, out_ptr, out_scratch.capacity()),
+    )?;
     if result < 0 {
         return Ok(Err(ShebangError::Resolved((-result) as i32)));
     }
