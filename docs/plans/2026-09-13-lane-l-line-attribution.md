@@ -1011,15 +1011,40 @@ Fixed: the site asks `checked_shared_range` and returns `-EFAULT`, the errno
 its own cited contract already specifies. No design decision was needed,
 because the answer was written in the comment above the bug.
 
-**The rest of the class is measured and NOT fixed.** `checked_shared_range`
-has six call sites covering three functions — `KernelScratch::write` and both
-sides of `proc_copy_in`/`proc_copy_out`, the cross-memory process copies.
-Against that, `guest.rs` has **75 raw `write_bytes` call sites**. A
-conservative classifier — it only recognises a closure signature written on
-one line — attributes **at least nine** of those to a pointer that arrived as
-an import parameter, and spot-reading shows more that it missed. The other
-sixty-odd write to addresses the host computed itself, mostly channel offsets
-derived from a layout the kernel placed.
+**The rest of the class is measured, listed, and NOT fixed.**
+`checked_shared_range` has six call sites covering three functions —
+`KernelScratch::write` and both sides of `proc_copy_in`/`proc_copy_out`, the
+cross-memory process copies. Against that, `guest.rs` has **73 raw
+`write_bytes` call sites** (an earlier count of 75 included the definition and
+a line of comment prose describing `host_proc_write_bytes` — a checked path,
+which is what made the error worth catching before publishing a list).
+
+Of the 73, **thirteen write through a pointer the kernel handed in**, and
+they are worth naming rather than counting, because the decision below is
+about these and not about the other sixty:
+
+| Import | Site | Address |
+|---|---|---|
+| `host_clock_gettime` | guest.rs:3110, :3111 | `sec_ptr`, `nsec_ptr` |
+| `host_read` | guest.rs:3162, :3178 | `buf_ptr` |
+| `host_pread` | guest.rs:3348 | `buf_ptr` |
+| `host_readlinkat` | guest.rs:3733 | `buf_ptr` |
+| `host_fpathconf` | guest.rs:3916 | `value_ptr` |
+| `host_readdir` | guest.rs:4010 | `name_ptr` |
+| `host_fetch_deferred` | guest.rs:4070 | `buf_ptr` |
+| `host_getrandom` | guest.rs:4088 | `buf_ptr` |
+| `host_waitpid` | guest.rs:4185 | `status_ptr` |
+| (helper) `write_wasm_statfs` | guest.rs:909 | `ptr`, passed through |
+| (helper) `write_wasm_stat_fields` | guest.rs:1003 | `stat_ptr`, passed through |
+
+The remaining sixty write to addresses the host computed itself — channel
+offsets derived from a layout the kernel placed, and scratch offsets inside a
+region the host allocated. Those are a different question and are not part of
+this report.
+
+**The line numbers here will rot**, which this document has said about line
+anchors elsewhere and applies to its own table: what does not rot is the
+import names, and `grep -n 'write_bytes('` re-derives the rest in a second.
 
 **A second instance, and it names the shape of the fix.**
 `write_wasm_statfs` cites `#writeStatfsToMemory` in `host/src/kernel.ts` and

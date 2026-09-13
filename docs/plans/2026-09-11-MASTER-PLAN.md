@@ -2575,9 +2575,13 @@ version proves the range and returns `-EFAULT`. A legal wasm32 `buf_ptr` past
 the end of the memory went to `copy_nonoverlapping`. Reverting the fix does not
 give a wrong errno; it kills the process with **SIGBUS**. The JavaScript host
 answers `-EFAULT`. Fixed at the site, with a test that fails without it.
-**The rest of the class is measured and left alone**: `checked_shared_range`
-has 6 call sites covering 3 functions, against 75 raw `write_bytes` sites, at
-least 9 of which take an import-supplied pointer. Those need one decision about
+**The rest of the class is measured, listed and left alone**:
+`checked_shared_range` has 6 call sites covering 3 functions, against 73 raw
+`write_bytes` sites, of which **thirteen** write through a pointer the kernel
+handed in — `host_clock_gettime`, `host_read` (twice), `host_pread`,
+`host_readlinkat`, `host_fpathconf`, `host_readdir`, `host_fetch_deferred`,
+`host_getrandom`, `host_waitpid`, and the two `write_wasm_stat*` helpers those
+imports call. The attribution document carries the table. Those need one decision about
 what the host↔kernel contract returns for an unmappable pointer, applied
 consistently — a maintainer's call, not a lane's. **The shape of the fix is
 already written twice**: the TypeScript host proves the kernel's
