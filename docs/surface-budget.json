@@ -94,11 +94,11 @@
       "why": "Shebang is a kernel feature on every real Unix: execve(2) substitutes the interpreter. POSIX does not specify it at all and only requires libc's execvp family to fall back to sh on ENOEXEC, so a libc-only implementation is a divergence rather than a simplification. The lane is done when the host no longer parses it."
     },
     "setuidLazyWithoutDigest": {
-      "measure": "packages with mode 4755 that ship lazy while the rootfs manifest emitter writes no digest for lazy outputs",
+      "measure": "packages with mode 4755 that ship lazy while the rootfs manifest emitter writes no digest for lazy outputs. PROXY: reads the emitter, so it measures whether a digest is RECORDED, not whether anything checks it",
       "ceiling": 2,
       "slack": 2,
       "target": 0,
-      "why": "sudo and sudo-lite ship setuid-root as lazy references fetched by URL with length as the only check. Bytes of the same length from a substituting host, a poisoned cache or a network position execute as root inside the guest."
+      "why": "sudo and sudo-lite ship setuid-root as lazy references fetched by URL with length as the only check. Bytes of the same length from a substituting host, a poisoned cache or a network position execute as root inside the guest. Read the caveat in `measure`: this counter drops to 0 as soon as the emitter writes a digest, whether or not anything verifies it, so it can be satisfied by editing one script. A recorded digest nobody checks is hazard H-2 exactly. The counter must be re-pointed at the verification before lane S closes, and the shape of that re-point depends on where the digest ends up living, which is V5's open decision."
     },
     "kernelWorkerTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/kernel-worker.ts",
@@ -271,14 +271,14 @@
     },
     "S": {
       "title": "setuid lazy references are fetched without integrity",
-      "status": "open",
+      "status": "deferred",
       "closure": [
         {
           "surface": "setuidLazyWithoutDigest",
           "atMost": 0
         }
       ],
-      "why": "Closure is that no setuid binary is fetched without its bytes being verified. Either the emitter records a digest for lazy outputs, or those packages stop shipping lazy."
+      "why": "DEFERRED by the maintainer 2026-09-12: \"I only want the problem fixed for the new Rust-based FS which is not completed yet.\" The fix was built and worked, and it was ~46 code lines in host/src/vfs/memory-fs.ts, the TypeScript filesystem lane V exists to delete. Handoff at docs/plans/2026-09-12-lane-s-deferral-handoff.md. Closure is that no setuid binary is fetched without its bytes being VERIFIED -- not merely that a digest is emitted, which is all the surface above currently measures. Resumes behind V5, which resumes behind lane Y."
     },
     "M": {
       "title": "shared-mapping cutover",
