@@ -3515,6 +3515,49 @@ interface to what the bridge already implements, then adding `statfs`,
 `getImageMetadata` and a `saveImage` shape to the bridge. The repoint becomes
 mechanical once the interface can honestly describe what a builder does.
 
+### Y5 MOVED: importers 36 -> 20, banked. 2026-09-12.
+
+**The acceptance number moved for the first time**, and what unlocked it was not
+another repoint attempt: it was typing the FUNNEL against the interface. Every
+recipe passes its filesystem into `vfs-image-helpers.ts`, so nothing downstream
+could move while that file took the concrete class. Three earlier attempts
+diverged (79, 121, 240 errors) for want of that one change.
+
+Getting the funnel there took three moves, in this order:
+
+1. **`host/src/vfs/image-helpers.ts` first**, because the funnel passes its
+   filesystem into it. Ninety-nine lines, and only `mkdir` was missing from the
+   interface — the bridge had it all along.
+2. **The interface moved to `host/src/vfs/`.** It had been under `images/`, and
+   a host module importing from `images/` inverts the dependency. Same home and
+   reason as `vfs-errors.ts`.
+3. **`VfsImageMetadata` moved with it**, `memory-fs.ts` re-exporting it. It is a
+   contract, not part of the implementation: thirteen recipes import it and each
+   was counted as coupled to a filesystem it never touches.
+   `memoryFsTypeScript` 8501 -> 8491, banked.
+
+**Membership in the repointable set is decided by three tests, and two of them
+were learned by getting it wrong:**
+
+* what the file CALLS on the filesystem — the obvious one;
+* whether it CONSTRUCTS one. `MemoryFileSystem.create` is a VALUE; no interface
+  provides it, and a pass that renamed it produced sixteen "only refers to a
+  type, but is being used as a value" errors;
+* **what it PASSES ITS FILESYSTEM TO.** `wordpress-preinstall.ts` passes usage
+  analysis and still cannot move: it calls `saveShellDerivedBuildGuestSnapshot`
+  in `shell-vfs-build.ts`, which needs capabilities the bridge lacks.
+
+**The remaining 20 are not one problem.** Sixteen CONSTRUCT a filesystem — they
+stop importing `memory-fs` when they start constructing `SffsImageFs`, which is
+the cutover itself and needs image loading for the derived ones. The rest are
+the derived builders and the two supply-chain port targets.
+
+**Two ceilings lowered, and the budget insisted on one of them.**
+`imageBuilderFilesystemImporters` at 20 against a ceiling of 36 FAILED the gate
+— "more than 0 below its ceiling" — because an unbanked reduction is a reduction
+that can be silently given back. Worth recording as the direction people forget
+a budget works in.
+
 ### The predicate the recipes need is one, not two — and it cannot live in `memory-fs.ts`
 
 **Measured 2026-09-12, second repoint attempt.** The recipes that ask "are these
