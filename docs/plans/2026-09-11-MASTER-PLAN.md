@@ -3515,6 +3515,42 @@ interface to what the bridge already implements, then adding `statfs`,
 `getImageMetadata` and a `saveImage` shape to the bridge. The repoint becomes
 mechanical once the interface can honestly describe what a builder does.
 
+### Gap 14 — a Rust-exported image cannot meet a product's declared capacity
+
+**Found 2026-09-12 by a surviving mutant**, and larger than the defect that
+exposed it. `build_export_image` derives `max_blocks` FROM the tree — the
+ceiling and the size move together, plus a fixed 64-block slack — so:
+
+* every exported image reports **exactly 262,144 bytes free**, however full it
+  is, and
+* a builder's declared `expectedMaxByteLength` **never reaches the export**.
+
+The second is the gap. Builders declare a capacity per product, and
+`assertVfsImageCapacity` checks the artifact against it; a Rust-exported image
+would fail that check for every product, because the export chose its own
+number. **The image also has no runtime growth room at all** — it is sized to
+hold its contents and nothing more, where the TypeScript path builds into a
+buffer of the declared `maxByteLength`.
+
+**How it surfaced is the useful part.** A mutation replaced the headroom
+measurement with `u64::MAX` and changed no outcome, because the figure was
+decorative — the verdict came from a separate comparison. Fixing the measurement
+to "ceiling minus occupancy" did not move the number either, and THAT is what
+exposed the ceiling as tree-derived. Two layers of H-5, each hiding the next.
+
+**The fix is a requested capacity on the export**, which is where
+`expectedMaxByteLength` should arrive. It is not merely a parameter: the export
+currently converges `max_blocks` and `data_start` in a loop against the tree, so
+a requested capacity has to enter that computation as a floor rather than
+replace it. Not attempted here.
+
+**It is a prerequisite for `assertVfsImageCapacity` against the Rust writer**,
+and therefore for the sixteen builders that will construct `SffsImageFs` — which
+puts it alongside image loading as what the export still owes. The module test
+asserts the constant explicitly and names this gap, so the day capacity becomes
+requestable the assertion fails and points at itself rather than silently
+passing.
+
 ### Next: bridge image loading, at no cost to the surface
 
 **Scoped 2026-09-12.** Sixteen of the remaining twenty importers CONSTRUCT a
