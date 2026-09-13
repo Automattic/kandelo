@@ -4516,3 +4516,46 @@ the guard works. A perturbation that passes tells you either the guard is
 missing or the experiment is broken, and those are indistinguishable from the
 output alone. That asymmetry is worth remembering: the H-2 discipline is not
 "perturb and read the number", it is "perturb and be able to explain the number".
+
+## §95 — I shipped the election with the wrong rule, and found it by reading on
+
+`ForkTableStateOwners` landed in 3b718be0b electing the FIRST coordinate
+registered for a physical table. Its own comment defended the choice: "First
+rather than lowest id, because registration order is the order activations load,
+and the canonical owner must be one that already exists when a later alias
+arrives."
+
+That is wrong, and the registry it replaces says so in eight lines I had not read
+when I wrote it:
+
+```ts
+coordinates.push({ activationId, ownerId, tracker });
+coordinates.sort((l, r) => l.activationId - r.activationId || l.ownerId - r.ownerId);
+...
+for (const table of affectedTables) this.bindTableCoordinates(table);
+```
+
+`bindTableCoordinates` takes `coordinates[0]` -- the LOWEST `(activationId,
+ownerId)` -- and re-runs on every registration, so a lower coordinate registering
+later DISPLACES the incumbent and demotes it with `setStateOwner(ownerId, false)`.
+Two differences from what I shipped: lowest rather than first, and re-election
+rather than a one-time decision. `releaseActivation` needs the same re-election
+for the mirror reason -- removing the canonical coordinate must promote the next,
+or the table is left with no writer at all and every later sparse write is lost.
+
+The two rules agree whenever activations register in ascending id order, which
+is the common case. That is precisely what makes the bug hard to see: it is
+invisible until a side activation loads before a lower-numbered one, and its
+symptom is a corrupted child rather than a trap.
+
+What found it was not a test. It was reading the code I was replacing, in order
+to answer a different question (where does the floor get `tryEncodeExternref`).
+The lesson I want to keep is about the ORDER of the work: I wrote the replacement
+from the interface it had to satisfy, and the interface did not carry the rule.
+Reading the implementation first would have cost ten minutes and caught it before
+it was committed.
+
+The corrected version is perturbed seven ways, and P1 is the shipped defect
+itself -- "first-registered wins" now fails two tests. A perturbation that
+reproduces a bug you actually shipped is the most convincing kind, because you
+know for certain the code once looked like that.

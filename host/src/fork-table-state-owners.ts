@@ -16,35 +16,54 @@
  * coming back.
  */
 
+interface Coordinate {
+  readonly activationId: number;
+  readonly ownerId: number;
+}
+
+/** Ascending by activation, then by owner. The smallest is canonical. */
+function before(left: Coordinate, right: Coordinate): number {
+  return left.activationId - right.activationId || left.ownerId - right.ownerId;
+}
+
+function key(coordinate: Coordinate): string {
+  return `${coordinate.activationId}:${coordinate.ownerId}`;
+}
+
 export class ForkTableStateOwners {
-  /** Coordinates seen per physical table, in registration order. */
-  private readonly byTable = new WeakMap<WebAssembly.Table, number[]>();
-  /** Owner id -> owns the physical table's sparse state. */
-  private readonly owns = new Map<number, boolean>();
+  /** Coordinates seen per physical table, kept sorted. */
+  private readonly byTable = new WeakMap<WebAssembly.Table, Coordinate[]>();
+  /** `activation:owner` -> owns the physical table's sparse state. */
+  private readonly owns = new Map<string, boolean>();
 
   constructor(private readonly label = "fork table state owners") {}
 
   /**
-   * Register one coordinate against the physical table it names.
+   * Register one coordinate against the physical table it names, and re-elect.
    *
-   * The FIRST coordinate registered for a table is its canonical owner and every
-   * later alias is not. First rather than lowest id, because registration order
-   * is the order activations load, and the canonical owner must be one that
-   * already exists when a later alias arrives.
+   * The canonical owner is the LOWEST `(activationId, ownerId)`, not the first
+   * one registered, and every registration re-runs the election. Those differ:
+   * a side activation can load before a lower-numbered one, and "first wins"
+   * would then leave the table owned by a coordinate that a later registration
+   * should have displaced. The two agree in the common case, which is exactly
+   * what makes the difference easy to miss -- activations usually register in
+   * ascending order, so the bug only appears when they do not.
    */
-  register(ownerId: number, table: WebAssembly.Table): void {
-    if (!Number.isInteger(ownerId) || ownerId < 0) {
+  register(activationId: number, ownerId: number, table: WebAssembly.Table): void {
+    if (!Number.isInteger(activationId) || activationId < 0) {
+      throw new RangeError(`${this.label}: invalid activation id ${activationId}`);
+    }
+    if (!Number.isInteger(ownerId) || ownerId <= 0 || ownerId > 0xffff_ffff) {
       throw new RangeError(`${this.label}: invalid table owner id ${ownerId}`);
     }
-    const seen = this.byTable.get(table);
-    if (seen === undefined) {
-      this.byTable.set(table, [ownerId]);
-      this.owns.set(ownerId, true);
-      return;
+    const coordinate: Coordinate = { activationId, ownerId };
+    const seen = this.byTable.get(table) ?? [];
+    if (!seen.some((existing) => before(existing, coordinate) === 0)) {
+      seen.push(coordinate);
+      seen.sort(before);
+      this.byTable.set(table, seen);
     }
-    if (seen.includes(ownerId)) return;
-    seen.push(ownerId);
-    this.owns.set(ownerId, false);
+    this.elect(seen);
   }
 
   /**
@@ -54,12 +73,30 @@ export class ForkTableStateOwners {
    * would make two aliases both write sparse state for one table, and the
    * duplicate would only surface as a corrupted child.
    */
-  ownsState(ownerId: number): boolean {
-    return this.owns.get(ownerId) === true;
+  ownsState(activationId: number, ownerId: number): boolean {
+    return this.owns.get(key({ activationId, ownerId })) === true;
   }
 
-  /** Forget a coordinate whose activation has unregistered. */
-  release(ownerId: number): void {
-    this.owns.delete(ownerId);
+  /** Forget every coordinate an unregistering activation contributed. */
+  releaseActivation(activationId: number, tables: readonly WebAssembly.Table[]): void {
+    for (const table of tables) {
+      const seen = this.byTable.get(table);
+      if (seen === undefined) continue;
+      const remaining = seen.filter((c) => c.activationId !== activationId);
+      for (const gone of seen.filter((c) => c.activationId === activationId)) {
+        this.owns.delete(key(gone));
+      }
+      if (remaining.length === 0) this.byTable.delete(table);
+      else this.byTable.set(table, remaining);
+      // Re-elect: removing the canonical coordinate must promote the next one,
+      // or the table is left with no writer at all.
+      this.elect(remaining);
+    }
+  }
+
+  private elect(sorted: readonly Coordinate[]): void {
+    sorted.forEach((coordinate, index) => {
+      this.owns.set(key(coordinate), index === 0);
+    });
   }
 }

@@ -7,65 +7,100 @@ function table(): WebAssembly.Table {
 }
 
 describe("ForkTableStateOwners", () => {
-  it("makes the first coordinate registered for a table its owner", () => {
+  it("makes the only coordinate on a table its owner", () => {
     const owners = new ForkTableStateOwners();
-    const t = table();
-    owners.register(7, t);
-    expect(owners.ownsState(7)).toBe(true);
+    owners.register(0, 7, table());
+    expect(owners.ownsState(0, 7)).toBe(true);
   });
 
   it("does not make a second coordinate naming the SAME table an owner", () => {
     const owners = new ForkTableStateOwners();
     const t = table();
-    owners.register(7, t);
-    owners.register(9, t);
+    owners.register(0, 7, t);
+    owners.register(0, 9, t);
     // The alias must not also write sparse state: two writers for one physical
     // table corrupt the child, and the corruption is silent.
-    expect(owners.ownsState(9)).toBe(false);
-    expect(owners.ownsState(7)).toBe(true);
+    expect(owners.ownsState(0, 9)).toBe(false);
+    expect(owners.ownsState(0, 7)).toBe(true);
+  });
+
+  it("elects the LOWEST coordinate, not the first registered", () => {
+    const owners = new ForkTableStateOwners();
+    const t = table();
+    owners.register(3, 5, t);
+    owners.register(1, 9, t);
+    // Activation 1 registered second but sorts first, so it displaces
+    // activation 3. "First wins" would leave 3 owning the table -- and the two
+    // rules agree whenever activations register in ascending order, which is
+    // the common case and exactly why this is easy to get wrong.
+    expect(owners.ownsState(1, 9)).toBe(true);
+    expect(owners.ownsState(3, 5)).toBe(false);
+  });
+
+  it("breaks a tie on activation id by owner id", () => {
+    const owners = new ForkTableStateOwners();
+    const t = table();
+    owners.register(2, 9, t);
+    owners.register(2, 4, t);
+    expect(owners.ownsState(2, 4)).toBe(true);
+    expect(owners.ownsState(2, 9)).toBe(false);
   });
 
   it("makes coordinates on DIFFERENT tables each an owner", () => {
     const owners = new ForkTableStateOwners();
-    owners.register(7, table());
-    owners.register(9, table());
-    expect(owners.ownsState(7)).toBe(true);
-    expect(owners.ownsState(9)).toBe(true);
+    owners.register(0, 7, table());
+    owners.register(1, 9, table());
+    expect(owners.ownsState(0, 7)).toBe(true);
+    expect(owners.ownsState(1, 9)).toBe(true);
   });
 
   it("keeps ownership when the owning coordinate re-registers", () => {
     const owners = new ForkTableStateOwners();
     const t = table();
-    owners.register(7, t);
-    owners.register(7, t);
-    // A re-register is not an alias. Treating it as one would silently demote
-    // the only owner and leave the table with no writer at all.
-    expect(owners.ownsState(7)).toBe(true);
+    owners.register(0, 7, t);
+    owners.register(0, 7, t);
+    // A re-register is not an alias. Recording it twice would leave the same
+    // coordinate in the list at index 1 as well, where the election would mark
+    // it a non-owner and the table would lose its only writer.
+    expect(owners.ownsState(0, 7)).toBe(true);
   });
 
   it("answers false for a coordinate that never registered", () => {
     const owners = new ForkTableStateOwners();
-    expect(owners.ownsState(7)).toBe(false);
+    expect(owners.ownsState(0, 7)).toBe(false);
   });
 
-  it("forgets a released coordinate", () => {
+  it("promotes the next coordinate when the owner's activation releases", () => {
     const owners = new ForkTableStateOwners();
     const t = table();
-    owners.register(7, t);
-    owners.release(7);
-    expect(owners.ownsState(7)).toBe(false);
+    owners.register(0, 7, t);
+    owners.register(1, 9, t);
+    owners.releaseActivation(0, [t]);
+    // Without re-election the table is left with NO writer, which loses every
+    // subsequent sparse-state write rather than duplicating one.
+    expect(owners.ownsState(1, 9)).toBe(true);
+    expect(owners.ownsState(0, 7)).toBe(false);
   });
 
-  it("rejects an owner id that is not a non-negative integer", () => {
+  it("rejects an activation id that is not a non-negative integer", () => {
     const owners = new ForkTableStateOwners();
     const t = table();
-    expect(() => owners.register(-1, t)).toThrow(/invalid table owner id -1/);
-    expect(() => owners.register(1.5, t)).toThrow(/invalid table owner id 1.5/);
-    expect(() => owners.register(Number.NaN, t)).toThrow(/invalid table owner id/);
+    expect(() => owners.register(-1, 7, t)).toThrow(/invalid activation id -1/);
+    expect(() => owners.register(1.5, 7, t)).toThrow(/invalid activation id 1.5/);
+  });
+
+  it("rejects an owner id outside the wire range", () => {
+    const owners = new ForkTableStateOwners();
+    const t = table();
+    // Owner 0 is not a coordinate; the registry it replaces rejected it too.
+    expect(() => owners.register(0, 0, t)).toThrow(/invalid table owner id 0/);
+    expect(() => owners.register(0, -1, t)).toThrow(/invalid table owner id -1/);
+    expect(() => owners.register(0, 0x1_0000_0000, t)).toThrow(
+      /invalid table owner id/,
+    );
     // A rejected registration must leave no trace: if it recorded the table
-    // first, the NEXT (valid) coordinate would be demoted to an alias of a
-    // registration that never happened.
-    owners.register(0, t);
-    expect(owners.ownsState(0)).toBe(true);
+    // first, the NEXT valid coordinate could be demoted by a phantom.
+    owners.register(0, 1, t);
+    expect(owners.ownsState(0, 1)).toBe(true);
   });
 });
