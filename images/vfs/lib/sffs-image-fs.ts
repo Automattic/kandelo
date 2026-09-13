@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
+import type { ZipEntry } from "../../../host/src/vfs/zip";
+import { planLazyArchiveEntries } from "../../../host/src/vfs/lazy-archive-paths";
 
 /**
  * Builder-facing filesystem backed by the Rust image module.
@@ -532,15 +534,100 @@ export class SffsImageFs {
    * `registerLazyFile` does not take one for — `MemoryFileSystem` assigns them
    * itself, so a bridge that demanded one would not be answering the same call.
    *
-   * Counts down from a high value so it cannot collide with the inodes a
+   * Counts UP from a high value so it cannot collide with the inodes a
    * builder assigns explicitly through {@link registerArchiveMember}, which are
-   * small and come from a manifest.
+   * small and come from a manifest. (The comment said "down" while the code
+   * incremented; the behaviour was always safe and the words were not.)
    */
   private standaloneIno = 0x7fff_0000;
   private nextStandaloneIno(): number {
     this.standaloneIno += 1;
     return this.standaloneIno;
   }
+
+  /**
+   * Register a whole lazy archive: every member of a zip, mounted under a
+   * prefix, backed by one archive the fetcher will pull on first touch.
+   *
+   * **Every member is planned before any is created.** `planLazyArchiveEntries`
+   * is the same validator `MemoryFileSystem` uses — shared rather than copied,
+   * because it is what stops a member called `../../etc/passwd` from landing
+   * wherever path resolution takes it — and running it over the whole archive
+   * first means a member rejected halfway cannot leave a partial tree behind.
+   * A half-registered archive would be worse than a refused one: the image
+   * would build, and be missing exactly the files nobody checked for.
+   *
+   * Returns the archive id assigned, which the caller needs for nothing today
+   * and is returned because a second archive must not silently reuse the first
+   * one's id.
+   */
+  registerLazyArchive(args: {
+    url: string;
+    entries: ZipEntry[];
+    mountPrefix: string;
+    symlinkTargets?: Map<string, string>;
+    integrity?: { sha256: string; bytes: number };
+  }): number {
+    const planned = planLazyArchiveEntries(
+      args.url,
+      args.entries,
+      args.mountPrefix,
+      args.symlinkTargets,
+    );
+    const archiveId = ++this.lastArchiveId;
+    // The archive's own fetch description. Opaque to the kernel, which carries
+    // it and never parses it; whoever fetches decides whether the URL may be
+    // fetched and validates the digest.
+    const descriptor = encoder.encode(JSON.stringify({
+      url: args.url,
+      ...(args.integrity ? { sha256: args.integrity.sha256 } : {}),
+    }));
+    const archiveBytes = args.integrity?.bytes ?? 0;
+
+    // Directories first, so a member never arrives before its parent.
+    //
+    // `ensureDirRecursive` makes a path's PARENTS, not the path itself — it is
+    // `mkdir -p` of the containing directory, which is what every other caller
+    // wants and reads wrong here. So a directory ENTRY needs both: its parents,
+    // then itself with its own mode.
+    for (const { entry, vfsPath } of planned) {
+      if (!entry.isDirectory) continue;
+      this.ensureDirRecursive(vfsPath);
+      try {
+        this.mkdir(vfsPath, entry.mode & 0o7777);
+      } catch (error) {
+        // An archive may name a directory its own members already implied.
+        if ((error as { errno?: number }).errno !== ERRNO.EEXIST) throw error;
+      }
+    }
+    for (const { entry, vfsPath, archivePath } of planned) {
+      if (entry.isDirectory) continue;
+      // The file's own path: its parents are exactly the directories it needs.
+      this.ensureDirRecursive(vfsPath);
+      if (entry.isSymlink) {
+        const target = args.symlinkTargets?.get(entry.fileName);
+        if (target === undefined) {
+          throw new Error(`lazy archive symlink target missing: ${entry.fileName}`);
+        }
+        this.symlink(target, vfsPath, 0, 0);
+        continue;
+      }
+      this.registerArchiveMember({
+        path: vfsPath,
+        archiveId,
+        sourcePath: archivePath,
+        size: entry.uncompressedSize,
+        mode: entry.mode & 0o7777,
+        ino: this.nextStandaloneIno(),
+        archiveBytes,
+        archiveDescriptor: descriptor,
+      });
+    }
+    return archiveId;
+  }
+
+  /** Archive ids are assigned here; 0 means "no archive" to the module. */
+  private lastArchiveId = 0;
 
   registerArchiveMember(args: {
     path: string;

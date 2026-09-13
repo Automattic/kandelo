@@ -3,9 +3,27 @@ import { describe, expect, it } from "vitest";
 import { SffsImageFs, SffsImageError } from "../../images/vfs/lib/sffs-image-fs";
 import { writeVfsBinary } from "../src/vfs/image-helpers";
 import { OPEN_FLAGS } from "../src/generated/abi";
+import type { ZipEntry } from "../src/vfs/zip";
 
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+
+/** A zip central-directory entry with only the fields the bridge reads. */
+function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
+  return {
+    fileNameBytes: new TextEncoder().encode(over.fileName),
+    compressedSize: 0,
+    uncompressedSize: 0,
+    compressionMethod: 0,
+    localHeaderOffset: 0,
+    mode: 0o644,
+    isDirectory: false,
+    isSymlink: false,
+    externalAttrs: 0,
+    creatorOS: 3,
+    ...over,
+  } as ZipEntry;
+}
 
 /**
  * The bridge driven the way a builder drives it.
@@ -477,6 +495,61 @@ describe("SffsImageFs", () => {
     expect(derived.getImageMetadata()).toEqual({ version: 1, kernelAbi: 44 });
     // And the capacity took effect, so this is not passing by ignoring the call.
     expect(derived.exportCapacityBytes()).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it("registers a whole archive under its mount prefix", () => {
+    const fs = SffsImageFs.create();
+    const id = fs.registerLazyArchive({
+      url: "https://example.invalid/tools.zip",
+      mountPrefix: "/opt/tools",
+      entries: [
+        zipEntry({ fileName: "bin/", isDirectory: true, mode: 0o755 }),
+        zipEntry({ fileName: "bin/tool", uncompressedSize: 1234, mode: 0o755 }),
+      ],
+      integrity: { sha256: "a".repeat(64), bytes: 4096 },
+    });
+    expect(id).toBe(1);
+    // The member is deferred, carries its REAL size, and is linked to the
+    // archive rather than fetched standalone.
+    const st = fs.lstat("/opt/tools/bin/tool");
+    expect(st.size).toBe(1234);
+    expect(st.deferred).toBe(true);
+    expect(st.archiveId).toBe(id);
+    // A second archive does not silently reuse the first one's id.
+    expect(fs.registerLazyArchive({
+      url: "https://example.invalid/more.zip",
+      mountPrefix: "/opt/more",
+      entries: [zipEntry({ fileName: "f", uncompressedSize: 1 })],
+    })).toBe(2);
+  });
+
+  it("refuses a member that would escape its mount prefix", () => {
+    // The reason the validator is shared rather than reimplemented: a path is
+    // resolved AFTER it is joined to the prefix, so this member would land in
+    // /etc rather than under /opt/tools.
+    const fs = SffsImageFs.create();
+    expect(() => fs.registerLazyArchive({
+      url: "https://example.invalid/evil.zip",
+      mountPrefix: "/opt/tools",
+      entries: [zipEntry({ fileName: "../../etc/passwd", uncompressedSize: 1 })],
+    })).toThrow();
+    expect(() => fs.lstat("/etc/passwd")).toThrow();
+  });
+
+  it("creates nothing when any member of an archive is rejected", () => {
+    // Planned before created: a member rejected halfway must not leave a
+    // partial tree. A half-registered archive is worse than a refused one,
+    // because the image builds and is missing exactly what nobody checked for.
+    const fs = SffsImageFs.create();
+    expect(() => fs.registerLazyArchive({
+      url: "https://example.invalid/partial.zip",
+      mountPrefix: "/opt/partial",
+      entries: [
+        zipEntry({ fileName: "good", uncompressedSize: 1 }),
+        zipEntry({ fileName: "bad\u0000name", uncompressedSize: 1 }),
+      ],
+    })).toThrow();
+    expect(() => fs.lstat("/opt/partial/good")).toThrow();
   });
 
   it("gives each instance an independent tree", () => {
