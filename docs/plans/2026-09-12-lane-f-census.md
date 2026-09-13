@@ -4622,3 +4622,85 @@ apart is to work out what the perturbed code would now do in production.
 
 The new case pins it: a module importing `clock_time_get` from
 `wasi_snapshot_preview1` must not be reported. Dropping the filter now fails.
+
+## §98 — The gap was three, not one, and a real artifact said so
+
+Section 96 found one unlisted import kind by reading `fork-instrument`'s source.
+Building an actual instrumented fixture through the production pipeline and
+counting what it imports gives the real number:
+
+```
+env imports: 51
+  function 46
+  table     2   __wpk_fork_ref_gc_transit, __wpk_fork_resume_table
+  global    2   __wpk_fork_module_activation,
+                __wpk_fork_module_state_table_generation_addr
+  tag       1   __wpk_fork_unwind
+```
+
+The generated tables enumerate 48 of those 51. THREE are covered by no list:
+a second global I had not found by reading (`__wpk_fork_module_activation`), the
+generation-fence global from section 96, and the unwind TAG. The tag has
+`requireForkUnwindTag` guarding it at the call sites that happen to remember,
+which is precisely the "a name nobody wrote is a name nobody notices" shape the
+binder's own preamble warns about -- a per-caller convention rather than a
+contract.
+
+Reading the instrumenter found one. Asking the artifact found three. That is the
+argument for section 96's fix stated as a measurement rather than as a principle,
+and it is worth the difference in weight: "a list enumerates what someone
+remembered" is a claim, and "the list is missing three of fifty-one" is evidence.
+
+`host/test/fork-guest-env-composition.test.ts` now builds that fixture through
+`scripts/build-fork-instrumented-test-fixture.sh` -- the same tool every
+fork-using package build runs -- composes an `env` from the five thin-layer
+pieces (`buildForkGuestImports`, `createForkGuestHostFloor`, `ForkResumeTable`,
+`ForkTableStateOwners`, and the module's exports), and asserts that NOTHING the
+artifact imports is left unbound.
+
+Why this test and why now. Every one of those five pieces has unit tests and
+every one passes, against inputs I built by hand. That proves each piece and says
+nothing about whether they add up to a complete `env` for a guest the production
+instrumentation actually emits -- which is the only question that matters at the
+moment `worker-main.ts` stops building that object by hand. The composition is
+the risky part of the rewiring ahead, so it now has a test that runs before the
+rewiring rather than a debugging session after it.
+
+One assertion is deliberately a NUMBER: three env imports that no generated list
+enumerates. If instrumentation adds a fourth, this fails, and the right response
+is to check the binder still reports it -- not to bump the number.
+
+## §99 — Three decisions the next steps need, none of them mine
+
+Severing `worker-main.ts` from `fork-module-state` ran into three questions that
+are capacity or architecture calls rather than implementation ones. Recording
+them rather than spending the capacity unilaterally, per the maintainer's
+instruction to raise rather than stop.
+
+**1. The module-state descriptor decoder.** `decodeForkModuleStateDescriptor` is
+~60 lines of TypeScript validating every field of a custom section against
+constants. `ModuleStateFormat::parse_descriptor` in `crates/fork-codec` already
+does the same thing and its doc comment says so ("Mirrors the TS
+`decodeForkModuleStateDescriptor`"). This is the duplicate-decoder hazard the
+campaign exists to remove, and the port is the established validate-on-seed shape
+(host locates the section, module decodes). It costs ONE new `fm_*` entry on
+`forkModuleHostEntries`, which is at 46 against a target of 5. Worth it, but it
+is a spend on the surface the maintainer most wants shrinking, so it should be
+their call.
+
+**2. The synchronous SHA-256.** `computeForkModuleTemplateIdSync` is ~90 lines of
+hand-rolled SHA-256 in the host, existing only because `dlopen` is synchronous
+and WebCrypto's `digest` is not. The standing guidance says a hand-rolled crypto
+primitive in the host is not host code -- but moving it needs either staging the
+whole module's bytes into wasm memory (up to ~50 MB for node.wasm) or making the
+dlopen path async. Both are larger changes than the thing they remove.
+
+**3. What replaces the template check.** `requireForkModuleTemplate` verifies the
+KFMS arena record for an activation carries the same template id as the module
+the child is instantiating -- "the child is replaying into the module the parent
+captured from". It is a KFMS decode, so it belongs in the module, but it is
+reached only through the registry and so it ports WITH the registry rather than
+before it.
+
+None of these blocks the work: the composition test above, and the four commits
+before it, are all independent of them.
