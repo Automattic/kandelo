@@ -421,6 +421,10 @@ export class SffsImageFs {
     uid?: number;
     gid?: number;
     ino: number;
+    /**
+     * The archive's total length. Pass `0` with `archiveId: 0` for a file
+     * fetched standalone — there is no archive to bound a read of.
+     */
     archiveBytes: number;
     /**
      * The archive's own fetch description — URL, transport, integrity digest.
@@ -428,6 +432,12 @@ export class SffsImageFs {
      * producer must supply one is a policy question this bridge does not
      * answer; an image whose archives carry none is a real state, and a
      * visible one.
+     */
+    /**
+     * With an archive, this describes the ARCHIVE. Without one
+     * (`archiveId: 0`), it describes this FILE — and is then the only thing
+     * that says where its bytes are, which is where a digest for a
+     * URL-backed setuid binary belongs.
      */
     archiveDescriptor?: Uint8Array;
   }): void {

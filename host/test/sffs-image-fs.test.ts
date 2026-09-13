@@ -241,6 +241,29 @@ describe("SffsImageFs", () => {
     expect(() => fs.isPathDeferred("/nope")).toThrow(/ENOENT/);
   });
 
+  it("registers a file fetched standalone, with no archive behind it", () => {
+    // 79 files in the shipped shell image have this shape, and it is the shape
+    // lane S's setuid defect is about. The bridge could not express it until
+    // the archive declaration stopped being unconditional.
+    const fs = SffsImageFs.create();
+    const url = new TextEncoder().encode("https://example.invalid/sudo#sha256:feed");
+    fs.registerLazyFile({
+      path: "/sudo",
+      archiveId: 0,
+      sourcePath: "",
+      size: 99_999,
+      mode: 0o4755,
+      ino: 40,
+      archiveBytes: 0,
+      archiveDescriptor: url,
+    });
+    const st = fs.lstat("/sudo");
+    expect(st.deferred).toBe(true);
+    expect(st.size).toBe(99_999);
+    expect(st.archiveId).toBe(0);
+    expect(st.mode & 0o7777).toBe(0o4755);
+  });
+
   it("refuses one archive declared with two different lengths", () => {
     // The member's size and the ARCHIVE's size are different numbers, and the
     // second is what bounds the fetch. Two lengths for one archive would make

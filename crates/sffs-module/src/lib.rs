@@ -664,8 +664,17 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         }
         unsafe { slice(archive_payload_ptr, archive_payload_len) }
     };
-    if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {
-        return err(e);
+    // `archive_id == 0` is a file fetched STANDALONE — no archive behind it, so
+    // nothing to declare, and the payload belongs to the FILE rather than to an
+    // archive. That case was unreachable through this entry point until now,
+    // because the archive declaration below refuses id 0: the bridge could
+    // register an archive member and could not register the shape 79 files in
+    // the shipped shell image actually have, which is also the shape lane S's
+    // setuid defect is about.
+    if archive_id != 0 {
+        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {
+            return err(e);
+        }
     }
     ok_or_errno(rootfs::insert_lazy_file(
         unsafe { slice(path_ptr, path_len) },
@@ -676,6 +685,9 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         uid,
         gid,
         ino,
+        // With an archive, the payload described the ARCHIVE and the file needs
+        // none of its own. Without one, it describes the file.
+        if archive_id == 0 { archive_payload } else { b"" },
     ))
 }
 
@@ -1280,6 +1292,82 @@ mod tests {
             Some(8_000_000),
             "the exported section declares the archive its record points into",
         );
+    }
+
+    #[test]
+    fn a_file_fetched_standalone_registers_and_exports_with_its_description() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+
+        // No archive: `archive_id == 0`, no member path, and the payload is the
+        // whole of what says where the bytes are. This is the shape 79 files in
+        // the shipped shell image have, and the shape lane S's setuid defect is
+        // about — and it was NOT registrable through this entry point before,
+        // because the archive declaration it went through refuses id 0.
+        let url: &[u8] = b"https://example.invalid/sudo#sha256:feedface";
+        let rc = with_two(b"/usr/sudo", url, |pp, pl, up, ul| unsafe {
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 99_999, 0o4755, 0, 0, 40, 0, up, ul)
+        });
+        assert_eq!(rc, 0, "a standalone-fetch file registers");
+
+        // Its metadata is right before any fetch, setuid bit included.
+        let st = rootfs::lstat(b"/usr/sudo").expect("exists");
+        assert_eq!(st.st_size, 99_999);
+        assert_eq!(st.st_mode & 0o7777, 0o4755);
+
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let ino = fs.resolve(b"/usr/sudo", false).expect("the path survives");
+        let record = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("a deferred section")
+            .get(ino)
+            .cloned()
+            .expect("a record for it");
+
+        assert_eq!(record.size, 99_999, "the real size rides in the record");
+        assert_eq!(record.archive_id, 0, "fetched standalone");
+        assert!(record.source_path.is_empty(), "so with no member path");
+        assert_eq!(
+            record.payload, url,
+            "and the description carried through byte for byte — this is where a \
+             digest for a setuid binary would live",
+        );
+    }
+
+    #[test]
+    fn an_archive_member_and_a_standalone_file_can_share_one_image() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        let rc = with_two(b"/member", b"members/x", |pp, pl, sp, sl| unsafe {
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0)
+        });
+        assert_eq!(rc, 0);
+        let url: &[u8] = b"https://example.invalid/solo";
+        let rc = with_two(b"/solo", url, |pp, pl, up, ul| unsafe {
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 20, 0o644, 0, 0, 41, 0, up, ul)
+        });
+        assert_eq!(rc, 0);
+
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let section = fs.deferred_section().expect("decodes").expect("section");
+        assert_eq!(section.len(), 2, "both are described");
+
+        // One archive declared, for the member that needs it — and not one for
+        // the standalone file, which has no archive to declare.
+        assert_eq!(section.archives.len(), 1);
+        assert_eq!(section.archive_bytes(3), Some(8_000_000));
+
+        let member = fs.resolve(b"/member", false).expect("member");
+        let solo = fs.resolve(b"/solo", false).expect("solo");
+        assert_eq!(section.get(member).expect("member record").archive_id, 3);
+        assert_eq!(section.get(solo).expect("solo record").archive_id, 0);
+        assert_eq!(section.get(solo).expect("solo record").payload, url);
     }
 
     #[test]

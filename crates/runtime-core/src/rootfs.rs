@@ -1221,7 +1221,20 @@ pub fn insert_lazy_file(
     uid: u32,
     gid: u32,
     ino: u64,
+    payload: &[u8],
 ) -> Result<(), Errno> {
+    // `archive_id == 0` is a file fetched STANDALONE: no archive behind it, so
+    // no member path either, and `payload` is the only thing that says where
+    // its bytes are. That is the shape 79 files in the shipped shell image
+    // have, and the shape lane S's setuid defect is about — it was not
+    // registrable through this path at all until now, because the archive
+    // declaration it went through rejects id 0.
+    if (archive_id == 0) != source_path.is_empty() {
+        return Err(Errno::EINVAL);
+    }
+    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        return Err(Errno::EINVAL);
+    }
     ROOTFS.with(|state| {
         state.bump_next_ino(ino);
         let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
@@ -1237,6 +1250,9 @@ pub fn insert_lazy_file(
             1,
             ino,
         ));
+        if let Some(inode) = state.get_mut(child) {
+            inode.deferred_payload = payload.to_vec();
+        }
         let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
         if let Err(e) = link_into_parent(state, &comps, last, child) {
             state.inodes[child as usize] = None;
@@ -1478,7 +1494,7 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
                 let archive_id = rd_u32(buf, &mut pos)?;
                 let source_path_len = rd_u32(buf, &mut pos)? as usize;
                 let source_path = rd_bytes(buf, &mut pos, source_path_len)?.to_vec();
-                insert_lazy_file(&path, archive_id, &source_path, size, mode, uid, gid, ino)?
+                insert_lazy_file(&path, archive_id, &source_path, size, mode, uid, gid, ino, b"")?
             }
             _ => return Err(Errno::EINVAL),
         }
@@ -1935,6 +1951,20 @@ where
                                 stat.uid,
                                 stat.gid,
                                 ino,
+                                // Retained below from the image's own deferred
+                                // section, once the walk knows which inode this
+                                // is; KLZY carries no payload to retain.
+                                // The file's own fetch description, when the
+                                // image carried one. An archive member usually
+                                // has none — the archive carries the transport
+                                // — but nothing says it cannot, and losing one
+                                // the image DID carry is the defect this whole
+                                // retention path exists to prevent.
+                                deferred
+                                    .as_ref()
+                                    .and_then(|section| section.get(entry.ino))
+                                    .map(|record| record.payload.as_slice())
+                                    .unwrap_or(b""),
                             )?;
                         }
                         // A URL-backed lazy file (`archive_id == 0`) is a base
@@ -3576,6 +3606,11 @@ enum ExportNode {
         archive_id: u32,
         source_path: Vec<u8>,
         size: u64,
+        /// The file's own fetch description, when it has one. An archive member
+        /// usually does not -- the archive carries the transport -- but a file
+        /// fetched STANDALONE (`archive_id == 0`) has nothing else, and this is
+        /// the whole of what says where its bytes are.
+        payload: Vec<u8>,
     },
     /// A host-backed base file the loaded image DID describe: the description
     /// was retained verbatim at load, and is re-emitted here under the inode
@@ -3830,6 +3865,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     archive_id: *archive_id,
                     source_path: source_path.clone(),
                     size: *size,
+                    payload: inode.deferred_payload.clone(),
                 },
             };
             Ok::<_, Errno>((node, inode.mode, emitted.get(&item.overlay).copied()))
@@ -3858,6 +3894,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 archive_id,
                 source_path,
                 size,
+                payload,
             } => {
                 // Declare the archive before the first record that points into
                 // it. The length comes from the archive table this kernel
@@ -3865,7 +3902,10 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 // and `encode` would refuse the whole section — which is the
                 // behaviour we want, but the export should not have built an
                 // image it cannot finish.
-                if !declared_archives.contains(&archive_id) {
+                //
+                // `archive_id == 0` has no archive to declare: the file is
+                // fetched standalone and its own payload says where from.
+                if archive_id != 0 && !declared_archives.contains(&archive_id) {
                     let (bytes, payload) = ROOTFS
                         .with(|state| {
                             state
@@ -3877,10 +3917,11 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     writer.declare_lazy_archive(archive_id, bytes, &payload)?;
                     declared_archives.insert(archive_id);
                 }
-                // The payload is empty on purpose. It is the HOST's fetch
-                // description, and an archive member has none of its own: the
-                // archive carries the transport, and the two fields beside this
-                // one are the whole of what locates the member inside it.
+                // Usually empty: an archive MEMBER has no fetch description of
+                // its own, because the archive carries the transport and the
+                // two linkage fields beside this one locate the member inside
+                // it. A file fetched standalone has nothing else, and its
+                // payload is the whole of what says where its bytes are.
                 writer.create_deferred_file(
                     item.parent_sffs,
                     &item.name,
@@ -3888,7 +3929,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     size,
                     archive_id,
                     &source_path,
-                    b"",
+                    &payload,
                 )?
             }
             ExportNode::LazyBase { size, payload } => {
@@ -4259,7 +4300,7 @@ mod tests {
     fn build_lazy_tree() {
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_dir(b"/lazy", 0o755, 0, 0, 2).unwrap();
-        insert_lazy_file(b"/lazy/f", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3).unwrap();
+        insert_lazy_file(b"/lazy/f", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3, b"").unwrap();
         insert_archive_entry(7, TINY_ZIP.len() as u64);
     }
 
@@ -5397,8 +5438,8 @@ mod tests {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_dir(b"/lazy", 0o755, 0, 0, 2).unwrap();
-        insert_lazy_file(b"/lazy/big", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3).unwrap();
-        insert_lazy_file(b"/lazy/small", 7, b"etc/small.txt", 6, 0o644, 0, 0, 4).unwrap();
+        insert_lazy_file(b"/lazy/big", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3, b"").unwrap();
+        insert_lazy_file(b"/lazy/small", 7, b"etc/small.txt", 6, 0o644, 0, 0, 4, b"").unwrap();
         insert_archive_entry(7, TINY_ZIP.len() as u64);
         let (mut fetch, calls) =
             make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
@@ -5451,7 +5492,7 @@ mod tests {
     fn lazy_member_missing_source_path_is_enoent() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_lazy_file(b"/g", 7, b"bin/nope", 10, 0o644, 0, 0, 2).unwrap();
+        insert_lazy_file(b"/g", 7, b"bin/nope", 10, 0o644, 0, 0, 2, b"").unwrap();
         insert_archive_entry(7, TINY_ZIP.len() as u64);
         let (mut fetch, _calls) =
             make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
@@ -5468,7 +5509,7 @@ mod tests {
     fn lazy_member_missing_archive_registration_is_enoent() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_lazy_file(b"/g", 42, b"bin/big.txt", 4096, 0o644, 0, 0, 2).unwrap();
+        insert_lazy_file(b"/g", 42, b"bin/big.txt", 4096, 0o644, 0, 0, 2, b"").unwrap();
         // No insert_archive_entry(42, ..): archive_id 42 is not registered.
         let (mut fetch, _calls) =
             make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
@@ -6142,7 +6183,7 @@ mod tests {
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
         mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
         declare_archive(3, 8_000_000, b"sha256:abc").expect("declare archive");
-        insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2)
+        insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2, b"")
             .expect("archive member");
         write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
             .expect("an ordinary file, so the tree is not all deferred");
@@ -6359,7 +6400,7 @@ mod tests {
         // length alongside the member for exactly this reason. It is reachable
         // here, and this is the layer that has to refuse.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
-        insert_lazy_file(b"/big", 3, b"members/big.bin", 99_999, 0o644, 0, 0, 2)
+        insert_lazy_file(b"/big", 3, b"members/big.bin", 99_999, 0o644, 0, 0, 2, b"")
             .expect("the member itself is well-formed");
 
         let mut buf = alloc::vec![0u8; 8192];
