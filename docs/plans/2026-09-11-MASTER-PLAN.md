@@ -3765,6 +3765,27 @@ until the kernel HAS the metadata to report, so gap 16 comes before the
 read-back decision rather than after it — otherwise the first thing the new
 entry point would do is return nothing, correctly, for every loaded image.
 
+**It is not only the metadata. The declared CAPACITY is dropped the same way.**
+`image_capacity_bytes` is written only by `set_image_capacity` and read only by
+the export; `load_image_inner` never sets it. So an image that declares 256 MiB
+of room, loaded and re-exported, comes back sized to its own tree.
+
+**The TypeScript side already has a method named for this problem.**
+`MemoryFileSystem.fromImagePreservingCapacity` exists, reads the SFFS
+superblock's capacity, and restores with it — a name that is evidence somebody
+needed exactly this and solved it on the host side. The Rust loader should not
+need a second "preserving" variant: **a load preserves what the image says about
+itself, or it is not a load.**
+
+The capacity fix is smaller than the metadata one, because `Sffs::mount`
+already gives `growth_ceiling_bytes()`. The loader has the number in hand at the
+moment it records the image geometry; it simply does not keep it.
+
+**Together these turn three static TypeScript entry points into ordinary
+loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
+all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
+is the one that still needs the read-back decision.
+
 ### The seal check is ten methods, and nine of them exist because the digest was async
 
 **Measured 2026-09-12, after the maintainer assigned the port to this lane, and
