@@ -4405,6 +4405,62 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### Y5: importers 7 -> 5, and what the seal blocker actually dissolved into
+
+**2026-09-13.** `shell-vfs-build.ts` and `shell-rootfs-restore.ts` moved to
+`SffsImageFs` in one increment, because the restore's return type feeds the
+populator and neither could go alone. Both were on the "blocked on the seal"
+list.
+
+**Nothing had to be ported.** The three methods that looked like blockers each
+dissolved:
+
+| what the builder called | what replaced it |
+|---|---|
+| `verifyImportedLazyAtomicGroupSeals()` | nothing — verification runs INSIDE `sm_load_image` |
+| `rebaseToNewFileSystem(max)` | `setImageCapacity(max)` |
+| `statfs("/")` then `blocks * bsize` | `exportCapacityBytes()` |
+
+The first is the one worth stating. A separate verify call is a second step
+guarding a boundary from outside it, and a caller can forget a second step. With
+verification inside the load, **an unverified loaded image is unrepresentable**,
+which is a stronger property than the one being replaced — the cutover did not
+preserve the check, it improved it.
+
+The second and third are the maintainer's guidance arriving in code: *an image
+of capacity X should only take the size of its contents in memory when loaded.*
+`rebaseToNewFileSystem` copied the whole tree into a freshly sized filesystem,
+because a `SharedArrayBuffer` cannot be asked to mean something different after
+the fact. The module sizes the image when it EXPORTS, so capacity is a number
+the export reads. Two tests asserted `sharedBuffer.byteLength` directly, which
+enshrined exactly the behaviour being removed; they now assert the declared
+capacity.
+
+**`vfs-image-transport.ts` came out of the cutover.** Shipped images are
+`.vfs.zst` and a builder on the module met one as `EINVAL` — the module reads
+images, not archives. Getting an image's bytes off the wire, including the frame
+walk that stops a decompression bomb before a byte is decompressed, was never
+`MemoryFileSystem`'s to own. `memoryFsTypeScript` banked 8387 -> 8215, and the
+helper survives that file's deletion.
+
+**Two test-shape changes, each because the old test could no longer be honest.**
+The forged-seal pair forged a LEGACY seal; the module does not read that format,
+so the test would have passed for the wrong reason. Forging a CURRENT seal from
+TypeScript would mean asserting against TypeScript's idea of a format that
+belongs to the module — where it already has ten trials — so what remains here
+is the boundary's own contract: a refused load aborts before any side effect.
+
+**A false alarm worth recording, because the lesson is about method.** Mid-
+diagnosis I measured that the Rust loader could not read ANY TypeScript-written
+image and began working out what that meant for every shipped artifact. It was
+wrong: `saveImage()` is async and my probe passed the PROMISE to `loadImage`.
+The two formats interoperate. **The probe was the thing that was broken, and it
+produced a confident, specific, entirely false finding** — which is the same
+hazard as a fixture that cannot express its condition (H-14), arriving in
+diagnosis rather than in a test. The cheap defence was the one that caught it:
+before believing a sweeping result, check the negative control — something that
+MUST work — through the same probe.
+
 ### GAPS 20 and 21 — a truthful gap at one end becomes a silent lie at the other
 
 **Both found 2026-09-13 by the first real cutover, and neither by a test.** They
