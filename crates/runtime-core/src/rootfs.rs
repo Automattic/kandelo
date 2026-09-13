@@ -4155,6 +4155,92 @@ pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// One deferred file, as an enumerator sees it.
+///
+/// The fields are the file's IDENTITY, which is what a builder checking "this
+/// step disturbed nothing" compares. `payload` is the opaque fetch description,
+/// handed back unread exactly as [`archive_payloads`] hands back an archive's.
+pub struct LazyEntryView {
+    pub path: Vec<u8>,
+    pub ino: u64,
+    pub size: u64,
+    /// `0` for a file fetched standalone; otherwise the archive it belongs to.
+    pub archive_id: u32,
+    /// Empty exactly when `archive_id == 0`.
+    pub source_path: Vec<u8>,
+    pub payload: Vec<u8>,
+}
+
+fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyEntryView>) {
+    let Some(inode) = state.get(idx) else {
+        return;
+    };
+    match &inode.kind {
+        InodeKind::LazyMember {
+            archive_id,
+            source_path,
+            size,
+        } => out.push(LazyEntryView {
+            path: abs_path.to_vec(),
+            ino: inode.ino,
+            size: *size,
+            archive_id: *archive_id,
+            source_path: source_path.clone(),
+            payload: inode.deferred_payload.clone(),
+        }),
+        // A URL-backed lazy file is a BASE file whose bytes the host fetches:
+        // `Host`-sourced, with a real size and a fetch description. A base file
+        // with no description is an ordinary host-walked file and not deferred
+        // at all, which is why the payload -- not the source -- decides.
+        InodeKind::BaseRegular { size, source, .. }
+            if matches!(source, BaseSource::Host) && !inode.deferred_payload.is_empty() =>
+        {
+            out.push(LazyEntryView {
+                path: abs_path.to_vec(),
+                ino: inode.ino,
+                size: *size,
+                archive_id: 0,
+                source_path: Vec::new(),
+                payload: inode.deferred_payload.clone(),
+            })
+        }
+        InodeKind::Dir(entries) => {
+            for (name, &child) in entries.iter() {
+                let mut child_path = Vec::with_capacity(abs_path.len() + 1 + name.len());
+                if abs_path == b"/" {
+                    child_path.push(b'/');
+                } else {
+                    child_path.extend_from_slice(abs_path);
+                    child_path.push(b'/');
+                }
+                child_path.extend_from_slice(name);
+                lazy_walk(state, child, &child_path, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every deferred file in the tree, in path order, with its identity.
+///
+/// # Why this exists rather than a digest
+///
+/// The builders' invariant is not "did anything change" but "did anything
+/// change OTHER than these", because a build step legitimately supersedes some
+/// lazy files -- the mandoc archive replacing a `man` applet, a lazy binary
+/// made eager. A digest answers the first question and cannot express the
+/// second, and a failure that says only "something moved" sends whoever meets
+/// it to read the whole build.
+pub fn lazy_entries() -> Vec<LazyEntryView> {
+    ROOTFS.with(|state| {
+        let mut out = Vec::new();
+        if let Some(root) = state.root {
+            lazy_walk(state, root, b"/", &mut out);
+        }
+        out
+    })
+}
+
 /// Every declared archive, as `(archive_id, fetch description)`.
 ///
 /// The descriptions are opaque here, exactly as they are everywhere else in
@@ -4912,6 +4998,32 @@ mod tests {
         assert_eq!(lstat(b"/usr/bin/hello2").unwrap().st_nlink, 1);
         // No hard links to directories.
         assert_eq!(link(b"/usr/bin", b"/bin2").unwrap_err(), Errno::EPERM);
+    }
+
+    #[test]
+    fn only_a_file_with_a_fetch_description_enumerates_as_deferred() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // Two base files that differ in ONE thing. Both are `Host`-sourced
+        // regular files with a real size, which is why the source cannot be
+        // what decides: a tree the host walked is full of them and none of its
+        // files is deferred.
+        //
+        // What makes a file deferred is that something says where its bytes
+        // come from. `/walked.bin` has no such description and its bytes are an
+        // ordinary host file; `/fetched.bin` has one and its bytes are a
+        // promise. Enumerating the first would tell a builder its tree is full
+        // of lazy files it never registered.
+        insert_base_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 90).unwrap();
+        insert_base_file(b"/fetched.bin", 78, 8192, 0o644, 0, 0, 91).unwrap();
+        set_deferred_payload(b"/fetched.bin", br#"{"url":"https://x/f.bin"}"#).unwrap();
+
+        let entries = lazy_entries();
+        let paths: alloc::vec::Vec<&[u8]> =
+            entries.iter().map(|e| e.path.as_slice()).collect();
+        assert_eq!(paths, alloc::vec![b"/fetched.bin".as_slice()]);
+        assert_eq!(entries[0].size, 8192, "its REAL length, not a stub's");
+        assert_eq!(entries[0].archive_id, 0, "fetched standalone");
     }
 
     #[test]

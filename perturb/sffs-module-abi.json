@@ -351,6 +351,27 @@
    "scope_end": "\n}\n",
    "find": "                Some(existing) if existing != declared => return err(Errno::EINVAL),",
    "replace": "                Some(existing) if existing != declared && false => return err(Errno::EINVAL),"
+  },
+  {
+   "name": "a resident file is enumerated as a deferred one",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
+   "scope_end": "\n}\n",
+   "find": "    let files = rootfs::lazy_entries();",
+   "replace": "    let files = rootfs::lazy_entries();\n    let files = { let mut f = files; f.push(rootfs::LazyEntryView { path: b\"/ghost\".to_vec(), ino: 0, size: 0, archive_id: 0, source_path: alloc::vec::Vec::new(), payload: alloc::vec::Vec::new() }); f };"
+  },
+  {
+   "name": "the enumeration writes into a buffer smaller than the record set",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
+   "scope_end": "\n}\n",
+   "find": "    if out_len < buf.len() {\n        return err(Errno::ERANGE);\n    }",
+   "replace": ""
+  },
+  {
+   "name": "a deferred member's archive linkage is dropped from the record",
+   "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
+   "scope_end": "\n}\n",
+   "find": "        put_u32(&mut buf, entry.archive_id);",
+   "replace": "        put_u32(&mut buf, 0);"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

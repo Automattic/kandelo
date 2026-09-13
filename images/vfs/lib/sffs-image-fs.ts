@@ -72,6 +72,7 @@ interface ModuleExports {
   ): number;
   sm_set_image_options(capacityBytes: bigint, p: number, pl: number): number;
   sm_check_headroom(minBytes: bigint, minInodes: bigint, o: number, ol: number): number;
+  sm_lazy_entries(o: number, ol: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
 }
 
@@ -1033,6 +1034,85 @@ export class SffsImageFs {
     } catch (error) {
       this.exports.sm_free(ptr, image.byteLength);
       throw error;
+    }
+  }
+
+  /**
+   * Every deferred file and declared archive in the tree.
+   *
+   * What a builder compares when it asserts that a step disturbed nothing. The
+   * identity of a deferred file is its path, inode, real size and backing
+   * archive; an archive's is its id, length and fetch description.
+   *
+   * The descriptions are returned as BYTES and not parsed here. They are the
+   * fetcher's to read -- a URL, a transport, a digest -- and this bridge
+   * carries them for the same reason the kernel does: whoever fetches decides
+   * whether a URL may be fetched, and carrying the bytes authorises nothing.
+   */
+  lazyEntries(): {
+    files: {
+      path: string;
+      ino: bigint;
+      size: number;
+      archiveId: number;
+      sourcePath: string;
+      descriptor: Uint8Array;
+    }[];
+    archives: { archiveId: number; bytes: number; descriptor: Uint8Array }[];
+  } {
+    const required = this.check(this.exports.sm_lazy_entries(0, 0), "lazyEntries", "");
+    const ptr = this.exports.sm_alloc(Math.max(required, 1));
+    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      this.check(this.exports.sm_lazy_entries(ptr, required), "lazyEntries", "");
+      const bytes = this.mem.slice(ptr, ptr + required);
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      let at = 0;
+      const u32 = () => {
+        const value = view.getUint32(at, true);
+        at += 4;
+        return value;
+      };
+      const u64 = () => {
+        const value = view.getBigUint64(at, true);
+        at += 8;
+        return value;
+      };
+      const blob = () => {
+        const len = u32();
+        const value = bytes.subarray(at, at + len);
+        at += len;
+        return value;
+      };
+      const text = () => decoder.decode(blob());
+      const fileCount = u32();
+      const archiveCount = u32();
+      const files = [];
+      for (let i = 0; i < fileCount; i++) {
+        files.push({
+          path: text(),
+          ino: u64(),
+          size: Number(u64()),
+          archiveId: u32(),
+          sourcePath: text(),
+          descriptor: blob(),
+        });
+      }
+      const archives = [];
+      for (let i = 0; i < archiveCount; i++) {
+        archives.push({ archiveId: u32(), bytes: Number(u64()), descriptor: blob() });
+      }
+      if (at !== required) {
+        // Every byte the module wrote must be accounted for. Trailing bytes
+        // mean this reader and that writer disagree about the record set, and
+        // a reader that stops early would silently drop whatever came after.
+        throw new Error(
+          `sffs-module: lazy entry record set has ${required - at} trailing bytes`,
+        );
+      }
+      return { files, archives };
+    } finally {
+      this.exports.sm_free(ptr, Math.max(required, 1));
     }
   }
 

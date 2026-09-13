@@ -331,6 +331,48 @@ describe("SffsImageFs", () => {
     expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
   });
 
+  it("enumerates every deferred file and archive with its identity", () => {
+    // What replaces `exportLazyEntries` and `exportLazyArchiveEntries`: the
+    // builders' "this step disturbed nothing" check, asked of the module that
+    // owns the tree rather than of a second filesystem that mirrored it.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    fs.registerLazyFile("/opt/solo", "https://example.invalid/solo.wasm", 4242, 0o755);
+    fs.registerArchiveMember({
+      path: "/opt/member",
+      archiveId: 3,
+      sourcePath: "members/member",
+      size: 99,
+      mode: 0o644,
+      ino: 71,
+      archiveBytes: 8_000_000,
+      archiveDescriptor: new TextEncoder().encode('{"url":"https://x/a.zip"}'),
+    });
+    fs.writeFile("/opt/plain", new TextEncoder().encode("resident"), 0o644);
+
+    const { files, archives } = fs.lazyEntries();
+    expect(files.map((f) => f.path)).toEqual(["/opt/member", "/opt/solo"]);
+    // A resident file is not deferred, which is the distinction that would be
+    // easiest to get wrong: both are regular files.
+    expect(files.some((f) => f.path === "/opt/plain")).toBe(false);
+
+    const member = files.find((f) => f.path === "/opt/member")!;
+    expect(member.size).toBe(99);
+    expect(member.archiveId).toBe(3);
+    expect(member.sourcePath).toBe("members/member");
+
+    const solo = files.find((f) => f.path === "/opt/solo")!;
+    expect(solo.size).toBe(4242);
+    expect(solo.archiveId).toBe(0);
+    // The standalone file's description IS its identity: without it nothing
+    // says where its bytes come from.
+    expect(solo.descriptor.byteLength).toBeGreaterThan(0);
+
+    expect(archives).toHaveLength(1);
+    expect(archives[0]!.archiveId).toBe(3);
+    expect(archives[0]!.bytes).toBe(8_000_000);
+  });
+
   it("loads a zstd-compressed image without the caller unwrapping it", () => {
     // Shipped images are `.vfs.zst`. The module reads IMAGES, not archives, so
     // a compressed one reaches it as EINVAL -- a truthful refusal of the wrong

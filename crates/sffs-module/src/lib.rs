@@ -686,6 +686,109 @@ pub unsafe extern "C" fn sm_read_dir(
     at as i32
 }
 
+/// Every deferred file and declared archive in the tree, as one record set.
+///
+/// Returns the byte count written, or the record set's length when `out_len` is
+/// 0 -- the module's size-probe convention, shared with `sm_read_dir`,
+/// `sm_lstat`, `sm_check_headroom` and `sm_image_metadata`.
+///
+/// # Layout
+///
+/// `u32 file_count | u32 archive_count | files… | archives…`, where a file is
+/// `path | u64 ino | u64 size | u32 archive_id | source_path | payload` and an
+/// archive is `u32 id | u64 bytes | payload`. Every byte string is `u32`
+/// length-prefixed, so nothing is positional and nothing is delimited.
+///
+/// # Why this entry point exists, given the budget it costs
+///
+/// This is the twenty-first, and `sffsModuleEntryPoints` was banked at twenty
+/// with no slack. The rule is to find an export that can GO before arguing for
+/// one that must come, and that search was made and FAILED. The only plausible
+/// fold was `sm_mkdir` with `sm_mkdir_parents` behind a flag, and it is a bad
+/// trade: the two create DIFFERENT paths -- one makes the path, the other makes
+/// the path's parents -- so a boolean would decide which path the call operates
+/// on. That exact confusion has already caused a bug in this lane, and baking
+/// it into the ABI to save a slot would be paying for the budget with a defect.
+///
+/// What it buys: two TypeScript methods delete, `exportLazyEntries` and
+/// `exportLazyArchiveEntries`, and with them the last thing keeping the shell
+/// composer and its overlay on `MemoryFileSystem` -- which is in turn what
+/// blocks rebuilding the shipped base images through the Rust producer.
+///
+/// # Why enumeration rather than a digest
+///
+/// A digest answers "did anything change" in thirty-two bytes and would be a
+/// much smaller surface. It cannot answer the question the builders actually
+/// ask, which is "did anything change OTHER than these" -- a build step
+/// legitimately supersedes some lazy files, and the composer names the ones it
+/// expects to move. A digest also reports a failure as "something moved",
+/// which sends whoever meets it to read the whole build.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe a writable range when `out_len` is not 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_lazy_entries(out_ptr: usize, out_len: usize) -> i32 {
+    fn put_u32(out: &mut alloc::vec::Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    fn put_u64(out: &mut alloc::vec::Vec<u8>, value: u64) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    fn put_bytes(out: &mut alloc::vec::Vec<u8>, bytes: &[u8]) -> Result<(), Errno> {
+        put_u32(out, u32::try_from(bytes.len()).map_err(|_| Errno::EINVAL)?);
+        out.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    let files = rootfs::lazy_entries();
+    let archives = rootfs::archive_payloads();
+    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    let Ok(file_count) = u32::try_from(files.len()) else {
+        return err(Errno::EINVAL);
+    };
+    let Ok(archive_count) = u32::try_from(archives.len()) else {
+        return err(Errno::EINVAL);
+    };
+    put_u32(&mut buf, file_count);
+    put_u32(&mut buf, archive_count);
+    for entry in &files {
+        if put_bytes(&mut buf, &entry.path).is_err() {
+            return err(Errno::EINVAL);
+        }
+        put_u64(&mut buf, entry.ino);
+        put_u64(&mut buf, entry.size);
+        put_u32(&mut buf, entry.archive_id);
+        if put_bytes(&mut buf, &entry.source_path).is_err()
+            || put_bytes(&mut buf, &entry.payload).is_err()
+        {
+            return err(Errno::EINVAL);
+        }
+    }
+    for (archive_id, payload) in &archives {
+        put_u32(&mut buf, *archive_id);
+        put_u64(&mut buf, rootfs::archive_size(*archive_id).unwrap_or(0));
+        if put_bytes(&mut buf, payload).is_err() {
+            return err(Errno::EINVAL);
+        }
+    }
+
+    let Ok(required) = i32::try_from(buf.len()) else {
+        return err(Errno::ERANGE);
+    };
+    if out_len == 0 {
+        return required;
+    }
+    if out_len < buf.len() {
+        return err(Errno::ERANGE);
+    }
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    out[..buf.len()].copy_from_slice(&buf);
+    required
+}
+
 /// Stream the built image's bytes at `offset` into `out`. Returns the byte
 /// count, 0 at end of image, or a negative errno.
 ///
@@ -2387,6 +2490,114 @@ mod tests {
         assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
             sm_mkdir(pp, pl, 0o755, 0, 0)
         }), 0);
+    }
+
+    /// Read the record set back through the size-probe convention.
+    fn drain_lazy_entries() -> alloc::vec::Vec<u8> {
+        let required = unsafe { sm_lazy_entries(0, 0) };
+        assert!(required >= 0, "size probe failed: {required}");
+        let len = required as usize;
+        let buf = sm_alloc(len.max(1));
+        let wrote = unsafe { sm_lazy_entries(buf, len) };
+        assert_eq!(wrote, required, "the probe and the write must agree");
+        let out = unsafe { core::slice::from_raw_parts(buf as *const u8, len) }.to_vec();
+        unsafe { sm_free(buf, len.max(1)) };
+        out
+    }
+
+    fn read_u32(bytes: &[u8], at: &mut usize) -> u32 {
+        let v = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap());
+        *at += 4;
+        v
+    }
+
+    fn read_u64(bytes: &[u8], at: &mut usize) -> u64 {
+        let v = u64::from_le_bytes(bytes[*at..*at + 8].try_into().unwrap());
+        *at += 8;
+        v
+    }
+
+    fn read_bytes(bytes: &[u8], at: &mut usize) -> alloc::vec::Vec<u8> {
+        let len = read_u32(bytes, at) as usize;
+        let v = bytes[*at..*at + len].to_vec();
+        *at += len;
+        v
+    }
+
+    #[test]
+    fn the_deferred_set_is_enumerable_with_every_identity_it_carries() {
+        // What a builder compares when it asserts that a step disturbed
+        // nothing: each deferred file's path, inode, real size, and which
+        // archive backs it.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"members/a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"", b"", 0),
+            0,
+        );
+        assert_eq!(register_member(b"/opt/solo", 0, b"", b"{\"url\":\"https://x/solo\"}"), 0);
+
+        let buf = drain_lazy_entries();
+        let mut at = 0usize;
+        let files = read_u32(&buf, &mut at);
+        let archives = read_u32(&buf, &mut at);
+        assert_eq!((files, archives), (2, 1));
+
+        // Path order, which the walk guarantees: /opt/a before /opt/solo.
+        let path = read_bytes(&buf, &mut at);
+        assert_eq!(path, b"/opt/a");
+        let _ino = read_u64(&buf, &mut at);
+        assert_eq!(read_u64(&buf, &mut at), 99, "the member's REAL size");
+        assert_eq!(read_u32(&buf, &mut at), 1, "backed by archive 1");
+        assert_eq!(read_bytes(&buf, &mut at), b"members/a");
+        assert!(read_bytes(&buf, &mut at).is_empty(), "a member carries no description of its own");
+
+        assert_eq!(read_bytes(&buf, &mut at), b"/opt/solo");
+        let _ino = read_u64(&buf, &mut at);
+        assert_eq!(read_u64(&buf, &mut at), 99);
+        assert_eq!(read_u32(&buf, &mut at), 0, "fetched standalone");
+        assert!(read_bytes(&buf, &mut at).is_empty(), "no member path without an archive");
+        // The standalone file's payload IS its identity: it is the only thing
+        // that says where its bytes come from.
+        let payload = read_bytes(&buf, &mut at);
+        assert!(!payload.is_empty(), "a standalone lazy file carries its description");
+
+        assert_eq!(read_u32(&buf, &mut at), 1, "archive id");
+        assert_eq!(read_u64(&buf, &mut at), 4096, "archive length");
+        assert!(!read_bytes(&buf, &mut at).is_empty(), "the archive's description");
+        assert_eq!(at, buf.len(), "every byte accounted for");
+    }
+
+    #[test]
+    fn an_ordinary_file_is_not_enumerated_as_a_deferred_one() {
+        // The distinction the walk has to make, and the one that would be
+        // easiest to get wrong: a resident file and a deferred file are both
+        // regular files, and only the fetch description tells them apart.
+        fresh_tree();
+        assert_eq!(with_two(b"/opt/plain", b"bytes", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let buf = drain_lazy_entries();
+        let mut at = 0usize;
+        assert_eq!(read_u32(&buf, &mut at), 0, "no deferred files");
+        assert_eq!(read_u32(&buf, &mut at), 0, "no archives");
+    }
+
+    #[test]
+    fn enumerating_into_a_buffer_too_small_for_the_set_fails_loudly() {
+        // The size probe exists so a caller can allocate; a caller that
+        // allocated from a STALE probe must not get a truncated record set
+        // that still parses.
+        fresh_tree();
+        assert_eq!(register_member(b"/opt/solo", 0, b"", b"{\"url\":\"https://x/solo\"}"), 0);
+        let required = unsafe { sm_lazy_entries(0, 0) } as usize;
+        assert!(required > 8);
+        let small = sm_alloc(required - 1);
+        assert_eq!(
+            unsafe { sm_lazy_entries(small, required - 1) },
+            -(Errno::ERANGE as i32),
+        );
+        unsafe { sm_free(small, required - 1) };
     }
 
     #[test]

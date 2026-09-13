@@ -29,6 +29,13 @@
    "scope_end": "\n}\n",
    "find": "    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {\n        return Err(Errno::EINVAL);\n    }",
    "replace": ""
+  },
+  {
+   "name": "a host base file with no description is enumerated as deferred",
+   "scope": "fn lazy_walk",
+   "scope_end": "\n}\n",
+   "find": "            if matches!(source, BaseSource::Host) && !inode.deferred_payload.is_empty() =>",
+   "replace": "            if matches!(source, BaseSource::Host) =>"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
