@@ -1053,9 +1053,10 @@ cross-memory process copies. Against that, `guest.rs` has **73 raw
 a line of comment prose describing `host_proc_write_bytes` — a checked path,
 which is what made the error worth catching before publishing a list).
 
-Of the 73, **thirteen write through a pointer the kernel handed in**, and
+Of the 73, **sixteen write through a pointer the kernel handed in** — a count
+that was thirteen until `cargo xtask perturb` showed why (see below) — and
 they are worth naming rather than counting, because the decision below is
-about these and not about the other sixty:
+about these and not about the other fifty-seven:
 
 | Import | Site | Address |
 |---|---|---|
@@ -1064,14 +1065,14 @@ about these and not about the other sixty:
 | `host_pread` | guest.rs:3348 | `buf_ptr` |
 | `host_readlinkat` | guest.rs:3733 | `buf_ptr` |
 | `host_fpathconf` | guest.rs:3916 | `value_ptr` |
-| `host_readdir` | guest.rs:4010 | `name_ptr` |
+| `host_readdir` | four sites | `dp`, `dp + 8`, `dp + 12`, `name_ptr` |
 | `host_fetch_deferred` | guest.rs:4070 | `buf_ptr` |
 | `host_getrandom` | guest.rs:4088 | `buf_ptr` |
 | `host_waitpid` | guest.rs:4185 | `status_ptr` |
 | (helper) `write_wasm_statfs` | guest.rs:909 | `ptr`, passed through |
 | (helper) `write_wasm_stat_fields` | guest.rs:1003 | `stat_ptr`, passed through |
 
-The remaining sixty write to addresses the host computed itself — channel
+The remaining fifty-seven write to addresses the host computed itself — channel
 offsets derived from a layout the kernel placed, and scratch offsets inside a
 region the host allocated. Those are a different question and are not part of
 this report.
@@ -1080,11 +1081,22 @@ this report.
 anchors elsewhere and applies to its own table: what does not rot is the
 import names, and `grep -n 'write_bytes('` re-derives the rest in a second.
 
-**The count is pinned while the decision is pending.**
-`the_import_layer_does_not_grow_new_writes_through_unproven_pointers` scans
-`define_kernel_host_imports` and asserts the number of writes through a
-pointer-shaped address is exactly eleven (the table's thirteen, less the two
-helpers, which sit outside that function). It does not force the decision; it
+**The count is pinned while the decision is pending, and pinning it correctly
+took two goes.** The first version counted addresses whose NAME looked like a
+pointer — `_ptr`, `_addr` — which is a thing that is usually true when the
+invariant holds rather than the invariant itself, the third instance of that
+shape on this branch. `cargo xtask perturb` killed it with a write through
+`let dest = value_ptr as u32 as usize`, and the survivor was not hypothetical:
+`host_readdir` already does exactly that, writing four times through
+`let dp = dirent_ptr as u32 as usize`. Three real sites were missing from the
+count and from the table above.
+
+The guard counts arithmetic now: writes in the function, minus proofs in the
+function, pinned at **fourteen**. Every proof there belongs to a write there,
+so the difference is the number of unproven writes whatever anyone names their
+variables. A proven write added later leaves the difference alone; an unproven
+one raises it; proving an existing one lowers it, which has to be a deliberate
+edit. It does not force the decision; it
 stops the class getting larger while the decision is open, and makes fixing a
 site move the number on purpose rather than drift past it.
 

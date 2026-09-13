@@ -2632,7 +2632,7 @@ mod proc_bytes_tests {
     /// The kernel's host imports may not GROW the set of writes that trust a
     /// pointer without proving it.
     ///
-    /// L-D3: thirteen sites write at an address the kernel handed in, with no
+    /// L-D3: sixteen sites write at an address the kernel handed in, with no
     /// range proof. `copy_launch_entry` was fixed because its errno was
     /// settled by the TypeScript contract it cites; the rest need one decision
     /// about what this host returns for an unmappable pointer, which is the
@@ -2666,31 +2666,41 @@ mod proc_bytes_tests {
         let end = body.find("\n}\n").expect("the import function ends");
         let body = &body[..end];
 
-        let mut unproven = Vec::new();
+        // Counting POINTER-NAMED addresses is what the first version did,
+        // and `cargo xtask perturb` killed it: a write through
+        // `let dest = value_ptr as u32 as usize` is unproven and invisible to
+        // a check that looks for `_ptr`. The name is a thing that is usually
+        // true when the invariant holds, not the invariant.
+        //
+        // Arithmetic instead. Every proof in this function belongs to a write
+        // in it, so `writes - proofs` is the number of writes with no proof,
+        // whatever anyone calls their variables. Adding a proven write leaves
+        // the difference alone; adding an unproven one raises it; proving an
+        // existing one lowers it, which must be a deliberate edit here.
+        let proof = concat!("checked_shared", "_range(");
+        let mut writes = 0usize;
+        let mut proofs = 0usize;
         for line in body.lines() {
             let trimmed = line.trim_start();
             if trimmed.starts_with("//") {
                 continue;
             }
-            let Some(rest) = trimmed.split_once(needle) else { continue };
-            // write_bytes(mem, ADDRESS, bytes): the second argument.
-            let Some((_, after_mem)) = rest.1.split_once(',') else { continue };
-            let address = after_mem.split(',').next().unwrap_or("").trim();
-            let root = address.split_whitespace().next().unwrap_or("");
-            if root.ends_with("_ptr") || root.ends_with("_addr") || root == "ptr"
-                || root == "addr"
-            {
-                unproven.push(address.to_string());
+            if trimmed.contains(needle) {
+                writes += 1;
+            }
+            if trimmed.contains(proof) {
+                proofs += 1;
             }
         }
+        let unproven = writes.saturating_sub(proofs);
 
         assert_eq!(
-            unproven.len(),
-            11,
-            "the import layer's unproven-pointer writes moved: {unproven:?}. \
-             A NEW one must be routed through the shared rule, not added to \
-             this count. Fixing one is the good direction — lower the number \
-             in the same commit, and never raise it to make this pass.",
+            unproven, 14,
+            "the import layer's unproven writes moved: {writes} writes minus \
+             {proofs} proofs. A NEW write must carry a proof, not raise this \
+             number. Proving an existing one is the good direction -- lower \
+             the count in the same commit, and never raise it to make this \
+             pass.",
         );
     }
 

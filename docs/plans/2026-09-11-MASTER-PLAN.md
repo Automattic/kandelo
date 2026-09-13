@@ -2577,8 +2577,9 @@ give a wrong errno; it kills the process with **SIGBUS**. The JavaScript host
 answers `-EFAULT`. Fixed at the site, with a test that fails without it.
 **The rest of the class is measured, listed and left alone**:
 `checked_shared_range` has 6 call sites covering 3 functions, against 73 raw
-`write_bytes` sites, of which **thirteen** write through a pointer the kernel
-handed in — `host_clock_gettime`, `host_read` (twice), `host_pread`,
+`write_bytes` sites, of which **sixteen** write through a pointer the kernel
+handed in (thirteen until a mutation probe found `host_readdir` writing four
+times through a local the name-based count could not see) — `host_clock_gettime`, `host_read` (twice), `host_pread`,
 `host_readlinkat`, `host_fpathconf`, `host_readdir`, `host_fetch_deferred`,
 `host_getrandom`, `host_waitpid`, and the two `write_wasm_stat*` helpers those
 imports call. The attribution document carries the table. Those need one decision about

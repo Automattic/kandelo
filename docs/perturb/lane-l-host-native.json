@@ -44,6 +44,20 @@
       "scope_end": "\n}\n",
       "find": "    let scratch = blob_scratch.ptr() as u32 as usize;",
       "replace": "    let scratch = blob_scratch.ptr() as u32 as usize;\n    let _smuggled = blob_scratch.ptr() as u32 as usize;"
+    },
+    {
+      "name": "L5: a capacity that is mentioned but wrong (capacity() - 1)",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "(manifest.ptr(), manifest.capacity())",
+      "replace": "(manifest.ptr(), manifest.capacity() - 1)"
+    },
+    {
+      "name": "L-D3 ratchet: an unproven import write through a NON-pointer-named local",
+      "scope": "fn define_kernel_host_imports",
+      "scope_end": "\n}\n",
+      "find": "                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())\n                            };",
+      "replace": "                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())\n                            };\n                            let dest = value_ptr as u32 as usize;\n                            unsafe { write_bytes(&mem, dest, &[0u8]) };"
     }
   ]
 }
