@@ -74,12 +74,17 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
 const MAX_BUNDLE_ENTRIES = 100_000;
-const STAGING_FLAGS = new Map([
+// Keyed by `string`, deliberately. The keys are COMMAND-LINE arguments, so
+// every lookup starts from an arbitrary string and `get` returning undefined is
+// how an unknown flag is rejected. Typing the keys as the four literals would
+// force every caller to assert it already holds one of them, which is the
+// question the lookup exists to answer.
+const STAGING_FLAGS = new Map<string, keyof StagedProductInvocation>([
   ["--vfs-product-manifest", "manifestPath"],
   ["--vfs-product-inputs", "resolvedInputsPath"],
   ["--vfs-product-report", "builderReportPath"],
   ["--vfs-product-output", "outputPath"],
-] as const);
+]);
 
 export interface StagedProductInvocation {
   manifestPath: string;
@@ -1253,7 +1258,11 @@ export function parseStagedProductInvocation(
   const values: Partial<StagedProductInvocation> = {};
   for (let index = 0; index < arguments_.length; index += 2) {
     const flag = arguments_[index];
-    const field = STAGING_FLAGS.get(flag as keyof typeof STAGING_FLAGS);
+    // `keyof typeof STAGING_FLAGS` was a `Map`'s METHOD names -- "get", "size"
+    // and friends -- not its keys, so the cast asserted something both false
+    // and useless. It also asserted the flag is a KNOWN one, which is exactly
+    // what the next line checks.
+    const field = flag === undefined ? undefined : STAGING_FLAGS.get(flag);
     if (field === undefined) {
       throw new Error(`unknown staging flag ${JSON.stringify(flag)}`);
     }
@@ -1360,17 +1369,19 @@ export function readRepositoryPathBundle(
   let previous = "";
   const entries = root.entries.map((raw, index): RepositoryPathBundleEntry => {
     const entry = recordValue(raw, `repository bundle entry ${index}`);
+    // Checked before it is used, rather than by an empty key list standing in
+    // for "unsupported". The chain below narrowed `kind` for a READER and left
+    // it `unknown` for the compiler, so the value reaching the returned record
+    // was never actually known to be one of the three.
     const kind = entry.kind;
+    if (kind !== "file" && kind !== "directory" && kind !== "symlink") {
+      throw new Error(`repository bundle entry ${index} kind is unsupported`);
+    }
     const keys = kind === "file"
       ? ["bytes", "content_base64", "kind", "mode", "path", "sha256"]
       : kind === "directory"
       ? ["kind", "mode", "path"]
-      : kind === "symlink"
-      ? ["kind", "mode", "path", "target"]
-      : [];
-    if (keys.length === 0) {
-      throw new Error(`repository bundle entry ${index} kind is unsupported`);
-    }
+      : ["kind", "mode", "path", "target"];
     exactRecord(entry, keys, `repository bundle entry ${index}`);
     const entryPath = normalizedRelativePath(
       entry.path,
