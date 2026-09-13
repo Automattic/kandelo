@@ -4167,6 +4167,37 @@ where
     Ok(n)
 }
 
+/// Judge the image this tree WOULD export against a headroom profile.
+///
+/// Free space is a property of a laid-out filesystem, not of a tree, and the
+/// export is what lays it out — so the plan is built and mounted, and the
+/// existing policy is applied to it. Building the plan holds structure rather
+/// than content, which is what makes this affordable for a 249 MiB image.
+///
+/// Lives here rather than in the module that calls it because `ExportPlan` is
+/// private: exposing the laid-out image to reach one field would trade an
+/// encapsulation for a convenience.
+pub fn check_export_headroom(
+    headroom: &crate::image_policy::Headroom,
+) -> Result<crate::image_policy::PolicyOutcome, Errno> {
+    let plan = build_export_image()?;
+    let source = crate::sffs_write::SffsImageSource {
+        image: &plan.image,
+        content: &crate::sffs_write::NoContent,
+    };
+    let fs = crate::sffs::Sffs::mount(source)?;
+    let st = fs.statfs()?;
+    let free_bytes = st.f_bfree.saturating_mul(u64::from(st.f_frsize));
+    let met = crate::image_policy::check_headroom(&fs, headroom).is_ok();
+    Ok(crate::image_policy::PolicyOutcome {
+        met,
+        free_bytes,
+        required_bytes: headroom.minimum_free_bytes,
+        free_inodes: st.f_ffree,
+        required_inodes: headroom.minimum_free_inodes,
+    })
+}
+
 /// Discard any in-progress export. Called by [`reset`] so a fresh store never
 /// serves a chunk of the previous store's image.
 pub fn reset_image_export() {

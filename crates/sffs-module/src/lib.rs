@@ -691,6 +691,76 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     ))
 }
 
+/// Check the image this tree would export against a headroom profile.
+///
+/// Writes four little-endian `u64`s — `free_bytes`, `required_bytes`,
+/// `free_inodes`, `required_inodes` — and returns 0 when the profile is met, or
+/// `-EDOM` when it is not, with the numbers in `out` either way. Call with
+/// `out_len == 0` for the required size, the convention `sm_read_dir` uses.
+///
+/// # Why a POLICY and not a `statfs`
+///
+/// The builders' `assertVfsImageHeadroom` reads `statfs`, multiplies free
+/// blocks by block size, compares two numbers and formats a message. Exposing
+/// `statfs` would have been one line and would have left that arithmetic and
+/// that judgement in TypeScript — moving a syscall rather than a decision, and
+/// leaving the host doing MORE work while the surface count looked better.
+///
+/// `image_policy::check_headroom` already performs exactly this computation
+/// over `Sffs::statfs`, so what crosses the boundary is the verdict plus the
+/// numbers behind it. The caller still formats the message, because a `no_std`
+/// policy that owned its own prose would force one wording on every host.
+///
+/// # Why it costs an entry point, deliberately
+///
+/// This is the module's twentieth, against a `sffsModuleEntryPoints` budget
+/// banked at nineteen. The budget's own rule is that the surface does not grow
+/// WITHOUT AN ARGUMENT, and the argument is that the host ends up doing less:
+/// a primitive and a computation in TypeScript become one verdict. It is also
+/// the last method standing between `vfs-image-helpers.ts` — the funnel every
+/// builder reaches the format through — and an interface it can be typed
+/// against.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe a writable range when `out_len` is nonzero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_check_headroom(
+    minimum_free_bytes: u64,
+    minimum_free_inodes: u64,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    const RECORD: usize = 4 * 8;
+    if out_len == 0 {
+        return RECORD as i32;
+    }
+    if out_ptr == 0 || out_len < RECORD {
+        return err(Errno::EINVAL);
+    }
+
+    let headroom = runtime_core::image_policy::Headroom {
+        minimum_free_bytes,
+        minimum_free_inodes,
+    };
+    let outcome = match rootfs::check_export_headroom(&headroom) {
+        Ok(outcome) => outcome,
+        Err(e) => return err(e),
+    };
+    let fields = [
+        outcome.free_bytes,
+        outcome.required_bytes,
+        outcome.free_inodes,
+        outcome.required_inodes,
+    ];
+    let rc = if outcome.met { 0 } else { err(Errno::EDOM) };
+
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    for (index, value) in fields.iter().enumerate() {
+        out[index * 8..index * 8 + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    rc
+}
+
 /// # Safety
 /// `path_ptr`/`path_len` must describe a readable range.
 #[unsafe(no_mangle)]
@@ -1368,6 +1438,53 @@ mod tests {
         assert_eq!(section.get(member).expect("member record").archive_id, 3);
         assert_eq!(section.get(solo).expect("solo record").archive_id, 0);
         assert_eq!(section.get(solo).expect("solo record").payload, url);
+    }
+
+    #[test]
+    fn headroom_is_judged_with_the_numbers_behind_the_verdict() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+
+        let size = unsafe { sm_check_headroom(0, 0, 0, 0) };
+        assert_eq!(size, 32, "four u64s, discoverable without a second export");
+        let buf = sm_alloc(32);
+        let read = |min_bytes: u64, min_inodes: u64| -> (i32, [u64; 4]) {
+            let rc = unsafe { sm_check_headroom(min_bytes, min_inodes, buf, 32) };
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, 32) };
+            let mut out = [0u64; 4];
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8"));
+            }
+            (rc, out)
+        };
+
+        // A profile this image meets.
+        let (rc, [free_bytes, required_bytes, free_inodes, required_inodes]) = read(0, 0);
+        assert_eq!(rc, 0, "zero required is met by anything");
+        assert_eq!(required_bytes, 0);
+        assert_eq!(required_inodes, 0);
+        assert!(free_bytes > 0, "a fresh image has free space");
+        assert!(free_inodes > 0, "and free inodes");
+
+        // A profile it cannot meet. The numbers come back either way, which is
+        // the point: a caller that only learns "no" cannot say by how much.
+        let (rc, [reported_free, required, _, _]) = read(u64::MAX, 0);
+        assert!(rc < 0, "an unmeetable profile is a failure, got {rc}");
+        assert_eq!(required, u64::MAX, "and it reports what was required");
+        assert_eq!(
+            reported_free, free_bytes,
+            "and the same free count as the passing call -- the verdict changed, \
+             not the measurement",
+        );
+
+        let (rc, [_, _, _, required_inodes]) = read(0, u64::MAX);
+        assert!(rc < 0, "free inodes are checked too, not only bytes");
+        assert_eq!(required_inodes, u64::MAX);
+
+        unsafe { sm_free(buf, 32) };
     }
 
     #[test]

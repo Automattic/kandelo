@@ -264,6 +264,26 @@ describe("SffsImageFs", () => {
     expect(st.mode & 0o7777).toBe(0o4755);
   });
 
+  it("judges headroom and reports the numbers either way", () => {
+    // The assertion builders make — "this image must ship with room to write" —
+    // now comes back as a verdict computed in Rust rather than a statfs the
+    // caller has to turn into one.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/f", new TextEncoder().encode("hello"), 0o644);
+
+    const ok = fs.checkHeadroom(0, 0);
+    expect(ok.met).toBe(true);
+    expect(ok.freeBytes).toBeGreaterThan(0);
+    expect(ok.freeInodes).toBeGreaterThan(0);
+
+    // Unmeetable: still returns the measurement, because a caller that only
+    // learns "no" cannot say by how much.
+    const no = fs.checkHeadroom(Number.MAX_SAFE_INTEGER, 0);
+    expect(no.met).toBe(false);
+    expect(no.requiredBytes).toBe(Number.MAX_SAFE_INTEGER);
+    expect(no.freeBytes).toBe(ok.freeBytes);
+  });
+
   it("refuses one archive declared with two different lengths", () => {
     // The member's size and the ARCHIVE's size are different numbers, and the
     // second is what bounds the fetch. Two lengths for one archive would make

@@ -64,6 +64,7 @@ interface ModuleExports {
     archivePayload: number, archivePayloadLen: number,
   ): number;
   sm_set_image_metadata(p: number, pl: number): number;
+  sm_check_headroom(minBytes: bigint, minInodes: bigint, o: number, ol: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
 }
 
@@ -512,6 +513,52 @@ export class SffsImageFs {
    * The fetch URL is deliberately absent. Nothing reads one through this path,
    * and it lives in the deferred payload the kernel carries without reading.
    */
+  /**
+   * Free space and free inodes in the image this tree would export, judged
+   * against a profile.
+   *
+   * Returns the four numbers whether or not the profile is met, because a
+   * caller that only learns "no" cannot say by how much — and the message a
+   * build script wants to print is not one a `no_std` policy should own.
+   *
+   * The arithmetic lives in Rust: this is a VERDICT, not a `statfs`. Exposing
+   * the primitive would have moved a syscall and left the multiplication, the
+   * comparison and the judgement on this side.
+   */
+  checkHeadroom(minimumFreeBytes: number, minimumFreeInodes: number): {
+    met: boolean;
+    freeBytes: number;
+    requiredBytes: number;
+    freeInodes: number;
+    requiredInodes: number;
+  } {
+    const size = this.exports.sm_check_headroom(0n, 0n, 0, 0);
+    const ptr = this.exports.sm_alloc(size);
+    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      const rc = this.exports.sm_check_headroom(
+        BigInt(minimumFreeBytes), BigInt(minimumFreeInodes), ptr, size,
+      );
+      const view = new DataView(this.exports.memory.buffer, ptr, size);
+      const at = (i: number) => Number(view.getBigUint64(i * 8, true));
+      // A breach is a VERDICT, not a failure to compute: the numbers under it
+      // are the reason, and throwing would discard them. Anything else is a
+      // real error.
+      if (rc !== 0 && rc !== -ERRNO.EDOM) {
+        throw new SffsImageError(-rc, "checkHeadroom", "");
+      }
+      return {
+        met: rc === 0,
+        freeBytes: at(0),
+        requiredBytes: at(1),
+        freeInodes: at(2),
+        requiredInodes: at(3),
+      };
+    } finally {
+      this.exports.sm_free(ptr, size);
+    }
+  }
+
   isPathDeferred(path: string): boolean {
     return this.lstat(path).deferred;
   }
