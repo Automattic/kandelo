@@ -1481,12 +1481,7 @@ rejected, which was a bad section length, not a type verdict:
 | `funcref` | validates and instantiates |
 | `exnref` | validates and instantiates |
 
-**That is structural only.** It does not show that a real `exnref` VALUE crosses
-usefully, which is what identity needs — the host must be able to hold it as a
-map key. Weak counter-evidence: `new WebAssembly.Table({element: "exnref"})` is
-REJECTED by the same engine, where `anyfunc`, `externref` and `anyref` are all
-accepted. Settling it needs a tag, a throw and a `try_table` catch, which this
-census did not build.
+**That was structural only, and it is now settled — negatively.** §28a.
 
 ### The semantic mismatch
 
@@ -1517,3 +1512,68 @@ property that is not established.
 Not built, deliberately. Building an abstraction over a group that turned out
 not to share a need is how a host contract grows without anyone deciding to grow
 it — which is the defect this campaign's primary measure exists to catch.
+
+## §28a — SETTLED: an `exnref` value cannot cross into a JS host
+
+Built the probe §28 said it needed: a tag, a throw, a `try_table` catch, the
+caught `exnref` handed to a JS import twice. Assembled with `wasm-tools 1.239.0`
+rather than by hand.
+
+```
+compile:      OK
+instantiate:  OK
+call run():   FAILED -> TypeError: type incompatibility when transforming from/to JS
+```
+
+**A module may DECLARE an `exnref` import and instantiate it. Passing a real
+`exnref` value across the JS boundary is where it stops.** That is why the
+structural probe in §28 read as permissive: nothing rejects the declaration.
+
+Two corroborating asymmetries from the same run:
+
+* `new WebAssembly.Table({element: "exnref"})` is rejected by the JS API, while
+  `anyfunc`, `externref` and `anyref` are all accepted.
+* `(table $t 1 exnref)` assembles fine as a MODULE-OWNED table. So wasm can hold
+  exception references in a table; JavaScript cannot create that table or
+  receive what is in it.
+
+### What this removes
+
+**`exn_claim`, `exn_lookup` and `exn_broker_encode` cannot be served by a
+host-identity import at all.** Not "at a cost" — the mechanism does not exist on
+a JS host. Widening `__wpk_fork_host_ref_identity` to take an `exnref` would
+compile, instantiate, and then throw a `TypeError` the first time a guest
+actually caught an exception. That is the worst possible failure shape: it
+passes every structural check and fails only under load.
+
+So the §28 grouping narrows again. Of the four "identity" imports, `exn_claim` /
+`exn_lookup` / `exn_broker_encode` are not a host-import question at all, and
+only `encode_funcref` remains — and §28 already showed it wants a catalog
+ordinal rather than an identity.
+
+**There is no longer a case for a new or widened identity import.** The host
+obligation stays at 5.
+
+### What it points at instead
+
+Exception identity has to be decided INSIDE wasm, where exnrefs live. The module
+can own an `exnref` table, so the remaining mechanism is a module-owned
+exception table plus a linear scan — wasm has no `ref.eq` for `exn`, but it does
+have `ref.is_null`, and a table the module fills itself has a known slot per
+entry. That makes `exn_claim`/`exn_lookup` an injector problem rather than a
+host-contract problem, which is the direction this lane wants anyway.
+
+Not started. Recorded because it changes which door the exception group goes
+through.
+
+### On the instrument
+
+§28's hand-encoded probe was checked against `wasm-tools` output for the
+`anyref` case and is **byte-identical**
+(`0061736d0100000001060160016e017f020d0103656e760570726f62650000`). The earlier
+correction to two section lengths was an arithmetic fix derived from the
+encoding rules — 6 and 13 where 5 and 11 had been written — not an instrument
+tuned until it gave a wanted answer. The control was chosen because its result
+is independently known: the production fork-module imports an `anyref`-typed
+function and instantiates. Worth stating plainly, because "fix it until the
+control passes" is exactly what a tuned experiment also looks like.
