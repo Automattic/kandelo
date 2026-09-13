@@ -363,7 +363,7 @@ will go looking in its own changeset.
 
 | Package | Stage it fails at | What is missing |
 |---|---|---|
-| `wget` | compile | `openssl/ssl.h` not found (`openssl.c:40`) |
+| `wget` | compile | `openssl/ssl.h` not found (`openssl.c:40`, wget's own source, not a path in this tree) |
 | `vim` | link | `wasm-ld: unable to find library -lncursesw`, `-ltinfow` |
 | `php` | configure | `icu-uc >= 50.1 icu-io icu-i18n` not met |
 
@@ -938,6 +938,42 @@ histories, which is not this lane's to do. The reason to think
 it matters is that the campaign's whole method is lanes reducing counted
 surfaces, and this is the one way to satisfy that method without doing the work
 — available by accident, not only by intent.
+
+### The same test, turned on this document
+
+The finding above is that ten of thirteen line-anchored citations in
+`crates/host-native` no longer resolve. A document that reports that and does
+not check itself is making an argument it declines to be measured by, so every
+citation here was resolved against the tree.
+
+**34 distinct file paths, all of which exist.** One git ref named in the text
+resolves; the only other `refs/...` string is `refs/heads`, a namespace rather
+than a ref.
+
+**Fourteen line anchors, and only three are this document speaking.** The
+other eleven are the rotted host-native citations, quoted as the evidence for
+the finding — resolving is not what they are for, and a checker that flagged
+them would be flagging this document for reporting rot accurately. Of the
+three: `scripts/test-allow-stale.sh:82` is the `CACHE_DIR=` line that reads
+`WASM_POSIX_CACHE_DIR`, and `scripts/activate-ci-test-workspace.sh:34` is the
+`export WASM_POSIX_BINARY_CACHE_ROOT=` line — both exactly what they are cited
+for. The third, `openssl.c:40`, is wget's own source and not in this tree,
+which the table now says.
+
+**The real defence is that this document barely uses anchors at all.** Three
+in eleven hundred lines, against thirteen in one Rust file. An argument stated
+in prose, with the identifier named, does not rot when the file grows.
+
+**And the checker that established this answers a weaker question than the
+finding needs, which is worth more than its result.** Perturbed three ways: a
+path that does not exist is caught, a line past the end of a real file is
+caught, and **a real file at a real line whose content is something else
+entirely is NOT** — which is the shape five of the thirteen rotted citations
+have. Existence is mechanical; correspondence was verified by reading each of
+the three. That is only tractable because there are three. It is a one-off
+audit and is not shipped as a test: a content check would have to guess which
+identifier each anchor means, and a guard that guesses is the next entry in
+this list rather than the end of it.
 
 ## The oracle's LEB128 walk lost one byte per name
 
