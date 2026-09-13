@@ -1,0 +1,81 @@
+{
+  "$comment": [
+    "One statement of the rule for judging a pointer and length against a",
+    "WebAssembly linear memory, checked in both hosts.",
+    "",
+    "`crates/shared/tests/host_memory_range.rs` runs it against",
+    "`wasm_posix_shared::host_memory::checked_range`, which crates/host-native",
+    "calls directly. `host/test/kernel-scratch-range.test.ts` runs it against",
+    "`checkedMemoryRange` and `checkedWasmImportMemoryRange` in",
+    "host/src/kernel-scratch.ts, which keep their own arithmetic because a",
+    "bounds check runs on the syscall hot path and a wasm module call per",
+    "check is a cost the performance contract does not permit.",
+    "",
+    "So the two hosts share a STATEMENT rather than an implementation, and the",
+    "statement is failable. Every limit is a whole number of 64 KiB pages so",
+    "the TypeScript half can build a real WebAssembly.Memory of that size",
+    "rather than describing one.",
+    "",
+    "`rustOnly` marks a case the TypeScript half cannot express, with the",
+    "reason. Saying which properties a technique cannot reach is part of the",
+    "result; a silently-skipped case reads exactly like a passing one."
+  ],
+  "cases": [
+    {
+      "name": "a zero-length range at address zero is legal",
+      "addr": 0, "len": 0, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "ok"
+    },
+    {
+      "name": "a null pointer with a positive length is refused",
+      "why": "Address zero is addressable in wasm; a kernel allocator returning zero means failure, and that convention is what is being enforced.",
+      "addr": 0, "len": 1, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "null-pointer"
+    },
+    {
+      "name": "a caller that means offset zero says so",
+      "addr": 0, "len": 16, "limitPages": 1, "allowAddressZero": true,
+      "verdict": "ok"
+    },
+    {
+      "name": "the exact end of memory is inclusive",
+      "addr": 65532, "len": 4, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "ok"
+    },
+    {
+      "name": "one byte past the end is refused",
+      "addr": 65532, "len": 5, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "out-of-bounds"
+    },
+    {
+      "name": "a zero-length range AT the end is legal",
+      "why": "end == limit, which the rule admits; it addresses no byte.",
+      "addr": 65536, "len": 0, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "ok"
+    },
+    {
+      "name": "a zero-length range past the end is refused",
+      "why": "Nothing is read, but the address is not one this memory has.",
+      "addr": 65537, "len": 0, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "out-of-bounds"
+    },
+    {
+      "name": "a range that spans a grown memory is admitted",
+      "addr": 65536, "len": 131072, "limitPages": 4, "allowAddressZero": false,
+      "verdict": "ok"
+    },
+    {
+      "name": "the largest wasm32 address with a positive length is refused",
+      "why": "A 32-bit pointer at its maximum plus any length leaves every real memory.",
+      "addr": 4294967295, "len": 1, "limitPages": 4, "allowAddressZero": false,
+      "verdict": "out-of-bounds"
+    },
+    {
+      "name": "an address that overflows the address space is refused as overflow",
+      "why": "Unreachable through a wasm32 pointer, so the TypeScript half cannot present it: `checkedWasmImportMemoryRange` rejects anything above 0xffffffff as an invalid pointer before a range is considered. Kept because crates/host-native takes a u64 from a memory64 guest.",
+      "rustOnly": true,
+      "addr": 18446744073709551615, "len": 2, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "end-overflows"
+    }
+  ]
+}
