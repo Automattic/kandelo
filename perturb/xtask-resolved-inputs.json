@@ -15,8 +15,8 @@
       "name": "the manifest path is never validated",
       "scope": "pub fn validate_envelope",
       "scope_end": "\n}\n",
-      "find": "    validate_repo_path(repository_root, &document.product.manifest_path)?;",
-      "replace": "    let _ = repository_root;"
+      "find": "    validate_repo_path_shape(&document.product.manifest_path)?;",
+      "replace": "    let _ = &document.product.manifest_path;"
     },
     {
       "name": "the product output may be a path",
@@ -73,6 +73,13 @@
       "scope_end": "\n}\n",
       "find": "    if document.inputs.len() > MAX_INPUTS {",
       "replace": "    if false {"
+    },
+    {
+      "name": "the manifest path is checked for existence rather than shape",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "    validate_repo_path_shape(&document.product.manifest_path)?;",
+      "replace": "    super::canonical_json::validate_repo_path(\n        std::path::Path::new(\"/nonexistent\"),\n        &document.product.manifest_path,\n    )?;"
     }
   ]
 }
