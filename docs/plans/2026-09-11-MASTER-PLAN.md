@@ -664,6 +664,38 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-16 — mutation testing quietly fills the disk, because macOS leaves a
+  fresh set of debuginfo object files beside every rebuild and removes none of
+  the previous ones.** Measured 2026-09-13, when the maintainer reported the
+  worktree target directories holding roughly 222 GB between them. This lane's
+  was 34 GB, of which 30 GB was **738,632 orphaned `.o` files** in
+  `target/<triple>/debug/deps` — debuginfo for test binaries that no longer
+  exist. Three other worktrees held 353,947, 311,018 and 307,601 of them.
+
+  **The cause is a default, not a mistake.** On macOS the dev profile defaults
+  to `split-debuginfo = "unpacked"`: the debug info stays in separate object
+  files that the binary references by path. Cargo writes a new set on each
+  rebuild and has no garbage collector, so nothing ever deletes the old set. A
+  mutation run rebuilds the tree once per trial, and this lane has run about 240
+  trials.
+
+  **The fix is one line of worktree-local config**, in `$CARGO_HOME/config.toml`
+  where `CARGO_HOME` already points inside the worktree and is git-excluded:
+
+  ```toml
+  [profile.dev]
+  debug = 0
+  ```
+
+  After deleting the accumulated tree, a full rebuild took 28 seconds and
+  produced zero `.o` files; all suites stayed green. Panic messages keep file
+  and line — those come from the `panic!` macro, not from debuginfo — so the
+  only loss is symbolised backtraces, which no suite here reads.
+
+  **For every lane running `xtask perturb`: set this before the first run, not
+  after the hundredth.** The growth is invisible while it happens; the only
+  signal is free space, and by the time anyone looks the cost is already paid.
+
 - **H-15 — a suite that only exercises VALID input says nothing about the
   checks that reject invalid input, and reads identically to one that does.**
   Measured six times in one session, 2026-09-13, across four modules. **Recorded
@@ -4082,6 +4114,41 @@ decode is a payload whose seal status is unknown, and unknown is not none.
 bridge BEFORE this fix carry raw descriptors and will not load afterwards. Under
 the rebuild decision that is acceptable — those images are being rebuilt anyway
 — but it is a break, and it is better stated than discovered.
+
+**CLOSED 2026-09-13**, by the fix above and nothing weaker. `sm_register_lazy_file`
+now wraps the caller's descriptor in the envelope before declaring the archive,
+so the payload format is written by the code that owns it. The bridge still
+passes plain descriptor bytes and TypeScript still never writes the format.
+
+Three things landed with it, each because the fix would otherwise be untested or
+unbuildable:
+
+* **A regression test written before the fix**, `an_image_with_an_ordinary_archive_descriptor_still_loads`.
+  It registers an archive with a plain JSON descriptor and loads the image back.
+  It failed first, which is the only way to know it tests the bug.
+* **`SealState` became three-valued in the same change** (`None` / `Pending` /
+  `Sealed`), and `verify_cohorts` refuses a pending payload with `EPERM`. The
+  reasoning is the section below; what gap 18 added was the deadline.
+* **`rootfs::set_archive_payload`.** Completing a seal means rewriting a payload
+  that was already stored, because a cohort digest cannot be computed until the
+  last member is registered. The producer needs it at export, and it is also the
+  only honest way for the wiring test to stand up a SEALED archive — registration
+  cannot be handed a seal, by construction, which is the whole point.
+
+**What the wiring test had to stop doing, and why that is the design working.**
+It used to hand `sm_register_lazy_file` a seal-encoded payload directly. After
+the fix that payload would be wrapped a second time and its seal would read as
+absent, so the test would have passed while testing nothing. It now registers
+the descriptor and writes the seal where the producer will. A test that can no
+longer fake a producer's output is a test that has stopped being able to lie.
+
+**Trials.** Three new ones, all killed: registration storing the caller's bytes
+verbatim (gap 18 itself), `verify_cohorts` carrying a pending payload instead of
+refusing it, and the decoder reading a pending declaration as an absent seal. One
+existing trial rotted against the fix — it anchored by quoting the declare call
+directly beneath the `archive_id != 0` guard, and the wrapping now sits between
+them — and was re-aimed at the guard itself, which is what it was always about.
+`sffs-module-seal.json` is 12/12 killed.
 
 ### The seal's producer: a THIRD payload state, because "pending" must not read as "none"
 
