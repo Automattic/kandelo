@@ -3612,6 +3612,72 @@ better trade than a ceiling raise even if a raise would be defensible** — the
 argument for growth is strongest when you have first looked for what can shrink,
 and an export that returns a constant is exactly what to look for.
 
+**LANDED 2026-09-12** — `41ce154c2` "The kernel can load an image, including one
+it wrote itself", with the trade exactly as scoped: `sm_load_image` in,
+`sm_stat_size` out, surface 20 either side.
+
+**Both halves had to be one commit**, and the reason is worth keeping: landing
+the deletion alone would drop the count to 19, and the budget would then require
+banking 19 and raising the ceiling back to 20 — the move nobody is allowed to
+make. A net-zero trade has to arrive net-zero.
+
+**Ownership transfers on success and only on success.** A loaded image hands out
+`BaseSource::Image` nodes, each a promise the kernel can come back for those
+bytes later, so the module keeps the buffer rather than copying it — `lamp.vfs`
+is 249 MiB and a copy means both resident at once in a 32-bit address space. On
+failure the module has not adopted it and the host still owns what it allocated,
+because **a caller that must read a return code to know whether it still owns
+memory will eventually get it wrong, and the safe direction to be wrong in is
+"the host frees what it allocated"**.
+
+**Two byte sources stopped being hardcoded `EIO`.** `sm_read_file` reads a base
+file out of the image it came from, and `sm_export_image_read` carries base
+content into a derived export. That is what made the two trials held out since
+V4 killable — `perturb/deferred-until-v4.json` is retired and its trials are in
+`sffs-module-abi.json`, which is the green contract its handoff named as the
+definition of done.
+
+### Gap 15 — the kernel refused an image it had just written
+
+**Found 2026-09-12 by the first round-trip test, and it had been invisible.**
+`xtask vfs-image roundtrip` compares DECODED DESCRIPTIONS, so "the export writes
+a format the decoder understands" was proven and "the kernel can load back what
+it wrote" was not. The first test to try it got `EINVAL` on a 290 KB image the
+module had produced seconds earlier.
+
+`load_image` refuses an image declaring neither `KLZY` nor `SDEF`, and the
+reasoning is sound: it cannot tell "this image has no lazy files" from "this
+image records its lazy files only in the host-side JSON I cannot read", and
+accepting the second builds a tree where every deferred file reports size 0 — a
+wrong tree that looks like a right one. But `emit_deferred_section` returned
+early when nothing was deferred, so the image came out byte-identical to one
+built before the section existed. **That backward-compatibility property was
+exactly what made the artifact unloadable.**
+
+**The fix is opt-in, and the first attempt is why.** Emitting the empty section
+unconditionally broke four `matches_the_typescript_writer` byte-for-byte tests —
+the migration safety property saying the change was one layer too low. Only a
+producer that really would have written the records may make the statement:
+`SffsWriter::declare_deferred_section` is called by the kernel's export and by
+nothing else. The TypeScript writer cannot make it, and for its images "no
+section" is the truth the loader is right to refuse.
+
+**An empty section is not a formality.** It is the statement "this image was
+written by something that would have told you", and it is the difference between
+silence and an answer. It costs one inode and one block — visible as the fixed
+export slack moving from 64 blocks to 63.
+
+Evidence: `xtask vfs-image roundtrip` on a real 1.5 MB kernel-written image —
+loaded 375 entries, re-exported, EQUIVALENT, carriers `sdef -> sdef`. The
+shipped 16 MB rootfs is unchanged at 65 deferred lost, which is the base-file
+identity gap (items 2 and 3), not a regression.
+
+**What this did NOT close.** A blob-backed base file still exports as an empty
+stub, because the kernel holds no identity for it that survives renumbering.
+That is still items 2 and 3, and the module test asserting the damage now
+asserts it against a section that exists and does not mention the inode, rather
+than against no section at all.
+
 ### Y5 MOVED: importers 36 -> 20, banked. 2026-09-12.
 
 **The acceptance number moved for the first time**, and what unlocked it was not
