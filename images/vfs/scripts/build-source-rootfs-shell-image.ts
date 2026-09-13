@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
@@ -224,7 +224,7 @@ export function composeSourceRootfsDemoConfig(
 }
 
 function requireOwnedDemoCommands(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   demoBytes: Uint8Array,
 ): void {
   const config = parseKandeloDemoConfig(
@@ -255,7 +255,7 @@ function requireOwnedDemoCommands(
 }
 
 function requireImageExecutable(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   config: ExperimentalTerminalProgram,
 ): void {
   const stat = (() => {
@@ -277,7 +277,7 @@ function requireImageExecutable(
 }
 
 function readExperimentalTerminalSession(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
 ): ExperimentalTerminalSession {
   let stat;
   try {
@@ -307,7 +307,6 @@ function readExperimentalTerminalSession(
 
 interface LazyIdentity {
   ino: number;
-  generation?: number;
 }
 
 interface BashAliasContract {
@@ -322,47 +321,71 @@ interface SourceBashIdentity {
   aliases: BashAliasContract[];
 }
 
+/**
+ * Identity is the inode NUMBER alone, where it used to be the inode number and
+ * a generation counter.
+ *
+ * The counter existed because inode numbers can be REUSED: delete a file and a
+ * later one may take its number, so two different files would compare equal.
+ * The module mints inode numbers from a counter that only rises and never
+ * hands one back, so within a build an inode number identifies one file for
+ * the whole life of the tree, and there is nothing for a generation to
+ * disambiguate.
+ *
+ * `bigint` because the module's inode numbers are 64-bit; comparing them
+ * loosely would defeat the point of comparing them at all.
+ */
 function sameLazyIdentity(
-  entry: { ino: number; generation?: number },
+  entry: { ino: number | bigint },
   identity: LazyIdentity,
 ): boolean {
-  return entry.ino === identity.ino && entry.generation === identity.generation;
+  return Number(entry.ino) === identity.ino;
 }
 
+type LazyRecords = {
+  files: ReturnType<SffsImageFs["lazyEntries"]>["files"];
+  trees: ReturnType<SffsImageFs["lazyEntries"]>["archives"];
+};
+
 function lazyRecords(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
-): {
-  files: ReturnType<MemoryFileSystem["exportLazyEntries"]>;
-  trees: ReturnType<MemoryFileSystem["exportLazyArchiveEntries"]>;
-} {
+): LazyRecords {
+  const { files, archives } = fs.lazyEntries();
   return {
-    files: fs
-      .exportLazyEntries()
-      .filter(
-        (entry) =>
-          !omittedIdentities.some((identity) =>
-            sameLazyIdentity(entry, identity)
-          ),
-      ),
-    trees: fs.exportLazyArchiveEntries(),
+    files: files.filter(
+      (entry) =>
+        !omittedIdentities.some((identity) => sameLazyIdentity(entry, identity)),
+    ),
+    trees: archives,
   };
 }
 
 function lazyState(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
 ): string {
-  return JSON.stringify(lazyRecords(fs, omittedIdentities));
+  // `JSON.stringify` renders a `bigint` as a throw and a `Uint8Array` as an
+  // object of indices, so both are spelled out. The descriptor is rendered as
+  // hex because it is OPAQUE -- decoding it here to print something friendlier
+  // would make this comparison depend on a format the kernel promises not to
+  // read.
+  return JSON.stringify(lazyRecords(fs, omittedIdentities), (_key, value) =>
+    typeof value === "bigint"
+      ? value.toString()
+      : value instanceof Uint8Array
+        ? Buffer.from(value).toString("hex")
+        : value,
+  );
 }
 
 /** The lazy identity at `path`, or null if `path` is not a lazy file. */
 function optionalLazyIdentity(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   path: string,
 ): LazyIdentity | null {
-  const lazy = fs.getLazyEntry(path);
-  return lazy === null ? null : { ino: lazy.ino, generation: lazy.generation };
+  if (!fs.isPathDeferred(path)) return null;
+  return { ino: Number(fs.lstat(path).ino) };
 }
 
 /**
@@ -376,7 +399,7 @@ function optionalLazyIdentity(
  * change or no change at all.
  */
 function requireManSupersededByMandoc(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   priorIdentity: LazyIdentity | null,
 ): void {
   if (priorIdentity === null) return;
@@ -395,7 +418,7 @@ function requireManSupersededByMandoc(
 
 function requireExpectedLazyState(
   before: string,
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   label: string,
 ): void {
   const after = lazyState(fs);
@@ -408,8 +431,8 @@ function requireExpectedLazyState(
 }
 
 function requirePreservedLazyState(
-  expected: ReturnType<typeof lazyRecords>,
-  fs: MemoryFileSystem,
+  expected: LazyRecords,
+  fs: SffsImageFs,
   label: string,
 ): void {
   const actual = lazyRecords(fs);
@@ -431,21 +454,26 @@ function requirePreservedLazyState(
   }
 }
 
-function requireCompleteProductShellContract(fs: MemoryFileSystem): void {
+function requireCompleteProductShellContract(fs: SffsImageFs): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
-    if (fs.getLazyEntry(spec.vfsPath) === null) {
+    if (!fs.isPathDeferred(spec.vfsPath)) {
       throw new Error(
         `source-rootfs shell omitted production lazy utility ${spec.vfsPath}`,
       );
     }
   }
-  const archiveUrls = new Set(
-    fs.exportLazyArchiveEntries().map((entry) => entry.url),
-  );
+  // Asked of the TREE rather than of a list of URLs. The contract being checked
+  // is that the shipped shell can actually run each of these -- which is that
+  // the member is present and still deferred, not that some table mentions a
+  // URL. A URL is the archive's transport and lives in the fetch description
+  // the kernel carries without reading; a rebuild that changed one would fail
+  // this check while shipping exactly the right contents.
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
-    if (!archiveUrls.has(spec.archiveUrl)) {
+    const member = `${spec.mountPrefix}${spec.requiredMember}`;
+    if (!fs.isPathDeferred(member)) {
       throw new Error(
-        `source-rootfs shell omitted production lazy archive ${spec.archiveUrl}`,
+        `source-rootfs shell omitted production lazy archive ${spec.archiveUrl}` +
+          ` (${member} is not a deferred member of it)`,
       );
     }
   }
@@ -500,7 +528,7 @@ function strictResolverFromDependencyEnvironment(
   };
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: SffsImageFs, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);
@@ -528,27 +556,29 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 function requireLazyBashIdentity(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
 ): SourceBashIdentity {
   const bashPath = REQUIRED_BASH_ALIASES[0];
-  const lazy = fs.getLazyEntry(bashPath);
-  if (lazy === null) {
+  if (!fs.stat(bashPath).deferred) {
     throw new Error(`${bashPath} must be a lazy source-rootfs entry`);
   }
-  const identity = { ino: lazy.ino, generation: lazy.generation };
-  const hardlinkPaths = Array.from(
-    new Set([lazy.path, ...(lazy.paths ?? [])]),
-  ).sort();
+  const identity = { ino: Number(fs.stat(bashPath).ino) };
+  // The hardlinks are DERIVED from the tree rather than read from a list the
+  // filesystem kept beside it. A hardlink is one inode reachable by several
+  // paths, so the paths sharing this inode ARE the hardlinks -- and a list that
+  // could disagree with the tree is a list that eventually will.
+  const hardlinkPaths = fs
+    .lazyEntries()
+    .files.filter((entry) => Number(entry.ino) === identity.ino)
+    .map((entry) => entry.path)
+    .sort();
   const aliases: BashAliasContract[] = [];
   for (const alias of REQUIRED_BASH_ALIASES) {
     const linkStat = fs.lstat(alias);
     const stat = fs.stat(alias);
-    const aliasLazy = fs.getLazyEntry(alias);
-    if (
-      stat.ino !== lazy.ino ||
-      aliasLazy === null ||
-      !sameLazyIdentity(aliasLazy, identity)
-    ) {
+    // Through `stat`, not `lstat`: an alias may be a symlink, and what must
+    // match is the file it RESOLVES to.
+    if (Number(stat.ino) !== identity.ino || !stat.deferred) {
       throw new Error(
         `${alias} must resolve to the complete lazy Bash identity`,
       );
@@ -575,7 +605,7 @@ function requireLazyBashIdentity(
 }
 
 function requireMaterializedBashIdentity(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   contract: SourceBashIdentity,
   expectedBytes: Uint8Array,
 ): void {
@@ -593,7 +623,7 @@ function requireMaterializedBashIdentity(
     ) {
       throw new Error(`${path} lost the materialized Bash hardlink identity`);
     }
-    if (fs.getLazyEntry(path) !== null || fs.isPathDeferred(path)) {
+    if (fs.isPathDeferred(path)) {
       throw new Error(`${path} remained lazy after Bash materialization`);
     }
     if (!bytesEqual(readVfsBytes(fs, path), expectedBytes)) {
@@ -611,7 +641,7 @@ function requireMaterializedBashIdentity(
       throw new Error(`${alias.path} changed Bash symlink target`);
     }
     const stat = fs.stat(alias.path);
-    if (stat.ino !== canonical.ino || fs.getLazyEntry(alias.path) !== null) {
+    if (Number(stat.ino) !== Number(canonical.ino) || stat.deferred) {
       throw new Error(`${alias.path} does not resolve to materialized Bash`);
     }
     if (!bytesEqual(readVfsBytes(fs, alias.path), expectedBytes)) {
@@ -633,18 +663,20 @@ export async function buildSourceRootfsShellImage(
   inputs: SourceRootfsShellInputs,
 ): Promise<Uint8Array> {
   const rootfs = readRegularInput(inputs.rootfsPath, "rootfs dependency");
-  const sourceMetadata = MemoryFileSystem.readImageMetadata(rootfs);
+  const sourceMetadata = SffsImageFs.readImageMetadata(rootfs);
   if (sourceMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error(
       `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +
         `got ${String(sourceMetadata?.kernelAbi)}`,
     );
   }
-  const sourceCapacity = MemoryFileSystem.readImageCapacity(rootfs);
-  const fs = MemoryFileSystem.fromImagePreservingCapacity(rootfs);
-  // WHY: this builder exports and preserves lazy state from an imported image;
-  // authenticate atomic seals before the source image gains that authority.
-  await fs.verifyImportedLazyAtomicGroupSeals();
+  const sourceCapacity = SffsImageFs.readImageCapacity(rootfs);
+  // The load AUTHENTICATES. Verification runs inside the module's
+  // `sm_load_image`, so the source image gains its authority only after its
+  // activation cohorts checked out -- there is no window between importing and
+  // authenticating, and no second call to forget.
+  const fs = SffsImageFs.create();
+  fs.loadImage(rootfs);
   const terminalSession = readExperimentalTerminalSession(fs);
   const demo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
@@ -719,20 +751,21 @@ export async function buildSourceRootfsShellImage(
     ),
   });
 
-  const outputMetadata = MemoryFileSystem.readImageMetadata(image);
+  const outputMetadata = SffsImageFs.readImageMetadata(image);
   if (outputMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error("composed shell lost its explicit kernel ABI");
   }
   if (
-    MemoryFileSystem.readImageCapacity(image).maxByteLength !==
+    SffsImageFs.readImageCapacity(image).maxByteLength !==
     sourceCapacity.maxByteLength
   ) {
     throw new Error("composed shell changed the rootfs capacity contract");
   }
-  const outputFs = MemoryFileSystem.fromImagePreservingCapacity(image);
-  // WHY: post-save assertions are a separate import boundary and must verify
-  // the exact serialized seals rather than inherit trust from the source fs.
-  await outputFs.verifyImportedLazyAtomicGroupSeals();
+  // A separate import boundary on purpose: the post-save assertions check the
+  // bytes that were WRITTEN rather than inheriting trust from the tree that
+  // wrote them. Loading them back is what authenticates their seals.
+  const outputFs = SffsImageFs.create();
+  outputFs.loadImage(image);
   requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(
     composedLazyState,

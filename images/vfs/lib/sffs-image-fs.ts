@@ -982,6 +982,20 @@ export class SffsImageFs {
   }
 
   /**
+   * The growth ceiling an image declares, without keeping the image.
+   *
+   * A CEILING and not an allocation: the image says how far it may grow, and a
+   * loader restoring it costs the inode table its share rather than the
+   * declared room. That is the whole reason a builder can ask this of a 256 MiB
+   * base without paying 256 MiB to find out.
+   */
+  static readImageCapacity(image: Uint8Array): { maxByteLength: number } {
+    const fs = SffsImageFs.create();
+    fs.loadImage(image);
+    return { maxByteLength: fs.exportCapacityBytes() };
+  }
+
+  /**
    * Load a VFS image as the base layer, replacing whatever tree is present.
    * Returns the number of entries the kernel inserted.
    *
