@@ -134,6 +134,27 @@
       "scope_end": "\n  }\n",
       "find": "    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );",
       "replace": "    return (this.lastMetadata as VfsImageMetadata | null) ?? null;\n    // eslint-disable-next-line no-unreachable\n    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );"
+    },
+    {
+      "name": "an archive is registered member by member as it is validated",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    const planned = planLazyArchiveEntries(\n      args.url,\n      args.entries,\n      args.mountPrefix,\n      args.symlinkTargets,\n    );",
+      "replace": "    const planned = args.entries.map((entry) => ({\n      entry,\n      archivePath: entry.fileName,\n      vfsPath: `${args.mountPrefix}/${entry.fileName}`,\n    }));"
+    },
+    {
+      "name": "every archive reuses the same id",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    const archiveId = ++this.lastArchiveId;",
+      "replace": "    const archiveId = 1;"
+    },
+    {
+      "name": "a member's real size is not recorded",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "        size: entry.uncompressedSize,",
+      "replace": "        size: 0,"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

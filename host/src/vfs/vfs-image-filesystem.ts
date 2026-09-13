@@ -231,6 +231,30 @@ export interface VfsImageFilesystem {
    * build expects — so an implementation must report what the IMAGE declared
    * and not what the builder last set.
    */
+  /**
+   * Register a whole lazy archive in one call.
+   *
+   * Optional, and one of the places the two implementations genuinely differ:
+   * the Rust bridge takes this shape, `MemoryFileSystem` takes a positional
+   * `registerLazyArchiveFromEntries`. The caller prefers this one and falls
+   * back, exactly as it does for `checkHeadroom` against `statfs`. Both the
+   * option and the fallback are deleted along with that class.
+   */
+  registerLazyArchive?(args: {
+    url: string;
+    entries: readonly unknown[];
+    mountPrefix: string;
+    symlinkTargets?: Map<string, string>;
+    integrity?: { sha256: string; bytes: number };
+  }): number;
+  /** The positional form, for the implementation that only has that. */
+  registerLazyArchiveFromEntries?(
+    url: string,
+    entries: readonly unknown[],
+    mountPrefix: string,
+    symlinkTargets?: Map<string, string>,
+    integrity?: { sha256: string; bytes: number },
+  ): unknown;
   getImageMetadata(): VfsImageMetadata | null;
   setImageMetadata(metadata: VfsImageMetadata | null): void;
   saveImage(options?: {
