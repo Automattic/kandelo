@@ -113,3 +113,59 @@ Stated so the next person does not inherit my gaps as facts:
 * **Tests.** A large number of host tests construct `SharedFS` or
   `MemoryFileSystem` directly. They are not a reason to keep an implementation,
   but they are work in any deletion and I have not sized it.
+
+---
+
+## ADDENDUM 2026-09-13 — the `/dev/shm` objection does not survive contact
+
+The census above recommended moving `/dev/shm` in-kernel but flagged one
+possible reason not to, and asked for it to be checked before anyone committed:
+
+> POSIX shared memory is **shared memory**. `/dev/shm`'s backing has to be a
+> `SharedArrayBuffer` that the host and the kernel both map.
+
+**That concern is wrong, and the code says so plainly.** Checked rather than
+guessed, at the maintainer's request.
+
+**1. The kernel already implements `MAP_SHARED` for its own files.**
+`memory.rs` carries a `fd_writeback` mapping kind, documented as *"a writable
+`MAP_SHARED` of a kernel-owned (tmpfs/memfd) regular file"*. Files in the
+in-kernel tmpfs are already mappable shared today.
+
+**2. The coherence limit is architectural and applies to EVERY shared mapping,
+whoever backs the file.** From the same file:
+
+> POSIX `MAP_SHARED` semantics for a platform where every process owns a
+> *distinct* linear memory. A store performed by one pid is not visible in a
+> peer's memory, so shared mappings are kept coherent by an explicit
+> publish/refresh protocol run at syscall boundaries… **coherence is
+> boundary-synchronous, not immediate.** … That is an architectural limit of
+> one-linear-memory-per-process.
+
+**3. So the host-backed path is not stronger.** A `SharedArrayBuffer` is shared
+between WORKERS; it is not a guest process's linear memory. A guest mapping a
+file in a host-served `/dev/shm` goes through the same publish/refresh protocol
+— the mapping kind beside `fd_writeback` is *"a tracked file `MAP_SHARED`
+interval over a host-backed page cache"*. **Both paths are boundary-synchronous.
+Moving `/dev/shm` in-kernel trades nothing away.**
+
+**4. And the kernel's own code already calls this out as an anomaly.**
+`devfs.rs`: *"`/dev/shm` is POSIX shared memory, served by a host mount on both
+hosts rather than by this module. **It is the sole exception to kernel ownership
+of the `/dev` namespace.**"*
+
+**Conclusion: move it.** The kernel owns all of `/dev` but this one subtree,
+owns `/` and every scratch prefix, and already maps its own files shared. The
+host mount is the last holdout, and it is the only reason a second SFFS
+implementation has to exist in TypeScript.
+
+**What this leaves of V9**, once `/dev/shm` moves: two `SAB` formats (or zero,
+if the kernel formats what it takes), one four-call read helper with one caller,
+and the host-owned lazy duties that were never block operations. **V10 —
+deleting `sharedfs-vendor.ts` and taking `sffsTypeScript` to its target of 0 —
+becomes reachable.**
+
+**What I did NOT check**, kept honest: whether any guest program depends on
+`/dev/shm` mappings being coherent SOONER than a syscall boundary. Nothing in
+the platform offers that today on any path, so such a program would already be
+broken — but I have not audited the guests to say it never happens.
