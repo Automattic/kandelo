@@ -25,7 +25,7 @@ reading, not by attributing every line."*
 **`process-memory.ts`: census says 1,337 → ~400, "allocation and lease
 mechanics stay".**
 
-Measured, the allocation and lease mechanics are **1,030 lines** —
+Measured, the allocation and lease mechanics are **1,038 lines** —
 `ProcessMemoryAllocator` alone is 634, `OwnedProcessMemoryLease` 72, the
 retirement thresholds, backlog errors and capacity errors another ~190, and
 the fork-clone/grow helpers ~80. The layout computation the census planned to
@@ -41,7 +41,7 @@ is a third of it. The same invariant is also carried by
 `ActiveKernelScratchLease` (**877 lines**) and `ActiveKernelScratchDataView`
 (**389 lines**), which are what hold "capacity beside pointer" across an
 escaped view and across a kernel export that may re-enter. Measured, the
-capacity machinery is **1,710 lines**, not 600. The estimate named one class
+capacity machinery is **1,711 lines**, not 600. The estimate named one class
 and counted one class.
 
 ## The attribution
@@ -57,14 +57,14 @@ important half of this document.
 | `process-memory.ts` constants + layout types | 72 | The shape this host's callers consume | No |
 | `computeProcessMemoryLayout` + empty-program note | 50 | A call into the shared Rust function | No — this IS the L3 result |
 | `createProcessMemory` | 19 | `new WebAssembly.Memory` | No — JS-only |
-| `process-memory.ts` allocator/lease/retirement | 1,030 | Admission, aliasing, retirement backpressure | Not by lane L's increments — **and the census's "stays" is unaudited; see below** |
+| `process-memory.ts` allocator/lease/retirement | 1,038 | Admission, aliasing, retirement backpressure | Not by lane L's increments — **and the census's "stays" is unaudited; see below** |
 | `kernel-scratch.ts` intrinsic capture | 135 | 46 `intrinsic*` bindings | No — JS-only overhead (census's fourth category) |
 | `kernel-scratch.ts` export-name + pointer tables | 312 | `KERNEL_SCRATCH_EXPORT_NAMES` and friends | No — guarded by a test, and generating it is declined; see below |
 | `kernel-scratch.ts` error + buffer intrinsics | 139 | Reading a live `WebAssembly.Memory` safely | No — JS-only |
 | `kernel-scratch.ts` DataView ownership | 389 | Capacity invariant, across an escaped view | No — per-syscall-argument, so the hot-path objection is real |
 | `kernel-scratch.ts` bounds checks | 195 | The rule, plus i32→u32 and bigint normalization | No — see L4 below |
 | `kernel-scratch.ts` lease | 877 | Capacity invariant, across a kernel export | No — same |
-| `kernel-scratch.ts` region ownership | 444 | Capacity invariant, at the allocation | No — same |
+| `kernel-scratch.ts` region ownership | 445 | Capacity invariant, at the allocation | No — same |
 | `kernel-entry-gate.ts` | 1,596 | The re-entrancy gate | Not lane L work — **and its size is unaudited; see below** |
 | `worker-protocol.ts` | 429 | The worker wire | Not by lane L's increments — **and "JS-host structural" is unaudited; see below** |
 
@@ -78,7 +78,7 @@ unchecked sentences of exactly the kind this campaign keeps overturning, and
 attributing a line to a declaration says nothing about whether the declaration
 needs to be that long or needs to be TypeScript:
 
-- **`process-memory.ts`'s allocator, 1,030 lines.** The census said
+- **`process-memory.ts`'s allocator, 1,038 lines.** The census said
   "allocation and lease mechanics stay". What the code does is admission
   thresholds, live-memory and byte accounting, retirement backpressure and
   finalization telemetry — bookkeeping over numbers. Only *holding* a
@@ -94,7 +94,7 @@ needs to be that long or needs to be TypeScript:
   gets the invariant from the borrow checker and JavaScript has no equivalent.
   Whether it needs 1,596 lines to hold it is unaudited, and the census said so.
 
-**Where the hot-path objection is real** is `kernel-scratch.ts`'s 1,710-line
+**Where the hot-path objection is real** is `kernel-scratch.ts`'s 1,711-line
 capacity machinery. Those accessors run per syscall argument; moving the
 decisions into a wasm module means a module call per field read, which is the
 same cost that stopped L4 deleting the TypeScript bounds checks.
@@ -210,19 +210,39 @@ invisible until now only because every previous rebuild of that module left its
 surface unchanged, so a package reading the previous bytes got the same
 answers.
 
-The in-lane fix is narrower and does not touch the graph: **the install check
-now asserts only the surface every caller needs, and the new entry point is
-checked where it is called.** Staleness still fails loudly, with a message
-naming both the module rebuild and the tier re-projection — it just fails at
-the caller that needs the entry rather than at every caller that does not. The
-SDK image build never asks where a process's memory goes.
+Two fixes, and only the second closes it.
+
+**The in-lane one narrowed the blast radius:** the install check now asserts
+only the surface every caller needs, and the new entry point is checked where
+it is called. Staleness still fails loudly, naming both the module rebuild and
+the tier re-projection — it just fails at the caller that needs the entry
+rather than at every caller that does not. The SDK image build never asks where
+a process's memory goes.
+
+**It did not escape the cycle.** `coreutils-docs` BOOTS A KERNEL during its
+build, and every process launch asks where its memory goes, so that package
+genuinely needs the entry point. It failed, taking twelve dependent nodes with
+it.
+
+**The ordering fix was the maintainer's call and was taken (2026-09-13):
+`local_build.rs` now stages the co-resident side modules before the scheduler
+runs.** It needs no new argument about atomicity, because the code already
+establishes it — `run_writes_to_tier`, the predicate gating the retraction
+immediately above, already includes
+`|| !coresident_side_module_projection_is_current(...)`. So whenever the side
+modules are stale the published authority has just been withdrawn, and there is
+no live manifest for the staged bytes to contradict, which is exactly the
+invariant the finalizer's staging comment protects. **The cost quoted when the
+decision was put to the maintainer — trading away that atomicity — was wrong in
+the safe direction: the option is cheaper than it was described.**
 
 **Candidate standing hazard, for the maintainer to promote or discard:** *a
 loud-staleness check placed at load time can deadlock the build that would
 clear it.* The check has to be reachable by something that runs after the
-artifact it guards is refreshed. This will bite the next person who adds a
-`wa_*` export, and the failure does not look like an ordering problem — it
-looks like a stale artifact, which is exactly what the message says.
+artifact it guards is refreshed. The ordering fix removes this instance; the
+shape is worth keeping, because the failure does not look like an ordering
+problem — it looks like a stale artifact, which is exactly what the message
+says, and it sends its reader to rebuild something already fresh.
 
 ## A lane-worktree setup step that cannot work as written
 
@@ -251,9 +271,24 @@ Recorded because the instruction is given to every lane agent, and the failure
 surfaces four hours into a provisioning build, in a package with no obvious
 connection to the setting.
 
+## Two inherited figures, re-measured
+
+Both come from the L1 census and both were repeated in this lane's commit
+messages before being checked. Neither changes a conclusion; both are recorded
+because a number nobody re-derives is how this lane's target went wrong.
+
+- **"`host-native` cites `host/src/*.ts` in 47 comments."** Measured at the
+  campaign base: **43 doc-comment blocks, 62 comment blocks in total, across 66
+  lines.** 47 sits between the two groupings, so the census is imprecise rather
+  than wrong — and the transcription argument is stronger, not weaker, at 62.
+- **"Six allocation sites move to `KernelScratch`."** Eight had, and three more
+  were still calling the allocator directly. **All eleven** now go through the
+  type, and a contract test enforces it — see the commit "Nothing reaches the
+  scratch allocator except through its capacity".
+
 ## What this did not establish
 
-- **Whether the 1,710-line capacity system is right-sized.** It was attributed,
+- **Whether the 1,711-line capacity system is right-sized.** It was attributed,
   not audited. The census left the same question open about
   `kernel-entry-gate.ts`'s 1,596 lines and it is still open; this document adds
   a second one of the same kind. Both are "these lines hold an invariant", not

@@ -2467,11 +2467,41 @@ maintainer has held it pending a running web app.
 
 # LANE L — host↔kernel plumbing
 
-**Status: L1 census COMPLETE — `docs/plans/2026-09-11-lane-l1-census.md`.
-Target derived, not provisional. The census changed what this lane is.**
+**Status: L4, L5 and L3's RUST HALF landed 2026-09-13 in
+`/Users/brandon/kandelo-lane-l` (`brandonpayton/lane-l-host-kernel-plumbing`).
+L2 is DECLINED rather than blocked. `hostKernelPlumbingTypeScript` still
+measures 5,853.**
+
+**The projection deadlock is DECIDED (maintainer, 2026-09-13): fix the xtask
+ordering.** L3's TypeScript half — `host/src/process-memory.ts` asking the
+shared Rust function, which is this lane's entire 164-line reduction — was held
+on `brandonpayton/lane-l-typescript-layout-held` because landing it wedged
+`./run.sh local-build`. `local_build.rs` now stages the co-resident side
+modules into the tier before the scheduler runs, so a package build that
+resolves through the tier can see a module this build just rebuilt. See "the
+projection deadlock" under Known hazards for why that is safe.
+
+**The 3,600 target is not derived, and no number here replaces it.** The L1
+census raised the lane's target from a guessed 1,500 to a "derived" 3,600 and
+said in bold that it was derived. It was not: its per-unit "After" column is
+smaller than the lines its own Findings table says must stay. Every line of the
+four files has now been attributed to the declaration that owns it —
+`docs/plans/2026-09-13-lane-l-line-attribution.md` — which is the measurement
+the census recorded as not made.
+
+That attribution sums to 5,376, and **5,376 is deliberately NOT proposed as the
+target**, because three of the census's "stays" are themselves unchecked:
+`process-memory.ts`'s 1,038-line allocator is bookkeeping over numbers and is
+not on a hot path; `worker-protocol.ts` is 429 lines of interface declarations,
+which lane E generated from Rust for its own peer pair; and
+`kernel-entry-gate.ts`'s 1,596 lines were never audited against a smaller
+design. Promoting an attribution to a derivation is the mistake the census
+made. **The campaign's own rule, applied to the campaign: an accepted cost is a
+claim, and claims get measured — including the ones in this section.**
 
 `kernel-scratch.ts` (2,491), `kernel-entry-gate.ts` (1,596), `process-memory.ts`
-(1,337), `worker-protocol.ts` (429) — **5,853 lines**.
+(1,337; 1,173 with the held commit), `worker-protocol.ts` (429) — **5,853 on
+this branch, 5,689 with the held commit applied**.
 
 ## What this lane is — as corrected by the census
 
@@ -2522,7 +2552,7 @@ Genuine floor, confirmed against `host-native`:
 
 ## Increments — rewritten by the census
 
-- **L2 — BLOCKED. Its premise is false, found 2026-09-12 while starting it.**
+- **L2 — DECLINED, not blocked. Checked 2026-09-13.**
 
   The increment said "generate the scratch pointer table from the kernel's own
   export signatures". **The signatures do not carry that information.** Kernel
@@ -2536,51 +2566,151 @@ Genuine floor, confirmed against `host-native`:
   The 12 are not evidence the TypeScript is wrong; they are evidence the
   *signatures* are not an authority. `*_ptr` naming is a convention, not a type.
 
-  **Three ways forward, and the choice is the maintainer's:**
+  **`host/test/kernel-scratch-contract.test.ts` already extracts all 55.** Line
+  1727 iterates every name in `KERNEL_SCRATCH_EXPORT_NAMES`, derives each
+  export's pointer positions from `crates/kernel/src/wasm_api.rs`, and fails if
+  they disagree with the TypeScript. Its rule is not type-based — a parameter is
+  a pointer iff its name ends `_ptr` — and it **enforces that convention in both
+  directions**: a raw `*const`/`*mut` parameter without the suffix throws, a
+  `_ptr` parameter that is not `*const`/`*mut`/`usize` throws, and a pointer not
+  followed by a `u32`/`usize` `len`/`capacity` throws. The "40 of 52"
+  measurement used a weaker rule than the repository actually runs.
 
-  1. **An explicit Rust declaration** — a const table in `crates/shared` naming
-     pointer positions per export, generated into TypeScript and assertable from
-     Rust. Campaign-consistent, but it is a second thing to keep in step with the
-     signatures.
-  2. **Make the type the authority** — change every kernel export to take
-     pointers as `*mut u8`/`*const u8`. Then extraction is exact and the
-     compiler enforces it. Invasive: it touches the whole kernel export surface.
-  3. **Name-based heuristic** (`*_ptr`, `*_buf`). **Not recommended** — a gate
-     that is wrong is worse than no gate, and this would encode a convention as
-     if it were a fact.
+  **It does not follow that the table should be generated.** Only the 76-line
+  required-pointer switch follows from `wasm_api.rs`. Three facts in that block
+  are host facts, not kernel facts: which 55 exports belong in the table (not
+  "every export with a pointer" — `kernel_select`,
+  `kernel_transfer_channel_execute` and `kernel_transfer_io_execute` are members
+  with none), the required/nullable split (the contract checks their union, so
+  it cannot see it), and the alignments (`kernel_pipe2`'s buffer holds two
+  `i32`s, which `buf_ptr: *mut u8` does not say).
 
-  Until then `KERNEL_SCRATCH_EXPORT_NAMES` stays hand-maintained and L-D2 stays
-  open.
-- **L3 — one process-memory layout** in `crates/shared`, consumed by both hosts.
-- **L4 — one bounds-check rule.** `checked_shared_range` already documents
-  itself as a copy of the TypeScript.
-- **L5 — fix L-D1** by giving the native host the capacity invariant, rather
-  than deleting the JavaScript host's version of it.
+  And the table is already guarded, so generating it buys line count and no
+  safety. **L2 is declined rather than blocked: nothing waits on a maintainer
+  decision, and `KERNEL_SCRATCH_EXPORT_NAMES` stays.** L-D2 is closed as
+  refuted, not open.
+- **L3 — one process-memory layout. RUST HALF LANDED; TypeScript half HELD.**
+  `wasm_posix_shared::process_memory::compute_layout` is now the only
+  description of a process address space, and `crates/host-native` calls it.
+
+  **It closed a live divergence, not just a duplication.** `host-native` read no
+  `__heap_base` at all and always placed control memory at the 16 MiB fallback,
+  while the TypeScript hosts placed it at the program's own heap base. Below
+  16 MiB that wasted address space; **above it, the native host put the syscall
+  channel inside the program's own static data.** 36 of 137 staged wasm32
+  programs carry a `__heap_base` export, so the case is reachable.
+
+  Evidence: `crates/shared/tests/process-memory-layouts.json` — expectations
+  derived by hand from the documented rule, never generated from the code under
+  test. It caught two real defects in the new code during development: an early
+  ceiling refusal reporting the heap base's page rather than control memory's
+  last page, and a page count near `u32::MAX` truncating to 2.
+
+  The TypeScript half reaches the same function through a new
+  `wa_process_memory_layout` export and deletes 207 lines including a
+  hand-rolled LEB128 walk. It is on
+  `brandonpayton/lane-l-typescript-layout-held`; see the projection deadlock.
+- **L4 — one bounds-check rule. LANDED, with a stated limit.**
+  `wasm_posix_shared::host_memory::checked_range` states the rule once and
+  `checked_shared_range` calls it, losing the transcribed copy whose doc comment
+  named the TypeScript it came from, down to `allowAddressZero: false`.
+
+  **The TypeScript copy is NOT deleted, and the reason is the performance
+  contract.** A bounds check runs on the syscall hot path; reaching the shared
+  function through the artifact module would add a wasm call, an input copy and
+  an output decode to every syscall argument. So the two hosts share a
+  *statement* rather than an implementation:
+  `crates/shared/tests/host-memory-ranges.json`, failed against by both
+  `crates/shared/tests/host_memory_range.rs` and
+  `host/test/kernel-scratch-range.test.ts`. The one case TypeScript cannot
+  present — a u64 address that overflows, unreachable through a wasm32 pointer —
+  is marked `rustOnly` with its reason rather than quietly skipped.
+- **L5 — L-D1 CLOSED, and enforced.** `KernelScratch` carries the capacity the
+  allocator gave beside the pointer it gave, and **all eleven** allocation sites
+  go through it — the first pass converted eight and left three exec/shebang
+  read buffers still handing the kernel a restated constant beside a bare
+  pointer, which is the state the commit itself condemned.
+
+  A contract test asserts the file holds exactly two `kernel_alloc_scratch`
+  calls AND that both are inside `allocate`/`allocate_or_none`; without the
+  second clause the count is satisfied by two fresh bare call sites while the
+  type goes unused. Each clause was shown failing separately. The test was
+  itself wrong first time — `include_str!` fed it its own source, so its string
+  literals counted as call sites and it reported "found 4" for two real callers
+  plus two mentions of itself.
 - **The re-entrancy gate and worker protocol are not lane L work.** Saying so is
-  part of the deliverable.
+  part of the deliverable, and it is said here.
 
 ## Acceptance evidence
 
-`hostKernelPlumbingTypeScript` reaches **3,600** — derived per unit by the L1
-census, not provisional. **The census raised this from a guessed 1,500**; a
-ratchet behind the guess would have judged a correct landing at 3,600 a failure.
+`hostKernelPlumbingTypeScript` stands at **5,853** — unchanged, because the
+164-line reduction lives in the held TypeScript commit. The **target stays at
+3,600 as an acknowledged placeholder**, because nothing has derived one:
+attributing every line (`docs/plans/2026-09-13-lane-l-line-attribution.md`)
+gives 5,376 as the sum of what the census said stays, and three of those
+"stays" are unaudited claims — the process-memory allocator, the worker
+protocol's generatability, and the entry gate's size. Deriving a target means
+doing those three audits.
 
-Per increment: the layout and bounds rules must be shown to produce identical
-results in both hosts before either copy is deleted, and the generated pointer
-table must reproduce the current hand-written one exactly before it replaces it.
+**3,600 did not follow from the census's own findings.** Two specific mistakes:
+it planned `process-memory.ts` at ~400 lines while the allocator and lease
+mechanics it said stay are 1,038 lines on their own; and it estimated
+`kernel-scratch.ts`'s capacity system at ~600 by counting
+`OwnedKernelScratchRegion` (326) alone, when `ActiveKernelScratchLease` (877)
+and `ActiveKernelScratchDataView` (389) carry the same invariant — 1,711
+measured.
+
+Per increment, met: the layout rule produces identical results in both hosts,
+checked against one hand-derived corpus rather than two sets of assertions; the
+bounds rule is stated once and both hosts are failed against that statement; and
+the capacity invariant's test was shown failing before it was shown passing.
 
 ## Known hazards
 
-- **L-D1 — the native host does not enforce the capacity invariant.** It writes
-  scratch through a bare `copy_nonoverlapping` after a `ptr > 0` check. The
-  call site is sound by construction; nothing enforces that. Census outcome 3:
-  not floor, and not permission to keep the gap.
-- **L-D2 — the scratch pointer table is 35 exports wider than the generated ABI
-  list.** `KERNEL_SCRATCH_EXPORT_NAMES` names 55 exports by hand; the generated
-  lists cover 78 + 8 and **overlap it on only 20**. `kernel_ioctl`,
-  `kernel_select`, `kernel_poll`, `kernel_recv`, `kernel_send` and
-  `kernel_rootfs_write_file` are among the 35 in neither. Lane G's failure mode
-  in a different file.
+- **L-D1 — CLOSED 2026-09-13** by L5 above. `KernelScratch` carries capacity
+  beside pointer, all eleven allocation sites go through it, and a contract test
+  keeps it that way.
+- **THE PROJECTION DEADLOCK — the open decision. A load-time staleness check can
+  deadlock the build that would clear it, and moving the check does not escape
+  it.** Adding `wa_process_memory_layout` to the surface
+  `installWasmArtifactModule` requires made every stale artifact-reader module
+  fail loudly — and wedged `./run.sh local-build`, because `kandelo-sdk`'s
+  VFS-image build inspects its artifacts through that module, resolved from the
+  projected tier, and local-build projects a rebuilt side module only *after*
+  every package is built. Checking the entry where it is CALLED instead narrowed
+  the blast radius and did not escape the cycle: `coreutils-docs` BOOTS A KERNEL
+  during its build, and every process launch calls `computeProcessMemoryLayout`.
+
+  **Why this is not fixable inside lane L.** `stage_coresident_side_module_members`
+  runs inside `with_source_only_program_projection_lock`, and its own comment
+  says the members are staged "before the manifest goes live, so the published
+  authority never references bytes that are not yet on disk". Staging earlier
+  would put new bytes under the PREVIOUS manifest's recorded member digests.
+  Trading that atomicity away is a decision about `tools/xtask`.
+
+  **DECIDED 2026-09-13: stage side modules before the package nodes.** The fix
+  turned out to need no new argument, because the code already establishes it.
+  `run_writes_to_tier` — the predicate that gates the retraction immediately
+  above the scheduler — already includes
+  `|| !coresident_side_module_projection_is_current(...)`. So whenever the side
+  modules are stale, **the published authority has just been withdrawn**, and
+  there is no live manifest for the newly staged bytes to contradict. That is
+  exactly the invariant the finalizer's staging comment protects. When the
+  predicate is false the tier already carries those bytes, so nothing is staged.
+  The finalizer's staging is unchanged and idempotent with the early one.
+
+  **The failure did not look like an ordering problem — it looked like a stale
+  artifact, which is what the reader's message says.** That is the part worth
+  carrying: the next `wa_*` export would have hit it too, and the message would
+  have sent its author to rebuild a module that was already fresh.
+- **A lane-worktree setup step that cannot work as written.**
+  `KANDELO_SOURCE_CACHE_ROOT=<worktree>/.cache/source-only` is inside the
+  checkout, and `packages/registry/rootfs/build-rootfs-package.sh` refuses it:
+  xtask derives `WASM_POSIX_DEP_OUT_DIR`/`WASM_POSIX_DEP_WORK_DIR` from the
+  cache base and that script checks both against the repo root. `rootfs` fails
+  and every product behind it becomes unreachable, four hours into provisioning,
+  in a package with no visible connection to the setting. Lane F independently
+  uses `~/.cache/kandelo-lane-f/source-only`; that convention works.
 - **Deleting an invariant while deleting its verbosity.** Still the way this
   lane does damage: the rules are about what must *not* happen, so a rewrite
   that loses one passes every existing test.
