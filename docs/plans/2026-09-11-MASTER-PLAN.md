@@ -3737,6 +3737,34 @@ make deliberately when reached, not to slide past.**
 `registerLazyArchiveFromEntries` (1 call site) is the bulk form of the bridge's
 existing `registerArchiveMember` and needs no new capability.
 
+### Gap 16 — loading an image drops the metadata it was carrying
+
+**Found 2026-09-13 while designing `getImageMetadata`, and it is the same family
+as gap 15.** `rootfs::image_metadata` is written ONLY by `set_image_metadata`
+and read ONLY by the export. `load_image_inner` does not mention metadata once.
+
+The container carries a `metadataJson` section — `version`, `kernelAbi`,
+`createdBy`, flagged `1<<2` — and the loader walks straight past it on its way
+to `KLZY`. So a derived build that loads a base image and re-exports emits
+whatever the builder happened to set and nothing the base declared. **The base's
+stated kernel ABI does not survive being loaded.**
+
+**A caller already depends on exactly that value.**
+`build-php-test-vfs-image.ts` reads `fs.getImageMetadata()` to raise *"PHP test
+base product ABI differs from its target"*. Ported onto the Rust writer as
+things stand, that guard would be asking a question the filesystem could no
+longer answer — an ABI check reading an empty answer, which is worse than no
+check because it looks like one.
+
+**The fix is a `metadata_span` beside `kernel_lazy_span`,** which already walks
+these sections; the metadata span is the same walk stopping one section earlier.
+The loader then keeps what it found, exactly as it now keeps deferred payloads.
+
+**Ordering matters here.** `getImageMetadata` cannot be a truthful bridge method
+until the kernel HAS the metadata to report, so gap 16 comes before the
+read-back decision rather than after it — otherwise the first thing the new
+entry point would do is return nothing, correctly, for every loaded image.
+
 ### The seal check is ten methods, and nine of them exist because the digest was async
 
 **Measured 2026-09-12, after the maintainer assigned the port to this lane, and
