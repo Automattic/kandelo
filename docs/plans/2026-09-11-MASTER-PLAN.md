@@ -4405,6 +4405,65 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### GAPS 20 and 21 — a truthful gap at one end becomes a silent lie at the other
+
+**Both found 2026-09-13 by the first real cutover, and neither by a test.** They
+are the same shape, which is why they are recorded together: a component
+correctly declines to invent something it does not know, and the component at
+the other end of the format reads that absence as a fact.
+
+**GAP 20 — an archive nobody mentioned. CLOSED.** The legacy `KLZY` encoder
+skips any archive group whose raw byte length or transport it does not know,
+and says why: *"without a size the fetched bytes cannot be validated."* That is
+honest where it is written. At the reading end the group simply is not there, so
+its members walk as ordinary files and are inserted with the zero length their
+stub inodes carry. A 4,096-byte binary loads as an empty file and the load
+returns success.
+
+This is exactly the failure the loader's neither-carrier refusal already names
+— *"a wrong tree that looks like a right one"* — reached one archive at a time
+instead of all at once. **The fix is the same refusal at the narrower scale:**
+an image whose header claims lazy archives while its carrier describes none is
+an image whose archives this reader cannot see, and it is refused. The container
+flag word is the image's own statement about itself, written from the writer's
+view of the tree rather than from the section a reader parses, which is what
+makes the disagreement detectable at all.
+
+**GAP 21 — a deferred file re-exported as an empty one. OPEN, and PINNED.** A
+standalone URL-backed lazy file loaded from a legacy image keeps its real size
+and its deferred flag in the live tree — and is re-exported as a zero-length
+ORDINARY file. `KLZY` carries no fetch description, so the export has nothing to
+re-emit; instead of saying so it writes a stub, because a base file with no
+description is legitimately a stub and the two cases are indistinguishable at
+the point of decision.
+
+The retention path's own comment predicted it: *"Without it, exporting this file
+loses the only thing that says where its bytes are."* It knew, and closed the
+retention without closing the consequence.
+
+**Pinned with `it.fails`** in `host/test/shell-vfs-build.test.ts`, which passes
+while the defect stands and turns RED the moment it is fixed. That is deliberate
+over two alternatives: weakening the assertion would bless the loss, and
+deleting the test would remove its only witness.
+
+**The fix is a refusal at EXPORT, not at load.** Loading such an image is fine —
+the host has the URLs in its own JSON and the kernel serves the bytes — so a
+load-time refusal would break BOOTING a legacy image to fix a defect that only
+appears when re-exporting one. The lossy operation is the export, and that is
+where the refusal belongs. **It is sequenced after the base rebuild**, because
+the refusal makes any derived build from a legacy base fail, and the rebuild is
+what gives derived builds a base that can be re-exported faithfully.
+
+**The lesson worth carrying past these two.** Three gaps in a row (19, 20, 21)
+are all the same sentence: **an absence means something, and the two ends of a
+format must agree about what.** Gap 19 was an empty payload meaning "nothing to
+say" to one side and "a description of nothing" to the other. Gap 20 was a
+missing archive meaning "I could not describe it" to the writer and "there is
+none" to the reader. Gap 21 is a missing payload meaning "this came from a
+carrier without the field" to the loader and "this file was never deferred" to
+the export. **When taking over a format, enumerate what its absences mean before
+writing anything that produces one.**
+
 ### Atomic activation cohorts have no producer, and that unblocks five importers
 
 **Found 2026-09-13 while planning the first seal-blocked cutover.** A cohort is
