@@ -46,16 +46,57 @@ pub struct ResolvedInputsEnvelopeV1 {
     pub build_environment: BuildEnvironmentV1,
     pub reference_class: String,
     pub source: ExactSourceV1,
-    /// Kept opaque BEYOND its id. The per-input descriptor rules are the
-    /// remainder of this port; validating the envelope first closes the
-    /// document-level gaps without pretending to cover what it does not.
-    pub inputs: Vec<ResolvedInputHeadV1>,
+    /// Each judged by [`validate_input`], except for the reference, descriptor
+    /// and path fields, which are the remainder of this port.
+    pub inputs: Vec<ResolvedInputV1>,
 }
 
+/// One resolved input, as far as this port has reached.
+///
+/// `descriptor`, `path` and `reference` are accepted but NOT yet judged here —
+/// they carry URL and OCI-reference parsing and local-file resolution, which is
+/// the remainder of this port. They are declared so `deny_unknown_fields` still
+/// refuses a field nobody recognises, which is the check that must not wait.
 #[derive(Debug, Deserialize)]
-pub struct ResolvedInputHeadV1 {
+#[serde(deny_unknown_fields)]
+pub struct ResolvedInputV1 {
     pub id: String,
+    pub kind: String,
+    pub role: String,
+    pub architecture: String,
+    pub declared_materialization: String,
+    pub effective_materialization: String,
+    pub sha256: String,
+    // DECLARED BUT NOT YET JUDGED, and the declaration is doing real work even
+    // so: `deny_unknown_fields` refuses a field nobody recognises, and it can
+    // only do that for fields it knows about. Omitting these would turn every
+    // document carrying them into a parse error.
+    //
+    // `bytes` is read by the reference check — a reference names a digest AND a
+    // length, and a length nothing compares against is a length that can lie.
+    // `descriptor`, `path` and `reference` carry URL and OCI-reference parsing
+    // and local-file resolution. All four are the remainder of this port, and
+    // this `allow` is removed by the increment that reads them.
+    #[allow(dead_code)]
+    pub bytes: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub descriptor: Option<serde_json::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub path: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub reference: Option<String>,
 }
+
+const INPUT_KINDS: [&str; 5] = [
+    "product-image",
+    "package-output",
+    "source-archive",
+    "toolchain-output",
+    "repository-path",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -165,8 +206,8 @@ pub fn validate_envelope(
             return Err("resolved inputs must be sorted by unique stable input id".to_string());
         }
     }
-    for input in &document.inputs {
-        validate_stable_id(&input.id, "resolved input id")?;
+    for (index, input) in document.inputs.iter().enumerate() {
+        validate_input(input, &document.product.architecture, &format!("resolved input {index}"))?;
     }
     Ok(())
 }
@@ -183,6 +224,68 @@ pub fn validate_document(path: &Path, allow_local_fixture: bool) -> Result<(), S
         .map_err(|e| format!("resolved inputs: {}: {e}", path.display()))?;
     validate_envelope(&document, allow_local_fixture)
         .map_err(|e| format!("resolved inputs: {}: {e}", path.display()))
+}
+
+/// Judge one resolved input.
+///
+/// # The role and materialization matrix
+///
+/// Three fields describe how an input arrives, and only three combinations mean
+/// anything:
+///
+/// * a RUNTIME input declared `embedded` must arrive `embedded`;
+/// * a RUNTIME input declared `lazy` may arrive `lazy-reference` OR `embedded`
+///   — a lazy input that was materialised anyway is still a correct build;
+/// * a BUILD input is `build-only` on both sides, because it never reaches the
+///   image at all.
+///
+/// Every other pairing is a document describing something that cannot happen:
+/// a build-only input that is embedded would put a toolchain in the product, and
+/// an embedded declaration arriving as a lazy reference would produce an image
+/// missing bytes it promised. Checking the fields SEPARATELY, as a schema does,
+/// accepts every one of those.
+fn validate_input(
+    input: &ResolvedInputV1,
+    product_architecture: &str,
+    label: &str,
+) -> Result<(), String> {
+    validate_stable_id(&input.id, label)?;
+    if !INPUT_KINDS.contains(&input.kind.as_str()) {
+        return Err(format!("{label} kind is not supported: {:?}", input.kind));
+    }
+    if !matches!(input.role.as_str(), "runtime" | "build") {
+        return Err(format!("{label} role is not supported: {:?}", input.role));
+    }
+    if !matches!(input.architecture.as_str(), "wasm32" | "wasm64") {
+        return Err(format!(
+            "{label} architecture is not supported: {:?}",
+            input.architecture
+        ));
+    }
+    // An input built for another architecture is not a smaller problem than a
+    // missing one: it would link, and then not run.
+    if input.architecture != product_architecture {
+        return Err(format!("{label} architecture does not match product architecture"));
+    }
+
+    let combination = (
+        input.role.as_str(),
+        input.declared_materialization.as_str(),
+        input.effective_materialization.as_str(),
+    );
+    let valid = matches!(
+        combination,
+        ("runtime", "embedded", "embedded")
+            | ("runtime", "lazy", "lazy-reference")
+            | ("runtime", "lazy", "embedded")
+            | ("build", "build-only", "build-only")
+    );
+    if !valid {
+        return Err(format!("{label} has inconsistent role and materialization"));
+    }
+
+    validate_sha256(&input.sha256)?;
+    Ok(())
 }
 
 /// The product's output filename: a name, never a path.
@@ -263,6 +366,21 @@ mod tests {
     }
 
 
+    /// A minimal valid input. Named fields rather than a literal so a test
+    /// that changes ONE of them says which one it is changing.
+    fn input(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "kind": "package-output",
+            "role": "runtime",
+            "architecture": "wasm32",
+            "declared_materialization": "embedded",
+            "effective_materialization": "embedded",
+            "sha256": "a".repeat(64),
+            "bytes": 12,
+        })
+    }
+
     fn check(value: &serde_json::Value) -> Result<(), String> {
         let parsed: ResolvedInputsEnvelopeV1 =
             serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
@@ -334,15 +452,17 @@ mod tests {
         // uniqueness alone would allow two producers to write the same set in
         // different orders, which makes a document's digest depend on who
         // wrote it rather than on what it says.
-        let sorted = document(r#"{"inputs":[{"id":"alpha"},{"id":"beta"}]}"#);
+        let mut sorted = document("");
+        sorted["inputs"] = serde_json::json!([input("alpha"), input("beta")]);
         check(&sorted).expect("sorted and unique");
 
-        for bad in [
-            r#"{"inputs":[{"id":"beta"},{"id":"alpha"}]}"#,
-            r#"{"inputs":[{"id":"alpha"},{"id":"alpha"}]}"#,
-        ] {
-            assert!(check(&document(bad)).is_err(), "{bad}");
-        }
+        let mut unsorted = document("");
+        unsorted["inputs"] = serde_json::json!([input("beta"), input("alpha")]);
+        assert!(check(&unsorted).is_err(), "out of order");
+
+        let mut duplicated = document("");
+        duplicated["inputs"] = serde_json::json!([input("alpha"), input("alpha")]);
+        assert!(check(&duplicated).is_err(), "repeated id");
     }
 
     #[test]
@@ -351,7 +471,7 @@ mod tests {
         // for testing it rather than trusting the constant. A bound only ever
         // exercised by not being hit is a bound nobody has checked.
         let ids: Vec<serde_json::Value> = (0..=MAX_INPUTS)
-            .map(|index| serde_json::json!({ "id": format!("input-{index:06}") }))
+            .map(|index| input(&format!("input-{index:06}")))
             .collect();
         let mut value = document("");
         value["inputs"] = serde_json::Value::Array(ids);
@@ -360,11 +480,82 @@ mod tests {
         // And exactly at the bound it is accepted, so the refusal is the
         // boundary rather than a smaller number nobody wrote down.
         let ids: Vec<serde_json::Value> = (0..MAX_INPUTS)
-            .map(|index| serde_json::json!({ "id": format!("input-{index:06}") }))
+            .map(|index| input(&format!("input-{index:06}")))
             .collect();
         let mut value = document("");
         value["inputs"] = serde_json::Value::Array(ids);
         check(&value).expect("exactly at the bound");
+    }
+
+    fn with_input(patch: serde_json::Value) -> serde_json::Value {
+        let mut base = input("only");
+        merge(&mut base, &patch);
+        let mut value = document("");
+        value["inputs"] = serde_json::json!([base]);
+        value
+    }
+
+    #[test]
+    fn only_three_role_and_materialization_combinations_mean_anything() {
+        // Checking these fields SEPARATELY, as a schema does, accepts every
+        // nonsensical pairing: a build-only input that is embedded would put a
+        // toolchain inside the product, and an embedded declaration arriving as
+        // a lazy reference would produce an image missing bytes it promised.
+        for (role, declared, effective) in [
+            ("runtime", "embedded", "embedded"),
+            ("runtime", "lazy", "lazy-reference"),
+            // A lazy input that was materialised anyway is still a correct
+            // build, which is why this pairing is permitted and its mirror is
+            // not.
+            ("runtime", "lazy", "embedded"),
+            ("build", "build-only", "build-only"),
+        ] {
+            let value = with_input(serde_json::json!({
+                "role": role,
+                "declared_materialization": declared,
+                "effective_materialization": effective,
+            }));
+            check(&value).unwrap_or_else(|e| panic!("{role}/{declared}/{effective}: {e}"));
+        }
+
+        for (role, declared, effective) in [
+            ("runtime", "embedded", "lazy-reference"),
+            ("runtime", "build-only", "build-only"),
+            ("build", "embedded", "embedded"),
+            ("build", "build-only", "embedded"),
+            ("build", "lazy", "lazy-reference"),
+        ] {
+            let value = with_input(serde_json::json!({
+                "role": role,
+                "declared_materialization": declared,
+                "effective_materialization": effective,
+            }));
+            assert!(check(&value).is_err(), "{role}/{declared}/{effective} must be refused");
+        }
+    }
+
+    #[test]
+    fn an_input_built_for_another_architecture_is_refused() {
+        // Not a smaller problem than a missing input: it would link, and then
+        // not run.
+        let value = with_input(serde_json::json!({ "architecture": "wasm64" }));
+        assert!(check(&value).is_err());
+    }
+
+    #[test]
+    fn an_input_field_nobody_recognises_is_refused() {
+        let value = with_input(serde_json::json!({ "surprise": "value" }));
+        assert!(check(&value).is_err());
+    }
+
+    #[test]
+    fn an_input_of_an_unknown_kind_is_refused() {
+        let value = with_input(serde_json::json!({ "kind": "something-else" }));
+        assert!(check(&value).is_err());
+        for kind in INPUT_KINDS {
+            let value = with_input(serde_json::json!({ "kind": kind }));
+            check(&value).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        }
     }
 
     #[test]

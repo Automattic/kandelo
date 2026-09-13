@@ -80,6 +80,41 @@
       "scope_end": "\n}\n",
       "find": "    validate_repo_path_shape(&document.product.manifest_path)?;",
       "replace": "    super::canonical_json::validate_repo_path(\n        std::path::Path::new(\"/nonexistent\"),\n        &document.product.manifest_path,\n    )?;"
+    },
+    {
+      "name": "role and materialization are checked separately rather than together",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    let valid = matches!(\n        combination,\n        (\"runtime\", \"embedded\", \"embedded\")\n            | (\"runtime\", \"lazy\", \"lazy-reference\")\n            | (\"runtime\", \"lazy\", \"embedded\")\n            | (\"build\", \"build-only\", \"build-only\")\n    );",
+      "replace": "    let valid = matches!(combination.0, \"runtime\" | \"build\");"
+    },
+    {
+      "name": "a lazy declaration may arrive any way at all",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "            | (\"runtime\", \"lazy\", \"lazy-reference\")\n            | (\"runtime\", \"lazy\", \"embedded\")",
+      "replace": "            | (\"runtime\", \"lazy\", _)"
+    },
+    {
+      "name": "an input may be built for another architecture",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    if input.architecture != product_architecture {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "an input may be of any kind",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    if !INPUT_KINDS.contains(&input.kind.as_str()) {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "an input's digest is never checked",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    validate_sha256(&input.sha256)?;",
+      "replace": "    let _ = &input.sha256;"
     }
   ]
 }
