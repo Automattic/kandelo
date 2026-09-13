@@ -1400,3 +1400,62 @@ the seed edge stop being a dependency and the cyclic half no longer fails;
 pointing the acyclic twin's seed back at struct(0) makes the acyclic half fail.
 So the test is sensitive to the provenance dependency path specifically, not to
 some incidental cycle.
+
+## §26 — Provenance is served but not yet USED, and that is gated on F3
+
+The three `gc_provenance_*` imports are served and the witness semantics are
+proven (§24, §25, §25a). Closing the loop means capture emitting witness recipe
+ids as `gc_define`'s provenance ids — and that is not a small next step. It is
+gated on F3.
+
+**The module cannot intern a witness by itself.** Interning requires capturing
+the witness as a full object: its layout, scalars and fields. Only the guest's
+generated encoder can walk an arbitrary GC object's fields; the module cannot
+introspect one.
+
+**And there is no capture-side drive.** `fm_drive_execute` and
+`__wpk_fork_drive_table` are REPLAY-side: the plan is built from a decoded graph
+and drives allocate/fill. Nothing lets the module call into the guest's encoder
+during capture.
+
+So the witnesses sit correctly recorded and unreadable until the module owns the
+capture WALK — which the census already names as F3's remaining work and the
+bulk of its estimate. Serving the trio was still right and is still complete as
+far as it can go: the guest's imports are satisfied by the module rather than
+the host, which is the lane's measure. What is deferred is the consumption, not
+the capture.
+
+## §27 — `exnref` is a FOURTH hierarchy, so exception identity needs its own host import. OPEN.
+
+Looking ahead to the next shim-backed tranche, `__wpk_fork_ref_exn_claim` and
+`__wpk_fork_ref_exn_lookup` are the same shape as the GC pair already built:
+read the value from a scratch table slot, get an identity, map it. That shape
+works because `__wpk_fork_host_ref_identity` takes an `anyref`.
+
+**It does not extend to exceptions.** Wasm's reference types are disjoint
+hierarchies — `any`, `func`, `extern`, and `exn` from the exception-handling
+proposal. An `exnref` is not a subtype of `anyref`, so the approved identity
+import cannot accept one, exactly as it cannot accept the `funcref` that
+`encode_funcref` needs (recorded earlier).
+
+So the remaining shim-backed imports are not one tranche but three, by what
+they need:
+
+* **No new host surface** — the provenance trio (done): keyed by integers the
+  guest already passes.
+* **A NEW host import each** — `exn_claim`, `exn_lookup`, `exn_broker_encode`
+  (exnref identity) and `encode_funcref` (funcref identity). Two new imports
+  would take the module's host obligation from 5 to 7, which is growth in the
+  campaign's primary measure and therefore a maintainer decision.
+* **Neither, but harder** — `gc_capture_layout` needs type introspection
+  against candidate layouts, `gc_broker_encode` is cross-activation dispatch,
+  and `exn_ingress_throw` / `exn_broker_throw_recipe` must THROW through the
+  module's own tag, which `inject_unwind_tag` already creates.
+
+**The open question is the middle group.** `resolve_externref` and
+`__wpk_fork_host_ref_identity` are each argued in the budget as a Wasm
+capability floor. Identity for `exnref` and `funcref` is the same argument in
+two more hierarchies — Wasm can compare neither, and `ref.eq` validates only on
+`eqref`. Whether that justifies two more imports, one generic import that
+dispatches on hierarchy, or leaving those four unserved is not a call this lane
+should make alone.
