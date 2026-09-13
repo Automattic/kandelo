@@ -473,20 +473,17 @@ describe("shell VFS base composition", () => {
     }
   });
 
-  // GAP 21, pinned rather than papered over. `it.fails` passes while the body
-  // throws and turns RED the moment the defect is fixed, so this cannot be
-  // forgotten and cannot quietly bless the wrong behaviour.
+  // GAP 21, closed. This was pinned with `it.fails` while the defect stood, and
+  // the pin is what turned red the moment the fix landed rather than letting a
+  // known loss go quiet.
   //
   // The defect: a standalone URL-backed lazy file loaded from a LEGACY image
-  // survives the load with its real size and its deferred flag, and is then
-  // re-exported as a zero-length ORDINARY file. `KLZY` carries no fetch
-  // description, so the export has nothing to re-emit -- and instead of
-  // saying so it writes a stub, which is the same "wrong tree that looks like
-  // a right one" as gap 20, reached through the writer instead of the reader.
-  //
-  // The live tree is NOT affected, which the assertions before the snapshot
-  // check; the loss is in the serialized copy.
-  it.fails("serializes a transient derived-image build guest without mutating the live image", async () => {
+  // survived the load with its real size and its deferred flag and was then
+  // re-exported as a zero-length ORDINARY file, because `KLZY` carries no
+  // fetch description and the export wrote a stub rather than a deferred
+  // record. Deferredness now decides, so the file re-exports as deferred with
+  // the size it really has -- exactly as informative as the input was.
+  it("serializes a transient derived-image build guest without mutating the live image", async () => {
     const image = await sourceImage(4 * MiB, 8 * MiB);
     const fs = await loadShellBaseFileSystemFromImage(image, 8 * MiB);
     const metadataBefore = fs.getImageMetadata();

@@ -34,7 +34,7 @@
    "name": "a host base file with no description is enumerated as deferred",
    "scope": "fn lazy_walk",
    "scope_end": "\n}\n",
-   "find": "            if matches!(source, BaseSource::Host) && !inode.deferred_payload.is_empty() =>",
+   "find": "            if matches!(source, BaseSource::Host)\n                && (inode.deferred_base || !inode.deferred_payload.is_empty()) =>",
    "replace": "            if matches!(source, BaseSource::Host) =>"
   },
   {
@@ -50,6 +50,20 @@
    "scope_end": "\n}\n",
    "find": "        now_ms: ROOTFS.with(|state| state.export_timestamp_ms).unwrap_or(0),",
    "replace": "        now_ms: 0,"
+  },
+  {
+   "name": "a deferred file with no description exports as an empty stub",
+   "scope": "pub fn build_export_image",
+   "scope_end": "\n}\n",
+   "find": "                        if inode.deferred_base || !inode.deferred_payload.is_empty() {",
+   "replace": "                        if !inode.deferred_payload.is_empty() {"
+  },
+  {
+   "name": "a loaded standalone lazy file is not marked deferred",
+   "scope": "fn load_image_inner",
+   "scope_end": "\n}\n",
+   "find": "                            mark_deferred_base(&abs)?;",
+   "replace": ""
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

@@ -163,6 +163,21 @@ struct Inode {
     /// dies with the inode; a freed index cannot hand a stale payload to
     /// whatever is allocated there next.
     deferred_payload: Vec<u8>,
+    /// This file's bytes are NOT in the image, whether or not the image said
+    /// where they come from.
+    ///
+    /// `deferred_payload` cannot answer this. A `KLZY`-described image records
+    /// that a file is deferred and how big it really is, and carries NO fetch
+    /// description at all -- the URL lives in host-side JSON the kernel does
+    /// not read. So a deferred file loaded from one arrives with an empty
+    /// payload, which is indistinguishable from a base file the host WALKED,
+    /// whose bytes are an ordinary host file and which was never deferred.
+    ///
+    /// Those two must not be confused, because the export treats them
+    /// oppositely: a walked base file is a stub with nothing to re-emit, and a
+    /// deferred file re-emitted as a stub silently becomes a zero-length
+    /// ordinary file. That was gap 21.
+    deferred_base: bool,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
     uid: u32,
@@ -186,6 +201,7 @@ impl Inode {
         Inode {
             kind,
             deferred_payload: Vec::new(),
+            deferred_base: false,
             mode,
             uid,
             gid,
@@ -1119,6 +1135,17 @@ pub fn insert_base_file(
 /// URL-backed lazy file does, a base tree the host walked does not. Calling it
 /// with an empty payload is a no-op rather than an error, so a loader need not
 /// branch on whether the image declared a section.
+pub fn mark_deferred_base(path: &[u8]) -> Result<(), Errno> {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.deferred_base = true;
+        Ok(())
+    })
+}
+
 pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
     if payload.is_empty() {
         return Ok(());
@@ -2025,6 +2052,12 @@ where
                             insert_base_file(
                                 &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
+                            // Deferred REGARDLESS of whether a description came
+                            // with it. `KLZY` carries none, so without this the
+                            // file is indistinguishable from one the host
+                            // walked -- and the export turns that into a
+                            // zero-length ordinary file (gap 21).
+                            mark_deferred_base(&abs)?;
                             // Retain the fetch description verbatim. Without
                             // it, exporting this file loses the only thing that
                             // says where its bytes are: its inode number here
@@ -3919,13 +3952,21 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     // transport. Keep the file lazy rather than force-fetching
                     // it, which is the behaviour the host reconciler documents.
                     BaseSource::Host => {
-                        if inode.deferred_payload.is_empty() {
-                            ExportNode::LazyStub
-                        } else {
+                        // Deferredness decides, not the description. A file
+                        // that IS deferred re-exports as deferred even when the
+                        // image it came from said nothing about where its bytes
+                        // live -- that is exactly as informative as the input
+                        // was, and `KLZY` inputs are never more informative
+                        // than that. Emitting a stub instead would turn a
+                        // 4,242-byte binary into an empty file and call the
+                        // export a success.
+                        if inode.deferred_base || !inode.deferred_payload.is_empty() {
                             ExportNode::LazyBase {
                                 size: *size,
                                 payload: inode.deferred_payload.clone(),
                             }
+                        } else {
+                            ExportNode::LazyStub
                         }
                     }
                 },
@@ -4223,7 +4264,8 @@ fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyE
         // with no description is an ordinary host-walked file and not deferred
         // at all, which is why the payload -- not the source -- decides.
         InodeKind::BaseRegular { size, source, .. }
-            if matches!(source, BaseSource::Host) && !inode.deferred_payload.is_empty() =>
+            if matches!(source, BaseSource::Host)
+                && (inode.deferred_base || !inode.deferred_payload.is_empty()) =>
         {
             out.push(LazyEntryView {
                 path: abs_path.to_vec(),
@@ -7000,6 +7042,44 @@ mod tests {
                 .expect("section")
                 .archive_bytes(3),
             Some(8_000_000),
+        );
+    }
+
+    #[test]
+    fn a_deferred_file_with_no_description_re_exports_as_deferred() {
+        let _guard = TestGuard::acquire();
+        // GAP 21. A `KLZY`-described image says a file is deferred and how big
+        // it really is, and says NOTHING about where its bytes come from -- the
+        // URL lives in host-side JSON the kernel does not read. So a deferred
+        // file loaded from one arrives with an empty payload, which used to be
+        // indistinguishable from a base file the host WALKED.
+        //
+        // The export treated them the same and wrote a stub, so a 4,242-byte
+        // binary came out a zero-length ORDINARY file and the export reported
+        // success. Re-emitting it as deferred is not "dressed up as pointing
+        // nowhere": the input pointed nowhere too, and this carries exactly
+        // what the input carried.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        insert_base_file(b"/php", 77, 4_242, 0o755, 0, 0, 2).expect("base file");
+        mark_deferred_base(b"/php").expect("deferred, description unknown");
+
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        // The image's inode is a zero-length stub BY DESIGN -- a deferred file's
+        // bytes are not in the image, and its real length lives in the deferred
+        // record beside it. So the stub proves nothing either way, and the
+        // record is where the difference between a fix and the defect shows:
+        // without one, this file is simply an empty ordinary file.
+        let php = fs.resolve(b"/php", true).expect("/php");
+        assert_eq!(fs.stat_ino(php).expect("stat").size, 0, "a deferred stub");
+        let section = fs.deferred_section().expect("decodes").expect("section");
+        assert_eq!(section.records.len(), 1, "exactly this file is deferred");
+        let record = &section.records[0];
+        assert_eq!(record.size, 4_242, "the record carries the real length");
+        assert_eq!(record.archive_id, 0, "fetched standalone");
+        assert!(
+            record.payload.is_empty(),
+            "no description, because the image it came from carried none",
         );
     }
 
