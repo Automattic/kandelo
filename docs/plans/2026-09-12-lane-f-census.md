@@ -3882,3 +3882,66 @@ failure from a wrong one is the §19 pattern wearing a different hat.
 And the first version of the test clobbered `__indirect_function_table[1]` --
 inside the module's OWN dylink entries, which it calls through `call_indirect`.
 It trapped in the archive decoder. Slot 100 now, with the reason written down.
+
+## §76 — Audit of the two large restored files, before any target is set
+
+The maintainer asked for these two examined specifically, rather than a target
+invented over them. Both are floor. One is floor for a reason I recorded WRONGLY
+in §64.
+
+### `fork-worker-import-exceptions` (796 code lines)
+
+§64 called it "host-import failure transport". It is not transport at all:
+**zero** `Atomics`, **zero** `SharedArrayBuffer`, **zero** `postMessage`, two
+`DataView` uses. I classified it by its position in a dependency chain rather
+than by reading it.
+
+It is floor for two better reasons, both of which wasm cannot express:
+
+- `ForkWorkerLocalImportExceptionNormalizer` keys a `WeakMap<object, Token>` and
+  a `Map<symbol, Token>`. Object and SYMBOL identity -- the documented floor,
+  and symbols are not even reachable as a wasm value.
+- Its own doc states the other: "a nested Wasm RuntimeError is re-trapped so it
+  cannot become CatchAllRef-visible merely by crossing this JS frame." That is
+  JavaScript/Wasm exception-boundary behaviour, definable only where the boundary
+  is.
+
+### `fork-externref-import-mailbox` (1165 code lines)
+
+Genuinely a cross-worker transport: 13 `Atomics` operations, 6
+`SharedArrayBuffer`, a `postMessage`, 14 `DataView` reads and writes. Split by
+region:
+
+| Region | Code lines | What |
+|---|---|---|
+| 1-352 | 301 | slot layout math, capacity/binding/type validation, the type-sequence wire encoding |
+| 353-end | 864 | the owner and worker endpoints, where every `Atomics` call lives |
+
+The 301 lines look portable -- layout arithmetic and a wire format are exactly
+what `fork-codec` owns elsewhere. **They are not, and the reason is structural
+rather than about the code.** `crates/fork-codec` is a `no_std` crate compiled
+INTO the fork module. A TypeScript host cannot call it. The module would have to
+be a participant in the mailbox for a Rust codec to be reachable, and it is not:
+the mailbox's two ends are the process worker and the kernel worker, and the fork
+module lives in neither conversation.
+
+So the only way to move those 301 lines is to give the format a second
+implementation -- one in Rust for the kernel end, one in TypeScript for the
+worker end -- which is precisely the two-decoder drift this lane refused twice
+(`fork-module-state`, `fork-gc-codec`).
+
+### What this means for the target
+
+Both files are floor, so `forkRestoredHostFloor` has no obvious reduction in its
+two largest members. A target below the current 3894 would be a number with
+nothing behind it.
+
+What WOULD reduce it is the cluster port (§70): `fork-module-state` and the
+capture/replay modules are not in this surface at all, but porting their
+consumers may retire restored files that exist only to serve them. That is
+measurable when it happens rather than predictable now.
+
+RECOMMENDATION to the maintainer: leave the target at the ceiling, and let it
+fall as the port retires files -- each drop banked, as every other reduction in
+this file has been. The ratchet already prevents growth, which is the property
+that matters.
