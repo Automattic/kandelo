@@ -27,10 +27,9 @@ import {
 import { pathToFileURL } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 import { findRepoRoot } from "../../../host/src/binary-tiers";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import { loadVfsProductCatalog } from "../../../scripts/vfs-product-catalog.mjs";
-import {
-  MemoryFileSystem,
-} from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   parseTarBytes,
   parseTarGzip,
@@ -193,7 +192,7 @@ async function buildStagedPackageVfs(
     throw new Error(`${productId} package image must be embedded`);
   }
   const bytes = exactInputBytes(input, `${productId} package image`);
-  const metadata = MemoryFileSystem.readImageMetadata(bytes);
+  const metadata = SffsImageFs.readImageMetadata(bytes);
   if (
     metadata?.kernelAbi !== build.targetAbi.version ||
     metadata.abiSnapshotSha256 !== build.targetAbi.snapshot_sha256
@@ -1109,7 +1108,7 @@ function exactInputBytes(
   return bytes;
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: VfsImageFilesystem, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);

@@ -930,6 +930,26 @@ export class SffsImageFs {
    * and the floor this lane is reducing toward is host facilities only.
    */
   /**
+   * Read the metadata an image declares, without keeping the image.
+   *
+   * The static form `MemoryFileSystem.readImageMetadata` has, for callers that
+   * hold image BYTES and want to know what they say about themselves — a
+   * publication gate checking an artifact's ABI, for instance — rather than
+   * callers building a tree.
+   *
+   * It loads the image to read it, because the metadata lives inside the
+   * container and the loader is what knows the layout. That is heavier than
+   * parsing the header host-side, and deliberately so: a second reader of the
+   * container format in TypeScript is exactly what gap 11 warns about, and this
+   * runs at build time where the cost is a few milliseconds.
+   */
+  static readImageMetadata(image: Uint8Array): VfsImageMetadata | null {
+    const fs = SffsImageFs.create();
+    fs.loadImage(image);
+    return fs.getImageMetadata();
+  }
+
+  /**
    * Load a VFS image as the base layer, replacing whatever tree is present.
    * Returns the number of entries the kernel inserted.
    *

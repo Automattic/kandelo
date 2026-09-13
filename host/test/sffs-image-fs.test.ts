@@ -587,6 +587,27 @@ describe("SffsImageFs", () => {
     expect(fs.getLazyEntry("/absent")).toBeNull();
   });
 
+  it("reads an image's metadata from bytes alone", () => {
+    // The static form, for callers that hold bytes and want to know what they
+    // declare — a publication gate checking an artifact's ABI, say — rather
+    // than callers building a tree.
+    const source = SffsImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    expect(SffsImageFs.readImageMetadata(image)).toEqual({
+      version: 1,
+      kernelAbi: 44,
+      createdBy: "the test",
+    });
+
+    // An image declaring none says so, rather than throwing.
+    const bare = SffsImageFs.create();
+    bare.writeFile("/f", new Uint8Array([1]), 0o644);
+    expect(SffsImageFs.readImageMetadata(bare.exportImage())).toBeNull();
+  });
+
   it("gives each instance an independent tree", () => {
     const a = SffsImageFs.create();
     a.mkdir("/only-in-a", 0o755);

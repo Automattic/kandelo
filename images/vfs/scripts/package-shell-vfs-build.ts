@@ -6,6 +6,7 @@ import {
   MemoryFileSystem,
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   programWasmArtifactPolicy,
   resolveBinary,
@@ -156,7 +157,12 @@ export async function loadShellBaseFileSystemFromImage(
 
 /** Serialize a transient package-shell guest used by a derived-image build. */
 export function saveShellDerivedBuildGuestSnapshot(
-  fs: MemoryFileSystem,
+  // Widened to the interface: this function calls only `getImageMetadata` and
+  // `saveImage`, both of which the interface carries. Its own file still needs
+  // the atomic-seal check and so cannot repoint yet, but the SIGNATURE has no
+  // reason to wait — and `wordpress-preinstall.ts` is a type-only importer that
+  // passes its filesystem here and nowhere else.
+  fs: VfsImageFilesystem,
 ): Promise<Uint8Array> {
   requirePackageShellMetadata(fs.getImageMetadata(), "build guest");
   return fs.saveImage();
