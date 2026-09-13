@@ -5611,6 +5611,7 @@ pub struct ForkModule {
     /// grows dlopen support must pass its real control address here or its
     /// function table will never reconcile.
     pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
+    pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
     pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
@@ -5638,7 +5639,6 @@ pub struct ForkModule {
     /// section bytes (`ptr`, `byte_len`, both guest byte offsets/lengths).
     pub fm_set_activation_gc_codec: wasmtime::TypedFunc<(u32, u32, u32), ()>,
     /// Seed the worker's `hostExceptionOwner` (`u32::MAX` == none).
-    pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     /// Build the real topological GC drive plan for the fork's whole
     /// reference graph; returns a guest address for `fm_drive_execute`, or
     /// `0` + `fm_last_errno` on failure.
@@ -6130,6 +6130,7 @@ pub(crate) fn instantiate_fork_module(
         region_bytes,
         catalog_scratch_base,
         fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
+        fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
         fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
@@ -6138,7 +6139,6 @@ pub(crate) fn instantiate_fork_module(
         fm_set_activation_catalog_base: fm_func!("fm_set_activation_catalog_base": (u32, u32) => ()),
         fm_set_activation_static_root_base: fm_func!("fm_set_activation_static_root_base": (u32, u32) => ()),
         fm_set_activation_gc_codec: fm_func!("fm_set_activation_gc_codec": (u32, u32, u32) => ()),
-        fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
         fm_build_gc_plan: fm_func!("fm_build_gc_plan": u32 => u32),
         fm_gc_plan_count: fm_func!("fm_gc_plan_count": () => i32),
         fm_drive_execute: fm_func!("fm_drive_execute": (u32, u32) => ()),

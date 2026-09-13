@@ -3451,3 +3451,48 @@ This is the shape for the rest of `fork-gc-codec` and its siblings: ask what the
 host call actually PRODUCES. Where it produces a decoded structure the module
 also decodes, the answer is usually to move the check into the module and delete
 the call -- not to port the decoder.
+
+## §67 — A reduction I could make but could not check, so I did not make it
+
+Applying §66's method to the exception codec found two host decodes of one
+module-owned format. `worker-main.ts` decoded
+`kandelo.wpk_fork.exception_codec` to produce (a) a `u32` array of tag ordinals
+it passed to `fm_set_activation_exception_tags`, and (b) the host-exception
+owner: the smallest activation that declared a codec.
+
+Both fall out of the section, and `fork_codec::exception_codec` already decodes
+it. So `fm_set_activation_exception_codec(activation, ptr, byte_len)` now takes
+the raw section and derives the ordinals, and
+`fm_set_activation_exception_tags` is deleted. One host entry replaces one, and
+the host stops decoding a format it does not own.
+
+**The owner derivation was within reach and was not taken.** The owning set is
+exactly the activations that reach that entry, so `min` over them is the host's
+former rule. Deriving it would have deleted `fm_set_host_exception_owner` too --
+a real `-1` on `forkModuleHostDriveEntries`, the surface whose target is 5.
+
+It is not taken because NOTHING CAN OBSERVE IT. The owner is module-internal
+state with no accessor; `fm_stats` is an array of `AtomicU64` COUNTERS, not a
+state read, so putting it there would conflate two surfaces; and a dedicated
+accessor is an `fm_*` entry no production host calls, which lands in a bucket
+whose target is 0 and whose ceiling has no slack.
+
+That value decides which activation owns a host exnref, and an exnref left
+ownerless makes `build_drive_plan` fail loudly. An untested derivation of it is
+worse than one more host call -- this lane has now found five tests that could
+not fail and one guard nothing covered, and every one of them was written by
+someone confident the code was right. The code comment and the entry's doc both
+say why it is not derived, so the next reader does not re-derive the idea and
+stop at "the module could do this."
+
+**What made the tested half testable** is worth noting, because it was not
+obvious: the stored tags have no accessor either. The idempotence rule supplies
+the observation -- an identical re-seed is accepted, a conflicting one is
+refused, and neither could happen if nothing had been stored. Perturbing the
+module to store the section without decoding it fails the conflicting-re-seed
+assertion.
+
+**And the paired raise from §59 is withdrawn.** `forkModuleHostDriveEntries` is
+back to 24: `fm_capture_intern` regaining its caller is paid for by deleting a
+real entry rather than by moving a ceiling. The paired-ratchet question in the
+budget file now stands on its own merits instead of excusing a raise.

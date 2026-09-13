@@ -1622,4 +1622,56 @@ function i31Minter() {
   assert.equal(lastErrno(), EINVAL, "a truncated codec section is refused");
 }
 
+// ---- The module derives exception tags from the section itself --------------
+//
+// `fm_set_activation_exception_tags` took a `u32` array the HOST produced by
+// decoding the exception codec section -- a second decoder of a format the module
+// owns. `fm_set_activation_exception_codec` takes the raw section instead.
+//
+// Asserted through errno, which is all that is observable: the stored tags have
+// no accessor. That is enough, because the idempotence rule makes the STORE
+// visible -- an identical re-seed is accepted and a conflicting one is refused,
+// and neither could happen if nothing had been stored.
+{
+  const codecBytes = readFileSync(
+    new URL("../../fork-codec/testdata/exception-codec-wasm32.bin", import.meta.url),
+  );
+  const AT = SCRATCH_BASE + 24576;
+
+  x.fm_set_format(4, 0, 0, 0);
+  assert.equal(lastErrno(), 0, "format reseeded");
+  u8().set(codecBytes, AT);
+
+  x.fm_set_activation_exception_codec(7, AT, codecBytes.length);
+  assert.equal(lastErrno(), 0, "a real exception codec section is accepted");
+
+  // An identical re-seed is a no-op, which it could only be by comparing against
+  // tags the first call actually stored.
+  x.fm_set_activation_exception_codec(7, AT, codecBytes.length);
+  assert.equal(lastErrno(), 0, "an identical re-seed is accepted as a no-op");
+
+  // A DIFFERENT section for the same activation is refused. Truncating the tag
+  // count changes the derived ordinals, so this is the conflicting-re-seed path
+  // and it proves the stored set came from the section rather than being empty.
+  const shorter = codecBytes.subarray(0, codecBytes.length - 8);
+  u8().set(shorter, AT);
+  const shorterOk = (() => {
+    x.fm_set_activation_exception_codec(7, AT, shorter.length);
+    return lastErrno();
+  })();
+  assert.notEqual(
+    shorterOk,
+    0,
+    "a section yielding different tags is refused for an already-seeded activation",
+  );
+
+  // A corrupted magic is refused outright: the module decodes, it does not just
+  // copy bytes.
+  const corrupt = Uint8Array.from(codecBytes);
+  corrupt[0] ^= 0xff;
+  u8().set(corrupt, AT);
+  x.fm_set_activation_exception_codec(8, AT, corrupt.length);
+  assert.equal(lastErrno(), EINVAL, "a corrupted exception codec is refused");
+}
+
 console.log("fork-module capture harness: all assertions passed");

@@ -889,34 +889,19 @@ mod wasm {
     static ACT_EXN_TAGS_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_EXN_TAGS_ORD_USED: AtomicU32 = AtomicU32::new(0);
 
-    fn set_activation_exception_tags_impl(
+
+    /// Record one activation's exception tag ordinals.
+    ///
+    /// Split out of the host-facing entry so the codec path can reuse it: the
+    /// storage rules (idempotent re-seed, conflicting re-seed is `EINVAL`, caps
+    /// are `E2BIG`) are the same whoever produced the ordinals.
+    fn store_activation_exception_tags(
         activation_id: u32,
-        ptr: u64,
-        count: u64,
+        incoming: &[u32],
     ) -> Result<(), Errno> {
-        let count = usize::try_from(count).map_err(|_| Errno::EINVAL)?;
+        let count = incoming.len();
         let act_count = ACT_EXN_TAGS_ACT_COUNT.load(Ordering::Relaxed) as usize;
         let ord_used = ACT_EXN_TAGS_ORD_USED.load(Ordering::Relaxed) as usize;
-        // Bound the incoming array against guest memory, then copy it out into a
-        // local buffer through raw pointers (the same aliasing-safe idiom the
-        // resume catalog uses) so the re-seed compare and the store both read a
-        // distinct, owned copy rather than aliasing guest memory.
-        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
-        let byte_len = count.checked_mul(4).ok_or(Errno::EINVAL)?;
-        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end > mem_len_bytes() {
-            return Err(Errno::EINVAL); // ordinal region past the end of guest memory
-        }
-        let mut incoming: Vec<u32> = Vec::with_capacity(count);
-        // SAFETY: `[start, end)` is within guest linear memory (checked above).
-        let src = core::hint::black_box(start) as *const u8;
-        for i in 0..count {
-            let mut bytes = [0u8; 4];
-            unsafe {
-                core::ptr::copy(src.add(i * 4), bytes.as_mut_ptr(), 4);
-            }
-            incoming.push(u32::from_le_bytes(bytes));
-        }
         // Idempotent re-seed of an already-present activation (see the block
         // comment): identical tags are a no-op; conflicting tags are `EINVAL`.
         // SAFETY: single-threaded; the index/ordinals are static buffers read here.
@@ -927,7 +912,7 @@ mod wasm {
                 let off = entry[1] as usize;
                 let len = entry[2] as usize;
                 let stored = stored_all.get(off..off + len).ok_or(Errno::EINVAL)?;
-                if stored == incoming.as_slice() {
+                if stored == incoming {
                     return Ok(()); // identical re-seed: no-op
                 }
                 return Err(Errno::EINVAL); // conflicting re-seed of the same activation
@@ -944,12 +929,68 @@ mod wasm {
         // SAFETY: single-threaded; the destination slice `[ord_used, ord_end)` is
         // bounded by the cap check; `incoming` is a distinct local buffer.
         let ords = unsafe { &mut *ACT_EXN_TAGS_ORDS.0.get() };
-        ords[ord_used..ord_end].copy_from_slice(&incoming);
+        ords[ord_used..ord_end].copy_from_slice(incoming);
         let index = unsafe { &mut *ACT_EXN_TAGS_INDEX.0.get() };
         index[act_count] = [activation_id, ord_used as u32, count as u32];
         ACT_EXN_TAGS_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
         ACT_EXN_TAGS_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Guest-facing `fm_set_activation_exception_codec(activation, ptr, byte_len)`.
+    ///
+    /// Seed ONE activation's exception codec from its raw
+    /// `kandelo.wpk_fork.exception_codec` section, and derive from it the two
+    /// things the host used to derive for itself.
+    ///
+    /// Replaces `fm_set_activation_exception_tags`, which took a `u32` array the
+    /// HOST produced by decoding this very section -- a second decoder of a format
+    /// this module owns. The module decodes it now.
+    ///
+    /// An empty section is not an error: it is an activation whose codec declares
+    /// no tags, which still makes it a candidate owner.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_exception_codec(
+        activation_id: u32,
+        ptr: usize,
+        byte_len: usize,
+    ) {
+        match set_activation_exception_codec_impl(activation_id, ptr, byte_len) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    fn set_activation_exception_codec_impl(
+        activation_id: u32,
+        ptr: usize,
+        byte_len: usize,
+    ) -> Result<(), Errno> {
+        let end = ptr.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // section region past the end of memory
+        }
+        let ordinals: Vec<u32> = if byte_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: `[ptr, end)` is inside guest linear memory, checked above,
+            // and the module shares that memory.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(ptr) as *const u8, byte_len)
+            };
+            let codec = fork_codec::exception_codec::decode_exception_codec(bytes)?;
+            codec.tags.iter().map(|tag| tag.tag_ordinal).collect()
+        };
+        store_activation_exception_tags(activation_id, &ordinals)
+        // NOTE: this entry deliberately does NOT derive the host-exception owner,
+        // even though it could -- the owner is the smallest activation that
+        // declared a codec, which is exactly the set of activations that reach
+        // here. It is left host-seeded because nothing can OBSERVE the derivation:
+        // the owner is module-internal state with no accessor, `fm_stats` is a
+        // counter surface rather than a state read, and adding an accessor would
+        // put an entry nothing in production calls into a bucket whose target is
+        // 0. An untested derivation of a value that decides which activation owns
+        // a host exnref is worse than one more host call. See census section 67.
     }
 
     /// The exception tag ordinals `activation_id`'s codec declared, or `None` when
@@ -4433,43 +4474,26 @@ mod wasm {
         }
     }
 
-    /// Seed ONE activation's declared exnref tag ordinals for this worker (the
-    /// exnref tag-validity admission gate): `[ptr, ptr + count*4)` is a
-    /// little-endian `u32` array of the tag ordinals that activation's
-    /// `kandelo.wpk_fork.exception_codec` section declares. The child-install
-    /// entry (`fm_attach_child`, COW and borrowed alike) re-checks every
-    /// captured exnref recipe against these before building the reconstruction
-    /// drive plan, so a recipe naming an undeclared tag fails loud (`EINVAL`)
-    /// rather than being materialized blindly. Called ONCE per activation per
-    /// worker, before any fork drives reference reconstruction, alongside
-    /// `fm_set_activation_gc_codec`. An identical re-seed (a COW child on the host
-    /// that re-seeds) is a no-op; a conflicting re-seed fails `EINVAL`; too many
-    /// activations, or catalogs that jointly exceed the module's arena, fail
-    /// `E2BIG` (check `fm_last_errno`). An activation that declares no exnref tags
-    /// need not be seeded at all — any exnref naming it then fails the gate.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_exception_tags(
-        activation_id: u32,
-        ptr: usize,
-        count: usize,
-    ) {
-        match set_activation_exception_tags_impl(activation_id, ptr as u64, count as u64) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
+    // `fm_set_activation_exception_tags` was DELETED here: it took a `u32` array
+    // the host produced by decoding the exception codec section, which made the
+    // host a second decoder of a module-owned format.
+    // `fm_set_activation_exception_codec` above takes the raw section instead.
 
-    /// Seed the `hostExceptionOwner` for this worker (Phase 6 item 3c): the
-    /// smallest activation that declared an exception descriptor, which
-    /// `fm_build_gc_plan` uses to remap a HOST-exception exnref's owner exactly as
-    /// the JS `directOwner`. Pass `u32::MAX` (0xffff_ffff) when there is no such
-    /// owner (the JS `null`). Called ONCE per worker; a single-activation program
-    /// with no host exceptions need not call it at all (the default is "none").
+    /// Seed which activation owns a HOST exnref (one with no activation of its
+    /// own): the smallest activation that declared an exception codec, or
+    /// `u32::MAX` for "none". `build_gc_plan_impl` leaves an exnref ownerless when
+    /// this is `u32::MAX` so `build_drive_plan` fails loudly rather than guessing.
+    ///
+    /// Still host-seeded, and the module COULD derive it -- the owning set is
+    /// exactly the activations that reach `fm_set_activation_exception_codec`. It
+    /// is not derived because nothing could observe that it had been: see census
+    /// section 67.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_host_exception_owner(owner: u32) {
         HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
         set_ok();
     }
+
 
     /// Seed the reference graph for this fork from the KFMS module-state arena
     /// rooted at `module_state_root` and run its bookkeeping reconstruction pass
