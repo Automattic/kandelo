@@ -234,6 +234,13 @@
       "scope_end": "\n}\n",
       "find": "        validate_reference_shape(reference, input, reference_class, target_abi_version, label)?;",
       "replace": "        let _ = (reference_class, target_abi_version);"
+    },
+    {
+      "name": "a product output may be a hidden file",
+      "scope": "fn validate_output_name",
+      "scope_end": "\n}\n",
+      "find": "        || value.starts_with('.')",
+      "replace": "        || matches!(value, \".\" | \"..\")"
     }
   ]
 }
