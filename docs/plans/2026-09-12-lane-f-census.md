@@ -2205,3 +2205,71 @@ checks, because neither pair was on the list.
 
 Nothing binds or calls the new slot yet: that is F3 step 2, the capture-side
 walk.
+
+## §40 — F3 step 2 designed: one straight-line shim, no loop, no dangling export
+
+Reading `inject_drive_thunk` settles the shape, and it is smaller than expected.
+
+### The shim is straight-line
+
+The witness intern is three wasm operations, not a loop:
+
+```
+__wpk_fork_capture_witness(activation, witness_slot) -> recipe
+    transit[0] = witness_table[witness_slot]     ;; table.get + table.set
+    call_indirect drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE] (0)
+```
+
+`fm_drive_execute` needed a loop because a drive plan has many steps. Interning
+one witness is one encode, so this is a single `call_indirect` with the transit
+slot as its argument and the guest's generated codec returning the recipe id.
+
+### The PLACEHOLDER IMPORT is what keeps it callable
+
+`inject_drive_thunk` is the pattern: Rust declares
+`#[link(wasm_import_module = "env")] fn __wpk_fork_drive_plan(...)`, and the
+injector rewrites that import into a LOCAL thunk forwarding to the shim, so the
+emitted module carries no unresolved import and the host supplies nothing new.
+
+That matters here for a specific reason. `forkModuleEntriesWithoutProductionCaller`
+is at 27 of 27 with a target of 0, so any new `fm_*` export with no caller trips
+it — which is what forced §35's revert. Under the placeholder pattern the shim is
+reached from Rust, so nothing dangles and the bucket does not move. **A rise in a
+target-0 surface is a design smell, not a budget need**, and this design avoids
+needing one.
+
+### Where the interning belongs
+
+Lazily inside `__wpk_fork_ref_gc_define`, which is itself one of the twelve
+unserved guest imports and is the natural site: §21 established that gc_define is
+coupled to provenance and must not be served alone, because serving it in
+isolation would bake in "provenance is always absent".
+
+So the increment is one coherent unit:
+
+1. Serve `__wpk_fork_ref_gc_define` — guest-facing, so it does not touch the
+   `fm_*` counters at all.
+2. For a layout with provenance, intern that layout's witnesses through the
+   capture shim on first use, caching the recipe per witness slot.
+3. Pass those recipe ids as `define_gc`'s provenance edges, which closes §24 and
+   §26: the witnesses stop being recorded-but-unreadable.
+
+`forkGuestImportsUnserved` 12 -> 11, `forkModuleInjectorHelpers` rises within
+its existing envelope of 15, and no ceiling with a target of 0 moves.
+
+### What the harness needs to test it
+
+A drive table with a real function bound at `base + DRIVE_SLOT_GC_ENCODE`. The
+JS API will not accept a plain JS function in an `anyfunc` table, so the harness
+must compile a tiny stub module — `(func (export "encode") (param i32) (result
+i32) ...)` — and bind its export. `wasm-tools` is available and was used for the
+exnref probes, so this is the same technique that settled §28a.
+
+### The risk, restated
+
+This runs inside the fork's critical section, where the `ABORT_UNWINDING`
+discipline lives. `gc_define` is called during the guest's own encode walk
+rather than during unwind, which keeps it clear of `fm_parent_seal_capture`'s
+window — but that separation is an assumption to verify, not to rely on.
+
+Designed, not started.
