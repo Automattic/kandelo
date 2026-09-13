@@ -1,0 +1,43 @@
+{
+  "_comment": "The seam between the staged product builder and the Rust extractor. The four tests that existed before the cutover never reach this code \u2014 every production caller is inside a buildStaged* function \u2014 so these trials are killed only by the two that drive the seam itself.",
+  "file": "images/vfs/scripts/staged-product-inputs.ts",
+  "verify": "cd host && npx vitest run test/staged-product-inputs.test.ts >/dev/null 2>&1",
+  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true",
+  "trials": [
+    {
+      "name": "a failed extraction is reported as success",
+      "scope": "function materializeExactArchive(",
+      "scope_end": "\n}\n",
+      "find": "  if (result.status !== 0) {",
+      "replace": "  if (false) {"
+    },
+    {
+      "name": "the reason an archive was refused is the first line of cargo's noise",
+      "scope": "function materializeExactArchive(",
+      "scope_end": "\n}\n",
+      "find": "      .pop() ?? \"\";",
+      "replace": "      .shift() ?? \"\";"
+    },
+    {
+      "name": "a spawn that never ran is treated as an extraction that worked",
+      "scope": "function materializeExactArchive(",
+      "scope_end": "\n}\n",
+      "find": "  if (result.error) {",
+      "replace": "  if (false) {"
+    },
+    {
+      "name": "the single-root strip is never requested",
+      "scope": "function materializeExactArchive(",
+      "scope_end": "\n}\n",
+      "find": "  if (stripSingleRoot) args.push(\"--strip-root\");",
+      "replace": "  if (false) args.push(\"--strip-root\");"
+    },
+    {
+      "name": "the expected root is never passed to the extractor",
+      "scope": "function materializeExactArchive(",
+      "scope_end": "\n}\n",
+      "find": "  if (expectedRoot !== undefined) args.push(\"--expect-root\", expectedRoot);",
+      "replace": "  if (false) args.push(\"--expect-root\", expectedRoot as string);"
+    }
+  ]
+}

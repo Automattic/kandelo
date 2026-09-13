@@ -1143,7 +1143,11 @@ function materializeSingleRootArchive(
   materializeExactArchive(bytes, destination, label, true);
 }
 
-function materializeNamedSingleRootArchive(
+/** Exported alongside {@link materializeArchiveContents}, and for the same
+ * reason: it is the only way a test reaches the `--strip-root` and
+ * `--expect-root` plumbing, which no production caller a unit test can run
+ * exercises. */
+export function materializeNamedSingleRootArchive(
   bytes: Uint8Array,
   destination: string,
   label: string,

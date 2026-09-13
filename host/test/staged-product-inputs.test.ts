@@ -20,6 +20,7 @@ import {
   materializeRepositoryPathBundle,
   parseStagedProductInvocation,
   materializeArchiveContents,
+  materializeNamedSingleRootArchive,
   readRepositoryPathBundle,
 } from "../../images/vfs/scripts/staged-product-inputs";
 
@@ -276,6 +277,31 @@ describe("archive extraction through the Rust extractor", () => {
     );
     expect(readFileSync(join(destination, "bin/tool"), "utf8")).toBe("tool bytes");
     expect(readFileSync(join(destination, "README"), "utf8")).toBe("readme");
+  });
+
+  it("strips the single root and checks it is the expected one", () => {
+    // The only test that exercises the `--strip-root` and `--expect-root`
+    // plumbing. Nothing a unit test can call passes those flags otherwise, so
+    // without this they are arguments nobody proves are sent.
+    const destination = join(scratch(), "out");
+    materializeNamedSingleRootArchive(
+      targz({ "pkg/bin/tool": "tool bytes" }),
+      destination,
+      "fixture archive",
+      "pkg",
+    );
+    expect(readFileSync(join(destination, "bin/tool"), "utf8")).toBe("tool bytes");
+
+    // And the check is a check: a different root is refused, not silently
+    // stripped anyway.
+    expect(() =>
+      materializeNamedSingleRootArchive(
+        targz({ "other/bin/tool": "tool bytes" }),
+        join(scratch(), "out2"),
+        "fixture archive",
+        "pkg",
+      )
+    ).toThrow(/top-level directory/);
   });
 
   it("carries the extractor's own refusal back to the caller", () => {
