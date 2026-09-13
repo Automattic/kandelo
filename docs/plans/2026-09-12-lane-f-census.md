@@ -2651,3 +2651,72 @@ Both production hosts were already right (host-native derives the table type
 from the import itself; the TypeScript layer reads `dylink.0`), so this only
 moved the two V8 fixtures. Worth recording because it is the first time the
 module's own table footprint became part of what a host must get right.
+
+## §49 — The table-mutation group: four imports, and probably no new host obligation
+
+The eight remaining unserved guest imports are:
+
+| Import | Group |
+|---|---|
+| `__wpk_fork_module_state_table_mutation_begin` | table mutation |
+| `__wpk_fork_module_state_table_mutation_commit` | table mutation |
+| `__wpk_fork_module_state_table_mutation_abort` | table mutation |
+| `__wpk_fork_module_state_table_state_owned` | table mutation |
+| `__wpk_fork_ref_encode_funcref` | reference codec |
+| `__wpk_fork_ref_provenance_externref` | reference codec |
+| `__wpk_fork_ref_exn_ingress_throw` | must-throw (deferred by the maintainer to last) |
+| `__wpk_fork_ref_exn_broker_throw_recipe` | must-throw (deferred by the maintainer to last) |
+
+The mutation group is the largest remaining cluster, and it is the natural
+continuation of §48: it writes the same archive the reconcile reads.
+
+**What the four do**, from the contract the attic registry spells out:
+
+- `begin() -> i64` — acquire the process writer, apply the latest snapshot, and
+  return its exact generation. Ownership lives until commit or abort.
+- `commit(activation, first_index, length)` — publish a successful guest
+  mutation and release ownership.
+- `abort()` — release ownership after a non-mutating failure or no-op.
+- `table_state_owned(activation) -> i32` — a query.
+
+**Applying the rule — does any of it have to be host code?**
+
+*Applying the latest snapshot* is the reconcile, which is now in the module
+(§48). Done.
+
+*Acquiring the writer* is cross-worker mutual exclusion. The module imports the
+guest's SHARED linear memory and already does atomics on its own BSS inside it,
+so a lock word is module-reachable. Blocking (`memory.atomic.wait`) is not
+emittable from Rust, but that is exactly what the placeholder-import pattern is
+for — the same pattern that turned three other imports into local thunks.
+
+*Publishing a mutation* looked like the blocker, because the archive format
+carries no allocation cursor: `encode_dylink_archive` takes addresses from its
+CALLER, and `plan_dylink_archive` only says how much storage is needed. So
+something must allocate.
+
+**But the allocator is not a host capability.** `crates/dylink/src/archive.rs`
+documents `HostRequest::AllocateArchive` as "one `SYS_MMAP`-backed block". It is
+a syscall, and a table mutation is ordinary runtime rather than mid-fork, so the
+guest is free to make it. That puts allocation in reach of the drive table —
+the same mechanism that unlocked `__wpk_fork_capture_probe` and
+`__wpk_fork_capture_encode`, where the guest's own export is called by the
+module through `call_indirect`. The drive table is an obligation hosts already
+have; adding a slot to it is additive, because the doc is explicit that it is an
+ephemeral runtime binding and not a wire format.
+
+And the encoder is already in Rust: `fork_codec::dylink_archive_encode` has
+`plan_dylink_archive` and `encode_dylink_archive`, with a test suite of its own.
+
+So the projected shape is **four imports served, zero new host obligations** —
+two new drive slots (a blocking lock acquire, and an archive allocation) rather
+than two new host entries. That is better than the reconcile's outcome, which
+cost one host entry.
+
+**This is a projection, not a result.** The parts proven today are: the
+reconcile (landed, §48), the encoder's existence, and the allocator being a
+syscall rather than a host call. The parts NOT yet proven are the lock
+protocol's exact shape, whether `table_state_owned` needs anything beyond
+decoded archive state, and whether a mutation can be published without
+re-encoding records that did not change. Each is a real question and none of
+them is answered by reading a comment.
