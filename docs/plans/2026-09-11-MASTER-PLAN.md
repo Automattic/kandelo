@@ -3983,6 +3983,47 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The cutover landed, and I was wrong to defer it
+
+**2026-09-13, `1cf5aaec7`.** I had written that the cutover "wants a session
+that can exercise a real product build". That was an assumption, and checking
+beat it: `host/test/staged-product-inputs.test.ts` imports the module directly
+under vitest, so the seam is testable here. **The contract says a missing
+artifact is a step away rather than a boundary; the same applies to a missing
+test path.**
+
+`materializeExactArchive` now spawns `xtask archive-extract-tree` and the
+TypeScript tar reader, zip reader, zstd path, traversal rules and writes are
+deleted: **1,975 lines to 1,816**. Piped rather than written to a temporary
+file, because the caller sometimes holds its archive as bytes read out of a VFS
+image.
+
+**I almost shipped it covered by tests that never run it.** The four existing
+tests passed immediately — and every production caller of the changed function
+lives inside a `buildStaged*` product function no unit test reaches. That is the
+same trap this lane has been naming all session, arriving on my own change. Two
+tests now drive the seam, and two more trials were only killable after a third
+test exercised the `--strip-root` / `--expect-root` plumbing that nothing else
+reaches.
+
+**Writing them found a defect in the cutover.** `cargo run` writes its own build
+warnings to stderr, so reporting the FIRST line reported somebody else's warning
+about an unrelated crate as the reason this archive was refused. The last
+non-empty line is the extractor's own sentence, which names which rule fired and
+for which member.
+
+**One parity detail, preserved deliberately.** `tar -C dir .` writes entries as
+`./bin/tool`, and a `.` component is refused — by the Rust extractor and by the
+TypeScript it replaced, identically. The fixture names its entries explicitly
+rather than papering over behaviour both implementations share.
+
+**Seam trials: 4 of 5 killed, the fifth removed after measurement.** A spawn
+that never ran reports `status: null`, and `null !== 0`, so the status check
+throws with or without the `result.error` branch — it changes the SENTENCE, not
+the outcome. The branch stays because "spawn cargo ENOENT" and "exit null" send
+an operator to different places; the trial goes because no test can tell them
+apart.
+
 ### The port's Rust half is done and defended: `xtask archive-extract-tree`
 
 **2026-09-13.** Three formats dispatched by MAGIC (gzip tar, zstd tar, zip),
