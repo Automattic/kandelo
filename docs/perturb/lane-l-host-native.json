@@ -1,0 +1,35 @@
+{
+  "file": "crates/host-native/src/guest.rs",
+  "build": "cargo build -p host-native --target aarch64-apple-darwin --tests",
+  "verify": "cargo test -p host-native --target aarch64-apple-darwin --lib",
+  "trials": [
+    {
+      "name": "L5: a call site restates a length instead of asking the region",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "(manifest.ptr(), manifest.capacity())",
+      "replace": "(manifest.ptr(), manifest_len)"
+    },
+    {
+      "name": "L5: a call site passes a DIFFERENT region's capacity",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "(root_scratch.ptr(), root_scratch.capacity())",
+      "replace": "(root_scratch.ptr(), prefix_scratch.capacity())"
+    },
+    {
+      "name": "L-D3: the launch-entry range proof is removed",
+      "scope": "fn copy_launch_entry",
+      "scope_end": "\n}\n",
+      "find": "    let Some(offset) = checked_shared_range(guest_mem, buf_ptr, len as u32) else {\n        return -libc_errno::EFAULT;\n    };\n    unsafe { write_bytes(guest_mem, offset, entry) };",
+      "replace": "    unsafe { write_bytes(guest_mem, buf_ptr as usize, entry) };"
+    },
+    {
+      "name": "L-D3: the blob decode restates the length as its capacity",
+      "scope": "fn handle_spawn",
+      "scope_end": "\n}\n",
+      "find": "(scratch as i32, blob_scratch.capacity() as i32, blob_len as i32)",
+      "replace": "(scratch as i32, blob_len as i32, blob_len as i32)"
+    }
+  ]
+}

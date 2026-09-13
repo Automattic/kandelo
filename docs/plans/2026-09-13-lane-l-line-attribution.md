@@ -1452,6 +1452,51 @@ that state until its own output looked wrong. The second attempt compares each
 status by name and was perturbed with a known-failing command before being
 believed.
 
+## The harness for this already existed, and it names the mistakes I made
+
+`cargo xtask perturb` is a mutation harness in this repository: apply a source
+mutation, run a verifier, revert, report, and fail if a mutant SURVIVES.
+Lane L perturbed every guard it built by hand instead, in a fresh shell loop
+each time — and hit, in one session, all three hazards that tool's own doc
+comment was written to prevent:
+
+* *"On an UNTRACKED file the revert FAILS... two mutations stacked, and the
+  second trial's result was attributed to the wrong change."* Two of this
+  lane's perturbations never applied at all — the replacement strings had the
+  wrong indentation — and the test that ran afterwards passed on unmodified
+  source.
+* *"On a TRACKED file with UNCOMMITTED changes the revert SUCCEEDS, and
+  destroys the work under test."* `git checkout --` on `guest.rs` reverted a
+  new guard along with the perturbation.
+* *"a mutation that does not COMPILE is indistinguishable from one the tests
+  caught."* One trial failed to build and printed no verdict to read.
+
+The tool makes all three unrepresentable: it refuses to start unless the
+target is tracked and clean, and a `build` command distinguishes a mutation
+the compiler rejected from one a test killed.
+
+**Lane L's guards now have specs, and they are checked in.** No convention
+existed for where these live — nothing in the tree carries one — so they are
+`docs/perturb/lane-l-host-native.json` and `docs/perturb/lane-l-range-corpus.json`,
+to be moved if the campaign settles somewhere else.
+
+  * `lane-l-host-native.json`: restate a length instead of asking the region;
+    pass a DIFFERENT region's capacity; remove L-D3's launch-entry range
+    proof; restate the blob length as its capacity. **4 trials, 0 survived, 0
+    invalid.**
+  * `lane-l-range-corpus.json`: mark a case `rustOnly` with no true reason;
+    change an expected verdict. **2 trials, 0 survived, 0 invalid.**
+
+One overlap is worth noting because it was not designed: removing the
+launch-entry range proof is caught by the pointer/capacity guard as well as by
+its own test, because the reverted form creates a third base-address-shaped
+site and the pinned exemption count sees it. Two guards, one mutant, neither
+written with the other in mind.
+
+**The evidence is now reproducible rather than asserted.** Every perturbation
+claim elsewhere in this document is a transcript of a run somebody has to take
+on trust; these two are a command.
+
 ## A second candidate standing hazard, learned the hard way
 
 *A guard that testing routinely bypasses is not protecting what sits behind
