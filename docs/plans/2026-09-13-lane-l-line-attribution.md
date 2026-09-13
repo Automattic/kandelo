@@ -1493,9 +1493,34 @@ its own test, because the reverted form creates a third base-address-shaped
 site and the pinned exemption count sees it. Two guards, one mutant, neither
 written with the other in mind.
 
-**The evidence is now reproducible rather than asserted.** Every perturbation
-claim elsewhere in this document is a transcript of a run somebody has to take
-on trust; these two are a command.
+**A surviving mutant found both pairing guards asserting the wrong thing.**
+They required the other half to MENTION the corpus filename — which a doc
+comment satisfies. In `host_memory_range.rs` the name appears five times and
+only two are reads, so a half that stopped reading the corpus and kept its
+header would have passed, in either direction. All four now require the read
+itself: `include_str!("<corpus>")` on the Rust side, the relative path the URL
+is built from on the TypeScript side. Neither is satisfiable by prose.
+
+That is the third guard on this branch satisfied by something other than what
+it meant, after a `startsWith` that could never fire against a prefixed error
+message and a ratchet whose input could vanish. The shape is identical every
+time: **the check names something that is TRUE when the invariant holds,
+rather than the thing the invariant IS.**
+
+**One direction could not be expressed as a mutation at all, and that is a
+limit of the model rather than a gap in the guard.** The harness mutates
+content; it cannot delete a file, and it applies one anchor at a time. The
+Rust half reads its corpus twice, so mutating one read leaves "the Rust half
+reads this corpus" true — the mutant survives because the invariant survives.
+The spec for that direction was withdrawn rather than left reporting a
+survivor it cannot kill. That direction is verified by moving the file aside
+and running the TypeScript suite, which is a perturbation this document
+records and the harness has no way to express.
+
+**The evidence is otherwise reproducible rather than asserted.** Every
+perturbation claim elsewhere in this document is a transcript of a run
+somebody has to take on trust; these four specs are a command:
+`cargo xtask perturb docs/perturb/lane-l-*.json`, 10 trials, 0 survived.
 
 ## A second candidate standing hazard, learned the hard way
 
