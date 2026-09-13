@@ -3317,6 +3317,23 @@ Recorded so the budget's 0 target is read as what it is: the END of this lane,
 reached through a capability increment nobody has scheduled, not through more
 repointing.
 
+**CORRECTION, same day, to something written two paragraphs up.** An earlier
+version of this section lumped `verifyImportedLazyAtomicGroupSeals` in with "APIs
+this campaign has already retired". **It is not retired anywhere**, and the
+mistake is the kind that gets a check deleted. What the plan actually says is
+that the atomic-group SEAL — the datum — travels opaquely in the deferred
+payload alongside the URL, transport, digest and activation mode. The OPERATION
+is sha256 cohort authentication of imported lazy groups
+(`docs/plans/2026-09-09-k1-sffs-wiring-grounding.md`), and it is live.
+
+So the retired set is `rebaseToNewFileSystem` (a `SharedArrayBuffer`
+`maxByteLength` workaround the Rust path does not need) and the archive-entry
+import/export pair (producer-side recipe manipulation of a section the kernel
+carries opaquely). **`verifyImportedLazyAtomicGroupSeals` belongs with lane S
+instead**: an integrity verification that currently lives in the TypeScript
+filesystem, over data the Rust format now carries. Where it should run is that
+lane's question, not a thing to drop on the way past.
+
 ### What the repoint actually costs, measured per file — 2026-09-12
 
 **The importer count can reach 12 of 36.** Repointing the 24 files whose
