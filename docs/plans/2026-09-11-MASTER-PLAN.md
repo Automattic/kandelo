@@ -3269,6 +3269,21 @@ sides, doing different things. Worth remembering for the rest of the repoint:
 the census counts what a file CALLS, and two implementations can answer the
 same call differently enough that one of them cannot answer it at all.
 
+**And the conflation is on OUR side, which makes it cheap to fix.** Measured
+2026-09-12: both recipes that call `registerLazyFile` use the POSITIONAL form
+`(path, url, size, mode)` — `build-perl-vfs-image.ts` and
+`source-rootfs-shell-overlay.ts` — which is the standalone-fetch shape gap 13
+just made reachable. The bridge's method of that name takes an object and
+registers an ARCHIVE MEMBER, a different operation.
+
+So the next increment is a naming correction rather than a capability: give the
+bridge `registerLazyFile(path, url, size, mode)` matching what recipes call, and
+name the object form for what it does — registering an archive member. **No new
+module entry point**: both go through `sm_register_lazy_file`, which now handles
+either case. That unblocks two of the nine remaining files **without the
+headroom decision**, which is worth knowing because it means the funnel's
+`statfs` is not the only thing left to do while that call is pending.
+
 ### What the repoint actually costs, measured per file — 2026-09-12
 
 **The importer count can reach 12 of 36.** Repointing the 24 files whose
