@@ -41,6 +41,36 @@
 > not be carried by inode number, because an export renumbers, which is why
 > retention rather than reconstruction was the only available design.
 >
+> ### UPDATE 2026-09-13 — where today's integrity ACTUALLY lives, and why it bounds this lane
+>
+> Measured while designing the seal verifier. **The integrity that exists today
+> is not in `SDEF`. It is in the image's host-side lazy JSON** — each lazy
+> archive entry carries `activation.atomicGroup` with a cohort digest and a
+> per-member descriptor digest, and `MemoryFileSystem.verifyImportedLazyAtomicGroupSeals`
+> authenticates them. That section is the one `load_image` walks straight past,
+> so **the Rust filesystem cannot see any of today's digests**.
+>
+> What this means for this lane, concretely:
+>
+> * **A Rust-side verification applies only to images the NEW producer wrote.**
+>   The nine recipes repointed on 2026-09-13 emit `SDEF`; everything else still
+>   emits lazy JSON. Verifying an existing shipped base in Rust would mean
+>   reproducing JavaScript's `JSON.stringify` byte-for-byte — the cohort
+>   identity is literally `JSON.stringify({schema:1,id,members:[…sorted]})` —
+>   in a `no_std` crate, over member names that are archive paths.
+> * **So "is a digest mandatory" has a prerequisite**: mandatory for which
+>   images? A rule applied to `SDEF` producers today would exempt every image
+>   still written through the TypeScript path, which is most of them.
+> * **The maintainer has an open call that decides this**: whether derived
+>   builds from existing JSON-sealed bases must still verify, or whether those
+>   bases are rebuilt through the new producer.
+>   `docs/agent-guidance/abi.md` argues for rebuilding — a stale artifact should
+>   fail loudly rather than be shimmed — but it is a product call.
+>
+> **Nothing above changes where a digest GOES.** The payload is still the place,
+> and the courier contract still holds. What it changes is the honest scope of
+> any requirement this lane writes.
+
 > ### Two things this lane still has to decide, and one it must know
 >
 > 1. **Whether a digest is MANDATORY.** Deliberately left open: an archive or
