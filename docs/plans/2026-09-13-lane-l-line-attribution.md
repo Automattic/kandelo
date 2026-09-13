@@ -16,8 +16,10 @@ things that CHECK this lane, rather than the things they check.
   validated the wrong tree. None of them fails anything.
 - **The citations have measurably rotted** — the lane's transcription argument,
   with a number under it.
-- **Six figures, re-measured** — four of them this lane's own, one introduced
-  by this document while recording the others.
+- **The figures this lane got wrong, re-measured** — most of them its own, one
+  introduced by this document while recording the others. The section carries
+  the count; this line deliberately does not, because two copies of one number
+  is what drifted here before.
 
 The rest is the attribution, the L2 decline and its guard, the two candidate
 standing hazards, and what none of it establishes.
@@ -396,14 +398,23 @@ nothing until the last clone of that content goes. The 43 GB of duplicated
 source archives found in a stalled session's scratchpad is the first kind —
 five separate 608 MB downloads, not five references to one.
 
-## Nine figures, re-measured — and where they came from
+## Ten figures, re-measured — and where they came from
 
-The first two come from the L1 census and were repeated in this lane's commit
-messages before being checked; the last four are this lane's own, and the
-sixth was introduced by this document while it was recording the other five.
-None changes a conclusion. All are recorded because a number nobody re-derives
-is how this lane's target went wrong, and four of the six show the lane doing
-it too. **The seventh, and the pattern the seven share.** Deleting this lane's
+**The count in this heading was wrong until the list was counted.** It read
+"nine" while the summary at the top of the document read "six" and the body
+below narrated a tenth: each session appended an entry and left both counts
+alone. That is this section's own subject happening to this section, which is
+the third time the document has demonstrated its thesis on itself and the
+first time the demonstration was in a heading. The list has **ten** entries,
+and the summary at the top of the document no longer restates the number —
+two copies of one count is the thing that drifted, so there is now one.
+
+Two come from the L1 census and were repeated in this lane's commit messages
+before being checked. **The other eight are this lane's own**, and the sixth
+was introduced by this document while it was recording the other five. None
+changes a conclusion. All are recorded because a number nobody re-derives is
+how this lane's target went wrong. **The seventh, and the pattern it shares
+with the six above it.** Deleting this lane's
 `target` was justified in writing by "the binary cache is intact, so package
 resolution is still warm" — that cache is 17 MB. The bulk is elsewhere (24 GB
 under source-only). The conclusion happened to be right and the stated reason
@@ -437,8 +448,10 @@ other lanes built Rust throughout. What was withheld was PERMISSION — a
 standing instruction not to build until the volume had 50 GB of margin.
 Writing it as an absent tool implied a broken toolchain rather than a hold
 being respected, and it spread to both commit drafts and the window script
-before anyone read it closely. The lesson is the same as the nine figures: it
-was never the sentence under examination.
+before anyone read it closely. The lesson is the same as every entry above it:
+it was never the sentence under examination. (This paragraph said "the nine
+figures" until the list was counted — a fourth copy of a number that belonged
+in one place, found by grepping for the other three.)
 
 **Two sit in landed commit messages**, which are immutable: the
 correction lives here rather than in a rewritten history.
@@ -960,9 +973,13 @@ three: `scripts/test-allow-stale.sh:82` is the `CACHE_DIR=` line that reads
 for. The third, `openssl.c:40`, is wget's own source and not in this tree,
 which the table now says.
 
-**The real defence is that this document barely uses anchors at all.** Three
-in eleven hundred lines, against thirteen in one Rust file. An argument stated
-in prose, with the identifier named, does not rot when the file grows.
+**The real defence is that this document barely uses anchors at all.** Three,
+against thirteen in one Rust file. The first draft of this sentence gave a
+ratio — "three in eleven hundred lines" — which was already wrong when written
+and would have been wrong again by the next commit, because the denominator
+moves every time the document is edited. A self-referential count is the one
+number guaranteed to rot. An argument stated in prose, with the identifier
+named, does not.
 
 **And the checker that established this answers a weaker question than the
 finding needs, which is worth more than its result.** Perturbed three ways: a
