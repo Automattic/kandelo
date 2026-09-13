@@ -169,3 +169,42 @@ becomes reachable.**
 `/dev/shm` mappings being coherent SOONER than a syscall boundary. Nothing in
 the platform offers that today on any path, so such a program would already be
 broken — but I have not audited the guests to say it never happens.
+
+---
+
+## SCOPING 2026-09-13 — what moving `/dev/shm` in-kernel actually touches
+
+Mapped read-only, so the work is known before it is authorised.
+
+**The routing today.** `tmpfs::claims_path` is a pure prefix match against
+`SCRATCH_MOUNTS`, and `syscalls.rs` gates every path operation on it. `/dev` is
+served by `devfs`, and `devfs::is_host_backed_path` carves out `/dev/shm` as
+"the sole exception to kernel ownership of the `/dev` namespace". About **ten
+call sites** in `syscalls.rs` test `is_host_backed_devfs_path`, each of the
+shape `is_devfs_namespace_path(p) && !is_host_backed_devfs_path(p)`.
+
+**The shape of the change.** Flipping `is_host_backed_path` is NOT enough, and
+would be actively wrong: the devfs branch runs BEFORE the tmpfs branch, so
+`/dev/shm/foo` would be claimed by devfs, which knows only the fixed entry names
+and would answer `ENOENT`. What is needed is that
+
+* `/dev/shm` **itself** stays a devfs directory entry — a mount point;
+* `/dev/shm/*` routes to **tmpfs**, which means adding it to `SCRATCH_MOUNTS`
+  with its own `st_dev` and mode `0o1777`;
+* the ten gates learn the difference between "the mount point" and "inside the
+  mount", which today they do not have to.
+
+**The host side then deletes:** `MemoryFileSystem.create(shmSab)` in
+`browser-kernel-host.ts` and `node-kernel-worker-entry.ts`, the `/dev/shm`
+`MountConfig`, and the shm `SharedArrayBuffer` itself.
+
+**Estimate: this is a kernel syscall-routing change, not a builder change.** It
+is larger than any single increment in this lane so far and it lands in
+`syscalls.rs`. It wants its own increment with its own trials, and the mount
+point/inside-the-mount distinction is where a mutation should be aimed first.
+
+**Not a blocker, but worth knowing before starting:** `/dev/shm` is mode
+`0o1777` and sticky, and the scratch mounts that exist carry their own mode and
+`st_dev`. Nothing in the table suggests sticky-bit handling is missing, but I
+have not verified that tmpfs honours the sticky bit on unlink, which is what
+stops one process deleting another's shm segment.
