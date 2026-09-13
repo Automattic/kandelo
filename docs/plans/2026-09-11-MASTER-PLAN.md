@@ -3737,6 +3737,34 @@ make deliberately when reached, not to slide past.**
 `registerLazyArchiveFromEntries` (1 call site) is the bulk form of the bridge's
 existing `registerArchiveMember` and needs no new capability.
 
+### Capacity is a declared ceiling, never an allocation — maintainer, 2026-09-13
+
+> *"An image of capacity X should only take the size of its contents in memory
+> when loaded. It should not take X in memory right away unless it is filled to
+> capacity X already."*
+
+**This is the invariant gap 14 has to keep, and gap 16's capacity restore must
+not break.** The export already separates the two numbers: `total_blocks` is
+`min(max_blocks, data_start + data_blocks + 64)` — sized to the CONTENT — while
+`max_blocks` carries the declared ceiling into `max_size_bytes` and
+`growable_to_bytes`. A declared capacity moves the second and not the first.
+
+**The property held and was not asserted**, which is how it would have been lost.
+The capacity test declares 64 MiB and passes only because `drain_export` gives
+up past 4 MiB — so a regression would have shown as a confusing drain failure
+rather than as the statement "declaring room is not occupying it". It is now
+said out loud.
+
+**The one cost that IS proportional** is the metadata region: a larger
+`max_blocks` means a larger block bitmap and inode table, because
+`total_inodes = max_blocks / 4`. For a 256 MiB declaration that is about 2 MiB
+of inode table — under one percent, real, and the honest answer to "only the
+size of its contents" rather than a claim of exactly zero.
+
+**It constrains the gap 16 fix too.** Restoring a loaded image's declared
+capacity must restore the CEILING, not preallocate the room: an image declaring
+256 MiB whose tree is 3 MiB must load, and re-export, at roughly 3 MiB.
+
 ### Gap 16 — loading an image drops the metadata it was carrying
 
 **Found 2026-09-13 while designing `getImageMetadata`, and it is the same family
