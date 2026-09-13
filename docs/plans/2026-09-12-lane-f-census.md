@@ -3218,3 +3218,47 @@ TS2307 for the module itself, plus whatever implicit-anys it alone caused. The
 last few of those go, not linearly. 19 dangling modules remain.
 
 `fork-guest-imports.ts` is 100 code lines and the platform half is 186 of 450.
+
+## §62 — The unwind tag: a host responsibility the module already removed, unclaimed
+
+`fork-module-inject`'s `inject_unwind_tag` says why it exists: the fork unwind
+tag "was minted in JavaScript, which made every host responsible for creating
+one and handing it over. It does not have to be." It defines a module-owned tag
+and exports it as `__wpk_fork_unwind`.
+
+**Both hosts still mint their own.** `worker-main.ts` calls
+`createForkUnwindTag()`; `crates/host-native` calls `wasmtime::Tag::new` at two
+sites. Nothing reads the module's export. So the pass built a replacement that
+was never connected, the host responsibility it was written to delete is still
+there, and the module's tag is dead -- H-1 exactly, in the code that was
+supposed to be the fix.
+
+It is also a latent hazard rather than only waste: the moment the module throws
+that tag itself, the guest's instrumented catch would not match it, and the
+exception would escape to the worker boundary instead of committing a frame.
+
+**host-native now binds the module's tag** at its process path, type-checking
+the module's tag signature against the guest's import and failing loud if the
+module does not export one.
+
+**What validates it, and what does not.** I first ran host-native's 61 tests,
+saw them pass, and took that as validation. It was not: a deliberately broken
+lookup (`get_tag` under a name the module does not export) ALSO passes all 61.
+A probe -- `eprintln!` at both binding sites -- confirmed neither site is
+reached by this crate's tests at all, because no host-native fixture guest
+imports `env.__wpk_fork_unwind`. The tag-binding path has no coverage in
+host-native and did not before this change either.
+
+So the coverage added is the part the change actually depends on, not a claim
+about the whole path: `fork_module_host_obligation_is_pinned` now asserts every
+fork-module artifact on disk exports `__wpk_fork_unwind` as a tag with no
+payload. Perturbed by deleting the export from the injector: the assertion
+fails. The end-to-end link -- a guest importing the tag, instantiated against
+the module's -- remains uncovered in both hosts, and is named here rather than
+left to be assumed.
+
+`worker-main.ts` is NOT changed yet. Its tag is created at line 3403, before
+the fork module is instantiated at 3652, so the switch needs a reordering rather
+than a substitution, and the browser host has no equivalent of host-native's
+suite to catch a mistake. Doing it needs the end-to-end test that does not exist
+yet, which is the honest prerequisite rather than a reason to skip it.

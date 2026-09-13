@@ -10037,7 +10037,40 @@ fn run_worker_thread(
                     wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
                 ),
             };
-            let tag = wasmtime::Tag::new(&mut store, &tag_ty)?;
+            // The MODULE owns this tag. `fork-module-inject` defines and
+            // exports it precisely so a host does not have to mint one:
+            // "It was minted in JavaScript, which made every host responsible
+            // for creating one and handing it over. It does not have to be."
+            // Minting here instead left that export dead and the responsibility
+            // in place -- and, worse, meant the module and the guest would not
+            // agree on the tag the moment the module throws one itself.
+            let tag = fm
+                .instance
+                .get_tag(
+                    &mut store,
+                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+                )
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "fork-module does not export {}; it cannot supply the \
+                         guest's unwind tag",
+                        wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                    )
+                })?;
+            // `TagType` is not comparable, so compare the signature it carries.
+            // The transport is `() -> ()`; a module whose tag took a payload
+            // would link and then mismatch at the first throw.
+            let module_sig = tag.ty(&store);
+            let module_sig = module_sig.ty();
+            let guest_sig = tag_ty.ty();
+            if module_sig.params().len() != guest_sig.params().len()
+                || module_sig.results().len() != guest_sig.results().len()
+            {
+                anyhow::bail!(
+                    "fork-module's {} tag does not match the type the guest imports",
+                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                );
+            }
             linker.define(
                 &mut store,
                 wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,

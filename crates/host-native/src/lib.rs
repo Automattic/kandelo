@@ -1012,6 +1012,46 @@ mod tests {
                 continue;
             }
             let module = Module::from_file(&engine, path)?;
+
+            // The module must EXPORT the guest's unwind tag, type-correct.
+            //
+            // `fork-module-inject` defines and exports it so that a host does
+            // not have to mint one, which is a host responsibility removed --
+            // but only if a host actually binds it. Both hosts now do, and this
+            // is what makes that binding safe to perform: without it, a module
+            // built without the pass would leave the host reaching for an
+            // export that is not there.
+            //
+            // What this does NOT cover, and nothing currently does: linking the
+            // tag into a guest that imports it, end to end. No host-native
+            // fixture imports `env.__wpk_fork_unwind`, so neither binding site
+            // is reached by this crate's tests -- verified by probe, not
+            // assumed. See docs/plans/2026-09-12-lane-f-census.md section 62.
+            let unwind = module
+                .exports()
+                .find(|e| e.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} does not export the guest's unwind tag",
+                        path.display()
+                    )
+                });
+            match unwind.ty() {
+                wasmtime::ExternType::Tag(tag) => {
+                    let sig = tag.ty();
+                    assert!(
+                        sig.params().len() == 0 && sig.results().len() == 0,
+                        "{}: the unwind transport carries no payload, but its tag is {sig:?}",
+                        path.display(),
+                    );
+                }
+                other => panic!(
+                    "{}: {} is a {other:?}, not a tag",
+                    path.display(),
+                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                ),
+            }
+
             let surface = inspect_fork_module(&module);
             assert!(
                 surface.other_imports.is_empty(),
