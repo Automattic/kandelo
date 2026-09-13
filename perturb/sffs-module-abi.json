@@ -52,13 +52,6 @@
       "replace": "content, 0o644, true,"
     },
     {
-      "name": "stat size reports the wrong field count",
-      "scope": "pub extern \"C\" fn sm_stat_size",
-      "scope_end": "\n}\n",
-      "find": "    8 * 8",
-      "replace": "    7 * 8"
-    },
-    {
       "name": "read_file ignores the offset",
       "scope": "pub unsafe extern \"C\" fn sm_read_file",
       "scope_end": "\n}\n",
@@ -66,11 +59,11 @@
       "replace": "rootfs::read_file_at(path, 0, out,"
     },
     {
-      "name": "read_file invents zeroes for unreachable base bytes",
+      "name": "read_file invents zeroes instead of reading the loaded image",
       "scope": "pub unsafe extern \"C\" fn sm_read_file",
       "scope_end": "\n}\n",
-      "find": "|_req, _dst| Err(Errno::EIO))",
-      "replace": "|_req, _dst| Ok(_dst.len()))"
+      "find": "    match rootfs::read_file_at(path, offset, out, image_source) {",
+      "replace": "    match rootfs::read_file_at(path, offset, out, |_r, d: &mut [u8]| Ok(d.len())) {"
     },
     {
       "name": "readlink returns success regardless of length",
@@ -169,6 +162,83 @@
       "scope_end": "\n    ];\n",
       "find": "        outcome.required_inodes,\n        capacity,",
       "replace": "        capacity,\n        outcome.required_inodes,"
+    },
+    {
+      "name": "export reports a negative errno as a byte count",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "        Err(e) => err(e),",
+      "replace": "        Err(_e) => 0,"
+    },
+    {
+      "name": "export silently invents base bytes",
+      "scope": "pub unsafe extern \"C\" fn sm_export_image_read",
+      "scope_end": "\n}\n",
+      "find": "    let mut source = image_source;",
+      "replace": "    let mut source = |_r: rootfs::ByteReq, d: &mut [u8]| Ok(d.len());"
+    },
+    {
+      "name": "a refused load adopts the host's buffer anyway",
+      "scope": "pub unsafe extern \"C\" fn sm_load_image",
+      "scope_end": "\n}\n",
+      "find": "            unsafe { *IMAGE.0.get() = None };",
+      "replace": "            unsafe { core::hint::black_box(&IMAGE) };"
+    },
+    {
+      "name": "loading a second image leaks the first",
+      "scope": "pub unsafe extern \"C\" fn sm_load_image",
+      "scope_end": "\n}\n",
+      "find": "    release_image();",
+      "replace": "    // release_image();"
+    },
+    {
+      "name": "a zero-length range is accepted as an image",
+      "scope": "pub unsafe extern \"C\" fn sm_load_image",
+      "scope_end": "\n}\n",
+      "find": "    if ptr == 0 || len == 0 {",
+      "replace": "    if ptr == 0 {"
+    },
+    {
+      "name": "reset keeps the image its tree was built on",
+      "scope": "pub extern \"C\" fn sm_reset() {",
+      "scope_end": "\n}\n",
+      "find": "    release_image();",
+      "replace": "    // release_image();"
+    },
+    {
+      "name": "the byte source answers a blob or archive request from the image",
+      "scope": "fn image_source(",
+      "scope_end": "\n}\n",
+      "find": "    let rootfs::ByteReq::Image { offset } = req else {\n        return Err(Errno::EIO);\n    };",
+      "replace": "    let offset = match req {\n        rootfs::ByteReq::Image { offset } => offset,\n        rootfs::ByteReq::Base { offset, .. } => offset,\n        rootfs::ByteReq::Archive { offset, .. } => offset,\n    };"
+    },
+    {
+      "name": "the byte source reads past the end of the image",
+      "scope": "fn image_source(",
+      "scope_end": "\n}\n",
+      "find": "    let n = core::cmp::min(dst.len(), bytes.len() - start);",
+      "replace": "    let n = dst.len();"
+    },
+    {
+      "name": "the byte source serves bytes with nothing loaded",
+      "scope": "fn image_source(",
+      "scope_end": "\n}\n",
+      "find": "    let bytes = image_bytes().ok_or(Errno::EIO)?;",
+      "replace": "    let bytes = image_bytes().unwrap_or(&[]);"
+    },
+    {
+      "name": "the stat probe reports a length that is not the record's",
+      "scope": "pub unsafe extern \"C\" fn sm_lstat(",
+      "scope_end": "\n}\n",
+      "find": "    const RECORD: usize = 8 * 8;",
+      "replace": "    const RECORD: usize = 6 * 8;"
+    },
+    {
+      "name": "the stat probe is answered only after the path resolves",
+      "scope": "pub unsafe extern \"C\" fn sm_lstat(",
+      "scope_end": "\n}\n",
+      "find": "    if out_len == 0 {\n        return RECORD as i32;\n    }\n    let path = unsafe { slice(path_ptr, path_len) };",
+      "replace": "    let path = unsafe { slice(path_ptr, path_len) };\n    if out_len == 0 {\n        return RECORD as i32;\n    }"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
