@@ -1768,3 +1768,106 @@ is not lane F's call.
 
 `forkGuestImportsUnserved` therefore has a floor of 5 for this lane alone,
 unless that boundary question is answered differently.
+
+## §32 — CORRECTION to §31: the dylink protocol is already Rust, and the fork-module can reach it
+
+The maintainer's answer to §31 was to move table replication into
+`crates/dylink` unless there is a good reason not to. Checking for that reason
+found §31 overstated the boundary.
+
+**Most of it is already there.** `crates/dylink/src/session.rs` models
+generations, `table_checkpoint_generation` and the rule that patch generations
+must be strictly ordered. `crates/dylink/src/archive.rs` models
+`DylinkTablePatch` with its publication records. The wire types live in
+`fork_codec::dylink_archive`, which `fork-codec` re-exports — and `fork-module`
+already depends on `fork-codec`, so **the types are reachable from the
+fork-module today, with no new dependency edge.**
+
+**§31's boundary concern was about the wrong thing.** What the TypeScript
+reaches into is the *host-side* dlopen loader. Linking `crates/dylink`'s Rust
+library is not that: a library is not a component boundary.
+
+### The one real constraint
+
+`dylink_module32.wasm` declares **0 imports**. It is a pure computation module —
+no memory, no tables — which is a deliberate shape, not an oversight. So the
+half of the protocol that READS AND WRITES FUNCREF TABLE ENTRIES cannot live
+there: it holds no table to read.
+
+That is the good reason the move cannot be total, and it is specific: the
+protocol logic belongs in `crates/dylink` (and largely already is), while the
+table access needs whoever holds the table.
+
+### Who holds the table
+
+The fork-module does. Its built artifact imports
+`env.__indirect_function_table` alongside its three fork tables, and
+`fork-module-inject` already emits `table.get` / `table.set` shims.
+
+So the shape that works, without a new host import or a new module:
+
+* **`crates/dylink`** keeps the protocol — generations, ordering, patch model.
+  Already true.
+* **`crates/fork-module`** serves the five `module_state_table_*` guest imports,
+  delegating decisions to that Rust and doing the table access itself through
+  injected shims.
+* The **host** keeps only what neither can: the writer lock, if it must stay a
+  host object rather than an atomic in shared memory.
+
+`forkGuestImportsUnserved`'s floor of 5 from §31 is therefore lifted. The
+mutation group is buildable in this lane after all — §31's "not unblocked work"
+was wrong and is superseded.
+
+## §33 — What the 139 reversal errors actually point at
+
+The maintainer asked whether the TypeScript errors blocking the merge point at
+further things that should be ported. Measured: the lane branch reports 148
+`tsc` errors, the parent 25, and **139 lines differ**.
+
+### Three quarters of them are not work
+
+| kind | count | what it is |
+|---|---|---|
+| `TS7006` implicit any | **55** | CASCADE. A parameter loses its type when its module is missing. Resolves for free. |
+| `TS6059` / openssl rootDir | **15** | PRE-EXISTING — the parent reports the same 15. Not the reversal's. |
+| `TS2307` cannot find module | **44** | The real signal: 25 distinct missing modules. |
+| type errors (`TS2322`, `TS2339`, `TS18046`, `TS2551`, `TS2353`) | **25** | Downstream of the missing types. |
+
+So the actionable population is **25 modules**, not 139 errors. And **99 of the
+139 are in one file**, `worker-main.ts` — the fork orchestration site, which is
+the lane's target anyway.
+
+### Ranked by how much they block
+
+`fork-host-import-runtime` (5 errors), `fork-replay-gate` (4),
+`fork-reference-broker` (4), `vfork-lifetime` (4),
+`fork-externref-process-owner` (3), `fork-mechanism-trace` (3), then 19 modules
+at 1-2 errors each.
+
+The ranking is a poor guide to effort: `fork-process-continuation` causes ONE
+error and is 1,471 lines of driver loop (§23), while `fork-mechanism-trace`
+causes three and exports a single function.
+
+### The ones I doubt should be ported, and why
+
+Four are worth a decision rather than a default:
+
+* **`fork-mechanism-trace`** — exports `sampleProcessMemoryStats`. That is
+  process diagnostics, not fork mechanism. It looks misfiled rather than
+  unported: the likely right move is relocating it to a non-fork host file, and
+  porting it would put memory sampling inside the fork module for no reason.
+* **`browser-fork-module-artifact`** — a Vite `?url` artifact shim. Browser
+  build plumbing; there is nothing to port.
+* **`fork-reference-broker` / `fork-externref-process-owner` /
+  `fork-externref-import-mailbox`** — externref identity and per-process
+  lifetime. `CLAUDE.md` names externref identity as the irreducible floor, and
+  §28a showed why the boundary is real. These stay, but the question worth
+  asking is how THIN they can get now that the module owns identity for the
+  `any` hierarchy.
+* **`fork-module-trampoline`** — host-side call thunks. Whether these survive
+  depends on the F3 coarsening: a coarse drive API needs fewer thunks, so this
+  may shrink to nothing without being ported.
+
+Everything else falls into the two groups already measured: work the module now
+does, where the call site should be deleted (§13, as corrected by §19), and
+genuine floor (§23).
