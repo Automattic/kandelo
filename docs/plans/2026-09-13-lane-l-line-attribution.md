@@ -1121,6 +1121,23 @@ the full run:
 | `host_getrandom` | **0** |
 | `host_fstatfs` | **0** |
 
+**One of the five was made drift-proof instead of left alone.** `host-native`
+carried three record sizes as hand-written constants — `WASM_STAT_SIZE = 88`,
+`WASM_STATFS_SIZE = 72`, and a literal `16` for the dirent record — each with
+a comment naming `crates/shared` as where the number comes from. That is the
+same size stated twice, with the citation attached, which is this lane's
+subject exactly. All three are `core::mem::size_of::<...>()` of the shared
+type now, and a test pins them at 88/72/16 so the switch is provably
+behaviour-preserving rather than merely plausible. The statfs path is one of
+the five nothing executes, so a drift there would have been invisible; it
+cannot drift now.
+
+The dirent capacity was verified against the kernel before it was derived:
+`WasmDirent { d_ino: u64, d_type: u32, d_namlen: u32 }` is 16 bytes, the
+kernel passes `&mut dirent as *mut WasmDirent as *mut u8`, and the host writes
+exactly those three fields — so the hand-written 16 was right, and is now the
+shared type's own answer.
+
 So `waitpid` is the hot one, not the clock, and the five zeros are
 **compile-checked only**: their conversions type-check and their capacity
 arguments were derived by reading the kernel's declared buffer size, but no

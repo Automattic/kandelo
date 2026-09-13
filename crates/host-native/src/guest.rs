@@ -305,10 +305,18 @@ const DT_UNKNOWN: u32 = 0;
 const DT_DIR: u32 = 4;
 const DT_REG: u32 = 8;
 const DT_LNK: u32 = 10;
-/// Size of the `repr(C)` `WasmStat` the kernel reads back (crates/shared).
-const WASM_STAT_SIZE: usize = 88;
-/// Size of the `repr(C)` `WasmStatfs` the kernel reads back (crates/shared).
-const WASM_STATFS_SIZE: usize = 72;
+/// Size of the `repr(C)` `WasmStat` the kernel reads back.
+///
+/// Asked of the shared type rather than written down. These were `88` and
+/// `72` with a comment naming `crates/shared` as the source -- the same size
+/// stated twice, which is the thing this lane exists to stop. A field added
+/// to `WasmStat` moved one of them and not the other, and the statfs path is
+/// one of the five imports no test in this repository executes.
+const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStat>();
+/// Size of the `repr(C)` `WasmStatfs` the kernel reads back.
+const WASM_STATFS_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStatfs>();
+/// Size of the `repr(C)` `WasmDirent` the kernel reads back.
+const WASM_DIRENT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmDirent>();
 /// First host handle the FS hands out; kept clear of the 0/1/2 stdio range.
 ///
 /// K9 collapsed the two disjoint handle namespaces (files from `host_open`,
@@ -2812,6 +2820,33 @@ mod proc_bytes_tests {
         );
     }
 
+    /// The three record sizes still equal what they were written as.
+    ///
+    /// They are asked of `crates/shared` now instead of written down, which
+    /// removes a transcription -- but it also changes WHERE they come from,
+    /// and a change that silently altered one would be a worse bug than the
+    /// duplication it removed. The old values are pinned here so the switch
+    /// is provably behaviour-preserving.
+    ///
+    /// If a field is added to one of those structs this test fails, which is
+    /// the right moment to look: the number moving is correct, and everything
+    /// reading that record on the other side of the ABI has to move with it.
+    #[test]
+    fn the_shared_record_sizes_are_what_this_host_used_to_hardcode() {
+        assert_eq!(WASM_STAT_SIZE, 88, "WasmStat");
+        assert_eq!(WASM_STATFS_SIZE, 72, "WasmStatfs");
+        assert_eq!(WASM_DIRENT_SIZE, 16, "WasmDirent");
+
+        // ...and the host's own serializers still fill exactly one record,
+        // which is what makes the capacity above the right one to prove.
+        assert_eq!(
+            core::mem::size_of::<wasm_posix_shared::WasmDirent>(),
+            8 + 4 + 4,
+            "d_ino + d_type + d_namlen, with no padding a repr(C) struct \
+             would have to explain",
+        );
+    }
+
     /// The inbound half of the capacity invariant, which a bounds check
     /// cannot supply.
     ///
@@ -4277,14 +4312,19 @@ fn define_kernel_host_imports(
                             // buffer whose capacity it already told us
                             // (`name_len`, checked above for the CONTENT but
                             // never for the ADDRESS until now).
-                            let mut record = [0u8; 16];
+                            let mut record = [0u8; WASM_DIRENT_SIZE];
                             record[..8].copy_from_slice(&entry.ino.to_le_bytes());
                             record[8..12].copy_from_slice(&entry.d_type.to_le_bytes());
                             record[12..].copy_from_slice(
                                 &(entry.name.len() as u32).to_le_bytes(),
                             );
                             if let Err(errno) =
-                                write_lent(&mem, dirent_ptr as u32 as u64, 16, &record)
+                                write_lent(
+                                    &mem,
+                                    dirent_ptr as u32 as u64,
+                                    WASM_DIRENT_SIZE as u32,
+                                    &record,
+                                )
                             {
                                 return errno;
                             }

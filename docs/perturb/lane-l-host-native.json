@@ -79,6 +79,13 @@
       "scope_end": "\n}\n",
       "find": "        checked_shared_range(mem, ptr, capacity).map(|offset| Self { offset, capacity })",
       "replace": "        Some(Self { offset: ptr as usize, capacity })"
+    },
+    {
+      "name": "L3: a record size is asked of the wrong shared type",
+      "scope": "const WASM_STAT_SIZE",
+      "scope_end": "\n/// First host handle",
+      "find": "const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStat>();",
+      "replace": "const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStatfs>();"
     }
   ]
 }
