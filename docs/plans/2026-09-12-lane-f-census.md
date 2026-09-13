@@ -4065,3 +4065,28 @@ between, `test/surface-budget.test.ts` was failing -- which
 `suite-baseline.mjs` reported as a REGRESSION rather than letting it pass as part
 of the red suite. That is exactly the noise-into-signal the maintainer asked for,
 working on the first day.
+
+## §80 — The host stops decoding both codec descriptors
+
+`worker-main.ts` built a `declarations` array by decoding each activation's GC
+codec descriptor AND its exception codec descriptor. Both are formats the module
+owns, and the host already locates both sections and hands over the raw bytes --
+so the decodes existed only to produce two things.
+
+One was `gcDescriptor`, whose only consumer is the attic'd early-reference
+provider. The other was the host-exception owner, computed as "the smallest
+activation whose `exceptionDescriptor !== undefined`".
+
+That second one is the interesting case. It looks like it needs the decoder and
+does not: an activation has an exception descriptor exactly when it HAS a
+section, so the owner falls out of the section scan the host already performs
+for the module's seeding. No decode, same answer.
+
+Both decodes are gone, `declarations` is now activation ids only, and the two
+decoder imports left `worker-main.ts` entirely. That is the third and fourth
+host-side decoder of a module-owned format removed in this lane, after the GC
+codec's validation (§66) and the exception codec's tag extraction (§67).
+
+`workerMainTypeScript` BANKED 5958 -> 5906. The surface had 150 slack, so nothing
+forced this -- but the file is supposed to shrink, and slack left unbanked is
+what the next addition spends.

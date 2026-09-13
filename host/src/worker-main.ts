@@ -131,7 +131,6 @@ import {
   buildForkExceptionImports,
   ForkExceptionBroker,
   forkExceptionProviderFromInstance,
-  readForkExceptionCodecDescriptor,
   type ForkExceptionReferenceReplayImports,
   type ForkExceptionProvider,
 } from "./fork-exception-provider";
@@ -142,7 +141,6 @@ import {
 } from "./fork-reference-segments";
 import {
   forkGcCodecProviderFromInstance,
-  readForkGcCodecDescriptor,
   type ForkGcCodecProvider,
 } from "./fork-gc-codec";
 import {
@@ -4470,14 +4468,12 @@ export async function centralizedWorkerMain(
           );
           modules.set(library.activationId, activationModule);
         }
+        // Each activation's identity, with no descriptor DECODED here. Both
+        // codecs are module-owned formats; the host locates their sections and
+        // hands over the raw bytes, and the module decodes them on seed.
         const declarations = [...modules]
           .sort(([left], [right]) => left - right)
-          .map(([activationId, activationModule]) => ({
-            activationId,
-            gcDescriptor: readForkGcCodecDescriptor(activationModule),
-            exceptionDescriptor:
-              readForkExceptionCodecDescriptor(activationModule),
-          }));
+          .map(([activationId]) => ({ activationId }));
         // Phase 6 item 3c: capture each activation's raw KFGC section bytes and
         // the host-exception owner HERE, where the compiled `modules` (and their
         // custom sections) are in scope, so the later instantiation/attach block
@@ -4500,11 +4496,6 @@ export async function centralizedWorkerMain(
           gcCodecBytes.set(activationId, new Uint8Array(sections[0]!));
         }
         childGcCodecBytes = gcCodecBytes;
-        childHostExceptionOwner =
-          declarations
-            .filter((entry) => entry.exceptionDescriptor !== undefined)
-            .map((entry) => entry.activationId)
-            .sort((left, right) => left - right)[0] ?? 0xffff_ffff;
         // Capture each activation's RAW exception codec section for the module's
         // exnref tag-validity admission gate. The module derives the declared tag
         // ordinals from the section itself -- decoding it here to hand over a
@@ -4520,6 +4511,12 @@ export async function centralizedWorkerMain(
           }
         }
         childExceptionCodecBytes = exceptionCodecBytes;
+        // The host-exception owner is the smallest activation that DECLARED an
+        // exception codec -- which is exactly the set that has a section, so it
+        // falls out of the scan above rather than out of a decoded descriptor.
+        childHostExceptionOwner =
+          [...exceptionCodecBytes.keys()].sort((left, right) => left - right)[0]
+            ?? 0xffff_ffff;
         // P2 (Path B): the co-resident module is the SOLE reconstructor whenever
         // it is active for this fork — there is no longer a per-kind host
         // admission gate, and no JS reconstruction fallback behind it. The former

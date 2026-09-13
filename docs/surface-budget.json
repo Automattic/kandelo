@@ -66,10 +66,10 @@
     },
     "workerMainTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/worker-main.ts",
-      "ceiling": 5958,
+      "ceiling": 5906,
       "slack": 150,
       "target": 2400,
-      "why": "Holds the fork drive loop. 6,083 -> 7,536 across the campaign; every fine-grained fm_* call leaves a host-side seeding and base-arithmetic loop behind by construction. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 7499 -> 5958, target 3000 -> 2400. Same code, a measure that counts implementation."
+      "why": "Holds the fork drive loop. 6,083 -> 7,536 across the campaign; every fine-grained fm_* call leaves a host-side seeding and base-arithmetic loop behind by construction. Re-baselined 2026-09-12 from total lines to CODE lines: ceiling 7499 -> 5958, target 3000 -> 2400. Same code, a measure that counts implementation.\n\nBANKED 5958 -> 5906 on 2026-09-13. The cluster port removed the host's two remaining decodes of module-owned formats from this file: the GC and exception codec DESCRIPTORS. Neither was needed -- the host already locates both sections and hands the module their raw bytes, and the host-exception owner (the smallest activation that DECLARED an exception codec) falls out of which activations have a section, not out of a decoded descriptor. \n\nThis is the direction this file is supposed to move, so the reduction is banked rather than left as slack for the next addition to spend."
     },
     "sffsTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/vfs/sharedfs-vendor.ts",
