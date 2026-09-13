@@ -3414,3 +3414,40 @@ ratchet exists to stop: a reclassification is a `git mv` with no content change.
 Both were. A rise in this surface from AUTHORED lines would be the abuse, and it
 is visible in the diff as insertions without a corresponding deletion from
 `attic/`.
+
+## §66 — Moving a validation rather than deleting it
+
+§65 said `fork-gc-codec` needs porting down to its locator, not restoring. The
+first step is done, and it went the other way round from what I expected.
+
+The host already locates the raw section and seeds the module with it
+(`worker-main.ts` reads `kandelo.wpk_fork.gc_codec` and calls
+`setActivationGcCodec`). So `readForkGcCodecDescriptor` was not the locator at
+all -- the locator was already inline. The call at `worker-main.ts:4097`
+**discarded its result**: it existed purely to fail early on a malformed section.
+
+That made it look deletable, and it was not, quite. `set_activation_gc_codec_impl`
+only BOUNDS-CHECKED the region; nothing decoded the descriptor until the first
+fork that needed the layouts. Deleting the host parse would have moved
+malformed-section detection from activation registration to first fork -- a real
+regression in failure timing, traded for removing a duplicate decoder.
+
+So the validation MOVED instead. The module now decodes the section when it
+arrives, with `fork_codec::gc_codec::decode_gc_codec`, and throws the result
+away: `build_gc_plan` decodes from the stored bytes when it needs them, and
+holding a decoded copy would just be a second source of truth inside the module
+this time. Same failure moment, one decoder instead of two.
+
+Only then is the host's call redundant, and it is gone.
+
+**Tested both directions.** The existing harness already seeds a real committed
+codec fixture and asserts errno 0, so the accept path was covered the moment the
+decode landed. Added: a corrupted magic and a section truncated below its header
+are both refused AT SEED TIME. Perturbed by removing the decode from the module:
+the corrupted-magic assertion fails. Without that, "the module validates on seed"
+would have been a claim resting on my reading of the code.
+
+This is the shape for the rest of `fork-gc-codec` and its siblings: ask what the
+host call actually PRODUCES. Where it produces a decoded structure the module
+also decodes, the answer is usually to move the check into the module and delete
+the call -- not to port the decoder.

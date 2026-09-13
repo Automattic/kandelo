@@ -1581,4 +1581,45 @@ function i31Minter() {
   }
 }
 
+// ---- The module validates a GC codec section when it ARRIVES ---------------
+//
+// The host used to decode this descriptor in TypeScript purely to fail early on
+// a malformed one, which meant two decoders of one format. The module decodes it
+// on seed now, so the host's copy is redundant -- but only if the module really
+// refuses a bad section HERE rather than at the first fork that reads it. That
+// is what this checks, and it is why the host's decoder can be deleted.
+{
+  const codecBytes = readFileSync(
+    new URL("../../fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
+  );
+  const AT = SCRATCH_BASE + 16384;
+
+  // A fresh worker: `fm_set_format` resets the per-activation catalogs, so these
+  // activation ids are unseeded regardless of what ran above.
+  x.fm_set_format(4, 0, 0, 0);
+  assert.equal(lastErrno(), 0, "format reseeded");
+
+  // The real fixture is accepted.
+  u8().set(codecBytes, AT);
+  x.fm_set_activation_gc_codec(11, AT, codecBytes.length);
+  assert.equal(lastErrno(), 0, "a real codec section is accepted on seed");
+
+  // The same bytes with a corrupted magic are REFUSED, at seed time.
+  const corrupt = Uint8Array.from(codecBytes);
+  corrupt[0] ^= 0xff;
+  u8().set(corrupt, AT);
+  x.fm_set_activation_gc_codec(12, AT, corrupt.length);
+  assert.equal(
+    lastErrno(),
+    EINVAL,
+    "a corrupted codec magic is refused when the section arrives",
+  );
+
+  // Truncated to less than a header is refused too -- a length check, not just a
+  // magic check, so a section that merely starts right cannot pass.
+  u8().set(codecBytes.subarray(0, 8), AT);
+  x.fm_set_activation_gc_codec(13, AT, 8);
+  assert.equal(lastErrno(), EINVAL, "a truncated codec section is refused");
+}
+
 console.log("fork-module capture harness: all assertions passed");

@@ -769,6 +769,24 @@ mod wasm {
                 core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, byte_len)
             }
         };
+        // DECODE IT NOW, and discard the result.
+        //
+        // The module owns this wire format, so it is the module that should say
+        // whether a section is well-formed -- and it should say so when the
+        // section ARRIVES, not at the first fork that needs it. Before this, the
+        // host parsed the descriptor in TypeScript purely to get that early
+        // answer, which meant two decoders of one format: the drift
+        // `dylink_archive`'s doc names, where "two readers of the same wire
+        // format drift, and the drift surfaces as a fork child silently
+        // disagreeing with its parent."
+        //
+        // The result is deliberately thrown away. `build_gc_plan` decodes from
+        // the stored bytes when it needs the layouts; holding a decoded copy here
+        // would be a second source of truth for the same bytes, inside the module
+        // this time.
+        if !incoming.is_empty() {
+            fork_codec::gc_codec::decode_gc_codec(incoming)?;
+        }
         // Idempotent re-seed of an already-present activation. A COW fork CHILD
         // inherits the parent's already-seeded catalog through the memory clone
         // (the module's BSS lives inside the shared linear memory and is NOT

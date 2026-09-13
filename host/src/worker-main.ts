@@ -4091,10 +4091,12 @@ export async function centralizedWorkerMain(
             `pid=${pid}: child activation ${activationId} provider coordinate mismatch`,
           );
         }
-        // Parse against this exact compiled module before publishing any
-        // provider. ForkEarlyChildReferenceProvider compares the resulting
-        // descriptor to the pre-instantiation declaration.
-        readForkGcCodecDescriptor(activationModule);
+        // The GC codec descriptor is NOT parsed here any more. This call existed
+        // only to fail early on a malformed section, and getting that early
+        // answer cost a second TypeScript decoder of a format the fork module
+        // owns. The module decodes the section when it is seeded
+        // (`set_activation_gc_codec_impl`) and refuses a bad one there, which is
+        // the same moment and one decoder instead of two.
         // WHY: these catalogs contain fresh-instance identities. Register the
         // activation only after the full registry has harvested static roots,
         // but before a later module's immutable import getter can request one.
