@@ -4484,6 +4484,55 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### The twenty-first entry point, and the fold that was rejected to pay for it
+
+**Decided and landed 2026-09-13. This raises a BANKED ceiling, 20 -> 21, which
+the maintainer may want to reverse — the argument is here so that is a judgement
+rather than an archaeology exercise.**
+
+`sm_lazy_entries` enumerates every deferred file and declared archive with its
+identity: a file's path, inode, real size and backing archive; an archive's id,
+length and fetch description.
+
+**The search for an export that could GO was made and failed, and that is part
+of the argument rather than a preamble to it.** The standing rule is to look for
+one before arguing for growth. The only plausible fold in a twenty-entry surface
+was `sm_mkdir` with `sm_mkdir_parents` behind a flag — and it is a bad trade.
+The two create **different paths**: `mkdir` makes the path, `mkdir_parents`
+makes the path's PARENTS and not the path. A boolean would therefore decide
+which path the call operates on, which is the classic flag that changes what a
+function does. **That exact confusion has already caused a bug in this lane**
+(`ensureDirRecursive` makes a path's parents, which read wrong at a call site
+and produced an ENOENT). Paying for a budget slot by baking a known confusion
+into the ABI is not a saving.
+
+The other nineteen are distinct filesystem operations a builder genuinely
+performs; the budget's own text already says so, and its target is *"does not
+grow without an argument"* rather than *"does not grow"*.
+
+**What it buys.** `exportLazyEntries` and `exportLazyArchiveEntries` delete.
+They are the last methods keeping `build-source-rootfs-shell-image.ts` and
+`source-rootfs-shell-overlay.ts` on `MemoryFileSystem`, and that pair is what
+blocks rebuilding the shipped base images through the Rust producer — decision 2
+above, and the step that makes the seal real rather than inert.
+
+**Why enumeration and not a digest.** A digest answers "did anything change" in
+thirty-two bytes and would be a far smaller surface. It cannot answer the
+question the builders ask, which is **"did anything change OTHER than these"** —
+a build step legitimately supersedes some lazy files (the mandoc archive
+replacing a `man` applet; a lazy binary made eager) and the composer names the
+ones it expects to move. A digest also reports failure as "something moved",
+which sends whoever meets it to read the whole build.
+
+**A distinction the walk had to get right.** What makes a file deferred is that
+something says where its bytes come from — NOT where it was sourced. A tree the
+host walked is full of `Host`-sourced base files and not one of them is lazy, so
+the walk tests the fetch description rather than the source. Enumerating on
+source would tell a builder its tree is full of lazy files it never registered.
+Pinned by a `runtime-core` test with two files differing in exactly that one
+thing, because the module cannot produce a host-walked base file and therefore
+cannot test the distinction at all.
+
 ### Y5: importers 7 -> 5, and what the seal blocker actually dissolved into
 
 **2026-09-13.** `shell-vfs-build.ts` and `shell-rootfs-restore.ts` moved to
