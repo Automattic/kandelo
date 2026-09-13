@@ -659,6 +659,18 @@ the relative path looked in `crates/host/test`, which does not exist. It
 failed loudly rather than silently, which is the only reason it took one run
 to find rather than a reader.
 
+**The mirror exists too, and it exists so the pairing needs no argument.**
+The first version guarded one direction, justified by which way the campaign
+pushes — TypeScript is what gets deleted, so the Rust side is what must
+notice. That reasoning is sound and it is also a thing to be wrong about. Each
+TypeScript corpus test now asserts the Rust half still reads the corpus, so a
+crate restructure that moves or drops the Rust consumer fails on the
+TypeScript side. Perturbed the same two ways, and the second perturbation
+improved the check: deleting the Rust file first produced a bare `ENOENT`,
+which tells a reader which syscall failed and nothing about what it means. It
+now says what the Rust side says — that the corpus is single-host now, and
+both the test and the corpus header have to admit it.
+
 **The refusals were checked in one host only; they are not now.** The
 TypeScript half wrote two of them out by hand rather than reading the corpus,
 so the two saturating refusals and the new exact-fit boundary were Rust-only —

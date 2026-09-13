@@ -389,6 +389,41 @@ describe("one process memory layout", () => {
     ).toBe(257);
   });
 
+  it("is still read by the Rust half, which is the other half of the claim", () => {
+    // The Rust side asserts this file still reads the corpus. This is the
+    // mirror, and the pair is the point: "one corpus, both hosts" is a claim
+    // about two files, and either one going quiet makes it false while the
+    // other stays green.
+    //
+    // The Rust direction is the one the campaign actually pushes, since its
+    // purpose is removing TypeScript. This direction guards the rarer case --
+    // a crate restructure that moves or drops the Rust consumer -- and it
+    // exists so the pairing needs no argument about which way is likelier.
+    const rustHalf = new URL(
+      "../../crates/shared/tests/process_memory_layout.rs",
+      import.meta.url,
+    );
+    let source: string;
+    try {
+      source = readFileSync(rustHalf, "utf8");
+    } catch (error) {
+      // Not a bare ENOENT: a reader who hits this needs to know what it
+      // means, not which syscall failed.
+      throw new Error(
+        `the Rust half of this corpus is unreadable at ${rustHalf.pathname}: `
+          + `${error}. If it was deleted on purpose, this corpus is `
+          + "single-host now and both this test and the corpus header must "
+          + "say so.",
+      );
+    }
+    expect(
+      source.includes("process-memory-layouts.json"),
+      "the Rust half no longer reads this corpus, so the layout rule is checked in "
+        + "one host while the corpus still calls itself shared. Say so here "
+        + "and in the corpus header, or restore the read.",
+    ).toBe(true);
+  });
+
   it("refuses every corpus refusal, with the message the rule gives", () => {
     // This replaces two hand-written refusals that restated corpus entries 0
     // and 1 in the test file. Five are now driven from the corpus the Rust
