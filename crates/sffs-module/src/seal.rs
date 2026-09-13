@@ -411,6 +411,107 @@ mod tests {
     }
 
     #[test]
+    fn a_cohort_RE_sealed_over_fewer_members_does_not_authenticate() {
+        // Why the count check is not redundant with the identity check.
+        //
+        // Dropping a member alone is caught by the identity, because the digest
+        // covers the member list. But an attacker who drops a member and then
+        // RE-SEALS the remainder produces a cohort whose identity is perfectly
+        // consistent — every descriptor digest matches, every member agrees.
+        // The only thing left saying a member is missing is the count the
+        // original seal declared.
+        let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1")], 1);
+        let mut payload = decode(&archives[0].1).expect("decode");
+        // Re-sealed as a cohort of one, but still CLAIMING two.
+        payload.seal.as_mut().expect("seal").expected_count = 2;
+        archives[0].1 = encode(&payload).expect("encode");
+        assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn a_cohort_whose_members_are_each_intact_still_needs_its_own_digest() {
+        // Why the identity check is not redundant with the per-descriptor one.
+        // Every descriptor here digests correctly and every member agrees about
+        // the cohort, so checks one and two pass. What is wrong is the cohort
+        // itself: these two archives were never sealed together.
+        let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1"), (b"docs", b"d2")], 2);
+        for (_, bytes) in archives.iter_mut() {
+            let mut payload = decode(bytes).expect("decode");
+            payload.seal.as_mut().expect("seal").cohort_digest = [7u8; 32];
+            *bytes = encode(&payload).expect("encode");
+        }
+        assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn one_archive_RE_sealed_twice_cannot_satisfy_a_cohort_of_two() {
+        // Why the duplicate-name check is not redundant either. Listing one
+        // archive twice under the same name and recomputing the identity over
+        // that list gives a cohort that is internally consistent and satisfies
+        // its own count — while the second archive simply does not exist.
+        let descriptor: &[u8] = b"d1";
+        let mut identity = alloc::vec![
+            (b"tools".to_vec(), sha256(descriptor)),
+            (b"tools".to_vec(), sha256(descriptor)),
+        ];
+        let digest = sha256(&cohort_identity(b"shell", &mut identity).expect("identity"));
+        let archives: Vec<(u32, Vec<u8>)> = (0..2)
+            .map(|i| {
+                let mut payload = sealed(b"shell", b"tools", 2, descriptor);
+                payload.seal.as_mut().expect("seal").cohort_digest = digest;
+                (i + 1, encode(&payload).expect("encode"))
+            })
+            .collect();
+        assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
+    }
+
+    #[test]
+    fn two_different_member_lists_cannot_share_an_identity() {
+        // Why every field in the identity is length-prefixed. Without prefixes
+        // the member names and digests run together, and these two DIFFERENT
+        // cohorts serialise to the same bytes:
+        //
+        //   "a"  + X + "bc" + Y      (member "a" then member "bc")
+        //   "ab" + P + "c"  + Y      (member "ab" then member "c")
+        //
+        // with X = b'b',1..31 and P = 1..31,b'b'. Both are two members with the
+        // same id, so the count does not separate them either. A digest over
+        // concatenated fields stops distinguishing exactly here.
+        let mut x = [0u8; 32];
+        x[0] = b'b';
+        for (i, slot) in x.iter_mut().enumerate().skip(1) {
+            *slot = i as u8;
+        }
+        let mut p = [0u8; 32];
+        for (i, slot) in p.iter_mut().enumerate().take(31) {
+            *slot = (i + 1) as u8;
+        }
+        p[31] = b'b';
+        let y = [200u8; 32];
+
+        let mut left = alloc::vec![(b"a".to_vec(), x), (b"bc".to_vec(), y)];
+        let mut right = alloc::vec![(b"ab".to_vec(), p), (b"c".to_vec(), y)];
+        assert_ne!(
+            cohort_identity(b"g", &mut left).expect("left"),
+            cohort_identity(b"g", &mut right).expect("right"),
+            "length prefixes are what keep these two cohorts distinct",
+        );
+    }
+
+    #[test]
+    fn the_cohort_identity_is_domain_separated() {
+        // A digest computed for one purpose must never be valid for another.
+        // The tag is what makes these bytes unmistakably a cohort identity and
+        // not, say, a descriptor that happened to start the same way.
+        let mut members = alloc::vec![(b"tools".to_vec(), [1u8; 32])];
+        let identity = cohort_identity(b"shell", &mut members).expect("identity");
+        assert!(
+            identity.starts_with(COHORT_TAG),
+            "the identity names what it is before it says anything else",
+        );
+    }
+
+    #[test]
     fn an_unsealed_archive_is_carried_rather_than_refused() {
         // Whether a seal is REQUIRED is policy, and not this module's to
         // decide. An image whose archives carry none is a real state — every
