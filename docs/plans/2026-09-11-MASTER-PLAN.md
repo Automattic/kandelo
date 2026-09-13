@@ -2579,7 +2579,12 @@ answers `-EFAULT`. Fixed at the site, with a test that fails without it.
 has 6 call sites covering 3 functions, against 75 raw `write_bytes` sites, at
 least 9 of which take an import-supplied pointer. Those need one decision about
 what the host↔kernel contract returns for an unmappable pointer, applied
-consistently — a maintainer's call, not a lane's.
+consistently — a maintainer's call, not a lane's. **The shape of the fix is
+already written twice**: the TypeScript host proves the kernel's
+`(ptr, capacity)` pair once at the inbound boundary and hands downstream code
+a frozen `RustLentKernelDestination` token, and `crates/host-native` has that
+exact type for regions it ALLOCATES (`KernelScratch`) and no mirror for
+regions the kernel LENDS it.
 
 **"One rule" was then checked against the tree, not just the corpora.** The
 corpora pin the rule's answers; they cannot say whether some other site works

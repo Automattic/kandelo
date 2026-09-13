@@ -1021,9 +1021,33 @@ an import parameter, and spot-reading shows more that it missed. The other
 sixty-odd write to addresses the host computed itself, mostly channel offsets
 derived from a layout the kernel placed.
 
+**A second instance, and it names the shape of the fix.**
+`write_wasm_statfs` cites `#writeStatfsToMemory` in `host/src/kernel.ts` and
+takes a bare `ptr: usize`, writing 68 bytes at it. The TypeScript it mirrors
+takes no pointer at all: it takes a `RustLentKernelDestination`, a frozen
+token produced by `#rustLentKernelDestination`, whose own comment is the
+clearest statement of this lane's subject anyone has written —
+
+> fitting in the current WebAssembly Memory proves only addressability, not
+> ownership. The Rust import arguments name the allocation and its capacity;
+> keeping both in an authenticated token prevents a later caller from
+> substituting total Memory length for the allocation bound.
+
+That function calls `checkedWasmImportMemoryRange` on the `(ptr, capacity)`
+pair the kernel passed, binds the result to the memory generation, and hands
+downstream code a token it cannot forge. **`crates/host-native` has exactly
+this type for regions it ALLOCATES — `KernelScratch` — and no mirror of it for
+regions the kernel LENDS it.** Outbound is guarded by a type and a source
+check; inbound is a `usize`.
+
+So the fix has a shape and it is already written, twice: once in TypeScript at
+the inbound boundary, once in Rust at the outbound one.
+
 Those remaining sites are reported rather than changed, and the reason is
-narrow: this one had its errno decided for it by the contract it cites, and
-the others do not. What `host_fpathconf` should return when the kernel hands
+narrow: `copy_launch_entry` had its errno decided for it by the contract it
+cites, and the others do not. `write_wasm_statfs` returns no errno at all —
+its caller does — so giving it a refusal path is a decision about the
+host↔kernel contract rather than a transcription repair. What `host_fpathconf` should return when the kernel hands
 it an unmappable `value_ptr` is a design decision about the host↔kernel
 contract, taken once and applied consistently, and that belongs to the
 maintainer rather than to a lane that arrived here by following a different
