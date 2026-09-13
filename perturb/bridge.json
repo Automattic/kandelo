@@ -204,6 +204,13 @@
    "scope_end": "\n  }\n",
    "find": "    const image = maybeDecompressImage(\n      compressedOrPlain,\n      options.maxDecompressedBytes,\n    );",
    "replace": "    const image = compressedOrPlain;"
+  },
+  {
+   "name": "a loaded image's declared capacity is forgotten by the bridge",
+   "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
+   "scope_end": "\n  }\n",
+   "find": "      this.requestedCapacityBytes = this.exportCapacityBytes();",
+   "replace": ""
   }
  ],
  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

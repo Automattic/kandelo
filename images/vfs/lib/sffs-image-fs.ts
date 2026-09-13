@@ -1100,6 +1100,21 @@ export class SffsImageFs {
       // sequence the shell and php-test builders perform. Refreshed here
       // because this is the only moment it can change behind the bridge's back.
       this.lastMetadata = this.getImageMetadata();
+      // GAP 24, and the same defect as gap 17 on the OTHER field the one entry
+      // point carries. `sm_set_image_options` sends capacity AND metadata
+      // together, so each has to survive a load that the kernel authored --
+      // and only the metadata was refreshed here.
+      //
+      // A load restores the image's declared capacity inside the module; this
+      // bridge went on remembering 0, so the next `setImageMetadata` sent 0
+      // and CLEARED it. The shell composer does exactly that: load a 256 MiB
+      // base, write files, then save with metadata. The image came out
+      // declaring 143 MiB -- sized to its own tree -- and failed its product
+      // profile at the publication gate.
+      //
+      // `sm_check_headroom` answers this without building an export, so a load
+      // pays one ABI crossing rather than a plan for a 250 MiB image.
+      this.requestedCapacityBytes = this.exportCapacityBytes();
       return entries;
     } catch (error) {
       this.exports.sm_free(ptr, image.byteLength);

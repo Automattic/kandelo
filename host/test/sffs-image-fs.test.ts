@@ -331,6 +331,35 @@ describe("SffsImageFs", () => {
     expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
   });
 
+  it("keeps a loaded image's declared capacity when metadata is written after", () => {
+    // GAP 24, and gap 17's defect on the other field the one entry point
+    // carries. `sm_set_image_options` sends capacity AND metadata together, so
+    // each must survive a load the KERNEL authored — and only the metadata was
+    // refreshed, so the bridge went on remembering a capacity of 0 and the next
+    // metadata write cleared what the image declared.
+    //
+    // This is the shell composer's exact sequence: load a base that declares a
+    // large capacity, write files, then save with metadata. The image came out
+    // sized to its own tree and failed its product profile at the publication
+    // gate — in a product build, which is where it was found.
+    const base = SffsImageFs.create();
+    base.mkdir("/etc", 0o755);
+    base.setImageCapacity(64 * 1024 * 1024);
+    const image = base.exportImage();
+
+    const derived = SffsImageFs.create();
+    derived.loadImage(image);
+    expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+
+    // The write that used to clear it.
+    derived.setImageMetadata({ version: 1, createdBy: "gap-24" });
+    expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+
+    // And it reaches the artifact, not just the live tree.
+    expect(SffsImageFs.readImageCapacity(derived.exportImage()).maxByteLength)
+      .toBe(64 * 1024 * 1024);
+  });
+
   it("enumerates every deferred file and archive with its identity", () => {
     // What replaces `exportLazyEntries` and `exportLazyArchiveEntries`: the
     // builders' "this step disturbed nothing" check, asked of the module that
