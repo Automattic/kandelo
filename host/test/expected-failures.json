@@ -89,7 +89,6 @@
     "test/externref-gated-fork-module-worker.test.ts",
     "test/fifo-lifecycle-guest.test.ts",
     "test/fork-activation-registry.test.ts",
-    "test/fork-anyref-transit.test.ts",
     "test/fork-capture-session-host-exception.test.ts",
     "test/fork-dlopen-replay-e2e.test.ts",
     "test/fork-early-reference-provider.test.ts",

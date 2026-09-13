@@ -3993,3 +3993,44 @@ A TEST is a caller: `fork-module-backend-coarse-failures` exercises that path to
 prove a failed seal raises a TYPED `ContinuationAllocationError` rather than a
 generic throw that traps the worker. Its absence from worker-main proved nothing,
 because worker-main's caller for it is in the attic'd cluster.
+
+## §78 — The cluster port begins: `fork-anyref-transit`, and a file I overwrote
+
+The maintainer chose to complete the cluster port. It starts at the leaves, and
+`fork-anyref-transit` is the smallest: no fork-internal dependencies, and the
+module already owns what it wraps.
+
+**148 attic lines become 60 authored ones**, because most of what the old one did
+is now the module's. The injector defines and exports
+`__wpk_fork_ref_gc_transit`; growth is `fm_transit_grow`. What is left for a host
+is reading and writing reference-typed slots, which Rust cannot do. So this is a
+VIEW, not an owner -- and the branch that minted its own table when no fork
+module was present is gone, because the module is unconditional now and that
+branch could have given the guest, the module and the host three tables to
+disagree about.
+
+The attic copy is deleted rather than left behind: it is superseded, and a
+superseded file that stays readable is one someone restores later.
+
+**I overwrote its existing test file without reading it.** `cat >` onto
+`host/test/fork-anyref-transit.test.ts` replaced 72 lines with mine. That is the
+same carelessness as the `#[test]` attribute an edit consumed (§73), and I only
+noticed because `git status` showed the file MODIFIED rather than untracked.
+
+Recovering it from git, the five original tests exercise the old design
+specifically -- minting with no arguments, `forkAnyrefTransitProviderBytes`, a
+`.table` property, and two instances holding DIFFERENT tables. None of that
+exists by design now: two views of one module table is the point, not a leak.
+
+But one intent survived and is carried over: the original asserted `clear()`
+empties EVERY slot, where my replacement sampled two. That difference is real --
+a `clear()` that stopped at the original length would pass a sample and leave
+everything the table grew into still holding references. The test now grows the
+table first and checks all of it, and perturbing `clear()` to stop at three
+fails it.
+
+**The baseline earned its keep immediately.** Deleting the attic copy made
+`test/fork-anyref-transit.test.ts` pass, and `suite-baseline.mjs` refused to be
+green until that file was removed from the expected-failure list in the same
+commit. 203 -> 202. Every entry that leaves this list is a file the port brought
+back.
