@@ -293,17 +293,18 @@ unsafe fn slice<'a>(ptr: usize, len: usize) -> &'a [u8] {
 /// rather than an instance handle threaded through every operation. A test
 /// pins that a build after this is indistinguishable from a first build.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm_reset() {
+pub extern "C" fn sm_reset(root_mode: u32, uid: u32, gid: u32) -> i32 {
     rootfs::reset();
     // The image the old tree was built on goes with it. Without this a reset
     // would free every inode and keep 249 MiB of bytes nothing references.
     release_image();
-}
-
-/// Create the root inode. Every other path operation needs it to exist.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm_init_root(mode: u32, uid: u32, gid: u32) -> i32 {
-    ok_or_errno(rootfs::insert_base_dir(b"/", mode, uid, gid, 1))
+    // Creating the root is part of the same transition, not a second one. No
+    // caller ever reset without immediately initialising a root, and none
+    // could usefully: a filesystem with no root fails every path operation, so
+    // the state between the two calls was never a state anything wanted. Two
+    // doors for one transition is the same redundancy that retired
+    // `sm_stat_size`, and retiring this one paid for `sm_image_metadata`.
+    ok_or_errno(rootfs::insert_base_dir(b"/", root_mode, uid, gid, 1))
 }
 
 /// # Safety
@@ -706,6 +707,51 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     }
 }
 
+/// Read back the image metadata this filesystem currently carries.
+///
+/// Returns the byte count written, or the record's length when `out_len` is 0 —
+/// the module's one size-probe convention, shared with `sm_read_dir`,
+/// `sm_check_headroom` and `sm_lstat`. A filesystem carrying no metadata
+/// answers 0, which is "there is none" and not an error.
+///
+/// # Why the kernel hands back BYTES and parses nothing
+///
+/// The metadata is an open JSON shape — `version`, `kernelAbi`, `createdBy`,
+/// and whatever a future producer adds. A Rust reader that parsed it into a
+/// struct and re-serialised would silently drop every field it did not know
+/// about, which is the opposite of what an open shape is for, and teaching the
+/// kernel crate to parse JSON for three fields it does not act on would buy a
+/// parser's attack surface for nothing. So the kernel carries these bytes
+/// exactly as it carries a deferred file's payload: opaquely.
+///
+/// # Why this needs an entry point at all
+///
+/// After a load the KERNEL holds the metadata — the image declared it and
+/// `load_image` keeps it. The bridge cannot answer from anything it kept,
+/// because it never sent it. Every builder that reads this is CHECKING it: six
+/// call sites, all comparing `kernelAbi` against what the build expects, which
+/// is a guard that must read the base's real answer rather than the builder's
+/// own memory of what it set.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe a writable range when `out_len` is nonzero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_image_metadata(out_ptr: usize, out_len: usize) -> i32 {
+    let metadata = rootfs::image_metadata();
+    let len = metadata.as_ref().map_or(0, |bytes| bytes.len());
+    if out_len == 0 {
+        return i32::try_from(len).unwrap_or(i32::MAX);
+    }
+    if out_ptr == 0 || out_len < len {
+        return err(Errno::EINVAL);
+    }
+    if let Some(bytes) = metadata {
+        let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+        out[..bytes.len()].copy_from_slice(&bytes);
+    }
+    i32::try_from(len).unwrap_or(i32::MAX)
+}
+
 /// Set what the exported image should be: its declared capacity, and the
 /// metadata section it carries.
 ///
@@ -949,8 +995,7 @@ mod tests {
 
     #[test]
     fn the_write_path_builds_a_tree_through_the_abi() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_path(b"/usr/lib/kandelo", |p, l| unsafe { sm_mkdir_parents(p, l, 0o755, 0, 0) }),
@@ -973,8 +1018,7 @@ mod tests {
 
     #[test]
     fn metadata_operations_reach_the_filesystem() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/opt", |p, l| unsafe { sm_mkdir(p, l, 0o700, 1, 2) }), 0);
         assert_eq!(with_path(b"/opt", |p, l| unsafe { sm_chmod(p, l, 0o751) }), 0);
         assert_eq!(
@@ -1003,8 +1047,7 @@ mod tests {
 
     #[test]
     fn files_are_written_with_their_contents_and_mode() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/etc", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let body = b"root:x:0:0:root:/root:/bin/sh\n";
@@ -1033,8 +1076,7 @@ mod tests {
     /// returns EIO is never called, and the write succeeds.
     #[test]
     fn a_full_rewrite_of_a_base_file_needs_no_base_bytes() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         // A base file: metadata in the overlay, contents nominally in a host
         // blob this module cannot read.
         rootfs::insert_base_file(b"/base.bin", 42, 16, 0o644, 0, 0, 7).expect("insert base");
@@ -1060,8 +1102,7 @@ mod tests {
     /// An empty file is a file, not a failure. The builders write them.
     #[test]
     fn an_empty_file_round_trips() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_two(b"/empty", b"", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o600, cp, cl)
         });
@@ -1075,8 +1116,7 @@ mod tests {
     /// write_file_at's contract that create and replace behave alike.
     #[test]
     fn rewriting_a_file_replaces_its_bytes_and_mode() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(
             with_two(b"/f", b"a much longer original", |pp, pl, cp, cl| unsafe {
                 sm_write_file(pp, pl, 0o755, cp, cl)
@@ -1097,8 +1137,7 @@ mod tests {
     /// The six-field record decodes at the documented offsets.
     #[test]
     fn lstat_writes_the_documented_record() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(
             with_two(b"/f", b"12345", |pp, pl, cp, cl| unsafe {
                 sm_write_file(pp, pl, 0o640, cp, cl)
@@ -1134,8 +1173,7 @@ mod tests {
     /// like data.
     #[test]
     fn lstat_refuses_an_undersized_buffer() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
         let out = sm_alloc(size);
         let rc = with_path(b"/", |p, l| unsafe { sm_lstat(p, l, out, size - 1) });
@@ -1145,8 +1183,7 @@ mod tests {
 
     #[test]
     fn readlink_and_read_file_return_byte_counts() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(
             with_two(b"/data", b"hello world", |pp, pl, cp, cl| unsafe {
                 sm_write_file(pp, pl, 0o644, cp, cl)
@@ -1181,8 +1218,7 @@ mod tests {
     /// is real rather than unreachable, and must be loud.
     #[test]
     fn reading_a_base_file_fails_loudly_rather_than_returning_zeroes() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         rootfs::insert_base_file(b"/base.bin", 42, 16, 0o644, 0, 0, 7).expect("insert base");
         let buf = sm_alloc(16);
         let rc = with_path(b"/base.bin", |p, l| unsafe { sm_read_file(p, l, 0, buf, 16) });
@@ -1210,8 +1246,7 @@ mod tests {
 
     #[test]
     fn read_dir_lists_entries_and_sizes_itself() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/d", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         for name in [&b"/d/one"[..], &b"/d/two"[..], &b"/d/three"[..]] {
             assert_eq!(
@@ -1242,8 +1277,7 @@ mod tests {
     /// missing binary nobody notices until something runs.
     #[test]
     fn read_dir_refuses_a_buffer_that_would_truncate() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/d", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_two(b"/d/file", b"x", |pp, pl, cp, cl| unsafe { sm_write_file(pp, pl, 0o644, cp, cl) }),
@@ -1260,8 +1294,7 @@ mod tests {
 
     #[test]
     fn read_dir_on_an_empty_directory_is_empty_not_an_error() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/empty", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         let required = with_path(b"/empty", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
         assert_eq!(required, 0, "an empty directory needs no bytes, and is not a failure");
@@ -1269,8 +1302,7 @@ mod tests {
 
     #[test]
     fn read_dir_on_a_missing_path_is_an_error() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_path(b"/nope", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
         assert!(rc < 0, "a missing directory must be an error, not an empty listing, got {rc}");
     }
@@ -1329,8 +1361,7 @@ mod tests {
 
     #[test]
     fn the_export_emits_a_whole_container_not_a_bare_body() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_two(b"/usr/hello", b"hi", |pp, pl, cp, cl| unsafe {
@@ -1372,8 +1403,7 @@ mod tests {
 
     #[test]
     fn image_metadata_set_through_the_abi_reaches_the_exported_container() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let metadata = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
         assert_eq!(
             with_path(metadata, |p, l| unsafe { sm_set_image_options(0, p, l) }),
@@ -1418,8 +1448,7 @@ mod tests {
     /// because the image builds, mounts, and boots.
     #[test]
     fn exporting_a_base_file_silently_empties_it_todo_derived_builds() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         rootfs::insert_base_file(b"/base.bin", 42, 4096, 0o644, 0, 0, 9).expect("insert base");
 
         let image = drain_export();
@@ -1464,8 +1493,7 @@ mod tests {
     /// what would make a 249 MiB image impossible.
     #[test]
     fn a_registered_lazy_file_exports_as_deferred_with_its_real_size() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
@@ -1524,8 +1552,7 @@ mod tests {
 
     #[test]
     fn a_file_fetched_standalone_registers_and_exports_with_its_description() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         // No archive: `archive_id == 0`, no member path, and the payload is the
@@ -1568,8 +1595,7 @@ mod tests {
 
     #[test]
     fn an_archive_member_and_a_standalone_file_can_share_one_image() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_two(b"/member", b"members/x", |pp, pl, sp, sl| unsafe {
             sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0)
         });
@@ -1600,8 +1626,7 @@ mod tests {
 
     #[test]
     fn the_export_reports_its_own_growth_ceiling() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -1630,8 +1655,7 @@ mod tests {
 
     #[test]
     fn a_requested_capacity_raises_the_ceiling_without_shrinking_the_image() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -1690,8 +1714,7 @@ mod tests {
         // tree, saves it, and a DERIVED build starts from what was saved. If
         // the load cannot read what the export wrote, the two halves are not
         // one format and every derived build is building on sand.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/etc", b"", |pp, pl, _c, _l| unsafe {
             sm_mkdir(pp, pl, 0o755, 0, 0)
         }), 0);
@@ -1705,7 +1728,7 @@ mod tests {
 
         // A DIFFERENT filesystem: reset first, so nothing below can be
         // answered by the tree that is still in memory.
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         let entries = load_image_bytes(&image);
         assert!(entries > 0, "load reported {entries} for a {}-byte image", image.len());
 
@@ -1751,21 +1774,20 @@ mod tests {
         // those bytes live in the loaded image rather than in any tree this
         // module built. Before the load existed, the export's byte source was a
         // hardcoded EIO and this was unreachable.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/base", b"from the base image", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
         let base = drain_export();
 
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         assert!(load_image_bytes(&base) > 0);
         assert_eq!(with_two(b"/added", b"by the derived build", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
         let derived = drain_export();
 
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         assert!(load_image_bytes(&derived) > 0);
         let read = |path: &[u8], want: &[u8]| {
             let (pp, pl) = write_path(path);
@@ -1788,7 +1810,7 @@ mod tests {
         // the host's own free is a double free. Observable here as: a refused
         // load leaves NOTHING loaded, so a later export cannot serve base bytes
         // out of a buffer the host is entitled to reuse.
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         let junk = alloc::vec![0xABu8; 4096];
         let ptr = sm_alloc(junk.len());
         unsafe { core::ptr::copy_nonoverlapping(junk.as_ptr(), ptr as *mut u8, junk.len()) };
@@ -1805,8 +1827,7 @@ mod tests {
         // The convention that let `sm_stat_size` go. A caller with no path yet
         // -- which is every caller, before its first lstat -- can still size
         // its buffer.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(unsafe { sm_lstat(0, 0, 0, 0) }, 64, "eight u64s");
         // And a path that does not exist does not change the answer, because
         // the probe is answered before the path is consulted.
@@ -1830,8 +1851,7 @@ mod tests {
         // directly, because the boundaries that matter -- what it refuses, and
         // what it does at the end of the image -- are hard to steer a builder
         // into and trivial to state here.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -1840,7 +1860,7 @@ mod tests {
 
         // Nothing loaded: a request cannot be served, and must not be answered
         // with silence that reads like an empty file.
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         let mut buf = [0u8; 16];
         assert_eq!(
             image_source(rootfs::ByteReq::Image { offset: 0 }, &mut buf),
@@ -1892,13 +1912,12 @@ mod tests {
         // if the byte source treated that id's offset as an image offset, the
         // read would succeed and return unrelated bytes from the middle of the
         // image.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
         let image = drain_export();
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         assert!(load_image_bytes(&image) > 0);
 
         rootfs::insert_base_file(b"/blob.bin", 7, 4096, 0o644, 0, 0, 99).expect("base file");
@@ -1912,47 +1931,55 @@ mod tests {
 
     #[test]
     fn an_image_that_is_replaced_or_reset_is_freed() {
-        // The adopted buffer is the one allocation in this module whose
-        // lifetime outlives its call, so it is the one that can leak. A leak
-        // has no direct observation, but a FREE does: the allocator can hand
-        // the region back. So load, replace, and ask for a buffer of exactly
-        // the size just released -- getting the same address back is the
-        // release, observed.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        // The adopted buffer is the one allocation here whose lifetime
+        // outlives its call, so it is the one that can leak -- and a leak has
+        // no direct observation. A FREE does: the allocator can hand the region
+        // back.
+        //
+        // An earlier version asserted exact address equality after one replace.
+        // That was too coupled to the allocator's state: folding an inode
+        // allocation into `sm_reset` moved the addresses and broke a test whose
+        // subject had not changed. Counting DISTINCT adopted addresses across
+        // many loads says the same thing without depending on which address
+        // comes back. Each load allocates the new image BEFORE releasing the
+        // old, so a freeing implementation ping-pongs between two regions and
+        // a leaking one climbs forever.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
         let image = drain_export();
 
-        sm_reset();
-        assert!(load_image_bytes(&image) > 0);
-        let first = image_bytes().expect("loaded").as_ptr() as usize;
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let mut seen: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+        for _ in 0..8 {
+            assert!(load_image_bytes(&image) > 0);
+            let at = image_bytes().expect("loaded").as_ptr() as usize;
+            if !seen.contains(&at) {
+                seen.push(at);
+            }
+        }
+        assert!(
+            seen.len() <= 2,
+            "eight loads used {} distinct regions; a load that frees the image \
+             it replaces reuses them",
+            seen.len(),
+        );
 
-        // Replacing it must free it.
-        assert!(load_image_bytes(&image) > 0);
-        let second = image_bytes().expect("loaded").as_ptr() as usize;
-        assert_ne!(second, first, "the second load is its own allocation");
-        let back_from_replace = sm_alloc(image.len());
-        assert_eq!(back_from_replace, first, "the replaced image's memory came back");
-
-        // And a reset must free the last one. The region above is deliberately
-        // still HELD: releasing it would leave two free regions of the right
-        // size and the allocator could satisfy the next request from either,
-        // which would make this assertion pass whether or not the reset freed
-        // anything.
-        sm_reset();
+        // And a reset frees the last one, so the next load can have it back.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert!(image_bytes().is_none(), "nothing is loaded after a reset");
-        let back_from_reset = sm_alloc(image.len());
-        assert_eq!(back_from_reset, second, "the reset image's memory came back");
-
-        unsafe { sm_free(back_from_replace, image.len()) };
-        unsafe { sm_free(back_from_reset, image.len()) };
+        assert!(load_image_bytes(&image) > 0);
+        let after_reset = image_bytes().expect("loaded").as_ptr() as usize;
+        assert!(
+            seen.contains(&after_reset),
+            "the reset released its image, so the next load reused a region",
+        );
     }
 
     #[test]
     fn an_empty_range_is_not_an_image() {
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         let ptr = sm_alloc(16);
         assert_eq!(unsafe { sm_load_image(ptr, 0) }, -(Errno::EINVAL as i32));
         assert_eq!(unsafe { sm_load_image(0, 16) }, -(Errno::EINVAL as i32));
@@ -1966,12 +1993,12 @@ mod tests {
         // destroy the image already loaded. Without that, any caller that
         // passed a truncated buffer would silently empty the base layer and
         // then get an error that says nothing about what it cost.
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
         let image = drain_export();
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         assert!(load_image_bytes(&image) > 0);
         let loaded = image_bytes().expect("loaded").as_ptr() as usize;
 
@@ -1989,12 +2016,17 @@ mod tests {
     fn a_failed_export_reports_the_failure_rather_than_a_byte_count() {
         // A zero return from `sm_export_image_read` means "the image ends
         // here", so an error reported as 0 is an error reported as SUCCESS --
-        // the host writes a truncated image and nothing says otherwise. With
-        // no root inode there is no tree to export.
-        sm_reset();
+        // the host writes a truncated image and nothing says otherwise.
+        //
+        // This used to reach the failure by exporting with no root inode.
+        // Folding `sm_init_root` into `sm_reset` made that state unreachable,
+        // which is the fold working as intended and not a loss: a negative
+        // offset is a failure a real caller can actually produce, by carrying
+        // a cursor that went wrong.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let buf = sm_alloc(4096);
-        let rc = unsafe { sm_export_image_read(0, buf, 4096) };
-        assert!(rc < 0, "an export with no root is a failure, got {rc}");
+        let rc = unsafe { sm_export_image_read(-1, buf, 4096) };
+        assert!(rc < 0, "a negative offset is a failure, got {rc}");
         unsafe { sm_free(buf, 4096) };
     }
 
@@ -2009,8 +2041,7 @@ mod tests {
         // quietly: the capacity test declares 64 MiB and passes only because
         // `drain_export` gives up past 4 MiB, so a regression would have
         // surfaced as a confusing drain failure rather than as this sentence.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -2040,8 +2071,7 @@ mod tests {
         // Gap 16. Both of these were written only by their setters and read
         // only by the export, so an image loaded and re-exported came back
         // having forgotten its own declarations.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -2053,7 +2083,7 @@ mod tests {
         let original = drain_export();
 
         // A DIFFERENT filesystem, with nothing declared on it.
-        sm_reset();
+        sm_reset(0o755, 0, 0);
         assert!(load_image_bytes(&original) > 0);
         let rewritten = drain_export();
 
@@ -2084,6 +2114,55 @@ mod tests {
     }
 
     #[test]
+    fn the_metadata_can_be_read_back_including_an_image_the_builder_never_set() {
+        // Six builder call sites read this, and every one of them is a GUARD:
+        // they compare the base image's declared `kernelAbi` against what the
+        // build expects. A guard must read the base's real answer, not the
+        // builder's memory of what it set -- and after a load the builder set
+        // nothing at all.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(unsafe { sm_image_metadata(0, 0) }, 0, "nothing declared yet");
+
+        let meta = b"{\"version\":1,\"kernelAbi\":44}";
+        let mp = sm_alloc(meta.len());
+        unsafe { core::ptr::copy_nonoverlapping(meta.as_ptr(), mp as *mut u8, meta.len()) };
+        assert_eq!(unsafe { sm_set_image_options(0, mp, meta.len()) }, 0);
+        unsafe { sm_free(mp, meta.len()) };
+
+        let read = |expect: &[u8]| {
+            let size = unsafe { sm_image_metadata(0, 0) } as usize;
+            assert_eq!(size, expect.len(), "the probe reports the record's length");
+            let buf = sm_alloc(size);
+            let n = unsafe { sm_image_metadata(buf, size) };
+            assert_eq!(n as usize, size);
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+            assert_eq!(got, expect, "the bytes come back exactly as given");
+            unsafe { sm_free(buf, size) };
+        };
+        read(meta);
+
+        // The case the entry point exists for: a DIFFERENT filesystem, which
+        // declared nothing, reading what an image declared.
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(unsafe { sm_image_metadata(0, 0) }, 0, "and it starts empty");
+        assert!(load_image_bytes(&image) > 0);
+        read(meta);
+
+        // A buffer too small is refused rather than truncating an answer a
+        // caller would then parse as JSON and get a confusing error from.
+        let small = sm_alloc(4);
+        assert_eq!(
+            unsafe { sm_image_metadata(small, 4) },
+            -(Errno::EINVAL as i32),
+        );
+        unsafe { sm_free(small, 4) };
+    }
+
+    #[test]
     fn a_small_request_cannot_cost_a_tree_the_inodes_it_needs() {
         // The convergence loop already re-raises the ceiling to whatever the
         // DATA needs, so a tiny tree cannot tell a floor from a replacement.
@@ -2099,8 +2178,7 @@ mod tests {
         // below is still the contract being stated — an image sized to hold
         // its own inodes — and it is what would catch a future writer that
         // grew quieter about running out.
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         const FILES: u64 = 100;
         for i in 0..FILES {
             let mut path = alloc::vec::Vec::from(&b"/f"[..]);
@@ -2136,8 +2214,7 @@ mod tests {
 
     #[test]
     fn headroom_is_judged_with_the_numbers_behind_the_verdict() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -2249,8 +2326,7 @@ mod tests {
 
     #[test]
     fn the_stat_record_says_whether_a_files_bytes_are_present() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_two(b"/usr/here", b"bytes", |pp, pl, cp, cl| unsafe {
@@ -2296,8 +2372,7 @@ mod tests {
 
     #[test]
     fn failures_come_back_as_negative_errno() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_path(b"/absent/deep", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) });
         assert!(rc < 0, "a missing parent must fail, got {rc}");
         let rc = with_path(b"/nothing-here", |p, l| unsafe { sm_unlink(p, l) });
@@ -2308,13 +2383,11 @@ mod tests {
     /// `sm_reset` must not inherit anything from the first.
     #[test]
     fn reset_gives_the_next_image_a_clean_slate() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/a", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         let first = rootfs::lstat(b"/a").expect("a").st_ino;
 
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert!(rootfs::lstat(b"/a").is_err(), "the previous tree must be gone");
         assert_eq!(with_path(b"/a", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
@@ -2344,8 +2417,7 @@ mod tests {
     /// whole suite.
     #[test]
     fn chown_clears_setuid_when_asked_and_leaves_it_otherwise() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
 
         // Not cleared unless requested.
         assert_eq!(with_path(b"/keep", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);

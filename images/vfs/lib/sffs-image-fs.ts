@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 
 /**
  * Builder-facing filesystem backed by the Rust image module.
@@ -43,8 +44,8 @@ interface ModuleExports {
   memory: WebAssembly.Memory;
   sm_alloc(len: number): number;
   sm_free(ptr: number, len: number): void;
-  sm_reset(): void;
-  sm_init_root(mode: number, uid: number, gid: number): number;
+  sm_reset(rootMode: number, uid: number, gid: number): number;
+  sm_image_metadata(out: number, outLen: number): number;
   sm_mkdir(p: number, pl: number, mode: number, uid: number, gid: number): number;
   sm_mkdir_parents(p: number, pl: number, mode: number, uid: number, gid: number): number;
   sm_symlink(t: number, tl: number, l: number, ll: number, uid: number, gid: number): number;
@@ -118,8 +119,7 @@ export class SffsImageFs {
       ),
     );
     const fs = new SffsImageFs(instance.exports as unknown as ModuleExports);
-    fs.exports.sm_reset();
-    fs.check(fs.exports.sm_init_root(rootMode, 0, 0), "init root", "/");
+    fs.check(fs.exports.sm_reset(rootMode, 0, 0), "reset", "/");
     return fs;
   }
 
@@ -158,8 +158,11 @@ export class SffsImageFs {
 
   /** Discard the tree. The release half of release-before-create. */
   reset(rootMode = 0o755): void {
-    this.exports.sm_reset();
-    this.check(this.exports.sm_init_root(rootMode, 0, 0), "init root", "/");
+    // One call: creating the root is part of the same transition, and a
+    // filesystem with no root fails every path operation, so the state between
+    // the two old calls was never one anything wanted.
+    this.check(this.exports.sm_reset(rootMode, 0, 0), "reset", "/");
+    this.lastMetadata = null;
   }
 
   mkdir(path: string, mode: number, uid = 0, gid = 0): void {
@@ -755,6 +758,36 @@ export class SffsImageFs {
 
   private lastMetadata: unknown | null = null;
 
+  /**
+   * The image metadata this filesystem carries, or null when it carries none.
+   *
+   * **Read from the module, never from `lastMetadata`.** After a load the
+   * KERNEL holds what the image declared and this bridge sent nothing, so the
+   * replay buffer would answer confidently and wrongly — which is precisely
+   * the derived-build case every caller of this is guarding.
+   */
+  getImageMetadata(): VfsImageMetadata | null {
+    const size = this.check(
+      this.exports.sm_image_metadata(0, 0),
+      "getImageMetadata",
+      "",
+    );
+    if (size === 0) return null;
+    const buf = this.exports.sm_alloc(size);
+    if (buf === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      const n = this.check(
+        this.exports.sm_image_metadata(buf, size),
+        "getImageMetadata",
+        "",
+      );
+      return JSON.parse(decoder.decode(this.mem.subarray(buf, buf + n))) as
+        VfsImageMetadata;
+    } finally {
+      this.exports.sm_free(buf, size);
+    }
+  }
+
   setImageMetadata(metadata: unknown | null): void {
     this.lastMetadata = metadata;
     const bytes = metadata === null
@@ -802,11 +835,21 @@ export class SffsImageFs {
     if (ptr === 0) throw new Error("sffs-module: allocation failed");
     try {
       this.mem.set(image, ptr);
-      return this.check(
+      const entries = this.check(
         this.exports.sm_load_image(ptr, image.byteLength),
         "loadImage",
         "",
       );
+      // GAP 17. `sm_set_image_options` carries capacity and metadata together,
+      // so `setImageCapacity` re-sends the metadata from `lastMetadata` — which
+      // is correct only while this bridge is the metadata's only author. A load
+      // makes the KERNEL an author: it restores what the image declared, and
+      // this bridge still remembers null. Sizing a derived image after loading
+      // its base would then clear the base's declared ABI, which is exactly the
+      // sequence the shell and php-test builders perform. Refreshed here
+      // because this is the only moment it can change behind the bridge's back.
+      this.lastMetadata = this.getImageMetadata();
+      return entries;
     } catch (error) {
       this.exports.sm_free(ptr, image.byteLength);
       throw error;

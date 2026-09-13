@@ -4142,6 +4142,15 @@ pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// The image metadata this filesystem currently carries, if any.
+///
+/// Set by [`set_image_metadata`] or restored by [`load_image`] from what the
+/// image declared (gap 16). Opaque bytes: the kernel stores and emits them
+/// without reading them, so this hands back exactly what it was given.
+pub fn image_metadata() -> Option<Vec<u8>> {
+    ROOTFS.with(|state| state.image_metadata.clone())
+}
+
 pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
     let len = crate::sffs_container::MAX_SECTION_LEN as usize;
     if metadata.len() > len {

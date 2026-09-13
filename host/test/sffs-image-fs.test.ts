@@ -441,6 +441,44 @@ describe("SffsImageFs", () => {
     expect(() => fs.stat("/hop50")).toThrow();
   });
 
+  it("reads back the metadata an image declared, not what this bridge set", () => {
+    const source = SffsImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    // A different instance, which declared nothing.
+    const derived = SffsImageFs.create();
+    expect(derived.getImageMetadata()).toBeNull();
+    derived.loadImage(image);
+    expect(derived.getImageMetadata()).toEqual({
+      version: 1,
+      kernelAbi: 44,
+      createdBy: "the test",
+    });
+  });
+
+  it("keeps a loaded image's metadata when the derived build sets a capacity", () => {
+    // GAP 17, and the sequence is the one the shell and php-test builders
+    // perform: load a base, then size the derived image. `setImageCapacity`
+    // re-sends the metadata because one module call carries both settings, so
+    // before the fix it re-sent the bridge's own null and cleared the base's
+    // declared ABI — losing, in the same session, the declaration the load had
+    // just restored.
+    const source = SffsImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44 });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    const derived = SffsImageFs.create();
+    derived.loadImage(image);
+    derived.setImageCapacity(64 * 1024 * 1024);
+
+    expect(derived.getImageMetadata()).toEqual({ version: 1, kernelAbi: 44 });
+    // And the capacity took effect, so this is not passing by ignoring the call.
+    expect(derived.exportCapacityBytes()).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+
   it("gives each instance an independent tree", () => {
     const a = SffsImageFs.create();
     a.mkdir("/only-in-a", 0o755);

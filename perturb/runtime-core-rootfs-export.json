@@ -239,7 +239,7 @@
       "scope": "    let total_blocks = core::cmp::min(",
       "scope_end": "\n    let total_blocks = core::cmp::max(total_blocks, 16);\n",
       "find": "    let total_blocks = core::cmp::min(\n        max_blocks,",
-      "replace": "    let total_blocks = core::cmp::min(\n        u32::MAX,"
+      "replace": "    let total_blocks = core::cmp::max(\n        max_blocks,"
     }
   ]
 }

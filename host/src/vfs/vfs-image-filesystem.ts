@@ -225,6 +225,14 @@ export interface VfsImageFilesystem {
    */
   exportCapacityBytes?(): number;
 
+  /**
+   * What this image declares about itself. Every builder that reads it is
+   * CHECKING it — six call sites, all comparing `kernelAbi` against what the
+   * build expects — so an implementation must report what the IMAGE declared
+   * and not what the builder last set.
+   */
+  getImageMetadata(): VfsImageMetadata | null;
+  setImageMetadata(metadata: VfsImageMetadata | null): void;
   saveImage(options?: {
     materializeAll?: boolean;
     metadata?: unknown;
