@@ -3,16 +3,18 @@
   "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "trials": [
     {
-      "name": "chmod_at drops the mode mask",
-      "scope": "fn chmod_at(",
-      "find": "inode.mode = mode & 0o7777;",
-      "replace": "inode.mode = 0o777;"
+      "name": "chmod drops the mode mask",
+      "scope": "pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {",
+      "find": "        inode.mode = mode & 0o7777;",
+      "replace": "        inode.mode = mode;",
+      "scope_end": "\n}\n"
     },
     {
-      "name": "symlink_at changes symlink mode",
-      "scope": "fn symlink_at(",
+      "name": "symlink is created with something other than 0o777",
+      "scope": "pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {",
       "find": "            0o777,",
-      "replace": "            0o644,"
+      "replace": "            0o755,",
+      "scope_end": "\n}\n"
     },
     {
       "name": "reset leaks the next_ino counter",

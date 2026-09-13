@@ -138,27 +138,41 @@ fn require_tracked_and_clean(root: &Path, file: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn apply(path: &Path, trial: &Trial) -> Result<(), String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+/// Where a trial's anchor lands in `text`: `(scope start, scope span length)`.
+///
+/// The single authority on whether a trial still anchors. `apply` mutates
+/// through it and `validate_all` checks through it, so the cheap check and the
+/// expensive one cannot disagree about what "anchors" means — a validator with
+/// its own rule would be answering a different question than the thing it
+/// claims to predict.
+fn anchor_of(text: &str, trial: &Trial) -> Result<(usize, usize), String> {
     let start = text
         .find(&trial.scope)
-        .ok_or_else(|| format!("{}: scope {:?} not found", trial.name, trial.scope))?;
+        .ok_or_else(|| format!("scope {:?} not found", trial.scope))?;
     let after = &text[start..];
     let span = after
         .find(&trial.scope_end)
         .map(|e| e + trial.scope_end.len())
         .unwrap_or(after.len());
-    let rest = &after[..span];
-    let tail = &after[span..];
-    let hits = rest.matches(&trial.find).count();
+    let hits = after[..span].matches(&trial.find).count();
     if hits != 1 {
         return Err(format!(
-            "{}: anchor {:?} occurs {hits} times after its scope, expected exactly 1. \
+            "anchor {:?} occurs {hits} times after its scope, expected exactly 1. \
              An anchor matching several places reads identically to one that was \
              never applied.",
-            trial.name, trial.find
+            trial.find
         ));
     }
+    Ok((start, span))
+}
+
+fn apply(path: &Path, trial: &Trial) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let (start, span) =
+        anchor_of(&text, trial).map_err(|why| format!("{}: {why}", trial.name))?;
+    let after = &text[start..];
+    let rest = &after[..span];
+    let tail = &after[span..];
     let mutated = format!(
         "{}{}{}",
         &text[..start],
@@ -233,10 +247,89 @@ unsafe extern "C" {
     fn libc_kill(pid: i32, sig: i32) -> i32;
 }
 
+/// Check that every trial in every spec still anchors, without running any.
+///
+/// # Why this is its own mode
+///
+/// **Specs rot silently.** A trial names the code it mutates by quoting it, so
+/// any edit to that code can leave the quote matching nothing — and a trial that
+/// matches nothing is not reported as a weaker result, it stops the whole run at
+/// that spec. Seven trials across two specs had rotted this way before anyone
+/// looked: five when the archive table gained a payload, two when a refactor was
+/// reverted and two functions moved back.
+///
+/// Rot is invisible between runs because a spec is only exercised when someone
+/// runs it, and a full run costs minutes per spec. This costs milliseconds and
+/// can be run after any change, which is the point: the expensive check tells
+/// you whether the guards hold, and this one tells you whether the expensive
+/// check would even start.
+pub fn validate_all(root: &Path) -> Result<(), String> {
+    let mut dir: Vec<_> = std::fs::read_dir(root.join("perturb"))
+        .map_err(|e| format!("perturb/: {e}"))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    dir.sort();
+
+    let mut rotted: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for spec_path in dir {
+        let text = std::fs::read_to_string(&spec_path)
+            .map_err(|e| format!("{}: {e}", spec_path.display()))?;
+        let spec: Spec = match serde_json::from_str(&text) {
+            Ok(spec) => spec,
+            // A spec without the fields this parses is not this tool's file.
+            Err(_) => continue,
+        };
+        let source = match std::fs::read_to_string(root.join(&spec.file)) {
+            Ok(source) => source,
+            Err(_) => {
+                rotted.push(format!(
+                    "{}: names a file that does not exist ({})",
+                    spec_path.display(),
+                    spec.file
+                ));
+                continue;
+            }
+        };
+        for trial in &spec.trials {
+            checked += 1;
+            if let Err(why) = anchor_of(&source, trial) {
+                rotted.push(format!(
+                    "{}: {} — {why}",
+                    spec_path.file_name().unwrap_or_default().to_string_lossy(),
+                    trial.name
+                ));
+            }
+        }
+    }
+
+    println!("{checked} trial(s) checked across every spec");
+    if rotted.is_empty() {
+        println!("every trial still anchors");
+        return Ok(());
+    }
+    for line in &rotted {
+        println!("  ROTTED — {line}");
+    }
+    Err(format!(
+        "{} trial(s) no longer anchor. A trial that matches nothing does not run, \
+         and a spec that cannot run proves nothing.",
+        rotted.len()
+    ))
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let spec_path = args
         .first()
-        .ok_or("usage: xtask perturb <spec.json>")?;
+        .ok_or("usage: xtask perturb <spec.json> | xtask perturb --validate")?;
+    if spec_path == "--validate" {
+        let root = PathBuf::from(
+            String::from_utf8_lossy(&git(Path::new("."), &["rev-parse", "--show-toplevel"])?.stdout)
+                .trim(),
+        );
+        return validate_all(&root);
+    }
     let spec: Spec = serde_json::from_str(
         &std::fs::read_to_string(spec_path).map_err(|e| format!("{spec_path}: {e}"))?,
     )
