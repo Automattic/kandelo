@@ -5031,6 +5031,65 @@ mod tests {
     }
 
     #[test]
+    fn a_normalized_export_stamps_one_instant_on_every_inode_including_the_root() {
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        const FIXED: u64 = 946_684_800_000; // 2000-01-01T00:00:00Z
+
+        // Without normalisation the export writes each inode's own times, and
+        // two builds of the same tree differ by the minute they ran in --
+        // which keys every downstream cache on the wall clock.
+        set_export_timestamp(Some(FIXED)).expect("normalise");
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+
+        // THE ROOT ESPECIALLY. `mkfs` creates it before the walk begins, so the
+        // walk never re-stamps it: normalising only the walk leaves an artifact
+        // that is reproducible everywhere except its own root directory, which
+        // is the half of this that is invisible until something compares whole
+        // images.
+        let root = fs.resolve(b"/", true).expect("/");
+        let root_stat = fs.stat_ino(root).expect("root stat");
+        assert_eq!(
+            (root_stat.mtime_ms, root_stat.ctime_ms, root_stat.atime_ms),
+            (FIXED, FIXED, FIXED),
+            "the root carries the normalised instant",
+        );
+
+        let etc = fs.resolve(b"/etc", true).expect("/etc");
+        let etc_stat = fs.stat_ino(etc).expect("etc stat");
+        assert_eq!(
+            (etc_stat.mtime_ms, etc_stat.ctime_ms, etc_stat.atime_ms),
+            (FIXED, FIXED, FIXED),
+        );
+        let passwd = fs.resolve(b"/etc/passwd", true).expect("/etc/passwd");
+        let passwd_stat = fs.stat_ino(passwd).expect("passwd stat");
+        assert_eq!(
+            (passwd_stat.mtime_ms, passwd_stat.ctime_ms, passwd_stat.atime_ms),
+            (FIXED, FIXED, FIXED),
+        );
+    }
+
+    #[test]
+    fn an_export_that_was_not_normalized_keeps_each_inode_s_own_times() {
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        // The negative control. Without it this pair would pass for an export
+        // that stamped one instant on everything ALWAYS, which would throw away
+        // truthful timestamps in every build that never asked for
+        // reproducibility.
+        set_base_times_from_ms(b"/etc/passwd", 1_700_000_000_000);
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let passwd = fs.resolve(b"/etc/passwd", true).expect("/etc/passwd");
+        assert_eq!(
+            fs.stat_ino(passwd).expect("stat").mtime_ms,
+            1_700_000_000_000,
+            "an un-normalised export carries the file's own time",
+        );
+    }
+
+    #[test]
     fn only_a_file_with_a_fetch_description_enumerates_as_deferred() {
         let _g = TestGuard::acquire();
         build_sample_tree();
