@@ -879,7 +879,7 @@ unsafe fn errno_location() -> *mut libc::c_int {
 /// Serialize a `statvfs` answer into the `WasmStatfs` the kernel reads back,
 /// at the field offsets its `repr(C)` struct expects (mirrors
 /// `#writeStatfsToMemory` in `host/src/kernel.ts`).
-unsafe fn write_wasm_statfs(
+fn write_wasm_statfs(
     mem: &SharedMemory,
     dest: KernelLent,
     vfs: &rustix::fs::StatVfs,
@@ -910,7 +910,7 @@ unsafe fn write_wasm_statfs(
     b[56..60].copy_from_slice(&(vfs.f_namemax as u32).to_le_bytes()); // f_namelen
     b[60..64].copy_from_slice(&(vfs.f_frsize as u32).to_le_bytes()); // f_frsize
     b[64..68].copy_from_slice(&flags.to_le_bytes()); // f_flags
-    unsafe { dest.write(mem, &b) }
+    dest.write(mem, &b)
 }
 
 /// Combine two 32-bit words into a signed 64-bit value (high word first),
@@ -924,15 +924,14 @@ fn combine_i64(lo: i32, hi: i32) -> i64 {
 /// already carries the `S_IFMT` file-type bits (`S_IFDIR`/`S_IFREG`/`S_IFLNK`
 /// etc.), which are numerically identical between Linux and the BSD/macOS
 /// heritage `st_mode` encoding, so no translation is needed.
-unsafe fn write_wasm_stat_from_metadata(
+fn write_wasm_stat_from_metadata(
     mem: &SharedMemory,
     dest: KernelLent,
     meta: &fs::Metadata,
 ) -> Result<(), i32> {
-    unsafe {
-        write_wasm_stat_fields(
-            mem,
-            dest,
+    write_wasm_stat_fields(
+        mem,
+        dest,
             StatFields {
                 ino: meta.ino(),
                 mode: meta.mode(),
@@ -943,22 +942,20 @@ unsafe fn write_wasm_stat_from_metadata(
                 atime: (meta.atime(), meta.atime_nsec()),
                 mtime: (meta.mtime(), meta.mtime_nsec()),
                 ctime: (meta.ctime(), meta.ctime_nsec()),
-            },
-        )
-    }
+        },
+    )
 }
 
 /// Serialize a [`CapMetadata`] — what every `*at` metadata query on a directory
 /// capability returns — into a `WasmStat`.
-unsafe fn write_wasm_stat_from_cap_metadata(
+fn write_wasm_stat_from_cap_metadata(
     mem: &SharedMemory,
     dest: KernelLent,
     meta: &CapMetadata,
 ) -> Result<(), i32> {
-    unsafe {
-        write_wasm_stat_fields(
-            mem,
-            dest,
+    write_wasm_stat_fields(
+        mem,
+        dest,
             StatFields {
                 ino: meta.ino(),
                 mode: meta.mode(),
@@ -969,9 +966,8 @@ unsafe fn write_wasm_stat_from_cap_metadata(
                 atime: (meta.atime(), meta.atime_nsec()),
                 mtime: (meta.mtime(), meta.mtime_nsec()),
                 ctime: (meta.ctime(), meta.ctime_nsec()),
-            },
-        )
-    }
+        },
+    )
 }
 
 /// The `WasmStat` fields this host can answer truthfully from a real host
@@ -990,7 +986,7 @@ struct StatFields {
     ctime: (i64, i64),
 }
 
-unsafe fn write_wasm_stat_fields(
+fn write_wasm_stat_fields(
     mem: &SharedMemory,
     dest: KernelLent,
     f: StatFields,
@@ -1012,7 +1008,7 @@ unsafe fn write_wasm_stat_fields(
     b[64..68].copy_from_slice(&nsec(f.mtime.1).to_le_bytes()); // st_mtime_nsec
     b[72..80].copy_from_slice(&sec(f.ctime.0).to_le_bytes()); // st_ctime_sec
     b[80..84].copy_from_slice(&nsec(f.ctime.1).to_le_bytes()); // st_ctime_nsec
-    unsafe { dest.write(mem, &b) }
+    dest.write(mem, &b)
 }
 
 /// The result of running a trivial guest to completion.
@@ -1199,15 +1195,6 @@ impl KernelLent {
         Ok(())
     }
 
-    /// The proven offset, for a caller that writes several fields into one
-    /// lent record rather than one buffer.
-    fn at(self, field: usize, len: usize) -> Option<usize> {
-        let end = field.checked_add(len)?;
-        if end > self.capacity as usize {
-            return None;
-        }
-        Some(self.offset + field)
-    }
 }
 
 /// Prove a lent `(ptr, capacity)` and copy `bytes` into it, or refuse.
@@ -2825,6 +2812,47 @@ mod proc_bytes_tests {
         );
     }
 
+    /// The inbound half of the capacity invariant, which a bounds check
+    /// cannot supply.
+    ///
+    /// [`KernelLent`] exists so a write is bounded by what the kernel LENT,
+    /// not by what the memory happens to hold. The distinction is the whole
+    /// of L-D1 and L-D3: an address being inside the memory proves the host
+    /// can reach those bytes, never that this caller was given them.
+    ///
+    /// The sibling for the outbound direction is
+    /// `a_region_that_does_not_fit_kernel_memory_is_refused_even_for_a_short_write`.
+    #[test]
+    fn a_lent_region_bounds_a_write_by_the_capacity_not_by_the_memory() {
+        let (_engine, _guest, kernel) = mems();
+
+        // A pair that does not fit the memory is refused outright, so no
+        // caller ever holds a region it cannot write.
+        assert!(
+            KernelLent::prove(&kernel, (PAGE - 4) as u64, 64).is_none(),
+            "a region running past the end of kernel memory must not prove",
+        );
+        assert!(
+            KernelLent::prove(&kernel, 0, 8).is_none(),
+            "a null pointer is a failed allocation, not an address",
+        );
+
+        // A pair that fits proves, and an honest write lands.
+        let lent = KernelLent::prove(&kernel, 4096, 8).expect("8 bytes at 4096 fit");
+        assert!(lent.write(&kernel, &[1, 2, 3, 4]).is_ok());
+        assert_eq!(unsafe { read_bytes(&kernel, 4096, 4) }, vec![1, 2, 3, 4]);
+
+        // ...and the capacity still binds, even though the memory has room
+        // for the longer write. This is the case a bounds check passes and
+        // the invariant refuses.
+        assert_eq!(
+            lent.write(&kernel, &[0u8; 9]),
+            Err(-libc_errno::EFAULT),
+            "nine bytes into an eight-byte lend must be refused, though the \
+             memory would have taken them",
+        );
+    }
+
     /// A launch entry is refused at a pointer past the end of the memory,
     /// with the errno the TypeScript host gives.
     ///
@@ -3525,7 +3553,7 @@ fn define_kernel_host_imports(
                             ) else {
                                 return -libc_errno::EFAULT;
                             };
-                            match unsafe { write_wasm_stat_from_cap_metadata(&mem, dest, &m) } {
+                            match write_wasm_stat_from_cap_metadata(&mem, dest, &m) {
                                 Ok(()) => 0,
                                 Err(errno) => errno,
                             }
@@ -3655,18 +3683,14 @@ fn define_kernel_host_imports(
                     };
                     match objects.get(&handle) {
                         Some(HostObject::File(file)) => match file.metadata() {
-                            Ok(m) => match unsafe {
-                                write_wasm_stat_from_metadata(&mem, dest, &m)
-                            } {
+                            Ok(m) => match write_wasm_stat_from_metadata(&mem, dest, &m) {
                                 Ok(()) => 0,
                                 Err(errno) => errno,
                             },
                             Err(e) => -errno_from_io(&e),
                         },
                         Some(HostObject::Dir(dh)) => match dh.dir.dir_metadata() {
-                            Ok(m) => match unsafe {
-                                write_wasm_stat_from_cap_metadata(&mem, dest, &m)
-                            } {
+                            Ok(m) => match write_wasm_stat_from_cap_metadata(&mem, dest, &m) {
                                 Ok(()) => 0,
                                 Err(errno) => errno,
                             },
@@ -4122,7 +4146,7 @@ fn define_kernel_host_imports(
                             ) else {
                                 return -libc_errno::EFAULT;
                             };
-                            match unsafe { write_wasm_statfs(&mem, dest, &vfs) } {
+                            match write_wasm_statfs(&mem, dest, &vfs) {
                                 Ok(()) => 0,
                                 Err(errno) => errno,
                             }
