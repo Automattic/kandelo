@@ -691,11 +691,23 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     ))
 }
 
-/// Check the image this tree would export against a headroom profile.
+/// Measure the image this tree would export, and judge its headroom.
 ///
-/// Writes four little-endian `u64`s — `free_bytes`, `required_bytes`,
-/// `free_inodes`, `required_inodes` — and returns 0 when the profile is met, or
-/// `-EDOM` when it is not, with the numbers in `out` either way. Call with
+/// Writes five little-endian `u64`s — `free_bytes`, `required_bytes`,
+/// `free_inodes`, `required_inodes`, `capacity_bytes` — and returns 0 when the
+/// headroom profile is met, or `-EDOM` when it is not, with the numbers in
+/// `out` either way.
+///
+/// **One call rather than one per assertion.** Capacity was briefly a second
+/// entry point and the surface budget refused it, correctly: the builders make
+/// several assertions about one artifact, and each is a separate ABI crossing
+/// only if the module is asked one question at a time. What crosses is the set
+/// of FACTS about the image, plus the verdict that needs kernel arithmetic.
+///
+/// Capacity is reported and not judged here, deliberately. Parsing the ceiling
+/// out of a container header and an SFFS superblock is format knowledge and
+/// belongs on this side; comparing the result to a number the profile declares
+/// is a comparison, and belongs with whoever holds the profile. Call with
 /// `out_len == 0` for the required size, the convention `sm_read_dir` uses.
 ///
 /// # Why a POLICY and not a `statfs`
@@ -730,7 +742,7 @@ pub unsafe extern "C" fn sm_check_headroom(
     out_ptr: usize,
     out_len: usize,
 ) -> i32 {
-    const RECORD: usize = 4 * 8;
+    const RECORD: usize = 5 * 8;
     if out_len == 0 {
         return RECORD as i32;
     }
@@ -746,11 +758,16 @@ pub unsafe extern "C" fn sm_check_headroom(
         Ok(outcome) => outcome,
         Err(e) => return err(e),
     };
+    let capacity = match rootfs::export_capacity_bytes() {
+        Ok(bytes) => bytes,
+        Err(e) => return err(e),
+    };
     let fields = [
         outcome.free_bytes,
         outcome.required_bytes,
         outcome.free_inodes,
         outcome.required_inodes,
+        capacity,
     ];
     let rc = if outcome.met { 0 } else { err(Errno::EDOM) };
 
@@ -1023,7 +1040,7 @@ mod tests {
         // contract, so a builder's loop terminates the way it expects.
         let n = with_path(b"/data", |p, l| unsafe { sm_read_file(p, l, 11, buf, 32) });
         assert_eq!(n, 0);
-        unsafe { sm_free(buf, 32) };
+        unsafe { sm_free(buf, 40) };
     }
 
     /// Reading a BASE file is the case the write path could not reach: its
@@ -1441,6 +1458,36 @@ mod tests {
     }
 
     #[test]
+    fn the_export_reports_its_own_growth_ceiling() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+
+        let buf = sm_alloc(40);
+        assert_eq!(unsafe { sm_check_headroom(0, 0, buf, 40) }, 0);
+        let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, 40) };
+        let ceiling =
+            u64::from_le_bytes(bytes[32..40].try_into().expect("8")) as i64;
+        unsafe { sm_free(buf, 40) };
+        assert!(ceiling > 0, "a real ceiling: {ceiling}");
+
+        // It is the ceiling the EXPORTED IMAGE declares, so reading the bytes
+        // back must agree. That is the property the builders assert, and
+        // checking it here is what makes asking the producer equivalent to
+        // parsing the artifact.
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        assert_eq!(
+            fs.growth_ceiling_bytes().expect("ceiling"),
+            ceiling as u64,
+            "the producer's answer and the artifact's own header agree",
+        );
+    }
+
+    #[test]
     fn headroom_is_judged_with_the_numbers_behind_the_verdict() {
         sm_reset();
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
@@ -1449,12 +1496,12 @@ mod tests {
         }), 0);
 
         let size = unsafe { sm_check_headroom(0, 0, 0, 0) };
-        assert_eq!(size, 32, "four u64s, discoverable without a second export");
-        let buf = sm_alloc(32);
-        let read = |min_bytes: u64, min_inodes: u64| -> (i32, [u64; 4]) {
-            let rc = unsafe { sm_check_headroom(min_bytes, min_inodes, buf, 32) };
-            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, 32) };
-            let mut out = [0u64; 4];
+        assert_eq!(size, 40, "five u64s, discoverable without a second export");
+        let buf = sm_alloc(40);
+        let read = |min_bytes: u64, min_inodes: u64| -> (i32, [u64; 5]) {
+            let rc = unsafe { sm_check_headroom(min_bytes, min_inodes, buf, 40) };
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, 40) };
+            let mut out = [0u64; 5];
             for (i, slot) in out.iter_mut().enumerate() {
                 *slot = u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8"));
             }
@@ -1462,16 +1509,17 @@ mod tests {
         };
 
         // A profile this image meets.
-        let (rc, [free_bytes, required_bytes, free_inodes, required_inodes]) = read(0, 0);
+        let (rc, [free_bytes, required_bytes, free_inodes, required_inodes, capacity]) = read(0, 0);
         assert_eq!(rc, 0, "zero required is met by anything");
         assert_eq!(required_bytes, 0);
         assert_eq!(required_inodes, 0);
         assert!(free_bytes > 0, "a fresh image has free space");
         assert!(free_inodes > 0, "and free inodes");
+        assert!(capacity > 0, "and the ceiling it will declare");
 
         // A profile it cannot meet. The numbers come back either way, which is
         // the point: a caller that only learns "no" cannot say by how much.
-        let (rc, [reported_free, required, _, _]) = read(u64::MAX, 0);
+        let (rc, [reported_free, required, _, _, _]) = read(u64::MAX, 0);
         assert!(rc < 0, "an unmeetable profile is a failure, got {rc}");
         assert_eq!(required, u64::MAX, "and it reports what was required");
         assert_eq!(
@@ -1480,7 +1528,7 @@ mod tests {
              not the measurement",
         );
 
-        let (rc, [_, _, _, required_inodes]) = read(0, u64::MAX);
+        let (rc, [_, _, _, required_inodes, _]) = read(0, u64::MAX);
         assert!(rc < 0, "free inodes are checked too, not only bytes");
         assert_eq!(required_inodes, u64::MAX);
 

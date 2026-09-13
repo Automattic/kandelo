@@ -4198,6 +4198,22 @@ pub fn check_export_headroom(
     })
 }
 
+/// The growth ceiling the image this tree would export will declare.
+///
+/// The builders read this out of finished image BYTES today, by parsing the
+/// container header and then the SFFS superblock — format parsing in
+/// TypeScript, over an artifact the kernel just produced. Asking the producer
+/// avoids both the parse and the copy: a 249 MiB image does not have to cross
+/// a boundary to answer a question about its own header.
+pub fn export_capacity_bytes() -> Result<u64, Errno> {
+    let plan = build_export_image()?;
+    let source = crate::sffs_write::SffsImageSource {
+        image: &plan.image,
+        content: &crate::sffs_write::NoContent,
+    };
+    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()
+}
+
 /// Discard any in-progress export. Called by [`reset`] so a fresh store never
 /// serves a chunk of the previous store's image.
 pub fn reset_image_export() {

@@ -294,14 +294,25 @@ export function assertVfsImageCapacity(
   image: Uint8Array,
   expectedMaxByteLength: number,
   label: string,
+  /**
+   * The filesystem that produced `image`, when the caller has it. A producer
+   * that can report its own ceiling is asked instead of parsing the artifact;
+   * the parse remains for the implementation that cannot.
+   */
+  fs?: VfsImageFilesystem,
 ): void {
   if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {
     throw new Error(
       `${label} expectedMaxByteLength must be a positive safe integer`,
     );
   }
-  const actualMaxByteLength =
-    MemoryFileSystem.readImageCapacity(image).maxByteLength;
+  // Ask the producer when it can answer; parse the artifact only for the
+  // implementation that cannot. The ceiling lives in the container header and
+  // the SFFS superblock, so parsing it here is format knowledge on the wrong
+  // side — and this is its last call site.
+  const actualMaxByteLength = fs?.exportCapacityBytes
+    ? fs.exportCapacityBytes()
+    : MemoryFileSystem.readImageCapacity(image).maxByteLength;
   if (actualMaxByteLength !== expectedMaxByteLength) {
     throw new Error(
       `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +
@@ -508,6 +519,7 @@ export async function serializeImage(
       image,
       options.expectedMaxByteLength,
       artifactLabel,
+      fs,
     );
   }
   // Level 19 — slow build, smaller download. Decompression speed is

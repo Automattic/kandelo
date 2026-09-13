@@ -532,6 +532,27 @@ export class SffsImageFs {
     freeInodes: number;
     requiredInodes: number;
   } {
+    const { capacityBytes: _ignored, ...verdict } =
+      this.exportImageFacts(minimumFreeBytes, minimumFreeInodes);
+    return verdict;
+  }
+
+  /**
+   * Everything the module can say about the image this tree would export: the
+   * headroom verdict, the numbers behind it, and the growth ceiling.
+   *
+   * One crossing rather than one per assertion — a second entry point for
+   * capacity was written and the surface budget refused it, which was the right
+   * answer: the builders assert several things about one artifact.
+   */
+  private exportImageFacts(minimumFreeBytes = 0, minimumFreeInodes = 0): {
+    met: boolean;
+    freeBytes: number;
+    requiredBytes: number;
+    freeInodes: number;
+    requiredInodes: number;
+    capacityBytes: number;
+  } {
     const size = this.exports.sm_check_headroom(0n, 0n, 0, 0);
     const ptr = this.exports.sm_alloc(size);
     if (ptr === 0) throw new Error("sffs-module: allocation failed");
@@ -553,10 +574,26 @@ export class SffsImageFs {
         requiredBytes: at(1),
         freeInodes: at(2),
         requiredInodes: at(3),
+        capacityBytes: at(4),
       };
     } finally {
       this.exports.sm_free(ptr, size);
     }
+  }
+
+  /**
+   * The growth ceiling the exported image will declare.
+   *
+   * Asked of the producer rather than parsed out of the finished bytes: the
+   * ceiling lives in the container header and the SFFS superblock, and reading
+   * it here would put format parsing back on this side over an artifact the
+   * module just produced.
+   */
+  exportCapacityBytes(): number {
+    // From the same record as the headroom verdict: the builders make several
+    // assertions about one artifact, and each is a separate ABI crossing only
+    // if the module is asked one question at a time.
+    return this.exportImageFacts().capacityBytes;
   }
 
   isPathDeferred(path: string): boolean {

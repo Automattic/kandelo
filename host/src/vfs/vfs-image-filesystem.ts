@@ -179,6 +179,16 @@ export interface VfsImageFilesystem {
   /** See {@link checkHeadroom}: the primitive, for the implementation that has no verdict. */
   statfs?(path: string): { bfree: number; frsize: number; ffree: number };
 
+  /**
+   * The growth ceiling the exported image will declare.
+   *
+   * Optional for the same reason as {@link checkHeadroom}: the producer can
+   * answer it, and the implementation that cannot leaves its caller to parse
+   * the finished bytes. That parse is the thing being removed, so the fallback
+   * dies with `memory-fs.ts` rather than becoming the contract.
+   */
+  exportCapacityBytes?(): number;
+
   saveImage(options?: {
     materializeAll?: boolean;
     metadata?: unknown;
