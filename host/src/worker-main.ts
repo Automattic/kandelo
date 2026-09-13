@@ -100,7 +100,7 @@ import {
   instantiateForkModule,
 } from "./fork-module-instance";
 import { ForkReferenceCaptureModule } from "./fork-reference-capture-module";
-import { ForkModuleTrampolines } from "./fork-module-trampoline";
+import { forkActivationFrameImports } from "./fork-guest-imports";
 import {
   FORK_MODULE_RESUME_CATALOG_CAP,
   ForkModuleContinuationBackend,
@@ -817,7 +817,12 @@ interface ProcessDylinkActivationOwnerOptions {
    * byte-identical JS continuation closures for the activation's frames.
    */
   readonly forkModuleFrameFlip?: {
-    readonly trampolines: ForkModuleTrampolines;
+    /**
+     * The shared fork-module's exports, which carry one pre-emitted frame entry
+     * point per activation. The module folds the activation id in, so nothing
+     * here synthesizes or caches anything per activation.
+     */
+    readonly moduleExports: Record<string, unknown>;
     readonly backend: ForkModuleContinuationBackend;
   };
   /**
@@ -976,7 +981,11 @@ function createProcessDylinkActivationOwner(
         // returns — crucially the JS `__wpk_fork_resume_table` funcref table the
         // module's `resume_peek` indexes — is kept. References stay JS this slice.
         ...(options.forkModuleFrameFlip
-          ? options.forkModuleFrameFlip.trampolines.frameImportsFor(activationId)
+          ? forkActivationFrameImports(
+              options.forkModuleFrameFlip.moduleExports,
+              activationId,
+              `${request.name}: fork activation`,
+            )
           : {}),
         ...buildForkActivationStateImports(
           activationId,
@@ -3538,7 +3547,7 @@ export async function centralizedWorkerMain(
       // to its own trampoline (wasm->wasm), folding in the activation id so its
       // frames route to its own writer/driver in the shared module. Null unless
       // the module-backed path is active.
-      let forkModuleTrampolines: ForkModuleTrampolines | null = null;
+      let forkModuleFrameExports: Record<string, unknown> | null = null;
       let useForkModule = false;
       // Phase 6 item 4: a borrowed (vfork) child instantiates its OWN fork-module
       // at a distinct `__memory_base` by channel-mmapping a fresh region on
@@ -3816,10 +3825,10 @@ export async function centralizedWorkerMain(
           // Seed the linked-frame format + full resume catalog once, now, before
           // any fork drives the module. Both are host-known custom sections.
           forkModuleBackend.setup();
-          // Per-activation frame trampolines share this one module instance.
-          forkModuleTrampolines = new ForkModuleTrampolines(
-            forkModuleInstance.exports,
-          );
+          // The per-activation frame entry points are the module's own, emitted
+          // by the injector and read out of its table -- there is nothing to
+          // construct or cache here any more.
+          forkModuleFrameExports = forkModuleInstance.exports;
         }
       }
       // Phase 6 item 3a (minimize host surface): the RESTORE data-feed FLIP. When
@@ -3981,11 +3990,11 @@ export async function centralizedWorkerMain(
         // coordinator's module-backed branches then own the journal/frames/
         // resume slots; every non-qualifying fork stays on the JS path. A dlopen
         // fork also evicts a side activation's trampoline when it unregisters.
-        const trampolines = forkModuleTrampolines;
-        processContinuation.enableModuleBacking(
-          forkModuleBackend,
-          trampolines ? (id) => trampolines.evict(id) : undefined,
-        );
+        // No eviction hook: a per-activation trampoline used to be a cached JS
+        // object that had to be dropped when its activation unregistered. The
+        // module's entries are static table slots with no per-activation state,
+        // so there is nothing to evict.
+        processContinuation.enableModuleBacking(forkModuleBackend, undefined);
       }
       // Path B P3: route this worker's next fork's reference CAPTURE through the
       // co-resident module's shared builder (the module is the SOLE capture
@@ -4335,9 +4344,9 @@ export async function centralizedWorkerMain(
               return Number((fork as () => number)());
             },
             forkModuleFrameFlip:
-              useForkModule && forkModuleBackend && forkModuleTrampolines
+              useForkModule && forkModuleBackend && forkModuleFrameExports
                 ? {
-                    trampolines: forkModuleTrampolines,
+                    moduleExports: forkModuleFrameExports,
                     backend: forkModuleBackend,
                   }
                 : undefined,

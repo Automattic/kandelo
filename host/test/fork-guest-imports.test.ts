@@ -4,8 +4,13 @@ import {
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_REQUIRED_TABLE_IMPORTS,
 } from "../src/generated/abi";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import {
   buildForkGuestImports,
+  FORK_ACTIVATION_TRAMPOLINE_SLOTS,
+  forkActivationFrameImports,
   FORK_GUEST_HOST_FLOOR_NAMES,
   type ForkGuestHostFloor,
 } from "../src/fork-guest-imports";
@@ -141,5 +146,64 @@ describe("fork guest imports", () => {
         `${name} must be a real required import`,
       ).toBe(true);
     }
+  });
+});
+
+describe("activation frame trampolines", () => {
+  /** A stand-in for the module's emitted table. */
+  function table(activations: number): WebAssembly.Table {
+    const t = new WebAssembly.Table({
+      element: "anyfunc",
+      initial: activations * FORK_ACTIVATION_TRAMPOLINE_SLOTS.length,
+    });
+    return t;
+  }
+
+  it("matches the slot ORDER the injector emits", () => {
+    // The host indexes this table by slot number. If the two orders drift, one
+    // frame import binds to another's entry point -- a wrong answer, not a
+    // trap, and one that only shows up as corrupted frames under fork.
+    const injector = readFileSync(
+      join(import.meta.dirname, "..", "..", "crates/fork-module-inject/src/main.rs"),
+      "utf8",
+    );
+    const block = injector.slice(
+      injector.indexOf("let targets: [(&str, bool);"),
+      injector.indexOf("let mut resolved"),
+    );
+    const emitted = [...block.matchAll(/\("(fm_[a-z_]+)",/g)].map((m) => m[1]);
+    expect(emitted.length).toBe(FORK_ACTIVATION_TRAMPOLINE_SLOTS.length);
+    // The guest-facing name is the module export's name with the `fm_` prefix
+    // replaced by the frozen `__wpk_fork_` one.
+    expect(emitted.map((n) => n.replace(/^fm_/, "__wpk_fork_"))).toEqual([
+      ...FORK_ACTIVATION_TRAMPOLINE_SLOTS,
+    ]);
+  });
+
+  it("reads one activation's slice, not another's", () => {
+    const t = table(4);
+    const imports = forkActivationFrameImports(
+      { __wpk_fork_activation_trampolines: t },
+      2,
+    );
+    expect(Object.keys(imports).sort()).toEqual(
+      [...FORK_ACTIVATION_TRAMPOLINE_SLOTS].sort(),
+    );
+  });
+
+  it("refuses an activation past the module's cap", () => {
+    const t = table(4);
+    // Without this the read runs off the end inside `table.get`, which throws
+    // without naming the activation anyone asked for.
+    expect(() =>
+      forkActivationFrameImports({ __wpk_fork_activation_trampolines: t }, 4),
+    ).toThrow(/activation 4/);
+    expect(() =>
+      forkActivationFrameImports({ __wpk_fork_activation_trampolines: t }, -1),
+    ).toThrow(/activation -1/);
+  });
+
+  it("fails loud when the module has no trampoline table", () => {
+    expect(() => forkActivationFrameImports({}, 0)).toThrow(/no activation trampoline table/);
   });
 });

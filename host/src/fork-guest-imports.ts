@@ -122,3 +122,58 @@ export function buildForkGuestImports(
   }
   return env;
 }
+
+/**
+ * Slots per activation in the module's `__wpk_fork_activation_trampolines`
+ * table, and the order they are emitted in.
+ *
+ * DUPLICATED from `TRAMPOLINE_SLOTS` and the target list in
+ * `crates/fork-module-inject`, which is the source of truth. Reading the wrong
+ * slot binds one frame import to another's entry point, which is a wrong answer
+ * rather than a trap -- so `host/test/fork-guest-imports.test.ts` pins the order
+ * against the injector.
+ */
+export const FORK_ACTIVATION_TRAMPOLINE_SLOTS = [
+  "__wpk_fork_frame_reserve",
+  "__wpk_fork_frame_commit",
+  "__wpk_fork_frame_peek",
+  "__wpk_fork_frame_next",
+  "__wpk_fork_resume_peek",
+] as const;
+
+/**
+ * One activation's five frame/resume imports, read from the module's own table.
+ *
+ * These are the imports whose guest signature is frozen at one argument while
+ * the module's export takes `(activation_id, arg)`. The module emits an entry
+ * per activation with the id already folded in, so the host does no code
+ * generation and no per-activation caching -- it indexes a table.
+ */
+export function forkActivationFrameImports(
+  moduleExports: Record<string, unknown>,
+  activationId: number,
+  label = "fork activation frame imports",
+): Record<string, unknown> {
+  const table = moduleExports.__wpk_fork_activation_trampolines;
+  if (!(table instanceof WebAssembly.Table)) {
+    throw new Error(
+      `${label}: the fork module exports no activation trampoline table; it ` +
+        `cannot serve per-activation frame imports`,
+    );
+  }
+  const base = activationId * FORK_ACTIVATION_TRAMPOLINE_SLOTS.length;
+  if (!Number.isInteger(activationId) || activationId < 0
+    || base + FORK_ACTIVATION_TRAMPOLINE_SLOTS.length > table.length) {
+    // The module caps activations; asking past the cap must say so rather than
+    // trap inside `table.get` with no mention of which activation was wanted.
+    throw new RangeError(
+      `${label}: activation ${activationId} is outside the module's table of ` +
+        `${table.length / FORK_ACTIVATION_TRAMPOLINE_SLOTS.length} activations`,
+    );
+  }
+  const imports: Record<string, unknown> = {};
+  FORK_ACTIVATION_TRAMPOLINE_SLOTS.forEach((name, slot) => {
+    imports[name] = table.get(base + slot);
+  });
+  return imports;
+}

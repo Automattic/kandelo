@@ -3187,3 +3187,34 @@ other's export.
 five frame entries had no production caller because the TypeScript that called
 them is in the attic, and the emitted trampolines are now that caller. This is
 the same migration §59 described, five entries at once.
+
+## §61 — First reconnection: one dangling import gone, and what it cost
+
+`worker-main.ts` no longer imports `./fork-module-trampoline`. Its three call
+sites now read the module's own emitted table through
+`forkActivationFrameImports`, and the plumbing that existed to support the
+TypeScript version went with it:
+
+- `ForkModuleFrameFlip.trampolines` becomes `moduleExports`.
+- The `new ForkModuleTrampolines(...)` construction becomes an assignment.
+- `enableModuleBacking`'s EVICTION hook is gone entirely. A per-activation
+  trampoline was a cached JS object that had to be dropped when its activation
+  unregistered; the module's entries are static table slots with no
+  per-activation state, so there is nothing to evict. That is a whole lifecycle
+  concern deleted rather than ported.
+
+**A cross-language pin came with it.** The host indexes the table by slot
+number, and the injector decides the order. Drift binds one frame import to
+another's entry point -- a wrong answer, not a trap, showing up only as
+corrupted frames under fork. So `host/test/fork-guest-imports.test.ts` reads the
+injector's own target list out of `crates/fork-module-inject/src/main.rs` and
+compares it to the host's, mapping `fm_` to the frozen `__wpk_fork_` prefix.
+Perturbed by swapping two slots in the injector: the pin fails.
+
+**Cost accounting, honestly.** `host/src` went 144 tsc errors to 142. Two, for
+one module. That is not disappointing, it is the shape of the problem: the
+TS2307 for the module itself, plus whatever implicit-anys it alone caused. The
+55-error implicit-any cascade has 20 causes and most errors will fall when the
+last few of those go, not linearly. 19 dangling modules remain.
+
+`fork-guest-imports.ts` is 100 code lines and the platform half is 186 of 450.
