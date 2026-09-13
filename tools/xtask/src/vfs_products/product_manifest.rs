@@ -319,7 +319,6 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
         "validate-resolved-inputs" => {
             let flags = parse_path_flags(args, &["--path"])?;
             super::resolved_inputs::validate_document(
-                &repository_root,
                 flags["--path"].as_path(),
                 args.iter().any(|arg| arg == "--allow-local-fixture"),
             )

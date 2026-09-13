@@ -29,7 +29,7 @@
 use serde::Deserialize;
 
 use super::canonical_json::{
-    validate_git_sha, validate_repo_path, validate_sha256, validate_stable_id,
+    validate_git_sha, validate_repo_path_shape, validate_sha256, validate_stable_id,
 };
 use std::path::Path;
 
@@ -95,7 +95,6 @@ pub struct ExactSourceV1 {
 /// `local-fixture` reference is a build that points at something outside the
 /// exact-source world, and only one builder may ask for it.
 pub fn validate_envelope(
-    repository_root: &Path,
     document: &ResolvedInputsEnvelopeV1,
     allow_local_fixture: bool,
 ) -> Result<(), String> {
@@ -111,7 +110,15 @@ pub fn validate_envelope(
     // THE RULE THE TYPESCRIPT GOT WRONG. Refuses a backslash rather than
     // splitting on it, and refuses a NUL rather than letting it truncate the
     // path later.
-    validate_repo_path(repository_root, &document.product.manifest_path)?;
+    //
+    // SHAPE ONLY, deliberately. The existence-checking variant would also
+    // require the manifest to be present, and "is this document well formed" is
+    // a different question from "are the things it names here" — conflating
+    // them means a document cannot be validated without the whole repository
+    // around it, which is exactly what a producer-side or CI schema check
+    // wants to do. Whoever READS the manifest checks it resolves, at the point
+    // of reading.
+    validate_repo_path_shape(&document.product.manifest_path)?;
     validate_sha256(&document.product.manifest_sha256)?;
     validate_output_name(&document.product.output)?;
 
@@ -169,16 +176,12 @@ pub fn validate_envelope(
 /// The entry point the builder calls instead of deciding for itself. It reports
 /// the first rule that refused and which field refused it, because "this
 /// document is invalid" is not a sentence anyone can act on.
-pub fn validate_document(
-    repository_root: &Path,
-    path: &Path,
-    allow_local_fixture: bool,
-) -> Result<(), String> {
+pub fn validate_document(path: &Path, allow_local_fixture: bool) -> Result<(), String> {
     let bytes = std::fs::read(path)
         .map_err(|e| format!("resolved inputs: read {}: {e}", path.display()))?;
     let document: ResolvedInputsEnvelopeV1 = serde_json::from_slice(&bytes)
         .map_err(|e| format!("resolved inputs: {}: {e}", path.display()))?;
-    validate_envelope(repository_root, &document, allow_local_fixture)
+    validate_envelope(&document, allow_local_fixture)
         .map_err(|e| format!("resolved inputs: {}: {e}", path.display()))
 }
 
@@ -259,37 +262,11 @@ mod tests {
         }
     }
 
-    /// A repository root holding the manifest the document names.
-    ///
-    /// `validate_repo_path` checks that the path RESOLVES, not only that its
-    /// shape is safe — which is stronger than the TypeScript rule it replaces,
-    /// and worth the fixture: a document naming a manifest that is not there
-    /// is a document that cannot be built from, and finding that out at
-    /// validation beats finding it out halfway through a build.
-    struct Repo(std::path::PathBuf);
-
-    impl Repo {
-        fn new() -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("xtask-resolved-{}-{:?}", std::process::id(), std::thread::current().id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(dir.join("images/vfs/products")).expect("fixture root");
-            std::fs::write(dir.join("images/vfs/products/shell.json"), b"{}").expect("manifest");
-            Self(dir)
-        }
-    }
-
-    impl Drop for Repo {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn check(value: &serde_json::Value) -> Result<(), String> {
-        let repo = Repo::new();
         let parsed: ResolvedInputsEnvelopeV1 =
             serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
-        validate_envelope(&repo.0, &parsed, false)
+        validate_envelope(&parsed, false)
     }
 
     #[test]
@@ -393,11 +370,10 @@ mod tests {
     #[test]
     fn a_local_fixture_reference_needs_the_miniature_builder() {
         let value = document(r#"{"reference_class":"local-fixture"}"#);
-        let repo = Repo::new();
         let parsed: ResolvedInputsEnvelopeV1 =
             serde_json::from_value(value).expect("parses");
-        assert!(validate_envelope(&repo.0, &parsed, false).is_err());
-        validate_envelope(&repo.0, &parsed, true).expect("the miniature builder may");
+        assert!(validate_envelope(&parsed, false).is_err());
+        validate_envelope(&parsed, true).expect("the miniature builder may");
     }
 
     #[test]
