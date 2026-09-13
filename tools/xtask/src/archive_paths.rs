@@ -45,6 +45,15 @@
 pub fn normalized_components(path: &str, label: &str) -> Result<Vec<String>, String> {
     let normalized = path.strip_suffix('/').unwrap_or(path);
     if normalized.is_empty()
+        // NOT MUTATION-TESTABLE, and measured rather than assumed: an absolute
+        // path always splits to a leading EMPTY component, so the rule below
+        // refuses every one of `/etc/passwd`, `/`, `/a/`, `//a` and `/a//b`
+        // with this line deleted. A trial for it survives every time.
+        //
+        // It stays anyway. It states the intent a reader should find here, and
+        // it is the line that keeps absolute paths refused if the component
+        // rule is ever narrowed. Redundancy in a traversal defence is not the
+        // same fault as redundancy elsewhere.
         || normalized.starts_with('/')
         || normalized.contains('\\')
         || normalized.contains('\0')

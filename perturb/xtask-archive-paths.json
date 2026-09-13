@@ -1,5 +1,5 @@
 {
-  "_comment": "The archive path rules ported from staged-product-inputs.ts. Every trial here removes one refusal, and the test that dies is the attack that refusal exists for. This is path-traversal defence over untrusted input, so a survivor means a door left open rather than a metric left unmeasured.",
+  "_comment": "The archive path rules ported from staged-product-inputs.ts. Every trial here removes one refusal, and the test that dies is the attack that refusal exists for. This is path-traversal defence over untrusted input, so a survivor means a door left open rather than a metric left unmeasured. One trial was removed rather than fixed: 'an absolute path is accepted'. Measured, not assumed \u2014 an absolute path always splits to a leading empty component, so the component rule refuses every shape of one on its own. The check stays and the reason is recorded at it, the same treatment sm_alloc's max(len,1) gets.",
   "file": "tools/xtask/src/archive_paths.rs",
   "verify": "scripts/dev-shell.sh cargo test -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" archive_paths >/dev/null 2>&1",
   "build": "scripts/dev-shell.sh cargo build -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
@@ -10,13 +10,6 @@
       "scope_end": "\n}\n",
       "find": "        .any(|item| item.is_empty() || item == \".\" || item == \"..\")",
       "replace": "        .any(|item| item.is_empty() || item == \".\")"
-    },
-    {
-      "name": "an absolute path is accepted",
-      "scope": "pub fn normalized_components",
-      "scope_end": "\n}\n",
-      "find": "        || normalized.starts_with('/')",
-      "replace": "        || false"
     },
     {
       "name": "a backslash separator is accepted",
