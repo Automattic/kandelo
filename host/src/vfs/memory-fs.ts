@@ -39,6 +39,11 @@ import {
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
+import {
+  normalizeLazyArchiveMountPrefix,
+  planLazyArchiveEntries,
+} from "./lazy-archive-paths";
+import type { PlannedLazyArchiveEntry } from "./lazy-archive-paths";
 import { resolveHardlinkGraph } from "./hardlink-graph";
 import {
   assertVfsDeferredTreeCollectionUsage,
@@ -556,115 +561,6 @@ class LazyHttpResponseError extends Error {
     super(`HTTP ${status}`);
     this.name = "LazyHttpResponseError";
   }
-}
-
-interface PlannedLazyArchiveEntry {
-  entry: ZipEntry;
-  archivePath: string;
-  vfsPath: string;
-}
-
-function normalizeLazyArchiveMountPrefix(mountPrefix: unknown): string {
-  if (
-    typeof mountPrefix !== "string" ||
-    !mountPrefix.startsWith("/") ||
-    new TextEncoder().encode(mountPrefix).byteLength > MAX_LAZY_TREE_PATH_BYTES ||
-    mountPrefix.includes("\0") ||
-    mountPrefix.includes("\\")
-  ) {
-    throw new Error(
-      `Lazy archive mount prefix must be an absolute POSIX path: ${JSON.stringify(mountPrefix)}`,
-    );
-  }
-  const normalized = mountPrefix.replace(/\/+$/, "");
-  if (normalized === "") return "/";
-  const segments = normalized.slice(1).split("/");
-  if (
-    segments.some(
-      (segment) => segment === "" || segment === "." || segment === "..",
-    )
-  ) {
-    throw new Error(
-      `Lazy archive mount prefix is not canonical: ${JSON.stringify(mountPrefix)}`,
-    );
-  }
-  return normalized;
-}
-
-function planLazyArchiveEntries(
-  url: string,
-  zipEntries: ZipEntry[],
-  mountPrefix: string,
-  symlinkTargets?: Map<string, string>,
-): PlannedLazyArchiveEntry[] {
-  const normalizedPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
-  const seen = new Map<string, ZipEntry>();
-  const planned = zipEntries.map((entry): PlannedLazyArchiveEntry => {
-    const member = entry.fileName;
-    const context = `Lazy archive ${JSON.stringify(url)} member ${JSON.stringify(member)}`;
-    if (member.length === 0) {
-      throw new Error(`${context} has an empty path`);
-    }
-    if (member.includes("\0")) {
-      throw new Error(`${context} contains a NUL byte`);
-    }
-    if (member.includes("\\")) {
-      throw new Error(`${context} contains a backslash`);
-    }
-    if (member.startsWith("/") || /^[A-Za-z]:\//.test(member)) {
-      throw new Error(`${context} must be relative, not absolute`);
-    }
-    if (entry.isDirectory && entry.isSymlink) {
-      throw new Error(`${context} has conflicting directory and symlink types`);
-    }
-    if (entry.isDirectory !== member.endsWith("/")) {
-      throw new Error(`${context} has inconsistent directory metadata`);
-    }
-
-    const archivePath = entry.isDirectory ? member.slice(0, -1) : member;
-    const segments = archivePath.split("/");
-    if (
-      archivePath.length === 0 ||
-      segments.some(
-        (segment) => segment === "" || segment === "." || segment === "..",
-      )
-    ) {
-      throw new Error(
-        `${context} is not a canonical relative POSIX path`,
-      );
-    }
-    if (seen.has(archivePath)) {
-      throw new Error(
-        `${context} collides with another member at ${JSON.stringify(archivePath)}`,
-      );
-    }
-    if (entry.isSymlink && !symlinkTargets?.has(member)) {
-      throw new Error(`Lazy archive symlink target was not provided: ${member}`);
-    }
-    seen.set(archivePath, entry);
-    return {
-      entry,
-      archivePath,
-      vfsPath: normalizedPrefix === "/"
-        ? `/${archivePath}`
-        : `${normalizedPrefix}/${archivePath}`,
-    };
-  });
-
-  for (const { archivePath } of planned) {
-    const segments = archivePath.split("/");
-    for (let length = 1; length < segments.length; length++) {
-      const ancestorPath = segments.slice(0, length).join("/");
-      const ancestor = seen.get(ancestorPath);
-      if (ancestor && !ancestor.isDirectory) {
-        throw new Error(
-          `Lazy archive member ${JSON.stringify(archivePath)} descends ` +
-            `through non-directory ${JSON.stringify(ancestorPath)}`,
-        );
-      }
-    }
-  }
-  return planned;
 }
 
 function cloneMetadata(
