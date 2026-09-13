@@ -3659,6 +3659,47 @@ V4 killable — `perturb/deferred-until-v4.json` is retired and its trials are i
 `sffs-module-abi.json`, which is the green contract its handoff named as the
 definition of done.
 
+### Y5 MOVED AGAIN: importers 20 -> 11, banked. 2026-09-13.
+
+`4e4948506`. The nine that needed nothing new now construct `SffsImageFs` and
+declare their capacity. **The `SharedArrayBuffer` disappeared with the concrete
+class** — it was never anything but the old constructor's first argument, which
+is what a repoint is supposed to reveal.
+
+**The method was: repoint ONE recipe and read the type errors.** Three earlier
+attempts repointed many and drowned. One recipe named three missing things in
+order, each a small decision rather than a guess:
+
+* **`stat`** — the bridge had only `lstat`. It follows symlinks IN THE BRIDGE
+  rather than through a new module entry point, because a builder wanting the
+  link itself already has `lstat` and an entry point differing only by a boolean
+  is a second spelling of one question.
+* **`write`** — read-modify-write, since the module addresses whole files. Not
+  the quadratic cost it looks like: `writeVfsBinary` hands over the entire
+  remaining buffer in one call. **Adding it exposed that `open` had been
+  ignoring its flags**, which was not harmless — every recipe opens
+  `O_WRONLY|O_CREAT|O_TRUNC`, so a second build writing a shorter file over a
+  longer one would have kept the old file's tail, and the image would build,
+  mount and boot containing bytes nobody wrote.
+* **The stat TYPE narrowed.** `StatResult` obliges an implementation to supply
+  `dev`, three timestamps, `generation`, `linkCount` and `dataSequence`. A
+  census of every builder found `mode` read 24 times, `size` 13, `ino` 4, `uid`
+  and `gid` twice, and **not one read of a timestamp or a device number**. The
+  way to supply a time the image does not record is to invent one. Same
+  judgement as `readdir` returning `{ name }`.
+
+**`ino` stays `number | bigint`.** Narrowing it to `number` typechecked the
+bridge and broke the incumbent in **three hundred** places — the interface being
+told which of its two implementations it is allowed to describe. Recorded
+because the instinct to tighten a type is usually right and was wrong here.
+
+**Typechecking proves the methods exist, not that they work.** Seven tests drive
+them the way a recipe does, through `writeVfsBinary` itself, plus the
+position-past-EOF zero fill, the cursor, symlink following, relative resolution,
+and a cycle refused rather than followed forever. The images typecheck is back
+to its 9 pre-existing errors, none in a file this touched, two of them in the
+supply-chain port targets.
+
 ### The seal check is ten methods, and nine of them exist because the digest was async
 
 **Measured 2026-09-12, after the maintainer assigned the port to this lane, and
