@@ -123,7 +123,7 @@
   },
   {
    "name": "a load leaves the replay buffer holding what this bridge last sent",
-   "scope": "  loadImage(image: Uint8Array): number {",
+   "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
    "scope_end": "\n  }\n",
    "find": "      this.lastMetadata = this.getImageMetadata();",
    "replace": "      // the replay buffer is not refreshed"
@@ -197,6 +197,13 @@
    "scope_end": "\n  }\n",
    "find": "                  args.cohort?.expectedCount ?? 0,",
    "replace": "                  0,"
+  },
+  {
+   "name": "a compressed image is handed to the module as-is",
+   "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
+   "scope_end": "\n  }\n",
+   "find": "    const image = maybeDecompressImage(\n      compressedOrPlain,\n      options.maxDecompressedBytes,\n    );",
+   "replace": "    const image = compressedOrPlain;"
   }
  ],
  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

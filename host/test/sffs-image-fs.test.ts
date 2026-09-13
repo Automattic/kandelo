@@ -1,3 +1,4 @@
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { SffsImageFs, SffsImageError } from "../../images/vfs/lib/sffs-image-fs";
@@ -328,6 +329,24 @@ describe("SffsImageFs", () => {
     // of one archive without tracking whether it has declared it.
     expect(() => fs.registerArchiveMember(member(41, 8_000_000))).not.toThrow();
     expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
+  });
+
+  it("loads a zstd-compressed image without the caller unwrapping it", () => {
+    // Shipped images are `.vfs.zst`. The module reads IMAGES, not archives, so
+    // a compressed one reaches it as EINVAL -- a truthful refusal of the wrong
+    // question, and a confusing one to meet from a builder that was handed the
+    // bytes of a shipped artifact. Decompression is transport and happens in
+    // the bridge, exactly where the filesystem this replaces put it.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/etc", 0o755);
+    fs.writeFile("/etc/hello", new TextEncoder().encode("hi"), 0o644);
+    const image = fs.exportImage();
+    const compressed = new Uint8Array(zstdCompressSync(image));
+    expect(compressed).not.toEqual(image);
+
+    const back = SffsImageFs.create();
+    back.loadImage(compressed);
+    expect(new TextDecoder().decode(back.readFile("/etc/hello"))).toBe("hi");
   });
 
   it("seals a declared activation cohort when the image is exported", () => {

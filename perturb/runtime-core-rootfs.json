@@ -1,28 +1,35 @@
 {
-  "file": "crates/runtime-core/src/rootfs.rs",
-  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
-  "trials": [
-    {
-      "name": "chmod drops the mode mask",
-      "scope": "pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {",
-      "find": "        inode.mode = mode & 0o7777;",
-      "replace": "        inode.mode = mode;",
-      "scope_end": "\n}\n"
-    },
-    {
-      "name": "symlink is created with something other than 0o777",
-      "scope": "pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {",
-      "find": "            0o777,",
-      "replace": "            0o755,",
-      "scope_end": "\n}\n"
-    },
-    {
-      "name": "reset leaks the next_ino counter",
-      "scope": "pub fn reset() {",
-      "scope_end": "\n}\n",
-      "find": "ROOTFS.with(|state| *state = RootfsState::new());",
-      "replace": "ROOTFS.with(|state| { let n = state.next_ino; *state = RootfsState::new(); state.next_ino = n; });"
-    }
-  ],
-  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
+ "file": "crates/runtime-core/src/rootfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "chmod drops the mode mask",
+   "scope": "pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {",
+   "find": "        inode.mode = mode & 0o7777;",
+   "replace": "        inode.mode = mode;",
+   "scope_end": "\n}\n"
+  },
+  {
+   "name": "symlink is created with something other than 0o777",
+   "scope": "pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {",
+   "find": "            0o777,",
+   "replace": "            0o755,",
+   "scope_end": "\n}\n"
+  },
+  {
+   "name": "reset leaks the next_ino counter",
+   "scope": "pub fn reset() {",
+   "scope_end": "\n}\n",
+   "find": "ROOTFS.with(|state| *state = RootfsState::new());",
+   "replace": "ROOTFS.with(|state| { let n = state.next_ino; *state = RootfsState::new(); state.next_ino = n; });"
+  },
+  {
+   "name": "an image may claim archives its carrier describes nowhere",
+   "scope": "fn load_image_inner",
+   "scope_end": "\n}\n",
+   "find": "    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {\n        return Err(Errno::EINVAL);\n    }",
+   "replace": ""
+  }
+ ],
+ "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
 }
