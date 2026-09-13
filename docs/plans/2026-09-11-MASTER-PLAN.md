@@ -3983,6 +3983,41 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The second port target is largely ALREADY PORTED, and the TypeScript is the weaker copy
+
+**Measured 2026-09-13, and it changes the second target's size and shape.**
+`vfs-product-builder-contract.ts` is 952 lines of validators. Almost every one
+of them already exists in Rust, in `tools/xtask/src/vfs_products/`:
+
+| TypeScript | Rust, already there |
+|---|---|
+| `sha256()` | `canonical_json::validate_sha256` |
+| `gitSha()` | `canonical_json::validate_git_sha` |
+| `stableId()` | `canonical_json::validate_stable_id` |
+| `normalizedRelativePath()` | `canonical_json::validate_repo_path` |
+| mount paths | `canonical_json::validate_absolute_posix_path` |
+| `canonicalJson()` | `canonical_json::canonical_json_bytes` / `canonical_sha256` |
+
+**So the work is not "write Rust". It is "stop the TypeScript having its own
+copy."** That is a different and much smaller job than the first target, which
+genuinely had no Rust counterpart and needed one built.
+
+**And the copy is the WEAKER one.** `validate_repo_path` refuses a backslash, a
+NUL, an absolute path, and any empty/`.`/`..` component, with a 4,096-byte cap.
+`assertNormalizedRelativePath` splits on the backslash and never looks for a
+NUL. The divergence recorded above is therefore not two peers disagreeing — it
+is a weaker duplicate of a stronger rule that was already in the tree.
+
+**This is the standing guidance landing exactly as written:** existing
+TypeScript that parses a platform format is a port target rather than a thing to
+patch. The NUL gap is not fixed in the TypeScript; it disappears when the
+TypeScript stops deciding.
+
+**Next increment, concretely:** have the builder contract obtain its validated
+inputs from the existing `vfs_products` CLI rather than re-deriving them, and
+delete the duplicated validators. The CLI, the canonical-JSON module and the
+manifest validator are all already there — what is missing is only the call.
+
 ### Three path rules disagree about a backslash, and the port must decide rather than transliterate
 
 **Measured 2026-09-13, before touching the second port target.** "Is this path
