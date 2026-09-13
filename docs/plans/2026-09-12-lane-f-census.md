@@ -3758,3 +3758,46 @@ the maintainer asked for `fork-externref-import-mailbox` (1165 lines) and
 `fork-worker-import-exceptions` (796) examined specifically, with a report on what
 is genuinely irreducible transport versus what could move to Rust. That is the
 next piece of work.
+
+## §73 — `encode_funcref` served, and a gate that had stopped running
+
+`__wpk_fork_ref_encode_funcref` is the module's. Unserved guest imports: 6 -> 5.
+
+The shape is the point. `__wpk_fork_host_func_identity(funcref) -> i32` answers
+ONE question -- are these the same function? -- and the injected scan owns
+everything built on the answer: walking the merged catalog, matching, resolving
+the slot to its owning activation, subtracting the base to get the ordinal, and
+refusing a function the loader never catalogued. The host contributes a `WeakMap`
+lookup, nothing more.
+
+A LINEAR scan deliberately. Capture is not hot, an identity map would need
+invalidating on every `dlopen`, and a stale map is a recipe that decodes to the
+wrong function -- the failure this design exists to prevent.
+
+**What is tested, and what is not.** Null encodes to 0 without asking the host to
+identify it. A catalogued function gets a recipe; a different one gets a
+different recipe; the same one twice gets the same recipe. Encoding agrees with
+asking `fm_funcref_slot_to_recipe` for that slot directly, which is what proves
+the scan located the right slot. A slot below every seeded base is refused rather
+than attributed to activation 0. An uncatalogued function is refused.
+
+NOT tested, and named rather than implied: that the interned ORDINAL is
+slot-minus-base. The coordinate lives in the serialized record PAYLOAD and the
+harness decodes only record headers, so a perturbation interning the raw slot
+passes every assertion above -- confirmed by running it. Observing it needs the
+payload decoder, a larger fixture than this question warrants. This is the second
+place in this lane where the right answer was unobservable (§67 was the first);
+both are recorded rather than papered over.
+
+**A gate had stopped running, and the warning said so.**
+`fork_module_host_obligation_is_pinned` lost its `#[test]` attribute when I
+inserted a test above it. It had not run since. `cargo` said
+"function `fork_module_host_obligation_is_pinned` is never used" -- in a build
+whose warnings I had been filtering out to find errors.
+
+Restoring it immediately failed, correctly: the gate pins the host functions by
+NAME, not just by count, and it named the new import. That is the gate doing its
+job, and it is the third time in this lane that a check existed, reported, and
+was not connected to the conclusion -- after a fixture that could not tell two
+answers apart and an exit status read from the wrong process. host-native goes
+62 -> 64 passing tests purely by running what was already written.

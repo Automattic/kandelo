@@ -251,7 +251,7 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// If any of the five is ever shown NOT to be a floor, this number and the
 /// matching budget target should both fall. Until then they are equal, which
 /// is why this surface's target is not below its ceiling.
-pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 5;
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 6;
 
 /// The number of PIC linking imports excluded from the count above. Pinned so
 /// that a change in linking shape is visible instead of silently rebalancing
@@ -1162,6 +1162,7 @@ mod tests {
         Ok(())
     }
 
+    #[test]
     fn fork_module_host_obligation_is_pinned() -> wasmtime::Result<()> {
         let root = crate::repo_root();
         let mut candidates = crate::artifact_search_paths("fork_module32.wasm");
@@ -1274,7 +1275,18 @@ mod tests {
         );
         assert_eq!(
             functions.as_slice(),
-            ["__wpk_fork_host_ref_identity", "resolve_externref"],
+            [
+                // Answers "are these the same function?" for funcref capture.
+                // Wasm cannot: `ref.eq` validates only on `eqref` and the
+                // reference hierarchies are disjoint. Maintainer-approved
+                // 2026-09-13 on the condition that a native host CAN supply it,
+                // which `a_native_host_can_identify_funcrefs` proves.
+                "__wpk_fork_host_func_identity",
+                // The same question for `anyref`, approved earlier.
+                "__wpk_fork_host_ref_identity",
+                // handle -> externref materialization.
+                "resolve_externref",
+            ],
             "the fork-module host FUNCTIONS changed",
         );
         assert_eq!(

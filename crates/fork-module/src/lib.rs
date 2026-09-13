@@ -5128,6 +5128,55 @@ mod wasm {
         set_ok();
     }
 
+    /// Turn a MERGED function-catalog slot into a funcref recipe.
+    ///
+    /// The injected `__wpk_fork_ref_encode_funcref` scan finds which catalog slot
+    /// holds the funcref it was handed, and this turns that slot into the
+    /// `(activation, ordinal)` coordinate the graph records. The split is the one
+    /// `fm_capture_intern`'s doc already describes -- the host resolves identity,
+    /// the module owns the recipe -- except that with
+    /// `__wpk_fork_host_func_identity` the SCAN is the module's too, and the host
+    /// answers only "are these the same function?".
+    ///
+    /// The owning activation is the one with the LARGEST base not above `slot`:
+    /// bases partition the merged catalog, so that is the slice `slot` falls in.
+    /// A worker that seeded no bases at all is the single-activation case, where
+    /// activation 0 owns everything.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_funcref_slot_to_recipe(slot: u32) -> i32 {
+        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
+        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        let mut owner: Option<(u32, u32)> = None;
+        for entry in map.iter().take(count) {
+            let (activation, base) = (entry[0], entry[1]);
+            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
+                owner = Some((activation, base));
+            }
+        }
+        let (activation, base) = owner.unwrap_or((0, 0));
+        if count > 0 && owner.is_none() {
+            // Bases were seeded but none covers this slot, so the catalog and the
+            // scan disagree about the table's shape. Guessing activation 0 here
+            // would record a recipe that decodes to another activation's function.
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        fm_capture_intern(INTERN_KIND_FUNCREF, activation, slot - base)
+    }
+
+    /// A funcref the scan could not find in the merged catalog.
+    ///
+    /// Its own entry rather than a sentinel from the scan, so the errno is set by
+    /// the same code that owns every other capture failure. A function the loader
+    /// never catalogued has no coordinate to record, and inventing one would put
+    /// a recipe in the graph that decodes to the WRONG function in the child.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_funcref_uncatalogued() -> i32 {
+        set_err(Errno::EINVAL);
+        -1
+    }
+
     /// Intern one LEAF reference into the capture graph by its already-resolved
     /// coordinate, dispatched on `kind`. Returns its recipe id (`>= 1`), or `-1`
     /// with `fm_last_errno` set.

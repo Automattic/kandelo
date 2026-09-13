@@ -105,6 +105,13 @@ const importObject = {
     // `resolve_externref(handle) -> externref`. Never exercised by this harness;
     // a stub returning a fresh unique object per call satisfies the
     // reference-returning import signature.
+    // The module asks the host "are these the same function?" when encoding a
+    // funcref -- wasm cannot compare two of them. This harness never encodes one,
+    // so a trap is the honest binding: it fails loud if the path is ever reached
+    // rather than returning a plausible id.
+    __wpk_fork_host_func_identity: () => {
+      throw new Error("harness: __wpk_fork_host_func_identity is not exercised here");
+    },
     resolve_externref: (_handle) => ({}),
     // `__wpk_fork_host_ref_identity(anyref) -> i32`: a stable integer per
     // distinct GC reference. Wasm can COMPARE references but cannot HASH one,

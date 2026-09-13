@@ -127,6 +127,22 @@ const GC_LOOKUP_EXPORT: &str = "__wpk_fork_ref_gc_lookup";
 /// two Rust helpers that map it. Wasm can COMPARE references but cannot HASH
 /// one, so a reference cannot key a map inside the module; the host can.
 const HOST_REF_IDENTITY_IMPORT: &str = "__wpk_fork_host_ref_identity";
+
+/// The host's funcref identity oracle: a stable integer per distinct function.
+///
+/// Wasm cannot compare two `funcref`s -- `ref.eq` validates only on `eqref` and
+/// the hierarchies are disjoint (census section 58) -- so this is the one thing
+/// the scan below cannot do for itself. Both hosts can: a `WeakMap` in
+/// JavaScript, `Func::to_raw` in wasmtime, which `a_native_host_can_identify_funcrefs`
+/// proves is stable per function.
+const HOST_FUNC_IDENTITY_IMPORT: &str = "__wpk_fork_host_func_identity";
+
+/// Guest-facing capture entry: `(funcref) -> recipe`.
+const ENCODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_encode_funcref";
+
+/// Rust helpers the scan calls once it has an answer.
+const FUNCREF_SLOT_TO_RECIPE_HELPER: &str = "fm_funcref_slot_to_recipe";
+const FUNCREF_UNCATALOGUED_HELPER: &str = "fm_funcref_uncatalogued";
 const GC_IDENTITY_FIND_HELPER: &str = "fm_gc_identity_find";
 const GC_IDENTITY_CLAIM_HELPER: &str = "fm_gc_identity_claim";
 
@@ -361,6 +377,134 @@ fn import_host_ref_identity(module: &mut Module) -> FunctionId {
         .add(&[ValType::Ref(RefType::ANYREF)], &[ValType::I32]);
     let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_REF_IDENTITY_IMPORT, ty);
     id
+}
+
+fn import_host_func_identity(module: &mut Module) -> FunctionId {
+    for import in module.imports.iter() {
+        if import.module == IMPORT_MODULE && import.name == HOST_FUNC_IDENTITY_IMPORT {
+            if let ImportKind::Function(id) = import.kind {
+                return id;
+            }
+        }
+    }
+    let ty = module
+        .types
+        .add(&[ValType::Ref(RefType::FUNCREF)], &[ValType::I32]);
+    let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_FUNC_IDENTITY_IMPORT, ty);
+    id
+}
+
+/// Emit `__wpk_fork_ref_encode_funcref(funcref) -> recipe`.
+///
+/// Capture's inverse of `__wpk_fork_ref_decode_funcref`: that one turns a recipe
+/// into a function by indexing the merged catalog, this one turns a function
+/// back into a recipe by finding WHICH catalog slot holds it.
+///
+/// Finding it requires comparing functions, which wasm cannot do, so the host
+/// supplies an identity oracle and the SCAN is emitted here. That split matters:
+/// the host answers only "are these the same function?", and every decision
+/// built on the answer -- which slice of the merged catalog the slot falls in,
+/// which activation owns it, what ordinal it becomes, what happens when it is
+/// not found -- stays in the module.
+///
+/// A linear scan, deliberately. Capture is not a hot path, an identity map would
+/// need invalidating on every `dlopen`, and a stale map is a recipe that decodes
+/// to the wrong function -- the failure this whole design exists to avoid.
+fn inject_encode_funcref(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == ENCODE_FUNCREF_EXPORT)
+    {
+        bail!("module already exports {ENCODE_FUNCREF_EXPORT}");
+    }
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let identity = import_host_func_identity(module);
+    let to_recipe = exported_function(module, FUNCREF_SLOT_TO_RECIPE_HELPER)?;
+    let uncatalogued = exported_function(module, FUNCREF_UNCATALOGUED_HELPER)?;
+    let catalog_is_64 = module.tables.get(catalog).table64;
+
+    let mut builder =
+        FunctionBuilder::new(&mut module.types, &[ValType::Ref(RefType::FUNCREF)], &[ValType::I32]);
+    let wanted = module.locals.add(ValType::Ref(RefType::FUNCREF));
+    let want_id = module.locals.add(ValType::I32);
+    let i = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    let entry = module.locals.add(ValType::Ref(RefType::FUNCREF));
+
+    let mut loop_body = builder.dangling_instr_seq(None);
+    let loop_id = loop_body.id();
+    loop_body
+        .local_get(i)
+        .local_get(size)
+        .binop(BinaryOp::I32GeU)
+        .if_else(
+            None,
+            // Scanned the whole catalog without a match.
+            |done| {
+                done.call(uncatalogued).return_();
+            },
+            |work| {
+                work.local_get(i);
+                if catalog_is_64 {
+                    work.unop(UnaryOp::I64ExtendUI32);
+                }
+                work.table_get(catalog).local_set(entry);
+                // A null slot cannot be the function we hold, and asking the host
+                // to identify null would make it invent an answer.
+                work.local_get(entry).ref_is_null().if_else(
+                    None,
+                    |_null| {},
+                    |occupied| {
+                        occupied
+                            .local_get(entry)
+                            .call(identity)
+                            .local_get(want_id)
+                            .binop(BinaryOp::I32Eq)
+                            .if_else(
+                                None,
+                                |found| {
+                                    found.local_get(i).call(to_recipe).return_();
+                                },
+                                |_| {},
+                            );
+                    },
+                );
+                work.local_get(i)
+                    .i32_const(1)
+                    .binop(BinaryOp::I32Add)
+                    .local_set(i);
+                work.instr(Br { block: loop_id });
+            },
+        );
+    drop(loop_body);
+
+    {
+        let mut body = builder.func_body();
+        // A null funcref is recipe 0 -- the graph's own "no reference", not a
+        // lookup failure, and asking the host to identify it would be wrong.
+        body.local_get(wanted).ref_is_null().if_else(
+            None,
+            |null| {
+                null.i32_const(0).return_();
+            },
+            |_| {},
+        );
+        body.local_get(wanted).call(identity).local_set(want_id);
+        body.table_size(catalog);
+        if catalog_is_64 {
+            body.unop(UnaryOp::I32WrapI64);
+        }
+        body.local_set(size);
+        body.i32_const(0).local_set(i);
+        body.instr(Loop { seq: loop_id });
+        // Unreachable: the loop returns on both exits. Wasm still needs a value
+        // of the result type to fall out with.
+        body.call(uncatalogued);
+    }
+    let shim = builder.finish(vec![wanted], &mut module.funcs);
+    module.exports.add(ENCODE_FUNCREF_EXPORT, shim);
+    Ok(())
 }
 
 fn import_resolve_externref(module: &mut Module) -> FunctionId {
@@ -1027,6 +1171,7 @@ fn main() -> Result<()> {
     inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
     inject_activation_trampolines(&mut module)
         .context("emitting the per-activation frame trampolines")?;
+    inject_encode_funcref(&mut module).context("injecting __wpk_fork_ref_encode_funcref")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a

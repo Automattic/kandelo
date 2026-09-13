@@ -82,6 +82,21 @@ const importObject = {
     // so a reference cannot key a map inside the module; the host can. On a
     // real JavaScript host this is a WeakMap; here a Map suffices because the
     // values under test are i31s, which are primitives at this boundary.
+    // `__wpk_fork_host_func_identity(funcref) -> i32`: the ONE thing the module
+    // cannot do for itself when encoding a funcref. Wasm cannot compare two
+    // `funcref`s -- `ref.eq` validates only on `eqref` and the hierarchies are
+    // disjoint -- so the host answers "are these the same function?" and the
+    // module owns the scan and every decision built on the answer. A Map keyed by
+    // the exported function object here; wasmtime uses `Func::to_raw`.
+    __wpk_fork_host_func_identity: (() => {
+      const ids = new Map();
+      let next = 1;
+      return (fn) => {
+        if (fn === null) return 0;
+        if (!ids.has(fn)) ids.set(fn, next++);
+        return ids.get(fn);
+      };
+    })(),
     __wpk_fork_host_ref_identity: (() => {
       const ids = new Map();
       let next = 1;
@@ -1672,6 +1687,83 @@ function i31Minter() {
   u8().set(corrupt, AT);
   x.fm_set_activation_exception_codec(8, AT, corrupt.length);
   assert.equal(lastErrno(), EINVAL, "a corrupted exception codec is refused");
+}
+
+// ---- Encoding a funcref back to a recipe -----------------------------------
+//
+// The inverse of `__wpk_fork_ref_decode_funcref`: that turns a recipe into a
+// function by indexing the merged catalog; this finds WHICH slot holds a given
+// function. Finding it needs function comparison, which wasm cannot do, so the
+// host supplies identity and the module owns the scan.
+{
+  const catalog = importObject.env.__wpk_fork_function_catalog;
+  // NOT `fm_last_errno`: the reconcile block above filled every slot of this
+  // shared catalog with it, so a scan would find it at a slot no base covers --
+  // which is the refusal working, not a match.
+  const alpha = x.fm_stats;
+  const beta = x.fm_capture_interned;
+  const uncatalogued = x.fm_capture_claim_gc;
+
+  x.fm_set_format(4, 0, 0, 0);
+  assert.equal(lastErrno(), 0, "format seeded");
+  x.fm_capture_begin();
+  assert.equal(lastErrno(), 0, "a capture session is open");
+
+  const base = catalog.length;
+  catalog.grow(2, null);
+  catalog.set(base + 0, alpha);
+  catalog.set(base + 1, beta);
+  x.fm_set_activation_catalog_base(5, base);
+  assert.equal(lastErrno(), 0, "activation 5's catalog base is seeded");
+
+  // A null funcref is recipe 0 -- the graph's "no reference", not a failure, and
+  // asking the host to identify null would make it invent an answer.
+  assert.equal(x.__wpk_fork_ref_encode_funcref(null), 0, "null encodes to 0");
+  assert.equal(lastErrno(), 0, "and is not an error");
+
+  const a = x.__wpk_fork_ref_encode_funcref(alpha);
+  assert.equal(lastErrno(), 0, `encoding a catalogued funcref errno=${lastErrno()}`);
+  assert.ok(a > 0, `a catalogued funcref gets a recipe (${a})`);
+
+  const b = x.__wpk_fork_ref_encode_funcref(beta);
+  assert.equal(lastErrno(), 0, "the second catalogued funcref encodes");
+  assert.notEqual(b, a, "DIFFERENT functions get different recipes");
+
+  assert.equal(
+    x.__wpk_fork_ref_encode_funcref(alpha),
+    a,
+    "the same function encodes to the same recipe",
+  );
+
+  // The scan located the RIGHT slot, which is what the host oracle buys:
+  // encoding the function agrees with asking the module for that slot's recipe
+  // directly, through the very entry the injected scan calls once it has an
+  // answer.
+  assert.equal(
+    a,
+    x.fm_funcref_slot_to_recipe(base + 0),
+    "encoding a function agrees with asking for its slot directly",
+  );
+
+  // A slot BELOW every seeded base is refused rather than attributed to
+  // activation 0, which would record a recipe naming another activation's
+  // function.
+  assert.equal(x.fm_funcref_slot_to_recipe(0), -1, "a slot under every base is refused");
+  assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
+
+  // A function the loader never catalogued is REFUSED. Inventing a coordinate
+  // would put a recipe in the graph that decodes to the wrong function.
+  assert.equal(
+    x.__wpk_fork_ref_encode_funcref(uncatalogued),
+    -1,
+    "an uncatalogued funcref is refused",
+  );
+  assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
+
+  // NOT asserted, and named rather than left implied: that the interned ORDINAL
+  // is slot-minus-base. The coordinate lives in the serialized record PAYLOAD and
+  // this harness decodes only record headers, so a perturbation interning the raw
+  // slot passes everything above. Census section 73.
 }
 
 console.log("fork-module capture harness: all assertions passed");
