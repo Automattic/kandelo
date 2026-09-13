@@ -664,6 +664,34 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-14 — a test can pass because its FIXTURE could not express the condition
+  under test.** Measured 2026-09-13. A test asserted that an extracted archive
+  member never comes out setuid, built its fixture by asking the `zip` crate for
+  mode `0o104755`, and passed. It passed because that crate masks
+  `unix_permissions` to `0o777` on write: the archive carried `0o755`, the
+  condition never existed, and the assertion was true for a reason that had
+  nothing to do with the code.
+
+  **A mutation found it.** Removing the `& 0o777` narrowing left every test
+  green. Against a real archive — a zip's external attributes hold a full mode
+  word, and one crafted outside that crate can carry `0o4755`, which `chmod`
+  honours — the mutant produces a setuid file. The fix was to test the narrowing
+  where it is reachable, against the function that performs it, and to say in a
+  comment why that unit test is NOT duplicative of the end-to-end one, so nobody
+  removes it as redundant with a test that structurally cannot reach the case.
+
+  **Distinct from H-5 and H-13, and the difference is where the lie lives.** In
+  H-5 the check asks a different question; in H-13 it asks a weaker one. Here
+  the CHECK is right and the INPUT is wrong — quietly rewritten by a library
+  between the test's intent and the code under test. No amount of reading the
+  assertion reveals it.
+
+  **For every lane: when a test builds a fixture through a library, confirm the
+  library preserved the property being tested.** A fixture is an input, and an
+  input a helper may normalise is an input that may no longer be the case you
+  meant. The cheap check is to assert the fixture itself before asserting the
+  behaviour.
+
 - **H-13 — a checker can answer a weaker question than its name implies, and
   the weaker answer looks exactly like the strong one.** Measured 2026-09-12.
   `xtask vfs-image roundtrip` reads "does this image survive a round trip"; what
