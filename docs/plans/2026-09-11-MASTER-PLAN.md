@@ -682,6 +682,48 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-19 — an assertion that encodes an implementation's CHOICE rather than the
+  property makes a gate intermittent, and an intermittent gate is worse than a
+  loose one.** Measured 2026-09-13 on
+  `an_image_that_is_replaced_or_reset_is_freed`, which checks that loading a
+  second image frees the first. A leak has no direct observation, so the test
+  counts DISTINCT allocator regions across repeated loads — sound. It then
+  asserted **two** regions across eight loads, reasoning that allocating the new
+  image before releasing the old must ping-pong between two.
+
+  That is what the allocator happens to do, not what freeing means. One run in
+  four observed four regions and failed with nothing wrong. **A gate that fails
+  for reasons unrelated to its subject teaches everyone to re-run it**, and a
+  gate people re-run is one that no longer blocks anything.
+
+  Fixed by asserting the actual property — the region count stays bounded while
+  the load count grows — with forty loads and a bound of eight. That is looser
+  AND stronger: a freeing implementation settles in a handful, a leaking one
+  shows forty, and the bound sits far from both. **Loosen a bound toward the
+  property; never toward the observation that happened to fail.**
+
+- **H-18 — some mutants are EQUIVALENT, and the only honest response is to
+  re-aim the trial, not to contrive a test.** Measured 2026-09-13 on
+  `rootfs::chmod`'s `& 0o7777`. Every reader of `inode.mode` masks again:
+  `Inode::stat` composes `type_bits | (mode & 0o7777)`, and the export's raw
+  read reaches writer entries that each mask. So deleting the narrowing cannot
+  change any observation, and no test could have killed it.
+
+  **Establishing that is work, and the work is the point.** It means enumerating
+  every reader of the value and showing each one masks — not concluding
+  "probably redundant" after two. Getting it wrong in the other direction is the
+  expensive mistake: I twice declared a mutation unkillable-looking and twice a
+  different check turned out to be doing the refusing (H-5).
+
+  The trial was re-aimed at a difference that IS observable: narrowing to
+  `0o777`, which silently drops set-user-ID. **The narrowing stays** — it costs
+  nothing and stops the redundancy from becoming load-bearing when a future
+  reader forgets to mask.
+
+  **The rule this does NOT relax:** a survivor is your test being wrong until
+  you have enumerated the readers and shown otherwise. "Equivalent mutant" is a
+  conclusion you earn, not a first explanation.
+
 - **H-17 — a test that applies the SAME transform it is checking cannot check
   it, and reads exactly like a test that can.** Measured 2026-09-13 on
   `rootfs::chmod`, which narrows an incoming mode with `& 0o7777` because
@@ -771,6 +813,17 @@ implied: `classify_additive_object_by_key` already existed and served
   case: the `lazy` row above could have been widened to a wildcard with four
   valid and five invalid combinations already under test, because none of the
   nine touched that row's negative side.
+
+  **The cheap defence, added 2026-09-13 after three fixtures in a row failed
+  this way: give every refusal test a NEGATIVE CONTROL.** A test asserting
+  "this input is refused" passes for ANY refusal, including one from a check it
+  is not about. Asserting that the same input WITHOUT the offending property is
+  ACCEPTED pins which check is answering. Three versions of one gap-20 fixture
+  passed while three different checks did the refusing — a linkage decoder, a
+  deferred-section parser, and the container's own flag/section accounting —
+  and the control is what finally distinguished them. It costs one assertion
+  and it is the difference between testing a guard and testing that something,
+  somewhere, said no.
 
   **Sharpened 2026-09-13 by two more survivors: the dangerous cases sit at
   INTERSECTIONS.** Both were rules about a product image meeting a reference
