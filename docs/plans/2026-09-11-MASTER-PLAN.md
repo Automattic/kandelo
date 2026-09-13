@@ -682,6 +682,32 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-17 — a test that applies the SAME transform it is checking cannot check
+  it, and reads exactly like a test that can.** Measured 2026-09-13 on
+  `rootfs::chmod`, which narrows an incoming mode with `& 0o7777` because
+  `inode.mode` holds permissions while the file's TYPE comes from its kind and
+  is OR-ed in by `lstat`. Removing the narrowing left the whole suite green.
+
+  Every chmod assertion in the file reads
+  `lstat(path).st_mode & 0o7777` — **the same mask the code applies**. So the
+  assertion discards precisely the bits the mask exists to discard, and the
+  mask's presence and absence produce identical observations. Without it,
+  `chmod(path, S_IFDIR | 0o700)` makes a regular file report `S_IFDIR |
+  S_IFREG` at once, which is not a type any caller can act on.
+
+  **Distinct from H-5, and the difference is where the masking happens.** In
+  H-5 a DIFFERENT check answers the question. Here the RIGHT check answers it
+  and the test throws the answer away before looking. The mask in the assertion
+  was almost certainly written to make the test robust — "I only care about
+  permission bits" — which is exactly why it is hard to see.
+
+  **For every lane: when a function narrows, normalises, clamps or canonicalises
+  its input, at least one test must assert the RAW result.** If every assertion
+  passes the output back through the same transform first, the transform is
+  untested no matter how many tests there are. The tell is textual and cheap to
+  grep for: the same mask, `.trim()`, `normalize()`, `?? default` or `Math.min`
+  appearing on both sides of the boundary.
+
 - **H-16 — mutation testing quietly fills the disk, because macOS leaves a
   fresh set of debuginfo object files beside every rebuild and removes none of
   the previous ones.** Measured 2026-09-13, when the maintainer reported the
