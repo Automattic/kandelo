@@ -3886,6 +3886,51 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### CORRECTED: the seal stays payload, because the verifier is not the kernel
+
+**Written and then corrected within the hour, 2026-09-13, by reading the
+format's own documentation instead of reasoning from the rule in the
+abstract.** The corrected conclusion is below; the original argument is kept
+after it because the mistake is instructive.
+
+`sffs_deferred`'s module doc names the seal explicitly, and puts it on the
+other side of the line:
+
+> *Everything the kernel merely carries stays in the payload — fetch URL,
+> transport, **integrity digest, activation mode, atomic-group seal** — and is
+> never inspected here. The kernel is a courier for those. **Whoever fetches
+> still decides whether a URL may be fetched, validates the digest, and honours
+> the activation mode**; carrying the bytes authorises nothing.*
+
+**The premise I got wrong was "the kernel verifies it".** It does not, and
+should not. `verifyImportedLazyAtomicGroupSeals` is called by the BUILDER before
+it trusts an imported base — a CONSUMER authenticating input, not a kernel
+acting on a field during a fetch. The kernel never verifies a seal today and
+nothing here proposes it should.
+
+**So the seal stays payload, and the verifier is a consumer-side component.**
+`sffs_deferred` still never inspects a payload; something above it does, exactly
+as "whoever fetches validates the digest" already describes. That distinction —
+the FORMAT does not inspect, a CONSUMER may — is what the doc means by "never
+inspected here", and collapsing it would have made the courier property a
+comment rather than a fact, which is the very thing the archive-linkage section
+warns about.
+
+**The JSON hazard still goes away, by a different route.** The payload's schema
+is the PRODUCER's, and once the producer is the Rust bridge that schema is ours
+to define as a byte layout. No JavaScript serialiser to reproduce, no escaping
+rule to get subtly wrong — not because the seal was promoted, but because the
+producer changed.
+
+**Why the mistake was easy, and worth recording.** The rule "first-class when
+the kernel acts on it" is correct and I applied it to a premise I had not
+checked. The format had already answered the question in prose, three paragraphs
+above the one I was quoting. **A rule derived from a document is not a
+substitute for the rest of the document.**
+
+<details>
+<summary>The original, incorrect argument, kept for the record</summary>
+
 ### The seal is a FIELD, not a payload — and the lane's own rule says so
 
 **Designed 2026-09-13.** The obvious place to put a seal is the `SDEF` payload:
@@ -3917,6 +3962,8 @@ the only place a canonical form is safe to live.
 **What stays payload:** the fetch description — the URL and whatever else
 locates the bytes. The kernel still only carries that, and the rule still
 holds for it.
+
+</details>
 
 ### Y5 and V5 are the same work seen from two ends
 
