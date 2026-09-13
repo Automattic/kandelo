@@ -682,6 +682,27 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-21 — a guard's test must live in the crate whose suite that trial's
+  verifier runs, or the trial proves nothing.** Measured three times on
+  2026-09-13, from one change.
+
+  A perturb spec names ONE verify command, and it is scoped: `cargo test -q -p
+  runtime-core`, `cargo test -q -p sffs-module`, `npx vitest run
+  test/sffs-image-fs.test.ts`. A guard in `runtime-core` whose only test is in
+  the host vitest suite is, to every mutation of that guard, **untested** — and
+  the suite is green, the behaviour genuinely covered, the coverage genuinely
+  real. It is simply not reachable from where the trial looks.
+
+  All three came from the export-timestamp work. The normalisation was tested
+  end to end in `shell-vfs-build.test.ts`, so both `runtime-core` trials
+  survived; when those gained `runtime-core` tests, the `sffs-module` trial on
+  the ENTRY POINT that carries the request survived too, because the tests one
+  layer down proved the behaviour and not the wiring.
+
+  **The habit:** when adding a guard, ask which spec will mutate this LINE, read
+  that spec's `verify`, and put a test where that command will run it. A test
+  one layer away is a real test of something else.
+
 - **H-20 — editing ANY file in the lane worktree while a mutation run is in
   flight invalidates that run, not just the file it mutates.** Done twice on
   2026-09-13, the second time costing a 53-trial run.
