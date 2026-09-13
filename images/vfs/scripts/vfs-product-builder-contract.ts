@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -11,6 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
+import { findRepoRoot } from "../../../host/src/binary-tiers";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
 const MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
@@ -170,6 +172,20 @@ async function openVfsProductBuildWithPolicy(
   if (canonicalJson(parsed) !== inputText) {
     fail("resolved input document is not canonical JSON");
   }
+  // THE ENVELOPE IS JUDGED IN RUST, BEFORE THIS FILE LOOKS AT IT.
+  //
+  // Every scalar rule below duplicates one that already existed in
+  // `tools/xtask/src/vfs_products/canonical_json.rs`, and the duplicate is the
+  // WEAKER one: `assertNormalizedRelativePath` splits on a backslash, so `a\b`
+  // becomes two components and passes though on POSIX it is one legal
+  // filename, and it never looks for a NUL, which truncates the path in the
+  // first C API that receives it. The Rust refuses both.
+  //
+  // Calling it rather than fixing the copy is the point. A second
+  // implementation of a security rule is a second chance to get it subtly
+  // different, and this one already had.
+  validateResolvedInputEnvelope(absoluteInputsPath, allowLocalFixture);
+
   const inputs = parseResolvedInputs(
     parsed,
     dirname(absoluteInputsPath),
@@ -321,6 +337,55 @@ async function openVfsProductBuildWithPolicy(
       finished = true;
     },
   });
+}
+
+/**
+ * Ask `xtask` whether this document's envelope is well formed.
+ *
+ * Shape only, deliberately: whether the manifest it names is PRESENT is a
+ * different question, answered where the manifest is read. A document naming a
+ * missing file is still a valid document, and a validator that refused it
+ * could not run anywhere the repository is not fully checked out.
+ */
+function validateResolvedInputEnvelope(
+  documentPath: string,
+  allowLocalFixture: boolean,
+): void {
+  const args = [
+    "vfs",
+    "products",
+    "validate-resolved-inputs",
+    "--path",
+    documentPath,
+  ];
+  if (allowLocalFixture) args.push("--allow-local-fixture");
+
+  const probe = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
+  const hostTarget = probe.stdout
+    ?.split("\n")
+    .find((line) => line.startsWith("host:"))
+    ?.split(/\s+/)[1];
+  if (!hostTarget) fail("could not determine the host rust target");
+
+  const result = spawnSync(
+    "cargo",
+    ["run", "-p", "xtask", "--target", hostTarget, "--quiet", "--", ...args],
+    { cwd: findRepoRoot(), encoding: "utf8" },
+  );
+  if (result.error) {
+    fail(`resolved input document could not be validated: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    // The LAST non-empty line. `cargo run` writes its own build warnings to
+    // stderr, so the first line is a warning about an unrelated crate rather
+    // than the sentence naming which field refused.
+    const detail = (result.stderr ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .pop() ?? `exit ${result.status}`;
+    fail(detail);
+  }
 }
 
 function parseResolvedInputs(
