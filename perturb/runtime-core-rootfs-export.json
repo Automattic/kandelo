@@ -21,15 +21,15 @@
       "name": "the exported record names the wrong member of the right archive",
       "scope": "            ExportNode::LazyMember {",
       "scope_end": "\n            }\n",
-      "find": "                    &source_path,\n                    b\"\",",
-      "replace": "                    b\"x\",\n                    b\"\","
+      "find": "                    &source_path,\n                    &payload,",
+      "replace": "                    b\"x\",\n                    &payload,"
     },
     {
       "name": "the member is materialized into the body instead of described",
       "scope": "            ExportNode::LazyMember {",
       "scope_end": "\n            }\n",
-      "find": "                writer.create_deferred_file(\n                    item.parent_sffs,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    b\"\",\n                )?",
-      "replace": "                let _ = (archive_id, source_path, size);\n                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b\"\"))?"
+      "find": "                writer.create_deferred_file(\n                    item.parent_sffs,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    &payload,\n                )?",
+      "replace": "                let _ = (archive_id, source_path, size, payload);\n                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b\"\"))?"
     },
     {
       "name": "the loader throws away the description it was given",
@@ -75,17 +75,17 @@
     },
     {
       "name": "the export never declares the archive its records point into",
-      "scope": "                if !declared_archives.contains(&archive_id) {",
+      "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
       "scope_end": "\n                }\n",
-      "find": "                    writer.declare_lazy_archive(archive_id, bytes)?;",
+      "find": "                    writer.declare_lazy_archive(archive_id, bytes, &payload)?;",
       "replace": ""
     },
     {
       "name": "the export invents an archive length instead of using the loaded one",
-      "scope": "                if !declared_archives.contains(&archive_id) {",
+      "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
       "scope_end": "\n                }\n",
-      "find": "                    let bytes = ROOTFS\n                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))\n                        .ok_or(Errno::EIO)?;",
-      "replace": "                    let bytes = ROOTFS\n                        .with(|state| state.archives.get(&archive_id).map(|entry| entry.size))\n                        .unwrap_or(0);"
+      "find": "                    let (bytes, payload) = ROOTFS\n                        .with(|state| {\n                            state\n                                .archives\n                                .get(&archive_id)\n                                .map(|entry| (entry.size, entry.payload.clone()))\n                        })\n                        .ok_or(Errno::EIO)?;",
+      "replace": "                    let (bytes, payload) = ROOTFS\n                        .with(|state| {\n                            state\n                                .archives\n                                .get(&archive_id)\n                                .map(|entry| (entry.size, entry.payload.clone()))\n                        })\n                        .unwrap_or((0, alloc::vec::Vec::new()));"
     },
     {
       "name": "the loader goes back to refusing an image described only by its body",
@@ -105,7 +105,7 @@
       "name": "the loader drops the archive table the body declares",
       "scope": "            for archive in &section.archives {",
       "scope_end": "\n            }\n",
-      "find": "                lazy_archives.push((archive.archive_id, archive.bytes));",
+      "find": "                lazy_archives.push((\n                    archive.archive_id,\n                    archive.bytes,\n                    archive.payload.clone(),\n                ));",
       "replace": ""
     },
     {
@@ -156,6 +156,34 @@
       "scope_end": "\n}\n",
       "find": "        state.image_metadata = if metadata.is_empty() {\n            None\n        } else {\n            Some(metadata.to_vec())\n        };",
       "replace": "        state.image_metadata = Some(metadata.to_vec());"
+    },
+    {
+      "name": "a standalone file is exported as if an archive backed it",
+      "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
+      "scope_end": "\n                }\n",
+      "find": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
+      "replace": "                if !declared_archives.contains(&archive_id) {"
+    },
+    {
+      "name": "the exported record drops a standalone file's description",
+      "scope": "            ExportNode::LazyMember {",
+      "scope_end": "\n            }\n",
+      "find": "                    &payload,\n                )?",
+      "replace": "                    b\"\",\n                )?"
+    },
+    {
+      "name": "registration accepts a half-specified linkage",
+      "scope": "pub fn insert_lazy_file(",
+      "scope_end": "\n    ROOTFS.with(",
+      "find": "    if (archive_id == 0) != source_path.is_empty() {\n        return Err(Errno::EINVAL);\n    }",
+      "replace": ""
+    },
+    {
+      "name": "registration drops the description it was given",
+      "scope": "        if let Some(inode) = state.get_mut(child) {",
+      "scope_end": "\n        }\n",
+      "find": "            inode.deferred_payload = payload.to_vec();",
+      "replace": ""
     }
   ]
 }

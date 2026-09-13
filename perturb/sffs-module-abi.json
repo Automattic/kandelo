@@ -134,6 +134,20 @@
       "scope_end": "\n    ];\n",
       "find": "        u64::from(deferred),\n        u64::from(archive_id),",
       "replace": "        u64::from(archive_id),\n        u64::from(deferred),"
+    },
+    {
+      "name": "the bridge declares an archive even when there is none",
+      "scope": "    if archive_id != 0 {\n        if let Err(e) = rootfs::declare_archive",
+      "scope_end": "\n    }\n",
+      "find": "    if archive_id != 0 {\n        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {\n            return err(e);\n        }\n    }",
+      "replace": "    if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {\n        return err(e);\n    }"
+    },
+    {
+      "name": "a standalone file's description is discarded at registration",
+      "scope": "        if archive_id == 0 { archive_payload } else { b\"\" },",
+      "scope_end": "\n",
+      "find": "        if archive_id == 0 { archive_payload } else { b\"\" },",
+      "replace": "        b\"\","
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
