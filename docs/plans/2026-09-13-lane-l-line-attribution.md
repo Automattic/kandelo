@@ -1720,6 +1720,74 @@ Three consequences, none of which this lane can settle alone:
   The loop is the whole change: the original joined every glob into one `ls`
   and could not tell which one matched nothing.
 
+## The closure target, re-derived — and it is not a line count
+
+The maintainer asked for the target to be derived rather than asserted. It is
+derivable now in a way it was not when L1 ran, because the thing to measure
+against exists: **`crates/host-native` now writes the whole of lane L, and it
+can be counted.**
+
+| What the native host writes for lane L | lines |
+|---|---|
+| `ProcessLayout::compute` — the layout seam | 37 |
+| `checked_shared_range` — the bounds rule | 9 |
+| `KernelScratch` + its impl — outbound capacity | 75 |
+| `KernelLent` + its impl — inbound capacity | 35 |
+| `write_lent` — the import-boundary helper | 10 |
+| **Total** | **166** |
+
+**166 lines is what a second host actually pays for this entire lane.** Not an
+estimate: the code is in the tree, it runs the same kernel, and the two
+capacity types are there because this lane put them there — which is the
+correction to L1's version of this claim. L1 measured ~46 lines and concluded
+"a new host's burden here is already near zero"; it was measuring a host that
+was MISSING the invariant, which is why L-D1 and L-D3 were filed against it.
+
+**Against that, 3,269 of the TypeScript's 5,689 lines are things a new host
+never writes at all:**
+
+| JS-host structural | lines |
+|---|---|
+| `process-memory.ts`'s allocator, leases, retirement, admission | 1,038 |
+| `kernel-entry-gate.ts` — Rust gets this from the borrow checker | 1,596 |
+| `worker-protocol.ts` — a native host has no workers | 429 |
+| intrinsic/typed-array capture in `kernel-scratch.ts` | 221 |
+| **Total** | **3,284** |
+
+The allocator is the addition to L1's list, and it is the largest single item
+in the lane. `crates/host-native` has **no** lease, retirement or admission
+machinery — it builds a `SharedMemory` in nine lines and drops it. The JS
+hosts carry a thousand lines there because a browser must bound and reclaim
+`WebAssembly.Memory`/`SharedArrayBuffer` reservations, which is a platform
+boundary, not duplicated knowledge.
+
+**So the lane's number splits in two, and that is the finding:**
+
+* **166** — what a host that is not JavaScript pays. This is the number goal V4
+  is about, and it is already small.
+* **~2,400** — what remains in the TypeScript after the structural block: the
+  capacity system, the bounds helpers, the pointer table (57 lines, and L-D2
+  refuted, so not generatable), and the layout seam. These carry invariants
+  BOTH hosts need, which is why the native host's 166 lines exist at all.
+* **3,284** — a tax the JavaScript host pays for being JavaScript and for
+  running in a browser. Deleting any of it would not reduce what a new host
+  faces by one line.
+
+**A single line-count target cannot express that, and picking one is what went
+wrong twice.** L1 replaced a made-up 1,500 with a derived-looking 3,600 whose
+per-unit numbers do not follow from its own rule: it said "allocation and lease
+mechanics stay" and then projected `process-memory.ts` from 1,337 to ~400,
+which is only possible if they go. The conversion's 2,900 inherits the same
+shape in a different unit. **Neither number was ever reachable without deleting
+something the census itself said must stay.**
+
+**What lane L should close against instead:** the pair. A new host's burden,
+measured at 166 and checked by the corpora in both hosts; and the JS host's own
+surface, which shrinks only by auditing the three structural items — and where
+a reduction is worth reporting as a JS-host improvement, not as progress toward
+a host-independent floor. Whether the ~2,400 can be smaller is the audit
+nobody has done, and any number for it today would be the third invented one.
+
 ## Is lane L finished? No, and the budget says so
 
 Worth stating plainly, because this document spends most of its length on

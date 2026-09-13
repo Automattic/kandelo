@@ -2493,6 +2493,33 @@ products at 1/7. A lane reading "Local build failed" in a fresh worktree should
 check that list before its own changeset. Detail in
 `docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
+**THE CLOSURE TARGET, RE-DERIVED (2026-09-13, on the maintainer's decision).**
+It is derivable now because the thing to measure against exists:
+`crates/host-native` writes the whole of lane L, and it can be counted.
+**166 lines** — `ProcessLayout::compute` (37), `checked_shared_range` (9),
+`KernelScratch` + impl (75), `KernelLent` + impl (35), `write_lent` (10). That
+is what a second host actually pays for this entire lane, and two of those
+items exist only because this lane put them there.
+
+Against that, **3,284 of the TypeScript's 5,689 lines are things a new host
+never writes**: the allocator/leases/retirement in `process-memory.ts`
+(1,038 — `host-native` has none of it, because a browser must bound and
+reclaim `WebAssembly.Memory`/SAB reservations and a wasmtime host just drops
+a `SharedMemory`), `kernel-entry-gate.ts` (1,596 — the borrow checker),
+`worker-protocol.ts` (429 — no workers), and intrinsic capture in
+`kernel-scratch.ts` (221).
+
+**So a single line-count target cannot express this lane, and picking one is
+what went wrong twice.** L1 said "allocation and lease mechanics stay" and
+then projected `process-memory.ts` from 1,337 to ~400, which is only possible
+if they go; 2,900 inherits the same shape in the new unit. Neither was
+reachable without deleting something the census itself said stays. Lane L
+should close against the PAIR — 166 for a new host, measured and
+corpus-checked in both hosts; and the JS host's own surface, which shrinks
+only by auditing the three structural items and is a JS-host improvement
+rather than progress toward a host-independent floor. Detail in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
 **One row of the unit-conversion table above is now stale, and it is not this
 lane's to edit.** It lists `hostKernelPlumbingTypeScript` at 4,734 code lines,
 which was true before this lane's reduction. It is **4,575**, and lane S's own
