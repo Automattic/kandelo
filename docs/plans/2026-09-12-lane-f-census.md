@@ -1917,5 +1917,32 @@ including the two silent ones, the `>=` skip and the null-run-as-slot-0, which
 are the failures that would otherwise surface as a child calling the wrong
 function.
 
+### Planned against the real published archive
+
+`crates/fork-codec/testdata/dylink-archive-wasm32.bin` is real output from the
+TypeScript `DylinkForkArchive` writer, already used by the decoder's own tests.
+The planner is now tested against it, not only against hand-built patches — that
+is what would catch the publisher's run encoding and this reader's expansion
+drifting apart. The test asserts the fixture actually CARRIES patches first,
+because without that the loop over owners would be vacuous and the test would
+pass by asserting nothing.
+
+### A test of mine that could not fail
+
+`the_reached_generation_is_the_highest_applied_not_the_last_seen` did not test
+that. Its out-of-order patch belonged to a DIFFERENT owner, so the owner filter
+removed it before order could matter, and `.last()` passed in place of `.max()`
+against the entire suite. Found by perturbing, not by reading.
+
+Fixed by putting the disordered patch under the SAME owner. Worth recording that
+`plan_table_patches` refuses a disordered chain, so that input cannot reach a
+reconcile — `planned_generation` is public and independently callable, so it is
+made correct by construction rather than by trusting its caller to have checked.
+
+This is the third test this session that could not fail — after the dirty-page
+assertion and the last-wins witness. All three shared one cause: the assertion
+was written from what the implementation does rather than from the property that
+must hold.
+
 **Not yet wired.** The five guest imports stay unserved until the shim and the
 archive address land; this is the half that can be proven without them.

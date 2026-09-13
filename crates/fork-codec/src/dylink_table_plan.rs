@@ -160,6 +160,58 @@ mod tests {
         }
     }
 
+    /// The same archive fixture `dylink_archive.rs` decodes: real output from
+    /// the TypeScript `DylinkForkArchive` writer. Planning against it rather
+    /// than only against hand-built patches is what catches a disagreement
+    /// between the publisher's run encoding and this reader's expansion.
+    const TS_FIXTURE: &[u8] = include_bytes!("../testdata/dylink-archive-wasm32.bin");
+    const FIXTURE_HEAD: u64 = 4096;
+    const FIXTURE_MEMORY_BYTES: usize = 262_144;
+    const FIXTURE_PW: u8 = 4;
+
+    fn fixture_archive() -> crate::dylink_archive::DylinkArchive {
+        let mut mem = TS_FIXTURE.to_vec();
+        mem.resize(FIXTURE_MEMORY_BYTES, 0);
+        crate::dylink_archive::decode_dylink_archive(&mem, FIXTURE_HEAD, FIXTURE_PW).unwrap()
+    }
+
+    #[test]
+    fn plans_against_the_real_published_archive() {
+        let archive = fixture_archive();
+        // Whatever the fixture happens to carry, planning it must be total and
+        // self-consistent: every owner it names plans without error, and
+        // replanning from the generation just reached yields nothing.
+        let owners: alloc::collections::BTreeSet<u32> =
+            archive.table_patches.iter().map(|p| p.owner_id).collect();
+        // Without this the loop below would be VACUOUS on a fixture that
+        // happens to carry no patches, and the test would pass by asserting
+        // nothing.
+        assert!(
+            !owners.is_empty(),
+            "the fixture must carry table patches for this test to mean anything",
+        );
+        for owner in owners {
+            let steps = plan_table_patches(&archive.table_patches, owner, 0)
+                .expect("a published chain plans");
+            let reached = planned_generation(&archive.table_patches, owner, 0);
+            assert!(
+                reached > 0,
+                "owner {owner} has patches, so it reaches a generation",
+            );
+            let again = plan_table_patches(&archive.table_patches, owner, reached)
+                .expect("replan is total");
+            assert!(
+                again.is_empty(),
+                "replanning from the generation just reached must write nothing",
+            );
+            // Every step names a slot inside the table its patch described.
+            assert!(
+                steps.iter().all(|s| s.dest != u32::MAX),
+                "no step names a sentinel slot",
+            );
+        }
+    }
+
     #[test]
     fn a_run_expands_to_consecutive_slots_from_start() {
         let patches = vec![patch(1, 7, 4, 16, vec![run(3, Some((2, 9)))])];
@@ -241,13 +293,32 @@ mod tests {
 
     #[test]
     fn the_reached_generation_is_the_highest_applied_not_the_last_seen() {
-        let patches = vec![
+        // The out-of-order patch must belong to the SAME owner. An earlier
+        // version of this test put it under a different owner, so the filter
+        // removed it before order could matter and `.last()` passed in place of
+        // `.max()` — a test that could not fail.
+        //
+        // `plan_table_patches` refuses a disordered chain, so this input cannot
+        // reach a reconcile. `planned_generation` is public and independently
+        // callable, so it is correct by construction rather than by relying on
+        // its caller having checked first.
+        let disordered = vec![
+            patch(5, 7, 0, 8, vec![run(1, Some((1, 1)))]),
+            patch(1, 7, 1, 8, vec![run(1, Some((1, 2)))]),
+        ];
+        assert_eq!(
+            planned_generation(&disordered, 7, 0),
+            5,
+            "the HIGHEST applicable generation, not whichever came last",
+        );
+
+        let ordered = vec![
             patch(1, 7, 0, 8, vec![run(1, Some((1, 1)))]),
             patch(5, 7, 1, 8, vec![run(1, Some((1, 2)))]),
             patch(3, 9, 2, 8, vec![run(1, Some((1, 3)))]), // another owner
         ];
-        assert_eq!(planned_generation(&patches, 7, 0), 5);
-        assert_eq!(planned_generation(&patches, 7, 5), 5, "nothing to apply");
+        assert_eq!(planned_generation(&ordered, 7, 0), 5);
+        assert_eq!(planned_generation(&ordered, 7, 5), 5, "nothing to apply");
         assert_eq!(planned_generation(&[], 7, 4), 4, "empty chain holds");
     }
 }
