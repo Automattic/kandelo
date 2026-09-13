@@ -997,6 +997,79 @@ mod tests {
     /// PIC linking boilerplate into the fork obligation would both overstate it
     /// and make the number move for reasons unrelated to fork.
     #[test]
+    /// Can a native host answer "are these the same function?"
+    ///
+    /// This is the precondition for `__wpk_fork_host_func_identity`, the import
+    /// that would let the fork module serve `table_mutation_commit` and
+    /// `__wpk_fork_ref_encode_funcref`. Wasm itself cannot: `ref.eq` validates
+    /// only on `eqref` and `funcref` is a disjoint hierarchy (census section 58).
+    /// So the question is whether wasmtime can, since the browser host's WeakMap
+    /// answer says nothing about the native one.
+    ///
+    /// Two things have to hold, and neither is obvious from the types:
+    /// a host function must be able to TAKE a `funcref` parameter at all, and
+    /// two references to the same guest function must be distinguishable from
+    /// references to a different one. `wasmtime::Func` is not `PartialEq`.
+    #[test]
+    fn a_native_host_can_identify_funcrefs() -> wasmtime::Result<()> {
+        let engine = kernel_engine()?;
+        let module = Module::new(
+            &engine,
+            r#"(module
+                (func $a (result i32) (i32.const 1))
+                (func $b (result i32) (i32.const 2))
+                (table (export "t") 3 funcref)
+                (elem (i32.const 0) $a $b $a))"#,
+        )?;
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::Linker::new(&engine);
+        let instance = linker.instantiate(&mut store, &module)?;
+        let table = instance.get_table(&mut store, "t").expect("the table is exported");
+
+        let at = |store: &mut wasmtime::Store<()>, i: u64| -> *mut core::ffi::c_void {
+            let entry = table.get(&mut *store, i).expect("slot is in range");
+            let func = entry.as_func().expect("slot holds a funcref").expect("not null");
+            func.to_raw(&mut *store)
+        };
+
+        // Slots 0 and 2 are the SAME function; slot 1 is a different one. An
+        // identity scheme that answered "same" for everything, or "different"
+        // for everything, would pass one of these assertions and fail the other.
+        let zero = at(&mut store, 0);
+        let one = at(&mut store, 1);
+        let two = at(&mut store, 2);
+        assert_eq!(zero, two, "the same guest function must have one identity");
+        assert_ne!(zero, one, "distinct guest functions must differ");
+
+        // And a host import can take a funcref, which is the other half: without
+        // it the identity is unreachable from wasm no matter how stable it is.
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker.func_wrap(
+            "env",
+            "__wpk_fork_host_func_identity",
+            |mut caller: wasmtime::Caller<'_, ()>, f: Option<wasmtime::Func>| -> i32 {
+                match f {
+                    Some(f) => (f.to_raw(&mut caller) as usize as u32 % 0x7fff_ffff) as i32,
+                    None => 0,
+                }
+            },
+        )?;
+        let caller_module = Module::new(
+            &engine,
+            r#"(module
+                (import "env" "__wpk_fork_host_func_identity"
+                  (func $id (param funcref) (result i32)))
+                (func $x)
+                (elem declare func $x)
+                (func (export "probe") (result i32) (ref.func $x) (call $id)))"#,
+        )?;
+        let caller = linker.instantiate(&mut store, &caller_module)?;
+        let probe = caller.get_typed_func::<(), i32>(&mut store, "probe")?;
+        let id = probe.call(&mut store, ())?;
+        assert_ne!(id, 0, "a real funcref must get a non-zero identity");
+        Ok(())
+    }
+
     /// A guest importing the unwind tag links against the MODULE's tag.
     ///
     /// This is the end-to-end link census section 62 recorded as uncovered:

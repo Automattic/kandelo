@@ -608,7 +608,19 @@ const MEASURED: Record<string, () => number> = {
       .filter((b) => /mode = "4755"/.test(b) && !/install = "eager"/.test(b))
       .length;
   },
-  forkModuleHostDriveEntries: () => forkModuleEntries().hostCalled,
+  // ONE ratchet over the two buckets a reconnection moves entries BETWEEN.
+  //
+  // Splitting host-called from no-production-caller was right when they moved
+  // independently. They stopped: reconnecting the thin layer gives an existing
+  // entry a production caller, so it changes bucket and the two move equal and
+  // opposite. That happened three times, total 46 each time, and each looked
+  // like a raise in isolation. Their SUM only falls when the module absorbs work
+  // or an entry is deleted, which is what this surface is for. The two are still
+  // reported separately below for visibility; neither is ratcheted alone.
+  forkModuleHostEntries: () => {
+    const entries = forkModuleEntries();
+    return entries.hostCalled + entries.noProductionCaller;
+  },
   forkModuleInjectorHelpers: () => forkModuleEntries().injectorOnly,
   forkModuleEntriesWithoutProductionCaller: () =>
     forkModuleEntries().noProductionCaller,

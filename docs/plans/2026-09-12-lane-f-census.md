@@ -3710,3 +3710,51 @@ same judgment calls repeatedly and unilaterally, which is how four accumulated.
 Stopping here is the lane's own rule applied to itself: the maintainer is the
 sole merger, deferrals are the maintainer's call, and a raise taken while they
 are away is meant to be revisitable rather than a precedent.
+
+## §72 — Maintainer decisions, and the one precondition I had to answer first
+
+Four questions answered. Three are settled; one came back as a condition.
+
+**Funcref identity: approved IF the native host can support it.** That was the
+right thing to ask, because §58 only proved WASM cannot compare funcrefs -- the
+browser host's `WeakMap` answer says nothing about wasmtime, and
+`wasmtime::Func` is not `PartialEq`.
+
+Measured rather than argued, in
+`a_native_host_can_identify_funcrefs`. Two things had to hold and neither is
+obvious from the types:
+
+- `Func::to_raw` returns the underlying `VMFuncRef` pointer, and it is STABLE per
+  function: a table with `$a` at slots 0 and 2 and `$b` at slot 1 yields the same
+  pointer for 0 and 2 and a different one for 1. An identity scheme that answered
+  "same" for everything, or "different" for everything, fails one of those two.
+- A wasmtime host import CAN take a `funcref` parameter and receive a real one
+  (`Option<wasmtime::Func>`), which is the other half -- a stable identity is
+  useless if wasm cannot reach it.
+
+Perturbed by making every table slot hold the same function: the
+distinct-functions assertion fails.
+
+One wasm rule surfaced on the way, worth recording because it is not a wasmtime
+limitation: `ref.func $x` requires `$x` to be declared, so the probe module needs
+`(elem declare func $x)`. Without it the module fails to compile with "undeclared
+function reference", which reads like a host defect and is not.
+
+So the answer to the maintainer is YES, and
+`__wpk_fork_host_func_identity` is unblocked.
+
+**The paired ratchet is merged.** `forkModuleHostEntries` ratchets
+host-called + no-production-caller together, ceiling 46, target 5 carried over.
+Both halves stay measured and reported -- the no-caller bucket keeps its target of
+0, because a dead entry is still a defect -- but neither is ratcheted alone, so a
+reconnection moving an entry between them no longer reads as a raise. Two of the
+day's ceiling moves would not have happened under this measure. Lane F's closure
+condition now names the merged surface.
+
+**`forkTypeScript` holds at 419** as the new bank.
+
+**`forkRestoredHostFloor` gets an audit before a target**, not a number I invent:
+the maintainer asked for `fork-externref-import-mailbox` (1165 lines) and
+`fork-worker-import-exceptions` (796) examined specifically, with a report on what
+is genuinely irreducible transport versus what could move to Rust. That is the
+next piece of work.
