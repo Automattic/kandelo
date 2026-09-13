@@ -298,6 +298,19 @@ mod tests {
     }
 
     #[test]
+    fn a_document_must_say_what_it_is_before_anything_else_is_read() {
+        // The identity check refuses a document this builder does not
+        // understand. Without it, a future schema would be validated against
+        // THIS schema's rules and either refused for the wrong reason or — far
+        // worse — accepted because the fields happened to overlap.
+        assert!(check(&document(r#"{"schema":2}"#)).is_err(), "a future schema");
+        assert!(
+            check(&document(r#"{"kind":"kandelo-something-else"}"#)).is_err(),
+            "a document of another kind",
+        );
+    }
+
+    #[test]
     fn a_manifest_path_with_a_backslash_is_refused() {
         // THE DIVERGENCE THIS PORT EXISTS TO END. The TypeScript splits on the
         // backslash, so `a\b` becomes two components and passes. On POSIX that
