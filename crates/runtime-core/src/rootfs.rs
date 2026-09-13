@@ -2052,12 +2052,13 @@ where
                             insert_base_file(
                                 &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
+                            mark_deferred_base(&abs)?;
                             // Deferred REGARDLESS of whether a description came
                             // with it. `KLZY` carries none, so without this the
                             // file is indistinguishable from one the host
                             // walked -- and the export turns that into a
                             // zero-length ordinary file (gap 21).
-                            mark_deferred_base(&abs)?;
+
                             // Retain the fetch description verbatim. Without
                             // it, exporting this file loses the only thing that
                             // says where its bytes are: its inode number here
@@ -7043,6 +7044,67 @@ mod tests {
                 .archive_bytes(3),
             Some(8_000_000),
         );
+    }
+
+    #[test]
+    fn a_klzy_described_lazy_file_survives_a_load_and_re_export() {
+        let _guard = TestGuard::acquire();
+        // GAP 21 through the DOOR a real image comes in by, rather than by
+        // setting the flag this test is about.
+        //
+        // The first version of this test called `mark_deferred_base` directly
+        // and left the LOADER untested: a mutation deleting the loader's call
+        // survived the whole `runtime-core` suite. A test one layer past the
+        // wiring proves the behaviour and not the wiring, which is H-21 and is
+        // the third time this change produced it.
+        //
+        // The image is built HERE rather than with `url_backed_image`, and the
+        // difference is the whole test: that helper writes the URL into the
+        // body's deferred record as well, so the loaded file has a description
+        // and is deferred by its PAYLOAD. Using it, the mutation deleting the
+        // loader's mark survived.
+        //
+        // A real `KLZY`-described image has no such payload to fall back on:
+        // `KLZY` has no field for a URL, and the host-side JSON that carries it
+        // is not something the kernel reads. So the body's record here carries
+        // an EMPTY description, which is the exact condition gap 21 flattened.
+        let image = {
+            let mut w = crate::sffs_write::SffsWriter::mkfs(
+                crate::sffs_write::SffsConfig::fixed(256 * 1024),
+            )
+            .expect("mkfs");
+            let root = w.root();
+            let ino = w
+                .create_deferred_file(root, b"big.bin", 0o644, 45_000, 0, b"", b"")
+                .expect("deferred, description unknown");
+            let body = w
+                .finish()
+                .expect("finish")
+                .to_vec(&crate::sffs_write::NoContent)
+                .expect("materialize");
+            let klzy = klzy_section(&[], &[(ino, 45_000, 0, "")]);
+            let sections = crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(&klzy),
+            };
+            crate::sffs_container::wrap(&body, &sections).expect("wrap")
+        };
+        assert!(load_image(image.len() as u64, image_host(&image)).is_ok(), "load it");
+
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        let section = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the re-export describes its deferred files");
+        let record = section
+            .records
+            .iter()
+            .find(|r| r.size == 45_000)
+            .expect("the file is still deferred, at the size it really is");
+        assert_eq!(record.archive_id, 0, "still fetched standalone");
     }
 
     #[test]
