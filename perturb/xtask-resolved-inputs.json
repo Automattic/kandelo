@@ -115,6 +115,41 @@
       "scope_end": "\n}\n",
       "find": "    validate_sha256(&input.sha256)?;",
       "replace": "    let _ = &input.sha256;"
+    },
+    {
+      "name": "a reference need not bind any digest",
+      "scope": "fn validate_reference_binds_digest(",
+      "scope_end": "\n}\n",
+      "find": "    if !reference.contains(&format!(\"sha256:{digest}\"))\n        && !reference.contains(&format!(\"sha256={digest}\"))\n    {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "a reference may bind any digest, not this input's",
+      "scope": "fn validate_reference_binds_digest(",
+      "scope_end": "\n}\n",
+      "find": "    if !reference.contains(&format!(\"sha256:{digest}\"))\n        && !reference.contains(&format!(\"sha256={digest}\"))",
+      "replace": "    if !reference.contains(\"sha256:\") && !reference.contains(\"sha256=\")"
+    },
+    {
+      "name": "a reference may carry whitespace",
+      "scope": "fn validate_reference_binds_digest(",
+      "scope_end": "\n}\n",
+      "find": "    if reference.chars().any(char::is_whitespace) {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "a reference is unbounded in length",
+      "scope": "fn validate_reference_binds_digest(",
+      "scope_end": "\n}\n",
+      "find": "    if reference.len() > 4_096 {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "an input's reference is never checked",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "    if let Some(reference) = &input.reference {",
+      "replace": "    if false {"
     }
   ]
 }

@@ -74,9 +74,10 @@ pub struct ResolvedInputV1 {
     //
     // `bytes` is read by the reference check — a reference names a digest AND a
     // length, and a length nothing compares against is a length that can lie.
-    // `descriptor`, `path` and `reference` carry URL and OCI-reference parsing
-    // and local-file resolution. All four are the remainder of this port, and
-    // this `allow` is removed by the increment that reads them.
+    // `descriptor` and `path` carry OCI-reference parsing and local-file
+    // resolution. Both are the remainder of this port, and this `allow` is
+    // removed by the increment that reads them. `reference` is no longer among
+    // them: every reference must bind its digest, whatever its scheme.
     #[allow(dead_code)]
     pub bytes: u64,
     #[serde(default)]
@@ -86,7 +87,6 @@ pub struct ResolvedInputV1 {
     #[allow(dead_code)]
     pub path: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub reference: Option<String>,
 }
 
@@ -285,6 +285,46 @@ fn validate_input(
     }
 
     validate_sha256(&input.sha256)?;
+    if let Some(reference) = &input.reference {
+        validate_reference_binds_digest(reference, &input.sha256, label)?;
+    }
+    Ok(())
+}
+
+/// A reference must name the bytes it refers to, and name them immutably.
+///
+/// This is the rule applied to EVERY reference before any scheme-specific one:
+/// whatever the transport, the reference has to carry the digest of the thing
+/// it points at, either as `sha256:<digest>` or `sha256=<digest>`. A reference
+/// that does not is a reference to "whatever is at this address today", and the
+/// whole point of an exact-source build is that the answer cannot change
+/// between the resolve and the build.
+///
+/// Whitespace is refused rather than trimmed. A reference is handed to a
+/// fetcher, and a space in a URL is either a typo or an attempt to make two
+/// readers disagree about where it points.
+///
+/// The scheme-specific rules — the Pages URL shapes, the OCI form, the
+/// local-fixture form, each binding the input id, the byte count and the ABI
+/// version as well — are the remainder of this port.
+fn validate_reference_binds_digest(
+    reference: &str,
+    digest: &str,
+    label: &str,
+) -> Result<(), String> {
+    if reference.len() > 4_096 {
+        return Err(format!("{label} reference exceeds 4096 bytes"));
+    }
+    if reference.chars().any(char::is_whitespace) {
+        return Err(format!("{label} reference contains whitespace"));
+    }
+    if !reference.contains(&format!("sha256:{digest}"))
+        && !reference.contains(&format!("sha256={digest}"))
+    {
+        return Err(format!(
+            "{label} reference is not immutable or does not bind its SHA-256"
+        ));
+    }
     Ok(())
 }
 
@@ -538,6 +578,46 @@ mod tests {
             }));
             assert!(check(&value).is_err(), "{role}/{declared}/{effective} must be refused");
         }
+    }
+
+    #[test]
+    fn a_reference_must_bind_the_digest_of_what_it_points_at() {
+        let digest = "a".repeat(64);
+
+        // Both spellings, because both are in use: a path segment and a query
+        // parameter bind the same way.
+        for good in [
+            format!("oci://example.invalid/thing@sha256:{digest}"),
+            format!("https://example.invalid/thing.vfs?sha256={digest}&bytes=12"),
+        ] {
+            let value = with_input(serde_json::json!({ "reference": good }));
+            check(&value).unwrap_or_else(|e| panic!("{good}: {e}"));
+        }
+
+        // A reference to "whatever is at this address today" is the thing an
+        // exact-source build exists to make impossible.
+        let value = with_input(serde_json::json!({
+            "reference": "https://example.invalid/latest.vfs",
+        }));
+        assert!(check(&value).is_err(), "no digest at all");
+
+        // A digest that is not THIS input's digest binds someone else's bytes.
+        let value = with_input(serde_json::json!({
+            "reference": format!("oci://example.invalid/thing@sha256:{}", "b".repeat(64)),
+        }));
+        assert!(check(&value).is_err(), "another input's digest");
+
+        // Whitespace is refused rather than trimmed: in a URL it is either a
+        // typo or an attempt to make two readers disagree about the target.
+        let value = with_input(serde_json::json!({
+            "reference": format!("oci://example.invalid/thing @sha256:{digest}"),
+        }));
+        assert!(check(&value).is_err(), "embedded whitespace");
+
+        let value = with_input(serde_json::json!({
+            "reference": format!("{}#sha256:{digest}", "x".repeat(4_097)),
+        }));
+        assert!(check(&value).is_err(), "beyond the length bound");
     }
 
     #[test]
