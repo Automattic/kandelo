@@ -3700,6 +3700,43 @@ and a cycle refused rather than followed forever. The images typecheck is back
 to its 9 pre-existing errors, none in a file this touched, two of them in the
 supply-chain port targets.
 
+### One of the five methods dissolves, and two collide with the entry-point budget
+
+**Studied 2026-09-13, before writing any of them.**
+
+**`rebaseToNewFileSystem` should not be ported. It should disappear.** Its own
+doc says what it is: *"Copy this filesystem into a freshly formatted SharedFS
+whose superblock records `maxByteLength` as its growth ceiling."* It exists
+because `MemoryFileSystem` bakes its ceiling in at construction, so the only way
+to change a declared capacity is to copy the whole filesystem. All three callers
+do the identical dance — read `statfs`, compute `blocks * bsize`, compare,
+rebase — and `build-php-test` rebases only when the base is SMALLER than wanted.
+
+**That is exactly `setImageCapacity`'s floor semantics**, which raise a ceiling
+and never shrink one. The Rust export computes its ceiling at export time rather
+than at construction, so there is nothing to rebase: the three call sites become
+one call and no copy. Gap 14 did not merely unblock the capacity assertion — it
+removed a whole-filesystem copy from three product builds.
+
+**Two of the remaining four want a read-back path the module does not have**,
+and that is where the next real decision sits:
+
+* **`getImageMetadata`** (6 call sites) reads back what `setImageMetadata`
+  stored. For a LOADED image that metadata comes from the image, so the bridge
+  cannot answer it from anything it kept — it needs the module to say.
+* **`exportLazyArchiveEntries`** (4 call sites) enumerates deferred entries and
+  their URLs. In SDEF terms those URLs are the PAYLOADS, which the kernel holds
+  and no entry point exposes.
+
+**The budget refused a 21st entry point once already** (capacity, which became
+the fifth field of the headroom record). The same answer may not fit twice, and
+inventing a get-or-set entry point to dodge the count would be the count
+gaming the design rather than constraining it. **Named here as a decision to
+make deliberately when reached, not to slide past.**
+
+`registerLazyArchiveFromEntries` (1 call site) is the bulk form of the bridge's
+existing `registerArchiveMember` and needs no new capability.
+
 ### The seal check is ten methods, and nine of them exist because the digest was async
 
 **Measured 2026-09-12, after the maintainer assigned the port to this lane, and
