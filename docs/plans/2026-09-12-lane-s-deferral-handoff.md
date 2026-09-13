@@ -288,10 +288,70 @@ S2's blocker, verified rather than assumed:
   inspects. **It has no production caller yet.** Giving it one is V5, which
   lane Y gates.
 
-**So lane S resumes when SDEF has a production caller**, and its increments
-then become: put the digest in the SDEF payload, verify in the kernel, and
-demote set-ID in the Rust filesystem. The producer half above is a prerequisite
-either way and can land with it.
+**So lane S resumes when SDEF has a production caller.** But "a production
+caller" understates the ask. Four things are needed, and the first two are
+design decisions for V5 rather than work lane S can do inside it.
+
+### 1. The digest cannot stay inside the opaque payload
+
+`DeferredRecord` is `{ ino: u32, size: u64, payload: Vec<u8> }`, and
+`sffs_deferred.rs`'s own header is explicit that the payload — *"fetch URL,
+transport, integrity digest, activation mode, atomic-group seal"* — is **never
+inspected here. The kernel is a courier.** That opacity is deliberate: an image
+can arrive from a shared link, so the less structure the parser understands the
+less there is to get wrong.
+
+Lane S's whole point is that **the kernel** verifies, which is what makes a
+substituting host detectable rather than trusted. So the kernel has to read the
+digest, and that is the first thing to make it inspect part of what SDEF calls
+opaque. V5 has to choose:
+
+- **promote the digest to a typed field** on `DeferredRecord` — 32 bytes plus a
+  presence bit, the rest of the payload staying opaque; or
+- **leave it in the payload**, which means whoever parses the payload verifies
+  — the host. That is the shape that was just rejected.
+
+Space is not the constraint (`MAX_PAYLOAD_LEN` is 64 KiB). The contract is.
+
+### 2. A whole-file sha256 does not compose with a positioned read
+
+`host_fetch_deferred(kind, id_lo, id_hi, buf_ptr, buf_len, offset_lo,
+offset_hi)` is a **positioned read** — `crates/kernel/src/wasm_api.rs`. The
+kernel asks for ranges, not files. A single whole-file digest can only be
+checked once every byte is in hand, so verification needs either the kernel
+buffering the whole file before serving byte 0, or a **chunked digest** so each
+block verifies on its own.
+
+**Measured, because it decides which is reasonable:** deferred files are small.
+`rootfs.vfs` has 65 of them, 25.1 MiB in total, largest **4.3 MiB**, median
+0.1 MiB. `shell.vfs.zst` has 79, 62.0 MiB in total, largest **9.9 MiB**, three
+over 8 MiB, none over 32 MiB. So whole-file buffering costs ~10 MiB transient
+in the worst case today, and **that is the cheaper answer than inventing a
+Merkle layout** — but it is V5's call, because it changes what the record
+carries and what the first read costs.
+
+### 3. A sha256 in the kernel
+
+There is none in `crates/kernel`, `crates/runtime-core` or `crates/shared`
+today. `sha2` is already in `Cargo.lock` as a transitive dependency, so this is
+a dependency decision rather than a vendoring project — `no_std` and wasm
+suitability are what to check.
+
+### 4. A home for the producer half in the Rust writer
+
+`SffsWriter::create_deferred_file(parent, name, mode, size, payload)` is where
+the digest gets recorded. The production writer is still the TypeScript
+`saveImage`; V5's cutover is what makes this path real. The emitter and
+manifest work described above is host-independent and lands with it.
+
+### What does NOT depend on V5's read path
+
+**The set-ID half needs only decision 1.** "A deferred file does not keep its
+set-ID bits unless its record carries a digest" is answered wherever the Rust
+filesystem answers `stat` and exec credentials — it needs the digest's
+*presence* to be visible in the record, not the verification, the positioned
+read, or the hash. If decision 1 lands early, that half can go with the
+filesystem work rather than waiting for the rest.
 
 ## Acceptance evidence when it resumes
 
