@@ -1958,6 +1958,31 @@ mod tests {
         assert_eq!(unsafe { sm_load_image(0, 16) }, -(Errno::EINVAL as i32));
         assert!(image_bytes().is_none());
         unsafe { sm_free(ptr, 16) };
+
+        // The return code is not what the guard is for. A zero-length range
+        // would fail the load anyway -- there is no container in no bytes --
+        // so refusing it early changes no answer. What it changes is that the
+        // refusal happens BEFORE `release_image`, so a malformed call cannot
+        // destroy the image already loaded. Without that, any caller that
+        // passed a truncated buffer would silently empty the base layer and
+        // then get an error that says nothing about what it cost.
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        sm_reset();
+        assert!(load_image_bytes(&image) > 0);
+        let loaded = image_bytes().expect("loaded").as_ptr() as usize;
+
+        let ptr = sm_alloc(16);
+        assert_eq!(unsafe { sm_load_image(ptr, 0) }, -(Errno::EINVAL as i32));
+        assert_eq!(
+            image_bytes().expect("still loaded").as_ptr() as usize,
+            loaded,
+            "a refused load left the loaded image alone",
+        );
+        unsafe { sm_free(ptr, 16) };
     }
 
     #[test]
