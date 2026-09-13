@@ -2163,6 +2163,38 @@ mod tests {
     }
 
     #[test]
+    fn reset_gives_the_root_the_ownership_and_mode_it_was_handed() {
+        // A surviving mutant: `sm_reset` took a root mode, uid and gid, and
+        // nothing asserted that any of the three reached the inode. Every test
+        // passed 0o755 and then looked at some OTHER path's mode, so a reset
+        // that hardcoded its root would have gone unnoticed -- and a root with
+        // the wrong mode is a permission boundary silently in the wrong place
+        // at the top of every image built afterwards.
+        //
+        // Reachable only since the fold: creating the root used to be
+        // `sm_init_root`'s job, and this is the coverage that did not move
+        // across with it.
+        assert_eq!(sm_reset(0o751, 7, 11), 0);
+
+        let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
+        let buf = sm_alloc(size);
+        let (pp, pl) = write_path(b"/");
+        assert_eq!(unsafe { sm_lstat(pp, pl, buf, size) }, 0);
+        let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+        let field = |i: usize| {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+            u64::from_le_bytes(w)
+        };
+        assert_eq!(field(1) & 0o7777, 0o751, "the root carries the mode given");
+        assert_eq!(field(1) & 0o170000, 0o040000, "and is a directory");
+        assert_eq!(field(3), 7, "and the uid");
+        assert_eq!(field(4), 11, "and the gid");
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(buf, size) };
+    }
+
+    #[test]
     fn a_small_request_cannot_cost_a_tree_the_inodes_it_needs() {
         // The convergence loop already re-raises the ceiling to whatever the
         // DATA needs, so a tiny tree cannot tell a floor from a replacement.

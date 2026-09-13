@@ -267,6 +267,13 @@
       "scope_end": "\n}\n",
       "find": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, uid, gid, 1))",
       "replace": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", 0o700, uid, gid, 1))"
+    },
+    {
+      "name": "reset ignores the root owner it was given",
+      "scope": "pub extern \"C\" fn sm_reset(",
+      "scope_end": "\n}\n",
+      "find": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, uid, gid, 1))",
+      "replace": "    let _ = (uid, gid);\n    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, 0, 0, 1))"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
