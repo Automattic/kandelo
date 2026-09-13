@@ -69,6 +69,21 @@ const DRIVE_TABLE_IMPORT: &str = "__wpk_fork_drive_table";
 /// `fm_drive_execute` shim. MUST match the `#[link(wasm_import_module = "env")]`
 /// `extern` name in `crates/fork-module/src/lib.rs`.
 const DRIVE_PLAN_THUNK_IMPORT: &str = "__wpk_fork_drive_plan";
+
+/// The CAPTURE-side placeholder (F3 step 2). Rust declares it as an `env`
+/// import and this tool rewrites it into a local thunk, so the emitted module
+/// carries no unresolved import and a host supplies nothing new — the same
+/// arrangement `DRIVE_PLAN_THUNK_IMPORT` uses.
+const CAPTURE_WITNESS_THUNK_IMPORT: &str = "__wpk_fork_capture_witness";
+/// Drive-table slot the host binds the guest's `__wpk_fork_ref_gc_encode_slot`
+/// into. MUST equal `fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE`; the
+/// injector cannot link fork-codec, so the constant is duplicated and pinned by
+/// a test rather than left to drift.
+const DRIVE_SLOT_GC_ENCODE: i32 = 11;
+/// MUST equal `fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION`.
+const DRIVE_SLOTS_PER_ACTIVATION: i32 = 12;
+/// The anyref transit slot a capture encode reads its value from.
+const CAPTURE_TRANSIT_SLOT: i32 = 0;
 /// The injected loop export the host calls to run a serialized plan.
 const DRIVE_EXECUTE_EXPORT: &str = "fm_drive_execute";
 /// The Rust drive-step proof-of-use counter the injected shim `call`s once per
@@ -965,6 +980,8 @@ fn main() -> Result<()> {
     inject_unwind_tag(&mut module).context("injecting __wpk_fork_unwind")?;
     inject_gc_provenance_ref(&mut module)
         .context("injecting __wpk_fork_ref_gc_provenance_ref")?;
+    inject_capture_witness_thunk(&mut module)
+        .context("rewriting __wpk_fork_capture_witness into a thunk")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1231,6 +1248,72 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
 /// The guest ABI returns nothing, so a rejected slot is latched in
 /// `fm_last_errno` and surfaces at `__wpk_fork_ref_gc_provenance_end`, which
 /// refuses a transaction whose stores did not match the declared count.
+/// Rewrite the `__wpk_fork_capture_witness(activation, witness_slot)`
+/// placeholder into a local thunk that encodes a constructor-provenance witness
+/// through the guest's own codec.
+///
+/// Three operations, straight-line — no loop, because interning one witness is
+/// one encode:
+///
+/// ```text
+///   transit[0] = witness_table[witness_slot]
+///   call_indirect drive_table[activation * SLOTS + DRIVE_SLOT_GC_ENCODE] (0)
+/// ```
+///
+/// This is the first CAPTURE use of the drive table; every other slot drives
+/// replay. The guest's `__wpk_fork_ref_gc_encode_slot` takes the transit slot
+/// and returns the recipe id, so the module gets a recipe for a reference it
+/// could never encode itself.
+///
+/// MUST run after `inject_gc_provenance_ref`, which creates the witness table.
+fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != CAPTURE_WITNESS_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+
+    let witness_table = exported_table(module, PROVENANCE_WITNESS_TABLE)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
+    let encode_ty = module
+        .types
+        .add(&[ValType::I32], &[ValType::I32]);
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let activation = args[0];
+            let witness_slot = args[1];
+            // transit[0] = witness_table[witness_slot]
+            body.i32_const(CAPTURE_TRANSIT_SLOT)
+                .local_get(witness_slot)
+                .table_get(witness_table)
+                .table_set(transit_table);
+            // the guest codec's argument: which transit slot to encode
+            body.i32_const(CAPTURE_TRANSIT_SLOT);
+            // drive_table index = activation * SLOTS + DRIVE_SLOT_GC_ENCODE
+            body.local_get(activation)
+                .i32_const(DRIVE_SLOTS_PER_ACTIVATION)
+                .binop(BinaryOp::I32Mul)
+                .i32_const(DRIVE_SLOT_GC_ENCODE)
+                .binop(BinaryOp::I32Add);
+            body.instr(CallIndirect {
+                ty: encode_ty,
+                table: drive_table,
+            });
+        })
+        .with_context(|| format!("rewriting {CAPTURE_WITNESS_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
 fn inject_gc_provenance_ref(module: &mut Module) -> Result<()> {
     if module
         .exports
@@ -1354,6 +1437,27 @@ fn inject_unwind_tag(module: &mut Module) -> Result<()> {
 }
 
 /// Resolve an exported table by name.
+/// Resolve an IMPORTED table by name.
+///
+/// The drive table is created by an earlier pass with `add_import_table`, whose
+/// id is local to that pass. A later pass that needs it must look it up rather
+/// than thread the id through, and failing loud here beats emitting a
+/// `call_indirect` against the wrong table.
+fn imported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
+    module
+        .imports
+        .iter()
+        .find_map(|import| match import.kind {
+            walrus::ImportKind::Table(id)
+                if import.module == IMPORT_MODULE && import.name == name =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("module does not import table {name}"))
+}
+
 fn exported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
     let export = module
         .exports

@@ -2273,3 +2273,66 @@ rather than during unwind, which keeps it clear of `fm_parent_seal_capture`'s
 window — but that separation is an assumption to verify, not to rely on.
 
 Designed, not started.
+
+## §41 — F3 step 2 LANDED: the module drives the guest to capture
+
+`__wpk_fork_ref_gc_define` is served, and with it the first capture-side use of
+the drive table. Every other slot drives replay; slot 11 drives the guest's own
+codec to ENCODE.
+
+The shim is three operations, straight-line:
+
+```
+transit[0] = witness_table[witness_slot]
+call_indirect drive_table[activation * 12 + DRIVE_SLOT_GC_ENCODE] (0)
+```
+
+so the module obtains a recipe for a reference Rust can neither hold nor
+describe. Witness recipes are cached per slot, because a witness is shared by
+EVERY object of its layout: a thousand objects reference one recipe rather than
+interning the same reference a thousand times.
+
+This closes §24 and §26. The witnesses were recorded but unreadable; they are
+now interned and become `define_gc`'s provenance edges, which is what §21 said
+gc_define must not be served without.
+
+### What did NOT move
+
+`forkModuleHostImports` stays at 5 and the module still declares 10 imports.
+The placeholder-import pattern is why: Rust declares
+`env.__wpk_fork_capture_witness`, the injector rewrites that import into a local
+thunk, and the emitted module carries no unresolved import. No `fm_*` counter
+moved either, so no target-0 ceiling rose — the design constraint §40 set for
+itself.
+
+**The host-obligation gate proved it, by firing first.** With the Rust landed
+and the injector pass not yet written, `fork_module_host_obligation_is_pinned`
+failed naming the exact new import: `functions=["__wpk_fork_capture_witness",
+"__wpk_fork_host_ref_identity", "resolve_externref"]`. That gate was written
+earlier this session precisely for a change like this, and it caught the
+intermediate state rather than letting an unresolved import reach a host.
+
+### How the cache is proven rather than asserted
+
+The harness binds a real wasm stub at the drive slot — the JS API refuses a
+plain JS function in an `anyfunc` table — which counts its calls in an exported
+global. Defining one object drives it exactly once. Then the drive slot is
+CLEARED and a second object of the same layout is defined: it succeeds, and the
+call count does not move. A cache miss there would `call_indirect` a null entry
+and trap, so the test cannot pass by accident.
+
+Perturbations, and two of them trap rather than assert:
+
+* not caching the recipe -> `RuntimeError: null function or function signature
+  mismatch`, because the second define re-encodes through a cleared slot
+* passing no provenance edges -> "the module drove the guest codec exactly once"
+  fails
+* pointing the injector at drive slot 10 -> the same trap, since slot 10 is
+  `UNWIND_BEGIN` and unbound here
+
+### Duplicated constant, pinned not trusted
+
+`fork-module-inject` cannot link `fork-codec`, so `DRIVE_SLOT_GC_ENCODE` and
+`DRIVE_SLOTS_PER_ACTIVATION` are duplicated there. Both carry a comment saying
+which constant they must equal, and the wrong-slot perturbation above is what
+would catch drift. A better fix would be generating them; that is not done.

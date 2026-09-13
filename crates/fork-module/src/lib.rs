@@ -192,6 +192,26 @@ mod wasm {
         /// Drive a serialized drive plan of `count` steps at guest address
         /// `plan`. Injector-rewritten to forward to the `fm_drive_execute` shim.
         fn __wpk_fork_drive_plan(plan: usize, count: u32);
+
+        /// Encode the constructor-provenance witness at `witness_slot` for
+        /// `activation`, returning its recipe id. Injector-rewritten to a
+        /// `call_indirect` through the drive table (F3 step 2).
+        fn __wpk_fork_capture_witness(activation: u32, witness_slot: u32) -> i32;
+    }
+
+    /// Safe wrapper over the injector-wired capture placeholder.
+    ///
+    /// Encodes the witness at `witness_slot` and returns its recipe id, or a
+    /// negative value on failure. Injector-rewritten into a local thunk, so the
+    /// emitted module carries no unresolved import for it and the host supplies
+    /// nothing new -- the same arrangement `__wpk_fork_drive_plan` uses.
+    fn capture_witness_via_injector(activation: u32, witness_slot: u32) -> i32 {
+        // SAFETY: after injection this is a local thunk that copies
+        // `witness_table[witness_slot]` into anyref transit slot 0 and
+        // `call_indirect`s the guest's `__wpk_fork_ref_gc_encode_slot` through
+        // `drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE]`. Both tables and
+        // the drive slot are module-known; the guest export owns its own failure.
+        unsafe { __wpk_fork_capture_witness(activation, witness_slot) }
     }
 
     /// Safe wrapper over the injector-wired drive placeholder. Isolated so the
@@ -5432,6 +5452,118 @@ mod wasm {
         -1
     }
 
+    /// Intern every witness this layout recorded, newest-first ordinal order,
+    /// returning their recipe ids.
+    ///
+    /// Lazy and cached: a witness is shared by EVERY object of its layout, so
+    /// the encode happens once and a thousand objects reference one recipe.
+    ///
+    /// An empty result is the ordinary case — a layout with no mutable non-null
+    /// internal reference field records no witness — and is NOT an error.
+    fn intern_layout_witnesses(activation: u32, layout: u32) -> Result<Vec<u32>, Errno> {
+        if layout > 0x00ff_ffff {
+            return Err(Errno::E2BIG);
+        }
+        let mut ids = Vec::new();
+        for ordinal in 0u32..=0xff {
+            let key = (layout << 8) | ordinal;
+            let slot = {
+                let w = witness();
+                match w.keys.iter().position(|k| *k == key) {
+                    Some(slot) if w.occupied[slot] => slot,
+                    // Ordinals are dense from 0, so the first gap ends the list.
+                    _ => break,
+                }
+            };
+            let cached = witness().recipes[slot];
+            if cached != 0 {
+                ids.push(cached);
+                continue;
+            }
+            let recipe = capture_witness_via_injector(activation, slot as u32);
+            if recipe <= 0 {
+                // 0 is the canonical NULL recipe, which a witness can never be:
+                // it was stored from a live constructor argument. Treat it as
+                // failure rather than silently seeding a child with null.
+                return Err(Errno::EINVAL);
+            }
+            witness().recipes[slot] = recipe as u32;
+            ids.push(recipe as u32);
+        }
+        Ok(ids)
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_define(...)`.
+    ///
+    /// Completes a claimed GC placeholder into its final aggregate recipe, and
+    /// is where constructor provenance finally becomes readable: the witnesses
+    /// recorded at `__wpk_fork_ref_gc_provenance_ref` are interned here, through
+    /// the injected capture shim, and their recipe ids become this node's
+    /// provenance edges.
+    ///
+    /// §21 established this export must not be served WITHOUT that: serving it
+    /// alone would pass `has_provenance = 0` for every object and bake in
+    /// "provenance is always absent", which is true today only because nothing
+    /// interned the witnesses.
+    ///
+    /// The guest ABI returns nothing, so a failure latches in `fm_last_errno`
+    /// and the claimed-but-undefined placeholder it leaves is what
+    /// `fm_capture_validate` refuses to seal.
+    #[allow(clippy::too_many_arguments)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_define(
+        recipe_id: u32,
+        activation: u32,
+        type_ordinal: u32,
+        layout_id: u32,
+        kind: u32,
+        scalar_ptr: usize,
+        scalar_len: u32,
+        reference_vector_ordinal: u32,
+    ) {
+        let kind_enum = match kind {
+            CAPTURE_KIND_STRUCT => AggregateKind::Struct,
+            CAPTURE_KIND_ARRAY => AggregateKind::Array,
+            _ => {
+                set_err(Errno::EINVAL);
+                return;
+            }
+        };
+        let assembled = (|| -> Result<(), Errno> {
+            let scalars = read_capture_bytes(scalar_ptr, scalar_len as usize)?;
+            let prov_ids = intern_layout_witnesses(activation, layout_id)?;
+            let g = capture_builder()?;
+            // Edges are provenance ids first, then the interned field vector —
+            // the order `gc_allocation_dependencies` reads, where the leading
+            // `provenance_reference_count` entries are the allocation deps.
+            let field_vector = g
+                .vectors()
+                .get(reference_vector_ordinal as usize)
+                .ok_or(Errno::EINVAL)?
+                .clone();
+            let mut edges = prov_ids.clone();
+            edges.extend_from_slice(&field_vector);
+            let provenance = if prov_ids.is_empty() {
+                None
+            } else {
+                Some(GcProvenance {
+                    reference_ids: prov_ids,
+                })
+            };
+            g.define_gc(
+                recipe_id,
+                activation,
+                type_ordinal,
+                layout_id,
+                kind_enum,
+                &scalars,
+                &edges,
+                provenance,
+            )
+        })();
+        capture_ok_void(assembled);
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_exn_lookup(slot) -> recipe`.
     ///
     /// Always reports NOT FOUND, so every catch takes a fresh recipe. That is a
@@ -5614,11 +5746,18 @@ mod wasm {
         keys: [u32; WITNESS_SLOTS],
         /// Set once a slot has actually been written by the shim.
         occupied: [bool; WITNESS_SLOTS],
+        /// Recipe id this witness encoded to, or 0 before it is interned.
+        ///
+        /// Cached because a witness is shared by EVERY object of its layout: a
+        /// thousand objects must reference one witness recipe, not intern the
+        /// same reference a thousand times.
+        recipes: [u32; WITNESS_SLOTS],
     }
 
     static WITNESS: WitnessCell = WitnessCell(UnsafeCell::new(WitnessState {
         keys: [u32::MAX; WITNESS_SLOTS],
         occupied: [false; WITNESS_SLOTS],
+        recipes: [0u32; WITNESS_SLOTS],
     }));
 
     #[allow(clippy::mut_from_ref)]

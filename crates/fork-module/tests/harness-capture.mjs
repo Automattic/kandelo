@@ -1072,4 +1072,93 @@ function i31Minter() {
   );
 }
 
+// ============================================================================
+// F3 step 2: the module drives the GUEST to encode, through the drive table.
+//
+// Every other drive-table slot is replay — the module driving the guest to
+// rebuild a graph. Slot 11 is the first CAPTURE use: the module stages a
+// constructor-provenance witness in the anyref transit slot and calls the
+// guest's own codec to encode it, getting back a recipe for a reference Rust
+// can neither hold nor describe.
+//
+// The guest codec is stubbed here by a real wasm function (the JS API refuses a
+// plain JS function in an `anyfunc` table), which also counts its calls — that
+// is how the witness CACHE is proven, not assumed.
+// ============================================================================
+{
+  const ACT = 0; // drive base = ACT * 12 = 0
+  const DRIVE_SLOT_GC_ENCODE = 11;
+
+  // `(func (export "encode") (param i32) (result i32))` that bumps an exported
+  // global and returns recipe 1. Assembled with wasm-tools; bytes inlined so the
+  // harness needs no build step.
+  const stubBytes = new Uint8Array([
+    0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,3,2,1,0,6,6,1,127,1,65,0,11,7,18,
+    2,5,99,97,108,108,115,3,0,6,101,110,99,111,100,101,0,0,10,13,1,11,0,35,0,65,
+    1,106,36,0,65,1,11,0,15,4,110,97,109,101,7,8,1,0,5,99,97,108,108,115,
+  ]);
+  const stub = new WebAssembly.Instance(new WebAssembly.Module(stubBytes), {});
+  const encodeCalls = () => stub.exports.calls.value;
+
+  const transitTable = x.__wpk_fork_ref_gc_transit;
+  const driveTable = importObject.env.__wpk_fork_drive_table;
+  driveTable.grow(ACT * 12 + DRIVE_SLOT_GC_ENCODE + 1 - driveTable.length);
+  driveTable.set(ACT * 12 + DRIVE_SLOT_GC_ENCODE, stub.exports.encode);
+
+  x.fm_capture_begin();
+  // Recipe 1: what the stub codec will claim every witness encodes to, so the
+  // provenance edge names a node that exists.
+  assert.equal(x.fm_capture_intern(K_I31, 5, 0), 1, "witness stand-in is recipe 1");
+
+  // Record a witness for layout 21, ordinal 0, exactly as a constructor wrapper
+  // would: begin, stage the seed in transit, ref, end.
+  const LAYOUT = 21;
+  const token = x.__wpk_fork_ref_gc_provenance_begin(0, ACT, 0, LAYOUT, 0n, 0n, 1);
+  assert.ok(token >= 0, `provenance_begin errno=${lastErrno()}`);
+  transitTable.set(0, 123);
+  x.__wpk_fork_ref_gc_provenance_ref(token, 0, 0);
+  assert.equal(lastErrno(), 0, "witness stored");
+  transitTable.set(0, null);
+  x.__wpk_fork_ref_gc_provenance_end(token);
+  assert.equal(lastErrno(), 0, "provenance transaction closed");
+
+  const before = encodeCalls();
+  const node = x.fm_capture_claim_gc();
+  const fields = buildVector([1]);
+  writeBytes(SCRATCH_BASE + 768, [0xaa, 0xbb, 0xcc, 0xdd]);
+  x.__wpk_fork_ref_gc_define(
+    node, ACT, 2, LAYOUT, KIND_STRUCT, SCRATCH_BASE + 768, 4, fields,
+  );
+  assert.equal(lastErrno(), 0, `gc_define errno=${lastErrno()}`);
+  assert.equal(
+    encodeCalls() - before,
+    1,
+    "the module drove the guest codec exactly once to intern the witness",
+  );
+  assert.equal(x.fm_capture_validate(), 0, `graph validates errno=${lastErrno()}`);
+
+  // The witness is CACHED: a second object of the same layout reuses the recipe
+  // rather than re-encoding. Proven by clearing the drive slot first -- a
+  // re-encode would now call a null table entry and trap.
+  driveTable.set(ACT * 12 + DRIVE_SLOT_GC_ENCODE, null);
+  const second = x.fm_capture_claim_gc();
+  const fields2 = buildVector([1]);
+  x.__wpk_fork_ref_gc_define(
+    second, ACT, 2, LAYOUT, KIND_STRUCT, SCRATCH_BASE + 768, 4, fields2,
+  );
+  assert.equal(lastErrno(), 0, "a second object of the layout reuses the witness recipe");
+  assert.equal(encodeCalls() - before, 1, "and does NOT drive the codec again");
+  assert.equal(x.fm_capture_validate(), 0, "the graph still validates");
+
+  // A layout that recorded no witness needs no encode at all, which is the
+  // ordinary case: most layouts have no mutable non-null internal field.
+  const plain = x.fm_capture_claim_gc();
+  const fields3 = buildVector([1]);
+  x.__wpk_fork_ref_gc_define(
+    plain, ACT, 2, 99, KIND_STRUCT, SCRATCH_BASE + 768, 4, fields3,
+  );
+  assert.equal(lastErrno(), 0, "a layout with no provenance defines without a drive");
+  assert.equal(encodeCalls() - before, 1, "and still does not call the codec");
+}
+
 console.log("fork-module capture harness: all assertions passed");
