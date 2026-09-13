@@ -893,6 +893,34 @@ change in the same commit.**
   cannot fail, written into the same commit that argues against them. It
   reads `includes` now, and the third perturbation above exists to prove it.
 
+### The spawn fix is covered, and that was checked rather than assumed
+
+The commit fixing `handle_spawn` claimed validation from `host-native`'s 70
+tests, including the `smoke_spawn_*` set. **A suite that passes with a change
+in it has not shown that it reaches the change** — the distinction this
+document spends its length on — so both edited lines were broken on purpose to
+see whether anything noticed.
+
+* **The capacity argument.** Pass `0` where `blob_scratch.capacity()` now
+  goes: five tests fail, four of them `smoke_spawn_*`. The new
+  pointer/capacity guard fails too, which is the second thing worth knowing —
+  it covers this site, not just the three it was written for.
+* **The re-staged write.** Delete it outright: five tests fail, including
+  `smoke_spawn_waitpid`. 60 passed, 5 failed.
+
+So the line that fed the kernel's refusal the same number twice is exercised
+on every run, and the fix is load-bearing rather than merely present.
+
+**The conformance suites cannot cover this, and that is checked, not
+asserted.** The platform's validation contract says a process-lifecycle change
+must consider them, so `scripts/run-posix-tests.sh` was read: it launches each
+case through `node --experimental-wasm-exnref`, which is the TypeScript host.
+Nothing in `tests/` drives `crates/host-native`. **The native host's spawn path
+has no conformance coverage at all** — its own smoke tests are the whole of
+it. That is a gap worth naming rather than a defect to fix here: pointing the
+conformance suites at a second host is a piece of work with an owner, and the
+owner is not lane L.
+
 ## A hole in the ratchet itself, found by the same question
 
 Asking "what would a WRONG version do" of the surface budget — the instrument

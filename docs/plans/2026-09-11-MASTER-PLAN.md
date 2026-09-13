@@ -2584,7 +2584,13 @@ classified as harmless**: `handle_spawn` passed the blob's length where
 `kernel_spawn_blob_decode` declares `buf_capacity`, so the kernel's own
 `blob_len > buf_capacity` refusal was fed the same number twice and could
 never fire — H-2 on the far side of the ABI, manufactured by a restated length
-on this one. **The fourth is now done too**: all five corpus refusals are
+on this one. **Both edited lines were then broken on purpose to check the
+suite reaches them**: five tests fail either way, four of them `smoke_spawn_*`.
+And the conformance suites cannot cover it — `scripts/run-posix-tests.sh`
+launches each case through `node`, so it drives the TypeScript host, and
+nothing in `tests/` drives `crates/host-native`. **The native host's spawn path
+has no conformance coverage at all**, which is a gap for whoever owns that
+question, not a defect of this fix. **The fourth is now done too**: all five corpus refusals are
 driven from the shared file, and the two the TypeScript test used to write out
 by hand are gone, so the REJECT half of "one rule, both hosts" is checked
 rather than intended. The recorded blocker was half right — a heap base of
