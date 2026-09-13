@@ -4016,6 +4016,25 @@ decided about backslashes, this is a gap to close in the port.
 **Recorded before starting rather than discovered during**, because the moment
 to notice that three implementations disagree is before a fourth is written.
 
+**RESOLVED the same day, and the tiebreaker was already in the tree.** There is
+a FOURTH rule, in Rust, that nobody had counted:
+`tools/xtask/src/vfs_products/product_manifest.rs::validate_output` refuses
+`['/', '\\', '\0']` outright. So the tally is three rules refusing a backslash
+and a NUL against one that splits on the first and ignores the second — and the
+outlier is precisely the file being ported away.
+
+**The port adopts the strict rule**: a backslash is refused, not treated as a
+separator, and a NUL is refused rather than left to truncate the path in the
+first C API that receives it. That is lane V's decision to make, and it is made
+on the weight of what the repository already does rather than on taste.
+
+**It also settles where the port lands.** `tools/xtask/src/vfs_products/` already
+holds `validate_manifest`, `validate_mounts`, `validate_boot`, a canonical-JSON
+module and a CLI — so the second target's validators have peers and a caller to
+join, instead of arriving as a module nothing calls. That is the problem the
+first target's port hit and had to work around with an `allow(dead_code)`; this
+one does not have to.
+
 ### The cutover landed, and I was wrong to defer it
 
 **2026-09-13, `1cf5aaec7`.** I had written that the cutover "wants a session
