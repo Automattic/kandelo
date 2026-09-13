@@ -2345,7 +2345,15 @@ pub mod process_memory {
     /// and used the fallback unconditionally. For a program whose heap base is
     /// below 16 MiB that merely wasted address space, but a program linked
     /// with a heap base ABOVE it had its own static data underneath the
-    /// syscall channel on the native host. Both hosts now ask this function.
+    /// syscall channel on the native host.
+    ///
+    /// `crates/host-native` asks this function. **The TypeScript hosts do not
+    /// yet**: that commit is held on
+    /// `brandonpayton/lane-l-typescript-layout-held` because landing it wedges
+    /// `./run.sh local-build` — see "the projection deadlock" in lane L of
+    /// `docs/plans/2026-09-11-MASTER-PLAN.md`. Until then this function is the
+    /// authority for one host and the description the other is measured
+    /// against, which is less than the point of it.
     pub const fn compute_layout(request: LayoutRequest) -> Result<Layout, LayoutError> {
         let page = WASM_PAGE_SIZE as u64;
         if request.maximum_pages <= CHANNEL_PAGES {

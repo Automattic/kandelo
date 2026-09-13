@@ -1,15 +1,17 @@
 //! The Rust half of the one-layout contract.
 //!
 //! `tests/process-memory-layouts.json` carries expectations derived by hand
-//! from `compute_layout`'s documented rule. This test checks the Rust
-//! implementation against them; `host/test/process-memory-layout.test.ts`
-//! checks the TypeScript hosts against the SAME file, reaching the same
-//! function through the `wa_process_memory_layout` export.
+//! from `compute_layout`'s documented rule, and this test checks the Rust
+//! implementation against them.
 //!
-//! Two hosts checked against one corpus is what makes "one process memory
-//! layout" a fact a test can fail on. Two hosts each asserting their own
-//! numbers would pass for as long as they happened to agree, which is exactly
-//! how they came to disagree about `__heap_base` in the first place.
+//! Checking BOTH hosts against one corpus is what would make "one process
+//! memory layout" a fact a test can fail on — two hosts each asserting their
+//! own numbers pass for as long as they happen to agree, which is exactly how
+//! they came to disagree about `__heap_base`. The TypeScript half of that
+//! (`host/test/process-memory-layout.test.ts`, reaching the same function
+//! through a `wa_process_memory_layout` export) is written and held on
+//! `brandonpayton/lane-l-typescript-layout-held`; see "the projection
+//! deadlock" in lane L of `docs/plans/2026-09-11-MASTER-PLAN.md`.
 
 use serde_json::Value;
 use wasm_posix_shared::process_memory::{compute_layout, LayoutError, LayoutRequest};

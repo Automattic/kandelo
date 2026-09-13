@@ -172,9 +172,13 @@ impl ProcessLayout {
     /// pthread declaration.
     ///
     /// **The placement arithmetic is not here.** It is
-    /// `wasm_posix_shared::process_memory::compute_layout`, which the
-    /// TypeScript hosts reach through `wa_process_memory_layout`, so there is
-    /// one description of a process address space rather than one per host.
+    /// `wasm_posix_shared::process_memory::compute_layout`, so this host no
+    /// longer carries its own description of a process address space.
+    ///
+    /// The TypeScript hosts still carry theirs. Moving them to the same
+    /// function is written and held on
+    /// `brandonpayton/lane-l-typescript-layout-held`; it wedges
+    /// `./run.sh local-build`, for the reason lane L's plan records.
     ///
     /// This host previously ignored `__heap_base` entirely and always placed
     /// control memory at `FALLBACK_BRK_BASE`, while the TypeScript hosts

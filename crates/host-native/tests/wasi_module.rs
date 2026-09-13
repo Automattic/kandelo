@@ -39,7 +39,8 @@ const PAGE: usize = 65536;
 /// The guest's own declared minimum. The host-owned band starts above it,
 /// exactly as `wasm_posix_shared::process_memory::compute_layout` places the
 /// channel above a program's imported `env.memory` minimum — the one
-/// description both hosts now use.
+/// description this host now uses, and the one the TypeScript hosts are
+/// measured against until their own move lands.
 const GUEST_MIN_PAGES: u32 = 4;
 /// The host-owned band: the syscall channel, then the module's region.
 const CHANNEL_PAGE: u32 = GUEST_MIN_PAGES;
