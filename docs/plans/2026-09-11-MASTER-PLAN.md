@@ -2567,6 +2567,20 @@ agreeing. **This is the V1 case (share code across hosts) in evidence rather
 than principle**, and it is stronger than the line-count case V4 makes. See
 `docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
+**"One rule" was then checked against the tree, not just the corpora.** The
+corpora pin the rule's answers; they cannot say whether some other site works
+it out for itself. L3: every `controlBase`/`channelOffset`/`brkBase`/`mmapBase`
+in `host/src` is read off a layout, and the single producer is
+`wasm-artifact-driver.ts` decoding the shared Rust function's reply. L4: the
+rule has 23 call sites in `host/src`, against 63 places that build a view
+straight onto a guest buffer — and none of those can read out of bounds
+silently, because the ENGINE throws `RangeError` (verified, not assumed). So
+in the TypeScript host the shared rule supplies the null-pointer/out-of-range
+distinction and the `allowAddressZero` policy, not memory safety. **In
+`crates/host-native` there is no engine underneath and the same rule IS the
+safety.** Two hosts get different guarantees from one sentence, which is a
+stronger argument for stating it once than the line count is.
+
 **The shared corpora were audited while the machine was too full to build,
 and both could be satisfied by wrong rules.** Re-deriving every case from the
 documented rule rather than from the code found four plausible rules that

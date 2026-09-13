@@ -941,6 +941,46 @@ it. That is a gap worth naming rather than a defect to fix here: pointing the
 conformance suites at a second host is a piece of work with an owner, and the
 owner is not lane L.
 
+### "One rule" was a claim about the corpus; here it is as a claim about the tree
+
+L3 and L4 say one placement rule and one bounds rule, stated once and consumed
+by both hosts. The corpora make that checkable for the rule's ANSWERS. They
+say nothing about whether some other site in `host/src` still works it out for
+itself, which is the half that would make the claim false. Both were searched.
+
+**L3 holds, and there is exactly one producer.** Every `controlBase`,
+`channelOffset`, `brkBase` and `mmapBase` in `host/src` outside
+`wasm-artifact-driver.ts` is read off a layout and passed along. The driver is
+where the values are born, and it is decoding the shared Rust function's
+response off the wire. Two sites looked like second producers and are not:
+`acquireForkMemoryClone` divides the parent's CURRENT buffer length into pages
+to size an allocation, computing no control field, and `placeHostControlSlot`
+asks `kernel_reserve_host_region` for an address and only materializes views
+at what comes back. Placement authority is the kernel's; the page arithmetic
+next to it converts a page number the kernel supplied into a byte address.
+
+**L4 holds too, and checking it corrected what the rule is FOR.** The shared
+rule has 23 call sites in `host/src` and 14 more in the tests. Against that,
+63 places build a typed-array or `DataView` straight onto a guest buffer — 18
+with an explicit offset, 45 over the whole buffer — and none of them can read
+out of bounds silently. Verified rather than assumed: a three-argument view
+past the end of a `WebAssembly.Memory` throws `RangeError`, and so does a
+`DataView` read past the end.
+
+So in the TypeScript host the shared rule is not what stands between a bad
+pointer and the memory — **the engine is**. What the rule supplies is the part
+the engine has no opinion about: that address zero with a positive length is a
+FAILED ALLOCATION rather than an out-of-range address, that
+`allowAddressZero` is a policy and not an accident, and that the refusal names
+the region it was about.
+
+**In `crates/host-native` there is no engine underneath.** The same rule there
+is what memory safety rests on, not a source of better messages. That
+asymmetry is the strongest form of the one-rule argument this lane has, and it
+was not visible from the corpus: two hosts get different guarantees from the
+same sentence, which is exactly why the sentence must exist once rather than
+be re-derived by whoever is writing the second host.
+
 ## A hole in the ratchet itself, found by the same question
 
 Asking "what would a WRONG version do" of the surface budget — the instrument
