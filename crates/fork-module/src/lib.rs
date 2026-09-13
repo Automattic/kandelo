@@ -5568,12 +5568,30 @@ mod wasm {
     }
 
     /// The witness table slot `(token, ordinal)` names, allocating one on first
-    /// use. Returns `-1` on failure.
+    /// use. Returns `-1` on failure, or `-2` for "slot already witnessed, do
+    /// not store" -- which is not an error.
     ///
     /// Called by the injected `__wpk_fork_ref_gc_provenance_ref` shim, which
     /// then `table.set`s the guest's staged seed into that slot. Rust picks the
     /// slot because Rust can hold the map; wasm does the store because only
     /// wasm can hold the reference.
+    ///
+    /// # Why the FIRST seed wins, and never a later one
+    ///
+    /// Replay orders allocation by constructor dependency and fails
+    /// `EINVAL` on "an unallocatable constructor cycle"
+    /// (`crates/fork-codec/src/drive_plan.rs`). A provenance-eligible field is
+    /// mutable, NON-NULL and an internal GC reference, so seeding one always
+    /// requires an instance that already existed: the original program's
+    /// construction order over provenance edges is therefore acyclic.
+    ///
+    /// Keeping the FIRST witness preserves that order -- the first object of a
+    /// layout was seeded by something built before any object of that layout.
+    /// Keeping the LATEST does NOT: witness(A) may be an object whose own
+    /// layout's latest witness is a LATER object, which closes a cycle that the
+    /// original execution never had, and replay then refuses the whole graph.
+    /// This is the one place where a witness pool can differ from per-object
+    /// recording, and first-wins is what makes it equivalent.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_gc_provenance_witness_slot(token: u32, ordinal: u32) -> i32 {
         let open = PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed);
@@ -5605,9 +5623,14 @@ mod wasm {
                 }
             },
         };
-        w.occupied[slot] = true;
+        // Count the store as seen either way: `end` is checking that the guest
+        // made the calls it declared, not that each one wrote.
         PROVENANCE_IN_FLIGHT[3].fetch_add(1, Ordering::Relaxed);
         set_ok();
+        if w.occupied[slot] {
+            return -2; // already witnessed; keep the first seed
+        }
+        w.occupied[slot] = true;
         slot as i32
     }
 

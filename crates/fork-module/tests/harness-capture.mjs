@@ -903,7 +903,18 @@ function i31Minter() {
     2,
     "a second construction of the same layout allocates no new witness",
   );
-  assert.equal(witnesses.get(slotA), 201, "the witness is refreshed, not duplicated");
+  // The FIRST seed is kept, never replaced. Replay orders allocation by
+  // constructor dependency and refuses an "unallocatable constructor cycle".
+  // A provenance field is mutable, non-null and internal, so seeding one always
+  // needed an instance that already existed -- the original construction order
+  // is acyclic. Keeping the first witness preserves it; keeping the latest can
+  // close a cycle the original execution never had.
+  assert.equal(
+    witnesses.get(slotA),
+    101,
+    "the FIRST seed is kept -- a later one could close a dependency cycle",
+  );
+  assert.equal(witnesses.get(slotB), 102, "and so is ordinal 1's");
 
   // A DIFFERENT layout gets its own slots.
   record(12, [301]);

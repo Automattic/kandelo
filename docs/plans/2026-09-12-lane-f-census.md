@@ -1334,3 +1334,44 @@ by the injected shim.
 name the object's ORIGINAL seed rather than a type-correct substitute. Capture
 does not yet emit witness recipes into `gc_define`'s provenance ids — that is
 the next step, and it is where the assumption becomes load-bearing.
+
+## §25 — The witness must be the FIRST seed, not the latest
+
+§24 landed the witness pool with last-wins semantics, and the harness asserted
+that as correct. Verifying §22's open assumption — whether a type-correct
+substitute is as good as the object's original seed — found that it is, but only
+under a condition the first implementation did not meet.
+
+**Replay refuses cycles.** `crates/fork-codec/src/drive_plan.rs` orders
+allocation by constructor dependency and returns `EINVAL` on "an unallocatable
+constructor cycle".
+
+**Per-object seeds are acyclic by construction.** A provenance-eligible field is
+`mutable && !nullable && internal GC reference`, so seeding one always required
+an instance that ALREADY EXISTED. Every provenance edge therefore points
+backwards in construction order, and that graph cannot contain a cycle.
+
+**Last-wins breaks that; first-wins preserves it.** With one witness per
+`(layout, ordinal)`, the witness for layout A is some object X of layout B. At
+capture X is captured as a normal node, and X's own provenance edge is layout
+B's witness — which, under last-wins, may be an object constructed AFTER X,
+including one that transitively depends on X. That closes a cycle the original
+execution never had, and replay then refuses the whole graph.
+
+Keeping the FIRST witness follows the original construction order exactly: the
+first object of a layout was seeded by something built before any object of that
+layout. So the chain terminates where the program's own bootstrap did.
+
+**This is the single condition under which a witness pool is equivalent to
+per-object recording**, and it is now the implementation: the slot is written
+only when empty, and `fm_gc_provenance_witness_slot` returns `-2` for "already
+witnessed, do not store" — not an error, since the guest did make the call it
+declared.
+
+The harness previously asserted `witnesses.get(slot) === 201` after a second
+construction — it encoded last-wins as correct, exactly the shape of the
+dirty-page harness defect recorded earlier in this campaign. It now asserts the
+first seed survives, and reverting to last-wins fails it.
+
+§22's assumption is therefore resolved rather than merely carried: a
+type-correct substitute IS sufficient, provided it is the earliest one.
