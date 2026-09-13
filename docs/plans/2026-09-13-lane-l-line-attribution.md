@@ -911,6 +911,26 @@ see whether anything noticed.
 So the line that fed the kernel's refusal the same number twice is exercised
 on every run, and the fix is load-bearing rather than merely present.
 
+**The other three call sites were asked the same question, and the answer is
+not uniform.** L5 changed four sites in total; "69 tests pass with the
+substitutions in" said nothing about which of them any test reaches.
+
+* **The rootfs manifest** (`manifest.capacity()`) is on the boot path of
+  effectively every machine-starting test. Give it a wrong capacity and the
+  failures run to eight and beyond — the whole `smoke_execve_*` family.
+* **The foreign-prefix and root calls** rest on exactly **two** tests:
+  `smoke_runs_native_dir_mount` and
+  `smoke_runs_native_dir_mount_with_non_canonical_mount_point`. Break both
+  sites and leave the manifest correct: 62 passed, 3 failed — those two, and
+  the source guard.
+
+**That last column is the argument for the guard existing.** It failed in
+every one of these perturbations, at all four sites, including the two whose
+runtime coverage is two tests deep. Runtime coverage is what a suite happens
+to walk through; the guard is what refuses the shape regardless. Two tests is
+not nothing, but it is thin enough that a future edit could quietly restate a
+length at those sites without anything red — except the guard.
+
 **The conformance suites cannot cover this, and that is checked, not
 asserted.** The platform's validation contract says a process-lifecycle change
 must consider them, so `scripts/run-posix-tests.sh` was read: it launches each
