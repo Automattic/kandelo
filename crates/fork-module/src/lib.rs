@@ -202,6 +202,23 @@ mod wasm {
         /// `(type_ordinal << 32) | layout_id`, or 0 when no layout matched.
         /// Injector-rewritten to a `call_indirect` through the drive table.
         fn __wpk_fork_capture_probe(activation: u32, slot: u32) -> i64;
+
+        /// Encode the value already staged in anyref transit slot `slot` using
+        /// `activation`'s codec, returning its recipe id. Injector-rewritten to
+        /// a `call_indirect` through the drive table.
+        fn __wpk_fork_capture_encode(activation: u32, slot: u32) -> i32;
+    }
+
+    /// Safe wrapper over the injector-wired encode placeholder.
+    ///
+    /// Unlike `capture_witness_via_injector` this stages nothing: the value is
+    /// already in the transit slot, which is the case whenever the GUEST put it
+    /// there before asking the module a question about it.
+    fn capture_encode_via_injector(activation: u32, slot: u32) -> i32 {
+        // SAFETY: after injection this is a local thunk that `call_indirect`s
+        // the guest's `__wpk_fork_ref_gc_encode_slot` through
+        // `drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE]`.
+        unsafe { __wpk_fork_capture_encode(activation, slot) }
     }
 
     /// Safe wrapper over the injector-wired probe placeholder.
@@ -5505,6 +5522,50 @@ mod wasm {
             ids.push(recipe as u32);
         }
         Ok(ids)
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_broker_encode(slot) -> recipe`.
+    ///
+    /// The cross-activation path: `fork-instrument` calls this when a GC value
+    /// staged in the transit slot matched none of the CALLING activation's
+    /// layouts. A structurally canonical value can enter through another
+    /// dynamically loaded module, and its codec is the one that can encode it.
+    ///
+    /// Probes each registered activation's codec in turn through the drive
+    /// table, and routes to the first that claims the value. Both steps are the
+    /// guest's own generated functions; the module only chooses who to ask.
+    ///
+    /// # Why this is a loop and not a lookup
+    ///
+    /// Which activation owns a value is a property of the VALUE's type, and the
+    /// module cannot inspect a reference. Asking each codec is the only way to
+    /// find out, and it is bounded by the number of registered activations —
+    /// a handful even for a program that dlopens heavily, not a per-object cost.
+    ///
+    /// Refuses with `EOPNOTSUPP` when no activation claims the value, rather
+    /// than inventing a recipe. The returned `-1` is not a valid recipe id, so
+    /// an edge naming it is rejected at `define_gc` and the capture cannot seal
+    /// — the same structural refusal `__wpk_fork_ref_exn_broker_encode` uses.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_broker_encode(slot: u32) -> i32 {
+        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives the borrow.
+        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
+        for entry in index.iter().take(act_count) {
+            let activation = entry[0];
+            if capture_probe_via_injector(activation, slot) == 0 {
+                continue; // this codec does not recognise the value
+            }
+            let recipe = capture_encode_via_injector(activation, slot);
+            if recipe < 0 {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+            set_ok();
+            return recipe;
+        }
+        set_err(Errno::EOPNOTSUPP);
+        -1
     }
 
     /// Guest-facing `env.__wpk_fork_ref_gc_capture_layout(slot, activation,

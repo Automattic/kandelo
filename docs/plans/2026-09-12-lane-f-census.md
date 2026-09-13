@@ -2381,3 +2381,51 @@ the comment says so, because a wrong length does not fail loudly — it fails as
 a confusing instantiation error some distance from its cause.
 
 `forkGuestImportsUnserved` 11 -> 10, banked. Host obligation unchanged at 5.
+
+## §43 — The cross-activation broker: ask every codec, route to the claimant
+
+`__wpk_fork_ref_gc_broker_encode` is served. §28 had called this "cross-activation
+dispatch, not identity" and left it aside; with two capture drive slots in place
+it is now a short loop.
+
+A structurally canonical GC value can enter through another dynamically loaded
+module, and that module's codec is the one that can encode it. The module cannot
+inspect a reference, so it asks: for each activation registered through
+`fm_set_activation_gc_codec`, drive that activation's PROBE, and on a non-zero
+answer drive its ENCODE. Both are the guest's own generated functions.
+
+**A loop rather than a lookup, and bounded.** Which activation owns a value is a
+property of the value's TYPE, which the module cannot read — asking is the only
+way. The cost is the number of registered activations, a handful even for a
+program that dlopens heavily, and it is per BROKERED VALUE rather than per
+object: the common path never reaches the broker, because the calling
+activation's own codec matched first.
+
+An unclaimed value is `EOPNOTSUPP` with a poisoned recipe, the same structural
+refusal §30 gave the unknown exception tag: `-1` is not a valid recipe id, so an
+edge naming it is rejected at `define_gc` and the capture cannot seal.
+
+### The test routes, rather than merely succeeding
+
+Two activations are registered, 3 first, and 3's probe DENIES while 4's claims.
+Routing to the first registered rather than the first claimant would pick 3, so
+the assertions check that 3 was asked, 4 was asked, and only 4 encoded.
+
+Perturbations: ignoring the probe and routing to the first registered traps on
+activation 3's unbound encode slot; inventing a recipe when nobody claims fails
+"an unclaimed value is refused".
+
+### Stubs parameterised, not re-encoded
+
+The probe and encode stubs now read their answer from a mutable global the
+harness sets, so one assembled blob serves every case. Encoding a different
+`i64` by hand means re-encoding a LEB128 length, which is exactly how the
+earlier stub in this file acquired a wrong code-section size.
+
+### One injector simplification
+
+The probe and encode thunks differ only in drive slot and result type, so both
+now go through one `inject_forwarding_drive_thunk`. The index arithmetic — the
+part that silently calls the wrong guest function when wrong — exists once.
+
+`forkGuestImportsUnserved` 10 -> 9, banked. Host obligation unchanged at 5.

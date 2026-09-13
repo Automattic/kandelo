@@ -84,6 +84,8 @@ const DRIVE_SLOT_GC_ENCODE: i32 = 11;
 const DRIVE_SLOT_GC_PROBE: i32 = 12;
 /// The capture-side probe placeholder, rewritten like the witness one.
 const CAPTURE_PROBE_THUNK_IMPORT: &str = "__wpk_fork_capture_probe";
+/// Encode-from-transit placeholder: the cross-activation broker's second step.
+const CAPTURE_ENCODE_THUNK_IMPORT: &str = "__wpk_fork_capture_encode";
 /// MUST equal `fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION`.
 const DRIVE_SLOTS_PER_ACTIVATION: i32 = 13;
 /// The anyref transit slot a capture encode reads its value from.
@@ -988,6 +990,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_witness into a thunk")?;
     inject_capture_probe_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_probe into a thunk")?;
+    inject_capture_encode_thunk(&mut module)
+        .context("rewriting __wpk_fork_capture_encode into a thunk")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1278,9 +1282,21 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
 /// Simpler than the witness thunk: the value is ALREADY in the transit slot
 /// when the guest asks which layout it is, so there is nothing to stage — just
 /// forward the slot and call through.
-fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
+/// Rewrite a `(activation, slot)` placeholder into a local thunk that forwards
+/// `slot` and `call_indirect`s `drive_table[activation * SLOTS + offset]`.
+///
+/// Shared by the probe and encode thunks, which differ only in the drive slot
+/// and the callee's result type. Keeping one emitter means the index arithmetic
+/// — the part that silently calls the wrong guest function when wrong — exists
+/// once.
+fn inject_forwarding_drive_thunk(
+    module: &mut Module,
+    import_name: &str,
+    drive_slot: i32,
+    result: ValType,
+) -> Result<()> {
     let import_fn = module.imports.iter().find_map(|import| {
-        if import.module != IMPORT_MODULE || import.name != CAPTURE_PROBE_THUNK_IMPORT {
+        if import.module != IMPORT_MODULE || import.name != import_name {
             return None;
         }
         match import.kind {
@@ -1292,7 +1308,7 @@ fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
         return Ok(());
     };
     let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
-    let probe_ty = module.types.add(&[ValType::I32], &[ValType::I64]);
+    let callee_ty = module.types.add(&[ValType::I32], &[result]);
     module
         .replace_imported_func(import_fn, |(body, args)| {
             let activation = args[0];
@@ -1301,15 +1317,34 @@ fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
             body.local_get(activation)
                 .i32_const(DRIVE_SLOTS_PER_ACTIVATION)
                 .binop(BinaryOp::I32Mul)
-                .i32_const(DRIVE_SLOT_GC_PROBE)
+                .i32_const(drive_slot)
                 .binop(BinaryOp::I32Add);
             body.instr(CallIndirect {
-                ty: probe_ty,
+                ty: callee_ty,
                 table: drive_table,
             });
         })
-        .with_context(|| format!("rewriting {CAPTURE_PROBE_THUNK_IMPORT} import into a thunk"))?;
+        .with_context(|| format!("rewriting {import_name} import into a thunk"))?;
     Ok(())
+}
+
+fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(
+        module,
+        CAPTURE_PROBE_THUNK_IMPORT,
+        DRIVE_SLOT_GC_PROBE,
+        ValType::I64,
+    )
+}
+
+/// The broker's encode step. Same shape as the probe, different slot and result.
+fn inject_capture_encode_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(
+        module,
+        CAPTURE_ENCODE_THUNK_IMPORT,
+        DRIVE_SLOT_GC_ENCODE,
+        ValType::I32,
+    )
 }
 
 fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {

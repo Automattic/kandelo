@@ -1193,4 +1193,97 @@ function i31Minter() {
   assert.equal(encodeCalls() - before, 1, "and still does not call the codec");
 }
 
+// ============================================================================
+// The cross-activation broker (env.__wpk_fork_ref_gc_broker_encode).
+//
+// A structurally canonical GC value can enter through another dynamically
+// loaded module, whose codec is the one that can encode it. The module cannot
+// inspect a reference, so it ASKS each registered activation's codec in turn
+// and routes to the first that claims the value — both steps being the guest's
+// own generated functions, reached through the drive table.
+// ============================================================================
+{
+  const EOPNOTSUPP = 95;
+  const transitTable = x.__wpk_fork_ref_gc_transit;
+  const driveTable = importObject.env.__wpk_fork_drive_table;
+  const SLOTS = 13;
+  const ENC = 11;
+  const PRB = 12;
+
+  // Stubs standing in for two guests' generated codecs. Assembled by
+  // wasm-tools and PARAMETERISED through a mutable global rather than baked per
+  // value: encoding a different i64 by hand means re-encoding a LEB128 length,
+  // which is how the earlier stub in this file got a wrong code-section size.
+  const probeStubBytes = new Uint8Array([
+    0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,126,3,2,1,0,6,11,2,126,1,66,0,11,127,
+    1,65,0,11,7,23,3,3,114,101,116,3,0,5,99,97,108,108,115,3,1,5,112,114,111,98,
+    101,0,0,10,13,1,11,0,35,1,65,1,106,36,1,35,0,11,0,20,4,110,97,109,101,7,13,
+    2,0,3,114,101,116,1,5,99,97,108,108,115,
+  ]);
+  const encodeStubBytes = new Uint8Array([
+    0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,127,3,2,1,0,6,11,2,127,1,65,0,11,127,
+    1,65,0,11,7,24,3,3,114,101,116,3,0,5,99,97,108,108,115,3,1,6,101,110,99,111,
+    100,101,0,0,10,13,1,11,0,35,1,65,1,106,36,1,35,0,11,0,20,4,110,97,109,101,7,
+    13,2,0,3,114,101,116,1,5,99,97,108,108,115,
+  ]);
+  const makeProbe = (answer) => {
+    const i = new WebAssembly.Instance(new WebAssembly.Module(probeStubBytes), {});
+    i.exports.ret.value = answer;
+    return i;
+  };
+  const makeEncode = (recipe) => {
+    const i = new WebAssembly.Instance(new WebAssembly.Module(encodeStubBytes), {});
+    i.exports.ret.value = recipe;
+    return i;
+  };
+  // The broker walks the activations `fm_set_activation_gc_codec` registered,
+  // so a codec must be seeded for each. The committed fixture is a real codec
+  // section, shared here by both activations.
+  const codecBytes = readFileSync(
+    new URL("../../fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
+  );
+  const CODEC_AT = SCRATCH_BASE + 4096;
+  u8().set(codecBytes, CODEC_AT);
+  const seedCodec = (act) => {
+    x.fm_set_activation_gc_codec(act, CODEC_AT, codecBytes.length);
+    assert.equal(lastErrno(), 0, `seeding codec for activation ${act}`);
+  };
+
+  // Two activations: 3 does NOT recognise the value, 4 does. Registering 3
+  // first is deliberate — routing to the first CLAIMANT, not the first
+  // registered, is the property under test.
+  const deny = makeProbe(0n);
+  const claim = makeProbe((1n << 32n) | 21n);
+  const enc4 = makeEncode(1);
+
+  const need = 4 * SLOTS + PRB + 1;
+  if (driveTable.length < need) driveTable.grow(need - driveTable.length);
+  driveTable.set(3 * SLOTS + PRB, deny.exports.probe);
+  driveTable.set(4 * SLOTS + PRB, claim.exports.probe);
+  driveTable.set(4 * SLOTS + ENC, enc4.exports.encode);
+
+  x.fm_capture_begin();
+  assert.equal(x.fm_capture_intern(K_I31, 9, 0), 1, "routed value's recipe");
+
+  // Seed two activation codecs so the broker has a registry to walk. The bytes
+  // are the committed gc-codec fixture, which both activations can share.
+  seedCodec(3);
+  seedCodec(4);
+
+  transitTable.set(0, 314);
+  const routed = x.__wpk_fork_ref_gc_broker_encode(0);
+  assert.equal(lastErrno(), 0, `broker_encode errno=${lastErrno()}`);
+  assert.equal(routed, 1, "routed to the activation whose codec claimed the value");
+  assert.equal(deny.exports.calls.value, 1, "the non-claimant was asked");
+  assert.equal(claim.exports.calls.value, 1, "and the claimant was asked");
+  assert.equal(enc4.exports.calls.value, 1, "only the CLAIMANT encoded");
+
+  // Nobody claims it -> a truthful refusal, not an invented recipe.
+  driveTable.set(4 * SLOTS + PRB, deny.exports.probe);
+  const refused = x.__wpk_fork_ref_gc_broker_encode(0);
+  assert.equal(refused, -1, "an unclaimed value is refused");
+  assert.equal(lastErrno(), EOPNOTSUPP, "and the reason is EOPNOTSUPP");
+  transitTable.set(0, null);
+}
+
 console.log("fork-module capture harness: all assertions passed");
