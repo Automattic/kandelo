@@ -1046,6 +1046,38 @@ this report.
 anchors elsewhere and applies to its own table: what does not rot is the
 import names, and `grep -n 'write_bytes('` re-derives the rest in a second.
 
+**The count is pinned while the decision is pending.**
+`the_import_layer_does_not_grow_new_writes_through_unproven_pointers` scans
+`define_kernel_host_imports` and asserts the number of writes through a
+pointer-shaped address is exactly eleven (the table's thirteen, less the two
+helpers, which sit outside that function). It does not force the decision; it
+stops the class getting larger while the decision is open, and makes fixing a
+site move the number on purpose rather than drift past it.
+
+Perturbed both directions, which for a pinned count is the whole point:
+* **A twelfth unproven write** — a second `value_ptr` copy added to
+  `host_fpathconf` — fails, listing all twelve.
+* **One site made proven** — the same write taking an offset a check
+  returned — fails at ten, listing the remaining ones by name. A ratchet that
+  only caught growth would let a fix land with a stale number beside it.
+
+Two attempts before those proved nothing, and both are the same lesson in
+different clothes. The first pair of perturbations never applied: the
+replacement strings had the wrong indentation, the `assert` raised, the file
+was untouched, and the test that ran afterwards passed on unmodified source.
+The third failed to compile, and a `cargo test` that never builds prints no
+verdict at all. **A perturbation that does not land looks exactly like a guard
+that holds**, and the only defence is reading the run rather than its exit
+line.
+
+The cleanup between them did real damage: `git checkout --` on
+`crates/host-native/src/guest.rs` reverted the new guard along with the
+perturbation, because the guard itself was uncommitted. That is the incident
+this document already records under the window script, repeated by the person
+who wrote it down, two sections later. It was recovered from a copy taken
+before the first perturbation — which is the practice that section recommends,
+and the only reason this paragraph is an anecdote rather than lost work.
+
 **A second instance, and it names the shape of the fix.**
 `write_wasm_statfs` cites `#writeStatfsToMemory` in `host/src/kernel.ts` and
 takes a bare `ptr: usize`, writing 68 bytes at it. The TypeScript it mirrors

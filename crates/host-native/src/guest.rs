@@ -2629,6 +2629,71 @@ mod proc_bytes_tests {
             );
         }
     }
+    /// The kernel's host imports may not GROW the set of writes that trust a
+    /// pointer without proving it.
+    ///
+    /// L-D3: thirteen sites write at an address the kernel handed in, with no
+    /// range proof. `copy_launch_entry` was fixed because its errno was
+    /// settled by the TypeScript contract it cites; the rest need one decision
+    /// about what this host returns for an unmappable pointer, which is the
+    /// maintainer's. Until that is taken, this pins the number so the class
+    /// cannot quietly get larger while the decision is pending — and so that
+    /// fixing one has to move the count on purpose rather than drift past it.
+    ///
+    /// Scoped to `define_kernel_host_imports` because that is the boundary in
+    /// question: addresses arriving from the kernel. Writes elsewhere in this
+    /// file go to offsets the host computed itself, which is a different
+    /// question and deliberately not counted here.
+    ///
+    /// A proven write is not a write that vanished. `copy_launch_entry` still
+    /// calls the raw copy — it passes the offset `checked_shared_range`
+    /// returned. So what this counts is the SHAPE of the address, not the
+    /// presence of a copy.
+    #[test]
+    fn the_import_layer_does_not_grow_new_writes_through_unproven_pointers() {
+        let source = include_str!("guest.rs");
+        // Assembled like its siblings: a literal needle would match inside
+        // this test. The scan is scoped below the marker anyway, but a guard
+        // that depends on its own position in the file is one edit from
+        // being wrong.
+        let marker = concat!("fn define_kernel_", "host_imports(");
+        let needle = concat!("write_", "bytes(");
+
+        let start = source.find(marker).unwrap_or_else(|| {
+            panic!("{marker} is gone; this check no longer measures anything")
+        });
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("the import function ends");
+        let body = &body[..end];
+
+        let mut unproven = Vec::new();
+        for line in body.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let Some(rest) = trimmed.split_once(needle) else { continue };
+            // write_bytes(mem, ADDRESS, bytes): the second argument.
+            let Some((_, after_mem)) = rest.1.split_once(',') else { continue };
+            let address = after_mem.split(',').next().unwrap_or("").trim();
+            let root = address.split_whitespace().next().unwrap_or("");
+            if root.ends_with("_ptr") || root.ends_with("_addr") || root == "ptr"
+                || root == "addr"
+            {
+                unproven.push(address.to_string());
+            }
+        }
+
+        assert_eq!(
+            unproven.len(),
+            11,
+            "the import layer's unproven-pointer writes moved: {unproven:?}. \
+             A NEW one must be routed through the shared rule, not added to \
+             this count. Fixing one is the good direction — lower the number \
+             in the same commit, and never raise it to make this pass.",
+        );
+    }
+
     /// A launch entry is refused at a pointer past the end of the memory,
     /// with the errno the TypeScript host gives.
     ///
