@@ -3983,6 +3983,45 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The gap is closed in production: two documents that were accepted are now refused
+
+**2026-09-13**, `b0af50506`. The previous commit built the validator; **this one
+made it matter.** A validator nothing calls leaves the weaker rule deciding, and
+for a while that is exactly what was shipped.
+
+Two documents the TypeScript accepted, each with a test driving the real builder
+entry point:
+
+* **`images\mini-shell.toml`** — `assertNormalizedRelativePath` SPLITS on the
+  backslash, so it becomes two components and passes. On POSIX that string is
+  one legal filename.
+* **`images/mini\0shell.toml`** — the TypeScript has no NUL check at all. The
+  document validated cleanly and meant `images/mini` in the first C API that
+  received it.
+
+Verified both ways: with the call removed by hand, exactly those two tests fail.
+
+**The shape/existence split was forced by wiring it**, and is the better design
+anyway. `validate_repo_path` checks a path's shape AND that every component
+exists and is not a symlink — and the second half answers a question the
+envelope was not asked. The builder contract's own fixture names a manifest that
+does not exist, which is a legitimate document-validation case rather than a
+broken fixture. So `validate_repo_path_shape` is split out, `validate_repo_path`
+keeps both halves for callers about to READ the path, and **a trial now pins the
+decision** by mutating the envelope back to the stronger-looking call.
+
+**Trial tally for the second target: 11 + 4, zero survivors.** Three needed a
+test written first, and all three were the same failure wearing different
+clothes:
+
+* nothing built 4,097 inputs, so the bound was undefended;
+* nothing supplied a wrong schema, so the identity check was undefended;
+* nothing opened a NON-miniature build with a local-fixture document, so the
+  permission could have been handed to every caller silently.
+
+**A test that only exercises the permitted case proves nothing about the
+refused ones** — which is obvious stated plainly and invisible in a green suite.
+
 ### The envelope validates in Rust: `xtask vfs products validate-resolved-inputs`
 
 **2026-09-13**, `d912bd762` and `c20af29fc`. **10 trials, 0 survivors.** Wired to
