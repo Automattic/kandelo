@@ -423,7 +423,7 @@ function parseResolvedInputs(
   const product: ProductIdentity = {
     architecture,
     id: stableId(productValue.id, "product id"),
-    manifest_path: normalizedRelativePath(
+    manifest_path: relativePathValue(
       productValue.manifest_path,
       "product manifest path",
     ),
@@ -605,7 +605,7 @@ function parseResolvedInput(
   const path =
     record.path === undefined
       ? undefined
-      : normalizedRelativePath(record.path, `${label} path`);
+      : relativePathValue(record.path, `${label} path`);
   const descriptor = parseInputDescriptor(
     record.descriptor,
     id,
@@ -703,7 +703,7 @@ function parseInputDescriptor(
     targetAbiVersion,
     `${label} descriptor`,
   );
-  const path = normalizedRelativePath(
+  const path = relativePathValue(
     descriptor.path,
     `${label} descriptor path`,
   );
@@ -885,12 +885,25 @@ function outputName(value: unknown): string {
   return result;
 }
 
-function normalizedRelativePath(value: unknown, label: string): string {
-  const result = string(value, label);
-  assertNormalizedRelativePath(result, label);
-  return result;
-}
-
+/**
+ * A shape check for paths this file COMPUTES, not for paths the document
+ * supplies.
+ *
+ * Two callers, and neither is a duplicate of the Rust rule: one checks the
+ * output path produced by `relative(reportRoot, absoluteOutputPath)`, and the
+ * other checks a path immediately before walking it on disk. Those paths never
+ * appeared in the resolved-input document, so the validator that judged the
+ * document never saw them.
+ *
+ * It is deliberately NOT the document rule, and the difference is recorded
+ * rather than quietly inherited: this one splits on a backslash where
+ * `validate_repo_path_shape` refuses one. For a path derived from two absolute
+ * paths on POSIX that divergence is unreachable in practice — but "unreachable
+ * in practice" is the sentence that precedes most surprises, so it is written
+ * down rather than assumed. Making them agree is a behaviour change to computed
+ * paths, which belongs with whoever ports THIS half rather than in the commit
+ * that ported the document half.
+ */
 function assertNormalizedRelativePath(value: string, label: string): void {
   const parts = value.split(/[\\/]/);
   if (
@@ -901,6 +914,25 @@ function assertNormalizedRelativePath(value: string, label: string): void {
   ) {
     fail(`${label} is not a normalized relative path: ${JSON.stringify(value)}`);
   }
+}
+
+/**
+ * A relative path from the document, narrowed to a string and nothing more.
+ *
+ * THE RULE LIVES IN RUST NOW — `canonical_json::validate_repo_path_shape`, run
+ * by `xtask vfs products validate-resolved-inputs` before this file reads a
+ * byte of the document. What used to be here was a SECOND rule, and a weaker
+ * one: it SPLIT on a backslash, so `a\b` became two components and passed
+ * though on POSIX it is one legal filename, and it never looked for a NUL,
+ * which truncates the path in the first C API that receives it.
+ *
+ * Deleting it rather than fixing it is the point. Two implementations of a
+ * path-safety rule are two chances to get it subtly different, and these two
+ * already had — they disagreed about what a path IS, not about how strict to
+ * be. A rule that only narrows a type cannot drift from one that decides.
+ */
+function relativePathValue(value: unknown, label: string): string {
+  return string(value, label);
 }
 
 function assertRegularNonsymlinkBelow(
