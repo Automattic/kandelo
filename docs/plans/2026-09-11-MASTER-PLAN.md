@@ -3330,6 +3330,44 @@ built to permit, not to prevent. **A gate that makes you stop and justify has
 worked when you justify it; treating it as a veto is a different failure from
 ignoring it, and no better.**
 
+### How the funnel gets typed without growing the file being deleted
+
+**Decided in-lane 2026-09-12, and the shape generalises to the rest of the
+cutover.** Giving the bridge `checkHeadroom` is not enough on its own:
+`assertVfsImageHeadroom` still CALLS `fs.statfs("/")`, and `MemoryFileSystem`
+has no `checkHeadroom`. Declaring it required on `VfsImageFilesystem` would
+break the implementation recipes are handed today.
+
+The two obvious answers are both wrong, and one of them the budget already
+rejected:
+
+* **Give `MemoryFileSystem` a `checkHeadroom`.** That grows a file whose target
+  is 0, and the surface budget refused exactly this move for `isDeferred`
+  (8501 -> 8522). Adding capability to the thing being deleted is the shape this
+  campaign exists to stop.
+* **Put `statfs` on the bridge after all.** That reinstates the primitive the
+  verdict replaced, and leaves the arithmetic on the host.
+
+So the interface declares **both as OPTIONAL** — `checkHeadroom?` and `statfs?`
+— and the helper prefers the verdict, falling back to computing it from `statfs`
+for the implementation that cannot judge for itself, and failing loudly when
+neither is present. Three properties make that the right trade for a cutover
+rather than a fudge:
+
+* it grows nothing in `memory-fs.ts`;
+* the primitive stays off the bridge, so the Rust side never learns to answer a
+  question it should be deciding;
+* **the fallback branch is deleted WITH `memory-fs.ts`** rather than becoming
+  permanent — and there is exactly ONE `fs.statfs(` call in the funnel, so that
+  deletion is one site.
+
+**The general rule for the rest of the repoint:** where the two implementations
+genuinely differ in what they can answer, the interface carries both shapes as
+optional and the caller prefers the better one. An interface that demands the
+union forces capability into the doomed file; one that demands the intersection
+forces the primitive onto the bridge. Optionality is what lets the two coexist
+for exactly as long as both exist.
+
 ### Gap 13 — the bridge could not register the commonest kind of deferred file. CLOSED 2026-09-12.
 
 Found while checking whether `registerLazyFile` could go on the builder
