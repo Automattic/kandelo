@@ -33,9 +33,31 @@ struct Options {
     expect_root: Option<String>,
 }
 
+/// The bounds, injectable the way `archive-extract-member` injects its own.
+///
+/// Not for flexibility — no caller may loosen these — but so a test can prove
+/// a bound refuses without building a 256 MiB archive to do it. A bound that
+/// is only ever tested by not being hit is a bound nobody has tested.
+#[derive(Clone, Copy)]
+struct Limits {
+    compressed_bytes: u64,
+    entries: usize,
+    expanded_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            compressed_bytes: MAX_BUNDLE_BYTES,
+            entries: MAX_BUNDLE_ENTRIES,
+            expanded_bytes: MAX_SOURCE_TREE_BYTES,
+        }
+    }
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let options = parse_args(args)?;
-    extract_tree(&options)
+    extract_tree(&options, Limits::default())
 }
 
 fn parse_args(args: Vec<String>) -> Result<Options, String> {
@@ -74,19 +96,19 @@ fn require_value(
         .ok_or_else(|| format!("archive-extract-tree: {flag} needs a value"))
 }
 
-fn extract_tree(options: &Options) -> Result<(), String> {
+fn extract_tree(options: &Options, limits: Limits) -> Result<(), String> {
     let label = options.archive.display().to_string();
     let bytes = fs::read(&options.archive)
         .map_err(|e| format!("archive-extract-tree: read {label}: {e}"))?;
     let len = bytes.len() as u64;
-    if len == 0 || len > MAX_BUNDLE_BYTES {
+    if len == 0 || len > limits.compressed_bytes {
         return Err(format!("{label} is outside the accepted size bound"));
     }
 
     let reader = std::io::Cursor::new(&bytes[..]);
     let mut zip = zip::ZipArchive::new(reader)
         .map_err(|e| format!("archive-extract-tree: read {label} as a zip: {e}"))?;
-    if zip.len() == 0 || zip.len() > MAX_BUNDLE_ENTRIES {
+    if zip.len() == 0 || zip.len() > limits.entries {
         return Err(format!("{label} entry count is outside the accepted bound"));
     }
 
@@ -101,7 +123,7 @@ fn extract_tree(options: &Options) -> Result<(), String> {
         expanded = expanded
             .checked_add(entry.size())
             .ok_or_else(|| format!("{label} expands beyond the accepted bound"))?;
-        if expanded > MAX_SOURCE_TREE_BYTES {
+        if expanded > limits.expanded_bytes {
             return Err(format!("{label} expands beyond the accepted bound"));
         }
         sources.push(SourceEntry {
@@ -168,4 +190,180 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 #[cfg(not(unix))]
 fn set_mode(_path: &Path, _mode: u32) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    /// A zip built in memory, so a test can produce archives `zip(1)` refuses
+    /// to — which is exactly the shape a hostile one has.
+    fn zip_with(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            for (name, body, mode) in entries {
+                let options = SimpleFileOptions::default().unix_permissions(*mode);
+                if name.ends_with('/') {
+                    writer.add_directory(*name, options).expect("dir");
+                } else {
+                    writer.start_file(*name, options).expect("file");
+                    writer.write_all(body).expect("write");
+                }
+            }
+            writer.finish().expect("finish");
+        }
+        cursor.into_inner()
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("xtask-aet-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("scratch");
+            Self(dir)
+        }
+        fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.0.join(name);
+            fs::write(&path, bytes).expect("write archive");
+            path
+        }
+        fn out(&self) -> PathBuf {
+            self.0.join("out")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn options(archive: PathBuf, out: PathBuf, strip: bool, expect: Option<&str>) -> Options {
+        Options {
+            archive,
+            out,
+            strip_root: strip,
+            expect_root: expect.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_tree_extracts_with_its_single_root_stripped() {
+        let scratch = Scratch::new("good");
+        let archive = scratch.write(
+            "a.zip",
+            &zip_with(&[
+                ("pkg/", b"", 0o755),
+                ("pkg/bin/", b"", 0o755),
+                ("pkg/bin/tool", b"tool bytes", 0o755),
+                ("pkg/README", b"readme", 0o644),
+            ]),
+        );
+        extract_tree(
+            &options(archive, scratch.out(), true, Some("pkg")),
+            Limits::default(),
+        )
+        .expect("extracted");
+        assert_eq!(fs::read(scratch.out().join("bin/tool")).expect("tool"), b"tool bytes");
+        assert_eq!(fs::read(scratch.out().join("README")).expect("readme"), b"readme");
+        // The root itself is stripped, not recreated underneath.
+        assert!(!scratch.out().join("pkg").exists());
+    }
+
+    #[test]
+    fn a_traversing_member_lands_nothing_at_all() {
+        // The archive `zip(1)` will not build. Note the assertion is not only
+        // that the call failed: a refusal that had already written the safe
+        // member would leave a tree a later step builds on.
+        let scratch = Scratch::new("evil");
+        let archive = scratch.write(
+            "a.zip",
+            &zip_with(&[("pkg/ok", b"fine", 0o644), ("pkg/../../escaped", b"pwned", 0o644)]),
+        );
+        assert!(extract_tree(
+            &options(archive, scratch.out(), false, None),
+            Limits::default()
+        )
+        .is_err());
+        assert!(!scratch.out().join("pkg/ok").exists(), "nothing was written");
+    }
+
+    #[test]
+    fn an_archive_members_type_bits_never_reach_the_filesystem() {
+        // A mode word carries type bits beside permissions, and `0o104755` is
+        // a regular file that is also setuid. Handing the whole word to
+        // `set_permissions` is how an extracted file acquires a setuid bit
+        // nobody in this repository put there.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let scratch = Scratch::new("mode");
+            let archive = scratch.write("a.zip", &zip_with(&[("f", b"x", 0o104755)]));
+            extract_tree(
+                &options(archive, scratch.out(), false, None),
+                Limits::default(),
+            )
+            .expect("extracted");
+            let mode = fs::metadata(scratch.out().join("f")).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o7777, 0o755, "permission bits only");
+            assert_eq!(mode & 0o4000, 0, "and never setuid");
+        }
+    }
+
+    #[test]
+    fn each_bound_refuses_on_its_own() {
+        let scratch = Scratch::new("bounds");
+        let archive = scratch.write(
+            "a.zip",
+            &zip_with(&[("a", b"aaaaaaaaaa", 0o644), ("b", b"bbbbbbbbbb", 0o644)]),
+        );
+        let opts = || options(archive.clone(), scratch.out(), false, None);
+        assert!(extract_tree(&opts(), Limits::default()).is_ok(), "unbounded, it extracts");
+
+        // Compressed size.
+        assert!(extract_tree(
+            &opts(),
+            Limits { compressed_bytes: 1, ..Limits::default() }
+        )
+        .is_err());
+        // Entry count.
+        assert!(extract_tree(&opts(), Limits { entries: 1, ..Limits::default() }).is_err());
+        // Expanded size — the bound a zip bomb crosses while staying small on
+        // disk, so it is the one that must not be inferred from the other two.
+        assert!(extract_tree(
+            &opts(),
+            Limits { expanded_bytes: 5, ..Limits::default() }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn an_expected_root_that_does_not_match_is_refused() {
+        let scratch = Scratch::new("root");
+        let archive = scratch.write(
+            "a.zip",
+            &zip_with(&[("other/", b"", 0o755), ("other/f", b"x", 0o644)]),
+        );
+        assert!(extract_tree(
+            &options(archive, scratch.out(), true, Some("pkg")),
+            Limits::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn an_expected_root_without_stripping_is_refused_at_the_arguments() {
+        // Asking which top-level directory an archive has, while telling the
+        // extractor not to work one out, is a question with no answer. Silently
+        // accepting it would answer a different one.
+        let args = ["--archive", "a.zip", "--out", "o", "--expect-root", "pkg"]
+            .map(str::to_string)
+            .to_vec();
+        assert!(parse_args(args).is_err());
+    }
 }

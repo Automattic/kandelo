@@ -1,0 +1,50 @@
+{
+  "_comment": "The tree extractor. Its bounds are injectable so a trial can be killed by a test that does not build a 256 MiB archive \u2014 a bound only ever tested by not being hit is a bound nobody has tested. One trial was dropped before it ever ran: it renamed plan_entries to a function that does not exist, so the BUILD would fail and the harness would score a kill. A mutant that cannot compile proves nothing about the tests \u2014 it is a green that means 'this did not build'. The property it aimed at, writing nothing until the whole plan stands, is covered by the traversal test asserting the safe member was never written.",
+  "file": "tools/xtask/src/archive_extract_tree.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" archive_extract_tree >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "an archive of any compressed size is accepted",
+      "scope": "fn extract_tree(",
+      "scope_end": "\n}\n",
+      "find": "    if len == 0 || len > limits.compressed_bytes {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "an archive of any entry count is accepted",
+      "scope": "fn extract_tree(",
+      "scope_end": "\n}\n",
+      "find": "    if zip.len() == 0 || zip.len() > limits.entries {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "an archive may expand without bound",
+      "scope": "fn extract_tree(",
+      "scope_end": "\n}\n",
+      "find": "        if expanded > limits.expanded_bytes {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "the expanded total is never accumulated",
+      "scope": "fn extract_tree(",
+      "scope_end": "\n}\n",
+      "find": "        expanded = expanded\n            .checked_add(entry.size())",
+      "replace": "        expanded = expanded\n            .checked_add(0)"
+    },
+    {
+      "name": "a member's type bits are written to the filesystem",
+      "scope": "fn set_mode(path: &Path, mode: u32)",
+      "scope_end": "\n}\n",
+      "find": "    let permissions = fs::Permissions::from_mode(mode & 0o777);",
+      "replace": "    let permissions = fs::Permissions::from_mode(mode);"
+    },
+    {
+      "name": "an expected root is accepted without anything to compare it to",
+      "scope": "fn parse_args(",
+      "scope_end": "\n}\n",
+      "find": "    if expect_root.is_some() && !strip_root {",
+      "replace": "    if false {"
+    }
+  ]
+}
