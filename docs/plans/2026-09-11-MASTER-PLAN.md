@@ -3983,6 +3983,39 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### Three path rules disagree about a backslash, and the port must decide rather than transliterate
+
+**Measured 2026-09-13, before touching the second port target.** "Is this path
+safe" is answered three times in this repository, and the three answers are not
+the same:
+
+| rule | where | backslash | NUL | length cap | trailing `/` |
+|---|---|---|---|---|---|
+| archive entries | `xtask archive_paths` (Rust, ported) | **refused** | refused | none | stripped |
+| manifest paths | `vfs-product-builder-contract.ts` (port target) | **a separator** | not checked | 4,096 | not stripped |
+| lazy archive members | `host/src/vfs/lazy-archive-paths.ts` (shared) | **refused** | refused | `maxPathBytes` | not stripped |
+
+Some of the differences are legitimate context: an archive entry spells a
+directory with a trailing slash and a mount prefix is absolute where the others
+are relative. **The backslash is not.** Two rules refuse `a\b` outright; the
+third SPLITS on it, so `a\b` becomes two components and is accepted. On POSIX
+that string is one legal filename containing a backslash — so the two treatments
+do not merely differ in strictness, they disagree about what the path IS.
+
+**Neither is obviously wrong**, which is exactly why it must be decided rather
+than transliterated. Refusing is safer and may reject a legitimate filename;
+splitting is Windows-compatible and turns one name into two components. A port
+that copies the existing behaviour faithfully would carry the disagreement into
+Rust and make it permanent.
+
+**NUL is not checked at all by the manifest rule.** That one is not a judgement
+call: a path is eventually handed to a C API, where NUL truncates it, so a
+manifest naming `a b` would validate here and mean `a` there. Whatever is
+decided about backslashes, this is a gap to close in the port.
+
+**Recorded before starting rather than discovered during**, because the moment
+to notice that three implementations disagree is before a fourth is written.
+
 ### The cutover landed, and I was wrong to defer it
 
 **2026-09-13, `1cf5aaec7`.** I had written that the cutover "wants a session
