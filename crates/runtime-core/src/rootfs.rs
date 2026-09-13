@@ -291,6 +291,13 @@ struct RootfsState {
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
     archives: BTreeMap<u32, ArchiveEntry>,
+    /// The capacity a builder asked the next exported image to have, if any.
+    ///
+    /// A product declares this (`expectedMaxByteLength`) and its publication
+    /// gate checks the artifact against it. Without it the export sizes to its
+    /// own tree, so the image has no runtime growth room and meets no declared
+    /// capacity — see the master plan, gap 14.
+    image_capacity_bytes: Option<u64>,
     /// Image metadata for the next export, as opaque bytes. The kernel neither
     /// writes nor reads what is in here — `version`, `kernelAbi`, `createdBy`
     /// are the builder's statements about its own artifact — but the section
@@ -353,6 +360,7 @@ impl RootfsState {
             next_ino: 1,
             archives: BTreeMap::new(),
             image: None,
+            image_capacity_bytes: None,
             image_metadata: None,
         }
     }
@@ -3777,8 +3785,20 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
     // files can need a larger maximum than its bytes do.
     let inode_requirement = (inode_count + 2).saturating_mul(4);
-    let mut max_blocks =
-        u32::try_from(core::cmp::max(inode_requirement, 64)).map_err(|_| Errno::EIO)?;
+    // A requested capacity enters here as a FLOOR rather than replacing the
+    // computation: the tree's own requirement still has to be met, and the loop
+    // below still converges `data_start` against whichever is larger. Replacing
+    // it would let a small request produce an image that cannot hold its own
+    // contents.
+    let requested_blocks = ROOTFS
+        .with(|state| state.image_capacity_bytes)
+        .map(|bytes| bytes.div_ceil(4096))
+        .unwrap_or(0);
+    let mut max_blocks = u32::try_from(core::cmp::max(
+        core::cmp::max(inode_requirement, 64),
+        requested_blocks,
+    ))
+    .map_err(|_| Errno::EIO)?;
     let mut data_start = planned_data_start(max_blocks);
     // One or two rounds converge: a larger maximum needs a larger block bitmap,
     // which pushes `data_start` out, which needs a larger maximum.
@@ -4074,6 +4094,22 @@ where
 /// campaign has spent this lane reducing to one.
 ///
 /// Empty clears it, so a builder can unset without a second entry point.
+/// Ask the next exported image to be capable of growing to `bytes`.
+///
+/// A FLOOR, not a size: the export still sizes itself to hold the tree, and a
+/// request smaller than that is met by the tree's own requirement rather than
+/// refused. Zero clears the request.
+///
+/// Separate from the tree because it is a statement about the ARTIFACT, not
+/// about its contents — the same product profile that declares it also checks
+/// the published image against it.
+pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        state.image_capacity_bytes = if bytes == 0 { None } else { Some(bytes) };
+    });
+    Ok(())
+}
+
 pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
     let len = crate::sffs_container::MAX_SECTION_LEN as usize;
     if metadata.len() > len {

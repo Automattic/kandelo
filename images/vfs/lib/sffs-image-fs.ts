@@ -63,7 +63,7 @@ interface ModuleExports {
     archiveBytes: bigint,
     archivePayload: number, archivePayloadLen: number,
   ): number;
-  sm_set_image_metadata(p: number, pl: number): number;
+  sm_set_image_options(capacityBytes: bigint, p: number, pl: number): number;
   sm_check_headroom(minBytes: bigint, minInodes: bigint, o: number, ol: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
 }
@@ -647,13 +647,39 @@ export class SffsImageFs {
    *
    * Passed as bytes and never parsed by the kernel. Pass `null` to clear.
    */
+  /**
+   * The capacity the exported image should declare — a FLOOR on its growth
+   * ceiling, not a size.
+   *
+   * A product declares this (`expectedMaxByteLength`) and its publication gate
+   * checks the artifact against it. Without it the export sizes to its own
+   * tree, so the image meets no declared capacity and has no runtime growth
+   * room at all.
+   *
+   * Held here and sent with the metadata because both are statements about the
+   * artifact rather than operations on the tree, and one export carries both.
+   */
+  private requestedCapacityBytes = 0;
+
+  setImageCapacity(bytes: number): void {
+    this.requestedCapacityBytes = bytes;
+    this.setImageMetadata(this.lastMetadata);
+  }
+
+  private lastMetadata: unknown | null = null;
+
   setImageMetadata(metadata: unknown | null): void {
+    this.lastMetadata = metadata;
     const bytes = metadata === null
       ? new Uint8Array(0)
       : encoder.encode(JSON.stringify(metadata));
     this.withBytes(bytes, (p, pl) =>
       this.check(
-        this.exports.sm_set_image_metadata(bytes.byteLength === 0 ? 0 : p, pl),
+        this.exports.sm_set_image_options(
+          BigInt(this.requestedCapacityBytes),
+          bytes.byteLength === 0 ? 0 : p,
+          pl,
+        ),
         "setImageMetadata",
         "",
       ));

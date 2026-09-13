@@ -592,7 +592,13 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     }
 }
 
-/// Set the image-metadata section the exported container will carry.
+/// Set what the exported image should be: its declared capacity, and the
+/// metadata section it carries.
+///
+/// `capacity_bytes` is a FLOOR on the growth ceiling, not a size — the export
+/// still sizes itself to hold the tree, and 0 means "no request". A product
+/// declares this and its publication gate checks the artifact against it;
+/// without it the export sizes to its own tree and meets no declared capacity.
 ///
 /// Opaque bytes: the builder's statements about its own artifact (`version`,
 /// `kernelAbi`, `createdBy`). The kernel stores and emits them without reading
@@ -601,7 +607,20 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
 /// # Safety
 /// `ptr`/`len` must describe a readable range, or `len` must be 0.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sm_set_image_metadata(ptr: usize, len: usize) -> i32 {
+pub unsafe extern "C" fn sm_set_image_options(
+    capacity_bytes: u64,
+    ptr: usize,
+    len: usize,
+) -> i32 {
+    // Capacity and metadata travel together because they are the same KIND of
+    // thing: statements a builder makes about the artifact it wants, as opposed
+    // to operations on the tree inside it. One export for "settings for the
+    // image you will produce" rather than one per setting — the same reasoning
+    // that folded capacity into the headroom record instead of adding a second
+    // query.
+    if let Err(e) = rootfs::set_image_capacity(capacity_bytes) {
+        return err(e);
+    }
     let bytes: &[u8] = if len == 0 {
         b""
     } else {
@@ -1243,7 +1262,7 @@ mod tests {
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
         let metadata = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
         assert_eq!(
-            with_path(metadata, |p, l| unsafe { sm_set_image_metadata(p, l) }),
+            with_path(metadata, |p, l| unsafe { sm_set_image_options(0, p, l) }),
             0
         );
 
@@ -1258,7 +1277,7 @@ mod tests {
         );
 
         // Clearing it removes the section rather than leaving an empty one.
-        assert_eq!(unsafe { sm_set_image_metadata(0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0) }, 0);
         let cleared = drain_export();
         assert!(runtime_core::sffs::metadata_section(&cleared).expect("walk").is_none());
     }
@@ -1488,6 +1507,52 @@ mod tests {
     }
 
     #[test]
+    fn a_requested_capacity_raises_the_ceiling_without_shrinking_the_image() {
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+
+        let ceiling_of = || -> u64 {
+            let image = drain_export();
+            let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+            runtime_core::sffs::Sffs::mount(body)
+                .expect("mount")
+                .growth_ceiling_bytes()
+                .expect("ceiling")
+        };
+
+        // Without a request the export sizes to its own tree — gap 14's
+        // starting condition, and why a declared capacity was unmeetable.
+        let unrequested = ceiling_of();
+
+        // A request raises it. This is the number a product declares and its
+        // publication gate checks the artifact against.
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0) }, 0);
+        let requested = ceiling_of();
+        assert!(
+            requested >= 64 * 1024 * 1024,
+            "the declared capacity is met: {requested}",
+        );
+        assert!(requested > unrequested, "and it is a raise, not a coincidence");
+
+        // A request SMALLER than the tree needs is a floor, not a size: the
+        // tree's own requirement still wins, because an image that cannot hold
+        // its contents is not a smaller image, it is a broken one.
+        assert_eq!(unsafe { sm_set_image_options(1, 0, 0) }, 0);
+        assert_eq!(
+            ceiling_of(),
+            unrequested,
+            "a request below the tree's requirement changes nothing",
+        );
+
+        // And zero clears it.
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0) }, 0);
+        assert_eq!(ceiling_of(), unrequested);
+    }
+
+    #[test]
     fn headroom_is_judged_with_the_numbers_behind_the_verdict() {
         sm_reset();
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
@@ -1566,12 +1631,34 @@ mod tests {
              what it occupies",
         );
 
-        // NOTE, and it is a gap rather than a property: that difference is
-        // currently a CONSTANT — the export derives its ceiling from the tree,
-        // so every exported image has exactly the fixed slack and no runtime
-        // growth room. A builder's declared `expectedMaxByteLength` does not
-        // reach the export at all. See the master plan, gap 14.
-        assert_eq!(free_bytes, 64 * 4096, "the fixed slack, pending gap 14");
+        // With no requested capacity the export sizes to its tree, so this is
+        // the fixed slack — which is what made the check meaningless before a
+        // capacity could be asked for (gap 14).
+        assert_eq!(free_bytes, 64 * 4096, "the fixed slack, with nothing requested");
+
+        // Ask for a capacity and the headroom becomes a real measurement: it
+        // reflects the room the product declared, and it FALLS as the tree
+        // grows into it. That is the property the assertion exists for, and it
+        // was unreachable while the ceiling was derived from the tree.
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0) }, 0);
+        let (_, [roomy, _, _, _, _]) = read(0, 0);
+        assert!(
+            roomy > 60 * 1024 * 1024,
+            "a 64 MiB request leaves real headroom, got {roomy}",
+        );
+        let filler = alloc::vec![b'x'; 4 * 1024 * 1024];
+        assert_eq!(
+            with_two(b"/filler", &filler, |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o644, cp, cl)
+            }),
+            0
+        );
+        let (_, [after, _, _, _, _]) = read(0, 0);
+        assert!(
+            after < roomy,
+            "writing 4 MiB into the declared room consumes it: {roomy} -> {after}",
+        );
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0) }, 0);
 
         unsafe { sm_free(buf, 32) };
     }

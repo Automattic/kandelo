@@ -189,14 +189,14 @@
       "name": "the export headroom check ignores free inodes",
       "scope": "pub fn check_export_headroom(",
       "scope_end": "\n}\n",
-      "find": "    let met = crate::image_policy::check_headroom(&fs, headroom).is_ok();",
+      "find": "    let met =\n        free_bytes >= headroom.minimum_free_bytes && st.f_ffree >= headroom.minimum_free_inodes;",
       "replace": "    let met = free_bytes >= headroom.minimum_free_bytes;"
     },
     {
-      "name": "the export headroom check judges an empty filesystem instead of the image",
+      "name": "the reported headroom is not the image's own measurement",
       "scope": "pub fn check_export_headroom(",
       "scope_end": "\n}\n",
-      "find": "    let free_bytes = st.f_bfree.saturating_mul(u64::from(st.f_frsize));",
+      "find": "    let free_bytes = ceiling.saturating_sub(occupied);",
       "replace": "    let free_bytes = u64::MAX;"
     },
     {
@@ -205,6 +205,20 @@
       "scope_end": "\n}\n",
       "find": "    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()",
       "replace": "    let _ = source;\n    Ok(0)"
+    },
+    {
+      "name": "a requested capacity is ignored",
+      "scope": "    let requested_blocks = ROOTFS",
+      "scope_end": "\n        .unwrap_or(0);\n",
+      "find": "        .map(|bytes| bytes.div_ceil(4096))",
+      "replace": "        .map(|_| 0u64)"
+    },
+    {
+      "name": "a requested capacity replaces the tree's requirement instead of flooring it",
+      "scope": "    let mut max_blocks = u32::try_from(core::cmp::max(",
+      "scope_end": "\n    .map_err(|_| Errno::EIO)?;\n",
+      "find": "        core::cmp::max(inode_requirement, 64),\n        requested_blocks,",
+      "replace": "        requested_blocks,\n        requested_blocks,"
     }
   ]
 }
