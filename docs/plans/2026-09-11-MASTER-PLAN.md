@@ -3284,6 +3284,39 @@ either case. That unblocks two of the nine remaining files **without the
 headroom decision**, which is worth knowing because it means the funnel's
 `statfs` is not the only thing left to do while that call is pending.
 
+### What "importers to 0" actually costs: the bridge cannot load a base image
+
+**Measured 2026-09-12, and it bounds the whole repoint.** Three of the remaining
+blocked files are DERIVED builders — `shell-vfs-build.ts`,
+`package-shell-vfs-build.ts`, `build-php-test-vfs-image.ts`. They call
+`getImageMetadata`, `rebaseToNewFileSystem` and
+`verifyImportedLazyAtomicGroupSeals`, and the first of those reads what
+`shell-vfs-build.ts` itself calls *"inherited shell image metadata"* — it comes
+from a base image the builder LOADED, not from anything it set.
+
+**`SffsImageFs` has no way to load an image.** `create()` makes an empty tree
+and that is all; there is no `fromImage`. So a bridge `getImageMetadata` that
+returned what `setImageMetadata` was given would be quietly wrong for exactly
+the builders that need it — it would answer a different question and look
+right.
+
+The kernel HAS the capability: `rootfs::load_image` is what boots a machine. But
+it takes a host byte-source callback, and a zero-import module cannot call the
+host — so exposing it means a push-shaped path (write the image in, then
+finish), which is at least two more entry points plus the streaming protocol
+around them.
+
+**So the reachable floor for `imageBuilderFilesystemImporters` is not 0 today,
+and the gap is not the interface.** The repointable set is 29 of 37; of the
+eight blocked, one is the funnel (`statfs`, one decision away), three are
+derived builders needing image loading, one is a port target
+(`staged-product-inputs.ts`), and three use lazy-archive APIs this campaign has
+already retired.
+
+Recorded so the budget's 0 target is read as what it is: the END of this lane,
+reached through a capability increment nobody has scheduled, not through more
+repointing.
+
 ### What the repoint actually costs, measured per file — 2026-09-12
 
 **The importer count can reach 12 of 36.** Repointing the 24 files whose
