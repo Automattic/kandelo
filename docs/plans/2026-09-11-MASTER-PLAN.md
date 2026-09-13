@@ -1400,6 +1400,41 @@ inherits four errors the host's own gate deliberately excludes — which is the
 concrete reason the images gate cannot simply require zero. Small, and it is
 the kind of coupling that becomes load-bearing if left.
 
+### V4 measured on a real image: 309 of 374 entries survive, and 25.1 MiB does not
+
+**2026-09-12, `xtask vfs-image roundtrip`.** V4's round trip had only been
+tested against trees built inside a unit test — a handful of files, one archive,
+nothing at scale. Run against the shipped 16 MB rootfs instead:
+
+| | result |
+|---|---|
+| entries | 374 loaded, **309 round-trip identically** |
+| hard-link grouping | **preserved exactly** (compared as sets of paths, since an export renumbers) |
+| deferred files | **65 in, 0 out** — and the 65 differing entries are the SAME SET as the 65 deferred, not merely the same count |
+| content those 65 describe | **25,277,328 bytes — 25.1 MiB** |
+| among them | **`/usr/bin/sudo`**, `/usr/bin/bash`, `/usr/bin/coreutils` |
+
+**This is the limit already recorded, not a new defect.** A `KLZY`-described
+image carries no payloads to retain, so the export has nothing to re-emit and
+the files come back as zero-byte ordinary files. What changed is that it is now
+a number on production data instead of a note — and the number names the file
+lane S's defect is about.
+
+**It also sharpens why V5/Y5 matters.** The producer cutover is not tidiness: it
+is what stops 25 MiB of a 16 MB image going missing through a path the kernel
+already supports on both ends. Until the producers emit `SDEF`, the Rust export
+is correct only for images it produced itself.
+
+**Two corrections the run forced on the comparison, both worth keeping:**
+
+* **Inode NUMBERS are not part of equivalence.** Comparing them reported all 374
+  entries as differing — measuring the renumbering rather than the tree, and
+  renumbering is exactly why a deferred file's identity cannot ride on an inode
+  across a rewrite. An equivalence bar that flags every entry is H-5 in its
+  purest form: it answers a different question and looks thorough doing it.
+* The export's byte source must serve image-backed content. Refusing it is not a
+  stricter test; it fails at the first content byte.
+
 ## What is left in lane V
 
 * **V5 — the producer side.** The format is done; the TypeScript writers must
