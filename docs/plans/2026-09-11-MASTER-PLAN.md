@@ -2517,7 +2517,8 @@ glob at expansion time.
 files were checked out over this worktree's and the prepared patch applied
 cleanly. It moves no number (3 failed / 86 passed, identical before and after,
 and those three failures are lane L's unbanked rebaseline plus two of lane G's,
-not this patch's). It fails loudly on a renamed counted file AND on a glob that
+not this patch's — that commit's budget has `unguardedLayoutModules` at ceiling
+1 and open, this branch's at 0, because lane G finished after lane S branched). It fails loudly on a renamed counted file AND on a glob that
 matches nothing — the variant a literal-path check misses — and
 `host/src/fork-*.ts` still expands to 36 files and counts normally. The
 worktree was restored and this branch's own gate re-run at 81 passed.

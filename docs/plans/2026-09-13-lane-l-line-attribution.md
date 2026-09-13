@@ -1097,6 +1097,8 @@ rather than a matter of care:
 | `until [ "$x" -ge N ]; do wait; done` | `[` errors, loop continues waiting | closed |
 | `if [ "${x:-0}" != 1 ]; then block; fi` | string compare, no error | closed |
 | `[ -x path ] \|\| refuse` | false for a dangling symlink | closed |
+| `suite \| grep 'Tests'` then read the line | pipeline status is GREP's; a suite that died before printing shows nothing to read | **OPEN** |
+| `set -- $pair` in zsh, then `[ "$2" -eq 0 ]` | no word split: `$2` is empty, the test errors | **OPEN** |
 
 **The dangerous shape is a NUMERIC comparison inside an `if` whose else branch
 is the permissive path.** `[` treats a non-integer operand as an error, and an
@@ -1119,6 +1121,32 @@ comparisons and is safe by construction — `drift`, `version_bumped` and
 never parsed. The other matches across `scripts/` compare exit codes and
 locally computed counts. **The flaw was lane L's own tooling, and the rule is
 offered for its transferability, not because the repository has the bug.**
+
+### The last two rows are this lane's own, found after the work was done
+
+**Every validation this lane reported was read out of a pipe.** The shape was
+`npx vitest run ... 2>&1 | grep -E "Tests  |FAIL"`, and the verdict lines that
+came back were then read and quoted. Those lines are real evidence of the
+counts they state, and re-checking has not changed a single number — but the
+pipeline's exit status is `grep`'s, not the suite's, so the method cannot see
+a suite that exits non-zero while printing passing text, or one that dies
+before it prints anything at all. The commit messages say "All exit 0"; when
+they were written, nothing had looked at an exit code.
+
+Re-run gating on `$?` rather than on stdout: `budget=0 ts=0 shared=0
+host-native=0`. The claims hold. The way they were established did not, and
+the difference is exactly what the campaign's own rule is about.
+
+**The checker written to fix this failed open on its first attempt**, which is
+the more useful half. It collected four `name status` pairs and did
+`set -- $pair; [ "$2" -eq 0 ] || fail=1`. In zsh an unquoted parameter
+expansion is NOT word-split, so `$1` was the whole pair and `$2` was empty,
+the comparison never happened, and it printed **ALL FOUR EXIT 0** on the
+strength of nothing. Written in the same session as the argument against
+guards that cannot fail, to fix a guard that could not fail, and shipped in
+that state until its own output looked wrong. The second attempt compares each
+status by name and was perturbed with a known-failing command before being
+believed.
 
 ## A second candidate standing hazard, learned the hard way
 
@@ -1184,7 +1212,9 @@ Three consequences, none of which this lane can settle alone:
   two and run unmodified, report the figure themselves: *"hostKernelPlumbing-
   TypeScript is 4575, which is more than 120 below its ceiling of 4734. Lower
   the ceiling to 4575 in docs/surface-budget.json in this commit."* The
-  instrument demands the rebaseline; it does not merely permit it. The
+  instrument demands the rebaseline; it does not merely permit it: the banked
+  test asserts `actual > ceiling - slack - 1`, which is `4734 - 120 - 1 =
+  4613`, and a reduction of 159 code lines drops the measure below it. The
   independently computed figure below was **4,575**, which is the same
   number. The reduction is worth **159 code
   lines** against 164 by `wc -l` — the five-line difference is comment and
@@ -1204,9 +1234,14 @@ Three consequences, none of which this lane can settle alone:
   **Two other surfaces fail on that branch and neither is lane L's.** Running
   lane S's gate here leaves three failures: this one, and two for lane G
   (`unguardedLayoutModules` unbanked at 0, and the lane-closure test that
-  follows from it). Lane G's reduction is present on this branch and unbanked
-  in that commit's budget. Recorded so whoever merges does not read three
-  failures as lane L's debt.
+  follows from it). The cause is branch ordering, not a defect on either side:
+  that commit's budget carries `unguardedLayoutModules` at **ceiling 1, open**,
+  while this branch's carries **ceiling 0**, and the two files even name the
+  lane differently — *"14/15 layout modules anchored"* there against *"all 15"*
+  here. Lane G finished its last module after lane S branched, so lane S's
+  budget is measuring a tree that is further along than it knows. It resolves
+  itself when the branches meet. Recorded so whoever merges does not read three
+  red tests as lane L's debt.
 - **The ratchet fix has two forms, and the second one is now verified.** The
   hole survives the conversion: lane S's `lineCount` reads per file and would
   fail loudly, but `expandGlobs` runs `ls -1d ... 2>/dev/null || true` and
