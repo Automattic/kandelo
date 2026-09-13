@@ -807,6 +807,17 @@ mod tests {
         // different promise about where the bytes are.
         let value = canonical_with(serde_json::json!({ "reference": good }));
         assert!(check(&value).is_err(), "embedded placement");
+
+        // A PRODUCT IMAGE is not an input, however it is addressed. The
+        // product form exists for it and binds the ABI version; letting it
+        // through the input form would drop that binding entirely.
+        let value = canonical_with(serde_json::json!({
+            "kind": "product-image",
+            "declared_materialization": "lazy",
+            "effective_materialization": "lazy-reference",
+            "reference": good,
+        }));
+        assert!(check(&value).is_err(), "a product image through the input form");
     }
 
     #[test]
@@ -839,6 +850,17 @@ mod tests {
             "reference": at(44),
         }));
         assert!(check(&value).is_err(), "not a product image");
+
+        // A product image fetched LAZILY is an image whose bytes are not there
+        // when the build needs them. The matrix permits runtime/lazy/
+        // lazy-reference in general, so only this rule refuses it here.
+        let value = canonical_with(serde_json::json!({
+            "kind": "product-image",
+            "declared_materialization": "lazy",
+            "effective_materialization": "lazy-reference",
+            "reference": at(44),
+        }));
+        assert!(check(&value).is_err(), "a product image fetched lazily");
     }
 
     #[test]
