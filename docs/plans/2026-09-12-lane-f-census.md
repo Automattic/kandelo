@@ -2550,3 +2550,104 @@ has WIRING on the host side, and the name does not distinguish them.**
 The useful consequence is that Category A is not a list of deletions. Each entry
 is a question of how much of its surface migrated, answerable only by reading
 its call sites, and several will shrink rather than disappear.
+
+## §47 — Correction to §46: I read a comment, not a call graph
+
+§46 recorded that Category A's `fork-reference-segments` "is not a deletion"
+because its decoded transaction still feeds `ForkEarlyChildReferenceProvider`
+and both `attachChild` paths, quoting the comment at `worker-main.ts:4548`.
+
+That finding is wrong, and the way it is wrong matters more than the entry.
+
+**`host/src/fork-early-reference-provider.ts` does not exist.** Commit
+`49d7f6574` ("the build is now broken") moved it to
+`attic/fork-typescript-do-not-use/` along with `fork-reference-segments.ts`.
+`worker-main.ts:137` still imports it, so that import is DANGLING — it is one
+of the 148 tsc errors, not a live consumer. The comment I quoted describes the
+arrangement before the attic move; it survived only because nothing edited the
+lines around it. **A stale comment is evidence of what was once true, never of
+what is.** This is the fourth time in this lane that reading a name or a comment
+gave a worse answer than reading the call sites (§31, §33, §46, and the
+`forkModuleEntryPoints` miscount).
+
+**What the provider actually consumes.** Across its 1619 lines, `transaction`
+is touched exactly three times:
+
+| Line | Use |
+|---|---|
+| 403 | `transaction.graph.nodes` |
+| 407 | `transaction.vectors`, kept as "the immutable base" for an append overlay |
+| 1013 | `transaction` passed WHOLE into `adoptChildReplay` — handed on, never read |
+
+Only line 407 has any substance, and it is a representation preference (a JS
+page-tree that appends without copying), not a capability the host uniquely has.
+Line 403 is already served by the module: the same `worker-main.ts` comment
+says the static-root catalog mirror now reads node kinds and coordinates from
+the module's `fm_decoded_*` accessors.
+
+**And the decode is a second decode of the same bytes.** The module already
+does the wire decode internally — `fork_codec::reference_segments`, seeded by
+`fm_begin_reference_replay`. The host copy is a duplicate whose only remaining
+consumer is the provider's overlay base.
+
+So the corrected finding is: **the decode is host code because its consumer is
+host code, and that consumer is already in the attic.** It is blocked behind
+porting the provider, not behind a host-floor capability.
+
+This still supports §19 — the triage is a hypothesis list, not a work list —
+but for the opposite reason than §46 gave. The maintainer named the standing
+rule directly: *whenever deletion isn't happening, ask whether it has to be
+host code.* "Not deletable" and "must be host" are different findings, and only
+the second is a floor. A triage note that stops at the first retires a
+candidate without ever testing it against the campaign's goal, and makes the
+list self-confirming.
+
+## §48 — The reconcile: where the host floor actually is, and the swap not taken
+
+`__wpk_fork_module_state_table_reconcile` is served (commit `cd1247f60`).
+Unserved guest imports: 9 → 8.
+
+The interesting part is the ONE thing the host kept, and the alternative that
+would have kept nothing.
+
+The archive head is host-supplied because the published KFLA archive belongs to
+the dynamic loader: it is not in the fork module-state arena, so the module
+cannot find it by walking its own records, and the host is what wrote the
+header there in the first place (`HostRequest::WriteArchive`,
+`crates/dylink/src/archive.rs`).
+
+**But §45 was imprecise.** It said the guest's
+`__wpk_fork_module_state_table_generation_addr` import is "the address of a
+FENCE rather than of the archive." True, and misleading: `archive.rs:396`
+publishes that fence at `header.address + ARCHIVE_GENERATION_OFFSET`, where
+`ARCHIVE_GENERATION_OFFSET = 40`. The fence is INSIDE the header. So
+
+    head = generation_addr - 40
+
+and the module could recover the head with no host call at all, by importing
+that one global.
+
+That was not taken, deliberately. It trades one host EXPORT call for one host
+IMPORT obligation, and `docs/surface-budget.json`'s own `forkModuleHostImports`
+rationale says the import obligation is the more expensive of the two per unit:
+every host must implement an import, while an export call costs one line at one
+call site. So the ceiling raise (`forkModuleHostDriveEntries` 24 → 25) buys the
+cheaper of two real options rather than paying for an absence of thought. The
+swap is a drop-in if the economics are ever judged differently.
+
+**One guard could not be made to fail.** The bounds check in the module's
+guest-memory archive view is unreachable: `decode_dylink_archive` validates
+every range against the same `len()` first, so no perturbation of the archive
+bytes reaches it. It is kept — the raw-pointer slice it protects is UB on an
+out-of-range address, not a trap — but it is now LABELLED as a backstop rather
+than left looking like a tested guard. H-2 says a guard that cannot fail is not
+a guard; the honest response is to say so in the code, not to delete a real
+protection or to pretend the perturbation passed.
+
+**A contract change fell out of it.** The module now carries its own table
+elements — the archive decoder's trait vtable — so its `dylink.0` table size is
+no longer zero and an empty `__indirect_function_table` import is a LinkError.
+Both production hosts were already right (host-native derives the table type
+from the import itself; the TypeScript layer reads `dylink.0`), so this only
+moved the two V8 fixtures. Worth recording because it is the first time the
+module's own table footprint became part of what a host must get right.
