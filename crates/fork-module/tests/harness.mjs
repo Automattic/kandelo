@@ -79,7 +79,16 @@ const memory = new WebAssembly.Memory({
 const importObject = {
   env: {
     memory,
-    __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    // NOT zero. The module carries its own elements now (the dylink archive
+    // decoder's trait vtable), so its `dylink.0` table size is non-zero and an
+    // undersized import is a LinkError. Production hosts read the real size --
+    // host-native from the import's own type, the TypeScript layer from the
+    // `dylink.0` custom section -- which this co-residency harness does not need
+    // to parse; it only needs a table no smaller than the module asks for.
+    __indirect_function_table: new WebAssembly.Table({
+      element: "anyfunc",
+      initial: 64,
+    }),
     // Phase 6 D6.1: the module imports the guest's funcref function catalog for
     // `__wpk_fork_ref_decode_funcref`. This co-residency harness never
     // reconstructs references, so an empty funcref table is inert here.

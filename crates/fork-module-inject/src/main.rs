@@ -219,6 +219,14 @@ const DECODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_decode_funcref";
 /// supplies a matching funcref table to the fork-module import (a host-owned
 /// mirror populated from the guest's catalog — identical funcref identities).
 const FUNCTION_CATALOG_IMPORT: &str = "__wpk_fork_function_catalog";
+
+/// Placeholder the fork module declares for one funcref table write during a
+/// reconcile. Rewritten below into a local thunk; see `inject_table_apply_thunk`.
+const TABLE_APPLY_THUNK_IMPORT: &str = "__wpk_fork_table_apply";
+
+/// The guest's own indirect call table -- the table a reconcile writes into.
+/// Named by the wasm tool convention, not by anything Kandelo chose.
+const INDIRECT_FUNCTION_TABLE_IMPORT: &str = "__indirect_function_table";
 const IMPORT_MODULE: &str = "env";
 
 /// The `NULL_ORDINAL` sentinel `fm_funcref_ordinal` returns for a Null recipe;
@@ -992,6 +1000,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_probe into a thunk")?;
     inject_capture_encode_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_encode into a thunk")?;
+    inject_table_apply_thunk(&mut module)
+        .context("rewriting __wpk_fork_table_apply into a thunk")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1392,6 +1402,57 @@ fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
             });
         })
         .with_context(|| format!("rewriting {CAPTURE_WITNESS_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
+/// Rewrite the table-write placeholder into a local thunk.
+///
+/// Rust cannot emit `table.set` on an imported table, so the fork module
+/// declares `__wpk_fork_table_apply(dest, catalog_slot, clear)` as an import
+/// and this replaces it with the three instructions it stands for. Rust keeps
+/// the reconcile's striding and bounds logic, where it is testable; only the
+/// write itself lives in emitted wasm.
+///
+/// Both bounds are wasm's own: an out-of-range `dest` or `catalog_slot` traps
+/// rather than writing somewhere else.
+fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != TABLE_APPLY_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
+    let funcref = ValType::Ref(RefType::FUNCREF);
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let dest = args[0];
+            let catalog_slot = args[1];
+            let clear = args[2];
+            body.local_get(dest)
+                .local_get(clear)
+                .if_else(
+                    Some(funcref),
+                    |then| {
+                        then.ref_null(RefType::FUNCREF);
+                    },
+                    |els| {
+                        els.local_get(catalog_slot).table_get(catalog);
+                    },
+                )
+                .table_set(indirect);
+        })
+        .with_context(|| format!("rewriting {TABLE_APPLY_THUNK_IMPORT} import into a thunk"))?;
     Ok(())
 }
 

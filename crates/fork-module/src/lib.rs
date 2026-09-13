@@ -207,6 +207,24 @@ mod wasm {
         /// `activation`'s codec, returning its recipe id. Injector-rewritten to
         /// a `call_indirect` through the drive table.
         fn __wpk_fork_capture_encode(activation: u32, slot: u32) -> i32;
+
+        /// Write one funcref table slot during a reconcile: set
+        /// `__indirect_function_table[dest]` from `__wpk_fork_function_catalog[
+        /// catalog_slot]`, or to null when `clear` is non-zero.
+        /// Injector-rewritten into a local thunk.
+        fn __wpk_fork_table_apply(dest: u32, catalog_slot: u32, clear: u32);
+    }
+
+    /// Safe wrapper over the injector-wired table-write placeholder.
+    ///
+    /// One slot per call, with Rust owning the loop. The alternative — a loop
+    /// inside the shim — would put the step striding and bounds logic in
+    /// emitted wasm, where it is far harder to test than in Rust.
+    fn table_apply_via_injector(dest: u32, catalog_slot: u32, clear: bool) {
+        // SAFETY: after injection this is a local thunk doing one `table.get`
+        // on the imported function catalog and one `table.set` on the guest's
+        // indirect function table, both bounds-checked by wasm itself.
+        unsafe { __wpk_fork_table_apply(dest, catalog_slot, u32::from(clear)) }
     }
 
     /// Safe wrapper over the injector-wired encode placeholder.
@@ -1593,6 +1611,15 @@ mod wasm {
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
         HOST_EXCEPTION_OWNER.store(u32::MAX, Ordering::Relaxed);
         RESUME_CATALOG_LEN.store(0, Ordering::Relaxed);
+        // The dylink table archive resets for the same COW reason as the
+        // catalogs above, but with a worse failure mode if it did not: a child
+        // inheriting the parent's APPLIED generation would decide it is already
+        // coherent and skip writes its own table never received. That is a
+        // silent wrong answer rather than an errno, so the reset matters more
+        // here than anywhere else in this block.
+        for word in &TABLE_ARCHIVE {
+            word.store(0, Ordering::Relaxed);
+        }
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
         FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
         Ok(())
@@ -5522,6 +5549,151 @@ mod wasm {
             ids.push(recipe as u32);
         }
         Ok(ids)
+    }
+
+    /// Guest linear memory as archive storage.
+    ///
+    /// The archive's record pointers are absolute offsets into the guest's
+    /// memory, and the module shares that memory, so a record is readable in
+    /// place. Raw-pointer slicing rather than indexing a whole-memory slice is
+    /// deliberate, for the reason `read_capture_bytes` documents: a slice based
+    /// at wasm address 0 miscompiles under range indexing in release.
+    struct GuestArchiveBytes;
+
+    impl fork_codec::dylink_archive::ArchiveBytes for GuestArchiveBytes {
+        fn len(&self) -> u64 {
+            mem_len_bytes() as u64
+        }
+
+        fn slice(&self, offset: u64, len: u64) -> Result<&[u8], Errno> {
+            let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+            let count = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(count).ok_or(Errno::EINVAL)?;
+            // UNREACHABLE BY CONSTRUCTION, and kept anyway. `decode_dylink_archive`
+            // bounds-checks every range it asks for against `self.len()`, which is
+            // this same value, so no perturbation of the archive bytes reaches this
+            // branch -- it is not a guard in the H-2 sense and no test can make it
+            // fail. It stays because the failure it prevents is not an error: the
+            // raw-pointer slice below is UB on an out-of-range address, not a trap,
+            // so a future decoder bug would corrupt the guest instead of erroring.
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: bounds-checked above, and the module shares the guest's
+            // linear memory, so `start` is a readable address in it.
+            Ok(unsafe { core::slice::from_raw_parts(start as *const u8, count) })
+        }
+    }
+
+    /// Resolve a patch's `(activation, ordinal)` to a merged function-catalog
+    /// slot, the same coordinate `funcref_ordinal_impl` produces.
+    fn catalog_slot(activation_id: u32, ordinal: u32) -> Result<u32, Errno> {
+        let base = match func_catalog_base(activation_id) {
+            Some(base) => base,
+            // No seeded base at all is the single-activation worker, where the
+            // base is 0 by definition. A MISSING base when others were seeded is
+            // a graph naming an activation this worker never registered, which
+            // is corruption rather than a default.
+            None if func_catalog_base_map_empty() => 0,
+            None => return Err(Errno::EINVAL),
+        };
+        base.checked_add(ordinal).ok_or(Errno::EINVAL)
+    }
+
+    // ---- Funcref table replication -----------------------------------------
+    //
+    // `crates/dylink` owns the protocol; `fork_codec::dylink_table_plan` decides
+    // what a reconcile must write; this applies it. See census §32 and §34.
+
+    /// The published loader archive this worker reconciles against:
+    /// `[head, owner, generation_low, generation_high]`.
+    ///
+    /// Seeded by the host because the archive is the dynamic linker's, not the
+    /// fork module's: it is not reachable from the fork module-state arena, and
+    /// the guest's own `table_generation_addr` import is the address of a FENCE
+    /// rather than of the archive (census §45).
+    static TABLE_ARCHIVE: [AtomicU32; 4] = [
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+    ];
+
+    /// Point this worker at the published loader archive it reconciles against.
+    ///
+    /// Called once per worker before any reconcile. A head of 0 means "no
+    /// archive published yet", which a reconcile reports as generation 0 rather
+    /// than as an error — a worker whose process has never published is
+    /// coherent by definition.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_table_archive(head: usize, owner: u32) {
+        let Ok(head) = u32::try_from(head) else {
+            set_err(Errno::EINVAL);
+            return;
+        };
+        TABLE_ARCHIVE[0].store(head, Ordering::Relaxed);
+        TABLE_ARCHIVE[1].store(owner, Ordering::Relaxed);
+        set_ok();
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_reconcile() -> i64`.
+    ///
+    /// Brings this worker's `__indirect_function_table` up to the newest
+    /// published generation and returns the generation it reached.
+    ///
+    /// The generation is published only AFTER every write lands: storing it
+    /// first would let a peer observe a generation whose entries are not there
+    /// yet. `-1` on failure, with the reason in `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_reconcile() -> i64 {
+        let head = TABLE_ARCHIVE[0].load(Ordering::Relaxed);
+        let owner = TABLE_ARCHIVE[1].load(Ordering::Relaxed);
+        let applied = (u64::from(TABLE_ARCHIVE[3].load(Ordering::Relaxed)) << 32)
+            | u64::from(TABLE_ARCHIVE[2].load(Ordering::Relaxed));
+        if head == 0 {
+            // Nothing published yet: coherent by definition.
+            set_ok();
+            return applied as i64;
+        }
+        let reconciled = (|| -> Result<u64, Errno> {
+            let pointer_width = format()?.pointer_width;
+            let archive = fork_codec::dylink_archive::decode_dylink_archive(
+                &GuestArchiveBytes,
+                u64::from(head),
+                pointer_width,
+            )?;
+            let steps = fork_codec::dylink_table_plan::plan_table_patches(
+                &archive.table_patches,
+                owner,
+                applied,
+            )?;
+            let reached = fork_codec::dylink_table_plan::planned_generation(
+                &archive.table_patches,
+                owner,
+                applied,
+            );
+            for step in &steps {
+                let slot = if step.clear {
+                    0
+                } else {
+                    catalog_slot(step.activation_id, step.ordinal)?
+                };
+                table_apply_via_injector(step.dest, slot, step.clear);
+            }
+            Ok(reached)
+        })();
+        match reconciled {
+            Ok(reached) => {
+                TABLE_ARCHIVE[2].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
+                TABLE_ARCHIVE[3].store((reached >> 32) as u32, Ordering::Relaxed);
+                set_ok();
+                reached as i64
+            }
+            Err(errno) => {
+                set_err(errno);
+                -1
+            }
+        }
     }
 
     /// Guest-facing `env.__wpk_fork_ref_gc_broker_encode(slot) -> recipe`.

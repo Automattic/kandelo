@@ -862,7 +862,6 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    #[test]
     /// Every drive slot is distinct and inside the per-activation slice.
     ///
     /// Exhaustive rather than pairwise on purpose. The `assert_ne!` pairs

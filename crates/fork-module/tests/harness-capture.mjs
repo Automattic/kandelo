@@ -47,6 +47,7 @@ const STACK_LOW = MODULE_BASE + MODULE_MEM;
 const STACK_SIZE = 1024 * 1024;
 const STACK_TOP = STACK_LOW + STACK_SIZE;
 const TABLE_BASE = 0;
+const RECONCILE_TABLE_SLOTS = 4096;
 // A scratch region in the low (guest-proxied) area for the argument arrays this
 // harness hands to fm_capture_define_gc. Well below MODULE_BASE, so it never
 // collides with the module's own data / BSS / stack.
@@ -62,7 +63,12 @@ const memory = new WebAssembly.Memory({
 const importObject = {
   env: {
     memory,
-    __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    // Sized for the table-reconcile block at the end of this file, and at
+    // least as large as the module's own dylink table minimum.
+    __indirect_function_table: new WebAssembly.Table({
+      element: "anyfunc",
+      initial: RECONCILE_TABLE_SLOTS,
+    }),
     __wpk_fork_function_catalog: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __wpk_fork_drive_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
     __wpk_fork_static_root_catalog: new WebAssembly.Table({ element: "anyref", initial: 0 }),
@@ -1284,6 +1290,122 @@ function i31Minter() {
   assert.equal(refused, -1, "an unclaimed value is refused");
   assert.equal(lastErrno(), EOPNOTSUPP, "and the reason is EOPNOTSUPP");
   transitTable.set(0, null);
+}
+
+// ---- Funcref table reconcile against the REAL published dylink archive ------
+//
+// The fixture is the same byte image `fork_codec::dylink_table_plan`'s
+// `plans_against_the_real_published_archive` uses: a memory dump whose KFLA
+// header sits at offset 4096. Here it proves the whole module-side path --
+// decode, plan, catalog resolution, and the injected `table.set` -- against
+// tables a host really supplied, which no Rust unit test can reach.
+{
+  const FIXTURE_HEAD = 4096;
+  const fixture = readFileSync(
+    new URL("../../fork-codec/testdata/dylink-archive-wasm32.bin", import.meta.url),
+  );
+  assert.ok(fixture.length > FIXTURE_HEAD, "fixture must contain its own header");
+  u8().set(fixture, 0);
+
+  const indirect = importObject.env.__indirect_function_table;
+  const catalog = importObject.env.__wpk_fork_function_catalog;
+  // Every catalog slot holds the SAME function, so a written slot is
+  // identifiable without knowing which ordinal the archive chose.
+  const SENTINEL = x.fm_last_errno;
+  const SLOTS = RECONCILE_TABLE_SLOTS;
+  catalog.grow(SLOTS, SENTINEL);
+  assert.equal(indirect.length, SLOTS, "the indirect table is sized for the plan");
+  // The module's OWN dylink entries are already in the table -- it was placed
+  // at TABLE_BASE. Those are not reconcile writes, so everything below counts
+  // the DELTA against them rather than the absolute occupancy.
+  const occupied = () => {
+    let n = 0;
+    for (let i = 0; i < SLOTS; i += 1) if (indirect.get(i) !== null) n += 1;
+    return n;
+  };
+  const ownEntries = new Map();
+  for (let i = 0; i < SLOTS; i += 1) {
+    const entry = indirect.get(i);
+    if (entry !== null) ownEntries.set(i, entry);
+  }
+  const baseline = ownEntries.size;
+  const added = () => occupied() - baseline;
+  // Reset to exactly the placement state: every reconcile write undone, every
+  // entry the module placed for itself put back, so the module stays callable.
+  const resetIndirect = () => {
+    for (let i = 0; i < SLOTS; i += 1) {
+      indirect.set(i, ownEntries.get(i) ?? null);
+    }
+  };
+
+  // Every reconcile reads the worker's pointer width, so the once-per-worker
+  // format seed comes first -- the same order a real host uses. It also RESETS
+  // the archive, which is what a COW child depends on.
+  x.fm_set_format(4, 0);
+  assert.equal(lastErrno(), 0, "wasm32 is a valid pointer width");
+
+  // An unpublished worker is coherent by definition: generation 0, no error.
+  x.fm_set_table_archive(0, 0);
+  assert.equal(lastErrno(), 0, "seeding an empty archive is not an error");
+  assert.equal(
+    Number(x.__wpk_fork_module_state_table_reconcile()),
+    0,
+    "no published archive reconciles to generation 0",
+  );
+  assert.equal(lastErrno(), 0, "and reports no error");
+  assert.equal(added(), 0, "an unpublished reconcile writes nothing");
+
+  // The real archive. The fixture's owner is whichever one carries patches;
+  // owner 3 is the one `plans_against_the_real_published_archive` exercises.
+  x.fm_set_table_archive(FIXTURE_HEAD, 3);
+  assert.equal(lastErrno(), 0, "seeding the published head succeeds");
+  const reached = Number(x.__wpk_fork_module_state_table_reconcile());
+  assert.equal(lastErrno(), 0, `reconcile errno=${lastErrno()}`);
+  assert.ok(reached > 0, `a published archive reaches a real generation (${reached})`);
+  // Without this the idempotence check below would pass VACUOUSLY on an
+  // archive that never wrote a slot in the first place.
+  const first = added();
+  assert.ok(first > 0, `the reconcile wrote table slots (${first})`);
+  // Every slot the reconcile CHANGED must hold a value it took from the
+  // function catalog, never something it invented. A cleared slot is null.
+  let changed = 0;
+  for (let i = 0; i < SLOTS; i += 1) {
+    const entry = indirect.get(i);
+    if (entry === (ownEntries.get(i) ?? null)) continue;
+    changed += 1;
+    if (entry !== null) {
+      assert.equal(entry, SENTINEL, `slot ${i} came from the function catalog`);
+    }
+  }
+  assert.ok(changed > 0, "the reconcile changed slots it did not already own");
+
+  // Idempotent: replaying from the generation just reached must write NOTHING.
+  // Clearing first is what makes that observable -- otherwise a second full
+  // rewrite would leave the table looking identical.
+  resetIndirect();
+  const again = Number(x.__wpk_fork_module_state_table_reconcile());
+  assert.equal(again, reached, "a second reconcile reaches the same generation");
+  assert.equal(added(), 0, "and writes nothing, because nothing moved");
+
+  // A head that names no header is a malformed archive, not an empty one.
+  x.fm_set_table_archive(FIXTURE_HEAD + 8, 3);
+  assert.equal(
+    Number(x.__wpk_fork_module_state_table_reconcile()),
+    -1,
+    "a head pointing into the middle of the header is refused",
+  );
+  assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
+  assert.equal(added(), 0, "a refused reconcile writes no slots");
+
+  // A head past the end of memory is refused by the bounds check rather than
+  // read out of the guest's memory.
+  x.fm_set_table_archive(memory.buffer.byteLength - 4, 3);
+  assert.equal(
+    Number(x.__wpk_fork_module_state_table_reconcile()),
+    -1,
+    "a head whose header would run past memory is refused",
+  );
+  assert.equal(lastErrno(), EINVAL, "and the reason is EINVAL");
 }
 
 console.log("fork-module capture harness: all assertions passed");
