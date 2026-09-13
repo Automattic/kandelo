@@ -680,12 +680,44 @@ mod tests {
 
     #[test]
     fn a_bounded_read_refuses_a_stream_that_exceeds_its_limit() {
-        // A slice stands in for the pipe. Reading to the end and then measuring
-        // would spend the memory before learning the number, so the refusal has
-        // to happen at the read.
         assert_eq!(read_bounded(&b"abcd"[..], 10, "fixture").expect("under"), b"abcd");
         assert_eq!(read_bounded(&b"abcd"[..], 4, "fixture").expect("exact"), b"abcd");
         assert!(read_bounded(&b"abcde"[..], 4, "fixture").is_err(), "one byte over");
+    }
+
+    /// A stream that never ends, and notices being over-read.
+    ///
+    /// A finite slice cannot test the `take`: five bytes exceed a four-byte
+    /// limit whether or not the read is bounded, so the length check refuses
+    /// either way and the mutant survives. The `take` is a MEMORY bound, and
+    /// the only thing that can observe it is a stream that would not stop.
+    struct Endless {
+        read: usize,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.read += buf.len();
+            assert!(
+                self.read < 1 << 20,
+                "read {} bytes from an endless stream: the bound is not \
+                 stopping the read, only measuring it afterwards",
+                self.read,
+            );
+            buf.fill(0);
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_bounded_read_stops_reading_rather_than_measuring_afterwards() {
+        // The property the length check cannot express: an endless stream must
+        // be ABANDONED near the limit, not consumed and then judged. Without
+        // the `take` this runs until the reader's own assertion fires — which
+        // is H-11's mutant-detectable-by-hanging, made to fail fast instead.
+        let error = read_bounded(Endless { read: 0 }, 64, "fixture")
+            .expect_err("an endless stream exceeds any limit");
+        assert!(error.contains("outside the accepted size bound"), "{error}");
     }
 
     #[test]
