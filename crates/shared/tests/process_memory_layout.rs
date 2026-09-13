@@ -123,3 +123,36 @@ fn a_thread_slot_declaration_resolves_to_what_the_program_asked_for() {
     assert_eq!(resolve_thread_slot_count(Some(7), 1024), Ok(7));
     assert_eq!(resolve_thread_slot_count(Some(-2), 1024), Err(-2));
 }
+
+/// The TypeScript half must still be reading this corpus.
+///
+/// "One corpus, both hosts" is a claim about two files, and nothing here
+/// could see it stop being true. If `host/test/process-memory-layout.test.ts`
+/// stopped reading `process-memory-layouts.json` -- or were deleted, which is the
+/// direction this campaign actually pushes, since its whole purpose is
+/// removing TypeScript -- this file would go on passing and the corpus would
+/// quietly be checked in one host while still describing itself as shared.
+///
+/// This does not forbid that deletion. It makes it deliberate: whoever takes
+/// the TypeScript half out has to come here and say so, in the same change.
+#[test]
+fn the_typescript_half_still_reads_this_corpus() {
+    let consumer = concat!("../../host/test/process-memory-", "layout.test.ts");
+    // CARGO_MANIFEST_DIR is `crates/shared`, so the repo root is two up.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(consumer);
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "the TypeScript half of this corpus is unreadable at {}: {error}. \
+             If it was deleted on purpose, this corpus is single-host now and \
+             both this test and the corpus header must say so.",
+            path.display(),
+        )
+    });
+    assert!(
+        source.contains("process-memory-layouts.json"),
+        "{} no longer reads this corpus, so 'one corpus, both hosts' is false \
+         while everything is green. Say so here and in the corpus header, or \
+         restore the read.",
+        path.display(),
+    );
+}

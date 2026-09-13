@@ -637,6 +637,28 @@ leaves eleven presentable, the floor is satisfied, and only the new assertion
 catches it, by name. A guard is worth its lines when something gets past
 everything else.
 
+**Nothing could see the pairing stop being true, and now something can.**
+"One corpus, both hosts" is a claim about two files, and every check either
+side ran was a check on its own half. Delete the TypeScript consumer — which
+is the direction this campaign actually pushes, since removing TypeScript is
+its purpose — and the Rust half goes on passing while the corpus keeps
+describing itself as shared. Green, and the claim false.
+
+Each Rust corpus test now asserts that its TypeScript counterpart exists and
+still names the corpus file. It forbids nothing: it makes single-hosting a
+corpus a deliberate act, taken in one change, by whoever wants it. Perturbed
+both ways — renaming the corpus inside the TypeScript file fails with *"no
+longer reads this corpus, so 'one corpus, both hosts' is false while
+everything is green"*, and deleting the TypeScript file outright fails with
+the path and *"if it was deleted on purpose, this corpus is single-host now
+and both this test and the corpus header must say so."*
+
+The first attempt at it passed for the wrong reason and then failed for a
+better one: `CARGO_MANIFEST_DIR` is `crates/shared`, so joining `tests` before
+the relative path looked in `crates/host/test`, which does not exist. It
+failed loudly rather than silently, which is the only reason it took one run
+to find rather than a reader.
+
 **The refusals were checked in one host only; they are not now.** The
 TypeScript half wrote two of them out by hand rather than reading the corpus,
 so the two saturating refusals and the new exact-fit boundary were Rust-only —
