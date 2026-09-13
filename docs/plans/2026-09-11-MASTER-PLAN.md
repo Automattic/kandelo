@@ -4166,7 +4166,8 @@ refusing it, and the decoder reading a pending declaration as an absent seal. On
 existing trial rotted against the fix — it anchored by quoting the declare call
 directly beneath the `archive_id != 0` guard, and the wrapping now sits between
 them — and was re-aimed at the guard itself, which is what it was always about.
-`sffs-module-seal.json` is 12/12 killed.
+`sffs-module-seal.json` is 12/12 killed and `sffs-module-abi.json` 43/43, both
+with no survivors, no invalid trials and no timeouts.
 
 ### The seal's producer: a THIRD payload state, because "pending" must not read as "none"
 
