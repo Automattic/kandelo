@@ -3898,6 +3898,64 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### Y5: importers 11 -> 10, and a stub that would have halved a security check
+
+**2026-09-13, four increments.**
+
+**The lazy-archive path validator moved to `host/src/vfs/lazy-archive-paths.ts`**
+(`4b02b3c55`). Bulk registration means joining a mount prefix to each member's
+name, and that join is where a member escapes: a path is resolved AFTER it is
+joined, so `../../etc/passwd` lands wherever resolution takes it. The validator
+refuses far more than containment — NUL bytes, backslashes, absolute paths,
+Windows drive letters, conflicting directory/symlink metadata, non-canonical
+segments, colliding members, a symlink with no target, and a member descending
+through a non-directory ancestor. **Reimplementing that in the bridge would be
+two chances to get it subtly different**, and the difference would stay
+invisible until an archive exploited it. It is pure path logic, so it can be
+shared rather than copied. `memoryFsTypeScript` 8491 -> 8387, banked — it was
+inside the 200-line slack and passed UNBANKED, which is exactly how a reduction
+gets quietly given back.
+
+**The bridge registers a whole archive** (`8a5ab95e7`) at no module surface cost:
+the existing `registerArchiveMember` driven by that validator. Every member is
+planned before any is created, because a member rejected halfway leaves a
+partial tree — **an image that builds and is missing exactly the files nobody
+checked for.**
+
+**`shell-lazy-archives` types against the interface** (`4c57453ae`), 11 -> 10
+banked. The two implementations genuinely differ in SHAPE — the bridge takes an
+object, `MemoryFileSystem` takes positional arguments — so the caller prefers
+and falls back, as `assertVfsImageHeadroom` does for `checkHeadroom` against
+`statfs`. The third branch THROWS: a filesystem that can register neither would
+otherwise register nothing and let the image build without its utilities.
+
+### `getLazyEntry` returned null unconditionally, and that is an answer
+
+**Found 2026-09-13 while reading the next file to repoint.** Not
+"unimplemented" — an ANSWER, and the one recipes build on.
+
+The pair is documented elsewhere in this plan: `getLazyEntry(p) !== null`
+covers a URL-backed SINGLE, `isPathDeferred(p)` covers an archive or tree
+backing, every caller re-joins them by hand, and **collapsing them silently
+weakens the check** because it drops the URL-backed case — lane S's case. A
+half that always says "no registration" collapses the pair just as surely as
+deleting it would.
+
+**Nothing shipped weakened**: all ten repointed recipes were checked and none
+call it. It was implemented immediately anyway, because the next file to repoint
+DOES call it and the degradation would have arrived silently with that repoint.
+
+It needed no module surface — a URL-backed single is `deferred` with no archive,
+and `sm_lstat` reports both fields already. **The test asserts the DISTINCTION
+rather than the values**: a single says yes to both halves, an archive member
+only to the second, a resident file to neither. The stub gave the same answer to
+all three, which is precisely why it was invisible.
+
+**The general shape, worth carrying to other lanes:** a stub that returns a
+plausible value is worse than one that throws, because the caller cannot tell
+the difference between "no" and "not implemented" — and a security check made of
+two halves fails open when one half is a stub.
+
 ### CORRECTED: the seal stays payload, because the verifier is not the kernel
 
 **Written and then corrected within the hour, 2026-09-13, by reading the
