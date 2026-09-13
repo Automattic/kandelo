@@ -4405,6 +4405,49 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### Atomic activation cohorts have no producer, and that unblocks five importers
+
+**Found 2026-09-13 while planning the first seal-blocked cutover.** A cohort is
+a group of lazy archives that must activate all or nothing — a runtime split
+across two archives is a broken runtime if one arrives without the other — and
+the seal is a digest binding the group so a partial or substituted set is
+detectable at load.
+
+**Nothing in this repository declares one.** No `package.toml` mentions
+`activation` at all, let alone `activation.atomic_group`. Every `atomicGroup`
+outside `host/src` is in a test — `host/test/lazy-tree.test.ts` and one browser
+spec — plus three `tools/mkrootfs` CLI callers that VERIFY rather than produce.
+So `verifyImportedLazyAtomicGroupSeals()` on a shipped base image today
+authenticates an empty set.
+
+**Which means the five "blocked on the seal" importers were blocked on seal
+PARITY with a format nothing produces.** The bookkeeping was right when it was
+written and stopped being right when the corpus did — the same failure the Y5
+re-measure recorded two entries above, arriving again in the same lane.
+
+**Three maintainer decisions, 2026-09-13.**
+
+1. **Cut over now and record the risk.** The alternative was a fail-closed gate:
+   the new producer stamps a version in the image metadata and the restore
+   boundary refuses anything older. That would make the cutover's safety
+   independent of the corpus rather than dependent on it, at the cost of making
+   every existing image unusable until rebuilt. **The risk being recorded is
+   precise: if a package declares an `atomic_group` before the gate lands, an
+   image carrying legacy membership will load through the new path with its
+   cohort unverified, because the module reads SDEF seals and legacy membership
+   lives in the trailing lazy JSON.** The mitigation is that the legacy
+   machinery is being deleted (decision 3), which removes the way to produce one.
+2. **The base rebuild happens in this lane**, not after merge. The producer
+   seals nothing until images are built through it, so a lane that stops at "the
+   producer works" ships an inert capability.
+3. **Delete the legacy TypeScript cohort machinery rather than port it.** The
+   maintainer's words: *"We aren't doing legacy support right now."* The
+   CAPABILITY is not being dropped — it now lives in `sffs-module`, sealed at
+   export and verified at load. What goes is the second implementation:
+   `memory-fs.ts`'s sealing, verification and `deferred-tree-v3` serialization,
+   and the three `mkrootfs` CLI callers. This is weight removed from V9 rather
+   than moved by it.
+
 ### Y5: 10 -> 7, by re-measuring rather than by building anything
 
 **2026-09-13.** The remaining ten were grouped as "five blocked on the seal, one
