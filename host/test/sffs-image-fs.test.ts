@@ -359,6 +359,40 @@ describe("SffsImageFs", () => {
     expect(fs.readFile("/sparse")).toEqual(new Uint8Array([0, 0, 0, 0, 7, 7]));
   });
 
+  it("keeps the tail when writing into the middle of a longer file", () => {
+    // The zero-fill test above cannot see a `end = at + length` mutation,
+    // because its file is empty and both spellings give the same answer. Only
+    // an EXISTING file longer than the write can tell them apart: the mutant
+    // truncates everything past the patch.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/patch", new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 0o644);
+    const fd = fs.open("/patch", OPEN_FLAGS.O_WRONLY, 0o644);
+    fs.write(fd, new Uint8Array([9, 9]), 2, 2);
+    fs.close(fd);
+    expect(fs.readFile("/patch")).toEqual(
+      new Uint8Array([1, 2, 9, 9, 5, 6, 7, 8]),
+    );
+  });
+
+  it("writes only the length it was asked for, not the whole buffer", () => {
+    // A caller handing over a larger buffer and a smaller length is how a
+    // partial write is expressed. Taking the whole buffer would write bytes
+    // the caller did not offer, and report a count it did not ask for.
+    const fs = SffsImageFs.create();
+    const fd = fs.open("/partial", O_WRONLY_CREAT_TRUNC, 0o644);
+    const took = fs.write(fd, new Uint8Array([1, 2, 3, 4, 5]), 0, 2);
+    fs.close(fd);
+    expect(took).toBe(2);
+    expect(fs.readFile("/partial")).toEqual(new Uint8Array([1, 2]));
+  });
+
+  it("opens a missing path only when asked to create it", () => {
+    const fs = SffsImageFs.create();
+    expect(() => fs.open("/absent", OPEN_FLAGS.O_RDONLY, 0o644)).toThrow();
+    // And the failed open must not have left the file behind.
+    expect(() => fs.lstat("/absent")).toThrow();
+  });
+
   it("advances its own cursor when no position is given", () => {
     const fs = SffsImageFs.create();
     const fd = fs.open("/seq", O_WRONLY_CREAT_TRUNC, 0o644);
@@ -390,6 +424,21 @@ describe("SffsImageFs", () => {
     fs.symlink("/b", "/a", 0, 0);
     fs.symlink("/a", "/b", 0, 0);
     expect(() => fs.stat("/a")).toThrow();
+  });
+
+  it("bounds the chain it will follow, and the bound is the one it states", () => {
+    // A cycle alone cannot pin the LIMIT: raise it from forty to four million
+    // and the cycle test still passes, just slowly — H-11's mutant detectable
+    // only by hanging. A chain measures the bound directly and in bounded time:
+    // thirty-nine links resolve, forty-one do not.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/end", new Uint8Array([1]), 0o644);
+    fs.symlink("/end", "/hop0", 0, 0);
+    for (let i = 1; i < 60; i += 1) {
+      fs.symlink(`/hop${i - 1}`, `/hop${i}`, 0, 0);
+    }
+    expect(fs.stat("/hop37").size).toBe(1);
+    expect(() => fs.stat("/hop50")).toThrow();
   });
 
   it("gives each instance an independent tree", () => {
