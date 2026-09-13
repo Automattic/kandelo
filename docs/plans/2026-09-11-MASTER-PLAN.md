@@ -3659,6 +3659,47 @@ V4 killable — `perturb/deferred-until-v4.json` is retired and its trials are i
 `sffs-module-abi.json`, which is the green contract its handoff named as the
 definition of done.
 
+### The remaining twenty, measured: nine are ready and six need five methods
+
+**Census 2026-09-12, on the lane branch after image loading landed.** The
+twenty are not one problem, and the split is sharper than "sixteen construct a
+filesystem".
+
+**Nine can repoint today, needing nothing new:** `build-erlang`,
+`build-kandelo-sdk`, `build-mariadb`, `build-mariadb-test`, `build-node-zip`,
+`build-perl`, `build-python`, `build-redis`, `build-sqlite-test`. Each calls only
+methods `VfsImageFilesystem` already carries, and each constructs in the same two
+lines:
+
+```ts
+const sab = new SharedArrayBuffer(32 * 1024 * 1024, { maxByteLength: CAP });
+const fs = MemoryFileSystem.create(sab, CAP);
+```
+
+becoming `SffsImageFs.create()` plus `fs.setImageCapacity(CAP)` — **which is
+what gap 14 was a prerequisite for**. The `SharedArrayBuffer` disappears with
+the concrete class; it was never anything but that constructor's first argument.
+
+**Six are blocked, and between them they need five methods:**
+
+| method | wanted by |
+|---|---|
+| `getImageMetadata` / `setImageMetadata` | `shell-vfs-build`, `package-shell-vfs-build`, `build-php-test` |
+| `rebaseToNewFileSystem` | the same three |
+| `exportLazyArchiveEntries` | `source-rootfs-shell-overlay`, `build-source-rootfs-shell-image` |
+| `registerLazyArchiveFromEntries` | `shell-lazy-archives` |
+| `verifyImportedLazyAtomicGroupSeals` | five of the six |
+
+`setImageMetadata` is the cheap one — the bridge HAS it and the interface does
+not declare it. The seal check is the one with teeth: it is live sha256 cohort
+authentication and **the maintainer assigned it to this lane** (2026-09-12,
+"I don't care which lane owns it on paper — if there's no big downside, do it").
+It lands as its own increment with its own trials, because a subtle error there
+is a silent security regression rather than a visible failure.
+
+**The two supply-chain files stay last**, per the maintainer: they become Rust
+tools in this lane after the constructor repoints.
+
 ### The base-file identity gap is not a missing key — it is a source that never had one
 
 **Measured 2026-09-12, and it corrects how items 2 and 3 were framed.** The
