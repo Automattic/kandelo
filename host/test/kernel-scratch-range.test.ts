@@ -58,6 +58,26 @@ describe("one bounds-check rule", () => {
     expect(presentable.length).toBeGreaterThanOrEqual(11);
   });
 
+  it("skips a case only for the reason that is true of it", () => {
+    // The marker alone is not evidence. A case marked `rustOnly` for a
+    // reason this host does not actually have would be skipped in silence,
+    // and a skip nobody checked reads exactly like a pass — which is how the
+    // layout corpus came to be checked in one host while claiming two.
+    //
+    // The one reason a JavaScript host cannot present a range case is an
+    // address it cannot name exactly. `checkedWasmGuestPointerOffset`
+    // refuses anything above Number.MAX_SAFE_INTEGER before a range is
+    // considered, and that is a limit `crates/host-native` does not have,
+    // because it takes a u64 from a memory64 guest.
+    for (const entry of CORPUS.cases.filter((c) => c.rustOnly)) {
+      expect(
+        entry.addr > Number.MAX_SAFE_INTEGER,
+        `${entry.name}: marked rustOnly, but this host can name address `
+          + `${entry.addr} perfectly well`,
+      ).toBe(true);
+    }
+  });
+
   for (const entry of presentable) {
     it(`${entry.name}`, () => {
       const memory = memoryOf(entry.limitPages);

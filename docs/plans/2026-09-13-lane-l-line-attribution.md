@@ -604,6 +604,26 @@ declared-plus-checked accounts for every case. **Eight of nine cases are now
 checked in both hosts.** The range corpus already worked this way, with an
 explicit `rustOnly` marking; its floor was raised to track its size.
 
+**The range corpus was then asked the same question, and was missing the same
+half.** It declared its one skip, and a floor caught the corpus shrinking, but
+nothing checked that the marker was true — a case marked `rustOnly` for a
+reason this host does not actually have would have been skipped in silence,
+which is the exact defect the layout half had. The one reason a JavaScript
+host cannot present a range case is an address it cannot name exactly:
+`checkedWasmGuestPointerOffset` refuses anything above
+`Number.MAX_SAFE_INTEGER` before a range is considered, a limit
+`crates/host-native` does not have because it takes a u64 from a memory64
+guest. The check now asserts that of every skipped case, and **12 of 12 range
+cases are accounted for** — eleven run here, one skipped for a stated and
+verified reason.
+
+Perturbed three ways. Marking either of two presentable cases `rustOnly` fails
+— but both also tripped the floor, so neither showed the new check doing
+anything the old one did not. The third does: an EXTRA case marked `rustOnly`
+leaves eleven presentable, the floor is satisfied, and only the new assertion
+catches it, by name. A guard is worth its lines when something gets past
+everything else.
+
 **The refusals were checked in one host only; they are not now.** The
 TypeScript half wrote two of them out by hand rather than reading the corpus,
 so the two saturating refusals and the new exact-fit boundary were Rust-only —
