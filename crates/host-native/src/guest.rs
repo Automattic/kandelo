@@ -1129,6 +1129,105 @@ fn checked_shared_range(mem: &SharedMemory, addr: u64, len: u32) -> Option<usize
     .and_then(|addr| usize::try_from(addr).ok())
 }
 
+/// A kernel-scratch allocation, carrying the capacity it was actually given.
+///
+/// # The invariant, and why a pointer alone cannot carry it
+///
+/// `kernel_alloc_scratch(n)` answers with an address inside kernel memory.
+/// That address being in bounds proves the host CAN address those bytes; it
+/// does not prove the allocator gave *this caller* `n` of them. Nothing about
+/// the returned `i32` distinguishes "you were given 64 KiB here" from "you
+/// were given 8 bytes here", so a later write of the wrong length lands
+/// somewhere the allocator has already promised to someone else, and every
+/// bounds check in the world still passes.
+///
+/// The JavaScript host has an ownership type for exactly this fact
+/// (`OwnedKernelScratchRegion` in `host/src/kernel-scratch.ts`). This host had
+/// none: it allocated, checked `ptr > 0`, and wrote through a bare
+/// `copy_nonoverlapping`. Every call site was sound by construction — each
+/// asked for `len` and wrote `len` — but "sound by construction" is a property
+/// of the code as written, not an invariant anything enforces, and it is one
+/// careless edit from being false with no test able to see it.
+#[derive(Debug, Clone, Copy)]
+struct KernelScratch {
+    ptr: i32,
+    capacity: u32,
+}
+
+impl KernelScratch {
+    /// Ask the kernel for `capacity` bytes of scratch.
+    ///
+    /// `purpose` appears in the failure so a boot that cannot get scratch says
+    /// which allocation it was, rather than only how many bytes it wanted.
+    fn allocate(
+        alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+        kernel_store: &mut Store<()>,
+        capacity: u32,
+        purpose: &str,
+    ) -> anyhow::Result<Self> {
+        let ptr = alloc_scratch.call(&mut *kernel_store, capacity)?;
+        if ptr <= 0 {
+            anyhow::bail!("kernel_alloc_scratch({capacity}) for {purpose} returned {ptr}");
+        }
+        Ok(Self { ptr, capacity })
+    }
+
+    /// Ask for `capacity` bytes, reporting exhaustion as an ANSWER rather than
+    /// an error.
+    ///
+    /// A syscall that cannot get scratch owes its caller ENOMEM, not a host
+    /// abort — so the exec and spawn paths need "no scratch" as a value they
+    /// can turn into an errno, while boot needs it as a failure. The trap a
+    /// kernel call can itself raise stays an error in both.
+    fn allocate_or_none(
+        alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+        kernel_store: &mut Store<()>,
+        capacity: u32,
+    ) -> anyhow::Result<Option<Self>> {
+        let ptr = alloc_scratch.call(&mut *kernel_store, capacity)?;
+        Ok((ptr > 0).then_some(Self { ptr, capacity }))
+    }
+
+    /// The address to hand a kernel export, paired with its length.
+    fn ptr(self) -> i32 {
+        self.ptr
+    }
+
+    /// The capacity the allocator gave, which is the ONLY length a kernel
+    /// export may be told this region holds.
+    fn capacity(self) -> u32 {
+        self.capacity
+    }
+
+    /// Fill this region with `bytes`.
+    ///
+    /// Refuses two different things, and they are genuinely different: bytes
+    /// longer than the capacity the allocator gave (the invariant above), and
+    /// a region that does not fit inside kernel memory at all (the ordinary
+    /// bounds rule, asked of the whole capacity rather than of the write, so a
+    /// region that could never have been valid is refused even when a short
+    /// write into it would have fitted).
+    fn write(self, kernel_mem: &SharedMemory, bytes: &[u8]) -> anyhow::Result<()> {
+        if bytes.len() > self.capacity as usize {
+            anyhow::bail!(
+                "kernel scratch write of {} bytes exceeds the {} bytes the allocator gave it",
+                bytes.len(),
+                self.capacity,
+            );
+        }
+        let offset = checked_shared_range(kernel_mem, self.ptr as u32 as u64, self.capacity)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "kernel scratch at {} with capacity {} is not inside kernel memory",
+                    self.ptr,
+                    self.capacity,
+                )
+            })?;
+        unsafe { write_bytes(kernel_mem, offset, bytes) };
+        Ok(())
+    }
+}
+
 /// Copy `len` bytes from guest process memory at `addr` into kernel memory at
 /// `dst_ptr` (`host_proc_read_bytes`). Returns 0, or `-EFAULT` if either range
 /// is not wholly inside its own memory.
@@ -1958,14 +2057,15 @@ fn run_guest_inner(
     // pattern the foreign-prefixes block below uses.
     if let Some(base_image) = &options.base_image {
         let manifest_len = base_image.manifest.len() as u32;
-        let manifest_ptr = alloc_scratch.call(&mut kernel_store, manifest_len)?;
-        if manifest_ptr <= 0 {
-            anyhow::bail!(
-                "kernel_alloc_scratch({manifest_len}) for the base image manifest returned {manifest_ptr}"
-            );
-        }
-        unsafe { write_bytes(&kernel_mem, manifest_ptr as u32 as usize, &base_image.manifest) };
-        let loaded = rootfs_load_manifest.call(&mut kernel_store, (manifest_ptr, manifest_len))?;
+        let manifest = KernelScratch::allocate(
+            &alloc_scratch,
+            &mut kernel_store,
+            manifest_len,
+            "the base image manifest",
+        )?;
+        manifest.write(&kernel_mem, &base_image.manifest)?;
+        let loaded =
+            rootfs_load_manifest.call(&mut kernel_store, (manifest.ptr(), manifest_len))?;
         if loaded < 0 {
             // Malformed manifest: leave `/` empty (the N1-I1a default) rather
             // than proceed with a partial tree — a truthful failure, mirroring
@@ -2003,15 +2103,15 @@ fn run_guest_inner(
             prefixes.extend_from_slice(normalize_mount_point(&mount.mount_point).as_bytes());
             prefixes.push(0);
         }
-        let prefixes_ptr = alloc_scratch.call(&mut kernel_store, prefixes.len() as u32)?;
-        if prefixes_ptr <= 0 {
-            anyhow::bail!(
-                "kernel_alloc_scratch({}) for foreign prefixes returned {prefixes_ptr}",
-                prefixes.len()
-            );
-        }
-        unsafe { write_bytes(&kernel_mem, prefixes_ptr as u32 as usize, &prefixes) };
-        let n = set_foreign_prefixes.call(&mut kernel_store, (prefixes_ptr, prefixes.len() as u32))?;
+        let prefix_scratch = KernelScratch::allocate(
+            &alloc_scratch,
+            &mut kernel_store,
+            prefixes.len() as u32,
+            "foreign prefixes",
+        )?;
+        prefix_scratch.write(&kernel_mem, &prefixes)?;
+        let n = set_foreign_prefixes
+            .call(&mut kernel_store, (prefix_scratch.ptr(), prefixes.len() as u32))?;
         if n < 0 {
             anyhow::bail!("kernel_rootfs_set_foreign_prefixes failed: {n}");
         }
@@ -2033,16 +2133,15 @@ fn run_guest_inner(
         // than a mount that silently resolves somewhere else.
         let roots = fs.foreign_mount_root_records();
         if !roots.is_empty() {
-            let roots_ptr = alloc_scratch.call(&mut kernel_store, roots.len() as u32)?;
-            if roots_ptr <= 0 {
-                anyhow::bail!(
-                    "kernel_alloc_scratch({}) for foreign mount roots returned {roots_ptr}",
-                    roots.len()
-                );
-            }
-            unsafe { write_bytes(&kernel_mem, roots_ptr as u32 as usize, &roots) };
-            let attached =
-                set_foreign_mount_roots.call(&mut kernel_store, (roots_ptr, roots.len() as u32))?;
+            let root_scratch = KernelScratch::allocate(
+                &alloc_scratch,
+                &mut kernel_store,
+                roots.len() as u32,
+                "foreign mount roots",
+            )?;
+            root_scratch.write(&kernel_mem, &roots)?;
+            let attached = set_foreign_mount_roots
+                .call(&mut kernel_store, (root_scratch.ptr(), roots.len() as u32))?;
             let expected = fs.mounts.iter().filter(|m| m.root_handle.is_some()).count() as i32;
             if attached != expected {
                 // A record that matched no registered prefix means the two
@@ -2392,6 +2491,65 @@ mod proc_bytes_tests {
         assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 5), -14);
     }
 
+    /// L-D1, stated as the case a bounds check cannot see.
+    ///
+    /// The pointer here is genuinely inside kernel memory and the write is
+    /// genuinely inside kernel memory — every range check passes. What is
+    /// false is that the allocator gave this caller that many bytes, and that
+    /// fact lives beside the pointer or nowhere. Before `KernelScratch` this
+    /// host wrote through a bare `copy_nonoverlapping` after a `ptr > 0`
+    /// check, so this write landed silently on whatever the allocator had
+    /// already promised to the next caller.
+    #[test]
+    fn a_write_longer_than_the_capacity_the_allocator_gave_is_refused() {
+        let (_engine, _guest, kernel) = mems();
+        let scratch = KernelScratch {
+            ptr: 4096,
+            capacity: 8,
+        };
+
+        // In bounds and within capacity: written.
+        scratch
+            .write(&kernel, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .expect("a write that fits the capacity is allowed");
+        assert_eq!(
+            unsafe { read_bytes(&kernel, 4096, 8) },
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+        );
+
+        // One byte more. Still far inside a 64 KiB memory, so no bounds check
+        // can object — only the capacity can.
+        let error = scratch
+            .write(&kernel, &[9; 9])
+            .expect_err("a write past the allocated capacity must be refused");
+        assert!(
+            error.to_string().contains("exceeds the 8 bytes"),
+            "refusal should name the capacity, said: {error}",
+        );
+        assert_eq!(
+            unsafe { read_bytes(&kernel, 4096, 9) },
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 0],
+            "the refused write must not have touched memory",
+        );
+    }
+
+    /// The other half: a capacity that does not fit the memory at all is
+    /// refused even when the bytes being written would have.
+    #[test]
+    fn a_region_that_does_not_fit_kernel_memory_is_refused_even_for_a_short_write() {
+        let (_engine, _guest, kernel) = mems();
+        let scratch = KernelScratch {
+            ptr: (PAGE - 4) as i32,
+            capacity: 64,
+        };
+        let error = scratch
+            .write(&kernel, &[1, 2])
+            .expect_err("a region past the end of memory must be refused");
+        assert!(
+            error.to_string().contains("not inside kernel memory"),
+            "refusal should name the memory, said: {error}",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6224,11 +6382,13 @@ fn launch_process(
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
     replacing_exec_image: bool,
 ) -> anyhow::Result<GuestProcess> {
-    let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
-    if scratch_ptr <= 0 {
-        anyhow::bail!("kernel_alloc_scratch({MIN_CHANNEL_SIZE}) returned {scratch_ptr}");
-    }
-    let scratch_base = scratch_ptr as u32 as usize;
+    let scratch = KernelScratch::allocate(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        MIN_CHANNEL_SIZE as u32,
+        "the process syscall channel",
+    )?;
+    let scratch_base = scratch.ptr() as u32 as usize;
 
     // N1-I4 Task 2 concern 3: when this process will co-reside a fork-module
     // (`use_fork_module`), the kernel's OWN `max_addr` ceiling for `pid` must
@@ -6379,11 +6539,13 @@ fn launch_vfork_borrowed_child(
     fork_format: Option<Arc<GuestForkFormat>>,
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
 ) -> anyhow::Result<GuestProcess> {
-    let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
-    if scratch_ptr <= 0 {
-        anyhow::bail!("kernel_alloc_scratch({MIN_CHANNEL_SIZE}) returned {scratch_ptr}");
-    }
-    let scratch_base = scratch_ptr as u32 as usize;
+    let scratch = KernelScratch::allocate(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        MIN_CHANNEL_SIZE as u32,
+        "the forked process syscall channel",
+    )?;
+    let scratch_base = scratch.ptr() as u32 as usize;
 
     for (name, val) in [
         // POSIX: the program's own concurrent-thread ceiling. This host used
@@ -11692,13 +11854,13 @@ fn handle_spawn(
     // kernel-owned range, never a raw guest address: the two engines run in
     // separate Wasmtime instances with separate memories (this file's module
     // doc comment).
-    let scratch = alloc_scratch.call(&mut *kernel_store, blob_len as u32)?;
-    if scratch <= 0 {
+    let Some(blob_scratch) =
+        KernelScratch::allocate_or_none(&*alloc_scratch, &mut *kernel_store, blob_len as u32)?
+    else {
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
-    }
-    let scratch = scratch as u32 as usize;
-
-    unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
+    };
+    blob_scratch.write(kernel_mem, &blob_bytes)?;
+    let scratch = blob_scratch.ptr() as u32 as usize;
     let decoded_len =
         spawn_blob_decode.call(&mut *kernel_store, (scratch as i32, blob_len as i32, blob_len as i32))?;
     if decoded_len < 0 {
@@ -11725,17 +11887,25 @@ fn handle_spawn(
     // kernel rejects it with ENOENT (`kernel_spawn_exec_target_prepare`,
     // wasm_api.rs:3073-3074), which is the correct posix_spawn failure.
     let resolve_bytes = path_str.as_bytes();
-    let path_scratch = alloc_scratch.call(&mut *kernel_store, resolve_bytes.len() as u32)?;
-    if path_scratch <= 0 {
+    let Some(path_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        resolve_bytes.len() as u32,
+    )?
+    else {
         rollback_spawned_child(kernel_store, remove_process, child_pid, "a scratch-allocation failure resolving the exec target");
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
-    }
-    let path_scratch = path_scratch as u32 as usize;
-    unsafe { write_bytes(kernel_mem, path_scratch, resolve_bytes) };
+    };
+    path_scratch.write(kernel_mem, resolve_bytes)?;
 
     let token = spawn_exec_target_prepare.call(
         &mut *kernel_store,
-        (parent_pid, child_pid, path_scratch as u32, resolve_bytes.len() as u32),
+        (
+            parent_pid,
+            child_pid,
+            path_scratch.ptr() as u32,
+            path_scratch.capacity(),
+        ),
     )?;
     if token < 0 {
         // Resolution failure (e.g. ENOENT/EACCES/ENOTDIR from the kernel's
@@ -12424,16 +12594,26 @@ fn handle_exec_common(
     // `handle_spawn`'s `resolve_bytes` staging — the two engines run in
     // separate Wasmtime instances with separate memories (this file's
     // module doc comment).
-    let path_scratch = alloc_scratch.call(&mut *kernel_store, path_bytes.len() as u32)?;
-    if path_scratch <= 0 {
+    let Some(path_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        path_bytes.len() as u32,
+    )?
+    else {
         return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOMEM).map(|()| None);
-    }
-    let path_scratch = path_scratch as u32 as usize;
-    unsafe { write_bytes(kernel_mem, path_scratch, &path_bytes) };
+    };
+    path_scratch.write(kernel_mem, &path_bytes)?;
 
     let token = exec_target_prepare.call(
         &mut *kernel_store,
-        (pid, caller_tid, dirfd, path_scratch as u32, path_bytes.len() as u32, flags),
+        (
+            pid,
+            caller_tid,
+            dirfd,
+            path_scratch.ptr() as u32,
+            path_scratch.capacity(),
+            flags,
+        ),
     )?;
     if token < 0 {
         // Case 1: no target was ever retained on a `prepare` failure, so
