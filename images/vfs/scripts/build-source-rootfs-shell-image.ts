@@ -361,11 +361,27 @@ function lazyRecords(
   };
 }
 
-function lazyState(
+/**
+ * The lazy state that must survive a SAVE.
+ *
+ * Inode numbers are deliberately dropped. The writer assigns them when it lays
+ * out the image, so a saved copy legitimately renumbers every file -- comparing
+ * them across a serialization asserts that the writer did NOT do its job. The
+ * `MemoryFileSystem` this replaces carried its own inode numbers into the image
+ * and back, which is why the comparison could include them before.
+ *
+ * What is compared is what a save must not change: WHICH paths are deferred,
+ * how big each really is, which archive backs it, and the fetch description it
+ * carries. A lost file, a changed size, a re-pointed archive or a dropped
+ * description all still fail this.
+ */
+function serializedLazyState(
   fs: SffsImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
 ): string {
-  return stableJson(lazyRecords(fs, omittedIdentities));
+  const { files, trees } = lazyRecords(fs, omittedIdentities);
+  const withoutIno = ({ ino: _ino, ...rest }: { ino: bigint }) => rest;
+  return stableJson({ files: files.map(withoutIno), trees });
 }
 
 /**
@@ -435,7 +451,7 @@ function requireExpectedLazyState(
   fs: SffsImageFs,
   label: string,
 ): void {
-  const after = lazyState(fs);
+  const after = serializedLazyState(fs);
   if (after !== before) {
     throw new Error(
       `${label} changed rootfs lazy file or tree identities\n` +
@@ -745,7 +761,7 @@ export async function buildSourceRootfsShellImage(
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
-  const composedLazyState = lazyState(fs);
+  const composedLazyState = serializedLazyState(fs);
 
   const image = await saveImage(fs, inputs.outFile, {
     expectedMaxByteLength: sourceCapacity.maxByteLength,
