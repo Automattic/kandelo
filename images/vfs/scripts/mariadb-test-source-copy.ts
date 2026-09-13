@@ -1,10 +1,10 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   lstatSync,
   readFileSync,
   readdirSync,
 } from "node:fs";
 import { join } from "node:path";
-import { type MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
@@ -25,7 +25,7 @@ function requireRegularTestSource(path: string): Uint8Array {
 }
 
 function copyRequiredFixtureTree(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mysqlTestDir: string,
   name: "include" | "std_data",
 ): void {
@@ -44,7 +44,7 @@ function copyRequiredFixtureTree(
  * type, or VFS write failure must abort the artifact build.
  */
 export function copyMariaDbTestSources(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mysqlTestDir: string,
   options: MariaDbTestSourceCopyOptions,
 ): number {

@@ -130,7 +130,7 @@
     },
     "imageBuilderFilesystemImporters": {
       "measure": "files under images/ importing host/src/vfs/memory-fs or sharedfs-vendor",
-      "ceiling": 36,
+      "ceiling": 20,
       "slack": 0,
       "target": 0,
       "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes \u2014 which packages go in the LAMP image, how WordPress is preinstalled \u2014 and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done."

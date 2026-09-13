@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 // images/vfs/scripts/shell-runtime-layout.ts
 //
 // This is image-build tooling, not host runtime. It was in `host/src`
@@ -7,14 +8,13 @@
 // `scripts/migration-ledger.sh` count it as in-scope runtime TypeScript,
 // inflating the very number the rust-first campaign is measured by.
 /** User-visible filesystem layout shared by every Kandelo shell image. */
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../../host/src/vfs/image-helpers";
 
 /**
  * Populate ordinary shell state without selecting binaries, lazy archives,
  * command aliases, or package provenance.
  */
-export function populateShellRuntimeLayout(fs: MemoryFileSystem): void {
+export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   for (const dir of [
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",

@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 
 export const DEMO_LOGIN_USERNAME = "maker";
 export const DEMO_LOGIN_HOME = "/home/maker";
@@ -31,7 +31,7 @@ export interface DemoLoginOptions {
  * libc and the guest programs.
  */
 export function configureDemoLogin(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: DemoLoginOptions = {},
 ): void {
   const home = options.home ?? DEMO_LOGIN_HOME;
@@ -72,8 +72,8 @@ export function configureDemoLogin(
  * bytes and trusted mount provenance before the browser grants session policy.
  */
 export function hasConfiguredDemoLogin(
-  fs: MemoryFileSystem,
-  privilegedProgramFs: Pick<MemoryFileSystem, "stat"> = fs,
+  fs: VfsImageFilesystem,
+  privilegedProgramFs: Pick<VfsImageFilesystem, "stat"> = fs,
 ): boolean {
   try {
     const login = privilegedProgramFs.stat(DEMO_LOGIN_PROGRAM_PATH);
@@ -202,7 +202,7 @@ function addGroupMember(
   return `${lines.join("\n")}\n`;
 }
 
-function readVfsText(fs: MemoryFileSystem, path: string): string {
+function readVfsText(fs: VfsImageFilesystem, path: string): string {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -225,7 +225,7 @@ function readVfsText(fs: MemoryFileSystem, path: string): string {
 }
 
 function writeRootFile(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
   content: string,
   mode: number,

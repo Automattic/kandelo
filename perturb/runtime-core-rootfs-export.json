@@ -198,6 +198,13 @@
       "scope_end": "\n}\n",
       "find": "    let free_bytes = st.f_bfree.saturating_mul(u64::from(st.f_frsize));",
       "replace": "    let free_bytes = u64::MAX;"
+    },
+    {
+      "name": "the capacity report ignores the image and guesses",
+      "scope": "pub fn export_capacity_bytes()",
+      "scope_end": "\n}\n",
+      "find": "    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()",
+      "replace": "    let _ = source;\n    Ok(0)"
     }
   ]
 }
