@@ -520,6 +520,12 @@ mod tests {
 
         for (role, declared, effective) in [
             ("runtime", "embedded", "lazy-reference"),
+            // A LAZY declaration is permitted two arrivals, not any arrival.
+            // Without this case the whole `lazy` row could be widened to a
+            // wildcard and every test would still pass — a runtime input that
+            // arrives `build-only` is not in the image at all, which is the
+            // opposite of what declaring it lazy asked for.
+            ("runtime", "lazy", "build-only"),
             ("runtime", "build-only", "build-only"),
             ("build", "embedded", "embedded"),
             ("build", "build-only", "embedded"),
@@ -531,6 +537,18 @@ mod tests {
                 "effective_materialization": effective,
             }));
             assert!(check(&value).is_err(), "{role}/{declared}/{effective} must be refused");
+        }
+    }
+
+    #[test]
+    fn an_inputs_digest_must_be_a_digest() {
+        // Every other test hands over a well-formed sha256, so the check that
+        // rejects a malformed one was defended by nothing. An input's digest is
+        // the only thing tying the bytes that arrive to the bytes that were
+        // promised.
+        for bad in ["", "a".repeat(63).as_str(), "a".repeat(65).as_str(), "A".repeat(64).as_str(), "z".repeat(64).as_str()] {
+            let value = with_input(serde_json::json!({ "sha256": bad }));
+            assert!(check(&value).is_err(), "{bad:?} is not a sha256");
         }
     }
 
