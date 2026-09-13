@@ -5466,6 +5466,175 @@ mod wasm {
         }
     }
 
+    // ---- Constructor provenance: a WITNESS per (layout, ordinal) -----------
+    //
+    // A non-defaultable GC shape cannot be `struct.new_default`'d, so replay's
+    // allocate step must pass a type-correct non-null value for each mutable
+    // internal-reference field before the true edge target may exist. That
+    // seed is then OVERWRITTEN: the edge vector is
+    // `[ ...provenance refs, ...snapshot refs ]` and phase two fills the real
+    // edges over it.
+    //
+    // So the requirement is a type-correct CAPTURABLE instance of the field's
+    // type -- not the specific one the original constructor used. The original
+    // is what fork-instrument records only because an instance of an
+    // application-defined type cannot be conjured from nothing, and a value the
+    // program actually used is by construction one that existed.
+    //
+    // Hence a WITNESS: one retained instance per (layout, provenance ordinal),
+    // rather than one record per allocated object. The count is a static
+    // property of the guest's layouts, so this is bounded where a per-object
+    // record is not -- and the witness is stored by the injected shim with a
+    // plain `table.set`, so there is no host call on the allocation path.
+    //
+    // See docs/plans/2026-09-12-lane-f-census.md sections 21 and 22.
+    const WITNESS_SLOTS: usize = 256;
+
+    struct WitnessCell(UnsafeCell<WitnessState>);
+    // SAFETY: one guest drives these exports per worker, as with every other
+    // module static here.
+    unsafe impl Sync for WitnessCell {}
+
+    struct WitnessState {
+        /// `(layout << 8) | ordinal` per slot; `u32::MAX` when free.
+        keys: [u32; WITNESS_SLOTS],
+        /// Set once a slot has actually been written by the shim.
+        occupied: [bool; WITNESS_SLOTS],
+    }
+
+    static WITNESS: WitnessCell = WitnessCell(UnsafeCell::new(WitnessState {
+        keys: [u32::MAX; WITNESS_SLOTS],
+        occupied: [false; WITNESS_SLOTS],
+    }));
+
+    #[allow(clippy::mut_from_ref)]
+    fn witness() -> &'static mut WitnessState {
+        // SAFETY: single-threaded per worker, as `state()` above.
+        unsafe { &mut *WITNESS.0.get() }
+    }
+
+    /// The open provenance transaction: `[token + 1, layout, declared, seen]`.
+    ///
+    /// One slot is enough for the same reason `VECTOR_IN_FLIGHT` needs one: the
+    /// wrapper fork-instrument emits is straight-line -- `begin`, N x `ref`,
+    /// `end` -- with no guest call between them.
+    static PROVENANCE_IN_FLIGHT: [AtomicU32; 4] = [
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+    ];
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_provenance_begin(...) -> token`.
+    ///
+    /// Pure scalars, so this needs no shim: the object fork-instrument stages in
+    /// the transit slot is the NEWLY CONSTRUCTED one, and a witness design has
+    /// no use for it. Only the seeds matter, and those arrive at
+    /// `__wpk_fork_ref_gc_provenance_ref`.
+    ///
+    /// `_slot` and the constructor scalars are accepted and ignored for the same
+    /// reason: an array's length is the one constructor scalar that is not
+    /// overwritten by the fill, and it is recoverable at capture by inspecting
+    /// the array, so no scalar needs recording here. They stay in the signature
+    /// because the guest ABI declares them.
+    #[allow(clippy::too_many_arguments)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_provenance_begin(
+        _slot: u32,
+        _activation: u32,
+        _base_layout: u32,
+        layout: u32,
+        _scalar_lo: u64,
+        _scalar_hi: u64,
+        reference_count: u32,
+    ) -> i32 {
+        if PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed) != 0 {
+            // A second `begin` before an `end` means the emitted shape changed.
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        if layout > 0x00ff_ffff || reference_count > 0xff {
+            // The witness key packs layout and ordinal into one u32.
+            set_err(Errno::E2BIG);
+            return -1;
+        }
+        let token = 1u32;
+        PROVENANCE_IN_FLIGHT[0].store(token + 1, Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[1].store(layout, Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[2].store(reference_count, Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[3].store(0, Ordering::Relaxed);
+        set_ok();
+        token as i32
+    }
+
+    /// The witness table slot `(token, ordinal)` names, allocating one on first
+    /// use. Returns `-1` on failure.
+    ///
+    /// Called by the injected `__wpk_fork_ref_gc_provenance_ref` shim, which
+    /// then `table.set`s the guest's staged seed into that slot. Rust picks the
+    /// slot because Rust can hold the map; wasm does the store because only
+    /// wasm can hold the reference.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_provenance_witness_slot(token: u32, ordinal: u32) -> i32 {
+        let open = PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed);
+        if open == 0 || open - 1 != token {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        let declared = PROVENANCE_IN_FLIGHT[2].load(Ordering::Relaxed);
+        if ordinal >= declared || ordinal > 0xff {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        let layout = PROVENANCE_IN_FLIGHT[1].load(Ordering::Relaxed);
+        let key = (layout << 8) | ordinal;
+        let w = witness();
+        let slot = match w.keys.iter().position(|k| *k == key) {
+            Some(i) => i,
+            None => match w.keys.iter().position(|k| *k == u32::MAX) {
+                Some(free) => {
+                    w.keys[free] = key;
+                    free
+                }
+                None => {
+                    // Bounded, and a truthful failure: a witness that cannot be
+                    // stored would make the child allocate with a seed of the
+                    // wrong type, which is worse than refusing here.
+                    set_err(Errno::E2BIG);
+                    return -1;
+                }
+            },
+        };
+        w.occupied[slot] = true;
+        PROVENANCE_IN_FLIGHT[3].fetch_add(1, Ordering::Relaxed);
+        set_ok();
+        slot as i32
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_provenance_end(token)`.
+    ///
+    /// Closes the transaction. The guest ABI returns nothing, so a mismatch
+    /// between the declared reference count and the stores actually made is
+    /// latched in `fm_last_errno` rather than reported here -- but it still
+    /// matters, because a missing witness means some later object of this
+    /// layout would be allocated with no type-correct seed at all.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_provenance_end(token: u32) {
+        let open = PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed);
+        if open == 0 || open - 1 != token {
+            set_err(Errno::EINVAL);
+            return;
+        }
+        let declared = PROVENANCE_IN_FLIGHT[2].load(Ordering::Relaxed);
+        let seen = PROVENANCE_IN_FLIGHT[3].load(Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[0].store(0, Ordering::Relaxed);
+        if declared != seen {
+            set_err(Errno::EINVAL);
+            return;
+        }
+        set_ok();
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_vector_begin(count) -> handle`.
     ///
     /// Opens a reference vector for one call site's live references. `count` is

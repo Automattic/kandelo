@@ -105,6 +105,18 @@ const HOST_REF_IDENTITY_IMPORT: &str = "__wpk_fork_host_ref_identity";
 const GC_IDENTITY_FIND_HELPER: &str = "fm_gc_identity_find";
 const GC_IDENTITY_CLAIM_HELPER: &str = "fm_gc_identity_claim";
 
+/// Constructor-provenance WITNESS pool. One retained instance per
+/// `(layout, provenance ordinal)`, not one record per allocated object: the
+/// seed replay passes to `struct.new` is overwritten by the snapshot fill, so
+/// it only has to be a type-correct capturable instance of the field's type.
+/// See docs/plans/2026-09-12-lane-f-census.md sections 21 and 22.
+const PROVENANCE_REF_EXPORT: &str = "__wpk_fork_ref_gc_provenance_ref";
+const PROVENANCE_WITNESS_SLOT_HELPER: &str = "fm_gc_provenance_witness_slot";
+const PROVENANCE_WITNESS_TABLE: &str = "__wpk_fork_ref_gc_provenance_witness";
+/// Must match `WITNESS_SLOTS` in `crates/fork-module/src/lib.rs`: Rust picks the
+/// slot index, this table holds the reference at it.
+const PROVENANCE_WITNESS_SLOTS: u64 = 256;
+
 /// The process-owned fork-unwind transport tag.
 const UNWIND_TAG_EXPORT: &str = "__wpk_fork_unwind";
 
@@ -951,6 +963,8 @@ fn main() -> Result<()> {
     inject_gc_claim(&mut module).context("injecting __wpk_fork_ref_gc_claim")?;
     inject_gc_lookup(&mut module).context("injecting __wpk_fork_ref_gc_lookup")?;
     inject_unwind_tag(&mut module).context("injecting __wpk_fork_unwind")?;
+    inject_gc_provenance_ref(&mut module)
+        .context("injecting __wpk_fork_ref_gc_provenance_ref")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1202,6 +1216,78 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
 ///   (if (ref.is_null (local.get $v)) (then (return (i32.const 0))))
 ///   (call $fm_gc_identity_find (call $host_ref_identity (local.get $v))))
 /// ```
+/// `__wpk_fork_ref_gc_provenance_ref(token, ordinal, slot)`.
+///
+/// Stores the guest's staged constructor SEED into the witness pool. The
+/// division of labour is the same one `inject_gc_claim` uses and for the same
+/// reason: Rust picks the slot because Rust can hold the map, and wasm does the
+/// store because only wasm can hold the reference.
+///
+/// Needs no reference identity and no host call at all — unlike claim/lookup,
+/// the witness is keyed by `(layout, ordinal)`, both of which are plain
+/// integers the guest already passes. That is what keeps this off the
+/// allocation hot path.
+///
+/// The guest ABI returns nothing, so a rejected slot is latched in
+/// `fm_last_errno` and surfaces at `__wpk_fork_ref_gc_provenance_end`, which
+/// refuses a transaction whose stores did not match the declared count.
+fn inject_gc_provenance_ref(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == PROVENANCE_REF_EXPORT)
+    {
+        bail!("module already exports {PROVENANCE_REF_EXPORT}");
+    }
+    let helper = exported_function(module, PROVENANCE_WITNESS_SLOT_HELPER)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+
+    // Module-owned, and deliberately ROOTED: a witness the collector could take
+    // would leave a later object of that layout with no type-correct seed.
+    let witness_table = module.tables.add_local(
+        false,
+        PROVENANCE_WITNESS_SLOTS,
+        Some(PROVENANCE_WITNESS_SLOTS),
+        RefType::ANYREF,
+    );
+    module.tables.get_mut(witness_table).name = Some(PROVENANCE_WITNESS_TABLE.to_string());
+    module.exports.add(PROVENANCE_WITNESS_TABLE, witness_table);
+
+    let mut builder = FunctionBuilder::new(
+        &mut module.types,
+        &[ValType::I32, ValType::I32, ValType::I32],
+        &[],
+    );
+    let token = module.locals.add(ValType::I32);
+    let ordinal = module.locals.add(ValType::I32);
+    let slot = module.locals.add(ValType::I32);
+    let index = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(token)
+            .local_get(ordinal)
+            .call(helper)
+            .local_tee(index)
+            .i32_const(0)
+            .binop(BinaryOp::I32LtS)
+            .if_else(
+                None,
+                |rejected| {
+                    // errno is already latched by the helper.
+                    rejected.return_();
+                },
+                |_ok| {},
+            );
+        body.local_get(index)
+            .local_get(slot)
+            .table_get(transit_table)
+            .table_set(witness_table);
+    }
+    let shim = builder.finish(vec![token, ordinal, slot], &mut module.funcs);
+    module.exports.add(PROVENANCE_REF_EXPORT, shim);
+    Ok(())
+}
+
 fn inject_gc_lookup(module: &mut Module) -> Result<()> {
     if module
         .exports

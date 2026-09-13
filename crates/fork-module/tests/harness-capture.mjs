@@ -826,4 +826,131 @@ function i31Minter() {
   assert.equal(lastErrno(), EINVAL, "a reference span outside guest memory is EINVAL");
 }
 
+// ============================================================================
+// Constructor-provenance WITNESSES (env.__wpk_fork_ref_gc_provenance_*).
+//
+// A non-defaultable GC shape cannot be `struct.new_default`'d, so replay's
+// allocate step must pass a type-correct non-null value for each mutable
+// internal-reference field. That seed is then OVERWRITTEN by the snapshot fill,
+// so it only has to be a type-correct capturable instance of the field's type --
+// not the one the original constructor used. Hence one retained WITNESS per
+// (layout, ordinal), which is bounded by the guest's static layouts, rather
+// than one record per allocated object, which is not.
+//
+// The value never crosses into JavaScript: fork-instrument stages the seed in
+// the transit table and the injected shim moves it table-to-table.
+// ============================================================================
+{
+  const EINVAL = 22;
+  const E2BIG = 7;
+  const ACT = 7;
+  const transit = x.__wpk_fork_ref_gc_transit;
+  const witnesses = x.__wpk_fork_ref_gc_provenance_witness;
+  assert.ok(transit instanceof WebAssembly.Table, "transit table is exported");
+  assert.ok(witnesses instanceof WebAssembly.Table, "witness table is exported");
+
+  // Count occupied slots by READING the exported table, not by asking Rust for
+  // a number. A counter export would be a module entry no production host
+  // calls -- the thing `forkModuleEntriesWithoutProductionCaller` exists to
+  // discourage -- and reading the table also proves the shim's `table.set`
+  // landed rather than trusting a parallel tally.
+  const witnessCount = () => {
+    let n = 0;
+    for (let i = 0; i < witnesses.length; i += 1) {
+      if (witnesses.get(i) !== null) n += 1;
+    }
+    return n;
+  };
+  const before = witnessCount();
+
+  // One constructor with two provenance fields, exactly as the wrapper emits:
+  // begin, then per ordinal stage the seed in transit[0] and call ref, then end.
+  const record = (layout, seeds) => {
+    const token = x.__wpk_fork_ref_gc_provenance_begin(
+      0, ACT, 0, layout, 0n, 0n, seeds.length,
+    );
+    assert.ok(token >= 0, `provenance_begin errno=${lastErrno()}`);
+    seeds.forEach((seed, ordinal) => {
+      transit.set(0, seed);
+      x.__wpk_fork_ref_gc_provenance_ref(token, ordinal, 0);
+      assert.equal(lastErrno(), 0, `provenance_ref(${ordinal}) errno=${lastErrno()}`);
+      transit.set(0, null);
+    });
+    x.__wpk_fork_ref_gc_provenance_end(token);
+    assert.equal(lastErrno(), 0, `provenance_end errno=${lastErrno()}`);
+    return token;
+  };
+
+  record(11, [101, 102]);
+  assert.equal(
+    witnessCount() - before,
+    2,
+    "one witness per (layout, ordinal)",
+  );
+
+  // The seed actually reached the witness table -- table to table, never
+  // through JavaScript and never through a host import.
+  const slotA = 0;
+  const slotB = 1;
+  assert.equal(witnesses.get(slotA), 101, "ordinal 0's seed is retained");
+  assert.equal(witnesses.get(slotB), 102, "ordinal 1's seed is retained");
+
+  // The SAME layout again reuses its slots: this is what makes the pool bounded
+  // by the guest's static layouts instead of by allocation count.
+  record(11, [201, 202]);
+  assert.equal(
+    witnessCount() - before,
+    2,
+    "a second construction of the same layout allocates no new witness",
+  );
+  assert.equal(witnesses.get(slotA), 201, "the witness is refreshed, not duplicated");
+
+  // A DIFFERENT layout gets its own slots.
+  record(12, [301]);
+  assert.equal(
+    witnessCount() - before,
+    3,
+    "a distinct layout takes a distinct witness slot",
+  );
+
+  // -- Perturbation: a second begin before an end ---------------------------
+  const open = x.__wpk_fork_ref_gc_provenance_begin(0, ACT, 0, 13, 0n, 0n, 1);
+  assert.ok(open >= 0, "first begin opens");
+  assert.equal(
+    x.__wpk_fork_ref_gc_provenance_begin(0, ACT, 0, 14, 0n, 0n, 1),
+    -1,
+    "a second begin before end is refused",
+  );
+  assert.equal(lastErrno(), EINVAL, "and it is EINVAL");
+
+  // -- Perturbation: an ordinal past the declared count ----------------------
+  transit.set(0, 999);
+  x.__wpk_fork_ref_gc_provenance_ref(open, 5, 0);
+  assert.equal(lastErrno(), EINVAL, "an ordinal past the declared count is EINVAL");
+  transit.set(0, null);
+
+  // -- Perturbation: end with fewer stores than declared ---------------------
+  //
+  // This is the guard that makes the void return safe. A dropped store would
+  // leave a later object of this layout with NO type-correct seed at all.
+  x.__wpk_fork_ref_gc_provenance_end(open);
+  assert.equal(
+    lastErrno(),
+    EINVAL,
+    "ending with fewer witnesses than declared is EINVAL",
+  );
+
+  // -- Perturbation: end with a token that was never opened ------------------
+  x.__wpk_fork_ref_gc_provenance_end(99);
+  assert.equal(lastErrno(), EINVAL, "ending an unopened token is EINVAL");
+
+  // -- A layout id too large for the (layout << 8 | ordinal) witness key ------
+  assert.equal(
+    x.__wpk_fork_ref_gc_provenance_begin(0, ACT, 0, 0x0100_0000, 0n, 0n, 1),
+    -1,
+    "a layout id that would overflow the witness key is refused",
+  );
+  assert.equal(lastErrno(), E2BIG, "and it is E2BIG, not a silent truncation");
+}
+
 console.log("fork-module capture harness: all assertions passed");

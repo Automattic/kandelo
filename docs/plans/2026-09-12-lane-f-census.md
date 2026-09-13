@@ -1273,3 +1273,64 @@ host, and the largest is driver logic that should collapse rather than be
 rewritten. The `forkTypeScript` target of 700 should be revisited once the
 replay gate's placement and the F3 coarsening are settled — it is more likely
 too high than too low.
+
+## §24 — The witness pool, built. Unserved guest imports 18 -> 15.
+
+§22's proposal, approved and implemented. Three guest imports served, no new
+host obligation, and the module's import count is unchanged at 10.
+
+**Two of the three needed no shim at all.**
+`__wpk_fork_ref_gc_provenance_begin` and `_end` are pure scalars, so they are
+plain Rust exports. The object fork-instrument stages in the transit slot at
+`begin` is the NEWLY CONSTRUCTED one, and a witness design has no use for it —
+only the seeds matter, and those arrive at `_ref`.
+
+**`_ref` is the only shim, and it needs no host import.** Unlike `gc_claim` and
+`gc_lookup`, which must ask the host for a reference identity, the witness is
+keyed by `(layout, ordinal)` — both plain integers the guest already passes. So
+the shim reads the staged seed from the transit table and `table.set`s it into a
+module-owned witness table, table to table, never through JavaScript. **That is
+what keeps this off the allocation hot path**, and it is the concrete payoff of
+the witness design over per-object recording.
+
+**No guest re-instrumentation.** The wrapper fork-instrument already emits
+stages each provenance argument in the transit slot before calling `_ref`. The
+whole change is in `crates/fork-module` and `crates/fork-module-inject`.
+
+Scalars are accepted and ignored, deliberately: an array's length is the one
+constructor scalar the fill does not overwrite, and it is recoverable at capture
+by inspecting the array. The parameters stay in the signature because the guest
+ABI declares them.
+
+### Bounded, and truthful where it is not
+
+256 witness slots, keyed `(layout << 8) | ordinal`. A layout id that would
+overflow the key is `E2BIG` at `begin`, not a silent truncation into another
+layout's witness. Exhausting the slots is `E2BIG` at `_ref`. Both are truthful
+failures: a witness stored under the wrong key would make a child allocate with
+a seed of the WRONG TYPE, which is worse than refusing.
+
+The declared-versus-stored count is checked at `_end`. The guest ABI returns
+nothing there, so the mismatch is latched in `fm_last_errno` — but it matters,
+because a dropped store leaves a later object of that layout with no
+type-correct seed at all.
+
+### A diagnostic export was written and then removed
+
+`fm_gc_provenance_witness_count` was added for the harness, and
+`forkModuleEntriesWithoutProductionCaller` immediately caught it: 27 -> 28, an
+export no production host calls, which is exactly what that bucket exists to
+discourage. It was deleted and the harness now counts occupied slots by reading
+the exported witness table. That is strictly better — it observes the table the
+shim actually writes rather than trusting a parallel tally in Rust.
+
+The surface moved as expected otherwise: `forkModuleInjectorHelpers` 3 -> 4
+against its envelope of 15, since `fm_gc_provenance_witness_slot` is called only
+by the injected shim.
+
+### Still not established
+
+§22's open question stands: whether any consumer requires a provenance edge to
+name the object's ORIGINAL seed rather than a type-correct substitute. Capture
+does not yet emit witness recipes into `gc_define`'s provenance ids — that is
+the next step, and it is where the assumption becomes load-bearing.
