@@ -3919,6 +3919,40 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### MAINTAINER DECISIONS, 2026-09-13: rebuild the bases; start the port now
+
+**1. No legacy seal verification. The shipped bases are rebuilt through the new
+producer.** This settles the question that gated five of the ten remaining
+importers, and it settles it the way `docs/agent-guidance/abi.md` argues: a
+stale artifact fails loudly and is rebuilt rather than shimmed.
+
+What it means concretely:
+
+* **Nobody reproduces JavaScript's `JSON.stringify` in a `no_std` crate.** The
+  cohort identity is a byte layout defined once, in Rust, and there is no second
+  canonical form to keep in step.
+* **The seal verifier only ever authenticates images the new producer wrote**,
+  which is the honest scope and no longer a limitation to apologise for.
+* **The five blocked builders are unblocked by a REBUILD, not by more code.**
+  Their base images must be produced through the repointed path before they can
+  repoint themselves — so the ordering is: seal capability, then bases rebuilt,
+  then those five.
+* An image sealed the old way is not "unsupported" so much as **superseded**:
+  the kernel could never read those seals, so nothing is lost that the Rust path
+  ever had.
+
+**2. The supply-chain port starts NOW, ahead of the constructor repoints.** The
+original ordering put it after them; those repoints are exactly what is waiting
+on the rebuild, so holding the port behind them would idle the lane for no
+benefit.
+
+`staged-product-inputs.ts` (1,975 lines, 50 parse/verify sites) and
+`vfs-product-builder-contract.ts` (952, 55) are archive extraction,
+path-traversal defence and integrity verification **of untrusted input** —
+mechanism rather than product configuration, which is what the census
+correction established and what makes them a port rather than a repoint.
+`crates/runtime-core/src/zip.rs` already exists.
+
 ### CORRECTION: the seal work is NOT blocked, and I treated a question as a veto
 
 **2026-09-13.** I flagged `needs-maintainer` claiming everything reachable was
