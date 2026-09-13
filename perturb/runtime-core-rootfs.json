@@ -64,6 +64,27 @@
    "scope_end": "\n}\n",
    "find": "                            mark_deferred_base(&abs)?;",
    "replace": ""
+  },
+  {
+   "name": "a host write does not follow a symlinked path",
+   "scope": "pub fn write_file_at",
+   "scope_end": "\n}\n",
+   "find": "    let resolved = match resolve_read_symlinks(path) {\n        Ok(resolved) => resolved,\n        Err(Errno::ENOENT) => path.to_vec(),\n        Err(e) => return Err(e),\n    };",
+   "replace": "    let resolved = path.to_vec();"
+  },
+  {
+   "name": "a host write to a path that does not resolve is refused",
+   "scope": "pub fn write_file_at",
+   "scope_end": "\n}\n",
+   "find": "        Err(Errno::ENOENT) => path.to_vec(),",
+   "replace": ""
+  },
+  {
+   "name": "a truncating write sets the mode of the link, not its target",
+   "scope": "pub fn write_file_at",
+   "scope_end": "\n}\n",
+   "find": "        chmod(&resolved, mode & 0o7777)?;",
+   "replace": "        chmod(path, mode & 0o7777)?;"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

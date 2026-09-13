@@ -2813,6 +2813,18 @@ where
 ///
 /// Host-facing convenience for the 2e cutover so host-side `/` writes land in
 /// the authoritative overlay and are visible to live guests.
+///
+/// A symlinked path is followed ([`resolve_read_symlinks`], bounded by
+/// [`SYMLOOP_MAX`]) for the same reason [`read_file_at`] follows one, and the
+/// omission here was a real defect: `open` refuses a symlinked final component
+/// with `ELOOP` because the GUEST's namespace resolver pre-resolves, and a
+/// host-facing raw-path writer does not. So writing `/bin/bash` when it is a
+/// symlink failed `ELOOP` while READING it succeeded.
+///
+/// It surfaced building the shell package, where the composer materialises
+/// bash over a path the rootfs carries as a symlink. Following the link means
+/// the bytes land in the file the name refers to, which is what every other
+/// writer of a symlinked path does.
 pub fn write_file_at<F>(
     path: &[u8],
     offset: i64,
@@ -2824,15 +2836,29 @@ pub fn write_file_at<F>(
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
+    // Resolved BEFORE the open, and the mode is applied to the resolved path
+    // too: a truncating replace of `/bin/bash` must set the mode of the file
+    // the link names, not of the link.
+    //
+    // A path that does not RESOLVE is one this call may be about to create, so
+    // the raw path stands in. That keeps creation working without weakening
+    // anything: `open` below reports the real error for a missing parent, and
+    // an `ENOENT` here cannot hide a symlink, because resolving a symlink is
+    // the only way this returns a different path at all.
+    let resolved = match resolve_read_symlinks(path) {
+        Ok(resolved) => resolved,
+        Err(Errno::ENOENT) => path.to_vec(),
+        Err(e) => return Err(e),
+    };
     let flags = O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
-    let handle = open(path, flags, mode & 0o7777, 0, 0)?;
+    let handle = open(&resolved, flags, mode & 0o7777, 0, 0)?;
     let result = write(handle, offset, buf, byte_source);
     release_handle(handle);
     // open(O_CREAT) preserves an existing file's mode, so a truncating replace
     // sets it explicitly — create and replace then behave alike, matching the
     // host write_vfs_file handler.
     if truncate {
-        chmod(path, mode & 0o7777)?;
+        chmod(&resolved, mode & 0o7777)?;
     }
     result
 }
@@ -7043,6 +7069,64 @@ mod tests {
                 .expect("section")
                 .archive_bytes(3),
             Some(8_000_000),
+        );
+    }
+
+    #[test]
+    fn a_host_write_to_a_symlinked_path_lands_in_the_file_it_names() {
+        let _g = TestGuard::acquire();
+        // `open` refuses a symlinked final component with ELOOP on purpose:
+        // the GUEST's namespace resolver pre-resolves, so a symlink arriving
+        // there means `O_NOFOLLOW`. A host-facing raw-path writer does not
+        // pre-resolve, and `write_file_at` never closed that gap even though
+        // `read_file_at` beside it does.
+        //
+        // The result was that READING `/bin/bash` through a symlink worked and
+        // WRITING it failed ELOOP. It surfaced building the shell package,
+        // where the composer materialises bash over a path the rootfs carries
+        // as a symlink -- a product build, not a test.
+        mkdir(b"/bin", 0o755, 0, 0).expect("mkdir /bin");
+        mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
+        mkdir(b"/usr/bin", 0o755, 0, 0).expect("mkdir /usr/bin");
+        write_file_at(b"/usr/bin/bash", 0, b"old", 0o755, true, no_bytes())
+            .expect("the real file");
+        symlink(b"/usr/bin/bash", b"/bin/bash", 0, 0).expect("the alias");
+
+        write_file_at(b"/bin/bash", 0, b"new bytes", 0o755, true, no_bytes())
+            .expect("writing through the symlink must not fail ELOOP");
+
+        // The bytes landed in the file the NAME refers to, and the link is
+        // still a link rather than having been replaced by a regular file.
+        let mut buf = [0u8; 16];
+        let n = read_file_at(b"/usr/bin/bash", 0, &mut buf, no_bytes()).expect("read target");
+        assert_eq!(&buf[..n], b"new bytes");
+        assert_eq!(
+            lstat(b"/bin/bash").expect("lstat").st_mode & S_IFMT,
+            S_IFLNK,
+            "the alias is still a symlink",
+        );
+    }
+
+    #[test]
+    fn a_host_write_still_creates_a_file_that_does_not_exist_yet() {
+        let _g = TestGuard::acquire();
+        // The negative control for the resolution above. A path that does not
+        // RESOLVE is one the caller may be about to create, so the raw path
+        // stands in -- without this, following symlinks would have turned every
+        // creating write into ENOENT, which is exactly what it did on the first
+        // attempt and what sixteen tests caught.
+        mkdir(b"/etc", 0o755, 0, 0).expect("mkdir /etc");
+        write_file_at(b"/etc/fresh", 0, b"created", 0o644, true, no_bytes())
+            .expect("a creating write still creates");
+        let mut buf = [0u8; 16];
+        let n = read_file_at(b"/etc/fresh", 0, &mut buf, no_bytes()).expect("read it back");
+        assert_eq!(&buf[..n], b"created");
+
+        // And a missing PARENT is still the caller's error, not a silent
+        // creation somewhere else.
+        assert_eq!(
+            write_file_at(b"/nope/deep", 0, b"x", 0o644, true, no_bytes()).unwrap_err(),
+            Errno::ENOENT,
         );
     }
 
