@@ -4035,6 +4035,35 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The seal verifier is built, tested, perturbed — and called by nothing
+
+**Found 2026-09-13, by asking the question I had already written down for a
+different module.** `seal::verify_cohorts` has ten trials and zero survivors,
+and `sm_load_image` does not call it. The capability is complete and inert.
+
+**This is the same trap as the envelope validator two increments earlier**,
+where the plan records: *a validator nothing calls leaves the weaker rule
+deciding.* I wrote that sentence, then shipped another one.
+
+**The compiler said so and I did not look.** `cargo build -p sffs-module`
+reports dead-code warnings on `seal.rs` — `PAYLOAD_VERSION`, `COHORT_TAG`,
+`verify_cohorts`. When the seal landed I grepped the build output for the
+module names I had just edited rather than for warnings generally, so a clean
+grep read as a clean build. **A filtered check answers only the question its
+filter asks**, which is H-5 arriving through my own tooling rather than the
+code's.
+
+**What wiring it means**, per the design already recorded: verification runs
+INSIDE the load, so an unverified loaded image is unrepresentable rather than
+merely discouraged. It needs an accessor for the archives a load retained —
+`rootfs` already stores each archive's payload, so this is a getter beside
+`image_metadata()` rather than new state.
+
+**The habit that would have caught it:** after adding a module, read the build's
+warnings for THAT FILE by name, not by grepping for what you expected to see.
+The compiler's dead-code pass is the cheapest possible "is this called?" check
+and it runs whether or not anyone asks it.
+
 ### Y5: 10 -> 7, by re-measuring rather than by building anything
 
 **2026-09-13.** The remaining ten were grouped as "five blocked on the seal, one
