@@ -3441,6 +3441,17 @@ headroom decision**, which is worth knowing because it means the funnel's
 
 ### What "importers to 0" actually costs: the bridge cannot load a base image
 
+> **SUPERSEDED 2026-09-13.** All three blockers named below are now gone. The
+> bridge loads an image (`sm_load_image`, `41ce154c2`); `getImageMetadata` reads
+> what the image declared (`601a53169`); and `rebaseToNewFileSystem` dissolved
+> into `setImageCapacity` rather than being ported, because it existed only to
+> change a ceiling `MemoryFileSystem` bakes in at construction. **The one
+> remaining blocker of the three is `verifyImportedLazyAtomicGroupSeals`**, and
+> its obstacle is not a missing method but a carrier: the seal lives in the
+> host-side lazy JSON the Rust loader walks past. The measurement below is kept
+> because its reasoning about what "importers to 0" costs is still how the
+> remaining eleven were sized.
+
 **Measured 2026-09-12, and it bounds the whole repoint.** Three of the remaining
 blocked files are DERIVED builders — `shell-vfs-build.ts`,
 `package-shell-vfs-build.ts`, `build-php-test-vfs-image.ts`. They call
@@ -3564,7 +3575,8 @@ exposed the ceiling as tree-derived. Two layers of H-5, each hiding the next.
 `expectedMaxByteLength` should arrive. It is not merely a parameter: the export
 currently converges `max_blocks` and `data_start` in a loop against the tree, so
 a requested capacity has to enter that computation as a floor rather than
-replace it. Not attempted here.
+replace it. ~~Not attempted here.~~ **Done in `05e07cc98`; see "CLOSED
+2026-09-12" below.**
 
 **It is a prerequisite for `assertVfsImageCapacity` against the Rust writer**,
 and therefore for the sixteen builders that will construct `SffsImageFs` — which
