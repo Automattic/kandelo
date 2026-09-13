@@ -1824,6 +1824,156 @@ mod tests {
     }
 
     #[test]
+    fn the_byte_source_serves_the_image_and_only_the_image() {
+        // `image_source` is the module's whole answer to "where do bytes come
+        // from", and every caller reaches it through several layers. Tested
+        // directly, because the boundaries that matter -- what it refuses, and
+        // what it does at the end of the image -- are hard to steer a builder
+        // into and trivial to state here.
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        let len = image.len();
+
+        // Nothing loaded: a request cannot be served, and must not be answered
+        // with silence that reads like an empty file.
+        sm_reset();
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            image_source(rootfs::ByteReq::Image { offset: 0 }, &mut buf),
+            Err(Errno::EIO),
+            "no image loaded is a failure, not zero bytes",
+        );
+
+        assert!(load_image_bytes(&image) > 0);
+
+        // The image, from the front.
+        let mut head = [0u8; 8];
+        assert_eq!(image_source(rootfs::ByteReq::Image { offset: 0 }, &mut head), Ok(8));
+        assert_eq!(head, image[..8], "the bytes are the image's own");
+
+        // At the end: a short count, not a full buffer of whatever follows.
+        let mut tail = [0u8; 64];
+        let want = 10;
+        let n = image_source(
+            rootfs::ByteReq::Image { offset: (len - want) as u64 },
+            &mut tail,
+        );
+        assert_eq!(n, Ok(want), "a read straddling the end is short, not full");
+        assert_eq!(&tail[..want], &image[len - want..]);
+        // Past the end: nothing, and not an error -- a reader walking off the
+        // end has reached the end.
+        assert_eq!(
+            image_source(rootfs::ByteReq::Image { offset: len as u64 }, &mut tail),
+            Ok(0),
+        );
+
+        // And the requests this module cannot serve stay unserved. A blob or
+        // an archive is a HOST transport; answering one out of the image would
+        // hand back whatever bytes happen to sit at that offset, which is the
+        // most dangerous possible wrong answer because it looks like data.
+        assert_eq!(
+            image_source(rootfs::ByteReq::Base { blob_id: 1, offset: 0 }, &mut buf),
+            Err(Errno::EIO),
+        );
+        assert_eq!(
+            image_source(rootfs::ByteReq::Archive { archive_id: 1, offset: 0 }, &mut buf),
+            Err(Errno::EIO),
+        );
+    }
+
+    #[test]
+    fn a_blob_backed_file_is_not_read_out_of_the_loaded_image() {
+        // The same refusal, reached the way a builder would reach it. A base
+        // file whose bytes live in a host blob keeps its blob id after a load;
+        // if the byte source treated that id's offset as an image offset, the
+        // read would succeed and return unrelated bytes from the middle of the
+        // image.
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        sm_reset();
+        assert!(load_image_bytes(&image) > 0);
+
+        rootfs::insert_base_file(b"/blob.bin", 7, 4096, 0o644, 0, 0, 99).expect("base file");
+        let (pp, pl) = write_path(b"/blob.bin");
+        let buf = sm_alloc(64);
+        let rc = unsafe { sm_read_file(pp, pl, 0, buf, 64) };
+        assert_eq!(rc, -(Errno::EIO as i32), "a blob is a host transport, not an offset");
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(buf, 64) };
+    }
+
+    #[test]
+    fn an_image_that_is_replaced_or_reset_is_freed() {
+        // The adopted buffer is the one allocation in this module whose
+        // lifetime outlives its call, so it is the one that can leak. A leak
+        // has no direct observation, but a FREE does: the allocator can hand
+        // the region back. So load, replace, and ask for a buffer of exactly
+        // the size just released -- getting the same address back is the
+        // release, observed.
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+
+        sm_reset();
+        assert!(load_image_bytes(&image) > 0);
+        let first = image_bytes().expect("loaded").as_ptr() as usize;
+
+        // Replacing it must free it.
+        assert!(load_image_bytes(&image) > 0);
+        let second = image_bytes().expect("loaded").as_ptr() as usize;
+        assert_ne!(second, first, "the second load is its own allocation");
+        let back_from_replace = sm_alloc(image.len());
+        assert_eq!(back_from_replace, first, "the replaced image's memory came back");
+
+        // And a reset must free the last one. The region above is deliberately
+        // still HELD: releasing it would leave two free regions of the right
+        // size and the allocator could satisfy the next request from either,
+        // which would make this assertion pass whether or not the reset freed
+        // anything.
+        sm_reset();
+        assert!(image_bytes().is_none(), "nothing is loaded after a reset");
+        let back_from_reset = sm_alloc(image.len());
+        assert_eq!(back_from_reset, second, "the reset image's memory came back");
+
+        unsafe { sm_free(back_from_replace, image.len()) };
+        unsafe { sm_free(back_from_reset, image.len()) };
+    }
+
+    #[test]
+    fn an_empty_range_is_not_an_image() {
+        sm_reset();
+        let ptr = sm_alloc(16);
+        assert_eq!(unsafe { sm_load_image(ptr, 0) }, -(Errno::EINVAL as i32));
+        assert_eq!(unsafe { sm_load_image(0, 16) }, -(Errno::EINVAL as i32));
+        assert!(image_bytes().is_none());
+        unsafe { sm_free(ptr, 16) };
+    }
+
+    #[test]
+    fn a_failed_export_reports_the_failure_rather_than_a_byte_count() {
+        // A zero return from `sm_export_image_read` means "the image ends
+        // here", so an error reported as 0 is an error reported as SUCCESS --
+        // the host writes a truncated image and nothing says otherwise. With
+        // no root inode there is no tree to export.
+        sm_reset();
+        let buf = sm_alloc(4096);
+        let rc = unsafe { sm_export_image_read(0, buf, 4096) };
+        assert!(rc < 0, "an export with no root is a failure, got {rc}");
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
     fn a_small_request_cannot_cost_a_tree_the_inodes_it_needs() {
         // The convergence loop already re-raises the ceiling to whatever the
         // DATA needs, so a tiny tree cannot tell a floor from a replacement.

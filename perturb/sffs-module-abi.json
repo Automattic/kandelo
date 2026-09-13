@@ -237,8 +237,8 @@
       "name": "the stat probe is answered only after the path resolves",
       "scope": "pub unsafe extern \"C\" fn sm_lstat(",
       "scope_end": "\n}\n",
-      "find": "    if out_len == 0 {\n        return RECORD as i32;\n    }\n    let path = unsafe { slice(path_ptr, path_len) };",
-      "replace": "    let path = unsafe { slice(path_ptr, path_len) };\n    if out_len == 0 {\n        return RECORD as i32;\n    }"
+      "find": "    if out_len == 0 {\n        return RECORD as i32;\n    }\n    let path = unsafe { slice(path_ptr, path_len) };\n    let stat = match rootfs::lstat(path) {\n        Ok(stat) => stat,\n        Err(e) => return err(e),\n    };",
+      "replace": "    let path = unsafe { slice(path_ptr, path_len) };\n    let stat = match rootfs::lstat(path) {\n        Ok(stat) => stat,\n        Err(e) => return err(e),\n    };\n    if out_len == 0 {\n        return RECORD as i32;\n    }"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
