@@ -3665,3 +3665,48 @@ restore left. It is not restorable at all: it calls
 DELETED as dead unguarded duplicates. Restoring it would reintroduce calls to
 entries that no longer exist. Dependency count is not the measure of whether
 something can come back -- whether its callees still exist is.
+
+## §71 — Why there is no next incremental step, and what needs deciding
+
+§70 named `fork-gc-codec` and `fork-anyref-transit` as leaves that could move
+independently. Checking their CONSUMERS rather than their dependencies retracts
+that.
+
+`fork-anyref-transit`'s wrapper is passed to the activation registry
+(`worker-main.ts:3951`). Its own comment says it exists so "all three parties --
+guest import, module export, and this host seam -- share one object", and
+"on flag-off (no fork-module) it mints its own table" -- a branch that no longer
+exists, since the module is unconditional. What remains of it is five methods
+over a `WebAssembly.Table`, and the module already exports `fm_transit_grow` for
+the only non-trivial one.
+
+`fork-gc-codec`'s two live uses both feed `registerChildReferenceActivation`.
+
+So both leaves are consumed ONLY by the cluster. Porting either now means
+choosing a shape for a consumer that does not exist yet -- which is exactly what
+the 1239-line backend was made of, and what §69 spent its reduction undoing.
+There is no honest incremental step left: the next unit of work is the cluster
+port itself.
+
+**Four decisions are queued, and three of them shape that port.**
+
+1. `forkRestoredHostFloor`'s target -- parked equal to its ceiling because
+   inventing it makes it a budget to spend.
+2. The funcref-identity import (`__wpk_fork_host_func_identity`) -- would let the
+   module serve `table_mutation_commit` and `encode_funcref`, taking unserved
+   6 -> 4. Verified empirically that no wasm instruction substitutes (§58).
+   Nothing built either way.
+3. The paired ratchet -- three net-zero pairings now
+   (`forkModuleHostDriveEntries` + `forkModuleEntriesWithoutProductionCaller`,
+   total 46 each time). The budget file recommends they become one.
+4. `forkTypeScript` 249 -> 419 -- argued as 170 lines replacing 1239, but it is
+   a large raise against a surface that had been declared done.
+
+Decisions 3 and 4 both concern surfaces the cluster port will move heavily: it
+will reconnect many entries (bucket migration) and it will add authored
+module-facing TypeScript. Starting it before those are settled means making the
+same judgment calls repeatedly and unilaterally, which is how four accumulated.
+
+Stopping here is the lane's own rule applied to itself: the maintainer is the
+sole merger, deferrals are the maintainer's call, and a raise taken while they
+are away is meant to be revisitable rather than a precedent.
