@@ -148,8 +148,8 @@
       "name": "an input's reference is never checked",
       "scope": "fn validate_input(",
       "scope_end": "\n}\n",
-      "find": "    if let Some(reference) = &input.reference {",
-      "replace": "    if false {"
+      "find": "        validate_reference_binds_digest(reference, &input.sha256, label)?;",
+      "replace": "        let _ = reference;"
     }
   ]
 }
