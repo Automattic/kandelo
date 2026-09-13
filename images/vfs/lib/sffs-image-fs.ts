@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { ERRNO } from "../../../host/src/generated/abi";
+import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
 
 /**
  * Builder-facing filesystem backed by the Rust image module.
@@ -323,7 +323,10 @@ export class SffsImageFs {
   // module. It is the same choice `sm_read_dir` made by returning a snapshot.
   // ---------------------------------------------------------------------
 
-  private readonly openFiles = new Map<number, { path: string; offset: number }>();
+  private readonly openFiles = new Map<
+    number,
+    { path: string; offset: number; mode: number }
+  >();
   private readonly openDirs = new Map<number, { names: string[]; index: number }>();
   private nextHandle = 1;
 
@@ -331,11 +334,92 @@ export class SffsImageFs {
    * builders only ever open to read back what they wrote, and silently
    * accepting a write flag while not honouring it would be worse than the
    * narrow surface. */
-  open(path: string, _flags = 0, _mode = 0): number {
-    this.lstat(path); // Throws ENOENT before a handle is issued.
+  /**
+   * Open a path and get a handle.
+   *
+   * The flags were ignored here until the builder recipes needed `write`, and
+   * ignoring them was not harmless: every recipe opens with
+   * `O_WRONLY|O_CREAT|O_TRUNC`, so a second build writing over an existing file
+   * would have SPLICED into the old bytes instead of replacing them. A shorter
+   * new file would have kept the old file's tail, which is the kind of wrong
+   * that produces a working image containing something nobody wrote.
+   *
+   * Handles are the bridge's own: a path plus a cursor. The module addresses
+   * files by path, so there is no kernel fd to mirror and no state to leak if a
+   * caller forgets to close one.
+   */
+  open(path: string, flags = 0, mode = 0o644): number {
+    const create = (flags & OPEN_FLAGS.O_CREAT) !== 0;
+    const truncate = (flags & OPEN_FLAGS.O_TRUNC) !== 0;
+    let exists = true;
+    try {
+      this.lstat(path);
+    } catch (error) {
+      if (!create) throw error; // ENOENT, before a handle is issued.
+      exists = false;
+    }
+    if (!exists || truncate) this.writeFile(path, new Uint8Array(0), mode);
     const handle = this.nextHandle++;
-    this.openFiles.set(handle, { path, offset: 0 });
+    this.openFiles.set(handle, { path, offset: 0, mode });
     return handle;
+  }
+
+  /**
+   * Follow symlinks and stat what they point at.
+   *
+   * The module answers `lstat` only, because the kernel's own `rootfs::lstat`
+   * is what it wraps. Resolving here rather than adding a following variant to
+   * the module keeps the resolution in one place: a builder that wants the link
+   * itself already has `lstat`, and a module entry point that differed only by
+   * a boolean would be a second spelling of the same question.
+   */
+  stat(path: string): SffsStat {
+    // POSIX requires a bounded chain; forty is far above any real tree and far
+    // below anything that could hang a build on a symlink cycle.
+    let current = path;
+    for (let hop = 0; hop < 40; hop += 1) {
+      const st = this.lstat(current);
+      if ((st.mode & 0o170000) !== 0o120000) return st;
+      const target = this.readlink(current);
+      current = target.startsWith("/")
+        ? target
+        : `${current.slice(0, current.lastIndexOf("/") + 1)}${target}`;
+    }
+    throw new SffsImageError(ERRNO.ELOOP, "stat", path);
+  }
+
+  /**
+   * Write into an open handle at `position`, or at the handle's own cursor.
+   *
+   * Read-modify-write, because the module addresses whole files. That is not
+   * the quadratic cost it looks like: `writeVfsBinary` hands over the entire
+   * remaining buffer in one call, so a binary is written in a single pass. A
+   * caller that dribbled bytes in would pay for it, and no builder does.
+   *
+   * A write past the end zero-fills the gap, which is what a POSIX write to a
+   * position beyond EOF does. Silently dropping the gap would produce a file
+   * whose length disagreed with where its bytes are.
+   */
+  write(
+    handle: number,
+    buffer: Uint8Array,
+    position: number | null,
+    length = buffer.byteLength,
+  ): number {
+    const open = this.openFiles.get(handle);
+    if (!open) throw new Error(`sffs-module: bad file handle ${handle}`);
+    const at = position ?? open.offset;
+    const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength));
+
+    const existing = this.readFile(open.path);
+    const end = Math.max(existing.byteLength, at + incoming.byteLength);
+    const next = new Uint8Array(end);
+    next.set(existing, 0);
+    next.set(incoming, at);
+    this.writeFile(open.path, next, open.mode);
+
+    if (position === null) open.offset = at + incoming.byteLength;
+    return incoming.byteLength;
   }
 
   /**

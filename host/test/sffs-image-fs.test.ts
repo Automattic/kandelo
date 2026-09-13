@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { SffsImageFs, SffsImageError } from "../../images/vfs/lib/sffs-image-fs";
+import { writeVfsBinary } from "../src/vfs/image-helpers";
+import { OPEN_FLAGS } from "../src/generated/abi";
+
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 /**
  * The bridge driven the way a builder drives it.
@@ -318,6 +323,73 @@ describe("SffsImageFs", () => {
     expect(back.byteLength).toBe(big.byteLength);
     expect(back[0]).toBe(0x41);
     expect(back[back.byteLength - 1]).toBe(0x41);
+  });
+
+  it("writes a binary through the same helper path a recipe uses", () => {
+    // `writeVfsBinary` is how every recipe puts a program into an image: open
+    // with O_WRONLY|O_CREAT|O_TRUNC, write the whole buffer, close. Typechecking
+    // the bridge against the interface proves the methods EXIST; this proves
+    // they work, which is the part the repoint actually depends on.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    writeVfsBinary(fs, "/usr/bin/prog", new Uint8Array([1, 2, 3, 4, 5]), 0o755);
+    expect(fs.readFile("/usr/bin/prog")).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    expect(fs.lstat("/usr/bin/prog").mode & 0o7777).toBe(0o755);
+  });
+
+  it("truncates on O_TRUNC instead of splicing into the old bytes", () => {
+    // The bridge ignored its open flags until `write` existed, and ignoring
+    // them would not have been harmless: a second build writing a SHORTER file
+    // over a longer one would have kept the old file's tail. The image would
+    // build, mount and boot, containing bytes nobody wrote.
+    const fs = SffsImageFs.create();
+    writeVfsBinary(fs, "/f", new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]), 0o644);
+    writeVfsBinary(fs, "/f", new Uint8Array([1, 2, 3]), 0o644);
+    expect(fs.readFile("/f")).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("writes at a position past the end by zero-filling the gap", () => {
+    const fs = SffsImageFs.create();
+    const fd = fs.open("/sparse", O_WRONLY_CREAT_TRUNC, 0o644);
+    fs.write(fd, new Uint8Array([7, 7]), 4, 2);
+    fs.close(fd);
+    // Length must agree with where the bytes are; dropping the gap would
+    // produce a two-byte file whose content sat at offset four.
+    expect(fs.readFile("/sparse")).toEqual(new Uint8Array([0, 0, 0, 0, 7, 7]));
+  });
+
+  it("advances its own cursor when no position is given", () => {
+    const fs = SffsImageFs.create();
+    const fd = fs.open("/seq", O_WRONLY_CREAT_TRUNC, 0o644);
+    fs.write(fd, new Uint8Array([1, 2]), null, 2);
+    fs.write(fd, new Uint8Array([3, 4]), null, 2);
+    fs.close(fd);
+    expect(fs.readFile("/seq")).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it("follows symlinks for stat and stops at the link for lstat", () => {
+    const fs = SffsImageFs.create();
+    fs.writeFile("/target", new Uint8Array([1, 2, 3]), 0o644);
+    fs.symlink("/target", "/link", 0, 0);
+    expect(fs.stat("/link").size).toBe(3);
+    expect(fs.stat("/link").mode & 0o170000).toBe(0o100000);
+    expect(fs.lstat("/link").mode & 0o170000).toBe(0o120000);
+  });
+
+  it("resolves a relative symlink against the link's own directory", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/d", 0o755);
+    fs.writeFile("/d/target", new Uint8Array([1, 2, 3, 4]), 0o644);
+    fs.symlink("target", "/d/link", 0, 0);
+    expect(fs.stat("/d/link").size).toBe(4);
+  });
+
+  it("refuses a symlink cycle rather than following it forever", () => {
+    const fs = SffsImageFs.create();
+    fs.symlink("/b", "/a", 0, 0);
+    fs.symlink("/a", "/b", 0, 0);
+    expect(() => fs.stat("/a")).toThrow();
   });
 
   it("gives each instance an independent tree", () => {

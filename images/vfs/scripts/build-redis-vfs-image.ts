@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -37,8 +37,11 @@ export interface RedisVfsImageBuildInputs {
 export async function buildRedisVfsImage(
   inputs: RedisVfsImageBuildInputs,
 ): Promise<void> {
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024, { maxByteLength: 128 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 128 * 1024 * 1024);
+  const fs = SffsImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. It was the SharedArrayBuffer's `maxByteLength`; the buffer itself
+  // was never anything but the old constructor's first argument.
+  fs.setImageCapacity(128 * 1024 * 1024);
 
   for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/data"]) {
     ensureDir(fs, dir);

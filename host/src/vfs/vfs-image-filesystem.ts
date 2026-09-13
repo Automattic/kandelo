@@ -1,4 +1,35 @@
-import type { HostFileOffset, StatResult } from "../types";
+import type { HostFileOffset } from "../types";
+
+/**
+ * What an image builder reads off a stat, and nothing else.
+ *
+ * The host's `StatResult` additionally carries `dev`, `atimeMs`, `mtimeMs`,
+ * `ctimeMs`, `generation`, `linkCount` and `dataSequence`. A census of every
+ * builder in `images/` found the fields below and ONLY the fields below:
+ * `mode` 24 times, `size` 13, `ino` 4, `uid` and `gid` twice each, and not one
+ * read of a timestamp or a device number.
+ *
+ * Declaring the wide type would have obliged every implementation to supply
+ * seven values no caller looks at — and the way to supply a time the image does
+ * not record is to invent one. This is the same judgement as `readdir`
+ * returning `{ name }`: an interface states what is used, and a richer
+ * implementation still satisfies it structurally.
+ */
+export interface VfsImageStat {
+  /**
+   * `number | bigint` because the two implementations genuinely differ:
+   * `MemoryFileSystem` widens to `bigint` for exact identity across the
+   * host/kernel boundary, and the module's record is a `u64` read as a number.
+   * Narrowing it to `number` here type-checked the bridge and broke the
+   * incumbent in three hundred places, which is the interface being told which
+   * of the two it is allowed to describe.
+   */
+  ino: number | bigint;
+  mode: number;
+  size: number;
+  uid: number;
+  gid: number;
+}
 
 /**
  * What an image says about itself: the builder's own statements, carried by the
@@ -63,10 +94,15 @@ export interface VfsImageMetadata {
 export interface VfsImageFilesystem {
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
-  stat(path: string): StatResult;
-  lstat(path: string): StatResult;
+  stat(path: string): VfsImageStat;
+  lstat(path: string): VfsImageStat;
   open(path: string, flags: number, mode: number): number;
-  close(handle: number): number;
+  /**
+   * `void` rather than `number`: no builder reads the result, and a method
+   * returning a number still satisfies a `void` declaration, so this admits
+   * both implementations while promising only what is used.
+   */
+  close(handle: number): void;
   read(
     handle: number,
     buffer: Uint8Array,
