@@ -124,6 +124,33 @@ export interface VfsImageFilesystem {
    */
   registerLazyFile(path: string, url: string, size: number, mode?: number): number;
 
+  /**
+   * Free space and free inodes in the image, judged against a profile.
+   *
+   * **Optional, and so is {@link statfs} below, on purpose.** The two
+   * implementations differ in what they can answer: the Rust bridge computes
+   * this verdict in the kernel, and `MemoryFileSystem` can only report a
+   * `statfs` for a caller to turn into one.
+   *
+   * Requiring the verdict would force the method into `memory-fs.ts`, whose
+   * budget target is 0 and which the surface gate has already refused to let
+   * grow. Requiring `statfs` instead would put the primitive back on the
+   * bridge and leave the arithmetic and the judgement on this side. Carrying
+   * both as optional lets the two coexist for exactly as long as both exist —
+   * the `statfs` branch is deleted along with `memory-fs.ts`, and there is one
+   * call site to delete.
+   */
+  checkHeadroom?(minimumFreeBytes: number, minimumFreeInodes: number): {
+    met: boolean;
+    freeBytes: number;
+    requiredBytes: number;
+    freeInodes: number;
+    requiredInodes: number;
+  };
+
+  /** See {@link checkHeadroom}: the primitive, for the implementation that has no verdict. */
+  statfs?(path: string): { bfree: number; frsize: number; ffree: number };
+
   saveImage(options?: {
     materializeAll?: boolean;
     metadata?: unknown;
