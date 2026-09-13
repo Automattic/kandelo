@@ -113,6 +113,24 @@ run `./run.sh setup` in the lane worktree first, or the comparison measures
 artifact age rather than the branch. Comparing against another SEEDED worktree
 does not help — it carries the same stale copies.
 
+**A seeded worktree's `du` size is not its disk cost, and deleting its `target/`
+reclaims almost nothing. Measured 2026-09-13.** The lane S worktree reported
+**99G**, 97G of it `target/`. Removing that directory entirely took it to 2.4G
+by `du` and moved free space by **under 1G**, because every block was still
+clonefile-shared with the worktree it was seeded from. Cloned bytes are counted
+once per worktree by `du` and once in total by the filesystem.
+
+So **do not go looking for disk in a seeded worktree's `target/`.** On this
+machine the real consumer is the machine-wide build cache at
+`~/.cache/kandelo` — **233G**, 149G of it `source-only`, 60G `programs` — which
+is genuinely allocated rather than shared, and which every worktree reads, so
+pruning it forces rebuilds everywhere and is the maintainer's call.
+
+**And check `git check-ignore` before deleting anything in a worktree.**
+`test-runs/` is TRACKED, not build output; it was swept up in that cleanup and
+restored with `git checkout --`. `target/` being ignored says nothing about its
+neighbours.
+
 **Set the cache roots worktree-local in a lane worktree.** Two are
 user-settable and both are on `scripts/dev-shell.sh`'s `--keep` list precisely
 because stripping them once made the override *silently ineffective*:
