@@ -3293,6 +3293,43 @@ measured across all four call sites — and it lives in the deferred payload the
 kernel carries without reading. Building an accessor for it would be a floor
 nobody stands on (H-1).
 
+### The funnel's last method: a headroom VERDICT, and a ceiling raised on purpose
+
+**Decided in-lane 2026-09-12.** `vfs-image-helpers.ts` — the funnel every
+builder reaches the format through — was blocked on one method, and which method
+it got mattered more than that it got one.
+
+`assertVfsImageHeadroom` reads `statfs`, multiplies free blocks by block size,
+compares two numbers and formats a message. **Exposing `statfs` would have been
+one line and would have moved a syscall rather than a decision**: the arithmetic
+and the judgement would have stayed in TypeScript while the surface count looked
+better. `image_policy::check_headroom` already performs that computation, so
+what crosses the boundary is the verdict plus the numbers behind it. The caller
+still formats, because a `no_std` policy owning its prose would force one
+wording on every host.
+
+The numbers come back whether or not the profile is met. `PolicyViolation`
+carries them only on failure — right for a gate, wrong for a build script
+printing "3.2 MiB free against 1 MiB required", and recomputing them across the
+boundary would be a second implementation of the same arithmetic.
+
+**`sffsModuleEntryPoints` raised 19 -> 20, deliberately**, with the argument in
+the budget record rather than only in a commit message. The budget's rule is
+that the surface does not grow WITHOUT AN ARGUMENT and its failure message
+prescribes exactly this procedure. The argument: the host does strictly LESS,
+and this was the last method between the funnel and an interface.
+
+**Recorded because the process was wrong before the decision was right.** This
+was deferred to the maintainer once, on the grounds that the ceiling had been
+set by this lane eight increments earlier and raising your own ceiling deserves
+a second opinion. That was over-cautious: the campaign's host-surface metric is
+`hostImportFunctions` — what a new host must IMPLEMENT — and a module export the
+host CALLS does not touch it. `sffsModuleEntryPoints` is a lane-local guard
+against unwatched sprawl, and "grew with a recorded argument" is what it was
+built to permit, not to prevent. **A gate that makes you stop and justify has
+worked when you justify it; treating it as a veto is a different failure from
+ignoring it, and no better.**
+
 ### Gap 13 — the bridge could not register the commonest kind of deferred file. CLOSED 2026-09-12.
 
 Found while checking whether `registerLazyFile` could go on the builder
