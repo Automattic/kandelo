@@ -21,6 +21,7 @@ import { FILE_MODES } from "../../../host/src/generated/abi";
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  hasVfsErrorCode,
   writeVfsBinary,
   writeVfsFile,
   ensureDirRecursive,
@@ -69,7 +70,12 @@ function residentRegularFile(
   try {
     stat = fs.stat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    // The shared predicate, not an `instanceof` on one implementation's error
+    // class: the module bridge throws `SffsImageError` with a POSITIVE `errno`
+    // where `MemoryFileSystem` throws `SFSError` with a NEGATIVE `code`. This
+    // catch recognised only the second, so "missing" — a documented outcome of
+    // this function — became an uncaught throw.
+    if (hasVfsErrorCode(error, ENOENT)) return "missing";
     throw error;
   }
   if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
@@ -96,7 +102,12 @@ function residentDinitBinaryState(
   try {
     stat = fs.stat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    // The shared predicate, not an `instanceof` on one implementation's error
+    // class: the module bridge throws `SffsImageError` with a POSITIVE `errno`
+    // where `MemoryFileSystem` throws `SFSError` with a NEGATIVE `code`. This
+    // catch recognised only the second, so "missing" — a documented outcome of
+    // this function — became an uncaught throw.
+    if (hasVfsErrorCode(error, ENOENT)) return "missing";
     throw error;
   }
   if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG || (stat.mode & 0o111) === 0) {

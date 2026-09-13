@@ -72,7 +72,7 @@ export function writeVfsBinary(
  * `errno` is the surviving spelling; the `code` arm goes when `memory-fs.ts`
  * does.
  */
-function hasVfsErrorCode(error: unknown, code: number): boolean {
+export function hasVfsErrorCode(error: unknown, code: number): boolean {
   if (typeof error !== "object" || error === null) return false;
   const candidate = error as { code?: unknown; errno?: unknown };
   const raw = typeof candidate.code === "number"
