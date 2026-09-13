@@ -4190,9 +4190,59 @@ cohort id and member name. `decode` already refuses a byte it does not know, so
 an older reader meeting a pending payload refuses rather than guessing — which
 is the correct behaviour for a reader that cannot tell whether a seal was owed.
 
-**Not implemented yet.** Recorded first because it is a security format and the
-three-state insight arrived while writing the design down rather than while
-writing code.
+**The three states landed 2026-09-13**, brought forward by gap 18 — see that
+entry. What follows is the rest of the producer, designed the same day, and the
+two decisions inside it that are mine to make and worth stating.
+
+**Decision 1: the cohort declaration rides on `sm_register_lazy_file`. No new
+entry point.** `sffsModuleEntryPoints` stands at its ceiling of 20 with zero
+slack, and the rule is to look for an export that can GO before arguing for one
+that must come. Here neither is needed, because the budget record already
+contains this exact argument for this exact call: *"the archive length rides in
+`sm_register_lazy_file` rather than an `sm_declare_archive` of its own, because
+a member is useless without it."*
+
+The cohort declaration is the same shape. `archive_bytes` and `archive_payload`
+are ALREADY per-archive values riding on a per-file call, governed by "declaring
+the same value again is a no-op, a different one is `EINVAL`". Cohort id, member
+name and expected count join them under the same rule. So the precedent is
+exact rather than approximate, and the alternative — an `sm_declare_cohort` —
+would buy a tidier signature with a permanent entry in the builders' ABI.
+
+The cost is honest and worth naming: the call goes from thirteen arguments to
+eighteen, and most callers pass five zeros. An empty cohort id means "not in a
+cohort", which is what nearly every archive is.
+
+**Decision 2: `Pending` carries the expected count, and export RE-SEALS rather
+than sealing once.**
+
+The count cannot be derived at export from the number of pending members,
+because that is precisely the number that is wrong when a producer forgets one.
+Export would then seal a cohort of two that was meant to be three, the digests
+would all agree, and `verify_cohorts` would accept it — the count exists to
+catch the forgotten member, so deriving it from the members defeats it. Every
+member of a cohort must declare the same count; disagreement is `EINVAL` at
+export, under the same rule as a disagreeing archive length.
+
+Export recomputing every cohort from scratch — reading id, member and count from
+`Pending` and `Sealed` alike — makes the operation idempotent. Sealing only what
+is pending would look equivalent and is not: a second export after adding a
+member would leave the already-sealed members bound to the OLD cohort digest,
+and the image would fail its own verifier for a reason with no visible cause.
+Recomputation has no such state.
+
+**The export sequence**, at `sm_export_image_read` offset 0, before
+`build_export_image` reads any payload:
+
+1. Decode every archive payload. Group those in a cohort by id.
+2. Refuse a group whose members disagree about the expected count, and one
+   whose size does not equal it.
+3. Digest each member's descriptor; digest the cohort identity over the set.
+4. Write each member back as `Sealed` via `rootfs::set_archive_payload`.
+
+`runtime-core` learns nothing about the format in any of this. It stores and
+returns opaque payload bytes, exactly as it did before; every step above happens
+in `sffs-module`, which is where the format lives.
 
 ### The seal verifier is built, tested, perturbed — and called by nothing
 
