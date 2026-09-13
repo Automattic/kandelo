@@ -3898,6 +3898,47 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### Every remaining Y5 blocker is the same decision wearing different clothes
+
+**Concluded 2026-09-13, after checking what the next capability would actually
+return.** The remaining ten looked like they needed five different things. They
+need one.
+
+`source-rootfs-shell-overlay` appeared unblocked: it wants
+`exportLazyArchiveEntries`, which is an enumeration, which is one entry point
+the maintainer already approved. **But look at what it does with it.** It builds
+`new Set(entries.map(e => e.url))` and registers any declared archive whose URL
+is absent — a membership test against the archives the BASE image already
+declared.
+
+**A KLZY-described base yields archives with EMPTY descriptors**, stated in the
+loader itself: *"KLZY has no field for an archive's fetch description, so an
+image described that way carries none. Exporting it would therefore emit an
+archive with no descriptor — honest, and visible, rather than invented."* The
+shipped rootfs this overlay is applied to is exactly such an image — measured:
+`carriers: klzy -> sdef`.
+
+So the enumeration would return archives with no URLs, the membership set would
+be empty, and the overlay would re-register every archive the base already has.
+**Spending the approved entry point on it would buy a method that cannot answer
+correctly for the images it is used against.**
+
+**Therefore the honest list of remaining blockers is one item long:** are the
+shipped base images rebuilt through the new producer, or is a legacy path
+written? Five files need the seal, which lives in the lazy JSON; one needs
+archive URLs, which live in the lazy JSON; one sits behind those; the two
+supply-chain files are their own port; and the funnel is last by construction.
+
+**`docs/agent-guidance/abi.md` argues for the rebuild** — a stale artifact
+should fail loudly and be rebuilt rather than shimmed — and the rebuild is
+already partly done, since the nine recipes repointed on 2026-09-13 emit `SDEF`.
+But which artifacts must keep working is a product call, so it is the
+maintainer's.
+
+**What this lane should NOT do meanwhile** is spend the approved entry point, or
+repoint a file onto a capability that cannot yet answer. Both would look like
+progress and would have to be undone.
+
 ### Y5: importers 11 -> 10, and a stub that would have halved a security check
 
 **2026-09-13, four increments.**
