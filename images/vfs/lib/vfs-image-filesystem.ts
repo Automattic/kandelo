@@ -113,6 +113,17 @@ export interface VfsImageFilesystem {
    * the builder states it, the filesystem carries it, and nothing in between
    * reads it.
    */
+  /**
+   * Register a file fetched standalone: no archive, and `url` is the whole of
+   * what says where its bytes are.
+   *
+   * The positional shape is what recipes call and what `MemoryFileSystem` has
+   * always had. An ARCHIVE member is a different operation and is deliberately
+   * not here — only two recipes register one, and giving both operations one
+   * name is what hid a missing capability in the bridge until it was measured.
+   */
+  registerLazyFile(path: string, url: string, size: number, mode?: number): number;
+
   saveImage(options?: {
     materializeAll?: boolean;
     metadata?: unknown;

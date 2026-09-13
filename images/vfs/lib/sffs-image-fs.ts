@@ -412,7 +412,46 @@ export class SffsImageFs {
    * a member cannot be registered without it. Declaring the same archive twice
    * with the same length is a no-op; a different length is an error.
    */
-  registerLazyFile(args: {
+  /**
+   * Register a file fetched STANDALONE: no archive behind it, and `url` is the
+   * whole of what says where its bytes are.
+   *
+   * This positional form is what builder recipes call —
+   * `build-perl-vfs-image.ts` and `source-rootfs-shell-overlay.ts` both do, and
+   * `MemoryFileSystem` has had the same shape all along. The object form below
+   * registers an ARCHIVE MEMBER, which is a different operation that wore this
+   * same name until now.
+   */
+  registerLazyFile(path: string, url: string, size: number, mode = 0o755): number {
+    this.registerArchiveMember({
+      path,
+      archiveId: 0,
+      sourcePath: "",
+      size,
+      mode,
+      ino: this.nextStandaloneIno(),
+      archiveBytes: 0,
+      archiveDescriptor: encoder.encode(url),
+    });
+    return 0;
+  }
+
+  /**
+   * Inode numbers for standalone registrations, which the positional
+   * `registerLazyFile` does not take one for — `MemoryFileSystem` assigns them
+   * itself, so a bridge that demanded one would not be answering the same call.
+   *
+   * Counts down from a high value so it cannot collide with the inodes a
+   * builder assigns explicitly through {@link registerArchiveMember}, which are
+   * small and come from a manifest.
+   */
+  private standaloneIno = 0x7fff_0000;
+  private nextStandaloneIno(): number {
+    this.standaloneIno += 1;
+    return this.standaloneIno;
+  }
+
+  registerArchiveMember(args: {
     path: string;
     archiveId: number;
     sourcePath: string;

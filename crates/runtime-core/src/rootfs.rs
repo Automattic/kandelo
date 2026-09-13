@@ -6388,6 +6388,48 @@ mod tests {
     }
 
     #[test]
+    fn registering_a_half_specified_linkage_is_refused_at_the_call() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+
+        // An archive with no member to extract from it.
+        assert_eq!(
+            insert_lazy_file(b"/a", 4, b"", 10, 0o644, 0, 0, 2, b""),
+            Err(Errno::EINVAL),
+        );
+        // A member with no archive to extract it from.
+        assert_eq!(
+            insert_lazy_file(b"/b", 0, b"members/x", 10, 0o644, 0, 0, 3, b""),
+            Err(Errno::EINVAL),
+        );
+
+        // Refused at the CALL, not later at the export. Neither name exists, so
+        // the tree is not left holding a file it cannot describe — which is the
+        // whole point of checking here rather than in `create_deferred_file`.
+        assert!(lstat(b"/a").is_err());
+        assert!(lstat(b"/b").is_err());
+
+        // And both whole forms are accepted, so the refusals above are the
+        // half-specification and not something else about these calls.
+        insert_lazy_file(b"/member", 4, b"members/x", 10, 0o644, 0, 0, 4, b"")
+            .expect("an archive member");
+        insert_lazy_file(b"/solo", 0, b"", 10, 0o644, 0, 0, 5, b"https://example.invalid/x")
+            .expect("a standalone fetch");
+    }
+
+    #[test]
+    fn registering_an_oversized_fetch_description_is_refused() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        let too_long = alloc::vec![b'x'; crate::sffs_deferred::MAX_PAYLOAD_LEN as usize + 1];
+        assert_eq!(
+            insert_lazy_file(b"/a", 0, b"", 10, 0o644, 0, 0, 2, &too_long),
+            Err(Errno::EINVAL),
+        );
+        assert!(lstat(b"/a").is_err(), "and nothing was created");
+    }
+
+    #[test]
     fn exporting_a_member_of_an_archive_with_no_known_length_fails_loudly() {
         let _guard = TestGuard::acquire();
         // `insert_lazy_file` places a member; nothing here declares how long

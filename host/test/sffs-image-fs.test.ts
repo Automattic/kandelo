@@ -133,7 +133,7 @@ describe("SffsImageFs", () => {
   it("registers a lazy file whose metadata is readable before any fetch", () => {
     const fs = SffsImageFs.create();
     fs.mkdir("/usr", 0o755);
-    fs.registerLazyFile({
+    fs.registerArchiveMember({
       path: "/usr/big",
       archiveId: 3,
       sourcePath: "members/big.bin",
@@ -214,7 +214,7 @@ describe("SffsImageFs", () => {
     const fs = SffsImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.writeFile("/usr/here", new TextEncoder().encode("bytes"), 0o644);
-    fs.registerLazyFile({
+    fs.registerArchiveMember({
       path: "/usr/there",
       archiveId: 3,
       sourcePath: "members/big.bin",
@@ -247,7 +247,7 @@ describe("SffsImageFs", () => {
     // the archive declaration stopped being unconditional.
     const fs = SffsImageFs.create();
     const url = new TextEncoder().encode("https://example.invalid/sudo#sha256:feed");
-    fs.registerLazyFile({
+    fs.registerArchiveMember({
       path: "/sudo",
       archiveId: 0,
       sourcePath: "",
@@ -280,11 +280,11 @@ describe("SffsImageFs", () => {
       ino,
       archiveBytes,
     });
-    fs.registerLazyFile(member(40, 8_000_000));
+    fs.registerArchiveMember(member(40, 8_000_000));
     // The same length again is a no-op, so a builder may register many members
     // of one archive without tracking whether it has declared it.
-    expect(() => fs.registerLazyFile(member(41, 8_000_000))).not.toThrow();
-    expect(() => fs.registerLazyFile(member(42, 9_000_000))).toThrow(/EINVAL/);
+    expect(() => fs.registerArchiveMember(member(41, 8_000_000))).not.toThrow();
+    expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
   });
 
   it("survives an allocation large enough to grow the module's memory", () => {
