@@ -85,6 +85,19 @@ fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Write an archive payload.
+///
+/// NOT YET CALLED IN PRODUCTION, and the warning saying so is accurate: nothing
+/// SEALS yet. [`verify_cohorts`] runs on every load, so the enforcement point
+/// exists and is tested — but no producer emits a seal, so today it
+/// authenticates images that carry none, which it correctly accepts.
+///
+/// That is the honest state and not a soft landing: the capability is inert
+/// until the producer half lands. Who seals is a decision recorded in the
+/// master plan with its three candidates costed, and the answer there — the
+/// module seals at EXPORT, so nothing can forget to — is what removes this
+/// `allow`.
+#[allow(dead_code)]
 pub fn encode(payload: &ArchivePayload) -> Result<Vec<u8>, Errno> {
     let mut out = Vec::new();
     put_u32(&mut out, PAYLOAD_VERSION);

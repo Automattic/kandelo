@@ -231,7 +231,25 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
     unsafe { *IMAGE.0.get() = Some((ptr, len)) };
 
     match rootfs::load_image(len as u64, image_source) {
-        Ok(entries) => i32::try_from(entries).unwrap_or(i32::MAX),
+        Ok(entries) => {
+            // AUTHENTICATE BEFORE THE IMAGE IS USABLE, not beside it.
+            //
+            // The incumbent exposes this as a separate `verify` the builder
+            // must remember to await — a contract that exists only because
+            // `SubtleCrypto` is a promise. A synchronous digest has no such
+            // excuse, and a verification a caller can forget is one some caller
+            // eventually will. Verifying here makes an UNVERIFIED loaded image
+            // unrepresentable rather than merely discouraged.
+            //
+            // A refusal unloads: an image that failed to authenticate must not
+            // be left mounted for the next call to build on.
+            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {
+                rootfs::reset();
+                release_image();
+                return err(e);
+            }
+            i32::try_from(entries).unwrap_or(i32::MAX)
+        }
         Err(e) => {
             // Ownership did not transfer: clear the slot WITHOUT freeing, so
             // the host's buffer is still the host's to free.
@@ -2194,6 +2212,70 @@ mod tests {
         assert_eq!(field(4), 11, "and the gid");
         unsafe { sm_free(pp, pl) };
         unsafe { sm_free(buf, size) };
+    }
+
+    #[test]
+    fn a_load_refuses_an_image_whose_seals_do_not_authenticate() {
+        // The wiring, not the verifier. `seal::verify_cohorts` has its own ten
+        // trials; this asserts that `sm_load_image` CALLS it — which it did not
+        // for several commits while the verifier sat complete and inert.
+        //
+        // The archive declares a cohort of two and supplies one, which is the
+        // partial activation atomic cohorts exist to prevent.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        let mut identity = alloc::vec![
+            (b"tools".to_vec(), seal::sha256(descriptor)),
+            (b"docs".to_vec(), seal::sha256(b"{}")),
+        ];
+        let cohort = seal::sha256(
+            &seal::cohort_identity(b"shell", &mut identity).expect("identity"),
+        );
+        let payload = seal::encode(&seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: Some(seal::ArchiveSeal {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 2,
+                cohort_digest: cohort,
+                descriptor_digest: seal::sha256(descriptor),
+            }),
+        })
+        .expect("encode");
+
+        // Build an image carrying that single sealed archive.
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        let (pp, pl) = write_path(b"/opt/tool");
+        let (sp, sl) = write_path(b"tool");
+        let dp = sm_alloc(payload.len());
+        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), dp as *mut u8, payload.len()) };
+        assert_eq!(
+            unsafe {
+                sm_register_lazy_file(
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, payload.len(),
+                )
+            },
+            0,
+        );
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        unsafe { sm_free(dp, payload.len()) };
+        let image = drain_export();
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let rc = load_image_bytes(&image);
+        assert_eq!(rc, -(Errno::EPERM as i32), "a cohort short of its count");
+
+        // And the refusal UNLOADS: an image that failed to authenticate must
+        // not be left mounted for the next call to build on.
+        assert!(image_bytes().is_none(), "the refused image was released");
+        let (qp, ql) = write_path(b"/opt/tool");
+        let buf = sm_alloc(64);
+        assert!(unsafe { sm_lstat(qp, ql, buf, 64) } < 0, "and its tree is gone");
+        unsafe { sm_free(qp, ql) };
+        unsafe { sm_free(buf, 64) };
     }
 
     #[test]

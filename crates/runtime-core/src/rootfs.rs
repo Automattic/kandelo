@@ -4142,6 +4142,23 @@ pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Every declared archive, as `(archive_id, fetch description)`.
+///
+/// The descriptions are opaque here, exactly as they are everywhere else in
+/// this file: the kernel carries them and a CONSUMER reads them. This exists so
+/// one such consumer — the builder's own filesystem, authenticating an image
+/// before deriving from it — can reach them without the format learning to
+/// parse what it promises not to.
+pub fn archive_payloads() -> Vec<(u32, Vec<u8>)> {
+    ROOTFS.with(|state| {
+        state
+            .archives
+            .iter()
+            .map(|(id, entry)| (*id, entry.payload.clone()))
+            .collect()
+    })
+}
+
 /// The image metadata this filesystem currently carries, if any.
 ///
 /// Set by [`set_image_metadata`] or restored by [`load_image`] from what the
