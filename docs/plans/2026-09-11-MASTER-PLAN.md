@@ -3983,6 +3983,41 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The envelope validates in Rust: `xtask vfs products validate-resolved-inputs`
+
+**2026-09-13**, `d912bd762` and `c20af29fc`. **10 trials, 0 survivors.** Wired to
+the CLI in the same commit that added it, so it arrived live rather than as a
+module nothing calls — the problem the first target hit and worked around with
+an `allow(dead_code)`.
+
+**Three things writing it taught, beyond the port itself.**
+
+`validate_repo_path` is STRONGER than the rule it replaces in a second way
+nobody had recorded: it checks the path RESOLVES, not only that its shape is
+safe. A document naming a manifest that is not there cannot be built from, and
+learning that at validation beats learning it halfway through a build.
+
+**The ABI version had no rule at all.** The TypeScript checks "non-negative",
+which `u32` already guarantees — so DESERIALISING it was the entire check and
+the field went unread. A field carried but never judged is indistinguishable
+from a field nobody thought about.
+
+**`deny_unknown_fields` says what `exactRecord` says**, in the place the shape
+is declared rather than beside it. An unknown key is a document from a producer
+this one does not understand.
+
+**Both survivors were the same shape, and it is worth naming without numbering
+it.** A fixture that is always VALID never exercises the check that rejects
+invalid input: nothing built 4,097 inputs, and nothing supplied a wrong schema,
+so the bound and the identity check were each defended by nothing while every
+test passed. This is ordinary missing coverage rather than a new hazard — but it
+is the kind mutation testing finds and a passing suite never will, and it turned
+up twice in one module.
+
+**Still open, and it is the point:** the TypeScript does not yet CALL this. The
+backslash and NUL gaps remain open in production until it does, so wiring the
+call is worth more than porting the next validator.
+
 ### The second port target is largely ALREADY PORTED, and the TypeScript is the weaker copy
 
 **Measured 2026-09-13, and it changes the second target's size and shape.**
