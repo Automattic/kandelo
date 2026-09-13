@@ -664,6 +664,29 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-12 — a perturbation trial stops anchoring when the code it quotes moves,
+  and nothing notices.** A trial names the code it mutates by quoting it, so any
+  edit to that code can leave the quote matching nothing — and a trial that
+  matches nothing does not report a weaker result, it stops the whole spec at
+  that point. Rot is invisible between runs, because a spec is only exercised
+  when someone runs it and a full run costs minutes.
+
+  **Seven trials across two specs had rotted before anyone looked**, measured
+  2026-09-12: five when SDEF's archive table gained a payload, two when a
+  reverted refactor moved `chmod`/`symlink` back to where they had started. One
+  of the two specs had therefore been proving nothing since the revert.
+
+  `xtask perturb --validate` walks every spec and reports which trials no longer
+  anchor, without mutating or building anything — milliseconds against minutes,
+  so it can be run after any change. The validator and the applier share one
+  `anchor_of`, so the cheap check cannot disagree with the expensive one about
+  what "anchors" means.
+
+  **For every lane: run it after touching code any spec quotes.** A green
+  perturbation run on a rotted spec is the same false comfort as a suite that
+  skips — and "0 survived" from a spec whose trials no longer apply is a number
+  that looks like information and is not.
+
 - **H-11 — a mutant can be detected by HANGING, and an unbounded harness waits
   forever.** Measured 2026-09-12: a trial making the image export ignore its
   offset and always restart left a test's drain loop with no end condition. The
