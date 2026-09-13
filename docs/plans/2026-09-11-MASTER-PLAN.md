@@ -2632,6 +2632,10 @@ micro-benchmark**: a counter in `checked_shared_range` over the whole
 programs — reports 203 proofs in total, 34 of them from lane L's own unit
 tests. At that rate the per-call cost cannot matter. It says nothing about a
 WordPress boot or sustained syscall traffic, and is not offered as if it did.
+**Split per import, five of the eleven are never called by the suite at all**
+— `readlinkat`, `fpathconf`, `readdir`, `getrandom`, `fstatfs` — so those
+conversions are compile-checked and not execution-checked, which is the
+caveat this fix carries. `waitpid` is the hot one at 801 calls, not the clock.
 
 **"One rule" was then checked against the tree, not just the corpora.** The
 corpora pin the rule's answers; they cannot say whether some other site works

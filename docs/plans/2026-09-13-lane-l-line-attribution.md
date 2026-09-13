@@ -1103,6 +1103,42 @@ At that frequency the per-call cost of a few integer comparisons cannot
 matter, and no micro-benchmark of `checked_range` would add anything: the
 question was never how fast one proof is.
 
+**Five of the eleven converted imports are never executed by the suite**, and
+that is the caveat this fix carries. The same counter, split per import over
+the full run:
+
+| import | calls |
+|---|---|
+| `host_waitpid` | 801 |
+| `host_fetch_deferred` | 45 |
+| `host_clock_gettime` | 5 |
+| `host_pread` | 4 |
+| `host_read` | 2 |
+| `host_fstat` | 2 |
+| `host_readlinkat` | **0** |
+| `host_fpathconf` | **0** |
+| `host_readdir` | **0** |
+| `host_getrandom` | **0** |
+| `host_fstatfs` | **0** |
+
+So `waitpid` is the hot one, not the clock, and the five zeros are
+**compile-checked only**: their conversions type-check and their capacity
+arguments were derived by reading the kernel's declared buffer size, but no
+test runs them. A wrong capacity there would not be caught by anything in this
+repository today. Exercising them needs guest fixtures that call
+`readlink`, `pathconf`, `getdents`, `getrandom` and `statfs` — which is a
+piece of work with an owner, and the owner is whoever wants those paths
+covered rather than a lane that arrived here from a bounds rule.
+
+Two measurement mistakes are recorded with it, both the same shape. The first
+count of proofs was read BEFORE the smoke suite ran, because the reporting
+test sat in a module that sorts earlier — a number that looked like a total
+and was a prefix. The second hid `host_clock_gettime` entirely, because
+`grep "^HITS"` cannot match the first line: `--nocapture` prefixes it with the
+test's own name. **An anchored grep is a check that answers a narrower
+question than it was asked**, which is this document's subject arriving in its
+own measurements, twice in one session.
+
 **What this does NOT measure**, because the performance contract is explicit
 that a narrow check must not carry a broad claim: it says nothing about a
 WordPress boot, a PHP request storm, or any workload with sustained syscall
