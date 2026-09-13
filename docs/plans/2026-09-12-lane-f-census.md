@@ -1678,3 +1678,44 @@ Rust: no injected shim, no host import, no new module entry point.
 
 `exn_broker_encode` is the remaining member of that group and is a different
 question — cross-activation dispatch, not identity.
+
+## §30 — The unknown-tag path, served as a loud refusal
+
+`__wpk_fork_ref_exn_broker_encode` is called when a caught exception matched
+none of the module's declared tag layouts. It now returns `EOPNOTSUPP` and a
+poisoned recipe.
+
+**A foreign exception is opaque on every axis.** Its payload needs `catch_ref`
+against the tag that threw it, which this module by definition does not have; it
+cannot be identified (§28b); and it cannot be handed to a host to inspect
+(§28a). Real handling means routing to the activation whose codec DOES own the
+tag, which needs the module to drive the capture walk across activations — no
+capture-side drive exists, and that is F3 (§26).
+
+### Why not the designed mechanism
+
+`fm_capture_gated_placeholder` exists exactly for "a value with no recoverable
+provenance", and it was the obvious choice. Its contract, though, is that the
+HOST notices and gates the fork — and **no signal for that is exported**:
+`fm_stats` carries eleven counters and none of them is a gated count. So a
+placeholder here would be silent. The child would rebuild the `i31(0)` sentinel
+where an exception had been, and nothing anywhere would say so.
+
+A poisoned recipe makes the failure structural instead. The value is not a valid
+recipe id, so an edge naming it is rejected by `define_gc`'s bounds check and by
+`fm_capture_validate`, and the capture cannot seal. The harness asserts that
+whole chain, and perturbing it BACK to a gated placeholder fails the first
+assertion — which is the point: the silent option is the one the test refuses.
+
+### The restriction, stated
+
+A fork cannot be taken while a foreign exception is live. That is real, and it
+is named rather than hidden. It is also not a regression: leaving the import
+unserved hands the same case to a host that cannot inspect the exception either,
+so nothing was able to do better before.
+
+Upgrading it is a well-defined piece of F3 work: once the module can drive the
+capture walk, the unknown-tag path becomes a routing question rather than a
+refusal.
+
+`forkGuestImportsUnserved` 13 -> 12, banked. Host obligation unchanged at 5.

@@ -1032,4 +1032,44 @@ function i31Minter() {
   );
 }
 
+// ============================================================================
+// The unknown-tag path (env.__wpk_fork_ref_exn_broker_encode).
+//
+// A foreign exception is opaque on every axis: its payload needs `catch_ref`
+// against a tag this module does not have, it cannot be identified, and it
+// cannot be handed to a host to inspect. So the module REFUSES, and the refusal
+// has to be structural rather than a sentinel the child would rebuild silently.
+// ============================================================================
+{
+  const EOPNOTSUPP = 95;
+  const ACT = 7;
+  const SCALARS = SCRATCH_BASE + 640;
+  const REFS = SCRATCH_BASE + 704;
+
+  x.fm_capture_begin();
+  const poisoned = x.__wpk_fork_ref_exn_broker_encode(0);
+  assert.equal(poisoned, -1, "an unknown tag is refused");
+  assert.equal(lastErrno(), EOPNOTSUPP, "and the reason is EOPNOTSUPP, not a guess");
+
+  // The refusal must be STRUCTURAL: the returned value is not a usable recipe,
+  // so a graph that tried to reference it cannot seal. A sentinel that happened
+  // to be a valid recipe id would let the child rebuild something wrong and say
+  // nothing.
+  const holder = x.__wpk_fork_ref_exn_claim(0);
+  assert.ok(holder >= 1, "claimed a holder recipe");
+  writeBytes(SCALARS, [0xbe, 0xef, 0xbe, 0xef]);
+  writeU32Array(REFS, [poisoned >>> 0]);
+  x.__wpk_fork_ref_exn_define(holder, ACT, 4, 21, SCALARS, 4, REFS, 1);
+  assert.notEqual(
+    lastErrno(),
+    0,
+    "an edge naming the refused recipe is rejected at define",
+  );
+  assert.notEqual(
+    x.fm_capture_validate(),
+    0,
+    "and the capture cannot seal",
+  );
+}
+
 console.log("fork-module capture harness: all assertions passed");

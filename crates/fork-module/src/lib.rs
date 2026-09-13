@@ -5393,6 +5393,45 @@ mod wasm {
         recipe
     }
 
+    /// Guest-facing `env.__wpk_fork_ref_exn_broker_encode(slot) -> recipe`.
+    ///
+    /// The UNKNOWN-tag path: `fork-instrument` calls this when a caught
+    /// exception matched none of this module's declared tag layouts. Refuses,
+    /// loudly, with `EOPNOTSUPP` and a poisoned recipe.
+    ///
+    /// # Why it cannot do better yet
+    ///
+    /// A foreign exception is opaque to the module on every axis. Its payload
+    /// needs `catch_ref` against the tag that threw it, which by definition this
+    /// module does not have; it cannot be identified (`ref.eq` does not validate
+    /// on `exnref`); and it cannot be handed to a host to inspect (an `exnref`
+    /// value cannot cross into a JS import). Real handling means routing to the
+    /// activation whose codec DOES own the tag, which needs the module to drive
+    /// the capture walk across activations -- there is no capture-side drive
+    /// today, and that is F3's work. See census sections 26, 28a and 28b.
+    ///
+    /// # Why loud rather than a gated placeholder
+    ///
+    /// `fm_capture_gated_placeholder` is the designed mechanism for a value with
+    /// no recoverable provenance, but its contract is that the HOST notices and
+    /// gates the fork -- and no signal for that is exported (`fm_stats` has no
+    /// gated counter). A placeholder here would therefore be silent: the child
+    /// would rebuild the `i31(0)` sentinel where an exception had been, and
+    /// nothing would say so. Returning a poisoned recipe instead makes the
+    /// failure structural. The value is not a valid recipe id, so any edge
+    /// naming it is rejected by `define_gc`'s bounds check and by
+    /// `fm_capture_validate`, and the capture cannot seal.
+    ///
+    /// That is a real restriction -- a fork cannot be taken while a foreign
+    /// exception is live -- and it is stated as one rather than hidden. It is
+    /// also not a regression: an unserved import leaves the same case to a host
+    /// that cannot inspect the exception either.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_broker_encode(_slot: u32) -> i32 {
+        set_err(Errno::EOPNOTSUPP);
+        -1
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_exn_lookup(slot) -> recipe`.
     ///
     /// Always reports NOT FOUND, so every catch takes a fresh recipe. That is a
