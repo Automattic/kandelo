@@ -4565,6 +4565,55 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### THE BASE IMAGES ARE REBUILT THROUGH THE RUST PRODUCER — and what that cost
+
+**2026-09-13.** `shell/wasm32` builds, and with it every browser product:
+`browser-main-shell`, `browser-nginx`, `browser-nginx-php`, `browser-node`,
+`browser-wordpress`, `browser-lamp`, and `platform-rootfs`. The source-only
+graph reports `"outcome":"succeeded"` with no failed or blocked package.
+
+This is decision 2 discharged, and it is what makes the seal REAL rather than
+inert: the shipped bases now carry SDEF and are produced by the module.
+
+**It took eight real defects and two missing artifacts, and not one of them was
+visible to a green test suite.** That is the finding, more than the artifact.
+
+| # | What broke | Where it lived |
+|---|---|---|
+| 1 | `fork_module32.wasm` not projected to `host/wasm/` | provisioning — the error named its own fix |
+| 2 | **`ELOOP` on every host write through a symlink** | `write_file_at` never got the symlink resolution `read_file_at` beside it documents |
+| 3 | `TypeError: Do not know how to serialize a BigInt` | two renderers of one record; one got a replacer, its sibling did not |
+| 4 | `undeclared dependency coreutils` | `isPathDeferred`/`getLazyEntry` used `lstat`, so every ALIAS of a lazy binary read as not-lazy |
+| 5 | **capacity cleared by a later metadata write** (gap 24) | gap 17's defect on the other field the one entry point carries |
+| 6 | `changed rootfs lazy file or tree identities` | the Rust writer renumbers inodes; the cross-save check still compared them |
+| 7 | **`ENOSYS` truncating a lazy archive member** | a kernel refusal POSIX does not support, and a host/kernel divergence |
+| 8 | `ENOENT: lstat /sbin/dinit` | I had made `isPathDeferred` throw on a missing path; a real caller needed `false` |
+| 9 | `ENOENT` again, one line later | a catch testing `instanceof SFSError && .code` — gap 22 a second time |
+| 10 | `dylink_module32.wasm` not projected | provisioning, same class as #1 |
+
+**What the pattern says.** Six of the eight code defects are **symlink-, error-
+shape- or identity-specific in ways a fixture tree does not reproduce**. The
+suites build small trees with plain files and no aliases; the real rootfs is
+full of symlinked binaries, lazily-backed members and an error convention that
+differs between the two implementations. **A cutover verified only by unit tests
+is a cutover verified against a tree that does not resemble the product.**
+
+**Two of them were my own earlier decisions**, reversed by evidence: I made
+`isPathDeferred` throw on a missing path on a speculative argument about typos,
+and a real caller whose return type is `"missing" | "resident"` settled it the
+other way. And I had planned to fix gap 21 with a refusal sequenced behind this
+very rebuild, which would have been backwards.
+
+**One reversed a deliberate kernel decision** (#7), and it is flagged in its
+commit for the maintainer: `O_TRUNC` on a lazy archive member returned `ENOSYS`
+with a test named for the refusal, and truncation is exactly the operation that
+does NOT need the content it was protecting.
+
+**The argument for doing the rebuild inside the lane rather than after it.** The
+lane's own closure condition — zero importers — was met while eight of these
+defects were live. A measure can be honestly met by code that cannot build the
+product, and only the product build says so.
+
 ### The `images/` typecheck reaches a ZERO baseline, and what still blocks wiring it
 
 **2026-09-13.** `images/tsconfig.typecheck.json` was built earlier in this lane
