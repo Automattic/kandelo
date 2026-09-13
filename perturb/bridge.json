@@ -155,6 +155,20 @@
       "scope_end": "\n  }\n",
       "find": "        size: entry.uncompressedSize,",
       "replace": "        size: 0,"
+    },
+    {
+      "name": "getLazyEntry answers for an archive member too",
+      "scope": "  getLazyEntry(path: string)",
+      "scope_end": "\n  }\n",
+      "find": "    return st.deferred && st.archiveId === 0",
+      "replace": "    return st.deferred"
+    },
+    {
+      "name": "getLazyEntry claims a resident file is lazily backed",
+      "scope": "  getLazyEntry(path: string)",
+      "scope_end": "\n  }\n",
+      "find": "    return st.deferred && st.archiveId === 0\n      ? { size: st.size, deferred: true }\n      : null;",
+      "replace": "    return { size: st.size, deferred: true };"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

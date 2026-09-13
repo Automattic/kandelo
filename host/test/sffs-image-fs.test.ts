@@ -552,6 +552,41 @@ describe("SffsImageFs", () => {
     expect(() => fs.lstat("/opt/partial/good")).toThrow();
   });
 
+  it("tells a URL-backed single apart from an archive member", () => {
+    // The two halves of "are these bytes here?". Recipes ask
+    // `getLazyEntry(p) !== null` for a URL-backed SINGLE and `isPathDeferred(p)`
+    // for an archive or tree backing, and re-join them by hand. A
+    // `getLazyEntry` that always answered null would collapse the pair into
+    // the second half alone and drop exactly the URL-backed case — which is
+    // the case the setuid-binary assertions are about.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/eager", new Uint8Array([1, 2, 3]), 0o755);
+    fs.registerLazyFile("/lazy-single", "https://example.invalid/x.bin", 4096, 0o755);
+    fs.registerLazyArchive({
+      url: "https://example.invalid/tools.zip",
+      mountPrefix: "/opt/tools",
+      entries: [zipEntry({ fileName: "tool", uncompressedSize: 99 })],
+    });
+
+    // A URL-backed single: both halves say yes.
+    expect(fs.getLazyEntry("/lazy-single")).not.toBeNull();
+    expect(fs.isPathDeferred("/lazy-single")).toBe(true);
+
+    // An archive member: deferred, but NOT a per-inode registration. This is
+    // the distinction a stub returning null could never express, because it
+    // gave the same answer here as for the single above.
+    expect(fs.getLazyEntry("/opt/tools/tool")).toBeNull();
+    expect(fs.isPathDeferred("/opt/tools/tool")).toBe(true);
+
+    // A resident file is neither.
+    expect(fs.getLazyEntry("/eager")).toBeNull();
+    expect(fs.isPathDeferred("/eager")).toBe(false);
+
+    // A missing path is not a lazy registration, and asking is not an error —
+    // recipes ask about paths that may not exist yet.
+    expect(fs.getLazyEntry("/absent")).toBeNull();
+  });
+
   it("gives each instance an independent tree", () => {
     const a = SffsImageFs.create();
     a.mkdir("/only-in-a", 0o755);

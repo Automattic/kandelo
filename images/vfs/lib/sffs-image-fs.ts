@@ -786,8 +786,36 @@ export class SffsImageFs {
    * behind it, and `isPathDeferred` already reports both — so the union those
    * callers compute comes out identical against this implementation.
    */
-  getLazyEntry(_path: string): unknown {
-    return null;
+  /**
+   * The per-inode lazy registration for a path, or null when there is none.
+   *
+   * **This returned `null` unconditionally**, which was a stub wearing the
+   * shape of an answer. Recipes ask `getLazyEntry(p) !== null` as one HALF of
+   * "are these bytes here?" — it covers a URL-backed SINGLE lazy file, while
+   * `isPathDeferred` covers an archive or tree backing — and the assertions
+   * built on the pair are "dinit must be resident before service boot" and
+   * "the login program must be eager". A half that always says "no
+   * registration" turns those into the other half alone, which drops exactly
+   * the URL-backed case.
+   *
+   * No repointed recipe called it yet, so nothing shipped weakened. It is
+   * implemented now rather than later because the next file to repoint DOES
+   * call it, and a stub that answers plausibly is worse than one that throws.
+   *
+   * A URL-backed single is `deferred` with no archive behind it — which is the
+   * same distinction `sm_lstat` already reports, so this needs no new module
+   * surface.
+   */
+  getLazyEntry(path: string): { size: number; deferred: true } | null {
+    let st;
+    try {
+      st = this.lstat(path);
+    } catch {
+      return null; // No such path is not a lazy registration.
+    }
+    return st.deferred && st.archiveId === 0
+      ? { size: st.size, deferred: true }
+      : null;
   }
 
   /**
