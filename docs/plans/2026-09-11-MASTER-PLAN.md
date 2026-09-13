@@ -3898,6 +3898,81 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### CORRECTION: the seal work is NOT blocked, and I treated a question as a veto
+
+**2026-09-13.** I flagged `needs-maintainer` claiming everything reachable was
+blocked on the legacy-seal product call. That was wrong, and the loop prompt
+names the failure exactly: *a gate that makes you stop and justify has worked
+when you justify it; treating it as a veto is a different failure from ignoring
+it.*
+
+**The new-path seal is required under BOTH answers.** If the shipped bases are
+rebuilt through the new producer, an `SDEF`-carried seal verified in Rust is the
+whole job. If legacy images must also verify, it is still the whole job plus a
+compatibility path. **Nothing about it waits on the decision.** What waits is
+only whether a SECOND, legacy path is also needed — and that question is
+answered better once the first one exists.
+
+The entry below (*"every remaining blocker is the same decision"*) is correct
+about the REPOINTS and wrong as a description of the lane's reachable work. The
+repoints wait; the capability they wait for does not.
+
+### The seal's payload layout, and why the descriptor and the seal are separate
+
+**Designed 2026-09-13. Lane V's call, recorded with its reasoning.**
+
+What the incumbent seals, measured rather than assumed: a `LazyAtomicGroupMembership`
+is `{ id, member, descriptorSha256, expectedCount, cohortSha256 }` and hangs off
+each lazy ARCHIVE group — so a cohort "member" is an archive, not a file, and a
+cohort is a set of archives that must activate together or not at all.
+
+Verification is three checks and no more:
+
+1. every archive in a cohort digests to its declared `descriptorSha256`;
+2. the cohort's archive count equals `expectedCount`;
+3. the cohort identity digests to `cohortSha256`.
+
+**The payload therefore has two halves, and they must not be one.** The
+descriptor is what gets digested; the seal carries the digest. A payload that
+mixed them would be self-referential — a digest over bytes containing itself —
+so the layout separates them explicitly:
+
+```
+u32 version | u32 descriptor_len | descriptor bytes | u8 has_seal | [seal]
+seal: u32 id_len | id | u32 member_len | member
+      | u32 expected_count | 32-byte cohort_digest | 32-byte descriptor_digest
+```
+
+The descriptor half stays whatever the producer writes — today a small JSON
+object naming the URL and the archive's content digest — and **the kernel still
+never parses it.** The seal half is parsed by the VERIFIER, which is
+consumer-side, exactly as `sffs_deferred`'s doc requires: *whoever fetches
+decides whether a URL may be fetched, validates the digest, and honours the
+activation mode.*
+
+**A defined byte layout rather than `JSON.stringify`.** The incumbent's cohort
+identity is literally `JSON.stringify({schema:1,id,members:[…sorted]})`, which a
+Rust verifier of EXISTING images would have to reproduce byte-for-byte. Writing
+the canonical form as a LAYOUT removes that hazard at the root: there is no
+serialiser to imitate and no escaping rule to get subtly wrong, because the
+canonical form is the format.
+
+**Where the verifier runs: inside the load, not beside it.** The obvious design
+is a `sm_verify_seals` entry point the builder calls. Better is to verify as
+part of `sm_load_image`, and the reason is not the entry-point budget:
+
+* the incumbent's whole "await this before synchronous metadata inspection or
+  filesystem rebasing" contract exists because `SubtleCrypto` is a promise. A
+  synchronous Rust digest has no such contract to preserve;
+* a separate verify call is a call a builder can FORGET. Verifying during the
+  load makes an unverified loaded image **unrepresentable**, which is stronger
+  than any amount of remembering;
+* it costs no entry point, so the maintainer's approved ceiling raise stays
+  unspent for a third time.
+
+**What it costs:** a `no_std` sha2 in a module that has none, and a load that
+refuses an image whose seals do not authenticate. The second is the point.
+
 ### Every remaining Y5 blocker is the same decision wearing different clothes
 
 **Concluded 2026-09-13, after checking what the next capability would actually
