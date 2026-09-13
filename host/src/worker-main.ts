@@ -3518,13 +3518,22 @@ export async function centralizedWorkerMain(
 
     if (hasForkInstrumentation) {
       const linkedFrameFormat = readLinkedFrameFormat(module);
-      const moduleStateFormat = readForkModuleStateDescriptor(module);
-      if (moduleStateFormat.ptrWidth !== linkedFrameFormat.ptrWidth) {
-        throw new Error(
-          `pid=${pid}: module-state pointer width ${moduleStateFormat.ptrWidth} ` +
-            `does not match linked frames ${linkedFrameFormat.ptrWidth}`,
-        );
-      }
+      // The module-state descriptor is NOT re-validated here. `check_module_state`
+      // in `crates/wasm-artifact/src/fork_contract.rs` already parsed it, made
+      // this exact pointer-width comparison against the linked-frame descriptor,
+      // and cross-checked both against the module's actual memories -- and this
+      // program reached this line only by passing
+      // `describeWasmArtifactPolicyFailures` during exec
+      // (`process-lifecycle.ts`), which the artifact policy's own preamble calls
+      // "the question asked on every `exec`".
+      //
+      // The Rust check is also the better one to keep: it names the field that
+      // failed, where the message deleted from here read identically for a
+      // stale artifact and a byte-corrupted one.
+      //
+      // This does NOT generalise to the dlopen side-activation path, which
+      // re-checks the descriptor itself because the artifact policy is never
+      // asked about a side module. See census section 103.
       // Phase 6 D5: eagerly instantiate the co-resident `fork-module` once, at
       // process init, behind `initData.forkModuleEnabled`. It is placed into a
       // host-reserved region of the shared memory (via the same channel

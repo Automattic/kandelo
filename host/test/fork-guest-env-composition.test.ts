@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
+import { describeWasmArtifactPolicyFailures } from "../src/constants";
 import { buildForkGuestImports } from "../src/fork-guest-imports";
 import { createForkGuestHostFloor } from "../src/fork-guest-host-floor";
 import { ForkResumeTable } from "../src/fork-resume-table";
@@ -157,6 +158,50 @@ describe("the thin layer composed against a real instrumented guest", () => {
     expect(message).toContain("__wpk_fork_module_activation");
     expect(message).toContain("__wpk_fork_module_state_table_generation_addr");
     expect(message).not.toContain("__wpk_fork_unwind");
+  });
+
+  guard("has its module-state descriptor validated by the artifact policy", () => {
+    // `worker-main.ts` used to re-validate this descriptor for the main program
+    // at process init. That check is deleted, on the argument that the artifact
+    // policy already made the identical comparison during exec. This is the
+    // argument turned into a test: corrupt the pointer width the descriptor
+    // declares and require the policy to reject the artifact.
+    //
+    // Without this, "the Rust check already covers it" is a claim about code I
+    // read once. The deleted check and this one must reject the same input, or
+    // the deletion removed coverage.
+    const pristine = readFileSync(join(workspace!, "fixture32.wasm"));
+    const clean = describeWasmArtifactPolicyFailures(
+      pristine.buffer.slice(
+        pristine.byteOffset,
+        pristine.byteOffset + pristine.byteLength,
+      ) as ArrayBuffer,
+      {},
+    );
+    expect(clean.join("\n")).not.toContain("module_state");
+
+    // The descriptor is `KFMD`, version, size, then the pointer width at byte
+    // 8. Flipping 4 to 8 makes it disagree with the linked-frame descriptor and
+    // with the module's own memories -- exactly what the deleted line compared.
+    const corrupted = Uint8Array.from(pristine);
+    const magic = Buffer.from("kandelo.wpk_fork.module_state", "utf8");
+    const at = Buffer.from(corrupted).indexOf(magic);
+    expect(at).toBeGreaterThan(0);
+    const ptrWidthByte = at + magic.length + 8;
+    expect(corrupted[ptrWidthByte]).toBe(4);
+    corrupted[ptrWidthByte] = 8;
+
+    const failures = describeWasmArtifactPolicyFailures(
+      corrupted.buffer.slice(
+        corrupted.byteOffset,
+        corrupted.byteOffset + corrupted.byteLength,
+      ) as ArrayBuffer,
+      {},
+    );
+    // Rejected, and the report NAMES the section -- which the deleted host
+    // check could not do. Its message read identically for a stale artifact
+    // and a byte-corrupted one.
+    expect(failures.join("\n")).toContain("module_state");
   });
 
   it("pins which object imports the built module actually serves", () => {
