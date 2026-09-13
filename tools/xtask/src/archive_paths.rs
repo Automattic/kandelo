@@ -1,16 +1,3 @@
-// NOT YET CALLED, and the warning that says so is accurate. This is the first
-// half of the `staged-product-inputs.ts` port: the rules and the plan, which
-// are pure and can be tested and perturbed on their own. The half that calls
-// them — an `xtask` verb that extracts an archive tree into a staging
-// directory, with the atomicity and size bounds `archive_extract_member`
-// already models for a single member — is the next increment, and until it
-// lands these are dead.
-//
-// Allowed rather than left as build noise because a warning nobody can act on
-// this session is a warning everybody learns to scroll past. Named here so it
-// is removed by the increment that makes it false, not by someone tidying.
-#![allow(dead_code)]
-
 //! The path rules an archive's entries must satisfy before anything is written.
 //!
 //! Ported from `images/vfs/scripts/staged-product-inputs.ts`, which the lane Y
@@ -121,6 +108,15 @@ pub struct PlannedEntry {
     pub path: String,
     pub is_directory: bool,
     pub mode: u32,
+    /// Which source entry this came from.
+    ///
+    /// Carried rather than recomputed. The plan SKIPS the stripped root, so the
+    /// two lists have different lengths and any attempt to pair them back up by
+    /// counting is an off-by-one away from writing one member's bytes under
+    /// another member's name. The first draft of the extractor did exactly that
+    /// reconstruction; this field deletes the possibility instead of testing
+    /// for it.
+    pub source_index: usize,
 }
 
 /// One archive entry as the planner needs it, whatever parsed it.
@@ -166,7 +162,7 @@ pub fn plan_entries(
     }
 
     let mut planned = Vec::new();
-    for entry in entries {
+    for (source_index, entry) in entries.iter().enumerate() {
         if entry.is_link {
             return Err(format!("{label} contains unsupported link {}", entry.path));
         }
@@ -183,6 +179,7 @@ pub fn plan_entries(
             path: relative,
             is_directory: entry.is_directory,
             mode: entry.mode,
+            source_index,
         });
     }
     Ok(planned)
@@ -271,9 +268,15 @@ mod tests {
         assert_eq!(
             planned,
             [
-                PlannedEntry { path: "bin".into(), is_directory: true, mode: 0o755 },
-                PlannedEntry { path: "bin/tool".into(), is_directory: false, mode: 0o755 },
+                PlannedEntry {
+                    path: "bin".into(), is_directory: true, mode: 0o755, source_index: 1,
+                },
+                PlannedEntry {
+                    path: "bin/tool".into(), is_directory: false, mode: 0o755, source_index: 2,
+                },
             ],
+            "and each remembers which source entry it came from, across the \
+             skipped root",
         );
     }
 

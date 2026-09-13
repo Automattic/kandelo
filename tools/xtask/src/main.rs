@@ -61,6 +61,7 @@ mod perturb;
 mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;
+mod archive_extract_tree;
 mod archive_paths;
 mod build_deps;
 mod build_stamp;
@@ -111,6 +112,7 @@ fn main() -> ExitCode {
         "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
         "archive-extract-member" => archive_extract_member::run(rest),
+        "archive-extract-tree" => archive_extract_tree::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
         "check-determinism" => determinism_check::run(rest),
