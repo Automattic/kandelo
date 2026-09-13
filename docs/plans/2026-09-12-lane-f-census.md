@@ -3253,9 +3253,19 @@ So the coverage added is the part the change actually depends on, not a claim
 about the whole path: `fork_module_host_obligation_is_pinned` now asserts every
 fork-module artifact on disk exports `__wpk_fork_unwind` as a tag with no
 payload. Perturbed by deleting the export from the injector: the assertion
-fails. The end-to-end link -- a guest importing the tag, instantiated against
-the module's -- remains uncovered in both hosts, and is named here rather than
-left to be assumed.
+fails. The end-to-end link is covered now:
+`a_guest_links_against_the_modules_unwind_tag` compiles a guest that imports the
+tag and throws it, asserts the module's exported tag and the guest's import
+agree on arity, and INSTANTIATES the guest against a tag of the module's
+declared type. A negative control links a tag carrying a payload and requires
+that to fail -- without it the test would pass against a linker that accepted
+anything and prove nothing about the type. Perturbed at the source: giving the
+injector's tag an `i32` parameter fails the arity assertion.
+
+What is still not covered: the module's actual tag INSTANCE, rather than a tag
+of its declared type. Taking that needs the fork module instantiated, which
+needs a laid-out guest memory and the whole placement dance -- a bigger fixture
+than this question warrants, and the type is the part that can differ.
 
 `worker-main.ts` is NOT changed yet. Its tag is created at line 3403, before
 the fork module is instantiated at 3652, so the switch needs a reordering rather

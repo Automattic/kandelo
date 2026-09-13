@@ -997,6 +997,98 @@ mod tests {
     /// PIC linking boilerplate into the fork obligation would both overstate it
     /// and make the number move for reasons unrelated to fork.
     #[test]
+    /// A guest importing the unwind tag links against the MODULE's tag.
+    ///
+    /// This is the end-to-end link census section 62 recorded as uncovered:
+    /// both hosts bind `env.__wpk_fork_unwind`, and no fixture guest in this
+    /// crate imports it, so a probe confirmed neither binding site is ever
+    /// reached by these tests. A broken lookup passed all 61 of them.
+    ///
+    /// The fork module is not instantiated here -- that needs a laid-out guest
+    /// memory and the whole placement dance. Its tag is taken from a module
+    /// compiled from the real artifact, which is what a host binds and is the
+    /// part that can differ.
+    #[test]
+    fn a_guest_links_against_the_modules_unwind_tag() -> wasmtime::Result<()> {
+        let root = crate::repo_root();
+        let path = root.join("host/wasm/fork_module32.wasm");
+        if !path.exists() {
+            // Provisioning, not a defect: build-wasm.sh stages this.
+            return Ok(());
+        }
+        let engine = kernel_engine()?;
+        let fork_module = Module::from_file(&engine, &path)?;
+        let mut store = wasmtime::Store::new(&engine, ());
+
+        // A guest shaped like an instrumented one at this boundary: it imports
+        // the tag and throws it, which is what the capture path does.
+        let guest_src = r#"(module
+            (import "env" "__wpk_fork_unwind" (tag $unwind))
+            (func (export "escape") (throw $unwind)))"#;
+        let guest = Module::new(&engine, guest_src)?;
+
+        let tag_ty = guest
+            .imports()
+            .find(|i| i.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME)
+            .map(|i| i.ty())
+            .expect("the guest imports the unwind tag");
+        let wasmtime::ExternType::Tag(guest_tag) = tag_ty else {
+            panic!("the guest's unwind import is not a tag");
+        };
+
+        // The module's exported tag must be the one a host hands over.
+        let exported = fork_module
+            .exports()
+            .find(|e| e.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME)
+            .expect("the fork module exports the unwind tag");
+        let wasmtime::ExternType::Tag(module_tag) = exported.ty() else {
+            panic!("the fork module's unwind export is not a tag");
+        };
+        assert_eq!(
+            module_tag.ty().params().len(),
+            guest_tag.ty().params().len(),
+            "the module's tag and the guest's import must agree on arity",
+        );
+        assert_eq!(module_tag.ty().results().len(), guest_tag.ty().results().len());
+
+        // And linking actually succeeds: a tag created to the module's declared
+        // type satisfies the guest, which is what makes binding the module's own
+        // tag sound rather than merely plausible.
+        let mut linker = wasmtime::Linker::new(&engine);
+        let tag = wasmtime::Tag::new(&mut store, &module_tag)?;
+        linker.define(
+            &mut store,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+            tag,
+        )?;
+        linker
+            .instantiate(&mut store, &guest)
+            .expect("a guest importing the unwind tag links against the module's type");
+
+        // Negative control: a tag carrying a payload must NOT satisfy it. Without
+        // this the assertions above would pass against a linker that accepted
+        // anything, and prove nothing about the type at all.
+        let payload_ty = wasmtime::TagType::new(wasmtime::FuncType::new(
+            &engine,
+            [wasmtime::ValType::I32],
+            [],
+        ));
+        let payload_tag = wasmtime::Tag::new(&mut store, &payload_ty)?;
+        let mut wrong = wasmtime::Linker::new(&engine);
+        wrong.define(
+            &mut store,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+            payload_tag,
+        )?;
+        assert!(
+            wrong.instantiate(&mut store, &guest).is_err(),
+            "a tag with a payload must not satisfy the unwind transport",
+        );
+        Ok(())
+    }
+
     fn fork_module_host_obligation_is_pinned() -> wasmtime::Result<()> {
         let root = crate::repo_root();
         let mut candidates = crate::artifact_search_paths("fork_module32.wasm");
