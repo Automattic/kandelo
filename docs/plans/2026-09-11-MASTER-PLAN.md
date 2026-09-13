@@ -3551,6 +3551,40 @@ asserts the constant explicitly and names this gap, so the day capacity becomes
 requestable the assertion fails and points at itself rather than silently
 passing.
 
+**CLOSED 2026-09-12** — `05e07cc98` "Let a builder declare the image it is about
+to fill", and `7927abb0a` for the test that was wrong.
+
+`set_image_capacity(bytes)` enters the convergence as a FLOOR:
+`max(inode_requirement, 64, requested_blocks)`. A request below what the tree
+already needs changes nothing, because an image that cannot hold its contents is
+not a smaller image but a broken one. Zero clears it. It reaches the kernel on
+`sm_set_image_options(capacity_bytes, ptr, len)` — renamed from
+`sm_set_image_metadata` — so the surface stays at 20 rather than 21. **The
+budget refused the 21st entry point and was right to**: capacity and metadata
+are the same question, "what shape is this image".
+
+**The floor/replacement distinction took a second surviving mutant to test
+properly, and the reason is worth keeping.** A trial that replaced the tree's
+requirement with the request outright stayed green against a one-file tree —
+because the convergence loop directly below the max *already* re-raises the
+ceiling to whatever the DATA needs. A floor and a replacement converge on the
+same number there, and no assertion on that tree can separate them. The half the
+loop does not recompute is the INODE requirement, which the comment four lines
+above the mutation site already named. A hundred empty files need 408 blocks for
+inodes and almost none for bytes; under the replacement the writer runs out of
+inodes and the export returns ENOSPC.
+
+**The general lesson: a guard placed next to a self-correcting loop is testable
+only on the input the loop does not correct.** Picking the smallest tree that
+exercises a code path is the usual instinct and it was exactly wrong here.
+
+Evidence: `perturb/runtime-core-rootfs-export.json` — 31 trials, 0 survived, 0
+timed out. runtime-core 2162 passed, sffs-module 29 passed, wasm32 build clean,
+host surface budget 81 passed, entry points 20.
+
+**`assertVfsImageCapacity` against the Rust writer is now unblocked.** What the
+sixteen builders still lack is image loading, below.
+
 ### Next: bridge image loading, at no cost to the surface
 
 **Scoped 2026-09-12.** Sixteen of the remaining twenty importers CONSTRUCT a
