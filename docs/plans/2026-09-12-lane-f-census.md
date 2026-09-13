@@ -1193,3 +1193,83 @@ exists", and this is the assumption the design rests on.
 
 **This is a design change to what capture records, so it is the maintainer's
 call.** It is recorded here as a proposal, not started.
+
+## §23 — The "platform half" is mostly not coordination, and mostly not floor
+
+Read under the maintainer's narrow grant: the coordination protocols only.
+Recorded here is what each module DEPENDS ON, not how it is written.
+
+§13 grouped five modules as the platform half and §17 estimated them at ~450
+code lines of irreducible host floor. Measuring what each actually touches says
+that premise was wrong for three of the five.
+
+| module | lines | Atomics | promises | worker refs | module calls | verdict |
+|---|---|---|---|---|---|---|
+| `fork-replay-gate` | 229 | yes | yes | yes | – | **split** |
+| `vfork-lifetime` | 346 | – | yes | yes | – | **host** |
+| `fork-process-continuation` | 1471 | – | – | – | **9** | **driver loop** |
+| `fork-host-import-runtime` | 497 | – | – | – | – | host, thin |
+| `vfork-workspace` | 175 | – | – | – | – | host-adjacent |
+
+### `fork-replay-gate` — split it
+
+The gate is **one shared i32** with three states, driven by
+`Atomics.compareExchange`, `Atomics.wait` and `Atomics.notify`. Every one of
+those has a Wasm threads equivalent (`i32.atomic.rmw.cmpxchg`,
+`memory.atomic.wait32`, `memory.atomic.notify`), and the waiter is the child's
+process worker blocked inside a synchronous Wasm import.
+
+Its own comment gives the reason it is a shared-memory gate: "a JavaScript
+promise cannot be awaited inside a synchronous Wasm import". That is a
+HOST-LANGUAGE constraint. The module has no such problem — it is already
+synchronous wasm — which makes the module the more natural owner, not the less.
+
+**The only blocker is placement**: the gate is a standalone `SharedArrayBuffer`,
+and the module can address only the guest's imported memory. Putting it at a
+known offset in guest shared memory, exactly as the table generation fence
+already is, makes it module-addressable. That is a placement change, not a
+protocol change.
+
+The `ForkReplayGateCoordinator` half stays host: it exists to observe Worker
+construction failure, protocol errors and exit paths, and to wake a child
+blocked in a synchronous import with a cancellation rather than leak it. Those
+are host-lifecycle facts.
+
+### `vfork-lifetime` — genuinely host
+
+A phase machine (`starting` → `borrowing` → `settled`) keyed by
+`WebAssembly.Memory` OBJECT IDENTITY (`hasActiveAddressSpace(memory)`,
+`isActiveBorrower(generation)`), whose completion is a `Promise` resolved by
+async worker events (exec / exit / signal / trap). No atomics, no shared
+memory. The module can neither hold a `Memory` object nor observe those events.
+
+The phase rules alone could move, but every transition TRIGGER would stay host,
+so the host code would not shrink while the module's entry count grew. That is
+the wrong trade.
+
+### `fork-process-continuation` — not floor at all, and not coordination
+
+1,471 lines with no atomics, no promises and no worker references, calling NINE
+fine-grained module entries: `fm_begin_replay`, `fm_finish_replay`,
+`fm_begin_abort`, `fm_finish_abort`, `fm_begin_reference_replay`,
+`fm_build_gc_plan`, `fm_serialize_journal_alloc`, `fm_finish_unwind`,
+`fm_add_activation_child_replay`.
+
+That is a DRIVER LOOP — the exact thing the "3-5 coarse entries" target exists
+to eliminate, and the largest single piece of evidence for it in the lane. It
+belongs to F3/F4 (coarsen the entries, delete the driver), not to stage 2's
+host floor.
+
+One of those nine, `fm_add_activation_child_replay`, was DELETED in F0-r for
+having no callers. So this file is partly stale as well as misfiled — more
+evidence that the attic is a snapshot, not a specification.
+
+### What this changes
+
+The platform-half estimate of ~450 code lines rested on all five being floor.
+Two are (`fork-host-import-runtime`, `vfork-workspace`, ~672 lines, and the
+first overlaps what `fork-module-instance.ts` already does), one splits, one is
+host, and the largest is driver logic that should collapse rather than be
+rewritten. The `forkTypeScript` target of 700 should be revisited once the
+replay gate's placement and the F3 coarsening are settled — it is more likely
+too high than too low.
