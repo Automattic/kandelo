@@ -62,6 +62,8 @@ mod wasm {
 // image construction. A wide surface a host never sees costs the host floor
 // nothing.
 
+mod seal;
+
 use runtime_core::rootfs;
 use wasm_posix_shared::Errno;
 
