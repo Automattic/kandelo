@@ -1,0 +1,78 @@
+{
+  "_comment": "The resolved-input envelope. Every trial removes one refusal from a document that arrives from a producer this builder does not control, so a survivor is a field nobody checks rather than a metric nobody measures.",
+  "file": "tools/xtask/src/vfs_products/resolved_inputs.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" resolved_inputs >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a document of any schema or kind is accepted",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "    if document.schema != 1 || document.kind != \"kandelo-resolved-vfs-product-inputs\" {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "the manifest path is never validated",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "    validate_repo_path(repository_root, &document.product.manifest_path)?;",
+      "replace": "    let _ = repository_root;"
+    },
+    {
+      "name": "the product output may be a path",
+      "scope": "fn validate_output_name",
+      "scope_end": "\n}\n",
+      "find": "        || value.contains(['/', '\\\\', '\\0'])",
+      "replace": "        || false"
+    },
+    {
+      "name": "the product output need not be a VFS image",
+      "scope": "fn validate_output_name",
+      "scope_end": "\n}\n",
+      "find": "        || !(value.ends_with(\".vfs\") || value.ends_with(\".vfs.zst\"))",
+      "replace": "        || false"
+    },
+    {
+      "name": "an ABI version of zero is accepted",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "    if document.target_abi.version == 0 {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "the source repository may be anything",
+      "scope": "fn validate_repository_identity",
+      "scope_end": "\n}\n",
+      "find": "    if !ok {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "a repository identity may carry extra path segments",
+      "scope": "fn validate_repository_identity",
+      "scope_end": "\n}\n",
+      "find": "    let ok = matches!((parts.next(), parts.next(), parts.next()), (Some(o), Some(n), None)",
+      "replace": "    let ok = matches!((parts.next(), parts.next(), parts.next()), (Some(o), Some(n), _)"
+    },
+    {
+      "name": "a local-fixture reference needs no permission",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "        \"local-fixture\" if allow_local_fixture => {}",
+      "replace": "        \"local-fixture\" => {}"
+    },
+    {
+      "name": "inputs need not be sorted or unique",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "        if pair[0].id >= pair[1].id {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "inputs are unbounded",
+      "scope": "pub fn validate_envelope",
+      "scope_end": "\n}\n",
+      "find": "    if document.inputs.len() > MAX_INPUTS {",
+      "replace": "    if false {"
+    }
+  ]
+}

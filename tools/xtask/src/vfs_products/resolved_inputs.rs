@@ -356,6 +356,28 @@ mod tests {
     }
 
     #[test]
+    fn an_input_list_beyond_its_bound_is_refused() {
+        // Cheap to build and therefore cheap to test — which is the argument
+        // for testing it rather than trusting the constant. A bound only ever
+        // exercised by not being hit is a bound nobody has checked.
+        let ids: Vec<serde_json::Value> = (0..=MAX_INPUTS)
+            .map(|index| serde_json::json!({ "id": format!("input-{index:06}") }))
+            .collect();
+        let mut value = document("");
+        value["inputs"] = serde_json::Value::Array(ids);
+        assert!(check(&value).is_err(), "{} inputs must be refused", MAX_INPUTS + 1);
+
+        // And exactly at the bound it is accepted, so the refusal is the
+        // boundary rather than a smaller number nobody wrote down.
+        let ids: Vec<serde_json::Value> = (0..MAX_INPUTS)
+            .map(|index| serde_json::json!({ "id": format!("input-{index:06}") }))
+            .collect();
+        let mut value = document("");
+        value["inputs"] = serde_json::Value::Array(ids);
+        check(&value).expect("exactly at the bound");
+    }
+
+    #[test]
     fn a_local_fixture_reference_needs_the_miniature_builder() {
         let value = document(r#"{"reference_class":"local-fixture"}"#);
         let repo = Repo::new();
