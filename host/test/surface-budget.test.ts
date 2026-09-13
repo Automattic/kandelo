@@ -181,8 +181,14 @@ function countMatches(relPath: string, pattern: RegExp): number {
 }
 
 const MEASURED: Record<string, () => number> = {
-  forkTypeScript: () =>
-    codeLineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]),
+  // Split by purpose 2026-09-12: the module-facing half is DONE and banked at
+  // its measurement, the platform half is unstarted. One ceiling over both
+  // mixes a finished population with an empty one and cannot be read — the same
+  // reason `forkModuleEntryPoints` was split into three.
+  forkTypeScript: () => codeLineCount(["host/src/fork-module-*.ts"]),
+  forkPlatformTypeScript: () =>
+    codeLineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]) -
+    codeLineCount(["host/src/fork-module-*.ts"]),
   workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
   sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),
   hostImportFunctions: () =>

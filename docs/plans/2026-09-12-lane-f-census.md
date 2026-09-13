@@ -2084,4 +2084,19 @@ The first is more in keeping with what splitting `forkModuleEntryPoints` by
 purpose already established: a ceiling that mixes a finished population with an
 unstarted one cannot be read.
 
-Recorded rather than chosen. Nothing in stage 2 proceeds until it is.
+**DECIDED 2026-09-12: the first.** `forkTypeScript` is banked to 249 with slack
+0 and its measure narrowed to `host/src/fork-module-*.ts`, and a new
+`forkPlatformTypeScript` covers the rest of `fork-*.ts` plus `vfork-*.ts` with a
+pre-authorized envelope of 450 on the same terms the module half's 250 had: it
+must be banked once the half stops moving.
+
+Target 300 rather than 450, because §23 measured what the set-aside modules
+actually depend on and found three of five are neither coordination nor floor —
+`fork-process-continuation` alone is 1,471 lines of driver loop that should
+collapse under the F3 coarsening rather than be rewritten.
+
+The split is proven to route, not assumed: with the platform ceiling tightened
+to 0, adding a `host/src/fork-probe-temp.ts` fails `forkPlatformTypeScript is 3,
+above its ceiling of 0` while the banked surface stays at 249; adding a
+`host/src/fork-module-probe-temp.ts` instead fails `forkTypeScript is 252, above
+its ceiling of 249`. Each surface catches exactly the file kind it owns.
