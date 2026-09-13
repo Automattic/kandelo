@@ -943,6 +943,7 @@ pub unsafe extern "C" fn sm_set_image_options(
     if let Err(e) = rootfs::set_export_timestamp(normalized) {
         return err(e);
     }
+
     let bytes: &[u8] = if len == 0 {
         b""
     } else {
@@ -2539,6 +2540,47 @@ mod tests {
         let v = bytes[*at..*at + len].to_vec();
         *at += len;
         v
+    }
+
+    #[test]
+    fn a_requested_export_timestamp_reaches_the_image() {
+        // The WIRING, not the normalisation. `rootfs` has its own two tests for
+        // what a normalised export writes; this asserts that
+        // `sm_set_image_options` carries the request to it, which is the part
+        // that lives here and which nothing in this crate covered -- a mutation
+        // deleting the call survived a full `cargo test -p sffs-module`.
+        const FIXED: i64 = 946_684_800_000; // 2000-01-01T00:00:00Z
+        fresh_tree();
+        assert_eq!(with_two(b"/opt/f", b"bytes", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, FIXED) }, 0);
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("unwrap");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let node = fs.resolve(b"/opt/f", true).expect("/opt/f");
+        let stat = fs.stat_ino(node).expect("stat");
+        assert_eq!(
+            (stat.mtime_ms, stat.ctime_ms, stat.atime_ms),
+            (FIXED as u64, FIXED as u64, FIXED as u64),
+        );
+
+        // And the negative half: NOT asking leaves the file's own times, so
+        // this pair cannot pass for an implementation that flattens always.
+        fresh_tree();
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
+        assert_eq!(with_two(b"/opt/f", b"bytes", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("unwrap");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let node = fs.resolve(b"/opt/f", true).expect("/opt/f");
+        assert_ne!(
+            fs.stat_ino(node).expect("stat").mtime_ms,
+            FIXED as u64,
+            "an un-normalised export does not carry the request that was cleared",
+        );
     }
 
     #[test]
