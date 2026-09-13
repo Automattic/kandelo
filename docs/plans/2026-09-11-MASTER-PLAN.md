@@ -4169,6 +4169,58 @@ them — and was re-aimed at the guard itself, which is what it was always about
 `sffs-module-seal.json` is 12/12 killed and `sffs-module-abi.json` 43/43, both
 with no survivors, no invalid trials and no timeouts.
 
+### GAP 19 — an archive may be described once, and gap 18's fix made it a conflict
+
+**Found 2026-09-13 by reading `declare_archive` while designing the producer,
+and it is a regression from the fix two commits earlier.** Not found by a test:
+nothing registered two members of one archive where only the first carried a
+description, which is the shape every real builder uses.
+
+A fetch description is a property of an ARCHIVE. Registration is per FILE. So a
+builder names the description on one member and omits it on the rest — which is
+exactly what the bridge's optional `archiveDescriptor` is for, and what
+`declare_archive`'s own comment promised: *"a caller that declares the archive
+once per member need not carry the descriptor on every call."*
+
+Wrapping broke the promise. An omitted description used to arrive as an EMPTY
+payload, which the store reads as "nothing new to say". Wrapped, it became a
+nine-byte envelope describing nothing — a *different* payload for one archive,
+which the store refuses for the same reason it refuses two lengths. The second
+member returned `EINVAL`.
+
+**The repair is a boundary correction, not a special case.** The tempting fix is
+"if the caller's descriptor is empty, store empty" — which works, and leaves the
+store deciding when two descriptions agree. Deciding that means READING them,
+and reading them is the format's job. So the merge moved into the module: it
+reads what the archive already carries, keeps an existing description when this
+call brings none, refuses two that disagree, and writes the result back.
+`declare_archive` lost its payload parameter and kept the rule it can enforce
+without reading anything — **one archive, one length**.
+
+**The conflict rule gained a test in the move.** It had none: two runtime-core
+callers used the parameter and neither exercised disagreement, and no trial
+touched it. A rule with no test is a rule that survives by being unexercised, so
+moving it was also the first time anything checked it.
+
+**An undescribed archive keeps an EMPTY payload**, not an envelope describing
+nothing. Empty already means "no description" everywhere else in this format —
+it is what a `KLZY`-described image carries and what `decode` accepts early — and
+spelling that absence as nine bytes would put a deferred section into images
+with no deferred description to carry.
+
+**The wasm32 build caught a `no_std` slip the test build hid.** `Vec` is not in
+scope in `sffs-module` without `alloc::vec::Vec`; `cargo test` has `std` and
+said nothing. **This is why the loop builds for `wasm32-unknown-unknown` and not
+only for the host** — the target that will actually run the code is the one that
+answers whether it compiles.
+
+**Two gaps in a row from one change, and the shape is the same both times.**
+Gap 18: the module started writing a format and a payload written by someone
+else stopped decoding. Gap 19: the module started writing a format and an
+ABSENT payload started meaning something new. **Taking over a format means
+taking over every value it can hold, including the empty one and the one written
+before you arrived.**
+
 ### The seal's producer: a THIRD payload state, because "pending" must not read as "none"
 
 **Designed 2026-09-13. The decision recorded earlier — the module seals at
