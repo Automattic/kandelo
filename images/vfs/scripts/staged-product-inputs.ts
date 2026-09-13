@@ -1201,6 +1201,16 @@ function materializeExactArchive(
     ["run", "-p", "xtask", "--target", hostRustTarget(), "--quiet", "--", ...args],
     { cwd: findRepoRoot(), input: bytes, encoding: "buffer" },
   );
+  // NOT INDEPENDENTLY OBSERVABLE, and measured rather than assumed: a spawn
+  // that never ran reports `status: null`, and `null !== 0` is true, so the
+  // check below throws with or without this one. What this branch changes is
+  // the SENTENCE — "spawn cargo ENOENT" instead of "exit null" — and the
+  // difference between those two is the difference between an operator
+  // installing a toolchain and an operator filing a bug about an archive.
+  //
+  // A trial for it survives every time, so there is none. Kept because a
+  // worse message is still a real cost, and because the day `status` stops
+  // being null on a failed spawn this is what still refuses.
   if (result.error) {
     throw new Error(`${label} could not be extracted: ${result.error.message}`);
   }
