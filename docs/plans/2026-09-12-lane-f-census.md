@@ -1459,3 +1459,61 @@ two more hierarchies — Wasm can compare neither, and `ref.eq` validates only o
 `eqref`. Whether that justifies two more imports, one generic import that
 dispatches on hierarchy, or leaving those four unserved is not a call this lane
 should make alone.
+
+## §28 — The four "identity" imports do not want the same thing
+
+§27 grouped `exn_claim`, `exn_lookup`, `exn_broker_encode` and `encode_funcref`
+as "need identity in a hierarchy the current import cannot reach", and the
+maintainer approved a single dispatching import for flexibility. Checking what
+each would actually ask for says the group is not one need, so the single
+import was not built.
+
+### What the probe established, and what it did not
+
+A JS import CAN declare a parameter in every hierarchy. Measured on V8 with a
+hand-encoded module and a PASSING CONTROL — an earlier attempt reported all four
+rejected, which was a bad section length, not a type verdict:
+
+| parameter | result |
+|---|---|
+| `anyref` (control) | validates and instantiates with a JS function |
+| `externref` | validates and instantiates |
+| `funcref` | validates and instantiates |
+| `exnref` | validates and instantiates |
+
+**That is structural only.** It does not show that a real `exnref` VALUE crosses
+usefully, which is what identity needs — the host must be able to hold it as a
+map key. Weak counter-evidence: `new WebAssembly.Table({element: "exnref"})` is
+REJECTED by the same engine, where `anyfunc`, `externref` and `anyref` are all
+accepted. Settling it needs a tag, a throw and a `try_table` catch, which this
+census did not build.
+
+### The semantic mismatch
+
+`encode_funcref` does not want an identity. A funcref recipe is keyed by
+`base(module_activation) + function_ordinal` — a MERGED CATALOG SLOT, which is
+what `fm_funcref_ordinal` returns on the decode side. So the encode direction
+must produce that same catalog ordinal, or encode and decode disagree about what
+a funcref recipe means.
+
+An arbitrary host-assigned identity integer is not a catalog ordinal. Getting
+the ordinal from a funcref means finding it in the catalog table, which wasm
+cannot do (it cannot compare funcrefs) but the host can, because the host owns
+the catalog and can compare function identities.
+
+So `encode_funcref` wants **"which catalog slot is this funcref"**, while
+`exn_claim`/`exn_lookup` want **"give this exception a stable integer"**. Same
+shape, different questions — and a single import answering both would be a union
+in a trench coat, not an abstraction.
+
+### Where that leaves it
+
+The dispatching import is still the right idea for the IDENTITY question, and
+widening the existing `__wpk_fork_host_ref_identity` rather than adding a new
+import would keep the host obligation at 5 rather than growing it. But it covers
+two of the four, not four, and its `exnref` arm rests on a value-crossing
+property that is not established.
+
+Not built, deliberately. Building an abstraction over a group that turned out
+not to share a need is how a host contract grows without anyone deciding to grow
+it — which is the defect this campaign's primary measure exists to catch.
