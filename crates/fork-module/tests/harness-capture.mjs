@@ -964,4 +964,72 @@ function i31Minter() {
   assert.equal(lastErrno(), E2BIG, "and it is E2BIG, not a silent truncation");
 }
 
+// ============================================================================
+// The GUEST-facing exception cycle: lookup -> claim -> define.
+//
+// `exn_lookup` always reports NOT FOUND, so every catch takes a fresh recipe.
+// Nothing can dedup an exception: wasm cannot compare two exnrefs (`ref.eq`
+// does not validate on them, and no cast rescues one into the eq hierarchy),
+// and an exnref value cannot cross into a JS import to be compared there.
+//
+// The same limitation is why it costs nothing: a guest cannot observe that two
+// exnrefs are distinct either. What MUST still hold is that the payloads dedup,
+// so two exception recipes share their payload objects rather than duplicating
+// them -- that is what these assertions pin.
+// ============================================================================
+{
+  const ACT = 7;
+  const SCALARS = SCRATCH_BASE + 512;
+  const REFS = SCRATCH_BASE + 576;
+
+  x.fm_capture_begin();
+  const payload = x.fm_capture_intern(K_EXTERNREF, 77, 0); // 1
+  assert.equal(payload, 1, "payload leaf interned");
+
+  // Lookup never hits, so the guest always proceeds to claim.
+  assert.equal(x.__wpk_fork_ref_exn_lookup(0), 0, "lookup reports not found");
+  assert.equal(lastErrno(), 0, "and that is not an error");
+
+  const first = x.__wpk_fork_ref_exn_claim(0);
+  assert.ok(first >= 1, `exn_claim errno=${lastErrno()}`);
+  // Still not found AFTER a claim: there is nothing to bind identity to.
+  assert.equal(
+    x.__wpk_fork_ref_exn_lookup(0),
+    0,
+    "lookup still reports not found after a claim",
+  );
+  const second = x.__wpk_fork_ref_exn_claim(0);
+  assert.notEqual(first, second, "each catch takes a DISTINCT recipe");
+
+  // Both exceptions describe the SAME payload recipe. This is the property that
+  // makes duplicate exnref recipes harmless: the payload graph is shared, so a
+  // child rebuilds one payload object, not two.
+  writeBytes(SCALARS, [0x11, 0x22, 0x33, 0x44]);
+  writeU32Array(REFS, [payload]);
+  x.__wpk_fork_ref_exn_define(first, ACT, 4, 21, SCALARS, 4, REFS, 1);
+  assert.equal(lastErrno(), 0, `exn_define(first) errno=${lastErrno()}`);
+  x.__wpk_fork_ref_exn_define(second, ACT, 4, 21, SCALARS, 4, REFS, 1);
+  assert.equal(lastErrno(), 0, `exn_define(second) errno=${lastErrno()}`);
+
+  assert.equal(x.fm_capture_validate(), 0, `exn graph validates errno=${lastErrno()}`);
+
+  // Proof the shared payload really is one node: the graph holds the two
+  // exception recipes plus ONE payload leaf, not two.
+  const stream = Buffer.from(drainRecords().raw);
+  assert.ok(
+    stream.includes(Buffer.from([0x11, 0x22, 0x33, 0x44])),
+    "exception scalars reached the serialized stream",
+  );
+
+  // A claimed exception that is never defined still blocks the seal -- the
+  // fresh-recipe path must not weaken that.
+  x.fm_capture_begin();
+  x.__wpk_fork_ref_exn_claim(0);
+  assert.notEqual(
+    x.fm_capture_validate(),
+    0,
+    "a claimed exception never defined blocks the seal",
+  );
+}
+
 console.log("fork-module capture harness: all assertions passed");

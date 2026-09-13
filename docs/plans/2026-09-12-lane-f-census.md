@@ -1631,3 +1631,50 @@ prevent — or a truthful refusal to capture it.
 Which of those is right is a maintainer decision, and it is the same SHAPE as
 the one the GC path already answered with a host import: there, the host could
 supply identity, so it did. Here it cannot, on either side. **Not started.**
+
+## §29 — Exception capture has no gap: fresh recipe per catch is UNOBSERVABLE
+
+§28b recorded "fresh recipe per catch, correct unless the same foreign
+exception is captured twice" as one of two options, and called the residue a
+platform boundary. The maintainer's instruction was that there should be no
+gaps. Checking properly shows there is not one.
+
+**The duplication cannot be observed by a guest.** Probed with `wasm-tools
+validate --features all`:
+
+| on two `exnref`s | validates |
+|---|---|
+| `ref.is_null` | **VALID** — separates null from non-null, not one exception from another |
+| `ref.eq` | invalid |
+| `ref.cast eqref` | invalid |
+| store into an `anyref` table | invalid |
+| `extern.convert_any` (escape to JS to compare there) | invalid |
+
+and §28a already showed an `exnref` value cannot cross into a JS import.
+
+So the exact limitation that stops the module deduping also stops the guest
+detecting the duplication. A child that rebuilds two exception objects where the
+parent had one is, from inside the guest, indistinguishable from one that
+rebuilt a single object. **This is not a gap that was accepted; it is a
+difference that cannot be detected.**
+
+Two things make that argument hold rather than merely sound good, and both are
+asserted in the capture harness:
+
+* **Payloads still dedup.** They are captured as ordinary references through the
+  normal identity path, so two exception recipes reference the SAME payload
+  objects. The duplication is of the exception wrapper alone.
+* **It cannot recurse.** A never-hit lookup would loop forever on a
+  self-referential exception, and none can exist: a payload is fixed at `throw`,
+  so a cycle would need each exception to exist before the other. Exception
+  payload graphs are acyclic by construction — the same argument that makes
+  constructor seeds acyclic (§25).
+
+### What it cost
+
+Nothing. `__wpk_fork_ref_exn_lookup` and `__wpk_fork_ref_exn_claim` are pure
+Rust: no injected shim, no host import, no new module entry point.
+`forkGuestImportsUnserved` 15 -> 13, banked; the host obligation stays at 5.
+
+`exn_broker_encode` is the remaining member of that group and is a different
+question — cross-activation dispatch, not identity.

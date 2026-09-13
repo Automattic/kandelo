@@ -5393,6 +5393,81 @@ mod wasm {
         recipe
     }
 
+    /// Guest-facing `env.__wpk_fork_ref_exn_lookup(slot) -> recipe`.
+    ///
+    /// Always reports NOT FOUND, so every catch takes a fresh recipe. That is a
+    /// deliberate decision with a proof, not a shortcut.
+    ///
+    /// # Why dedup is impossible here
+    ///
+    /// Deduping needs to tell two exception references apart, and nothing can:
+    ///
+    /// * Wasm cannot. `exn` is a disjoint hierarchy, so `ref.eq` on two
+    ///   `exnref`s does not validate, an `exnref` cannot be stored in an
+    ///   `anyref` table, and no cast rescues one into the eq hierarchy. Only
+    ///   `ref.is_null` accepts an `exnref`, and that separates null from
+    ///   non-null, not one exception from another.
+    /// * A JS host cannot. An `exnref` VALUE cannot cross into a JS import: the
+    ///   module compiles and instantiates, then throws
+    ///   `TypeError: type incompatibility when transforming from/to JS` at the
+    ///   first call. So the host cannot be asked to do it either.
+    ///
+    /// Both measured with `wasm-tools validate`, against a positive and a
+    /// negative control — see docs/plans/2026-09-12-lane-f-census.md sections
+    /// 28a and 28b.
+    ///
+    /// # Why that costs nothing observable
+    ///
+    /// The SAME limitation makes the duplication undetectable. A guest has no
+    /// instruction that distinguishes two `exnref`s and no way to hand one to
+    /// JavaScript to be compared there. A child that rebuilds two exception
+    /// objects where the parent had one is therefore indistinguishable, from
+    /// inside the guest, from one that rebuilt a single object.
+    ///
+    /// Their PAYLOADS do not duplicate: those are captured as ordinary
+    /// references and dedup through the normal identity path, so two exnref
+    /// recipes reference the same payload objects.
+    ///
+    /// # Why it cannot recurse
+    ///
+    /// A never-hit lookup would loop forever on a self-referential exception.
+    /// None exists: an exception payload is fixed at `throw`, so building a
+    /// cycle would need each exception to exist before the other. Exception
+    /// payload graphs are acyclic by construction, the same argument that makes
+    /// constructor seeds acyclic (section 25).
+    ///
+    /// The `slot` argument is accepted and ignored: with no identity to read,
+    /// the staged reference is not needed. It stays in the signature because
+    /// the guest ABI declares it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_lookup(_slot: u32) -> i32 {
+        set_ok();
+        0
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_claim(slot) -> recipe`.
+    ///
+    /// Reserves a placeholder recipe for an exception the guest is about to
+    /// describe with `__wpk_fork_ref_exn_define`. Pairs with the lookup above:
+    /// since lookup never hits, every catch claims once.
+    ///
+    /// Like the GC claim this only reserves identity, not content — but unlike
+    /// it, there is nothing to bind the identity TO, for the reasons on
+    /// `__wpk_fork_ref_exn_lookup`. `slot` is accepted and ignored.
+    ///
+    /// A claimed recipe that is never defined is refused by
+    /// `fm_capture_validate`, so a dropped `exn_define` cannot seal.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_claim(_slot: u32) -> i32 {
+        match capture_builder() {
+            Ok(g) => capture_ok_id(g.claim_gc()),
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
     /// Guest-facing `env.__wpk_fork_ref_exn_define(...)`.
     ///
     /// Completes a claimed exception placeholder into its final recipe. Unlike
