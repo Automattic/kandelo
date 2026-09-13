@@ -7,6 +7,37 @@ This is a **good merge point in the middle of the lane**, not the end of it.
 What is finished is a complete, coherent unit; what remains is named below so
 nobody reads the merge as "lane Y is done".
 
+> **UPDATE 2026-09-12 — a SECOND merge point, and a correction to the first.**
+>
+> The first merge landed at `802b03129`. The lane has since added work the
+> parent does not have, and one claim below needs correcting.
+>
+> **The correction.** Increment 5 below is titled *"An image the kernel exports
+> is one the kernel can load"*. That was over-broad. It held for images WITH
+> deferred files and was false for images without them: the writer omitted the
+> deferred section when nothing was deferred, and the loader refuses an image
+> that declares no section at all, so the kernel refused images it had just
+> written. Recorded as **gap 15** and fixed in `41ce154c2`. It went unseen
+> because `xtask vfs-image roundtrip` compares decoded descriptions and never
+> re-enters its own output — **H-13** in the master plan.
+>
+> **What is new since the first merge:**
+>
+> * the repoint — sixteen builder recipes stop importing the TypeScript
+>   filesystem; `imageBuilderFilesystemImporters` **36 → 20, banked**, and
+>   `memoryFsTypeScript` 8501 → 8491
+> * **gap 14** — a builder can declare the capacity of the image it is filling,
+>   which the export previously derived entirely from the tree
+> * **gap 15** and bridge image loading — `sm_load_image` in, `sm_stat_size`
+>   out, module surface unchanged at 20 entry points
+> * the two trials held out since V4 are now in the green contract, and
+>   `perturb/deferred-until-v4.json` is retired
+>
+> **This is still a mid-lane merge point.** What remains is the sixteen
+> constructor repoints that image loading unblocks, the two supply-chain files
+> the maintainer decided become Rust tools, and the base-file identity gap
+> (items 2 and 3) that still loses 65 deferred files on the shipped rootfs.
+
 ## What is finished: lane V's V4
 
 **An image the Rust export writes is now one the kernel can load back**, with
