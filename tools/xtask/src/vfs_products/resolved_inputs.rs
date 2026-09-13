@@ -74,11 +74,6 @@ pub struct ResolvedInputV1 {
     //
     // `bytes` is read by the reference check — a reference names a digest AND a
     // length, and a length nothing compares against is a length that can lie.
-    // `bytes` is read by the scheme-specific reference rules — a Pages URL
-    // carries the length as well as the digest, and a length nothing compares
-    // against is a length that can lie. Those rules are what remain of this
-    // port.
-    #[allow(dead_code)]
     pub bytes: u64,
     #[serde(default)]
     pub descriptor: Option<InputDescriptorV1>,
@@ -220,7 +215,13 @@ pub fn validate_envelope(
         }
     }
     for (index, input) in document.inputs.iter().enumerate() {
-        validate_input(input, &document.product.architecture, &format!("resolved input {index}"))?;
+        validate_input(
+            input,
+            &document.product.architecture,
+            &document.reference_class,
+            document.target_abi.version,
+            &format!("resolved input {index}"),
+        )?;
     }
     Ok(())
 }
@@ -260,6 +261,8 @@ pub fn validate_document(path: &Path, allow_local_fixture: bool) -> Result<(), S
 fn validate_input(
     input: &ResolvedInputV1,
     product_architecture: &str,
+    reference_class: &str,
+    target_abi_version: u32,
     label: &str,
 ) -> Result<(), String> {
     validate_stable_id(&input.id, label)?;
@@ -300,6 +303,7 @@ fn validate_input(
     validate_sha256(&input.sha256)?;
     if let Some(reference) = &input.reference {
         validate_reference_binds_digest(reference, &input.sha256, label)?;
+        validate_reference_shape(reference, input, reference_class, target_abi_version, label)?;
     }
     if let Some(path) = &input.path {
         // Shape only. Whether the file is THERE is the builder's question,
@@ -371,6 +375,127 @@ fn validate_reference_binds_digest(
         ));
     }
     Ok(())
+}
+
+/// The scheme-specific reference rules.
+///
+/// [`validate_reference_binds_digest`] has already established that the
+/// reference names THIS input's digest. These rules say what else each SHAPE
+/// must bind, and the answer is always "everything that could otherwise drift":
+/// the input's id, its byte count, and for a product image the ABI version the
+/// build targets.
+///
+/// A reference that binds only a digest is immutable but not unambiguous — two
+/// inputs with the same bytes would accept each other's references, and a
+/// product image built for one ABI would accept a URL naming another.
+///
+/// Anything that is not one of these shapes is left to the digest rule alone.
+/// That is deliberate: an OCI reference is already content-addressed by its own
+/// `@sha256:` form, and inventing extra structure for it here would refuse
+/// registries nobody has a reason to refuse.
+fn validate_reference_shape(
+    reference: &str,
+    input: &ResolvedInputV1,
+    reference_class: &str,
+    target_abi_version: u32,
+    label: &str,
+) -> Result<(), String> {
+    const PAGES_INPUT_PREFIX: &str = "https://automattic.github.io/kandelo/products/inputs/";
+    const PAGES_PREFIX: &str = "https://automattic.github.io/kandelo/products/";
+
+    if reference.starts_with(PAGES_INPUT_PREFIX) {
+        let captures = pages_input_pattern()
+            .captures(reference)
+            .ok_or_else(|| format!("{label} Pages input reference does not bind exact identity"))?;
+        let ok = reference_class == "canonical"
+            && &captures[1] == input.id
+            && captures[1] == captures[3]
+            && captures[2] == input.sha256
+            && captures[4] == input.sha256
+            && captures[5].parse::<u64>().ok() == Some(input.bytes)
+            // A product IMAGE is not an input, however it is addressed.
+            && input.kind != "product-image"
+            && input.effective_materialization == "lazy-reference";
+        if !ok {
+            return Err(format!("{label} Pages input reference does not bind exact identity"));
+        }
+        return Ok(());
+    }
+
+    if reference.starts_with(PAGES_PREFIX) {
+        let captures = pages_product_pattern()
+            .captures(reference)
+            .ok_or_else(|| format!("{label} Pages product reference does not bind exact identity"))?;
+        let ok = reference_class == "canonical"
+            && input.kind == "product-image"
+            && captures[1] == captures[3]
+            && captures[2] == input.sha256
+            && captures[5] == input.sha256
+            && captures[4].parse::<u32>().ok() == Some(target_abi_version)
+            && captures[6].parse::<u64>().ok() == Some(input.bytes);
+        if !ok {
+            return Err(format!("{label} Pages product reference does not bind exact identity"));
+        }
+        // A product image fetched lazily is an image whose bytes are not there
+        // when the build needs them.
+        if input.effective_materialization != "embedded" {
+            return Err(format!("{label} Pages product reference requires embedded placement"));
+        }
+        return Ok(());
+    }
+
+    if reference_class == "local-fixture" {
+        let captures = local_fixture_pattern()
+            .captures(reference)
+            .ok_or_else(|| {
+                format!("{label} local-fixture reference does not bind exact namespace and bytes")
+            })?;
+        let ok = captures[1] == input.sha256
+            && captures[3].parse::<u64>().ok() == Some(input.bytes)
+            // A product image is not source, whatever namespace it claims.
+            && !(input.kind == "product-image" && &captures[2] == "source");
+        if !ok {
+            return Err(format!(
+                "{label} local-fixture reference does not bind exact namespace and bytes"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn pages_input_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(concat!(
+            r"^https://automattic\.github\.io/kandelo/products/inputs/",
+            r"([a-z0-9][a-z0-9._-]{0,127})/sha256-([0-9a-f]{64})/",
+            r"([a-z0-9][a-z0-9._-]{0,127})\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$",
+        ))
+        .expect("a literal pattern")
+    })
+}
+
+fn pages_product_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(concat!(
+            r"^https://automattic\.github\.io/kandelo/products/",
+            r"([a-z0-9][a-z0-9._-]{0,127})/sha256-([0-9a-f]{64})/",
+            r"([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst",
+            r"\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$",
+        ))
+        .expect("a literal pattern")
+    })
+}
+
+fn local_fixture_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(
+            r"^local-fixture:sha256:([0-9a-f]{64})\?namespace=(candidate|canonical|source)&bytes=([1-9][0-9]*)$",
+        )
+        .expect("a literal pattern")
+    })
 }
 
 /// The product's output filename: a name, never a path.
@@ -632,6 +757,127 @@ mod tests {
             "path": "files/metadata.json",
             "reference": format!("oci://example.invalid/meta@sha256:{digest}"),
         })
+    }
+
+    /// A canonical document carrying one input, since the Pages shapes are
+    /// accepted only for that reference class.
+    fn canonical_with(patch: serde_json::Value) -> serde_json::Value {
+        let mut base = input("only");
+        merge(&mut base, &patch);
+        let mut value = document(r#"{"reference_class":"canonical"}"#);
+        value["inputs"] = serde_json::json!([base]);
+        value
+    }
+
+    #[test]
+    fn a_pages_input_url_binds_the_id_the_digest_and_the_byte_count() {
+        let digest = "a".repeat(64);
+        let good = format!(
+            "https://automattic.github.io/kandelo/products/inputs/only/sha256-{digest}/only\
+             ?sha256={digest}&bytes=12"
+        );
+        check(&canonical_with(serde_json::json!({
+            "declared_materialization": "lazy",
+            "effective_materialization": "lazy-reference",
+            "reference": good,
+        })))
+        .expect("a well-formed Pages input reference");
+
+        // Each binding, broken one at a time. A reference that binds only a
+        // DIGEST is immutable but not unambiguous: two inputs with the same
+        // bytes would accept each other's references.
+        let wrong_id = format!(
+            "https://automattic.github.io/kandelo/products/inputs/other/sha256-{digest}/other\
+             ?sha256={digest}&bytes=12"
+        );
+        let wrong_bytes = format!(
+            "https://automattic.github.io/kandelo/products/inputs/only/sha256-{digest}/only\
+             ?sha256={digest}&bytes=99"
+        );
+        for (why, reference) in [("another input's id", wrong_id), ("another length", wrong_bytes)] {
+            let value = canonical_with(serde_json::json!({
+                "declared_materialization": "lazy",
+                "effective_materialization": "lazy-reference",
+                "reference": reference,
+            }));
+            assert!(check(&value).is_err(), "{why}");
+        }
+
+        // A lazily-referenced input is what this shape is FOR; embedded is a
+        // different promise about where the bytes are.
+        let value = canonical_with(serde_json::json!({ "reference": good }));
+        assert!(check(&value).is_err(), "embedded placement");
+    }
+
+    #[test]
+    fn a_pages_product_url_binds_the_abi_version_too() {
+        let digest = "a".repeat(64);
+        let at = |abi: u32| {
+            format!(
+                "https://automattic.github.io/kandelo/products/only/sha256-{digest}/only-{abi}\
+                 .vfs.zst?sha256={digest}&bytes=12"
+            )
+        };
+        check(&canonical_with(serde_json::json!({
+            "kind": "product-image",
+            "reference": at(44),
+        })))
+        .expect("the ABI this build targets");
+
+        // The binding that has no analogue in the input shape: a product image
+        // built for another ABI is a different artifact wearing the same
+        // digest-shaped URL.
+        let value = canonical_with(serde_json::json!({
+            "kind": "product-image",
+            "reference": at(43),
+        }));
+        assert!(check(&value).is_err(), "another ABI version");
+
+        // And a product URL for something that is not a product image.
+        let value = canonical_with(serde_json::json!({
+            "kind": "package-output",
+            "reference": at(44),
+        }));
+        assert!(check(&value).is_err(), "not a product image");
+    }
+
+    #[test]
+    fn a_pages_url_is_refused_outside_the_canonical_class() {
+        // A candidate build naming a canonical URL is claiming a publication
+        // that has not happened.
+        let digest = "a".repeat(64);
+        let reference = format!(
+            "https://automattic.github.io/kandelo/products/inputs/only/sha256-{digest}/only\
+             ?sha256={digest}&bytes=12"
+        );
+        // The base fixture is CANONICAL, so building on it would have tested
+        // nothing — the first version of this test did exactly that and passed
+        // for the wrong reason. The class has to be set explicitly.
+        let mut base = input("only");
+        merge(
+            &mut base,
+            &serde_json::json!({
+                "declared_materialization": "lazy",
+                "effective_materialization": "lazy-reference",
+                "reference": reference,
+            }),
+        );
+        let mut value = document(r#"{"reference_class":"candidate"}"#);
+        value["inputs"] = serde_json::json!([base]);
+        assert_eq!(value["reference_class"], "candidate", "the fixture is what it claims");
+        assert!(check(&value).is_err(), "candidate class");
+    }
+
+    #[test]
+    fn a_reference_in_no_known_shape_needs_only_its_digest() {
+        // An OCI reference is already content-addressed by its own `@sha256:`
+        // form. Inventing extra structure here would refuse registries nobody
+        // has a reason to refuse.
+        let digest = "a".repeat(64);
+        let value = with_input(serde_json::json!({
+            "reference": format!("oci://registry.invalid/thing@sha256:{digest}"),
+        }));
+        check(&value).expect("an OCI reference binding its digest");
     }
 
     #[test]

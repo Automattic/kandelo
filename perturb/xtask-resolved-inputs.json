@@ -185,6 +185,55 @@
       "scope_end": "\n}\n",
       "find": "    validate_sha256(&descriptor.sha256)\n        .map_err(|e| format!(\"{label} descriptor: {e}\"))?;",
       "replace": "    let _ = &descriptor.sha256;"
+    },
+    {
+      "name": "a Pages input reference need not bind the input's id",
+      "scope": "fn validate_reference_shape(",
+      "scope_end": "\n}\n",
+      "find": "            && &captures[1] == input.id\n            && captures[1] == captures[3]",
+      "replace": "            && captures[1] == captures[3]"
+    },
+    {
+      "name": "a Pages input reference need not bind the byte count",
+      "scope": "fn validate_reference_shape(",
+      "scope_end": "\n}\n",
+      "find": "            && captures[5].parse::<u64>().ok() == Some(input.bytes)",
+      "replace": "            && captures[5].parse::<u64>().is_ok()"
+    },
+    {
+      "name": "a Pages product reference need not bind the ABI version",
+      "scope": "fn validate_reference_shape(",
+      "scope_end": "\n}\n",
+      "find": "            && captures[4].parse::<u32>().ok() == Some(target_abi_version)",
+      "replace": "            && captures[4].parse::<u32>().is_ok()"
+    },
+    {
+      "name": "a Pages product may be fetched lazily",
+      "scope": "fn validate_reference_shape(",
+      "scope_end": "\n}\n",
+      "find": "        if input.effective_materialization != \"embedded\" {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "a Pages reference is accepted outside the canonical class",
+      "scope": "fn validate_reference_shape(",
+      "scope_end": "\n}\n",
+      "find": "        let ok = reference_class == \"canonical\"\n            && &captures[1] == input.id",
+      "replace": "        let ok = true\n            && &captures[1] == input.id"
+    },
+    {
+      "name": "a product image may be addressed as an input",
+      "scope": "fn validate_reference_shape(",
+      "scope_end": "\n}\n",
+      "find": "            && input.kind != \"product-image\"\n            && input.effective_materialization == \"lazy-reference\";",
+      "replace": "            && input.effective_materialization == \"lazy-reference\";"
+    },
+    {
+      "name": "a reference shape is never checked at all",
+      "scope": "fn validate_input(",
+      "scope_end": "\n}\n",
+      "find": "        validate_reference_shape(reference, input, reference_class, target_abi_version, label)?;",
+      "replace": "        let _ = (reference_class, target_abi_version);"
     }
   ]
 }
