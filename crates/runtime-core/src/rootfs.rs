@@ -1909,6 +1909,7 @@ where
     // neither-carrier refusal exists to prevent, reached one archive at a time
     // instead of all at once. Same defect, same answer: a stale artifact fails
     // loudly and is rebuilt.
+
     let declared_flags = crate::sffs::container_flags(&source)?;
     if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0
         && lazy_archives.is_empty()
@@ -4914,7 +4915,7 @@ mod tests {
     }
 
     #[test]
-    fn chmod_cannot_smuggle_file_type_bits_into_a_permission_field() {
+    fn chmod_keeps_the_bits_it_owns_and_takes_no_others() {
         let _g = TestGuard::acquire();
         build_sample_tree();
         // `inode.mode` holds PERMISSIONS; the file's type comes from its kind
@@ -4928,12 +4929,36 @@ mod tests {
         // nothing any of them could see. A test that applies the transform it
         // is checking cannot check it. Mutation testing is what said so.
         chmod(b"/usr/bin/hello", S_IFDIR | 0o700).unwrap();
-        let st = lstat(b"/usr/bin/hello").unwrap();
+
+        // Asserted through the EXPORT, not through `lstat`, and the difference
+        // is the whole test. `Inode::stat` composes `type_bits | (mode &
+        // 0o7777)`, so it masks a second time and every `lstat` assertion in
+        // this file is blind to whether `chmod` masked at all -- a mutation
+        // that deleted the narrowing left the suite green, and a test I wrote
+        // against `lstat` to catch it stayed green too.
+        //
+        // The export walk reads `inode.mode` RAW and hands it to the writer,
+        // so that is where an unmasked mode becomes a file whose recorded type
+        // says directory and regular at once.
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let hello = fs.resolve(b"/usr/bin/hello", true).expect("/usr/bin/hello");
         assert_eq!(
-            st.st_mode,
+            fs.stat_ino(hello).unwrap().mode,
             S_IFREG | 0o700,
-            "the file keeps its own type and takes only the permission bits",
+            "the exported file keeps its own type and takes only permissions",
         );
+
+        // And the bits chmod DOES own reach the image. Narrowing to `0o777`
+        // instead of `0o7777` would drop set-user-ID silently, which is the
+        // mutation this half exists to kill -- the existing setuid test
+        // chmods to `0o4755` and then CHOWNS, which clears the bit on purpose,
+        // so it can never notice a chmod that dropped it first.
+        chmod(b"/usr/bin/hello", 0o4711).unwrap();
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let hello = fs.resolve(b"/usr/bin/hello", true).expect("/usr/bin/hello");
+        assert_eq!(fs.stat_ino(hello).unwrap().mode, S_IFREG | 0o4711);
     }
 
     #[test]
@@ -6396,54 +6421,61 @@ mod tests {
         crate::sffs_container::wrap(&body, &sections).expect("wrap")
     }
 
-    /// An image whose header CLAIMS lazy archives while its `KLZY` describes
-    /// none -- the shape the legacy writer produces for an archive group whose
-    /// raw byte length it does not know.
-    fn image_claiming_archives_it_does_not_describe() -> Vec<u8> {
+    /// An image in the shape the legacy writer produces when it had to skip an
+    /// archive group: the member is an ordinary EMPTY file in the body, the
+    /// kernel-facing section describes nothing, and only the container header
+    /// still says there are lazy archives.
+    ///
+    /// `claims_archives` is the one thing that varies, so the test can show
+    /// that the header flag is what decides -- a fixture with the flag clear
+    /// must LOAD, or the refusal is coming from something else.
+    fn legacy_image_with_an_undescribed_archive(claims_archives: bool) -> Vec<u8> {
         let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
             256 * 1024,
         ))
         .expect("mkfs");
         let root = w.root();
-        // A member whose inode is a zero-length stub, exactly as a deferred
-        // file's is. If the archive goes undescribed, this walks as an
-        // ordinary empty file and nothing says so.
-        w.create_deferred_file(root, b"php", 0o755, 4_242, 3, b"usr/bin/php", b"")
-            .expect("archive member");
-        w.declare_lazy_archive(3, 8_000_000, b"").expect("declare");
+        // The member as the legacy body holds it: a zero-length regular file.
+        // Its real length lived only in the archive metadata that was skipped,
+        // so nothing here says this file is 4,242 bytes of binary.
+        w.create_file(root, b"php", 0o755, crate::sffs_write::Content::Bytes(b""))
+            .expect("member stub");
         let body = w
             .finish()
             .expect("finish")
             .to_vec(&crate::sffs_write::NoContent)
             .expect("materialize");
 
-        // A `KLZY` that describes NOTHING, which is what the legacy encoder
-        // emits for an image whose only lazy group it had to skip.
+        // A `KLZY` that describes nothing, which is what the legacy encoder
+        // emits once it has skipped the only group it had.
         //
-        // The first version of this fixture put the MEMBER in `KLZY` while
-        // leaving its archive out, and the test passed without the guard --
-        // `decode_kernel_lazy_linkage` already refuses a record naming an
-        // undeclared archive, so a different check was doing the refusing and
-        // the test proved nothing about this one. The mutation is what said
-        // so. H-5, arriving through a fixture I wrote to test H-5's cousin.
-        //
-        // The header's flags are written by hand because
-        // `ContainerSections::flags()` derives them from the sections present,
-        // and the whole point is a header that disagrees with them.
+        // An earlier version of this fixture put the MEMBER in `KLZY` while
+        // leaving its archive out, and then wrote the member as a DEFERRED
+        // file in the body. Both passed without the guard: the first because
+        // `decode_kernel_lazy_linkage` refuses a record naming an undeclared
+        // archive, the second because the deferred body section produced its
+        // own `EINVAL`. Twice a different check was doing the refusing, and
+        // twice the test read as though it proved this one. H-5, and the only
+        // reason it is not still there is that the mutation kept surviving.
         let klzy = klzy_section(&[], &[]);
+        // The HOST-side archive JSON, which a legacy image really carries and
+        // which the kernel cannot read. Its presence is what sets the header's
+        // lazy-archive flag, so the flag word and the sections AGREE -- and the
+        // container's own "no bytes the flags do not account for" check is
+        // therefore satisfied. Only the kernel-facing section is short.
+        //
+        // The first two versions of this fixture set the flag by hand with no
+        // such section, and the container check refused them before the load
+        // ever looked. That is a THIRD different check doing the refusing, and
+        // it is why the mutation kept surviving a test that read as correct.
+        let archive_json: &[u8] = br#"[{"url":"https://example.invalid/x.zip"}]"#;
         let sections = crate::sffs_container::ContainerSections {
             lazy_json: b"",
-            archive_json: None,
+            archive_json: if claims_archives { Some(archive_json) } else { None },
             metadata_json: None,
             kernel_lazy: Some(&klzy),
         };
-        let flags = sections.flags() | crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES;
-        let mut image = crate::sffs_container::header(body.len(), flags)
-            .expect("header")
-            .to_vec();
-        image.extend_from_slice(&body);
-        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
-        image
+        crate::sffs_container::wrap(&body, &sections).expect("wrap")
     }
 
     #[test]
@@ -6457,11 +6489,20 @@ mod tests {
         // empty file -- a 4,242-byte binary reporting zero -- and the load
         // returns success. A build derived from that base ships the emptiness,
         // and nothing anywhere reported a problem.
-        let image = image_claiming_archives_it_does_not_describe();
+        let claiming = legacy_image_with_an_undescribed_archive(true);
         assert_eq!(
-            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            load_image(claiming.len() as u64, image_host(&claiming)).unwrap_err(),
             Errno::EINVAL,
             "an image whose archives this reader cannot see is refused",
+        );
+
+        // The negative control, and the reason it is here: the same bytes with
+        // the claim removed must LOAD. Without it this test would pass for any
+        // refusal at all, which is exactly how its first two versions passed.
+        let honest = legacy_image_with_an_undescribed_archive(false);
+        assert!(
+            load_image(honest.len() as u64, image_host(&honest)).is_ok(),
+            "the header's claim is what decides, not something else",
         );
     }
 

@@ -3,10 +3,10 @@
  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "trials": [
   {
-   "name": "chmod drops the mode mask",
+   "name": "chmod narrows away the set-user-ID bit",
    "scope": "pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {",
    "find": "        inode.mode = mode & 0o7777;",
-   "replace": "        inode.mode = mode;",
+   "replace": "        inode.mode = mode & 0o777;",
    "scope_end": "\n}\n"
   },
   {

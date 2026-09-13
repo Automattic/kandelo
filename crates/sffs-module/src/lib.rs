@@ -2070,18 +2070,34 @@ mod tests {
         let image = drain_export();
 
         assert_eq!(sm_reset(0o755, 0, 0), 0);
+        const LOADS: usize = 40;
         let mut seen: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
-        for _ in 0..8 {
+        for _ in 0..LOADS {
             assert!(load_image_bytes(&image) > 0);
             let at = image_bytes().expect("loaded").as_ptr() as usize;
             if !seen.contains(&at) {
                 seen.push(at);
             }
         }
+        // The property is that the region count stays BOUNDED while the number
+        // of loads grows -- a leak gives one fresh region per load, so forty
+        // loads would show forty.
+        //
+        // It used to assert two regions across eight loads, reasoning that
+        // allocate-before-release ping-pongs. That is what the allocator
+        // happens to do, not what freeing MEANS, and it made the test
+        // intermittent: one run in four observed four regions and failed with
+        // nothing wrong. A bound that encodes the allocator's choice fails for
+        // reasons unrelated to its subject, which is worse than a loose bound
+        // -- an intermittent gate teaches everyone to re-run it.
+        //
+        // Eight is far from both sides: a freeing implementation settles in a
+        // handful, and a leaking one is at forty. More loads than before, so
+        // this catches a leak more decisively than the tighter bound did.
         assert!(
-            seen.len() <= 2,
-            "eight loads used {} distinct regions; a load that frees the image \
-             it replaces reuses them",
+            seen.len() <= 8,
+            "{LOADS} loads used {} distinct regions, which grows with the load \
+             count; a load that frees the image it replaces reuses them",
             seen.len(),
         );
 
