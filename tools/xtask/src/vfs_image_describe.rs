@@ -423,12 +423,12 @@ fn digest_file<S: sffs::BlockSource>(
 /// its own capacity and declares no `KLZY`, so a difference there is expected
 /// and interesting rather than a failure.
 fn roundtrip(path: &Path, out: Option<&Path>) -> Result<(), String> {
-    let original = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    println!(
-        "{}: {} bytes, loading into the kernel",
-        path.display(),
-        original.len()
-    );
+    // `load_container` already handles the `.vfs.zst` every production image
+    // but the rootfs ships as; reusing it rather than writing a second reader
+    // keeps one answer to "what is an image file".
+    let original = load_container(path)?;
+    println!("{}: {} bytes decoded", path.display(), original.len());
+    println!("  loading into the kernel");
 
     // The kernel reads its own image through a positioned byte source; here
     // that source is the file we just read.
