@@ -57,6 +57,69 @@
       "scope_end": "\n  }\n",
       "find": "    if (dir.index >= dir.names.length) return null;",
       "replace": "    return null;"
+    },
+    {
+      "name": "open ignores O_TRUNC, splicing into the old file's bytes",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "    if (!exists || truncate) this.writeFile(path, new Uint8Array(0), mode);",
+      "replace": "    if (!exists) this.writeFile(path, new Uint8Array(0), mode);"
+    },
+    {
+      "name": "open creates a missing file even without O_CREAT",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "      if (!create) throw error; // ENOENT, before a handle is issued.",
+      "replace": "      void create;"
+    },
+    {
+      "name": "a write past the end drops the gap",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    const end = Math.max(existing.byteLength, at + incoming.byteLength);",
+      "replace": "    const end = at + incoming.byteLength;"
+    },
+    {
+      "name": "a write ignores its position and always writes at the start",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    next.set(incoming, at);",
+      "replace": "    next.set(incoming, 0);"
+    },
+    {
+      "name": "a positionless write does not advance the cursor",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    if (position === null) open.offset = at + incoming.byteLength;",
+      "replace": "    if (position === null) open.offset = at;"
+    },
+    {
+      "name": "a write reports the whole buffer rather than what it took",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength));",
+      "replace": "    const incoming = buffer.subarray(0, buffer.byteLength);"
+    },
+    {
+      "name": "stat does not follow symlinks",
+      "scope": "  stat(path: string): SffsStat {",
+      "scope_end": "\n  }\n",
+      "find": "      if ((st.mode & 0o170000) !== 0o120000) return st;",
+      "replace": "      return st;"
+    },
+    {
+      "name": "a relative symlink is resolved against the root instead of its own directory",
+      "scope": "  stat(path: string): SffsStat {",
+      "scope_end": "\n  }\n",
+      "find": "      current = target.startsWith(\"/\")\n        ? target\n        : `${current.slice(0, current.lastIndexOf(\"/\") + 1)}${target}`;",
+      "replace": "      current = target.startsWith(\"/\") ? target : `/${target}`;"
+    },
+    {
+      "name": "a symlink cycle is followed forever",
+      "scope": "  stat(path: string): SffsStat {",
+      "scope_end": "\n  }\n",
+      "find": "    for (let hop = 0; hop < 40; hop += 1) {",
+      "replace": "    for (let hop = 0; hop < 4000000; hop += 1) {"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
