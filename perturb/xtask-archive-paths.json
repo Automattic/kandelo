@@ -1,0 +1,85 @@
+{
+  "_comment": "The archive path rules ported from staged-product-inputs.ts. Every trial here removes one refusal, and the test that dies is the attack that refusal exists for. This is path-traversal defence over untrusted input, so a survivor means a door left open rather than a metric left unmeasured.",
+  "file": "tools/xtask/src/archive_paths.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" archive_paths >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p xtask --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a traversing path is accepted",
+      "scope": "pub fn normalized_components",
+      "scope_end": "\n}\n",
+      "find": "        .any(|item| item.is_empty() || item == \".\" || item == \"..\")",
+      "replace": "        .any(|item| item.is_empty() || item == \".\")"
+    },
+    {
+      "name": "an absolute path is accepted",
+      "scope": "pub fn normalized_components",
+      "scope_end": "\n}\n",
+      "find": "        || normalized.starts_with('/')",
+      "replace": "        || false"
+    },
+    {
+      "name": "a backslash separator is accepted",
+      "scope": "pub fn normalized_components",
+      "scope_end": "\n}\n",
+      "find": "        || normalized.contains('\\\\')",
+      "replace": "        || false"
+    },
+    {
+      "name": "an embedded NUL is accepted",
+      "scope": "pub fn normalized_components",
+      "scope_end": "\n}\n",
+      "find": "        || normalized.contains('\\0')",
+      "replace": "        || false"
+    },
+    {
+      "name": "a directory entry's trailing slash is not dropped",
+      "scope": "pub fn normalized_components",
+      "scope_end": "\n}\n",
+      "find": "    let normalized = path.strip_suffix('/').unwrap_or(path);",
+      "replace": "    let normalized = path;"
+    },
+    {
+      "name": "a root with nothing beneath it is accepted",
+      "scope": "pub fn common_root",
+      "scope_end": "\n}\n",
+      "find": "        Some(root) if has_child => Ok(root),",
+      "replace": "        Some(root) => Ok(root),"
+    },
+    {
+      "name": "an archive with two top-level directories is accepted",
+      "scope": "pub fn common_root",
+      "scope_end": "\n}\n",
+      "find": "            Some(first) if *first != components[0] => {",
+      "replace": "            Some(first) if false && *first != components[0] => {"
+    },
+    {
+      "name": "stripping does not re-check the root it strips",
+      "scope": "pub fn strip_root",
+      "scope_end": "\n}\n",
+      "find": "    if components[0] != root {",
+      "replace": "    if false {"
+    },
+    {
+      "name": "a link inside an archive is planned rather than refused",
+      "scope": "pub fn plan_entries",
+      "scope_end": "\n}\n",
+      "find": "        if entry.is_link {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "an unexpected top-level directory is accepted",
+      "scope": "pub fn plan_entries",
+      "scope_end": "\n}\n",
+      "find": "        if expected != actual {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "an expected root is silently ignored when nothing computes one",
+      "scope": "pub fn plan_entries",
+      "scope_end": "\n}\n",
+      "find": "    if expected_root.is_some() && root.is_none() {",
+      "replace": "    if false {"
+    }
+  ]
+}
