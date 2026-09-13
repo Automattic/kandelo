@@ -3097,3 +3097,50 @@ publish) -- a different trade from the 1-for-1 section 50 rejected for
 `forkModuleHostImports` is 5 with zero slack and this file calls the import
 obligation the expensive kind. AWAITING THAT DECISION; nothing is built on
 either branch.
+
+## §59 — The host identity floor, and a bucket move the budget did not anticipate
+
+`host/src/fork-guest-host-floor.ts` implements the six entries
+`fork-guest-imports.ts` declares a host must supply. It is deliberately thin,
+because `crates/fork-module` already states the split it implements: "The host
+resolves every coordinate with its per-host identity floor (the funcref catalog,
+the externref broker's `WeakMap` provenance) BEFORE calling. The module never
+sees a live reference, only scalars."
+
+So every member answers one question -- which coordinate is this reference? --
+and delegates. `encode_funcref` resolves the function to `(activation, ordinal)`
+and then calls the MODULE's `fm_capture_intern` for the recipe, rather than
+computing a recipe itself; two encoders for one wire format is the drift that
+`dylink_archive`'s doc comment warns about. A function the loader never
+catalogued is refused with `-1` rather than given an invented coordinate, which
+would put a recipe in the graph that decodes to the WRONG function in the child.
+
+The two must-throw entries throw a message naming why they cannot be
+implemented in JavaScript -- a JS throw crosses back as a foreign exception with
+the wrong tag -- rather than returning quietly, which would let a replay
+continue past an exception it never delivered. Both perturbations (inventing a
+coordinate, returning quietly) fail their tests.
+
+**A budget dynamic worth naming.** Adding this file moved `fm_capture_intern`
+from `forkModuleEntriesWithoutProductionCaller` (27 -> 26) into
+`forkModuleHostDriveEntries` (24 -> 25). Nothing was added: the entry always
+existed and was always meant to be host-called, but sat in the no-caller bucket
+because the TypeScript that called it was in the attic. 27+24 = 51 before,
+26+25 = 51 after.
+
+This will repeat. Every entry the module exports for a host to call migrates the
+same way as the thin layer restores its caller, so `forkModuleHostDriveEntries`
+rises toward its TRUE value while the target-0 bucket falls toward 0. Neither
+number means alone what it meant when they were split. The pair's total is the
+honest measure while that settles, and if the maintainer agrees it is a better
+ratchet than either, it should replace this raise rather than sit beside it.
+
+**Where the merge gate stands.** `host/src` has 144 tsc errors against the
+parent's 25. 99 are in `worker-main.ts`, and they are not 99 problems: 20 are
+dangling imports of attic'd modules and 55 are the implicit-any cascade from
+those, so ~75 of them have 20 causes. Across the file, those 20 modules have
+about 150 call sites. The largest cluster --
+`buildForkActivationStateImports` (9), `buildForkExceptionImports` (4),
+`ForkHostImportWorkerRuntime` (5) -- is import BUILDING, which is exactly what
+`buildForkGuestImports` plus this floor replace. That is the shape of the
+remaining migration: not a rewrite, a reconnection.
