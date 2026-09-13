@@ -85,8 +85,12 @@ describe("one bounds-check rule", () => {
           + "say so.",
       );
     }
+    // The READ, not a mention: `include_str!(...)`. Asserting the filename
+    // appears somewhere is satisfied by a doc comment, so a Rust half that
+    // stopped reading the corpus but kept its header would have passed.
+    // `cargo xtask perturb` kept that mutant alive until this was fixed.
     expect(
-      source.includes("host-memory-ranges.json"),
+      source.includes(`include_str!("host-memory-ranges.json")`),
       "the Rust half no longer reads this corpus, so the bounds rule is checked in "
         + "one host while the corpus still calls itself shared. Say so here "
         + "and in the corpus header, or restore the read.",

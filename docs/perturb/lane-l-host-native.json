@@ -30,6 +30,20 @@
       "scope_end": "\n}\n",
       "find": "(scratch as i32, blob_scratch.capacity() as i32, blob_len as i32)",
       "replace": "(scratch as i32, blob_len as i32, blob_len as i32)"
+    },
+    {
+      "name": "L-D3 ratchet: a TWELFTH unproven write appears in the import layer",
+      "scope": "fn define_kernel_host_imports",
+      "scope_end": "\n}\n",
+      "find": "                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())\n                            };",
+      "replace": "                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())\n                            };\n                            unsafe { write_bytes(&mem, value_ptr as u32 as usize, &[0u8]) };"
+    },
+    {
+      "name": "L5 exemption count: a third base-address binding appears",
+      "scope": "fn handle_spawn",
+      "scope_end": "\n}\n",
+      "find": "    let scratch = blob_scratch.ptr() as u32 as usize;",
+      "replace": "    let scratch = blob_scratch.ptr() as u32 as usize;\n    let _smuggled = blob_scratch.ptr() as u32 as usize;"
     }
   ]
 }

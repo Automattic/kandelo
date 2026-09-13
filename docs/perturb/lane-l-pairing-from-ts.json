@@ -1,0 +1,13 @@
+{
+  "file": "crates/shared/tests/host_memory_range.rs",
+  "verify": "npx vitest run host/test/kernel-scratch-range.test.ts",
+  "trials": [
+    {
+      "name": "pairing: the first Rust read of the range corpus is removed",
+      "scope": "fn every_corpus_range_is_judged_the_way_the_rule_says",
+      "scope_end": "\n}\n",
+      "find": "include_str!(\"host-memory-ranges.json\")",
+      "replace": "include_str!(\"host-memory-ranges-GONE.json\")"
+    }
+  ]
+}

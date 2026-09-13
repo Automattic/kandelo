@@ -80,8 +80,14 @@ fn the_typescript_half_still_reads_this_corpus() {
             path.display(),
         )
     });
+    // The READ, not a mention. The first version of this asserted the
+    // filename appeared somewhere in the file -- which a doc comment
+    // satisfies, so a half that stopped reading the corpus but kept its
+    // header would have passed. `cargo xtask perturb` found that by keeping
+    // a mutant alive.
+    let read = concat!("../../crates/shared/tests/", "host-memory-ranges.json");
     assert!(
-        source.contains("host-memory-ranges.json"),
+        source.contains(read),
         "{} no longer reads this corpus, so 'one corpus, both hosts' is false \
          while everything is green. Say so here and in the corpus header, or \
          restore the read.",
