@@ -579,6 +579,34 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_declaration_survives_the_round_trip_as_pending() {
+        // The producer writes PENDING and the module completes it at export,
+        // so the state has to cross the encoding between those two moments. If
+        // it decoded as anything else, the export that was supposed to finish
+        // the seal would have nothing left to finish.
+        let declared = ArchivePayload {
+            descriptor: b"{\"url\":\"https://x/tools.zip\"}".to_vec(),
+            seal: SealState::Pending { id: b"shell".to_vec(), member: b"tools".to_vec() },
+        };
+        let bytes = encode(&declared).expect("encode");
+        assert_eq!(decode(&bytes).expect("decode"), declared);
+    }
+
+    #[test]
+    fn a_seal_that_was_wanted_and_never_written_is_refused() {
+        // The whole reason PENDING is a state. An image reaching a consumer
+        // with a pending payload is one the producer FAILED to seal, and it
+        // must not be accepted -- least of all accepted the way an archive
+        // that was never meant to be in a cohort is accepted.
+        let pending = encode(&ArchivePayload {
+            descriptor: b"{\"url\":\"https://x/tools.zip\"}".to_vec(),
+            seal: SealState::Pending { id: b"shell".to_vec(), member: b"tools".to_vec() },
+        })
+        .expect("encode");
+        assert_eq!(verify_cohorts(&[(1, pending)]), Err(Errno::EPERM));
+    }
+
+    #[test]
     fn an_unsealed_archive_is_carried_rather_than_refused() {
         // Whether a seal is REQUIRED is policy, and not this module's to
         // decide. An image whose archives carry none is a real state — every
