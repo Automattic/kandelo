@@ -1158,6 +1158,26 @@ asked of `wasm_posix_shared`, because it does not declare them — only the host
 and the guest glue touch the status word — so the header is the single source
 and a test reads it now.
 
+**Every other comment in that file claiming a check was then surveyed**, since
+one of them had just turned out to be describing an intention. Eleven assert a
+pin, a guarantee, an enforcement or a verification. Most are accurate — the
+handle-liveness and scratch-ownership ones name a TYPE doing the work, which
+is the strongest form and needs no test. Two are worth recording:
+
+* **`proc_bytes_tests` says its cases "mirror the JS host's contract tests
+  (`host/test/kernel-public-scratch.test.ts`) so both hosts are pinned to the
+  same failure modes".** That file exists, so the citation has not rotted —
+  but mirroring is the hand-maintained arrangement this lane replaced. All
+  four modes it names (out-of-range guest range, out-of-range kernel range, a
+  null address with a positive length, the exact end-of-memory boundary) are
+  in `host-memory-ranges.json`, which both hosts read and neither can stop
+  reading without failing. The comment understates what now holds it.
+* One comment in the fork-replay driver asserts an exhaustiveness property
+  ("checked after every `fm_*` call in this sequence") and appears to sit
+  above a constant rather than the sequence it describes. **That is not this
+  lane's code** — it is fork capture/replay, not host↔kernel plumbing — so it
+  is named and left rather than chased.
+
 The remaining literals in that file are not transcriptions:
 fork-coordination phases are host-side protocol, and
 `KERNEL_MEMORY_MIN_PAGES` is this host's own sizing choice. Seven
