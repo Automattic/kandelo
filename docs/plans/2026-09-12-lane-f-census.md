@@ -3376,3 +3376,41 @@ ceiling on purpose: it is not mine to set.** Some of it should shrink -- 1165
 lines of externref mailbox is large for "floor" -- but inventing a number is
 exactly what the maintainer warned about, and the ratchet already works without
 one.
+
+## §65 — Where the audit stops, and why
+
+`fork-resume-catalog` is the tenth and last clean restore: 134 lines that read
+the host-known resume-catalog custom section, which `fm_set_resume_catalog`
+requires the host to locate. It needed only the `ForkResumeTarget` TYPE from the
+738-line replay journal, so two fields are declared locally -- the same call as
+`vfork-workspace`.
+
+tsc errors: 117 -> 113. Host suite: 3366 passing.
+
+**The audit stops here, and `fork-gc-codec` is why.** At 905 lines with no
+dependencies it looks like the next clean restore. It is not: it contains
+`decodeForkGcCodecDescriptor`, a full decoder of a wire format
+`fork_codec::gc_codec` already owns. And the module does not want a decoded
+descriptor -- `fm_set_activation_gc_codec(activation, ptr, byte_len)` takes a
+POINTER AND LENGTH. The host's only job is to LOCATE the section.
+
+So `fork-gc-codec` needs porting DOWN to its locator, not restoring. Restoring it
+whole would put a second decoder of the same format back in the host, which is
+the drift this lane has refused twice now (`fork-module-state`, and here).
+
+**What remains dangling is the real cluster**, all of it in `worker-main.ts`:
+`fork-activation-registry`, `fork-anyref-transit`, `fork-early-reference-provider`,
+`fork-exception-provider`, `fork-gc-codec`, `fork-imported-globals`,
+`fork-module-backend`, `fork-module-state`, `fork-process-continuation`,
+`fork-reference-capture-module`, `fork-reference-segments`,
+`fork-table-snapshot`, plus `fork-externref-process-owner` from three kernel-side
+files. These are capture/replay orchestration the module replaced, and they do
+not come back -- they get reconnected through the thin layer or ported down to
+the locators the module's seeding entries actually need.
+
+**How to tell a reclassification from growth**, because `forkRestoredHostFloor`
+moved twice today (3777, then 3894) and a ceiling that moves is exactly what the
+ratchet exists to stop: a reclassification is a `git mv` with no content change.
+Both were. A rise in this surface from AUTHORED lines would be the abuse, and it
+is visible in the diff as insertions without a corresponding deletion from
+`attic/`.
