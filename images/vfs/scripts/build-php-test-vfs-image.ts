@@ -25,7 +25,7 @@ import { createHash, type Hash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -195,7 +195,7 @@ function collectPhptSupportDirs(sourceRoot: string, phptDirs: string[]): string[
 }
 
 function copySupportFiles(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   sourceRoot: string,
   dir: string,
 ): number {
@@ -324,11 +324,11 @@ export async function buildPhpTestVfsImage(
     preparePhpTestFixtures(phpSrc, inputs.fixtureDirectory);
 
     console.log("==> Building PHP PHPT test VFS image");
-    let fs = MemoryFileSystem.fromImage(
-      inputs.baseImage,
-      { maxByteLength: maximumBytes },
-    );
-    await fs.verifyImportedLazyAtomicGroupSeals();
+    // The load AUTHENTICATES: verification runs inside the module's
+    // `sm_load_image`, so the base gains its authority only after its
+    // activation cohorts checked out.
+    const fs = SffsImageFs.create();
+    fs.loadImage(inputs.baseImage);
     if (inputs.targetAbi !== undefined) {
       const metadata = fs.getImageMetadata();
       if (
@@ -338,10 +338,13 @@ export async function buildPhpTestVfsImage(
         throw new Error("PHP test base product ABI differs from its target");
       }
     }
-    const baseStats = fs.statfs("/");
-    const baseMaxBytes = baseStats.blocks * baseStats.bsize;
-    if (baseMaxBytes < maximumBytes) {
-      fs = fs.rebaseToNewFileSystem(maximumBytes);
+    // A capacity REQUEST the export reads, not a rebuild of the tree. The old
+    // path copied everything into a freshly sized filesystem because a
+    // `SharedArrayBuffer` cannot be asked to mean something different after the
+    // fact; the module sizes the image when it EXPORTS, so raising the ceiling
+    // costs nothing until the contents need it.
+    if (fs.exportCapacityBytes() < maximumBytes) {
+      fs.setImageCapacity(maximumBytes);
     }
     ensureDirRecursive(fs, "/usr/local/bin");
     ensureDirRecursive(fs, "/usr/local/sbin");

@@ -10,24 +10,30 @@
   //
   // NOT YET WIRED AS A BLOCKING GATE. Its first run found four type errors
   // under `images/`: one introduced by this lane and fixed, and three that
-  // predate it —
+  // predate it. TWO REMAIN, both in one file —
   //
-  //   images/vfs/scripts/build-source-rootfs-shell-image.ts:389
-  //     a StatResult passed where `{ ino, generation? }` is expected
-  //   images/vfs/scripts/staged-product-inputs.ts:1402
+  //   images/vfs/scripts/staged-product-inputs.ts
   //     `keyof typeof STAGING_FLAGS` is a Map's METHOD names, not its keys
-  //   images/vfs/scripts/staged-product-inputs.ts:1570
+  //   images/vfs/scripts/staged-product-inputs.ts
   //     `kind` stays `unknown`; the ternary chain narrows it for a reader but
   //     not for the compiler
   //
-  // Each is a real defect in a production build script, and fixing them means
-  // behaviour judgement in code this lane did not otherwise touch — a scope
-  // question for the maintainer, not a coding one. A gate with a baseline of
-  // three cannot detect the fourth, which is why this is recorded as unwired
-  // rather than wired with an allowance.
+  // The third is FIXED, 2026-09-13, as a side effect of moving
+  // build-source-rootfs-shell-image.ts onto the Rust filesystem: it passed a
+  // StatResult where `{ ino, generation? }` was expected, and the identity
+  // comparison there now takes the module's 64-bit inode numbers instead of
+  // silently comparing a bigint to a number.
+  //
+  // Each remaining one is a real defect in a production build script, and
+  // fixing them means behaviour judgement in code this lane did not otherwise
+  // touch — a scope question for the maintainer, not a coding one. A gate with
+  // a baseline of two cannot detect the third, which is why this is recorded as
+  // unwired rather than wired with an allowance.
   //
   // It is useful as it stands: run it and require that the errors under
-  // `images/` are exactly those three.
+  // `images/` are exactly those two. Line numbers are deliberately not quoted
+  // any more — they moved once already and a stale number reads as a different
+  // defect.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
