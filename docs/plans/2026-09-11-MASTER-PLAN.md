@@ -3659,6 +3659,41 @@ V4 killable — `perturb/deferred-until-v4.json` is retired and its trials are i
 `sffs-module-abi.json`, which is the green contract its handoff named as the
 definition of done.
 
+### The seal check is ten methods, and nine of them exist because the digest was async
+
+**Measured 2026-09-12, after the maintainer assigned the port to this lane, and
+it corrects an estimate I gave before reading it.** I said there was "no big
+downside". There is a real one: `verifyImportedLazyAtomicGroupSeals` is not a
+function but a subsystem — **ten methods and 159 references** in `memory-fs.ts`,
+covering atomic activation groups, cohort digests, per-group in-flight
+deduplication, a pending/verified state machine, and linearization assertions
+that re-check the proof after awaiting it.
+
+**But the code says why it is that shape, and the reason does not survive the
+port.** From `memory-fs.ts` at the entry point itself:
+
+> *"synchronous export and rebase cannot invoke browser SubtleCrypto. Keep their
+> fail-closed guard while giving image consumers a cheap, explicit trust
+> boundary that does not serialize the whole VFS."*
+
+Every asynchronous element — the flight dedup, the settled-flight clearing, the
+re-assertion after the await, the whole "await this before synchronous metadata
+inspection or filesystem rebasing" contract, and the public
+`verifyImportedLazyAtomicGroupSeals` entry point itself — exists because the
+digest is `SubtleCrypto` and `SubtleCrypto` is a promise. **In the module,
+sha256 is a synchronous Rust call**, so the import can authenticate as it
+imports and there is nothing left to await, dedup, or re-assert.
+
+So the port is not ten methods. It is one verification performed eagerly, plus a
+`no_std` sha2 in a module that currently has none. The module is zero-import, so
+the digest cannot be a host call — which is the constraint that forces the
+simplification rather than merely permitting it.
+
+**Sequencing: after the nine repoints.** Those are unblocked and bankable now;
+this is the item where a subtle error is a silent security regression rather
+than a visible failure, and it should not ride in on a commit about import
+paths.
+
 ### The remaining twenty, measured: nine are ready and six need five methods
 
 **Census 2026-09-12, on the lane branch after image loading landed.** The
