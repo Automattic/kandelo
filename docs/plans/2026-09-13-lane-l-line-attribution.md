@@ -1,7 +1,26 @@
-# Lane L — every line attributed, and why that still does not give a target
+# Lane L — the attribution, and what auditing the checkers turned up
 
-**Date: 2026-09-13. Status: complete. This is the measurement the L1 census
-said it had not made.**
+**Date: 2026-09-13. Status: complete.** It began as the line measurement the
+L1 census said it had not made, and that is the first half. The second half is
+what a night of held builds produced instead: an audit of the
+things that CHECK this lane, rather than the things they check.
+
+**If you read one section, read one of these:**
+
+- **A hole in the ratchet itself** — four measures in the surface budget
+  reported a better number when their input disappears. `lineCount` was fixed
+  here on the maintainer's decision; the other three are campaign-wide and sit
+  on other lanes' surfaces. Latent, not live, in every case.
+- **Green is not evidence** — three findings that are one fault: a guard whose
+  removal cannot be detected, corpora every wrong rule satisfies, a check that
+  validated the wrong tree. None of them fails anything.
+- **The citations have measurably rotted** — the lane's transcription argument,
+  with a number under it.
+- **Six figures, re-measured** — four of them this lane's own, one introduced
+  by this document while recording the others.
+
+The rest is the attribution, the L2 decline and its guard, the two candidate
+standing hazards, and what none of it establishes.
 
 The L1 census (`docs/plans/2026-09-11-lane-l1-census.md`) replaced lane L's
 guessed 1,500-line target with a derived 3,600 and said so in bold: *"Target
@@ -162,6 +181,22 @@ table is guarded; generating it is declined" rather than "blocked on a
 decision" — those are different states and only one of them is waiting on
 anybody.**
 
+**The guard L2's decline rests on was examined, 2026-09-13, and it holds.**
+Declining L2 because "the table is guarded" is only as good as the guard, and
+this document had not looked. `host/test/kernel-scratch-contract.test.ts`
+exercises `assertKernelScratchPointerRoleContract` in both directions: a
+positive loop over every name in `KERNEL_SCRATCH_EXPORT_NAMES`, and a negative
+case that reorders `kernel_send`'s parameters into a WRONG order with an
+identical Wasm signature — the drift a type checker cannot see — and asserts
+the contract throws. It first asserts the original text is present, so the
+mutation cannot silently no-op against a stale needle, which is the failure
+that produced "found 4" in this lane's own scratch contract test and the one
+behind ten of thirteen rotted citations elsewhere in this document.
+
+The negative direction is tested for one export rather than all 55. The
+mechanism is shared across exports and the positive loop covers every name, so
+this is noted rather than filed as a gap.
+
 ## What L4 could and could not be
 
 `crates/host-native`'s `checked_shared_range` and `kernel-scratch.ts`'s
@@ -235,6 +270,19 @@ invariant the finalizer's staging comment protects. **The cost quoted when the
 decision was put to the maintainer — trading away that atomicity — was wrong in
 the safe direction: the option is cheaper than it was described.**
 
+**Verified end to end on 2026-09-13, once the disk hold lifted.** The test
+named for this fix passed: `./run.sh local-build` ran, `coreutils-docs/wasm32`
+SUCCEEDED, `rootfs/wasm32` SUCCEEDED, and `product/platform-rootfs` was
+CACHED. The package that could not escape the cycle builds again, so this is
+now an observation rather than a claim about code.
+
+**The run as a whole still failed, and saying only the first half would be the
+narrow-check-for-broad-claim error.** `php`, `vim` and `wget` each fail on a
+missing C dependency, at three different stages; thirteen nodes went unbuilt
+behind them and products finished at 1/7. They are a provisioning gap, recorded
+under the setup section below, not a deadlock — and no attempt was made here to
+trace each blocked node to which of the three stopped it.
+
 **Candidate standing hazard, for the maintainer to promote or discard:** *a
 loud-staleness check placed at load time can deadlock the build that would
 clear it.* The check has to be reachable by something that runs after the
@@ -270,11 +318,130 @@ Recorded because the instruction is given to every lane agent, and the failure
 surfaces four hours into a provisioning build, in a package with no obvious
 connection to the setting.
 
-## Two inherited figures, re-measured
+**The same instruction names a variable that cannot reach a build.** Lanes are
+told to set `KANDELO_SOURCE_CACHE_ROOT`, `WASM_POSIX_CACHE_DIR` and
+`KANDELO_CASE_IMAGE_DIR` before building. The first and third are on
+`scripts/dev-shell.sh`'s `--keep` list; **`WASM_POSIX_CACHE_DIR` is not**, and
+dev-shell runs `nix develop --ignore-environment`, so it is stripped before any
+cargo or xtask step sees it. Its only consumer in the tree is
+`scripts/test-allow-stale.sh:82`, a script nothing in the tree invokes.
 
-Both come from the L1 census and both were repeated in this lane's commit
-messages before being checked. Neither changes a conclusion; both are recorded
-because a number nobody re-derives is how this lane's target went wrong.
+The variable that actually keys a lane's binary cache is
+`WASM_POSIX_BINARY_CACHE_ROOT`: it is on the keep list, callers set it
+(`scripts/activate-ci-test-workspace.sh:34`, and an xtask test sets it through
+`.env()`), and xtask describes it as "the exact cache root selected for this
+resolution". In this lane it is `/Users/brandon/kandelo-lane-l-cache/binaries`,
+the directory holding the resolved `libs/` and `programs/` trees.
+
+**What that instruction may already have cost, observed 2026-09-13.** Another
+agent's session scratchpad on this machine holds **five identical copies of the
+same 608 MB source archive** — same SHA-256, under five different cache roots
+it evidently tried in turn: `cache-b6`, `kandelo/source-cache`,
+`src-cache/kandelo`, `srccache`, and `lane-d2/kandelo/src-cache`. That session
+directory is 43 GB, nothing has been written in it for over two hours, and
+three waiter loops are still polling for completion markers that will never
+appear.
+
+**Stated as observation, not proof.** Nothing was read from that session beyond
+file sizes and paths, no cause was established, and an agent can guess at cache
+roots for reasons unrelated to the instruction. But an agent paying 608 MB per
+guess at where its cache should live is what "the setup step names variables
+that do not do what they say" looks like from outside, and 43 GB is roughly the
+margin this lane has spent a night unable to reach.
+
+Setting the inert variable costs nothing by itself. What it costs is the
+belief that the caches were separated, when the separation rests on the two
+variables that are kept — and a lane that set only the named three would
+resolve against the shared default. Bounded claim: this is what the tree says.
+A consumer outside the repository could still read `WASM_POSIX_CACHE_DIR`.
+
+## Three packages cannot build here, each on a missing C dependency
+
+Recorded because they are what `./run.sh local-build` fails on in a lane
+worktree today, and a lane that reads "Local build failed" without this list
+will go looking in its own changeset.
+
+| Package | Stage it fails at | What is missing |
+|---|---|---|
+| `wget` | compile | `openssl/ssl.h` not found (`openssl.c:40`) |
+| `vim` | link | `wasm-ld: unable to find library -lncursesw`, `-ltinfow` |
+| `php` | configure | `icu-uc >= 50.1 icu-io icu-i18n` not met |
+
+Thirteen nodes went unbuilt behind them and products finished at **1/7**. These
+are unrelated to lane L's surface and were not investigated further: whether
+each is a missing dependency declaration, an unbuilt dep, or a resolver miss
+is a question for whoever owns those recipes. What this lane can say is the
+exact stage and the exact message, which is more than "the build failed".
+
+## Which deletions actually reclaim space, on a clonefile-seeded machine
+
+Two measurements this lane made, hours apart, disagree by two orders of
+magnitude and the difference is not noise:
+
+- A 99 GB `target` directory was deleted earlier in the campaign and the
+  volume gained **1.5 GB**.
+- This lane's own 4.06 GB `target` was deleted at 08:30 and the volume gained
+  **3.95 GB** — 97% of its apparent size.
+
+The rule underneath: **these worktrees are seeded with APFS clonefile
+(`cp -c -R`), so content that came WITH the seed is shared and deleting a copy
+frees almost nothing, while content BUILT after seeding is unique and deletes
+for its full size.** `du` cannot tell the two apart — it reports apparent size
+for both — so a size listing is not a reclaim estimate.
+
+Practical consequence on a machine carrying fifteen `kandelo*` trees: deleting
+a lane's post-seed build output (`target/`, a lane-local package cache) is
+worth roughly what it measures; deleting a seeded checkout is worth nearly
+nothing until the last clone of that content goes. The 43 GB of duplicated
+source archives found in a stalled session's scratchpad is the first kind —
+five separate 608 MB downloads, not five references to one.
+
+## Nine figures, re-measured — and where they came from
+
+The first two come from the L1 census and were repeated in this lane's commit
+messages before being checked; the last four are this lane's own, and the
+sixth was introduced by this document while it was recording the other five.
+None changes a conclusion. All are recorded because a number nobody re-derives
+is how this lane's target went wrong, and four of the six show the lane doing
+it too. **The seventh, and the pattern the seven share.** Deleting this lane's
+`target` was justified in writing by "the binary cache is intact, so package
+resolution is still warm" — that cache is 17 MB. The bulk is elsewhere (24 GB
+under source-only). The conclusion happened to be right and the stated reason
+pointed at the wrong directory, which would mislead anyone using it to judge
+what else is safe to delete. It went into a script written to prevent exactly
+this.
+
+Looking at all seven: not one was a figure the author was uncertain about.
+Every one was stated in passing, as support for something else that held the
+attention — a count quoted while arguing a conclusion, a cache named while
+justifying a deletion, a measurement point mixed in while cataloguing other
+people's measurement errors. **The unverified claim is not the hard one; it is
+the incidental one.** That is worth more than any individual correction here,
+because it says where to look: not at the numbers a document is about, but at
+the ones it uses to get somewhere else.
+
+**Eight and nine, both scaffolding for the ratchet finding.** "Five measures
+run shell pipelines with stderr suppressed" counted LINES containing
+`2>/dev/null`, not measures — one measure suppresses twice, so it is four
+measures across five sites (three and four after `lineCount` was fixed). And
+"all thirteen counted paths exist" is fourteen; the earlier count folded a
+`.json` reference into a total of source paths. Both had reached this
+document, the master plan, a commit message and an escalation to the
+maintainer before a claim-checker extended to read a third commit draft forced
+the comparison.
+
+**A tenth error of a different kind, and the maintainer caught it.** This
+document repeatedly said the night's work was done "with no compiler" and that
+four items "need a compiler". No compiler was ever missing: cargo works, and
+other lanes built Rust throughout. What was withheld was PERMISSION — a
+standing instruction not to build until the volume had 50 GB of margin.
+Writing it as an absent tool implied a broken toolchain rather than a hold
+being respected, and it spread to both commit drafts and the window script
+before anyone read it closely. The lesson is the same as the nine figures: it
+was never the sentence under examination.
+
+**Two sit in landed commit messages**, which are immutable: the
+correction lives here rather than in a rewritten history.
 
 - **"`host-native` cites `host/src/*.ts` in 47 comments."** Measured at the
   campaign base: **43 doc-comment blocks, 62 comment blocks in total, across 66
@@ -284,6 +451,695 @@ because a number nobody re-derives is how this lane's target went wrong.
   were still calling the allocator directly. **All eleven** now go through the
   type, and a contract test enforces it — see the commit "Nothing reaches the
   scratch allocator except through its capacity".
+- **"64 `host-native` tests."** Reported as this lane's evidence; the tree
+  holds **69** `#[test]` functions (49 in
+  `crates/host-native/src/lib.rs`, 19 in `crates/host-native/src/guest.rs`,
+  1 integration) — not to be read as the 35-file/69-test host-suite baseline
+  quoted elsewhere in the plan, which counts a different suite and collides
+  with this figure by coincidence. 64 was true when measured and later commits added tests
+  after that run, which is the same failure the two figures above record. The
+  module wire count (15) and shared corpus count (5) both reproduce exactly.
+  **A count of test functions is not a pass count**, and no suite has run
+  since the disk outage, so the host-native suite is to be re-run in full
+  rather than treated as already green.
+- **"That removes 207 lines from `host/src/process-memory.ts`."** From
+  `5c90e6a`, the commit that landed the TypeScript half. The commit deletes
+  **205** lines from that file and adds 41, for a net **164** — which is the
+  figure the surface budget banked and the one the lane's headline uses. 207
+  is neither the deletion count nor the net.
+- **"Six existing tests place a layout from a heap base with no program at
+  all."** From the same message, as the reason `heapBase` had to stay the
+  caller's to supply. **Five** tests in `host/test/process-memory.test.ts` do
+  this. The claim named no file, and I did not establish whether a sixth lives
+  elsewhere: seven other test files mention `heapBase`, mostly through helpers
+  rather than by placing a layout. The argument the figure supports is
+  unaffected — the authority would have moved under those tests either way.
+- **"62 comments cite `host/src/*.ts`", set beside "thirteen carry a line
+  number".** Written into the citation section below during this audit. The 62
+  is a campaign-base measurement and the thirteen is a lane-tip one, so the
+  pair reads as a single consistent count and is not. At the tip the figures
+  are **59 and thirteen**. The conclusion is unchanged — ten of the thirteen
+  anchors are dead either way — but the arithmetic a reader would do from the
+  pair (62 - 13 = 49 unanchored) was wrong by three, and mixing measurement
+  points is the exact error the first two entries in this list record.
+
+## What an audit without running anything found, 2026-09-13
+
+Every corpus case re-derived from the documented rule rather than from the
+function under test, while builds were held pending disk. Nothing
+below changes a landed conclusion. **It was written without running anything,
+and has since been run**: when the hold lifted, every claim in this section
+went through cargo and vitest, and each commit carries the result. The findings
+stand on the reading. The run is what made them observations — and it is what
+caught the oracle defect, described at the end of this document, that reading
+had not.
+
+### Both corpora were correct, and neither could fail
+
+Four plausible wrong rules passed every case in the two files. Each is now
+answered by one case, and each case fails under exactly the rule it was
+written for and passes under the others; every pre-existing case is unchanged.
+
+- **The layout corpus could not see `DEFAULT_INITIAL_PAGES`.** The rule floors
+  `min_pages` at 17 pages, but every case sat at 2 MiB or above, so the floor
+  never bound — and a derivation that omits that constant entirely reproduced
+  all seven cases exactly. Added a heap base of 65536 (page 1, below the
+  floor), which answers 17/18/20 under the real rule and 1/2/4 under the rule
+  that ignores it. With the floor removed the new case fails and the other
+  seven still pass, which is what "the corpus was blind here" means concretely.
+- **Nothing pinned the layout's accept/reject boundary.** The late refusal is
+  `initial_pages > maximum_pages`, and no case had the two equal, so `>=`
+  passed the whole corpus while rejecting every address space that exactly
+  fits. Added the smallest layout the rule can place — the 17-page floor puts
+  control memory at pages 17..19, so a ceiling of 20 fits exactly — paired
+  with a refusal at 19, fixing the boundary at 20 rather than near it.
+  Writing that case surfaced a question, which then had an answer: at the
+  boundary `brk_base == max_addr`, so the smallest layout `compute_layout`
+  ACCEPTS is one with no allocatable heap at all. Traced rather than left
+  open — `MemoryLayout::set_brk` returns the break unchanged for any growth
+  past `max_addr` (`crates/runtime-core/src/memory.rs`), which libc reads as
+  failure, and `mmap` refuses any region ending past it at the same ceiling.
+  So the process fails its first allocation and says so, which is the
+  platform-values contract's truthful failure rather than a crash or a
+  silently wrong address space. Placement and viability are different jobs
+  and the rule only claims the first. **The judgment left for the maintainer
+  is narrow**: whether placement should refuse earlier than the first
+  allocation does. If it should, this boundary moves and the case moves with
+  it.
+- **Nothing fixed the order of the range corpus's null and bounds checks.** No
+  case had an address that was both null and past the limit, so a host
+  checking bounds first passed the whole file. The order is the point: `0` is
+  what a kernel allocator returns when it gave nothing, and reporting the
+  memory's extent for a failed allocation diagnoses the wrong fact. Added addr
+  0, len 1000000 against a one-page memory, which is both.
+- **Nothing stopped `allowAddressZero` from waiving the bounds check.** The
+  flag says the caller means offset zero, not that the range fits, but every
+  case with the flag set was in bounds — so a rule returning ok for any zero
+  address once the flag is set passed the file. Added the flag set with a
+  range past the end.
+
+### Every case earns its place, and a weak mutation set said otherwise
+
+Having added four cases, the obvious question is whether the OLD ones still
+pay for themselves. Tested by mutation: write the plausible wrong rules and
+ask which cases reject each.
+
+A first set of seven mutations left three range cases catching nothing, which
+read as "these are regression baseline, not guards". That conclusion was wrong,
+and the error is worth recording because it is the same one this lane keeps
+finding in itself: **a case looks redundant exactly when the mutation set is
+too weak to need it.** Three more mutations — no null check at all, the limit
+misread as pages rather than bytes, an address read as a signed `i32` — claimed
+two of the three. The last, "the largest wasm32 address with a positive length
+is refused", needed a tenth: 32-bit end arithmetic, where `0xffffffff + 1`
+wraps to 0 and a range that leaves every real memory reads as a legal empty
+one. That is precisely the rule that case exists to exclude.
+
+**All twelve range cases discriminate at least one wrong rule**, and four do so
+alone: the failed-allocation case (bounds checked before null), the
+allow-zero-with-bad-bounds case (the flag waiving the check), the zero-length
+null case (a null check that ignores length), and the u64 case (silent overflow
+wrap).
+
+The layout corpus got the same treatment: thirteen mutations against nine
+cases and five refusals. Every case rejects three to five of them, and five
+mutations are caught by exactly one entry each — the `>=` boundary by the
+exact-fit case, aligning down by the unaligned heap base, the two minimums by
+their own cases, and early-path truncation by the 2^63 heap base.
+
+**One entry no mutation catches, and the reason is a property worth naming.**
+"Control memory alone past the ceiling" exercises the EARLY refusal, the one
+taken before the page arithmetic when `first_free_byte > max_addr`. Deleting
+that branch entirely changes no answer in the file: the late refusal catches
+the same request and reports the same message, because the early one was
+deliberately written to report "the SAME number the full path below would
+report". **So the corpus cannot observe whether that branch exists.** It is
+not a guard that cannot fail (hazard H-2); it is a guard whose REMOVAL cannot
+be detected, which is the same hazard read backwards. It is defensive rather
+than load-bearing — with `first_free_byte` bounded by `u64::MAX`, the page
+count it guards against reaches at most 2^48, so the late path would not
+overflow either. That is worth knowing before someone deletes it as dead code
+and every test still passes.
+
+The layout corpus's one unexplained refusal was explained the same way rather
+than with filler. `maximumPages: 2` pins the `<=` in
+`maximum_pages <= CHANNEL_PAGES`: were it `<`, that ceiling would fall through
+to the later refusal and report "initial pages 259 exceed process maximum 2" —
+true, and naming the wrong problem. All five refusals now say what they hold.
+
+### "One file, both hosts" was true in name more than in fact
+
+**The TypeScript half checked three of seven layout cases and skipped the rest
+silently.** Its filter took only cases naming neither a heap base nor an
+imported minimum, so both cases added above would have been Rust-only, as
+would the two heap-base placement cases that pin the divergence this lane
+closed. The filter's stated reason was wrong: `heapBase` is an option
+`computeProcessMemoryLayout` takes and honours — that is how a caller places a
+layout for a program it has not read — and only an imported memory's minimum
+needs a real binary, which the Rust side confirms by reading that one fact
+from the artifact bytes rather than from the wire. The filter now keys off a
+`programBytesOnly` marking the corpus declares (one case), checks each
+declared skip is declared for the reason true of it, and asserts
+declared-plus-checked accounts for every case. **Eight of nine cases are now
+checked in both hosts.** The range corpus already worked this way, with an
+explicit `rustOnly` marking; its floor was raised to track its size.
+
+**The refusals are still checked in one host only.** The TypeScript half
+writes two of them out by hand rather than reading the corpus, so the two
+saturating refusals and the new exact-fit boundary are Rust-only — and the two
+it does restate are the same knowledge written twice, which is the thing this
+lane exists to stop.
+
+### The held branch left nothing behind
+
+The TypeScript half sat on `brandonpayton/lane-l-typescript-layout-held` while
+landing it wedged `./run.sh local-build`, and was cherry-picked once the
+maintainer took the xtask ordering fix. "It landed" was being asserted from the
+weaker evidence that `host/src/process-memory.ts` calls the shared function.
+
+Checked properly: **all eight files that branch held are byte-identical to the
+lane branch.** `crates/wasm-artifact/src/facts.rs`, the three
+`wasm-artifact-module` files, `host/src/process-memory.ts`,
+`host/src/wasm-artifact-driver.ts`, `host/src/index.ts` and
+`host/test/process-memory-layout.test.ts` all diff empty. The only differences
+between the two branches are commits that landed afterwards. The held branch is
+fully subsumed and can be deleted whenever the maintainer wants; it is left in
+place because it costs nothing and is the provenance of the cherry-pick.
+
+### Why the `__heap_base` divergence went unnoticed
+
+The corpus asserts that `crates/host-native` answered 256/257/259 for a
+program whose heap base is 2 MiB. Checked against `cc2bfe7^`: it did.
+`first_free_byte` was `FALLBACK_BRK_BASE.max(min_pages * WASM_PAGE_SIZE)`,
+the 16 MiB fallback unconditionally, and the string `__heap_base` appears
+**zero** times in that file.
+
+What sat above that constant is the interesting part:
+
+> When a guest exports no `__heap_base`, the control/channel region is placed
+> at this fixed byte offset, matching `PROCESS_MEMORY_FALLBACK_BRK_BASE`.
+
+The comment describes a host that consults `__heap_base` and falls back only
+when there is none. No such code existed. It is an accurate description of the
+TypeScript host, transcribed onto a Rust constant that implemented half of it
+— so a reader checking this host against that comment would find them
+agreeing, and a reader checking the two hosts against each other would have to
+read both implementations to see the gap.
+
+**That is the lane's thesis with a mechanism attached.** "Two transcribed
+copies drift" understates it: the comment did not drift from the code, it was
+never true of this code, and being false is what kept it quiet. A program
+linked with a heap base above 16 MiB had its own static data underneath the
+syscall channel for as long as that comment stood.
+
+### The citations themselves have measurably rotted: ten of thirteen
+
+The lane argues that `host-native` was written by reading `host/src/*.ts` and
+that two transcribed copies drift. The citations are line-anchored, so the
+drift is measurable rather than rhetorical. At the lane tip, **59 comment
+blocks cite a `host/src` file and thirteen of them carry a line number** —
+those thirteen are the testable ones; the other 46 name a file or a symbol,
+with no anchor to rot. (Both figures are measured at the tip. The 62 in the
+errata above is the same count at the campaign base, before this lane's
+deletions; mixing the two would be the error this document exists to catch.)
+Every one of the thirteen was followed.
+
+**Ten do not resolve.**
+
+| Citation | What it claims | What is there |
+|---|---|---|
+| `fork-reference-transaction.ts:196-201`, `:301-331`, `:536-537` | a capture/retention contract | the file was deleted by `ace9756b1` |
+| `kernel-worker.ts:23747-23829` | `readExecPathFromProcess` | that function is at 22285 |
+| `fork-module-instance.ts:372-399` | `readForkModuleMemInfo` | that identifier is nowhere under `host/src/` |
+| `worker-main.ts:4545-4557` | `__wpk_fork_frame_reserve` import wiring | that identifier is at 4662 |
+| `worker-main.ts:4593-4607` | the guest import-flip block | `continuationMmap` for reference scratch |
+| `worker-main.ts:4714` (with `:5036`) | a bootstrap export called before `_start` | a funcref-graph comment; `_start` is at 5236 |
+| `fork-module-backend.ts:131-154` | `ForkModuleContinuationBackend::setup()` | `setup(): void` is at 209 |
+| `exec-target.ts:453` | Node's `isWasmModuleBytes` -> `ENOEXEC` | set-ID commit state; `isWasmModuleBytes` is absent |
+
+**Three hold up.** `fork-reference-broker.ts:590-632` contains
+`ForkExternrefTokenCache.materialize` (597); `fork-module-instance.ts:415-542`
+holds the shadow-stack placement design the Rust comment ports from (520); and
+`worker-main.ts:4780-4874` is consistent with its claim about reference-carrying
+tables — that last on weaker evidence than the other two, the range discussing
+tables rather than a named symbol being located in it.
+
+A note on method, because a first pass got this wrong. Grepping for a guessed
+symbol and asking whether it falls inside the cited range reported two failures
+that were not failures: a method whose signature sits at 117 can have the cited
+part of its body at 131-154, and the symbol a range refers to is not always the
+one a grep finds first. Both were withdrawn and re-checked by reading the Rust
+claim and the cited lines together, which is what the table above rests on.
+
+The broken anchors are mostly off by 100-200 lines — the signature of files
+that grew after the comments were written — plus two that name things which no
+longer exist at all.
+
+None of this is lane L's code to fix, and none of it is a defect in behaviour.
+It is the cost the lane's V1 argument predicts, measured: **ten of thirteen
+anchors no longer resolve, and the rot is invisible to anyone who does not
+follow them.** A shared corpus or a generated constant cannot rot this way,
+because nothing has to be re-stated to stay true.
+
+### Four items: two now fixed and verified, two still open
+
+**The two Rust items were applied and verified on 2026-09-13**, once the disk
+hold lifted. They were held as patches for nine hours because editing Rust
+without running the compiler is how this lane would earn another entry in the
+list of figures above. The compiler has now judged them: `cargo test -p
+wasm-posix-shared` and `-p host-native` (both `--target aarch64-apple-darwin`) pass
+with the patches applied -- 90 and 69 tests -- including
+`the_scratch_allocator_is_reached_only_through_the_capacity_type`, which still
+finds exactly two direct `alloc_scratch.call(` sites, both inside
+`KernelScratch`'s constructors, now that three call sites have stopped
+restating their lengths. The dead branch compiles away without changing any
+answer the corpus asks, which is what "provably unreachable" predicted.
+
+**Two of the four were written as patches and verified to apply cleanly.**
+They were first written to a session temp directory, which would have made
+them disposable, so they are also anchored in this clone's object store at
+`refs/lane-l/session-artifacts` — a tree, outside `refs/heads`, holding both
+patches, the commit drafts and the window script. **That ref is local to this
+machine and is not pushed**, so a reader elsewhere will not have it; the
+description below is what travels, and it is enough to redo the work. Naming a
+temp path here would have planted a fresh dead reference in a document whose
+own finding is that ten of thirteen such references have already rotted. Both are small enough to
+state outright, so the fix needs no artifact at all:
+
+```rust
+// crates/host-native/src/guest.rs -- three sites, pointer and length from
+// the same region rather than the length restated beside it:
+//   (manifest.ptr(), manifest_len)              -> (manifest.ptr(), manifest.capacity())
+//   (prefix_scratch.ptr(), prefixes.len() as u32) -> (prefix_scratch.ptr(), prefix_scratch.capacity())
+//   (root_scratch.ptr(), roots.len() as u32)      -> (root_scratch.ptr(), root_scratch.capacity())
+
+// crates/shared/src/lib.rs -- the comparison whose else no input reaches:
+//   let initial_pages = if control_end_page > min_pages as u64 {
+//       control_end_page
+//   } else {
+//       min_pages as u64
+//   };
+// becomes
+//   let initial_pages = control_end_page;
+```
+
+Each `.capacity()` returns the `u32` the restated expression produced, and
+`KernelScratch` is `Copy`, so the call sites type-check exactly as before —
+which is a claim about reading, not about compiling, and is why they are
+written here rather than applied. They are deliberately NOT in the tree: the substitutions are
+type-identical and the branch is provably unreachable, but neither claim has
+met a compiler, and "provably" is a word this lane has learned to distrust in
+its own mouth. The window script applies them where cargo can judge them and
+restores the exact pre-patch files if either fails — by copying them aside
+first, not by `git checkout --`, because both targets carry uncommitted work
+and discarding it is the incident this lane already had once. **If they land,
+this section and two passages in the commit messages stop being true and must
+change in the same commit.**
+
+- **`compute_layout`'s `initial_pages` comparison has a dead branch.**
+  `if control_end_page > min_pages { control_end_page } else { min_pages }`
+  can never take the else: `first_free_byte` is already at least
+  `min_pages * page`, so `control_end_page` is at least `min_pages + 3`.
+  Confirmed over 201,973 generated inputs reaching the branch, zero of which
+  took the else. Harmless, but it reads as though `min_pages` can raise
+  `initial_pages` on its own, when it only ever does so through
+  `first_free_byte`.
+- **L5 enforces half its invariant.** `KernelScratch` guarantees a WRITE
+  cannot exceed the allocation, and the contract test guarantees every
+  allocation goes through the type. Neither covers the length handed to a
+  kernel export beside the pointer, which is the other place the two can
+  disagree. Of eleven `.ptr()` uses, five pair it with `.capacity()`, three
+  are base addresses for manual indexing, and **three restated the length**:
+  `manifest_len` at the rootfs manifest, and `prefixes.len()`/`roots.len()` at
+  the foreign-prefix and root calls. They equalled the allocation, which is
+  "sound by construction" — the exact property the type's own doc comment says
+  is not an invariant. **FIXED 2026-09-13**: all three now ask the region via
+  `.capacity()`, so pointer and length come from the same object at every site,
+  and `host-native`'s 69 tests pass with the change in.
+- **The guard that would hold those three** is a source check that no `.ptr()`
+  reaches a kernel call without `.capacity()` beside it. It has to tell a
+  pointer/length pair from a base address, which the existing contract test
+  does not have to do.
+- **Driving the TypeScript refusals from the corpus** needs BigInt-safe
+  parsing: a heap base of 2^63 is not a safe JavaScript integer, and
+  `layoutAddressIn` refuses an unsafe one with a different message than the
+  refusal under test, so a naive loop would pass for the wrong reason.
+
+## A hole in the ratchet itself, found by the same question
+
+Asking "what would a WRONG version do" of the surface budget — the instrument
+every lane's target is measured by — finds one.
+
+`lineCount` in `host/test/surface-budget.test.ts` runs
+`cat <files> 2>/dev/null | wc -l`. **A file that no longer exists at its named
+path contributes zero, silently.** Measured against lane L's own surface: with
+`host/src/process-memory.ts` renamed or moved, the measure reads **4,516**
+against a ceiling of 5,689 — a reported 1,173-line improvement — and the gate
+passes.
+
+So a lane can bank a large reduction by moving code OUT of the counted set
+rather than deleting it, and the ratchet will confirm the win. Nothing goes
+red. The check is doing exactly what it was written to do, and measuring
+something other than what it claims.
+
+**And it was not one helper.** Four measures in that file ran shell pipelines
+with stderr suppressed, across five suppression sites (one measure suppresses
+twice) — three across four sites after the fix below — and every one of them
+reported a BETTER number when its input disappears: `lineCount`'s `cat`, a `find | xargs cat` over headers, a
+grep across five source trees, and `grep -ro 'parseShebang' host/src` — rename
+`host/src` and that last surface reads zero, a perfect score. The twelve
+`readFileSync` sites in the same file throw loudly on a missing path. The split
+is exactly shell-pipeline versus in-process read, which is not a decision
+anyone made about measurement; it is what each was convenient to write in.
+
+**Eight surfaces share the line counter alone, naming ten files** —
+`forkTypeScript`, `workerMainTypeScript`, `sffsTypeScript`, `memoryFsTypeScript`,
+`kernelWorkerTypeScript`, `kernelHostImportTypeScript`,
+`hostKernelPlumbingTypeScript` and `parseShebangReferences`. **FIXED 2026-09-13, on the maintainer's explicit decision.** It was reported
+rather than fixed first, because a ratchet everyone is measured by should not
+be quietly edited by one of the lanes it grades; the maintainer chose to take
+the fix in lane L's window. `lineCount` now requires every counted path to
+exist before counting, and a glob that matches nothing reaches the check as
+its own literal pattern and fails the same way. The measure is unchanged at
+5,689 — the fix must not move any lane's number, only change what happens
+when a path disappears. **Only `lineCount` was fixed**; the other three
+suppressed measures have the same failure direction, each needs a different
+remedy, and they belong to other lanes' surfaces.
+
+Checked for an existing mitigation before reporting this: there is none. The file's four
+`toBeGreaterThan(0)` assertions guard lane METADATA — closure lists, why-text
+length — not measured values, and **no surface declares a floor: 0 of 20**. So
+nothing anywhere notices a measure that collapses to zero.
+
+**The hole is latent, not live.** All fourteen source paths the budget test
+names as string literals exist today (`host/src/kernel-scratch.ts`,
+`kernel-entry-gate.ts`, `process-memory.ts`, `worker-protocol.ts`,
+`kernel-worker.ts`, `kernel.ts`, `worker-main.ts`, `vfs/memory-fs.ts`,
+`vfs/sharedfs-vendor.ts`, and four crate files), so no surface is currently
+mis-measuring. The fourteenth match is `surface-budget.json` inside an error
+message, not a counted path. Whether any lane has previously banked a
+reduction this way was NOT investigated: that would mean auditing other lanes'
+histories, which is not this lane's to do. The reason to think
+it matters is that the campaign's whole method is lanes reducing counted
+surfaces, and this is the one way to satisfy that method without doing the work
+— available by accident, not only by intent.
+
+## The oracle's LEB128 walk lost one byte per name
+
+`host/test/process-memory-layout.test.ts` keeps an ORACLE: the placement
+arithmetic `host/src/process-memory.ts` used before the shared Rust rule
+replaced it, so the new path can be checked against an independent
+implementation. When the tier was re-projected and the test could finally run,
+it failed on `wasm32/sh.wasm` — the rule floored control memory at 34,930,688,
+the oracle at 16,777,216, a 16 MiB gap in the same shape as the `__heap_base`
+divergence this lane closed on the native host.
+
+**The first diagnosis was wrong, and worth recording as such.** It said the
+oracle was an incomplete transcription that had dropped the imported-memory
+minimum because reading it needs a wasm parser. The oracle HAS that parser —
+`importedMemoryMinimumPagesOracle`, "read the way the oracle's era read it" —
+and calls it. The diagnosis stopped at a plausible story one step before the
+evidence.
+
+**The actual defect is one line of JavaScript semantics:**
+
+```js
+off += uleb();   // reads `off` BEFORE evaluating uleb()
+```
+
+A compound assignment evaluates its left operand first, and `uleb()` advances
+`off` past the length prefix as a side effect. The `+=` then overwrites that
+advance, **losing one byte per name** — two per import entry. Across
+`sh.wasm`'s 68 imports that is 136 bytes of drift, so the walk read `kind 103`
+(not a valid import kind) where `env.memory` sits at entry 16, fell through to
+`return null`, and the oracle silently used the 16 MiB fallback.
+
+**Three independent parses now agree the answer is 533 pages**: the Rust
+reader, a Python parse written to break the tie, and the oracle once its
+advance was corrected. `sh.wasm` imports `env.memory` with `flags=3 min=533
+max=16384` and exports no `__heap_base` at all.
+
+Two things this makes concrete:
+
+- **A parser that mis-walks fails silently and conservatively.** It did not
+  crash or report a malformed module; it returned "no imported memory", which
+  is a legal answer that a caller cannot distinguish from the truth. The
+  oracle agreed with the rule for every program whose imports it never had to
+  walk far into.
+- **It had never run.** The test arrived whole in `5c90e6a` and every run since
+  failed earlier, on the stale wasm module, so a real defect sat behind another
+  defect for a day. Nine of its cases were correct and unverifiable; the tenth
+  was wrong and equally unverifiable.
+
+Fixed by capturing each length before advancing. **Nothing about the test was
+weakened**: the oracle remains a genuine second implementation with full
+imported-minimum coverage.
+
+## Reading found wrong numbers; running found wrong behaviour
+
+The two halves of this lane's validation caught disjoint classes of defect,
+and neither substitutes for the other. Worth stating because the first half
+took nine hours and felt thorough.
+
+**Reading found ten wrong figures** — counts, ratios, measurement baselines,
+a cache directory named while justifying a deletion. Every one was an
+incidental claim, none was the claim under examination. They would have
+shipped inside commit messages and a plan document, where nothing executes
+them.
+
+**The first execution found five wrong behaviours, in twenty minutes**, none
+of them in code that had been perturbed:
+
+- The mutation gate blocked in BOTH directions — two variables with opposite
+  senses and a default that inverted one. It failed closed, so nine hours of
+  perturbation in the refusing direction confirmed it working.
+- Every cargo step omitted `--target`. `.cargo/config.toml` sets
+  `[build] target = "wasm32-unknown-unknown"`, so all three Rust suites exited
+  101 without building a single test. The convention was visible in other
+  lanes' `ps` output hours earlier.
+- Four vitest invocations re-ran `global-setup` four times, ~90s each.
+- The gate printed a pass count and no verdict lines, because vitest's default
+  reporter suppresses console output on success — so the standing rule to READ
+  them could not be satisfied by the run that claimed to satisfy it.
+- Six tests ran against a module that could not satisfy them, because
+  `binaryTierRoots()` returns the first existing candidate and the stale copy
+  sat in the tier searched first.
+
+**The asymmetry is the point.** Static checking cannot execute a branch, and
+every one of those five defects lived in a branch that had never been taken:
+the permissive side of a gate, a flag's effect on a build, a reporter's
+behaviour on success, a loader's tier precedence. Perturbation tests the paths
+you thought of. Running tests the paths that exist.
+
+## What this lane kept finding: green is not evidence
+
+Three of tonight's findings are the same fault wearing different clothes, and
+naming the shape is worth more than any one of them. Hazard H-2 says a guard
+that cannot fail is not a guard. Each of these passes that test and is still
+hollow:
+
+- **A guard whose REMOVAL cannot be detected.** `compute_layout`'s early
+  refusal reports the same message the late path would, deliberately. Delete
+  the branch and every corpus case still passes.
+- **A corpus every wrong rule satisfies.** Both shared corpora were correct in
+  every value and could not distinguish the real rule from four plausible
+  wrong ones — including one that ignores a constant the file's own header
+  names.
+- **A check that validates the wrong thing.** The window script ran the
+  surface-budget gate before applying patches, so the gate would have passed
+  on a tree that was not the tree being committed; and its commit plan omitted
+  a modified file, which would have been left behind with every test green and
+  both commits reporting success.
+
+- **A checker blind to the claim it was built for.** This lane wrote a script
+  to print the tree's counts beside the commit drafts' claims, precisely so a
+  number could not go stale again. Its claim extractor matched
+  `case|refusal|file|anchor|citation|figure|mutation|comment` — and not
+  `measure`. The headline number of the commit it was checking, "five
+  measures", was invisible to it, and the script reported success. It had also
+  been computing its own directory relatively while changing directories, so
+  the half that reads the drafts had been silently failing to find them.
+
+- **A guard that always refuses early shields everything downstream from
+scrutiny.** This lane's window script refused below 50 GB, and every test of
+it for nine hours stopped at that first check. When the volume finally rose,
+the first pass through the rest printed three stale instructions: "six
+figures" when it was ten, "two commits" when it was three, "after both
+commits" when it was three. The line that had been wrong longest was the one
+telling the operator not to let numbers go stale. Nothing failed; the text
+simply had never been executed, so nobody had read it.
+
+- **A checker that inherits the author's error and reports it back as
+independent confirmation.** The claim-checker printed "suppressed-err measures
+5" by counting LINES containing `2>/dev/null` — the same mistake that produced
+the wrong "five measures" figure it was built to catch, and one of those lines
+was the comment explaining the hole. So the tool agreed with the document, and
+the agreement was worth nothing: both counted text about the thing rather than
+the thing. This is worse than the omission above, because a check that merely
+misses an error leaves doubt, while one that confirms it manufactures
+confidence.
+
+None of these fails anything. Nothing goes red, no guard fires, and the
+evidence a reader would cite — "the tests passed" — is true and worthless. The last of
+these is the sharpest: it was committed BY the tool built to prevent it, by
+an author who had spent the night writing about exactly this failure.
+**They were all found by reading, and none by running.** The lane's habit of
+perturbing guards catches the first kind sometimes; it caught none of these.
+The question that did work was consistently *what would a WRONG version do
+here*, asked about the checker rather than the code.
+
+Offered alongside the hazard below, and arguably the more useful of the two.
+
+## Which shell guards fail open, precisely
+
+Auditing every guard this lane built found exactly one that fails toward
+permission, and the difference between it and the safe ones is mechanical
+rather than a matter of care:
+
+| Construct | On a bad or empty value | Direction |
+|---|---|---|
+| `if [ "$x" -lt N ]; then refuse; fi` | `[` errors, returns non-zero, **else branch runs** | **OPEN** |
+| `until [ "$x" -ge N ]; do wait; done` | `[` errors, loop continues waiting | closed |
+| `if [ "${x:-0}" != 1 ]; then block; fi` | string compare, no error | closed |
+| `[ -x path ] \|\| refuse` | false for a dangling symlink | closed |
+
+**The dangerous shape is a NUMERIC comparison inside an `if` whose else branch
+is the permissive path.** `[` treats a non-integer operand as an error, and an
+error is not `false` — it takes the other branch. Lane L's disk floor was
+written that way, and this machine had already produced the triggering
+condition once: a GNU `df` on `PATH` made `df -g` invalid earlier in the same
+lane, and a waiter silently never fired for hours.
+
+The fix is to validate the parse before trusting it (`case "$x" in ''|*[!0-9]*)
+refuse ;; esac`) and to say so in the refusal: *a guard that cannot read the
+disk must not assume there is room.* Cheap, and it converts the one failure
+mode that matters.
+
+**This is NOT escalated as a campaign finding, unlike the ratchet hole, because
+the repository's own guards were checked and do not have it.** The shape needs
+two ingredients: a numeric comparison in an `if`, and a value parsed from
+something external that can fail. `scripts/check-abi-version.sh` has six such
+comparisons and is safe by construction — `drift`, `version_bumped` and
+`snapshot_changed` are initialised to literal `0` and only ever set to `1`,
+never parsed. The other matches across `scripts/` compare exit codes and
+locally computed counts. **The flaw was lane L's own tooling, and the rule is
+offered for its transferability, not because the repository has the bug.**
+
+## A second candidate standing hazard, learned the hard way
+
+*A guard that testing routinely bypasses is not protecting what sits behind
+it.*
+
+This lane's disk floor sat at the top of a script and everything below it —
+applying patches, running cargo, running vitest — was treated as protected by
+it. To test the script's later behaviour, stubbed copies lowered that floor.
+Twice, those copies did real work: once applying two Rust patches to the live
+worktree, once starting `vitest`, `cargo test -p xtask` and an xtask
+`build-deps` run that had to be killed mid-transaction. Both times a `sed`
+meant to neuter the dangerous line did not match it — the first because the
+line ended in a backslash continuation rather than the word the pattern
+expected.
+
+The tempting lesson is "be more careful with `sed`". The real one is
+structural: **a single top-level check cannot protect steps that are tested by
+removing it.** Each step that mutates a worktree or spawns a build needs its
+own opt-in, so that disabling one to exercise the rest cannot enable the
+others. The fix here was two more environment gates, one of them inside the
+single function every build passes through, rather than at each call site
+where a future edit could miss one.
+
+**The strongest evidence for putting guards in structure rather than in
+memory** arrived later the same night: a background monitor was marked with an
+environment variable, and the liveness check used `pgrep -f`, which searches
+command lines and cannot see environment assignments — so a live process was
+reported dead. That is the identical mistake this lane had made two hours
+earlier with a different monitor, noted at the time, and written down. Knowing
+a failure mode, recording it, and repeating it inside one session says the
+lesson did not transfer even to its own author. A check whose pattern matches
+something intrinsic to the process would not have depended on remembering.
+
+Offered to the maintainer to promote or discard. It is not a finding about
+lane L's code; it is a finding about how this lane tested its own tooling, and
+it cost a worktree mutation and an interrupted build on a machine with 6 GB
+free.
+
+## This branch predates the code-lines conversion, and that governs everything above
+
+**Every figure in this document is `wc -l`, and the campaign has since changed
+units.** `19bb692c4` — *Build: Budget code lines, not comment lines*, landed on
+`brandonpayton/lane-s-setuid-integrity` — rebaselined every ceiling to
+non-blank, non-comment lines. It is **not** an ancestor of this lane's branch,
+so this worktree still measures the old way.
+
+| | this branch | after `19bb692c4` |
+|---|---|---|
+| measure | `wc -l` | code lines |
+| ceiling | 5,689 | 4,734 |
+| target | 3,600 | 2,900 |
+| slack | 150 | 120 |
+
+Three consequences, none of which this lane can settle alone:
+
+- **The closure figure depends on which branch you read.** The section below
+  says lane L closes at 3,600 and measures 5,689. That is true here. After the
+  conversion the same lane closes at 2,900 against a code-line measure.
+- **The ceiling rebaselines to 4,575 on merge.** 4,734 was the code-line count
+  BEFORE this lane's reduction. Computed with lane S's own `countCodeLines`
+  algorithm on the current files: **4,575**. The reduction is worth **159 code
+  lines** against 164 by `wc -l` — the five-line difference is comment and
+  blank lines that the old unit charged for and the new one does not. That
+  leaves the lane **1,675 lines above the converted target of 2,900**, against
+  2,089 above 3,600 in the old unit; the gap is smaller in the new unit but the
+  conclusion is the same.
+
+  **The method was validated before the number was used:** the same
+  transcription of `countCodeLines`, run on the files as they stood at
+  `19bb692c4`, reproduces lane S's published ceiling of 4,734 exactly. A
+  reimplementation that agrees with the original on a known input is worth more
+  than the ratio estimate it replaces (~4,600), which is what this section said
+  before.
+- **The ratchet fix has two forms.** The hole survives the conversion: lane S's
+  `lineCount` reads per file and would fail loudly, but `expandGlobs` runs
+  `ls -1d ... 2>/dev/null || true` and drops a missing path before the read
+  happens. The fix made here patches a `cat` pipeline that commit deleted; the
+  form that survives a rebase guards each glob at expansion time.
+
+## Is lane L finished? No, and the budget says so
+
+Worth stating plainly, because this document spends most of its length on
+what was found rather than on where the lane stands. `docs/surface-budget.json`
+records lane L as:
+
+    "L": { "status": "open",
+           "closure": [ { "surface": "hostKernelPlumbingTypeScript",
+                          "atMost": 3600 } ] }
+
+**The lane closes when that surface reaches 3,600 or less. It measures 5,689.**
+Nothing landed on 2026-09-13 changes that: the corpora, the documents and the
+ratchet fix touch no counted file, by design.
+
+**One subject line reads the wrong way, and curation is where that matters.**
+The commit `3f4525d` is titled "Lane L closes at 5,689", meaning the lane's
+tally ends there; its body says plainly that "the target stays at 3,600 as an
+acknowledged placeholder". Read as a subject alone — which is how a 369-commit
+history gets curated into a handful of narrative commits — it says the lane
+closed at a number 2,089 above its closure condition. The body is correct and
+the history is immutable; this note is for whoever writes the curated subject.
+
+The arithmetic then decides what is left. This document's attribution found
+that **the sum of everything the L1 census said STAYS is 5,376** — so even
+performing every reduction the census contemplated leaves the lane 1,776 lines
+above its closure condition. The only remaining route to 3,600 runs through the
+three stays the census never audited: the process-memory allocator (1,038),
+`kernel-entry-gate.ts` (1,596) and `worker-protocol.ts` (429) — 3,063 lines
+between them.
+
+That reframes "the gate and the worker protocol stay." It is the census's
+conclusion, and the census is the same document that missed its target by 2.4x
+and filed a defect that was already guarded. **Its stays have exactly the
+provenance its target had: read, not attributed.** Whether they survive
+attribution is unknown, and it is the only question standing between this lane
+and its closure condition.
 
 ## What this did not establish
 

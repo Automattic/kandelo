@@ -2481,6 +2481,93 @@ resolves through the tier can see a module this build just rebuilt. See "the
 projection deadlock" under Known hazards for why that needs no atomicity
 trade.
 
+**VERIFIED END TO END 2026-09-13**, once the disk hold lifted. `./run.sh
+local-build` ran and the named test passed: `coreutils-docs/wasm32` SUCCEEDED,
+`rootfs/wasm32` SUCCEEDED, `product/platform-rootfs` CACHED. "The deadlock is
+fixed" is now an observation.
+
+**The run as a whole still failed, on unrelated causes**: `php` (configure:
+icu), `vim` (link: `-lncursesw`/`-ltinfow`) and `wget` (compile:
+`openssl/ssl.h`) each miss a C dependency, leaving thirteen nodes unbuilt and
+products at 1/7. A lane reading "Local build failed" in a fresh worktree should
+check that list before its own changeset. Detail in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**One row of the unit-conversion table above is now stale, and it is not this
+lane's to edit.** It lists `hostKernelPlumbingTypeScript` at 4,734 code lines,
+which was true before this lane's reduction. Computed with lane S's own
+`countCodeLines` on the current files it is **4,575** — the reduction is worth
+159 code lines against 164 by `wc -l`. The method was checked before the
+number was used: the same transcription reproduces 4,734 exactly on the files
+as they stood at `19bb692c4`. The row is left alone because that table belongs
+to the conversion, not to lane L; whoever reconciles the branches should
+rebaseline it to 4,575.
+
+**And it survives the code-lines conversion, in a different function.**
+`19bb692c4` replaced `lineCount` with a per-file reader that WOULD fail loudly
+on a missing file — but `expandGlobs` runs `ls -1d ... 2>/dev/null || true`
+and drops the path before that read happens, so the surface still reads
+smaller. Lane L's branch does not contain that commit, so the fix made here
+patches the pre-conversion `cat` pipeline; the post-rebase form guards each
+glob at expansion time and is prepared but unrun.
+
+**CAMPAIGN-WIDE, found from lane L: four measures in
+`host/test/surface-budget.test.ts` reported a BETTER number when their input
+disappeared. One — `lineCount` — was fixed here on the maintainer's decision;
+the other three are not lane L's to fix.** Each runs a shell pipeline with stderr suppressed, so a counted
+file that is renamed or moved contributes zero rather than failing. Measured
+against lane L's own surface: with `host/src/process-memory.ts` moved, the gate
+reads 4,516 against a ceiling of 5,689 — a 1,173-line "improvement" — and
+passes. The starkest case is elsewhere: `grep -ro 'parseShebang' host/src
+2>/dev/null | wc -l` reads zero, a perfect score, if `host/src` is renamed. The
+twelve `readFileSync` measures in the same file throw loudly instead; the split
+is shell-pipeline versus in-process read, not a decision about measurement.
+
+Eight surfaces share the line counter alone. **The campaign's method is lanes
+reducing counted surfaces against a ratchet, and this is the one way to satisfy
+that method without doing the work** — reachable by accident as easily as by
+intent, since a lane that legitimately relocates a file gets the same
+undeserved green. **FIXED on the maintainer's decision, in lane L's window.** It was reported
+rather than fixed first, because a ratchet every lane is graded by should not be
+edited by one of the lanes it grades. `lineCount` now requires every counted
+path to exist before counting; a glob matching nothing fails the same check as
+its own literal pattern. Every lane's measure is unchanged — lane L still reads
+5,689 — so no ceiling moves. **Only `lineCount` was fixed.** The other three
+suppressed measures share the failure direction, need different remedies, and
+belong to other lanes' surfaces.
+
+**The transcription argument now has a number: ten of thirteen.** Lane L has
+always said `host-native` was written by reading `host/src/*.ts` and that two
+transcribed copies drift. Its citations are line-anchored, so that is testable.
+Thirteen name a `host/src` file with a line number; **ten no longer resolve** —
+three name a file `ace9756b1` deleted, two name identifiers that exist nowhere
+under `host/src/`, and five sit 100-200 lines from what they cite because the
+cited file grew. The rot is silent: every one of those comments still reads as
+authoritative. Separately, the comment that hid the `__heap_base` divergence
+turned out never to have been true of the code it sat on — it described the
+TypeScript host's fallback behaviour on a Rust constant that implemented only
+half of it, which is why checking this host against its own comment found them
+agreeing. **This is the V1 case (share code across hosts) in evidence rather
+than principle**, and it is stronger than the line-count case V4 makes. See
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**The shared corpora were audited while the machine was too full to build,
+and both could be satisfied by wrong rules.** Re-deriving every case from the
+documented rule rather than from the code found four plausible rules that
+passed every case in the two files, and found that the TypeScript half was
+checking three of seven layout cases and skipping the rest silently. Four
+cases were added, the skip is now declared rather than inferred, and eight of
+nine cases are checked in both hosts. **It was written without running
+anything and has since been run**, and running it caught a defect reading had
+not: the test oracle's LEB128 walk lost one byte per name, so it had silently
+reported "no imported memory" and fallen back to 16 MiB. Of four further items,
+**two are now applied and verified** — a dead branch, and three scratch call
+sites that restated a length the region already knows, now asking
+`.capacity()`. **Two remain open**: the source guard that would hold those
+sites, and corpus-driving the TypeScript refusals, which needs BigInt-safe
+parsing because a heap base of 2^63 is not a safe JavaScript integer. See
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
 **The 3,600 target is not derived, and no number here replaces it.** The L1
 census raised the lane's target from a guessed 1,500 to a "derived" 3,600 and
 said in bold that it was derived. It was not: its per-unit "After" column is
