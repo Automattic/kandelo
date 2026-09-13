@@ -17,9 +17,6 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 
 const MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_INPUTS = 4_096;
-const SHA256 = /^[0-9a-f]{64}$/;
-const GIT_SHA = /^[0-9a-f]{40}$/;
-const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const CANONICAL_PAGES_PRODUCT =
   /^https:\/\/automattic\.github\.io\/kandelo\/products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
 const CANONICAL_PAGES_INPUT =
@@ -835,28 +832,39 @@ function string(value: unknown, label: string): string {
   return value;
 }
 
+/**
+ * Document scalars, narrowed to their JavaScript types and nothing more.
+ *
+ * THE RULES LIVE IN RUST — `validate_stable_id`, `validate_sha256`,
+ * `validate_git_sha` and the integer types in the resolved-input validator,
+ * all run before this file reads a byte of the document. What stood here was a
+ * second copy of each, and a second copy of a rule is a second chance to get it
+ * subtly different.
+ *
+ * Each was compared against its Rust counterpart before being removed rather
+ * than assumed equivalent: `/^[0-9a-f]{64}$/` against `validate_lower_hex(64)`,
+ * `/^[0-9a-f]{40}$/` against `validate_lower_hex(40)`, and
+ * `/^[a-z0-9][a-z0-9._-]{0,127}$/` against `validate_stable_id`'s byte checks.
+ * They agreed. `outputName` did NOT — see below — and the Rust was strengthened
+ * to match before that one was removed.
+ */
 function stableId(value: unknown, label: string): string {
-  const result = string(value, label);
-  if (!STABLE_ID.test(result)) fail(`${label} is not a stable identifier`);
-  return result;
+  return string(value, label);
 }
 
 function sha256(value: unknown, label: string): string {
-  const result = string(value, label);
-  if (!SHA256.test(result)) fail(`${label} must be 64 lowercase hexadecimal characters`);
-  return result;
+  return string(value, label);
 }
 
 function gitSha(value: unknown, label: string): string {
-  const result = string(value, label);
-  if (!GIT_SHA.test(result)) fail(`${label} must be 40 lowercase hexadecimal characters`);
-  return result;
+  return string(value, label);
 }
 
 function nonnegativeInteger(value: unknown, label: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    fail(`${label} must be a nonnegative safe integer`);
-  }
+  // Still a TYPE check: the Rust refused a non-integer by failing to
+  // deserialise it into a `u32`/`u64`, so by here the value is known to be one.
+  // This narrows `unknown` to `number` and asserts nothing further.
+  if (typeof value !== "number") fail(`${label} must be a number`);
   return value as number;
 }
 
@@ -871,18 +879,21 @@ function oneOf<const T extends readonly string[]>(
   return value as T[number];
 }
 
+/**
+ * The product's output filename, narrowed only.
+ *
+ * This is the one rule that did NOT already match its Rust counterpart. The
+ * Rust refused exactly `.` and `..`; this refused ANY leading dot, so deleting
+ * it as a duplicate would have quietly LOOSENED the rule and let `.hidden.vfs`
+ * through — a published artifact that does not appear in an ordinary listing,
+ * which is a poor property for something whose whole job is to be found.
+ *
+ * The Rust was strengthened to match FIRST, and only then was this removed.
+ * "Port it faithfully" would have produced the loosening; comparing the two
+ * rules line by line is what caught it.
+ */
 function outputName(value: unknown): string {
-  const result = string(value, "product output");
-  if (
-    result.length > 255 ||
-    result.startsWith(".") ||
-    result.includes("/") ||
-    result.includes("\\") ||
-    (!result.endsWith(".vfs") && !result.endsWith(".vfs.zst"))
-  ) {
-    fail(`invalid VFS output filename ${JSON.stringify(result)}`);
-  }
-  return result;
+  return string(value, "product output");
 }
 
 /**

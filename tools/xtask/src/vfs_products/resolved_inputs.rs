@@ -503,7 +503,13 @@ fn validate_output_name(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 255
         || value.contains(['/', '\\', '\0'])
-        || matches!(value, "." | "..")
+        // ANY leading dot, not merely `.` and `..`. A product named
+        // `.hidden.vfs` is a published artifact that does not appear in an
+        // ordinary listing, which is a poor property for something whose whole
+        // job is to be found and fetched. The TypeScript rule this replaces
+        // refused it, and porting only `.`/`..` would have LOOSENED the rule
+        // while looking like a faithful translation.
+        || value.starts_with('.')
         || !(value.ends_with(".vfs") || value.ends_with(".vfs.zst"))
     {
         return Err(format!("product output is not an ABI-neutral VFS filename: {value:?}"));
@@ -1077,7 +1083,13 @@ mod tests {
 
     #[test]
     fn an_output_that_is_a_path_or_the_wrong_kind_of_file_is_refused() {
-        for output in ["../shell.vfs", "dir/shell.vfs", "shell.tar", "", "."] {
+        for output in [
+            "../shell.vfs", "dir/shell.vfs", "shell.tar", "", ".", "..",
+            // A published artifact that does not appear in an ordinary
+            // listing. The TypeScript refused it and a faithful-looking port
+            // of `.`/`..` alone would not have.
+            ".hidden.vfs",
+        ] {
             let patch = format!(r#"{{"product":{{"output":{output:?}}}}}"#);
             assert!(check(&document(&patch)).is_err(), "{output:?} must be refused");
         }
