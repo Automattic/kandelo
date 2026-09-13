@@ -2347,13 +2347,15 @@ pub mod process_memory {
     /// with a heap base ABOVE it had its own static data underneath the
     /// syscall channel on the native host.
     ///
-    /// `crates/host-native` asks this function. **The TypeScript hosts do not
-    /// yet**: that commit is held on
-    /// `brandonpayton/lane-l-typescript-layout-held` because landing it wedges
-    /// `./run.sh local-build` — see "the projection deadlock" in lane L of
-    /// `docs/plans/2026-09-11-MASTER-PLAN.md`. Until then this function is the
-    /// authority for one host and the description the other is measured
-    /// against, which is less than the point of it.
+    /// **Both hosts ask this function.** `crates/host-native` calls it
+    /// directly; the TypeScript host reaches it through the
+    /// `wa_process_memory_layout` export of `crates/wasm-artifact-module`, so
+    /// `host/src/process-memory.ts` no longer does the arithmetic itself. The
+    /// TypeScript half was held on
+    /// `brandonpayton/lane-l-typescript-layout-held` for as long as landing it
+    /// wedged `./run.sh local-build` — see "the projection deadlock" in lane L
+    /// of `docs/plans/2026-09-11-MASTER-PLAN.md` — and was cherry-picked once
+    /// the maintainer took the xtask ordering fix.
     pub const fn compute_layout(request: LayoutRequest) -> Result<Layout, LayoutError> {
         let page = WASM_PAGE_SIZE as u64;
         if request.maximum_pages <= CHANNEL_PAGES {
@@ -2409,11 +2411,13 @@ pub mod process_memory {
         let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE as u64;
         let control_end_page = channel_page + CHANNEL_PAGES as u64;
 
-        let initial_pages = if control_end_page > min_pages as u64 {
-            control_end_page
-        } else {
-            min_pages as u64
-        };
+        // Always `control_end_page`: `first_free_byte` is already at least
+        // `min_pages * page`, so `control_end_page` — that address rounded up
+        // to a page, plus the channel's primary page and its span — is at
+        // least `min_pages + 3`. This was written as a comparison, whose else
+        // branch no input can reach; a plain assignment says the same thing
+        // without implying `min_pages` can raise the count on its own.
+        let initial_pages = control_end_page;
         if initial_pages > request.maximum_pages as u64 {
             return Err(LayoutError::InitialPagesExceedMaximum {
                 // Saturating for the same reason as the early refusal above:

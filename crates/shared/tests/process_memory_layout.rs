@@ -7,11 +7,16 @@
 //! Checking BOTH hosts against one corpus is what would make "one process
 //! memory layout" a fact a test can fail on — two hosts each asserting their
 //! own numbers pass for as long as they happen to agree, which is exactly how
-//! they came to disagree about `__heap_base`. The TypeScript half of that
+//! they came to disagree about `__heap_base`. The TypeScript half
 //! (`host/test/process-memory-layout.test.ts`, reaching the same function
-//! through a `wa_process_memory_layout` export) is written and held on
-//! `brandonpayton/lane-l-typescript-layout-held`; see "the projection
-//! deadlock" in lane L of `docs/plans/2026-09-11-MASTER-PLAN.md`.
+//! through a `wa_process_memory_layout` export) checks every case this one
+//! does except those the corpus marks `programBytesOnly`, where an imported
+//! memory's minimum needs a real binary to present.
+//!
+//! **The refusals are still this test's alone.** The TypeScript half writes
+//! two of them out by hand instead of reading them from the corpus, so the
+//! three it does not restate — both saturating refusals and the exact-fit
+//! boundary — are checked in one host only.
 
 use serde_json::Value;
 use wasm_posix_shared::process_memory::{compute_layout, LayoutError, LayoutRequest};

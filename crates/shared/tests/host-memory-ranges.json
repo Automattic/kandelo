@@ -33,6 +33,18 @@
       "verdict": "null-pointer"
     },
     {
+      "name": "a failed allocation is a null pointer, not an out-of-bounds range",
+      "why": "addr 0 with len 1000000 is BOTH null and past a 1-page memory. The rule names the null pointer, because 0 is what a kernel allocator returns when it gave nothing: reporting the memory's extent would diagnose the wrong fact. No other case in this file has a null address that is also out of bounds, so this is the only one that fixes the order of the two checks.",
+      "addr": 0, "len": 1000000, "limitPages": 1, "allowAddressZero": false,
+      "verdict": "null-pointer"
+    },
+    {
+      "name": "allowing address zero does not waive the bounds check",
+      "why": "allowAddressZero says the caller means offset zero; it does not say the range fits. Without this case a rule that returns ok for any zero address once the flag is set passes the whole file.",
+      "addr": 0, "len": 131072, "limitPages": 1, "allowAddressZero": true,
+      "verdict": "out-of-bounds"
+    },
+    {
       "name": "a caller that means offset zero says so",
       "addr": 0, "len": 16, "limitPages": 1, "allowAddressZero": true,
       "verdict": "ok"
@@ -72,7 +84,7 @@
     },
     {
       "name": "an address that overflows the address space is refused as overflow",
-      "why": "Unreachable through a wasm32 pointer, so the TypeScript half cannot present it: `checkedWasmImportMemoryRange` rejects anything above 0xffffffff as an invalid pointer before a range is considered. Kept because crates/host-native takes a u64 from a memory64 guest.",
+      "why": "Unreachable through a wasm32 pointer, and the TypeScript half cannot present it for a memory64 guest either -- but not because of a 32-bit ceiling, which does not apply there. `checkedWasmGuestPointerOffset` accepts the u64, then refuses any address above Number.MAX_SAFE_INTEGER with \"pointer exceeds JavaScript's exact address range\", before a range is considered. The boundary is that a JavaScript host cannot name an address it cannot represent exactly. Kept because crates/host-native takes a u64 from a memory64 guest and has no such limit.",
       "rustOnly": true,
       "addr": 18446744073709551615, "len": 2, "limitPages": 1, "allowAddressZero": false,
       "verdict": "end-overflows"

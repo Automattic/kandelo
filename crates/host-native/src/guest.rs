@@ -2069,7 +2069,7 @@ fn run_guest_inner(
         )?;
         manifest.write(&kernel_mem, &base_image.manifest)?;
         let loaded =
-            rootfs_load_manifest.call(&mut kernel_store, (manifest.ptr(), manifest_len))?;
+            rootfs_load_manifest.call(&mut kernel_store, (manifest.ptr(), manifest.capacity()))?;
         if loaded < 0 {
             // Malformed manifest: leave `/` empty (the N1-I1a default) rather
             // than proceed with a partial tree — a truthful failure, mirroring
@@ -2115,7 +2115,7 @@ fn run_guest_inner(
         )?;
         prefix_scratch.write(&kernel_mem, &prefixes)?;
         let n = set_foreign_prefixes
-            .call(&mut kernel_store, (prefix_scratch.ptr(), prefixes.len() as u32))?;
+            .call(&mut kernel_store, (prefix_scratch.ptr(), prefix_scratch.capacity()))?;
         if n < 0 {
             anyhow::bail!("kernel_rootfs_set_foreign_prefixes failed: {n}");
         }
@@ -2145,7 +2145,7 @@ fn run_guest_inner(
             )?;
             root_scratch.write(&kernel_mem, &roots)?;
             let attached = set_foreign_mount_roots
-                .call(&mut kernel_store, (root_scratch.ptr(), roots.len() as u32))?;
+                .call(&mut kernel_store, (root_scratch.ptr(), root_scratch.capacity()))?;
             let expected = fs.mounts.iter().filter(|m| m.root_handle.is_some()).count() as i32;
             if attached != expected {
                 // A record that matched no registered prefix means the two

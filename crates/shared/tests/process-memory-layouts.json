@@ -6,14 +6,16 @@
     "test agrees with that code by construction and can only detect a later",
     "change, not a present mistake.",
     "",
-    "`crates/shared/tests/process_memory_layout.rs` checks the Rust host",
-    "against this file. The TypeScript half",
-    "(`host/test/process-memory-layout.test.ts`, reaching the same function",
-    "through a `wa_process_memory_layout` export) is written and held on",
-    "`brandonpayton/lane-l-typescript-layout-held` — see 'the projection",
-    "deadlock' in lane L of docs/plans/2026-09-11-MASTER-PLAN.md. Checking",
-    "both against one file is what would make 'one layout' a fact a test can",
-    "fail on rather than an intention.",
+    "Both hosts are checked against this one file:",
+    "`crates/shared/tests/process_memory_layout.rs` checks the Rust host, and",
+    "`host/test/process-memory-layout.test.ts` checks the TypeScript host,",
+    "which reaches the same function through the `wa_process_memory_layout`",
+    "export. That is what makes 'one layout' a fact a test can fail on rather",
+    "than an intention. The TypeScript half was held on",
+    "`brandonpayton/lane-l-typescript-layout-held` while landing it wedged",
+    "`./run.sh local-build` — see 'the projection deadlock' in lane L of",
+    "docs/plans/2026-09-11-MASTER-PLAN.md — and landed once the maintainer",
+    "took the xtask ordering fix.",
     "",
     "Working constants: page 65536; DEFAULT_INITIAL_PAGES 17;",
     "FALLBACK_BRK_BASE 16777216 (page 256); MAIN_CHANNEL_PRIMARY_PAGE 1;",
@@ -117,8 +119,32 @@
       }
     },
     {
+      "name": "a heap base below the default initial pages is raised to that floor",
+      "why": "65536 is page 1, below DEFAULT_INITIAL_PAGES (17 pages = 1114112 bytes), so the floor supplies first_free_byte: control_base_page 17, channel 18, control_end 20. No other case in this file sits below the floor, so this is the only case that distinguishes the rule from one that ignores DEFAULT_INITIAL_PAGES entirely.",
+      "request": {
+        "maximumPages": 16384,
+        "importedMinimumPages": 0,
+        "requestedMinimumPages": 0,
+        "heapBase": 65536,
+        "threadSlotCount": 1024
+      },
+      "layout": {
+        "initialPages": 20,
+        "maximumPages": 16384,
+        "controlBase": 1114112,
+        "controlEnd": 1310720,
+        "channelOffset": 1179648,
+        "channelPage": 18,
+        "brkBase": 1310720,
+        "mmapBase": 1310720,
+        "brkLimit": 1073741824,
+        "maxAddr": 1073741824,
+        "threadSlotCount": 1024
+      }
+    },
+    {
       "name": "an imported memory minimum above the fallback raises the floor",
-      "why": "600 pages is 39321600 bytes, past the 16 MiB fallback, so the floor comes from the import.",
+      "why": "600 pages is 39321600 bytes, past the 16 MiB fallback, so the floor comes from the import. Marked programBytesOnly: an imported memory's minimum is a fact only a program's bytes carry, so the TypeScript half would have to synthesise a binary to present it. Every other case names its facts directly and both hosts check it.",
       "request": {
         "maximumPages": 16384,
         "importedMinimumPages": 600,
@@ -138,7 +164,8 @@
         "brkLimit": 1073741824,
         "maxAddr": 1073741824,
         "threadSlotCount": 1024
-      }
+      },
+      "programBytesOnly": true
     },
     {
       "name": "a caller's own minimum raises the floor too",
@@ -187,11 +214,36 @@
         "maxAddr": 33554432,
         "threadSlotCount": 1
       }
+    },
+    {
+      "name": "a ceiling that exactly fits control memory is accepted",
+      "why": "The smallest address space this rule can place: the 17-page floor puts control memory at pages 17..19, so initial_pages is 20 and a ceiling of 20 fits it exactly. The refusal is `initial_pages > maximum_pages`, and no other case has the two equal, so this is the case that keeps it from becoming `>=`. brk_base lands exactly at max_addr here, which is legal: control memory fills the memory and nothing is left to allocate.",
+      "request": {
+        "maximumPages": 20,
+        "importedMinimumPages": 0,
+        "requestedMinimumPages": 0,
+        "heapBase": 65536,
+        "threadSlotCount": 1024
+      },
+      "layout": {
+        "initialPages": 20,
+        "maximumPages": 20,
+        "controlBase": 1114112,
+        "controlEnd": 1310720,
+        "channelOffset": 1179648,
+        "channelPage": 18,
+        "brkBase": 1310720,
+        "mmapBase": 1310720,
+        "brkLimit": 1310720,
+        "maxAddr": 1310720,
+        "threadSlotCount": 1024
+      }
     }
   ],
   "refusals": [
     {
       "name": "a ceiling that cannot hold the syscall channel",
+      "why": "A ceiling of 2 pages cannot hold the channel's own 2 pages, let alone the control page under them, so the ceiling is refused before any placement arithmetic runs. The guard is `maximum_pages <= CHANNEL_PAGES`, and this case is what pins the `<=`: were it `<`, a ceiling of 2 would fall through to the later refusal and report \"initial pages 259 exceed process maximum 2\" instead — a true statement that names the wrong problem.",
       "request": {
         "maximumPages": 2,
         "importedMinimumPages": 0,
@@ -236,6 +288,18 @@
         "threadSlotCount": 1024
       },
       "message": "initial pages 4294967295 exceed process maximum 16384"
+    },
+    {
+      "name": "one page short of fitting control memory is refused",
+      "why": "The same request with a ceiling of 19. Paired with the accepting case above, it fixes the boundary at exactly 20 rather than near it.",
+      "request": {
+        "maximumPages": 19,
+        "importedMinimumPages": 0,
+        "requestedMinimumPages": 0,
+        "heapBase": 65536,
+        "threadSlotCount": 1024
+      },
+      "message": "initial pages 20 exceed process maximum 19"
     }
   ]
 }

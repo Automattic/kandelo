@@ -59,6 +59,8 @@ const CORPUS = JSON.parse(
       threadSlotCount: number;
     };
     layout: Record<string, number>;
+    /** Declared when only a program's bytes can present this case. */
+    programBytesOnly?: boolean;
   }[];
 };
 
@@ -184,8 +186,18 @@ function importedMemoryMinimumPagesOracle(bytes: ArrayBuffer): number | null {
     }
     const importCount = uleb();
     for (let i = 0; i < importCount; i++) {
-      off += uleb();
-      off += uleb();
+      // NOT `off += uleb()`. A compound assignment reads its left operand
+      // BEFORE evaluating the right, and `uleb()` advances `off` past the
+      // length prefix as a side effect — so `off += uleb()` discards that
+      // advance and loses one byte per name. Across 68 imports that is 136
+      // bytes of drift, and this walk read `kind 103` where `env.memory`
+      // should have been, returning null for a program that imports 533
+      // pages. It agreed with the Rust reader only for programs whose
+      // imports it never had to walk.
+      const moduleNameLength = uleb();
+      off += moduleNameLength;
+      const fieldNameLength = uleb();
+      off += fieldNameLength;
       const kind = buf[off++];
       if (kind === 0x00) uleb();
       else if (kind === 0x01) {
@@ -234,23 +246,29 @@ function programBinaries(): { path: string; bytes: ArrayBuffer }[] {
 
 describe("one process memory layout", () => {
   it("places every corpus case where the hand-derived rule says", () => {
-    // These cases name a heap base and an imported minimum directly, which a
-    // program's bytes are the only way to express through the module. The
-    // subset reachable without synthesising a binary is the one whose facts
-    // are all absent — the rest are the Rust test's to check, against the same
-    // file.
-    const reachable = CORPUS.cases.filter((entry) =>
-      entry.request.heapBase === null && entry.request.importedMinimumPages === 0
-    );
-    // Three of the corpus's cases name no heap base and no memory import. A
-    // corpus edit that dropped them would leave this assertion running over an
-    // empty list and still reporting a pass.
-    expect(reachable.length).toBeGreaterThanOrEqual(3);
+    // A heap base is NOT a program-bytes-only fact: `heapBase` is an option
+    // this entry point takes and honours, which is how a caller places a
+    // layout for a process whose program it has not read. Only an imported
+    // memory's minimum needs a real binary, and the corpus declares those
+    // cases rather than leaving this filter to infer them — a skip nobody
+    // declared reads exactly like a pass.
+    const skipped = CORPUS.cases.filter((entry) => entry.programBytesOnly);
+    const reachable = CORPUS.cases.filter((entry) => !entry.programBytesOnly);
+    // Every declared skip is declared for the one reason that is true of it.
+    for (const entry of skipped) {
+      expect(entry.request.importedMinimumPages).toBeGreaterThan(0);
+    }
+    // A corpus edit that dropped cases, or marked one skipped to quiet a
+    // failure, would otherwise leave this assertion running over a short list
+    // and still report a pass. The floor tracks the corpus: raise it when
+    // cases are added, never lower it to make a run pass.
+    expect(reachable.length).toBeGreaterThanOrEqual(8);
     for (const entry of reachable) {
       const layout = computeProcessMemoryLayout({
         ptrWidth: 4,
         maxPages: entry.request.maximumPages,
         minPages: entry.request.requestedMinimumPages,
+        heapBase: entry.request.heapBase,
         threadSlots: entry.request.threadSlotCount,
       });
       expect({ name: entry.name, ...layout }).toEqual({

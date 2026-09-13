@@ -53,8 +53,9 @@ describe("one bounds-check rule", () => {
   it("has cases this host can present", () => {
     // A corpus that drifted to all-`rustOnly` would leave this file asserting
     // nothing while still reporting a pass — the failure mode the whole
-    // shared-corpus arrangement exists to avoid.
-    expect(presentable.length).toBeGreaterThanOrEqual(8);
+    // shared-corpus arrangement exists to avoid. The floor tracks the corpus:
+    // raise it when cases are added, never lower it to make a run pass.
+    expect(presentable.length).toBeGreaterThanOrEqual(11);
   });
 
   for (const entry of presentable) {
