@@ -184,6 +184,20 @@
       "scope_end": "\n        }\n",
       "find": "            inode.deferred_payload = payload.to_vec();",
       "replace": ""
+    },
+    {
+      "name": "the export headroom check ignores free inodes",
+      "scope": "pub fn check_export_headroom(",
+      "scope_end": "\n}\n",
+      "find": "    let met = crate::image_policy::check_headroom(&fs, headroom).is_ok();",
+      "replace": "    let met = free_bytes >= headroom.minimum_free_bytes;"
+    },
+    {
+      "name": "the export headroom check judges an empty filesystem instead of the image",
+      "scope": "pub fn check_export_headroom(",
+      "scope_end": "\n}\n",
+      "find": "    let free_bytes = st.f_bfree.saturating_mul(u64::from(st.f_frsize));",
+      "replace": "    let free_bytes = u64::MAX;"
     }
   ]
 }

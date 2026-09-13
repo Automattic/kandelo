@@ -148,6 +148,20 @@
       "scope_end": "\n",
       "find": "        if archive_id == 0 { archive_payload } else { b\"\" },",
       "replace": "        b\"\","
+    },
+    {
+      "name": "a headroom breach reports success",
+      "scope": "    let rc = if outcome.met { 0 } else { err(Errno::EDOM) };",
+      "scope_end": "\n",
+      "find": "    let rc = if outcome.met { 0 } else { err(Errno::EDOM) };",
+      "replace": "    let rc = 0;"
+    },
+    {
+      "name": "the verdict reports the required numbers as the free ones",
+      "scope": "    let fields = [\n        outcome.free_bytes,",
+      "scope_end": "\n    ];\n",
+      "find": "        outcome.free_bytes,\n        outcome.required_bytes,",
+      "replace": "        outcome.required_bytes,\n        outcome.free_bytes,"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
