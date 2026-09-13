@@ -4484,6 +4484,72 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### LANE Y IS CLOSED — 36 importers to 0, on the lane's own stated condition
+
+**2026-09-13.** Zero files under `images/` import `memory-fs` or
+`sharedfs-vendor`. The lane declared its closure condition as
+`imageBuilderFilesystemImporters <= 0` and the measurement says so; the budget's
+lane-closure check is what surfaced it, which is the point of writing the
+condition down before doing the work.
+
+**What closing does NOT mean**, recorded beside the status so nobody has to
+reconstruct it:
+
+* **Gap 21 is still open**, pinned by an `it.fails` test. A legacy image's
+  standalone lazy file is re-exported as a zero-length ordinary file.
+* **The shipped base images have NOT been rebuilt** through the Rust producer,
+  which is what makes the seal real rather than inert. That is decision 2 above
+  and the next thing on the critical path.
+
+Neither is measured by this surface, which is a DECOUPLING measure: it says the
+builders no longer reach the image format through the TypeScript filesystem, and
+nothing more.
+
+**The last importer was the funnel**, `vfs-image-helpers.ts`, and both its uses
+were fallbacks for `MemoryFileSystem` whose own comments said they die with it:
+a `statfs` arm that recomputed a headroom DECISION in TypeScript from free
+blocks, and a capacity read that parsed the artifact host-side.
+
+### GAPS 22 and 23 — both found by the cutover, both would have shipped
+
+**GAP 22 — a shared helper recognised only one implementation's errors.**
+`image-helpers.ts` swallows `EEXIST` so a builder may create a directory
+idempotently. It tested `error.code === EEXIST`. The module bridge throws
+`errno`, and `vfs-errors.ts` defines `EEXIST` as the NEGATIVE form a syscall
+returns while the bridge reports the positive one — **two disagreements at
+once**, field name and sign. So "swallow only EEXIST" had quietly become
+"rethrow everything" for the new filesystem, and it surfaced as `EEXIST: mkdir
+/usr` from a builder that created `/usr` exactly once.
+
+The shape is worth naming: **a compatibility helper written for one
+implementation looks implementation-agnostic and is not.** It sat in
+`host/src/vfs/`, took the interface type as its parameter, and encoded one
+implementation's error convention in its body.
+
+**GAP 23 — the bridge accepted two options and honoured neither.**
+`SffsImageFs.saveImage` took `normalizeTimestampsMs` and `materializeAll` and
+dropped both on the floor. **An option accepted and ignored is worse than one
+not offered**, because the caller believes the artifact is what it asked for.
+
+`normalizeTimestampsMs` is what makes a product artifact reproducible: the same
+tree from the same inputs must produce the same BYTES, or every downstream cache
+keys on the wall clock. It is now implemented end to end. It rides on
+`sm_set_image_options` beside capacity and metadata — same reasoning, a
+statement about the ARTIFACT rather than an operation on the tree, and therefore
+no new entry point. Negative means "each inode keeps its own times": a timestamp
+is milliseconds since the epoch, so the whole negative half of the range is free
+to mean unset without stealing a representable value.
+
+**It also had to set the WRITER's clock**, which is the part that would have
+been easy to miss and impossible to see: `mkfs` creates the root directory
+before the walk begins, so the walk never re-stamps it. Normalising only the
+walk leaves an artifact that is reproducible everywhere except its own root.
+
+`materializeAll` now THROWS. This module has no fetcher — the transports are the
+host's — so it cannot honour the option at all, and exporting a tree still full
+of deferred stubs under a name that promised otherwise is exactly the
+convenient illusion the platform-values contract forbids.
+
 ### The twenty-first entry point, and the fold that was rejected to pay for it
 
 **Decided and landed 2026-09-13. This raises a BANKED ceiling, 20 -> 21, which
