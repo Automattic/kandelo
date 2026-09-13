@@ -3615,3 +3615,53 @@ gap to close" -- while its largest member sat in the attic. Same structural erro
 as `forkPlatformTypeScript`'s glob (§64). The raise is argued by what it buys:
 170 lines for 1239. Target is set equal to ceiling again, so a rise without a new
 caller in `worker-main.ts` is the anticipation this rewrite removed.
+
+## §70 — Why the remainder is a port and cannot be a restore
+
+With the audit done and the backend rewritten, what is left dangling in
+`worker-main.ts` is one cluster. Mapping each module's fork-internal
+dependencies settles how it has to be finished:
+
+| Module | Depends on |
+|---|---|
+| `fork-activation-registry` | 14 fork modules |
+| `fork-early-reference-provider` | 9 |
+| `fork-process-continuation` | 6 |
+| `fork-table-snapshot` | 7 |
+| `fork-externref-process-owner` | 4 |
+| `fork-reference-segments` | 3 |
+| `fork-exception-provider` | 3 (including the registry -- mutually) |
+| `fork-imported-globals` | 1 |
+| `fork-gc-codec` | NONE |
+| `fork-anyref-transit` | NONE |
+
+**Every path bottoms out in two modules that cannot come back.**
+
+`fork-module-state` (3825 lines) is a second implementation of the KFMS wire
+format the module owns. §64 refused it and the reason has not changed: two
+readers of one format drift, and the drift surfaces as a fork child silently
+disagreeing with its parent.
+
+`fork-reference-wire` does not exist at all -- this lane DELETED it in
+`b19fa1a58` as superseded by the module.
+
+So the cluster cannot be restored even in principle. Each consumer has to be
+rewritten against the module's own accessors (`fm_decoded_*`, the `fm_ref_*`
+feed) instead of the TypeScript arena and wire decoders. That is a port, and it
+is the shape of the rest of this lane.
+
+**Two of them are leaves and can move independently**: `fork-gc-codec` and
+`fork-anyref-transit` have no fork-internal dependencies at all. §66 already
+established what `fork-gc-codec` needs -- porting down to its locator, since the
+host already seeds the module with raw bytes and the decoder is the module's.
+`fork-anyref-transit` wraps the module's own exported transit table, so it is a
+candidate for the same treatment as the frame trampolines: read what the module
+exports rather than wrap it.
+
+**`fork-reference-capture-module` is a warning worth recording.** At 252 lines
+with a single dependency on `fork-module-instance`, it looks like the easiest
+restore left. It is not restorable at all: it calls
+`fm_capture_begin_vector` / `_append_vector` / `_finish_vector`, which this lane
+DELETED as dead unguarded duplicates. Restoring it would reintroduce calls to
+entries that no longer exist. Dependency count is not the measure of whether
+something can come back -- whether its callees still exist is.
