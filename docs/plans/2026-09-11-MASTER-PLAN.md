@@ -3659,6 +3659,19 @@ V4 killable — `perturb/deferred-until-v4.json` is retired and its trials are i
 `sffs-module-abi.json`, which is the green contract its handoff named as the
 definition of done.
 
+### Next in lane V: make the round-trip verb re-enter its own output
+
+**Scoped 2026-09-12, straight out of H-13.** `xtask vfs-image roundtrip` loads
+an image, exports it, and compares decoded descriptions. It never feeds the
+export back through the loader, which is why gap 15 — the kernel refusing images
+it had just written — survived a green corpus run.
+
+**The fix is one more pass, not a new tool**: load the export. It is cheap
+(the export is already in hand), it is the door the first load came through, and
+it would have failed loudly on every image with no deferred files. Worth doing
+before the sixteen constructor repoints, because those builds are exactly the
+artifacts this verb is the corpus check for.
+
 ### Gap 15 — the kernel refused an image it had just written
 
 **Found 2026-09-12 by the first round-trip test, and it had been invisible.**
