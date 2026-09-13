@@ -111,7 +111,6 @@ import {
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
 import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
-import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
