@@ -58,6 +58,37 @@ export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
  */
 export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
 
+/**
+ * Drive-table slots reserved per activation.
+ *
+ * DUPLICATED from `DRIVE_SLOTS_PER_ACTIVATION` in `fork-codec`; the module
+ * derives every slot from `fm_drive_table_base`, so a host that grew the table
+ * by a smaller stride would leave later activations overlapping earlier ones.
+ */
+export const FORK_ACTIVATION_DRIVE_SLOTS = 13;
+
+/**
+ * One activation's guest exports, bound into the module's drive table so the
+ * module can `call_indirect` them.
+ *
+ * Each entry is `[slot offset, guest export name]`. The offsets are
+ * DUPLICATED from `crates/fork-codec/src/drive_plan.rs`, and binding the wrong
+ * one makes the module call the wrong guest function with the right-looking
+ * arguments -- a silent wrong answer, so `host/test/fork-module-backend.test.ts`
+ * pins them against that file.
+ *
+ * This replaces `forkGcCodecProviderFromInstance`, which bound the same exports
+ * into a JavaScript object the host then called. The module calls them now, so
+ * the host only has to put them somewhere the module can reach.
+ */
+export const FORK_ACTIVATION_DRIVE_BINDINGS = [
+  [0, "__wpk_fork_ref_gc_allocate"],
+  [1, "__wpk_fork_ref_gc_fill"],
+  [2, "__wpk_fork_exception_materialize"],
+  [11, "__wpk_fork_ref_gc_encode_slot"],
+  [12, "__wpk_fork_ref_gc_probe"],
+] as const;
+
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
 const DECODED_FIELD_KIND = 0;
 const DECODED_FIELD_MODULE_ACTIVATION = 1;
@@ -275,6 +306,35 @@ export class ForkModuleContinuationBackend {
       );
     }
     return { ptr, len };
+  }
+
+  /**
+   * Bind one activation's typed-reference guest exports into the module's drive
+   * table, so the module can drive allocation, filling, exception
+   * materialization, probing and encoding without importing them.
+   *
+   * A reference-typed `Table.set` is a host floor: Rust cannot hold a funcref.
+   * Everything else about the drive -- the order, the plan, the transit asserts
+   * -- is the module's.
+   */
+  bindActivationDrive(
+    activationId: number,
+    guestExports: Record<string, unknown>,
+  ): void {
+    const base = this.call("fm_drive_table_base", activationId);
+    const table = this.options.instance.driveTable;
+    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    if (table.length < needed) table.grow(needed - table.length);
+    for (const [offset, name] of FORK_ACTIVATION_DRIVE_BINDINGS) {
+      const fn = guestExports[name];
+      if (typeof fn !== "function") {
+        throw new Error(
+          `${this.label}: activation ${activationId} exports no ${name}; the ` +
+            `module cannot drive its typed reference reconstruction`,
+        );
+      }
+      table.set(base + offset, fn);
+    }
   }
 
   /** Make a child's decoded reference graph resident for the accessors below. */

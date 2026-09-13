@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  FORK_ACTIVATION_DRIVE_BINDINGS,
+  FORK_ACTIVATION_DRIVE_SLOTS,
   FORK_MODULE_RESUME_CATALOG_CAP,
   FORK_MODULE_STATS,
 } from "../src/fork-module-backend";
@@ -38,5 +40,50 @@ describe("fork-module backend constants", () => {
     expect(Number(match![1].replace(/_/g, ""))).toBe(
       FORK_MODULE_RESUME_CATALOG_CAP,
     );
+  });
+});
+
+describe("activation drive bindings", () => {
+  const drivePlan = readFileSync(
+    join(import.meta.dirname, "..", "..", "crates/fork-codec/src/drive_plan.rs"),
+    "utf8",
+  );
+
+  /** `pub const NAME: u32 = N;` from drive_plan.rs. */
+  function constant(name: string): number {
+    const match = new RegExp(`pub const ${name}: u32 = ([0-9]+);`).exec(drivePlan);
+    if (!match) throw new Error(`drive_plan.rs no longer defines ${name}`);
+    return Number(match[1]);
+  }
+
+  it("binds each guest export at the slot fork-codec assigns it", () => {
+    // Binding the wrong slot makes the module call the wrong guest function with
+    // arguments that look right -- an allocate driven as a fill, say. Nothing
+    // traps; the child is simply rebuilt wrong.
+    const expected = new Map<string, number>([
+      ["__wpk_fork_ref_gc_allocate", constant("DRIVE_OP_ALLOC")],
+      ["__wpk_fork_ref_gc_fill", constant("DRIVE_OP_FILL")],
+      ["__wpk_fork_exception_materialize", constant("DRIVE_OP_EXN")],
+      ["__wpk_fork_ref_gc_encode_slot", constant("DRIVE_SLOT_GC_ENCODE")],
+      ["__wpk_fork_ref_gc_probe", constant("DRIVE_SLOT_GC_PROBE")],
+    ]);
+    expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
+    for (const [slot, name] of FORK_ACTIVATION_DRIVE_BINDINGS) {
+      expect(slot, name).toBe(expected.get(name));
+    }
+  });
+
+  it("reserves the stride fork-codec reserves", () => {
+    // The module derives every slot from fm_drive_table_base. A host growing by
+    // a smaller stride would leave later activations overlapping earlier ones.
+    expect(FORK_ACTIVATION_DRIVE_SLOTS).toBe(constant("DRIVE_SLOTS_PER_ACTIVATION"));
+  });
+
+  it("binds no slot outside the per-activation slice", () => {
+    // Without this, a binding at an offset past the stride would silently write
+    // into the NEXT activation's slice and pass the mapping test above.
+    for (const [slot, name] of FORK_ACTIVATION_DRIVE_BINDINGS) {
+      expect(slot, name).toBeLessThan(FORK_ACTIVATION_DRIVE_SLOTS);
+    }
   });
 });

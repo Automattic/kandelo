@@ -4034,3 +4034,34 @@ fails it.
 green until that file was removed from the expected-failure list in the same
 commit. 203 -> 202. Every entry that leaves this list is a file the port brought
 back.
+
+## §79 — The second port piece: a provider becomes a table binding
+
+`forkGcCodecProviderFromInstance` bound five of an activation's guest exports --
+`_gc_allocate`, `_gc_fill`, `exception_materialize`, `_gc_encode_slot`,
+`_gc_probe` -- into a JavaScript object, and the HOST called them.
+
+The module calls them now, through `call_indirect` on its drive table. So the
+host's job collapses to putting them where the module can reach: `bindActivationDrive`,
+27 lines against roughly 90. The `Table.set` itself is a genuine floor -- Rust
+cannot hold a funcref -- while the order, the plan and the transit asserts are
+all the module's.
+
+**The slot numbers are the danger, and they are pinned.** Binding the wrong slot
+makes the module call the wrong guest function with arguments that look right: an
+allocate driven as a fill. Nothing traps. The child is simply rebuilt wrong, and
+only at reconstruction time. So the five offsets and the per-activation stride
+are both read out of `crates/fork-codec/src/drive_plan.rs` by the test and
+compared, and both perturbations -- swapping allocate with fill, and shortening
+the stride by one -- fail.
+
+A third assertion exists because the first two are not enough on their own: no
+binding may sit at an offset past the stride. Without it, an offset of 13 would
+satisfy the mapping test while silently writing into the NEXT activation's slice.
+
+**The baseline caught its first real regression here.** Raising
+`forkTypeScript`'s ceiling was a separate step from writing the code, and in
+between, `test/surface-budget.test.ts` was failing -- which
+`suite-baseline.mjs` reported as a REGRESSION rather than letting it pass as part
+of the red suite. That is exactly the noise-into-signal the maintainer asked for,
+working on the first day.
