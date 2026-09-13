@@ -4049,6 +4049,50 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The seal's producer: a THIRD payload state, because "pending" must not read as "none"
+
+**Designed 2026-09-13. The decision recorded earlier — the module seals at
+EXPORT, so nothing can forget to — survives contact, with one addition that
+matters.**
+
+**Why the producer is on the critical path.** The maintainer's rebuild is what
+unblocks five importers, and the images being rebuilt are the SHELL images,
+which carry atomic cohorts. Rebuilding them through the new producer therefore
+requires the new producer to seal. The verifier alone does not close this.
+
+**Where sealing happens: at the export door, inside the module.** The builder
+cannot compute a cohort digest as it registers, because that digest covers every
+member and the last one is not known until the archive set is complete. A
+separate "finalise" call would work and is forgettable, which is the property
+this design exists to avoid. `sm_export_image_read` is the only way bytes leave
+the module, so sealing at its first chunk cannot be skipped by a caller who
+forgot.
+
+**The addition: the payload needs THREE states, not two.**
+
+| state | what it means | who writes it |
+|---|---|---|
+| none | this archive is not in a cohort | producer |
+| **pending** | it IS in cohort X as member Y, digests not yet computed | producer, at registration |
+| sealed | digests computed and bound | the module, at export |
+
+**And `verify_cohorts` must REFUSE pending**, which is the whole reason the
+third state has to exist rather than being modelled as "none". An image that
+reaches a consumer still carrying pending seals is one the producer failed to
+seal — and if pending read as "no cohort", that failure would arrive looking
+exactly like an archive that was never meant to be in a cohort at all. **The
+difference between "no seal was wanted" and "a seal was wanted and never
+written" is the entire question**, and a two-state payload cannot express it.
+
+**Encoding:** the existing `has_seal` byte gains value 2, carrying only the
+cohort id and member name. `decode` already refuses a byte it does not know, so
+an older reader meeting a pending payload refuses rather than guessing — which
+is the correct behaviour for a reader that cannot tell whether a seal was owed.
+
+**Not implemented yet.** Recorded first because it is a security format and the
+three-state insight arrived while writing the design down rather than while
+writing code.
+
 ### The seal verifier is built, tested, perturbed — and called by nothing
 
 **Found 2026-09-13, by asking the question I had already written down for a
