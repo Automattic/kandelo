@@ -4315,6 +4315,39 @@ Recomputation has no such state.
 returns opaque payload bytes, exactly as it did before; every step above happens
 in `sffs-module`, which is where the format lives.
 
+**LANDED 2026-09-13, as designed.** `sm_register_lazy_file` takes five more
+arguments and the ABI stays at twenty entry points; `sm_export_image_read` seals
+at offset 0; `seal_cohorts` recomputes every cohort from the membership that
+`Pending` and `Sealed` both carry. The bridge's `registerArchiveMember` grew an
+optional `cohort: { id, member, expectedCount }` and nothing else.
+
+**The recompute decision turned out to be TESTABLE, which was not obvious.** For
+a tree that was only ever registered, "seal what is pending" and "re-seal every
+cohort" produce identical bytes — so the argument for recomputation looked like
+one of those distinctions no test can see. It is visible from the other side: a
+payload can arrive ALREADY sealed and wrong, which is exactly what a derived
+build sees, because loading a base image brings its seals back. The test plants
+a stale cohort digest and exports; recomputation repairs it, and sealing only
+what is pending would carry it into an image that fails its own verifier. The
+trial for it — *a cohort already sealed is left as it is instead of recomputed*
+— is killed, so the design is defended rather than merely argued.
+
+**One existing test had to stop using the export door**, and that is worth
+recording as the design working rather than as a test getting harder. It stands
+up an image whose seals do not authenticate, and the producer now REFUSES to
+emit one — an image like that is, by construction, one no honest producer makes.
+It reaches past the door to `export_container_read`, with a comment saying why.
+Twice now the producer has made a test unable to fake its output: first when
+registration stopped accepting a seal, and again here.
+
+**Evidence:** sffs-module 71 passed (seven new), runtime-core 2162 + 6, bridge
+37 (two new), surface budget 81 with entry points still at 20, wasm32 rebuilt.
+`sffs-module-seal.json` 17/17 killed.
+
+**What this unblocks:** the maintainer's rebuild of the shipped base images now
+has a producer that seals, which is what five of Y5's seven remaining importers
+were waiting on.
+
 ### The seal verifier is built, tested, perturbed — and called by nothing
 
 **Found 2026-09-13, by asking the question I had already written down for a
