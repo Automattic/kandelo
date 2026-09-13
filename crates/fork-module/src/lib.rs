@@ -2384,6 +2384,60 @@ mod wasm {
         LAST_ERRNO.store(errno as i32, Ordering::Relaxed);
     }
 
+    // -- Fork lifecycle phase ------------------------------------------------
+    //
+    // Which capture/replay step the process is in, and which entry points are
+    // legal from it. This lived in TypeScript (`ForkProcessContinuationCoordinator`
+    // in attic/fork-typescript-do-not-use/fork-process-continuation.ts) as a
+    // `requirePhase(expected, operation)` guard in front of every coarse call.
+    //
+    // It is POLICY, not host floor: nothing about "you cannot seal a capture you
+    // never began" needs to observe a JavaScript object. Leaving it in the host
+    // meant every host reimplemented the same state machine, and a host that got
+    // it wrong called the module out of order -- which the module then had no way
+    // to refuse. That is the decoder-drift shape this campaign exists to remove,
+    // applied to control flow instead of a wire format.
+    //
+    // A wrong-phase call answers EBUSY, an errno the module uses for NOTHING else,
+    // so a test asserting it cannot be satisfied by an unrelated failure. EINVAL
+    // would not have that property: 207 sites already answer it.
+
+    const PHASE_IDLE: u32 = 0;
+    const PHASE_CAPTURE: u32 = 1;
+    const PHASE_SEALED_PARENT: u32 = 2;
+    const PHASE_PARENT_REPLAY: u32 = 3;
+    const PHASE_CHILD_REPLAY: u32 = 4;
+    const PHASE_ABORT_REPLAY: u32 = 5;
+
+    static PHASE: AtomicU32 = AtomicU32::new(PHASE_IDLE);
+
+    /// Refuse an entry point that is not legal from the current phase.
+    fn require_phase(expected: u32) -> Result<(), Errno> {
+        if PHASE.load(Ordering::Relaxed) == expected {
+            Ok(())
+        } else {
+            Err(Errno::EBUSY)
+        }
+    }
+
+    /// Refuse an entry point legal from either of two phases.
+    ///
+    /// Only the replay-finish entries need this: a parent replay and a child
+    /// replay both end at idle through the same call, and collapsing them into
+    /// one `require_phase` would mean accepting every phase instead.
+    fn require_phase_either(first: u32, second: u32) -> Result<(), Errno> {
+        let current = PHASE.load(Ordering::Relaxed);
+        if current == first || current == second {
+            Ok(())
+        } else {
+            Err(Errno::EBUSY)
+        }
+    }
+
+    fn enter_phase(next: u32) {
+        PHASE.store(next, Ordering::Relaxed);
+    }
+
     // -- Coordinator (JS→wasm, once per phase, not hot) ---------------------
 
     /// Register a fresh unwind activation into `module` over its own MODULE-OWNED
@@ -4307,7 +4361,14 @@ mod wasm {
     /// backend's `abort()` releasing the frame arena). Idempotent.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_abort() {
-        match abort_impl() {
+        // Deliberately legal from EVERY phase, including idle: this is the
+        // teardown a failed fork unwinds through, and a teardown that can itself
+        // be refused leaves the process stuck in the phase it was trying to
+        // leave. It returns to idle whether or not the impl succeeded, for the
+        // same reason.
+        let result = abort_impl();
+        enter_phase(PHASE_IDLE);
+        match result {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -4344,13 +4405,18 @@ mod wasm {
         sides_ptr: usize,
         sides_count: usize,
     ) {
-        match child_seed_impl(
-            module_state_root as u64,
-            act0_root as u64,
-            sides_ptr as u64,
-            sides_count as u64,
-        ) {
-            Ok(()) => set_ok(),
+        match require_phase(PHASE_IDLE).and_then(|()| {
+            child_seed_impl(
+                module_state_root as u64,
+                act0_root as u64,
+                sides_ptr as u64,
+                sides_count as u64,
+            )
+        }) {
+            Ok(()) => {
+                enter_phase(PHASE_CHILD_REPLAY);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4380,14 +4446,19 @@ mod wasm {
         sides_ptr: usize,
         sides_count: usize,
     ) {
-        match child_seed_borrowed_impl(
-            module_state_root as u64,
-            act0_root as u64,
-            act0_private_prefix as u64,
-            sides_ptr as u64,
-            sides_count as u64,
-        ) {
-            Ok(()) => set_ok(),
+        match require_phase(PHASE_IDLE).and_then(|()| {
+            child_seed_borrowed_impl(
+                module_state_root as u64,
+                act0_root as u64,
+                act0_private_prefix as u64,
+                sides_ptr as u64,
+                sides_count as u64,
+            )
+        }) {
+            Ok(()) => {
+                enter_phase(PHASE_CHILD_REPLAY);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4791,8 +4862,21 @@ mod wasm {
     /// state machine silently. Two names are the guard there. Here they are not.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_replay(abort: u32) {
-        match parent_replay_impl(abort != 0) {
-            Ok(()) => set_ok(),
+        match require_phase(PHASE_SEALED_PARENT)
+            .and_then(|()| parent_replay_impl(abort != 0))
+        {
+            Ok(()) => {
+                // The two replays END differently -- an abort replay finishes
+                // with `fm_parent_finish(abort=1)` and returns `-errno` to the
+                // guest's `kernel_fork`, an ordinary one with `abort=0` -- so
+                // they are separate phases rather than one "replaying".
+                enter_phase(if abort != 0 {
+                    PHASE_ABORT_REPLAY
+                } else {
+                    PHASE_PARENT_REPLAY
+                });
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4856,8 +4940,11 @@ mod wasm {
     /// rather than trapping.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_seal_capture(channel_base: usize) -> usize {
-        match seal_capture_impl(channel_base as u64) {
+        match require_phase(PHASE_CAPTURE)
+            .and_then(|()| seal_capture_impl(channel_base as u64))
+        {
             Ok(ptr) => {
+                enter_phase(PHASE_SEALED_PARENT);
                 set_ok();
                 ptr as usize
             }
@@ -4894,13 +4981,16 @@ mod wasm {
         sides_ptr: usize,
         sides_count: usize,
     ) -> usize {
-        match begin_capture_impl(
-            channel_base as u64,
-            arena_root as u64,
-            sides_ptr as u64,
-            sides_count as u64,
-        ) {
+        match require_phase(PHASE_IDLE).and_then(|()| {
+            begin_capture_impl(
+                channel_base as u64,
+                arena_root as u64,
+                sides_ptr as u64,
+                sides_count as u64,
+            )
+        }) {
             Ok(root) => {
+                enter_phase(PHASE_CAPTURE);
                 set_ok();
                 root as usize
             }
@@ -4947,8 +5037,11 @@ mod wasm {
     /// chunk allocation), so the committed chain is complete and seal-able.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_abort_seal() {
-        match finish_unwind_impl() {
-            Ok(()) => set_ok(),
+        match require_phase(PHASE_CAPTURE).and_then(|()| finish_unwind_impl()) {
+            Ok(()) => {
+                enter_phase(PHASE_SEALED_PARENT);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4975,8 +5068,19 @@ mod wasm {
     /// `fm_parent_finish(abort=1)` is a loud `EINVAL`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_finish(abort: u32) {
-        match finish_transaction_impl(abort != 0) {
-            Ok(()) => set_ok(),
+        // An ordinary finish ends EITHER a parent replay or a child replay --
+        // the same call closes both, which is why this takes two phases rather
+        // than one. An abort finish ends only an abort replay.
+        let allowed = if abort != 0 {
+            require_phase(PHASE_ABORT_REPLAY)
+        } else {
+            require_phase_either(PHASE_PARENT_REPLAY, PHASE_CHILD_REPLAY)
+        };
+        match allowed.and_then(|()| finish_transaction_impl(abort != 0)) {
+            Ok(()) => {
+                enter_phase(PHASE_IDLE);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -7125,8 +7229,11 @@ mod wasm {
     /// smaller change than carrying a duplicate export until then.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_attach_child(module_state_root: usize, pid: u32) -> usize {
-        match attach_from_arena_impl(module_state_root as u64, pid) {
+        match require_phase(PHASE_IDLE)
+            .and_then(|()| attach_from_arena_impl(module_state_root as u64, pid))
+        {
             Ok(ptr) => {
+                enter_phase(PHASE_CHILD_REPLAY);
                 set_ok();
                 ptr
             }

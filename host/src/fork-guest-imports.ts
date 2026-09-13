@@ -35,10 +35,12 @@ import {
  *
  * `encode_funcref` and `table_mutation_commit` used to be here and are not any
  * more: the module serves both, given the one host capability they needed
- * (`__wpk_fork_host_func_identity`). The The two `exn_*` throws are here
- * for a different reason: they must re-enter wasm THROWING a tagged exception,
- * which a host import cannot do from JavaScript. The two `exn_*` throws must re-enter wasm
- * throwing, which a host import cannot do from JavaScript.
+ * (`__wpk_fork_host_func_identity`).
+ *
+ * The two `exn_*` throws are here for a different reason, and it is not an
+ * identity one: they must re-enter wasm THROWING a tagged exception. A
+ * JavaScript import cannot -- a JS `throw` crosses back as a foreign exception
+ * carrying the wrong tag, so an instrumented catch clause does not recognise it.
  */
 export interface ForkGuestHostFloor {
   readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;

@@ -4126,3 +4126,393 @@ ratchet.
 Worth noting how this was found: not by reasoning about the JSON, but because a
 real change tripped it and the failure did not match what the merge was supposed
 to guarantee.
+
+## §82 — What worker-main still owes the attic, measured rather than guessed
+
+I had been treating "port the cluster" as an open-ended job. It is not: it is
+eleven modules and thirty named symbols, and `tsc` will enumerate them.
+
+```
+fork-process-continuation   (3)  ForkProcessContinuationCoordinator + 2 types
+fork-activation-registry    (6)  buildForkActivationStateImports, ForkActivationRegistry, ...
+fork-exception-provider     (5)  buildForkExceptionImports, ForkExceptionBroker, ...
+fork-module-state           (5)  computeForkModuleTemplateId, ForkModuleStateArena, ...
+fork-imported-globals       (4)  ForkImportedGlobalCapture, ForkImportedGlobalPlanner, ...
+fork-gc-codec               (2)  forkGcCodecProviderFromInstance + type
+fork-reference-segments     (2)  decodeSegmentedForkReferenceTransaction + type
+fork-early-reference-provider (1) ForkEarlyChildReferenceProvider
+fork-reference-capture-module (1) ForkReferenceCaptureModule
+fork-table-snapshot         (1)  ForkTableSnapshot
+browser-fork-module-artifact (1)
+```
+
+That is the whole merge gate. `host/src` sits at 105 typecheck errors against
+the parent's 25; 14 of the 21 unresolved-module errors are these, and the 40
+implicit-`any` errors are cascade from them. The other 7 are vite `?url` aliases
+`tsc` cannot resolve on either branch.
+
+Worth stating plainly because I had not: the count is not "how much TypeScript
+must I write". Most of these symbols should not come back in any form.
+
+## §83 — The coordinator is a phase machine, and a phase machine is policy
+
+`ForkProcessContinuationCoordinator` is the largest of the eleven (1,471 lines)
+and `worker-main.ts` calls twenty-one of its methods. That looked like the
+hardest port. It was the easiest to reason about, once I read what the methods
+actually do.
+
+Nineteen of the twenty-one are this shape:
+
+```ts
+beginCapture(arena) {
+  this.requirePhase("idle", "begin process continuation capture");
+  ...checks...
+  this.requireModuleBackend("begin process continuation capture");
+  this.beginModuleCapture(arena);          // -> backend -> fm_parent_begin_capture
+}
+```
+
+A phase check, then a delegation. The module already has the entry point for
+every one of them: `fm_parent_begin_capture`, `fm_parent_seal_capture`,
+`fm_parent_replay`, `fm_parent_finish`, `fm_parent_abort_seal`,
+`fm_attach_child`, `fm_child_seed`, `fm_child_seed_borrowed`, `fm_abort`,
+`fm_begin_reference_replay`. What it did NOT have was any notion of which of
+them may be called when.
+
+So the question from the maintainer's standing rule -- must this be host code?
+-- answers itself. "You cannot seal a capture you never began" does not need to
+observe a JavaScript object. It was in the host only because that is where the
+sequencing loop used to live, and leaving it there means every host reimplements
+the same six-state machine while the module, which does the work, cannot refuse
+a call that arrives out of order. That is the decoder-drift hazard this campaign
+was started over, with control flow in place of a wire format.
+
+The six phases and their transitions, ported verbatim from the TypeScript:
+
+| from | entry | to |
+|---|---|---|
+| idle | `fm_parent_begin_capture` | capture |
+| capture | `fm_parent_seal_capture` | sealed-parent |
+| capture | `fm_parent_abort_seal` | sealed-parent |
+| sealed-parent | `fm_parent_replay(abort=0)` | parent-replay |
+| sealed-parent | `fm_parent_replay(abort=1)` | abort-replay |
+| idle | `fm_attach_child` / `fm_child_seed` / `fm_child_seed_borrowed` | child-replay |
+| parent-replay, child-replay | `fm_parent_finish(abort=0)` | idle |
+| abort-replay | `fm_parent_finish(abort=1)` | idle |
+| ANY | `fm_abort` | idle |
+
+Two of those rows are the ones worth arguing.
+
+`fm_parent_finish(abort=0)` accepts TWO phases. It is the only entry that does,
+and it needs its own `require_phase_either` rather than a relaxed check, because
+the same call ends both a parent replay and a child replay. Writing it as "any
+phase except abort-replay" would have been shorter and would have accepted
+`idle` and `capture` too.
+
+`fm_abort` accepts EVERY phase, deliberately, including idle, and returns to
+idle whether or not its impl succeeded. It is the teardown a failed fork unwinds
+through: a teardown that can itself be refused leaves the process stuck in the
+phase it is trying to leave. A guard there would turn one failure into two.
+
+## §84 — EBUSY, because EINVAL cannot tell a working guard from a broken one
+
+A wrong-phase call answers `EBUSY`, which the module uses for nothing else.
+
+This is the same correction §80 made about the exception codec, and I want it
+written down as a rule rather than as two incidents. A test that asserts the
+errno a hundred other paths also answer is not testing what it claims. The fork
+module answers `EINVAL` at 207 sites. Had the phase guard answered `EINVAL`,
+`expect(errno).toBe(EINVAL)` would pass against a module with no phase machine
+at all -- any argument check firing for an unrelated reason satisfies it.
+
+So the phase test carries a companion assertion whose only job is to prove the
+first ones mean something:
+
+```ts
+it("distinguishes a wrong-phase refusal from every other failure", () => {
+  const fm = freshModule();
+  fm.call("fm_parent_begin_capture", 0, 0, 0, 0);  // legal phase, bad argument
+  expect(fm.errno()).not.toBe(EBUSY);
+  expect(fm.errno()).not.toBe(0);
+});
+```
+
+Every refusal test also asserts the phase did NOT advance. A guard that rejects
+the call but moves the state anyway lets the next out-of-order call through, and
+the rejection alone would not have caught it.
+
+## §85 — H-9 again: three artifact tiers, and the test reads the stale one
+
+The phase tests failed on first run with `fm_phase is not a function` and errno
+22 where 16 was expected -- a module with no phase machine at all. The machine
+was there; the test was reading a different file.
+
+```
+host/wasm/fork_module32.wasm                     HAS fm_phase   18:09
+local-binaries/fork_module32.wasm                HAS fm_phase   18:09
+local-binaries/source-only-v1/fork_module32.wasm stale          15:09
+```
+
+`resolveBinary` serves the `source-only-v1` tier, and `build-wasm.sh` stages
+only the first two. This is hazard H-9 exactly as recorded, and I walked into it
+anyway, which says the hazard list is not doing its job as a checklist. The
+failure mode is worth naming precisely: it does not look like staleness. It
+looks like the feature was never implemented -- a missing export and a wrong
+errno, both of which are what you would see if the Rust edit had silently not
+applied. I spent the first minute re-reading the Rust.
+
+The tell is that BOTH symptoms were "as if the change did not exist", with no
+partial state. A genuine bug in a new phase machine looks like a wrong
+transition, not like the absence of the whole thing.
+
+## §86 — Two ceilings said no, and both were right
+
+Wiring the phase machine tripped two budgets at once:
+
+```
+forkTypeScript is 529, above its ceiling of 484.
+forkModuleHostEntries is 47, above its ceiling of 46.
+```
+
+The first was seven lifecycle methods I added to `fork-module-backend.ts`
+(`beginCapture`, `parentReplay`, `finishReplay`, `abort`, `attachChild`, …)
+ahead of rewiring `worker-main.ts` to call them. The second was one new export,
+`fm_phase()`, added so a test could assert which phase the module was in.
+
+I could have raised both. The maintainer's standing answer covers it -- raise if
+you must while I am away, but land it reversibly. I did not, because the
+surfaces were describing the change accurately in both cases.
+
+`forkTypeScript`'s own rationale, written when the backend was banked at 419,
+says: *"If it rises without a caller appearing in `worker-main.ts`, that is the
+anticipation the 1239 lines were made of."* That is exactly what I had done --
+seven methods, zero production callers, added because I could see where they
+were going. The 1,239-line wrapper this file replaced was built the same way, a
+method at a time for a caller that was coming. They come back when the rewiring
+lands and deletes the coordinator; until then they are a guess.
+
+`forkModuleHostEntries` has a target of **five**. Spending one of those on an
+accessor whose only caller is a test is the wrong trade, and I only wanted it
+because reading a number is the easy way to write a phase test.
+
+## §87 — Removing the accessor made the test stronger
+
+Without `fm_phase()` the test cannot ask what phase the module is in. It has to
+ask what the module will now DO:
+
+```ts
+function idleIsStillReachable(fm: Fm): boolean {
+  fm.call("fm_parent_begin_capture", 0, 0, 0, 0);
+  return fm.errno() !== EBUSY;   // refused for its arguments, not its phase
+}
+
+it("refuses to seal a capture that never began", () => {
+  fm.call("fm_parent_seal_capture", 0);
+  expect(fm.errno()).toBe(EBUSY);
+  expect(idleIsStillReachable(fm)).toBe(true);
+});
+```
+
+This is the better assertion and I would not have found it if the budget had let
+me through. An accessor can agree with a broken machine -- `fm_phase()` returning
+0 proves the phase WORD says idle, not that an idle-only entry will be admitted.
+The behavioural version proves the thing the guard exists for. The surface budget
+is supposed to stop growth; here it also improved a test, which is not something
+I expected a line-count ratchet to do.
+
+## §88 — A test of mine that could not fail, found by perturbing
+
+Perturbation P3 -- collapse `fm_parent_finish`'s two phase branches into one --
+did not fail. Eight of eight still passed.
+
+The test was `refuses an abort finish outside abort replay`, calling
+`fm_parent_finish(1)` from idle. `fm_parent_finish(0)` is legal from
+parent-replay or child-replay; `fm_parent_finish(1)` only from abort-replay.
+From IDLE both are refused whether or not the branch exists, so the test
+demonstrated nothing about the branch it was named for. Telling them apart needs
+standing in parent-replay and calling `finish(1)`, and reaching parent-replay
+needs a real capture over a live guest, which a unit test does not have.
+
+This is H-2 pointed at my own test rather than at the code, and it is the second
+time this session (the first was the resume table's sort assertion, §89). Both
+had the same shape: the assertion was true for the right reason AND for the wrong
+one, and only the perturbation could tell.
+
+The test is now split. One case keeps the behaviour it can actually show
+(`refuses an abort finish from idle`). A second pins the two branches as SOURCE,
+and says in the comment why it is not behavioural and where the real coverage
+is (`fork-module-kernel-abort.test.ts`, which drives a genuine ENOMEM child
+launch failure through abort replay). Naming the gap is worth more than a green
+assertion that closes it on paper.
+
+## §89 — The resume table, and an assertion that held either way
+
+`ForkResumeTable` came back as 100 lines of host floor from the attic's ~95, but
+they are not the same 95. Gone are the `targets` map and `slotFor()`: the module
+resolves `(activation, ordinal)` to a slot itself, and two implementations of one
+numbering is the drift this campaign removes. What a host still cannot delegate
+is the `WebAssembly.Table` itself -- Rust cannot hold a funcref, and the guest
+imports the table by name.
+
+What remains duplicated is narrow and unavoidable: WHERE each thunk goes. The
+module cannot write the table, so the host must place thunk `k` in the slot the
+module will name, which means both run one rule -- slot 0 reserved, each
+activation's ordinals sorted ascending, smallest free slot first, freed slots
+before grown ones. `host/test/fork-resume-table.test.ts` pins all four against
+the Rust that compiles into the module.
+
+The sort test is the one worth recording. It read:
+
+```ts
+table.registerActivation(0, [target(9), target(2), target(7)]);
+expect(table.slotsOf(0)).toEqual([1, 2, 3]);
+```
+
+Perturbing the sort away did not fail it. Slots come out `[1, 2, 3]` either way,
+because they are pushed in iteration order whether or not the batch was sorted.
+The assertion was about the slot NUMBERS, and the numbers are not what differs.
+What differs is which thunk is in which slot -- which is precisely the failure
+the parity contract exists to prevent, a guest resuming into a real function that
+is the wrong one. Asserting `table.get(1) === two.thunk` fails immediately.
+
+## §90 — The narrow command for H-9
+
+`./run.sh local-build` did not refresh the `source-only-v1` tier: two packages
+fail in this worktree for environmental reasons (`php` cannot find icu,
+`coreutils-docs` hits the known cold-cache kernel-boot blocker), 12 more were
+blocked behind them, and the projection never materialised. The tier kept a
+three-hour-old `fork_module32.wasm` while `local-binaries/` had the fresh one,
+and `source-only-v1` is FIRST in `ARTIFACT_TIERS`, so it shadowed it.
+
+The co-resident side modules are projected by the KERNEL product, not by the
+package set, so this refreshes them without touching either failing package:
+
+```
+cargo run -p xtask --target aarch64-apple-darwin -- local-build run \
+  --set  <abs>/packages/sets/local-supported.toml \
+  --source-cache-root <abs cache> \
+  --output-root <abs>/local-binaries/source-only-v1 \
+  --product kernel
+```
+
+Both `--set` and `--output-root` must be ABSOLUTE (a relative `--output-root`
+fails with a clear message; a relative `--set` does not). This is the command to
+reach for after any `crates/fork-module` change, and it takes seconds against
+`local-build`'s many minutes.
+
+## §91 — I ported the guards that existed; I did not invent new ones
+
+Three coordinator methods have no phase guard in the module, and the reason
+differs for each. Writing them down so a later reader does not take the absence
+for an oversight.
+
+`restoreFromArena` and `enableModuleReferenceReplay` were NOT guarded in the
+TypeScript either. Adding guards for them would be new policy invented during a
+port, which is how a port stops being reviewable: the diff then mixes "this
+moved" with "this changed", and only the author knows which is which. If they
+need guards, that is its own change with its own argument.
+
+`borrowedReplayWorkspaceRequirements` WAS guarded (`sealed-parent`) and is not
+guarded now, because it has no module entry point at all -- it is a host-side
+measurement that walks each activation's frame format and sums aligned prefix
+sizes. Its guard moves when the method does. This is a KNOWN REMAINING guard,
+not a dropped one.
+
+## §92 — A pgrep that matched another lane
+
+Twice I blocked on `until ! pgrep -f "build-wasm.sh|xtask"` waiting for my own
+build to finish. It was matching lane Y's `xtask perturb` run in
+`/Users/brandon/kandelo-lane-y`. My builds had already finished; I waited on a
+neighbour, then killed my own perturbation loop mid-P5 trying to clear the
+"stuck" wait, leaving a perturbation applied in the source tree.
+
+Worktrees share a machine, so a process-name pattern is not a lane-scoped
+question. The fix is to watch the thing that is actually mine -- the run's own
+output file -- rather than the process table:
+
+```
+tail -f <the run's output file> | grep --line-buffered -E "exit=|BUILD FAILED"
+```
+
+The second-order lesson is the one that cost more: after `pkill` I checked
+`git status` and saw `crates/fork-module/src/lib.rs` modified, which is what I
+expected from an in-progress perturbation loop. It took a `diff` against the
+saved original to see WHICH perturbation was still applied. A perturbation loop
+that can be interrupted must be assumed interrupted: diff, never assume, before
+building on the tree again.
+
+## §93 — The rewiring plan, and two phase reads that delete themselves
+
+`worker-main.ts` has 34 coordinator call sites across three parallel paths (the
+main process, the dlopen side activations, the pthread coordinator). Most map
+one-to-one onto a module entry the phase machine now guards. Five call
+`phaseName()`, which matters because I just removed `fm_phase()` on the grounds
+that its only caller was a test. After the rewiring that is no longer true --
+so the accessor comes back WITH those callers, and `forkModuleHostEntries`
+rises 46 -> 47 in that commit with the argument attached, rather than in this
+one on speculation.
+
+But two of the five delete themselves, and it is the phase machine that does it:
+
+```ts
+} catch (error) {
+  if (processContinuation.phaseName() !== "idle") {
+    try { processContinuation.abort(); } catch { /* preserve the original */ }
+  }
+```
+
+That guard exists because the OLD `abort()` would throw if called from idle.
+`fm_abort` is legal from every phase by construction -- it is the teardown a
+failed fork unwinds through, and a teardown that can be refused leaves the
+process stuck. So both sites become an unconditional `backend.abort()` inside
+the existing `try`, and the phase read disappears. Two of five, removed not by
+being ported but by the ported thing being better behaved.
+
+The remaining three are genuine reads (`phaseBeforeEntry`, and two branch
+points) and will need the accessor. Worth noticing which kind of call each of
+the 34 is before porting any of them: a call that exists to work around a
+limitation of the layer being replaced should not be carried across.
+
+## §94 — Two perturbation loops over one file, and a result I nearly believed
+
+The P3 re-run passed again -- 9 of 9 green with the perturbation applied -- and
+the assertion it was supposed to trip is a plain string search over the source
+file. A throwaway probe running that exact assertion under vitest against two
+fixed copies showed it working: unperturbed copy reports both guards, perturbed
+copy loses the abort one. So the assertion was fine and the run was lying.
+
+The cause was mine and it was ordinary. I had killed the FIRST perturbation
+loop's waiters and assumed I had killed the loop; I had not. It was still
+working through its own P5, and its final step is
+
+    cp /tmp/claude-501/fm2.orig crates/fork-module/src/lib.rs
+
+which landed in the middle of the SECOND loop's P3 -- after the perturbation was
+applied and the module rebuilt, before vitest read the source. The test read a
+restored file and correctly reported that both guards were present.
+
+Run in isolation, P3 fails exactly as it should:
+
+    AssertionError: expected 'pub extern "C" fn fm_parent_finish(ab…'
+      to match /require_phase\(PHASE_ABORT_REPLAY\)/
+
+Three things worth keeping from this.
+
+A perturbation loop mutates shared state in a worktree, so **two of them are not
+two experiments, they are one corrupted experiment**. Before starting one, check
+that no other is alive -- and `pkill` on a waiter does not kill what the waiter
+was waiting for.
+
+**A perturbation that does not fail is a claim about the test, and it needs the
+same standard of evidence as any other claim.** My first instinct both times was
+to rewrite the test, and the first time that was right (section 88: the
+behavioural version genuinely could not distinguish the branches). The second
+time it would have been wrong -- I would have "fixed" a working assertion and
+recorded a lesson that never happened. What separated the two cases was running
+the assertion in isolation against known inputs before touching it.
+
+**The green result was the dangerous one.** A perturbation that fails tells you
+the guard works. A perturbation that passes tells you either the guard is
+missing or the experiment is broken, and those are indistinguishable from the
+output alone. That asymmetry is worth remembering: the H-2 discipline is not
+"perturb and read the number", it is "perturb and be able to explain the number".
