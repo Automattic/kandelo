@@ -38,6 +38,40 @@ nobody reads the merge as "lane Y is done".
 > the maintainer decided become Rust tools, and the base-file identity gap
 > (items 2 and 3) that still loses 65 deferred files on the shipped rootfs.
 
+> **UPDATE 2026-09-13 — a THIRD merge point, and the lane is now gated on one
+> product decision.**
+>
+> Added since the note above:
+>
+> * **Y5: importers 20 → 11, banked.** Nine recipes construct `SffsImageFs` and
+>   declare their capacity. Repointing a recipe IS the producer cutover for that
+>   recipe, so these are also nine producers emitting `SDEF` rather than
+>   host-side lazy JSON.
+> * **Gap 16** — a load now keeps the image's declared CAPACITY and METADATA.
+>   Both were written only by their setters and read only by the export, so an
+>   image loaded and re-exported forgot its own declarations.
+> * **Gap 17** — sizing a derived image no longer wipes the base's declared ABI.
+>   Gap 16 made the kernel a second author of metadata the bridge was replaying.
+> * **`sm_image_metadata`** in, **`sm_init_root`** folded into `sm_reset`.
+>   Surface unchanged at 20 entry points; an approved ceiling raise went unused.
+> * **H-13** — `xtask vfs-image roundtrip` now loads its own export back. It had
+>   been comparing decoded descriptions, which is why gap 15 survived a green
+>   corpus run.
+>
+> **The gate.** Five of the eleven remaining importers need
+> `verifyImportedLazyAtomicGroupSeals`, and the seal is serialised into the
+> **host-side lazy JSON** — the section the Rust loader walks past. So those
+> builders can only repoint once either (a) their base images are rebuilt
+> through the new producer, or (b) a legacy verification path is written, which
+> means reproducing JavaScript's `JSON.stringify` byte-for-byte in a `no_std`
+> crate. `docs/agent-guidance/abi.md` argues for (a) — stale artifacts fail
+> loudly and are rebuilt rather than shimmed — but it is a product call about
+> what must keep working, so it is the maintainer's.
+>
+> **Not blocked on that decision:** `shell-lazy-archives` (bulk archive
+> registration, no new surface) and `source-rootfs-shell-overlay` (deferred-entry
+> enumeration, one entry point). Those take 11 → 9.
+
 ## What is finished: lane V's V4
 
 **An image the Rust export writes is now one the kernel can load back**, with
