@@ -905,6 +905,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn drive_table_base_reserves_slots_per_activation() {
         // Thirteen slots per activation (ALLOC, FILL, EXN, RESTORE,
         // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,

@@ -3801,3 +3801,39 @@ job, and it is the third time in this lane that a check existed, reported, and
 was not connected to the conclusion -- after a fixture that could not tell two
 answers apart and an exit status read from the wrong process. host-native goes
 62 -> 64 passing tests purely by running what was already written.
+
+## §74 — A second test that had never run, and a guard for the class
+
+Finding one disabled test (§73) was reason to look for more. `cargo`'s own
+"function ... is never used" warning, read instead of filtered, found a second:
+`drive_table_base_reserves_slots_per_activation` in
+`crates/fork-codec/src/drive_plan.rs`.
+
+**It had never run.** Not lost by an edit of mine -- checked back through every
+revision of that file, including the earliest, and the `#[test]` was never
+there. It passes now that it runs, so it was not hiding a defect; it simply was
+not defending anything. fork-codec goes 468 -> 469.
+
+Two instances is a class, so the class is now guarded.
+`host/test/rust-test-attributes.test.ts` fails when a no-argument function that
+asserts sits in a scanned Rust file without `#[test]`.
+
+The heuristic had to be narrowed once, by a false positive worth recording:
+`kernel_path_or_skip() -> Option<PathBuf>` panics with a provisioning message and
+is called by real tests. Flagging it would train a reader to ignore the check,
+which is worse than not having it. The rule is now: a TEST returns nothing or a
+`Result<()>` it can `?` through; a function returning a VALUE is a helper. Both
+real orphans return `()` or `wasmtime::Result<()>`, so the narrowing costs
+nothing.
+
+The guard carries its own anti-vacuity test -- a scanner that returned `[]` for
+every input would satisfy "no orphans found" perfectly -- and is perturbed
+against the real defect: removing `#[test]` from
+`drive_table_base_reserves_slots_per_activation` makes it fail by name.
+
+**This is the fourth time in this lane a check existed and did not reach the
+conclusion**, after a fixture that could not tell two answers apart, an exit
+status read from the wrong process, and an attribute an edit consumed. Cargo
+reported this one from the start. The failure was in reading a build's output
+through a filter shaped to find errors -- the same shape that hid the wasm64
+validation failure for three builds.
