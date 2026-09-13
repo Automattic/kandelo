@@ -3659,6 +3659,56 @@ V4 killable — `perturb/deferred-until-v4.json` is retired and its trials are i
 `sffs-module-abi.json`, which is the green contract its handoff named as the
 definition of done.
 
+### The base-file identity gap is not a missing key — it is a source that never had one
+
+**Measured 2026-09-12, and it corrects how items 2 and 3 were framed.** The
+maintainer asked the right question: *"The VFS should own the key entirely. The
+host is just responsible for taking some kind of address and resolving to bytes.
+If the VFS owned the key, wouldn't it be a lot harder to lose the deferred
+reference."* Yes — and the measurement says the VFS does **not** own it today.
+
+What the shipped rootfs actually contains: 65 deferred entries, **every one of
+them `archive_id == 0`** — a URL-backed single whose only identity is its
+payload — and the carrier is `klzy -> sdef`. `KLZY` is the kernel-facing subset
+and **carries no fetch description at all**: the URL and the integrity fields
+live in the trailing lazy JSON beside it, which only the host parses
+(`tools/xtask/src/vfs_image_describe.rs`, the comment at the KLZY branch says so
+in as many words).
+
+**So the export is not losing something it was given.** It is re-emitting
+everything it was told, and it was never told the URL. Today the HOST-side JSON
+owns the key; the kernel is handed an inode number and a size. A host-backed
+deferred file is *"addressed by its inode number"*
+(`host/src/vfs/rootfs-lazy-archives.ts`), and re-export renumbers inodes — which
+is why the reference cannot survive.
+
+**The design the maintainer describes already exists: it is SDEF.** A record
+carries an opaque payload that the kernel stores, carries through a load, and
+re-emits on export, never reading it. The kernel owns the key and the host is a
+resolver. It is proven lossless today on kernel-written images —
+`roundtrip` on a 1.5 MB SDEF image is EQUIVALENT.
+
+**What is missing is therefore not a format capability but a producer.** Four
+ways to close it, and only one is worth doing:
+
+* **(a) the producer cutover (V5/Y5) — the answer.** Builders emit SDEF with
+  payloads, and every image written afterwards round-trips losslessly. Already
+  the plan; already in flight.
+* **(b) teach the kernel to read the lazy JSON.** Rejected: JSON parsing in the
+  kernel, and it re-enshrines the host's format as the authority this lane
+  exists to remove.
+* **(c) add a payload field to KLZY.** A kernel-facing format change to a
+  section being replaced.
+* **(d) let the host push payloads in after a KLZY load.** The host already
+  parses the lazy JSON, so it could hand each payload to the kernel and the
+  kernel would own the key from that point. **Worth recording as the transition
+  bridge** if derived builds from today's KLZY images must be lossless before
+  the cutover finishes — it needs a way to attach a payload post-load, which is
+  an entry point the module does not have.
+
+**Nothing here needs a maintainer decision.** The measurement removed the
+decision: there is no key to choose, only a producer to cut over.
+
 ### Next in lane V: make the round-trip verb re-enter its own output
 
 **Scoped 2026-09-12, straight out of H-13.** `xtask vfs-image roundtrip` loads
