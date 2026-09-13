@@ -1270,6 +1270,46 @@ Three consequences, none of which this lane can settle alone:
   The worktree was restored and the branch's own gate re-run: 81 passed. Two
   guards, two forms, both perturbed until they failed.
 
+  **It is written out here rather than pointed at, for the reason the two
+  Rust patches were.** It was first written to a session temp directory, and
+  a verified fix that dies with the session is not a deliverable — the
+  session-artifacts ref does not hold it either, which was worth finding
+  before the claim travelled any further than this branch. Replace
+  `expandGlobs` in `host/test/surface-budget.test.ts` as it stands at
+  `19bb692c4` with:
+
+  ```ts
+  function expandGlobs(globs: string[]): string[] {
+    // Each glob must match something. `ls -1d ... 2>/dev/null || true` drops a
+    // path that no longer exists and swallows the failure, so a counted file
+    // that is renamed or moved contributes zero and the surface reads SMALLER
+    // — a reduction the ratchet then confirms. The per-file read below would
+    // have failed loudly, but it never sees the file: the expansion dropped it
+    // first.
+    const files: string[] = [];
+    for (const glob of globs) {
+      const script = `ls -1d ${glob} 2>/dev/null || true`;
+      const matched = execFileSync("/bin/sh", ["-c", script], {
+        cwd: repoRoot,
+        encoding: "utf8",
+      })
+        .split("\n")
+        .filter((line) => line !== "");
+      if (matched.length === 0) {
+        throw new Error(
+          `surface-budget: counted path matches nothing: ${glob}. A counted `
+            + "file that moved must fail here, not shrink the surface.",
+        );
+      }
+      files.push(...matched);
+    }
+    return files;
+  }
+  ```
+
+  The loop is the whole change: the original joined every glob into one `ls`
+  and could not tell which one matched nothing.
+
 ## Is lane L finished? No, and the budget says so
 
 Worth stating plainly, because this document spends most of its length on

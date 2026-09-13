@@ -2521,7 +2521,11 @@ not this patch's — that commit's budget has `unguardedLayoutModules` at ceilin
 1 and open, this branch's at 0, because lane G finished after lane S branched). It fails loudly on a renamed counted file AND on a glob that
 matches nothing — the variant a literal-path check misses — and
 `host/src/fork-*.ts` still expands to 36 files and counts normally. The
-worktree was restored and this branch's own gate re-run at 81 passed.
+worktree was restored and this branch's own gate re-run at 81 passed. **The
+patched function is written out in full in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`** rather than left in a
+session temp directory, which is where it was and where it would have died;
+the copy there was checked line-for-line against the version that was run.
 
 **CAMPAIGN-WIDE, found from lane L: four measures in
 `host/test/surface-budget.test.ts` reported a BETTER number when their input
