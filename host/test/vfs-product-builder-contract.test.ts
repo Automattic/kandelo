@@ -197,6 +197,21 @@ describe("VFS product builder contract", () => {
     ).rejects.toThrow(/not normalized/);
   });
 
+  it("refuses a local-fixture reference to every builder but the miniature one", async () => {
+    // A local-fixture reference points outside the exact-source world, so only
+    // one builder may ask for it. Without a test the permission could be
+    // handed to every caller and nothing would notice — the flag would simply
+    // always be sent.
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    inputs.reference_class = "local-fixture";
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    await expect(
+      openVfsProductBuild(fixture.inputsPath, fixture.reportPath),
+    ).rejects.toThrow(/local-fixture/);
+  });
+
   it("refuses a manifest path carrying a NUL, which the TypeScript never looked for", async () => {
     // A NUL truncates a path in the first C API that receives it, so a
     // document naming `images/mini\0shell.toml` validated cleanly here and
