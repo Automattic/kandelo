@@ -4187,8 +4187,30 @@ pub fn check_export_headroom(
     };
     let fs = crate::sffs::Sffs::mount(source)?;
     let st = fs.statfs()?;
-    let free_bytes = st.f_bfree.saturating_mul(u64::from(st.f_frsize));
-    let met = crate::image_policy::check_headroom(&fs, headroom).is_ok();
+
+    // **Room to GROW, not free blocks in the current allocation.**
+    //
+    // An export sizes the image to its tree plus a fixed slack, so free blocks
+    // are a constant — 64 of them — however full the tree is. Judging a profile
+    // against that constant is a check that cannot fail for the reason it
+    // exists: it would compare 256 KiB to the minimum and answer the same way
+    // for an empty image and a stuffed one. Found by a mutation that replaced
+    // this measurement with `u64::MAX` and changed no outcome.
+    //
+    // What the assertion is FOR is "will normal runtime writes immediately run
+    // out of room", and at runtime the image is mounted into a buffer of its
+    // growth ceiling. So the headroom is the ceiling minus what the image
+    // already occupies, which falls as the tree grows — the behaviour the
+    // TypeScript path gets from a fixed-size buffer filling up.
+    let ceiling = fs.growth_ceiling_bytes()?;
+    let occupied = st
+        .f_blocks
+        .saturating_sub(st.f_bfree)
+        .saturating_mul(u64::from(st.f_frsize));
+    let free_bytes = ceiling.saturating_sub(occupied);
+
+    let met =
+        free_bytes >= headroom.minimum_free_bytes && st.f_ffree >= headroom.minimum_free_inodes;
     Ok(crate::image_policy::PolicyOutcome {
         met,
         free_bytes,

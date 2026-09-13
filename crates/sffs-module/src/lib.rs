@@ -1532,6 +1532,47 @@ mod tests {
         assert!(rc < 0, "free inodes are checked too, not only bytes");
         assert_eq!(required_inodes, u64::MAX);
 
+        // The REPORTED free count must be the real measurement, not merely a
+        // number that travels beside a correct verdict. Mutation found this
+        // gap: the verdict comes from the policy's own statfs, so a wrong
+        // `free_bytes` changed no outcome and every assertion above still
+        // passed. A build script PRINTS this number, and a confident wrong
+        // number is worse than none.
+        //
+        // Two independent checks, because either alone is weak. It cannot
+        // exceed what the image could ever hold, and it must FALL when the
+        // tree grows.
+        let (_, [free_bytes, _, _, _, capacity]) = read(0, 0);
+        assert!(
+            free_bytes <= capacity,
+            "free {free_bytes} exceeds the image's own ceiling {capacity}",
+        );
+
+        // Tie the reported number to the ARTIFACT rather than to itself. The
+        // verdict comes from its own comparison, so a wrong `free_bytes` would
+        // travel beside a correct answer and change no outcome — which is
+        // exactly what a mutation replacing this measurement with `u64::MAX`
+        // demonstrated. A build script PRINTS this, and a confident wrong
+        // number is worse than none.
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let st = fs.statfs().expect("statfs");
+        let occupied = (st.f_blocks - st.f_bfree) * u64::from(st.f_frsize);
+        assert_eq!(
+            free_bytes,
+            fs.growth_ceiling_bytes().expect("ceiling") - occupied,
+            "the reported headroom is the exported image's own ceiling minus \
+             what it occupies",
+        );
+
+        // NOTE, and it is a gap rather than a property: that difference is
+        // currently a CONSTANT — the export derives its ceiling from the tree,
+        // so every exported image has exactly the fixed slack and no runtime
+        // growth room. A builder's declared `expectedMaxByteLength` does not
+        // reach the export at all. See the master plan, gap 14.
+        assert_eq!(free_bytes, 64 * 4096, "the fixed slack, pending gap 14");
+
         unsafe { sm_free(buf, 32) };
     }
 
