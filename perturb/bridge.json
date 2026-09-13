@@ -211,6 +211,27 @@
    "scope_end": "\n  }\n",
    "find": "      this.requestedCapacityBytes = this.exportCapacityBytes();",
    "replace": ""
+  },
+  {
+   "name": "\"is this deferred\" answers about the link, not its target",
+   "scope": "  isPathDeferred(path: string): boolean {",
+   "scope_end": "\n  }\n",
+   "find": "      return this.stat(path).deferred;",
+   "replace": "      return this.lstat(path).deferred;"
+  },
+  {
+   "name": "a lazy entry is looked up without following symlinks",
+   "scope": "  getLazyEntry(path: string)",
+   "scope_end": "\n  }\n",
+   "find": "      st = this.stat(path);",
+   "replace": "      st = this.lstat(path);"
+  },
+  {
+   "name": "a missing path is reported as an error rather than not deferred",
+   "scope": "  isPathDeferred(path: string): boolean {",
+   "scope_end": "\n  }\n",
+   "find": "      if ((error as { errno?: number }).errno === ERRNO.ENOENT) return false;",
+   "replace": ""
   }
  ],
  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

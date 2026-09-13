@@ -85,6 +85,13 @@
    "scope_end": "\n}\n",
    "find": "        chmod(&resolved, mode & 0o7777)?;",
    "replace": "        chmod(path, mode & 0o7777)?;"
+  },
+  {
+   "name": "truncating a lazy archive member is refused instead of truncating",
+   "scope": "pub fn open(",
+   "scope_end": "\n}\n",
+   "find": "                            InodeKind::LazyMember { size, .. } => *size > 0,",
+   "replace": "                            InodeKind::LazyMember { .. } => return Err(Errno::ENOSYS),"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

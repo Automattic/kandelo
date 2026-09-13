@@ -335,6 +335,30 @@ describe("SffsImageFs", () => {
     expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
   });
 
+  it("answers deferredness about the file a symlink names, not the link", () => {
+    // A symlink is never itself deferred, so asking `lstat` answers "no" for
+    // every ALIAS of a lazy binary. The shell composer skips a binary that is
+    // already lazy, and with `lstat` it re-registered `/bin/coreutils` and
+    // failed the build on an undeclared dependency — in a product build, which
+    // is where this was found. The filesystem this replaces resolves the path.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.mkdir("/bin", 0o755);
+    fs.registerLazyFile("/usr/bin/tool", "https://example.invalid/tool.wasm", 4242, 0o755);
+    fs.symlink("/usr/bin/tool", "/bin/tool");
+
+    // Directly, and through the alias: both must say the same thing.
+    expect(fs.isPathDeferred("/usr/bin/tool")).toBe(true);
+    expect(fs.isPathDeferred("/bin/tool")).toBe(true);
+    expect(fs.getLazyEntry("/bin/tool")).not.toBeNull();
+    expect(fs.getLazyEntry("/bin/tool")?.size).toBe(4242);
+
+    // And the alias is still a symlink — resolving the QUESTION does not
+    // resolve the tree.
+    expect(fs.lstat("/bin/tool").deferred).toBe(false);
+  });
+
   it("keeps a loaded image's declared capacity when metadata is written after", () => {
     // GAP 24, and gap 17's defect on the other field the one entry point
     // carries. `sm_set_image_options` sends capacity AND metadata together, so
