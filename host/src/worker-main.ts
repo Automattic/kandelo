@@ -76,6 +76,8 @@ import {
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
   ABI_VERSION,
   type ProcessForkMode,
+  WPK_FORK_UNWIND_TAG_IMPORT_MODULE as FORK_UNWIND_TAG_IMPORT_MODULE,
+  WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME,
 } from "./generated/abi";
 import {
   FORK_SAVE_BUFFER_SIZE,
@@ -87,12 +89,11 @@ import {
   writeForkContinuationAnchor,
 } from "./fork-continuation";
 import {
-  createForkUnwindTag,
-  FORK_UNWIND_TAG_IMPORT_MODULE,
-  FORK_UNWIND_TAG_IMPORT_NAME,
+  forkActivationFrameImports,
+  forkUnwindTagFrom,
   isForkUnwindException,
   requireForkUnwindTag,
-} from "./fork-unwind-transport";
+} from "./fork-guest-imports";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
   type ForkModuleExports,
@@ -100,7 +101,6 @@ import {
   instantiateForkModule,
 } from "./fork-module-instance";
 import { ForkReferenceCaptureModule } from "./fork-reference-capture-module";
-import { forkActivationFrameImports } from "./fork-guest-imports";
 import {
   FORK_MODULE_RESUME_CATALOG_CAP,
   ForkModuleContinuationBackend,
@@ -3400,7 +3400,21 @@ export async function centralizedWorkerMain(
     // --- SDK module path (existing) ---
     const processLongjmpTag = createLongjmpTag(ptrWidth);
     const processCppExceptionTag = createCppExceptionTag(ptrWidth);
-    const processForkUnwindTag = createForkUnwindTag();
+    // Assigned from the fork module once it exists, a few dozen lines below,
+    // and unwrapped into `processForkUnwindTag` immediately after. The module
+    // DEFINES this tag and exports it, so minting one here would leave that
+    // export dead and make the module and the guest disagree about the tag the
+    // moment the module throws one itself.
+    let moduleForkUnwindTag: WebAssembly.Tag | undefined;
+    /**
+     * The process unwind tag, once the fork module has supplied it.
+     *
+     * An accessor rather than a value because the module is instantiated below
+     * this point: reading it before then is a sequencing bug, and the existing
+     * fail-loud check says so rather than handing a later `throw` an undefined.
+     */
+    const processForkUnwindTag = (): WebAssembly.Tag =>
+      requireForkUnwindTag(moduleForkUnwindTag, `pid=${pid}: fork unwind`);
     let kernelExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
       memory,
@@ -3830,6 +3844,11 @@ export async function centralizedWorkerMain(
           // construct or cache here any more.
           forkModuleFrameExports = forkModuleInstance.exports;
         }
+        // The unwind transport is the module's, not this host's. The module is
+        // unconditional for a fork-instrumented worker (see the fail-loud check
+        // above), so there is no branch here where a host-minted fallback would
+        // be needed.
+        moduleForkUnwindTag = forkUnwindTagFrom(forkModuleInstance.exports, `pid=${pid} unwind`);
       }
       // Phase 6 item 3a (minimize host surface): the RESTORE data-feed FLIP. When
       // a child's whole reference graph is admitted through the module
@@ -4320,7 +4339,7 @@ export async function centralizedWorkerMain(
             memory,
             ptrWidth,
             channelOffset,
-            forkUnwindTag: processForkUnwindTag,
+            forkUnwindTag: processForkUnwindTag(),
             coordinator: processContinuation,
             registry: activationRegistry,
             exceptionBroker,
@@ -4400,7 +4419,7 @@ export async function centralizedWorkerMain(
         hasDylinkForkRole
           ? undefined
           : `pid=${pid}: main artifact lacks the dylink fork role capability`,
-        processForkUnwindTag,
+        processForkUnwindTag(),
         (table, firstIndex, length) => {
           activationRegistry.markTableMutation(table, firstIndex, length);
         },
@@ -4760,7 +4779,7 @@ export async function centralizedWorkerMain(
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
-        processForkUnwindTag,
+        processForkUnwindTag(),
         (timedOutPtr, vmInterruptPtr, seconds) => {
           port.postMessage({
             type: "vm_interrupt_timer",
@@ -5303,7 +5322,7 @@ export async function centralizedWorkerMain(
               phaseBeforeEntry === "idle" ? lexicalEntry : replayEntry;
             entry();
           } catch (e) {
-            if (isForkUnwindException(e, processForkUnwindTag)) {
+            if (isForkUnwindException(e, processForkUnwindTag())) {
               transportedForkUnwind = true;
             } else if (isWasmUnreachableTrap(e)) {
               if (kernelExitStatus !== null) {
@@ -5584,7 +5603,7 @@ export async function centralizedWorkerMain(
         processCppExceptionTag,
         undefined,
         `pid=${pid}: main artifact has no fork activation coordinator`,
-        processForkUnwindTag,
+        processForkUnwindTag(),
         undefined,
         undefined,
         pid,
@@ -5601,7 +5620,7 @@ export async function centralizedWorkerMain(
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
-        processForkUnwindTag,
+        processForkUnwindTag(),
         (timedOutPtr, vmInterruptPtr, seconds) => {
           port.postMessage({
             type: "vm_interrupt_timer",

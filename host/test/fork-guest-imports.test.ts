@@ -12,6 +12,9 @@ import {
   FORK_ACTIVATION_TRAMPOLINE_SLOTS,
   forkActivationFrameImports,
   FORK_GUEST_HOST_FLOOR_NAMES,
+  forkUnwindTagFrom,
+  isForkUnwindException,
+  requireForkUnwindTag,
   type ForkGuestHostFloor,
 } from "../src/fork-guest-imports";
 
@@ -205,5 +208,45 @@ describe("activation frame trampolines", () => {
 
   it("fails loud when the module has no trampoline table", () => {
     expect(() => forkActivationFrameImports({}, 0)).toThrow(/no activation trampoline table/);
+  });
+});
+
+describe("the fork unwind tag", () => {
+  it("comes from the module that defines it", () => {
+    const tag = new WebAssembly.Tag({ parameters: [] });
+    expect(forkUnwindTagFrom({ __wpk_fork_unwind: tag })).toBe(tag);
+  });
+
+  it("refuses a module that exports no tag", () => {
+    // The module DEFINES this tag; a build without the injector pass would
+    // otherwise hand `undefined` to `WebAssembly.instantiate`, which reports a
+    // type mismatch naming neither the import nor who should have supplied it.
+    expect(() => forkUnwindTagFrom({})).toThrow(/no __wpk_fork_unwind tag/);
+    expect(() => forkUnwindTagFrom({ __wpk_fork_unwind: {} })).toThrow(
+      /no __wpk_fork_unwind tag/,
+    );
+  });
+
+  it("refuses a non-tag where the tag is required", () => {
+    const tag = new WebAssembly.Tag({ parameters: [] });
+    expect(requireForkUnwindTag(tag, "ctx")).toBe(tag);
+    expect(() => requireForkUnwindTag(undefined, "ctx")).toThrow(/ctx/);
+    expect(() => requireForkUnwindTag(null, "ctx")).toThrow(
+      /missing valid process-owned fork unwind tag/,
+    );
+  });
+
+  it("tells the unwind transport apart from a program exception", () => {
+    const unwind = new WebAssembly.Tag({ parameters: [] });
+    const other = new WebAssembly.Tag({ parameters: [] });
+    // Distinguishing these is the entire reason the transport has a private
+    // tag: instrumented catch-alls rethrow this one and consume the rest.
+    expect(isForkUnwindException(new WebAssembly.Exception(unwind, []), unwind)).toBe(
+      true,
+    );
+    expect(isForkUnwindException(new WebAssembly.Exception(other, []), unwind)).toBe(
+      false,
+    );
+    expect(isForkUnwindException(new Error("boom"), unwind)).toBe(false);
   });
 });

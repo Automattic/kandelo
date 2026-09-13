@@ -3272,3 +3272,42 @@ the fork module is instantiated at 3652, so the switch needs a reordering rather
 than a substitution, and the browser host has no equivalent of host-native's
 suite to catch a mistake. Doing it needs the end-to-end test that does not exist
 yet, which is the honest prerequisite rather than a reason to skip it.
+
+## §63 — Parity, and a ceiling I did not know existed
+
+§62 left `worker-main.ts` still minting its own unwind tag while host-native
+bound the module's. That is a PARITY VIOLATION under the host-runtime contract:
+"Node.js and browser hosts are peers... Do not land Node-first or browser-later
+host changes." Leaving it was not a cautious middle; it was half a change.
+
+So `worker-main.ts` takes the module's tag too, and `./fork-unwind-transport` is
+gone from it -- the second of twenty dangling imports resolved. Its five symbols
+went three ways: the two constants are re-exports and now come straight from
+`./generated/abi`; `requireForkUnwindTag` and `isForkUnwindException` are 15
+lines that moved into the thin layer; `createForkUnwindTag` is DELETED, because
+minting a tag is the host responsibility the module removed.
+
+The sequencing needed care rather than a substitution: the tag was created at
+worker-main line 3403 and the fork module is instantiated at 3652. All six uses
+are below that, so the tag became an accessor that fails loud if read early --
+a sequencing bug says so instead of handing a later `throw` an undefined.
+
+**`workerMainTypeScript` exists, ceiling 5958, and I tripped it at 5970.** I had
+not seen this surface before. Nothing was raised; the additions were made
+smaller until they fit: the accessor reuses `requireForkUnwindTag` instead of
+repeating its check (a better shape anyway -- one fail-loud path, not two), the
+new `generated/abi` import merged into the existing one, and the label was
+inlined. 5958, exactly at the ceiling.
+
+Worth recording for the remaining eighteen reconnections: this file is at its
+ceiling with zero slack, so every future reconnection must REMOVE at least as
+much of worker-main as it adds. That is the right pressure -- reconnection is
+supposed to shrink this file -- but it means a reconnection that merely rewires
+without deleting will not land, and that is a design signal rather than an
+obstacle to route around.
+
+**A guard that no test covered.** `forkUnwindTagFrom` was written, used, and
+then perturbed to accept a non-tag -- and the suite still passed, because
+nothing exercised it. Tests were added before the commit, not after: the module
+exporting no tag, a non-tag where the tag is required, and the transport being
+told apart from a program exception. All three perturbations now fail.

@@ -177,3 +177,69 @@ export function forkActivationFrameImports(
   });
   return imports;
 }
+
+/**
+ * The process-owned fork unwind tag, taken from the module that defines it.
+ *
+ * `fork-module-inject` defines and exports this tag so a host does not have to
+ * mint one: "It was minted in JavaScript, which made every host responsible for
+ * creating one and handing it over. It does not have to be." A host that mints
+ * its own leaves that export dead AND makes the module and the guest disagree
+ * about the tag the moment the module throws one itself.
+ */
+export function forkUnwindTagFrom(
+  moduleExports: Record<string, unknown>,
+  label = "fork unwind tag",
+): WebAssembly.Tag {
+  const tag = moduleExports.__wpk_fork_unwind;
+  if (typeof WebAssembly.Tag !== "function") {
+    throw new Error(`${label}: WebAssembly exception tags are unavailable`);
+  }
+  if (!(tag instanceof WebAssembly.Tag)) {
+    throw new TypeError(
+      `${label}: the fork module exports no __wpk_fork_unwind tag, so it ` +
+        `cannot supply the process's unwind transport`,
+    );
+  }
+  return tag;
+}
+
+/**
+ * Assert a value is the process-owned fork unwind tag.
+ *
+ * Kept as a check rather than a cast because the tag crosses several plumbing
+ * layers as an optional, and a `null` reaching `WebAssembly.instantiate` reports
+ * a type mismatch that names neither the import nor who should have supplied it.
+ */
+export function requireForkUnwindTag(
+  tag: unknown,
+  context: string,
+): WebAssembly.Tag {
+  if (typeof WebAssembly.Tag !== "function") {
+    throw new Error(`${context}: WebAssembly exception tags are unavailable`);
+  }
+  if (!(tag instanceof WebAssembly.Tag)) {
+    throw new TypeError(
+      `${context}: missing valid process-owned fork unwind tag`,
+    );
+  }
+  return tag;
+}
+
+/**
+ * Whether a caught value is the fork unwind transport rather than a program
+ * exception.
+ *
+ * The distinction is the whole point of a private tag: instrumented catch-all
+ * clauses rethrow this one, and only the worker entry boundary consumes it.
+ */
+export function isForkUnwindException(
+  value: unknown,
+  tag: WebAssembly.Tag,
+): value is WebAssembly.Exception {
+  return (
+    typeof WebAssembly.Exception === "function"
+    && value instanceof WebAssembly.Exception
+    && value.is(tag)
+  );
+}
