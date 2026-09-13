@@ -105,6 +105,29 @@ fn extract_tree(options: &Options, limits: Limits) -> Result<(), String> {
         return Err(format!("{label} is outside the accepted size bound"));
     }
 
+    // FORMAT BY MAGIC, not by file name. An archive's extension is a claim by
+    // whoever named the file; its first bytes are a claim by whoever wrote it,
+    // and only the second is the thing being read. The TypeScript this replaces
+    // dispatches the same three ways, and an archive it accepted that this
+    // rejected would be a regression nobody would read as one.
+    match bytes.as_slice() {
+        [0x1f, 0x8b, ..] => {
+            let decoder = flate2::read::GzDecoder::new(&bytes[..]);
+            return extract_tar(decoder, options, limits, &label);
+        }
+        [0x28, 0xb5, 0x2f, 0xfd, ..] => {
+            let decoder = zstd::stream::read::Decoder::new(&bytes[..])
+                .map_err(|e| format!("archive-extract-tree: open zstd stream {label}: {e}"))?;
+            return extract_tar(decoder, options, limits, &label);
+        }
+        [0x50, 0x4b, ..] => {}
+        _ => {
+            return Err(format!(
+                "{label} is not a supported gzip/zstd TAR or ZIP archive"
+            ))
+        }
+    }
+
     let reader = std::io::Cursor::new(&bytes[..]);
     let mut zip = zip::ZipArchive::new(reader)
         .map_err(|e| format!("archive-extract-tree: read {label} as a zip: {e}"))?;
@@ -141,8 +164,7 @@ fn extract_tree(options: &Options, limits: Limits) -> Result<(), String> {
         options.expect_root.as_deref(),
     )?;
 
-    fs::create_dir_all(&options.out)
-        .map_err(|e| format!("archive-extract-tree: create {}: {e}", options.out.display()))?;
+    create_staging_dir(&options.out)?;
 
     for entry in planned.iter() {
         let destination = options.out.join(&entry.path);
@@ -172,6 +194,106 @@ fn extract_tree(options: &Options, limits: Limits) -> Result<(), String> {
         fs::write(&destination, &contents)
             .map_err(|e| format!("archive-extract-tree: write {}: {e}", destination.display()))?;
         set_mode(&destination, entry.mode)?;
+    }
+    Ok(())
+}
+
+/// Unpack a tar stream, whatever decompressed it.
+///
+/// Read entirely into memory before anything is judged, for the same reason the
+/// zip path reads its directory first: a plan cannot refuse an archive it has
+/// only seen half of.
+fn extract_tar<R: Read>(
+    reader: R,
+    options: &Options,
+    limits: Limits,
+    label: &str,
+) -> Result<(), String> {
+    let mut archive = tar::Archive::new(reader);
+    let mut sources = Vec::new();
+    let mut bodies: Vec<Vec<u8>> = Vec::new();
+    let mut expanded = 0u64;
+
+    let entries = archive
+        .entries()
+        .map_err(|e| format!("archive-extract-tree: read tar directory from {label}: {e}"))?;
+    for entry in entries {
+        let mut entry =
+            entry.map_err(|e| format!("archive-extract-tree: read tar entry from {label}: {e}"))?;
+        if sources.len() >= limits.entries {
+            return Err(format!("{label} entry count is outside the accepted bound"));
+        }
+        let header = entry.header().clone();
+        let path = entry
+            .path()
+            .map_err(|e| format!("archive-extract-tree: {label} entry path: {e}"))?
+            .to_string_lossy()
+            .into_owned();
+        let size = header.size().unwrap_or(0);
+        expanded = expanded
+            .checked_add(size)
+            .ok_or_else(|| format!("{label} expands beyond the accepted bound"))?;
+        if expanded > limits.expanded_bytes {
+            return Err(format!("{label} expands beyond the accepted bound"));
+        }
+        let kind = header.entry_type();
+        let mut body = Vec::new();
+        if kind.is_file() {
+            entry
+                .read_to_end(&mut body)
+                .map_err(|e| format!("archive-extract-tree: read {path} from {label}: {e}"))?;
+        }
+        sources.push(SourceEntry {
+            path,
+            is_directory: kind.is_dir(),
+            // Symlinks AND hardlinks. Both name a target the archive does not
+            // control, and a hardlink additionally aliases bytes that may
+            // already have been judged under another name.
+            is_link: kind.is_symlink() || kind.is_hard_link(),
+            mode: header.mode().unwrap_or(0o644),
+        });
+        bodies.push(body);
+    }
+    if sources.is_empty() {
+        return Err(format!("{label} entry count is outside the accepted bound"));
+    }
+
+    let planned = plan_entries(&sources, label, options.strip_root, options.expect_root.as_deref())?;
+    create_staging_dir(&options.out)?;
+    for entry in planned.iter() {
+        let destination = options.out.join(&entry.path);
+        if !destination.starts_with(&options.out) {
+            return Err(format!("{label} entry would escape the output directory"));
+        }
+        if entry.is_directory {
+            fs::create_dir_all(&destination).map_err(|e| {
+                format!("archive-extract-tree: mkdir {}: {e}", destination.display())
+            })?;
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("archive-extract-tree: mkdir {}: {e}", parent.display()))?;
+        }
+        fs::write(&destination, &bodies[entry.source_index])
+            .map_err(|e| format!("archive-extract-tree: write {}: {e}", destination.display()))?;
+        set_mode(&destination, entry.mode)?;
+    }
+    Ok(())
+}
+
+/// Create the staging directory at 0o700, as the TypeScript does.
+///
+/// A staging tree is world-readable for the whole time it is being populated
+/// otherwise, which is a window nobody needs and nothing gains from.
+fn create_staging_dir(out: &Path) -> Result<(), String> {
+    fs::create_dir_all(out)
+        .map_err(|e| format!("archive-extract-tree: create {}: {e}", out.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(out, fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("archive-extract-tree: chmod {}: {e}", out.display()))?;
     }
     Ok(())
 }
@@ -379,6 +501,112 @@ mod tests {
             Limits::default()
         )
         .is_err());
+    }
+
+    /// A gzip-compressed tar, built in memory.
+    fn targz_with(entries: &[(&str, &[u8], u32, bool)]) -> Vec<u8> {
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            for (name, body, mode, is_dir) in entries {
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(*mode);
+                header.set_size(if *is_dir { 0 } else { body.len() as u64 });
+                header.set_entry_type(if *is_dir {
+                    tar::EntryType::Directory
+                } else {
+                    tar::EntryType::Regular
+                });
+                header.set_cksum();
+                builder.append_data(&mut header, *name, &body[..]).expect("append");
+            }
+            builder.finish().expect("finish tar");
+        }
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &tar_bytes).expect("gzip");
+        encoder.finish().expect("gzip finish")
+    }
+
+    #[test]
+    fn a_gzipped_tar_extracts_by_its_MAGIC_not_its_name() {
+        // The file is called `a.zip` deliberately. An extension is a claim by
+        // whoever named the file; the first bytes are a claim by whoever wrote
+        // it, and only the second is the thing being read.
+        let scratch = Scratch::new("targz");
+        let archive = scratch.write(
+            "a.zip",
+            &targz_with(&[
+                ("pkg/", b"", 0o755, true),
+                ("pkg/bin/tool", b"tool bytes", 0o755, false),
+            ]),
+        );
+        extract_tree(
+            &options(archive, scratch.out(), true, Some("pkg")),
+            Limits::default(),
+        )
+        .expect("extracted");
+        assert_eq!(
+            fs::read(scratch.out().join("bin/tool")).expect("tool"),
+            b"tool bytes",
+        );
+    }
+
+    #[test]
+    fn a_tar_hardlink_is_refused_like_a_symlink() {
+        // A hardlink names a target the archive does not control, and aliases
+        // bytes that may already have been judged under another name.
+        let scratch = Scratch::new("hardlink");
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o644);
+            header.set_size(0);
+            header.set_entry_type(tar::EntryType::Link);
+            header.set_link_name("pkg/real").expect("link name");
+            header.set_cksum();
+            builder.append_data(&mut header, "pkg/alias", &[][..]).expect("append");
+            builder.finish().expect("finish");
+        }
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &tar_bytes).expect("gzip");
+        let archive = scratch.write("a.tgz", &encoder.finish().expect("gzip finish"));
+        assert!(extract_tree(
+            &options(archive, scratch.out(), false, None),
+            Limits::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn an_archive_in_no_supported_format_is_refused_by_name() {
+        // Not "read it as a zip and fail confusingly" — say which three
+        // formats are supported, because that is the actionable sentence.
+        let scratch = Scratch::new("unknown");
+        let archive = scratch.write("a.bin", b"not an archive at all");
+        let error = extract_tree(
+            &options(archive, scratch.out(), false, None),
+            Limits::default(),
+        )
+        .expect_err("refused");
+        assert!(error.contains("not a supported"), "{error}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_staging_directory_is_not_world_readable_while_it_fills() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("staging");
+        let archive = scratch.write("a.zip", &zip_with(&[("f", b"x", 0o644)]));
+        extract_tree(
+            &options(archive, scratch.out(), false, None),
+            Limits::default(),
+        )
+        .expect("extracted");
+        let mode = fs::metadata(scratch.out()).expect("stat").permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "the staging tree is the extractor's own");
     }
 
     #[test]

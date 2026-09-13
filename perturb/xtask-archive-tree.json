@@ -45,6 +45,48 @@
       "scope_end": "\n}\n",
       "find": "    if expect_root.is_some() && !strip_root {",
       "replace": "    if false {"
+    },
+    {
+      "name": "a gzipped tar is read as a zip",
+      "scope": "    match bytes.as_slice() {",
+      "scope_end": "\n    }\n",
+      "find": "        [0x1f, 0x8b, ..] => {",
+      "replace": "        [0xff, 0xff, ..] => {"
+    },
+    {
+      "name": "an unsupported format is read as a zip rather than refused",
+      "scope": "    match bytes.as_slice() {",
+      "scope_end": "\n    }\n",
+      "find": "        _ => {\n            return Err(format!(\n                \"{label} is not a supported gzip/zstd TAR or ZIP archive\"\n            ))\n        }",
+      "replace": "        _ => {}"
+    },
+    {
+      "name": "a tar hardlink is extracted rather than refused",
+      "scope": "fn extract_tar<R: Read>",
+      "scope_end": "\n}\n",
+      "find": "            is_link: kind.is_symlink() || kind.is_hard_link(),",
+      "replace": "            is_link: kind.is_symlink(),"
+    },
+    {
+      "name": "a tar may expand without bound",
+      "scope": "fn extract_tar<R: Read>",
+      "scope_end": "\n}\n",
+      "find": "        if expanded > limits.expanded_bytes {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "a tar may carry any number of entries",
+      "scope": "fn extract_tar<R: Read>",
+      "scope_end": "\n}\n",
+      "find": "        if sources.len() >= limits.entries {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "the staging directory keeps the umask's permissions",
+      "scope": "fn create_staging_dir(out: &Path)",
+      "scope_end": "\n}\n",
+      "find": "        fs::set_permissions(out, fs::Permissions::from_mode(0o700))",
+      "replace": "        fs::set_permissions(out, fs::Permissions::from_mode(0o755))"
     }
   ]
 }
