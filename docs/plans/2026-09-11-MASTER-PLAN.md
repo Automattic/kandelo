@@ -1731,7 +1731,20 @@ is correct only for images it produced itself.
   emit SDEF and the JSON sections must retire. This closes the one limit V4
   left: an image carrying no SDEF still loses its URL-backed files on export,
   because there is nothing to retain from one.
-* **V9 — `memory-fs.ts` stops using `SharedFS`.** After lane Y, per the
+* **V9 — `memory-fs.ts` stops using `SharedFS`. CENSUSED 2026-09-13 and
+  REFRAMED** — `docs/plans/2026-09-13-lane-v9-census.md`. The 8,501-line figure
+  counts host-owned duties that are not block operations (lazy transports, URL
+  rewriting, download events) and that stay in TypeScript regardless. Measured
+  at the call sites, the kernel has already taken almost everything: it parses
+  the `/` image itself and resolves no names, and Phase 5's tmpfs claims every
+  scratch mount in the default spec, making the scratch-backend branch
+  unreachable as shipped. **What is left is two SAB formats, one four-call read
+  helper with one caller, and `/dev/shm`** — which is the hard core, and which
+  the module bridge cannot serve for a structural reason: POSIX shared memory
+  needs a buffer both sides map, and `SffsImageFs` holds its image in the
+  module's own linear memory. The census recommends `/dev/shm` move in-kernel as
+  tmpfs did, and says why that is a maintainer decision. **Blocked on that
+  decision**, not on lane Y. After lane Y, per the
   maintainer. The lane's only genuine unknown.
 * **V10 — delete `sharedfs-vendor.ts`**, at which point `sffsTypeScript`
   reaches 0.
