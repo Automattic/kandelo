@@ -5108,3 +5108,43 @@ contained the argument against it. Here I wrote the impossibility claim MYSELF,
 in a file whose job is to hold arguments, and then read it back later as
 evidence. A comment is not evidence. The attic file it contradicted was four
 directories away the whole time.
+
+## §110 — I reached for an overlay when the job was a replacement
+
+I tried the incremental route into `worker-main.ts`: leave both attic import
+builders running, and spread `forkModuleGuestImports(moduleExports)` AFTER them
+so the module's implementation wins for every name it serves. Reversible by
+deleting one spread, nothing can end up unbound, and it mirrors the
+`forkModuleReferenceFlip` shape the file already uses for a single name.
+
+It cost four lines and deleted nothing, so `workerMainTypeScript` -- banked at
+5899, can only fall -- refused it. I reverted.
+
+The maintainer's response reframed it, and correctly: *"Why aren't you just
+removing references to the attic builder while you are adding the new
+implementation?"* The line count was never the real objection. An overlay leaves
+the replaced code in place, which is why it cannot be net-negative; a replacement
+deletes as it adds. I had reached for a staging pattern because the replacement
+looked large, and then discovered the three things I had called blockers are
+small:
+
+  * `provenance_externref` needs `tryEncodeExternref`, i.e. threading the
+    existing `ForkExternrefTokenCache` in as ONE new option field;
+  * the two `exn_*` throws have `exceptionProvider` already in scope at the site
+    -- about six lines calling the activation's exported thrower (section 109);
+  * the transit table is served by the module since 05ff0ab6a, and the
+    generation global is already `tableReplication.generationAddress`.
+
+None of that is why I hesitated. I hesitated because the edit is large, and then
+chose a smaller edit that could not pass the gate instead of the right edit that
+could.
+
+The scope actually remaining in `worker-main.ts`, measured rather than guessed:
+3 env construction sites, 34 coordinator method calls, 16 registry method calls,
+11 attic modules imported, and 105 `host/src` typecheck errors against the
+parent's 25. Against that, four lines was never the thing to optimise.
+
+DIRECTION TAKEN (maintainer, 2026-09-13): do the replacement, remove the attic
+references in the same edit that adds the new implementation, and do the whole
+set of replacements as one stride before committing rather than landing
+intermediate states that each have to argue with a ratchet.
