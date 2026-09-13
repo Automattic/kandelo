@@ -4207,10 +4207,30 @@ TypeScript that parses a platform format is a port target rather than a thing to
 patch. The NUL gap is not fixed in the TypeScript; it disappears when the
 TypeScript stops deciding.
 
-**Next increment, concretely:** have the builder contract obtain its validated
+~~**Next increment, concretely:** have the builder contract obtain its validated
 inputs from the existing `vfs_products` CLI rather than re-deriving them, and
-delete the duplicated validators. The CLI, the canonical-JSON module and the
-manifest validator are all already there — what is missing is only the call.
+delete the duplicated validators.~~ **DONE 2026-09-13.** The call is wired, the
+validation is complete, and the duplicates are deleted:
+`vfs-product-builder-contract.ts` 1,316 → 1,060 lines.
+
+**What the two targets now look like together:**
+
+| | before | after | what moved |
+|---|---|---|---|
+| `staged-product-inputs.ts` | 1,975 | 1,816 | tar/zip/zstd readers, traversal rules, writes |
+| `vfs-product-builder-contract.ts` | 1,316 | 1,060 | the document's scalar and path rules |
+
+**Neither file is finished, and the difference matters.** Target 1's extraction
+is GONE — the TypeScript cannot extract an archive any more. Target 2 still
+parses its document into typed structures; what it no longer does is DECIDE
+whether the document is valid. Those are different amounts of progress and the
+second is the smaller one.
+
+**What is left in target 2**, none of it duplicated in Rust today: reading
+local files and verifying their contents against the digests the document
+declares, resolving paths beneath a caller-owned root, and the report writing.
+Those are filesystem operations at the point of use rather than document rules,
+which is exactly the line this port has been drawing all along.
 
 ### Three path rules disagree about a backslash, and the port must decide rather than transliterate
 
