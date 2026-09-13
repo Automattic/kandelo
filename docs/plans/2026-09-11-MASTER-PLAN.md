@@ -2495,11 +2495,13 @@ check that list before its own changeset. Detail in
 
 **One row of the unit-conversion table above is now stale, and it is not this
 lane's to edit.** It lists `hostKernelPlumbingTypeScript` at 4,734 code lines,
-which was true before this lane's reduction. Computed with lane S's own
-`countCodeLines` on the current files it is **4,575** — the reduction is worth
-159 code lines against 164 by `wc -l`. The method was checked before the
-number was used: the same transcription reproduces 4,734 exactly on the files
-as they stood at `19bb692c4`. The row is left alone because that table belongs
+which was true before this lane's reduction. It is **4,575**, and lane S's own
+gate is what says so: run unmodified over this branch's files it reports
+*"hostKernelPlumbingTypeScript is 4575 … Lower the ceiling to 4575"*, and fails
+until that happens. The reduction is worth 159 code lines against 164 by
+`wc -l`. An independent transcription of `countCodeLines` had computed the same
+4,575 beforehand, and reproduces 4,734 exactly on the files as they stood at
+`19bb692c4`. The row is left alone because that table belongs
 to the conversion, not to lane L; whoever reconciles the branches should
 rebaseline it to 4,575.
 
@@ -2509,7 +2511,16 @@ on a missing file — but `expandGlobs` runs `ls -1d ... 2>/dev/null || true`
 and drops the path before that read happens, so the surface still reads
 smaller. Lane L's branch does not contain that commit, so the fix made here
 patches the pre-conversion `cat` pipeline; the post-rebase form guards each
-glob at expansion time and is prepared but unrun.
+glob at expansion time.
+
+**The post-rebase form is verified, without committing it.** Lane S's two
+files were checked out over this worktree's and the prepared patch applied
+cleanly. It moves no number (3 failed / 86 passed, identical before and after,
+and those three failures are lane L's unbanked rebaseline plus two of lane G's,
+not this patch's). It fails loudly on a renamed counted file AND on a glob that
+matches nothing — the variant a literal-path check misses — and
+`host/src/fork-*.ts` still expands to 36 files and counts normally. The
+worktree was restored and this branch's own gate re-run at 81 passed.
 
 **CAMPAIGN-WIDE, found from lane L: four measures in
 `host/test/surface-budget.test.ts` reported a BETTER number when their input

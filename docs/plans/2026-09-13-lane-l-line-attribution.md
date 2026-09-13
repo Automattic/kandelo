@@ -1083,9 +1083,15 @@ Three consequences, none of which this lane can settle alone:
 - **The closure figure depends on which branch you read.** The section below
   says lane L closes at 3,600 and measures 5,689. That is true here. After the
   conversion the same lane closes at 2,900 against a code-line measure.
-- **The ceiling rebaselines to 4,575 on merge.** 4,734 was the code-line count
-  BEFORE this lane's reduction. Computed with lane S's own `countCodeLines`
-  algorithm on the current files: **4,575**. The reduction is worth **159 code
+- **The ceiling rebaselines to 4,575 on merge, and that is now measured
+  rather than computed.** 4,734 was the code-line count BEFORE this lane's
+  reduction. Lane S's own test file and budget, checked out over this branch's
+  two and run unmodified, report the figure themselves: *"hostKernelPlumbing-
+  TypeScript is 4575, which is more than 120 below its ceiling of 4734. Lower
+  the ceiling to 4575 in docs/surface-budget.json in this commit."* The
+  instrument demands the rebaseline; it does not merely permit it. The
+  independently computed figure below was **4,575**, which is the same
+  number. The reduction is worth **159 code
   lines** against 164 by `wc -l` — the five-line difference is comment and
   blank lines that the old unit charged for and the new one does not. That
   leaves the lane **1,675 lines above the converted target of 2,900**, against
@@ -1097,12 +1103,42 @@ Three consequences, none of which this lane can settle alone:
   `19bb692c4`, reproduces lane S's published ceiling of 4,734 exactly. A
   reimplementation that agrees with the original on a known input is worth more
   than the ratio estimate it replaces (~4,600), which is what this section said
-  before.
-- **The ratchet fix has two forms.** The hole survives the conversion: lane S's
-  `lineCount` reads per file and would fail loudly, but `expandGlobs` runs
-  `ls -1d ... 2>/dev/null || true` and drops a missing path before the read
-  happens. The fix made here patches a `cat` pipeline that commit deleted; the
-  form that survives a rebase guards each glob at expansion time.
+  before. The direct run has since confirmed it, so the transcription is now
+  corroboration rather than the sole evidence.
+
+  **Two other surfaces fail on that branch and neither is lane L's.** Running
+  lane S's gate here leaves three failures: this one, and two for lane G
+  (`unguardedLayoutModules` unbanked at 0, and the lane-closure test that
+  follows from it). Lane G's reduction is present on this branch and unbanked
+  in that commit's budget. Recorded so whoever merges does not read three
+  failures as lane L's debt.
+- **The ratchet fix has two forms, and the second one is now verified.** The
+  hole survives the conversion: lane S's `lineCount` reads per file and would
+  fail loudly, but `expandGlobs` runs `ls -1d ... 2>/dev/null || true` and
+  drops a missing path before the read happens. The fix made here patches a
+  `cat` pipeline that commit deleted; the form that survives a rebase guards
+  each glob at expansion time.
+
+  It was previously recorded as prepared but unrun, because this branch cannot
+  run it. It has since been run, without committing anything: lane S's two
+  files were checked out over this worktree's, the prepared patch applied
+  cleanly, and the suite was compared before and after.
+
+  * **It moves no number.** 3 failed / 86 passed, identical either way, and
+    `hostKernelPlumbingTypeScript` reads 4575 in both. A ratchet fix that
+    changed a lane's measure would be a ceiling change wearing a guard's
+    clothes.
+  * **It fails loudly when a counted literal path moves.** With
+    `host/src/process-memory.ts` renamed: *"surface-budget: counted path
+    matches nothing: host/src/process-memory.ts."*
+  * **It fails loudly when a glob matches nothing**, which is the variant a
+    literal-path check misses. With both `host/src/vfork-*.ts` files moved
+    aside, the glob itself is named in the error.
+  * **It still counts normally otherwise:** `host/src/fork-*.ts` expands to its
+    36 files and every measure is unchanged.
+
+  The worktree was restored and the branch's own gate re-run: 81 passed. Two
+  guards, two forms, both perturbed until they failed.
 
 ## Is lane L finished? No, and the budget says so
 
