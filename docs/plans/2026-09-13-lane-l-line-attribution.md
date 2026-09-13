@@ -1045,7 +1045,31 @@ Fixed: the site asks `checked_shared_range` and returns `-EFAULT`, the errno
 its own cited contract already specifies. No design decision was needed,
 because the answer was written in the comment above the bug.
 
-**The rest of the class is measured, listed, and NOT fixed.**
+**FIXED 2026-09-13, on the maintainer's decision.** All sixteen sites now
+prove the lent range before writing. `KernelLent` is the inbound mirror of
+`KernelScratch` — the Rust counterpart of `#rustLentKernelDestination` — and
+`write_lent` is the shape every import needed: the kernel names a buffer and
+its capacity, the host writes no more than that, and an address it cannot map
+is `-EFAULT`.
+
+**The errno was decided against the maintainer's first instinct, and the
+reason is in the tree rather than in taste.** The instinct was to trap: the
+kernel is the arbiter of reality, so a broken pointer means reality is broken.
+That is sound, and this host already disagrees with it in the only places it
+checks: `proc_copy_in` and `proc_copy_out` prove kernel-supplied ranges today
+and return `-EFAULT`. Trapping the other sixteen would have made one host
+answer the same condition two ways depending on which import you hit — and
+would have diverged from the JavaScript host, which returns `-EFAULT` for the
+identical kernel bug. Lane L exists to remove that kind of divergence, so
+`-EFAULT` it is, everywhere, matching what was already written down twice.
+
+The place trapping is still right is where there is no errno to return, and
+after this change there is no such place left in the import layer: every
+import returns `i32`, and the two helpers that returned nothing
+(`write_wasm_statfs`, `write_wasm_stat_fields`) now return `Result<(), i32>`
+so their callers can answer.
+
+**What the class was, before it was fixed.**
 `checked_shared_range` has six call sites covering three functions —
 `KernelScratch::write` and both sides of `proc_copy_in`/`proc_copy_out`, the
 cross-memory process copies. Against that, `guest.rs` has **73 raw

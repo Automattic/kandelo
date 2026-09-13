@@ -879,7 +879,11 @@ unsafe fn errno_location() -> *mut libc::c_int {
 /// Serialize a `statvfs` answer into the `WasmStatfs` the kernel reads back,
 /// at the field offsets its `repr(C)` struct expects (mirrors
 /// `#writeStatfsToMemory` in `host/src/kernel.ts`).
-unsafe fn write_wasm_statfs(mem: &SharedMemory, ptr: usize, vfs: &rustix::fs::StatVfs) {
+unsafe fn write_wasm_statfs(
+    mem: &SharedMemory,
+    dest: KernelLent,
+    vfs: &rustix::fs::StatVfs,
+) -> Result<(), i32> {
     // `statvfs` reports mount flags in its own `ST_*` bitset, whose numbering
     // is not portable; only the two flags POSIX defines for every platform are
     // forwarded, re-spelled with LINUX's `ST_RDONLY`/`ST_NOSUID` values because
@@ -906,7 +910,7 @@ unsafe fn write_wasm_statfs(mem: &SharedMemory, ptr: usize, vfs: &rustix::fs::St
     b[56..60].copy_from_slice(&(vfs.f_namemax as u32).to_le_bytes()); // f_namelen
     b[60..64].copy_from_slice(&(vfs.f_frsize as u32).to_le_bytes()); // f_frsize
     b[64..68].copy_from_slice(&flags.to_le_bytes()); // f_flags
-    unsafe { write_bytes(mem, ptr, &b) };
+    unsafe { dest.write(mem, &b) }
 }
 
 /// Combine two 32-bit words into a signed 64-bit value (high word first),
@@ -920,11 +924,15 @@ fn combine_i64(lo: i32, hi: i32) -> i64 {
 /// already carries the `S_IFMT` file-type bits (`S_IFDIR`/`S_IFREG`/`S_IFLNK`
 /// etc.), which are numerically identical between Linux and the BSD/macOS
 /// heritage `st_mode` encoding, so no translation is needed.
-unsafe fn write_wasm_stat_from_metadata(mem: &SharedMemory, stat_ptr: usize, meta: &fs::Metadata) {
+unsafe fn write_wasm_stat_from_metadata(
+    mem: &SharedMemory,
+    dest: KernelLent,
+    meta: &fs::Metadata,
+) -> Result<(), i32> {
     unsafe {
         write_wasm_stat_fields(
             mem,
-            stat_ptr,
+            dest,
             StatFields {
                 ino: meta.ino(),
                 mode: meta.mode(),
@@ -937,20 +945,20 @@ unsafe fn write_wasm_stat_from_metadata(mem: &SharedMemory, stat_ptr: usize, met
                 ctime: (meta.ctime(), meta.ctime_nsec()),
             },
         )
-    };
+    }
 }
 
 /// Serialize a [`CapMetadata`] — what every `*at` metadata query on a directory
 /// capability returns — into a `WasmStat`.
 unsafe fn write_wasm_stat_from_cap_metadata(
     mem: &SharedMemory,
-    stat_ptr: usize,
+    dest: KernelLent,
     meta: &CapMetadata,
-) {
+) -> Result<(), i32> {
     unsafe {
         write_wasm_stat_fields(
             mem,
-            stat_ptr,
+            dest,
             StatFields {
                 ino: meta.ino(),
                 mode: meta.mode(),
@@ -963,7 +971,7 @@ unsafe fn write_wasm_stat_from_cap_metadata(
                 ctime: (meta.ctime(), meta.ctime_nsec()),
             },
         )
-    };
+    }
 }
 
 /// The `WasmStat` fields this host can answer truthfully from a real host
@@ -982,7 +990,11 @@ struct StatFields {
     ctime: (i64, i64),
 }
 
-unsafe fn write_wasm_stat_fields(mem: &SharedMemory, stat_ptr: usize, f: StatFields) {
+unsafe fn write_wasm_stat_fields(
+    mem: &SharedMemory,
+    dest: KernelLent,
+    f: StatFields,
+) -> Result<(), i32> {
     let mut b = [0u8; WASM_STAT_SIZE];
     b[8..16].copy_from_slice(&f.ino.to_le_bytes()); // st_ino
     b[16..20].copy_from_slice(&f.mode.to_le_bytes()); // st_mode
@@ -1000,7 +1012,7 @@ unsafe fn write_wasm_stat_fields(mem: &SharedMemory, stat_ptr: usize, f: StatFie
     b[64..68].copy_from_slice(&nsec(f.mtime.1).to_le_bytes()); // st_mtime_nsec
     b[72..80].copy_from_slice(&sec(f.ctime.0).to_le_bytes()); // st_ctime_sec
     b[80..84].copy_from_slice(&nsec(f.ctime.1).to_le_bytes()); // st_ctime_nsec
-    unsafe { write_bytes(mem, stat_ptr, &b) };
+    unsafe { dest.write(mem, &b) }
 }
 
 /// The result of running a trivial guest to completion.
@@ -1137,6 +1149,85 @@ fn checked_shared_range(mem: &SharedMemory, addr: u64, len: u32) -> Option<usize
 ///
 /// # The invariant, and why a pointer alone cannot carry it
 ///
+/// A region the KERNEL lends this host, proven once at the boundary.
+///
+/// The mirror of [`KernelScratch`], for the other direction. `KernelScratch`
+/// covers memory this host ASKS the kernel for; this covers memory the kernel
+/// HANDS this host — a `(ptr, capacity)` pair arriving as import arguments,
+/// which the host then writes into.
+///
+/// Outbound had a type and a source guard. Inbound was a `usize`, and sixteen
+/// sites wrote at one without proving anything (L-D3). The JavaScript host has
+/// carried the inbound type all along — `#rustLentKernelDestination` in
+/// `host/src/kernel.ts`, whose comment is the whole argument:
+///
+/// > fitting in the current WebAssembly Memory proves only addressability,
+/// > not ownership. The Rust import arguments name the allocation and its
+/// > capacity; keeping both in an authenticated token prevents a later caller
+/// > from substituting total Memory length for the allocation bound.
+///
+/// The proof is `wasm_posix_shared::host_memory::checked_range`, the same rule
+/// the corpus checks in both hosts. Holding an offset that only this
+/// constructor can produce is what stops a caller reaching for the raw
+/// pointer again further down.
+#[derive(Debug, Clone, Copy)]
+struct KernelLent {
+    offset: usize,
+    capacity: u32,
+}
+
+impl KernelLent {
+    /// Prove a `(ptr, capacity)` pair the kernel passed in, or refuse it.
+    ///
+    /// `None` is the caller's cue to answer `-EFAULT`, which is what this
+    /// host already does wherever it proves a kernel range today
+    /// (`proc_copy_in`/`proc_copy_out`) and what the JavaScript host answers
+    /// for the same condition.
+    fn prove(mem: &SharedMemory, ptr: u64, capacity: u32) -> Option<Self> {
+        checked_shared_range(mem, ptr, capacity).map(|offset| Self { offset, capacity })
+    }
+
+    /// Copy `bytes` in, refusing a write longer than the lender promised.
+    ///
+    /// The capacity check is the half a bounds check cannot supply: being
+    /// inside the memory does not mean being inside what was lent.
+    fn write(self, mem: &SharedMemory, bytes: &[u8]) -> Result<(), i32> {
+        if bytes.len() > self.capacity as usize {
+            return Err(-libc_errno::EFAULT);
+        }
+        unsafe { write_bytes(mem, self.offset, bytes) };
+        Ok(())
+    }
+
+    /// The proven offset, for a caller that writes several fields into one
+    /// lent record rather than one buffer.
+    fn at(self, field: usize, len: usize) -> Option<usize> {
+        let end = field.checked_add(len)?;
+        if end > self.capacity as usize {
+            return None;
+        }
+        Some(self.offset + field)
+    }
+}
+
+/// Prove a lent `(ptr, capacity)` and copy `bytes` into it, or refuse.
+///
+/// The shape every kernel host import needs: the kernel names a buffer and
+/// how big it is, the host writes no more than that, and an address it cannot
+/// map is `-EFAULT` rather than a `copy_nonoverlapping` into whatever is
+/// there.
+fn write_lent(
+    mem: &SharedMemory,
+    ptr: u64,
+    capacity: u32,
+    bytes: &[u8],
+) -> Result<(), i32> {
+    let Some(dest) = KernelLent::prove(mem, ptr, capacity) else {
+        return Err(-libc_errno::EFAULT);
+    };
+    dest.write(mem, bytes)
+}
+
 /// `kernel_alloc_scratch(n)` answers with an address inside kernel memory.
 /// That address being in bounds proves the host CAN address those bytes; it
 /// does not prove the allocator gave *this caller* `n` of them. Nothing about
@@ -2671,33 +2762,34 @@ mod proc_bytes_tests {
             );
         }
     }
-    /// The kernel's host imports may not GROW the set of writes that trust a
-    /// pointer without proving it.
+    /// The kernel's host imports may not write through a raw pointer at all.
     ///
-    /// L-D3: sixteen sites write at an address the kernel handed in, with no
-    /// range proof. `copy_launch_entry` was fixed because its errno was
-    /// settled by the TypeScript contract it cites; the rest need one decision
-    /// about what this host returns for an unmappable pointer, which is the
-    /// maintainer's. Until that is taken, this pins the number so the class
-    /// cannot quietly get larger while the decision is pending — and so that
-    /// fixing one has to move the count on purpose rather than drift past it.
+    /// L-D3 was sixteen sites writing at an address the kernel handed in, with
+    /// no range proof. One of them crashed the process with SIGBUS when its
+    /// proof was removed. They are all proven now, through [`KernelLent`] --
+    /// the inbound mirror of [`KernelScratch`], and the Rust counterpart of
+    /// `#rustLentKernelDestination` in `host/src/kernel.ts`.
     ///
-    /// Scoped to `define_kernel_host_imports` because that is the boundary in
-    /// question: addresses arriving from the kernel. Writes elsewhere in this
-    /// file go to offsets the host computed itself, which is a different
-    /// question and deliberately not counted here.
+    /// So the invariant is no longer a count. It is that `write_bytes` does
+    /// not appear in this function: every write goes through a region that
+    /// was proven at the boundary, and a raw one is the thing being
+    /// prevented. That took three tries to state, and the first two are worth
+    /// keeping because they are the same mistake twice:
     ///
-    /// A proven write is not a write that vanished. `copy_launch_entry` still
-    /// calls the raw copy — it passes the offset `checked_shared_range`
-    /// returned. So what this counts is the SHAPE of the address, not the
-    /// presence of a copy.
+    ///   * counting addresses whose NAME looked like a pointer -- which
+    ///     `host_readdir` already evaded with `let dp = dirent_ptr as ...`;
+    ///   * counting writes minus proofs -- which went quietly wrong the
+    ///     moment a proof was spelled `KernelLent::prove` instead of
+    ///     `checked_shared_range`, and which assumed every proof in this
+    ///     function belonged to a write in it.
+    ///
+    /// Zero is not a proxy for the invariant. It is the invariant.
     #[test]
-    fn the_import_layer_does_not_grow_new_writes_through_unproven_pointers() {
+    fn the_kernel_host_imports_never_write_through_a_raw_pointer() {
         let source = include_str!("guest.rs");
-        // Assembled like its siblings: a literal needle would match inside
-        // this test. The scan is scoped below the marker anyway, but a guard
-        // that depends on its own position in the file is one edit from
-        // being wrong.
+        // Assembled, and CODE lines only: a comment mentioning the call must
+        // not be able to fail this, which is a mistake this file has already
+        // made once.
         let marker = concat!("fn define_kernel_", "host_imports(");
         let needle = concat!("write_", "bytes(");
 
@@ -2708,41 +2800,28 @@ mod proc_bytes_tests {
         let end = body.find("\n}\n").expect("the import function ends");
         let body = &body[..end];
 
-        // Counting POINTER-NAMED addresses is what the first version did,
-        // and `cargo xtask perturb` killed it: a write through
-        // `let dest = value_ptr as u32 as usize` is unproven and invisible to
-        // a check that looks for `_ptr`. The name is a thing that is usually
-        // true when the invariant holds, not the invariant.
-        //
-        // Arithmetic instead. Every proof in this function belongs to a write
-        // in it, so `writes - proofs` is the number of writes with no proof,
-        // whatever anyone calls their variables. Adding a proven write leaves
-        // the difference alone; adding an unproven one raises it; proving an
-        // existing one lowers it, which must be a deliberate edit here.
-        let proof = concat!("checked_shared", "_range(");
-        let mut writes = 0usize;
-        let mut proofs = 0usize;
-        for line in body.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            if trimmed.contains(needle) {
-                writes += 1;
-            }
-            if trimmed.contains(proof) {
-                proofs += 1;
-            }
-        }
-        let unproven = writes.saturating_sub(proofs);
+        let raw: Vec<&str> = body
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .collect();
 
-        assert_eq!(
-            unproven, 14,
-            "the import layer's unproven writes moved: {writes} writes minus \
-             {proofs} proofs. A NEW write must carry a proof, not raise this \
-             number. Proving an existing one is the good direction -- lower \
-             the count in the same commit, and never raise it to make this \
-             pass.",
+        assert!(
+            raw.is_empty(),
+            "a kernel host import writes through a raw pointer: {raw:?}. The \
+             kernel names a buffer and its capacity; prove the pair with \
+             KernelLent (or write_lent) and answer -EFAULT when it does not \
+             map. That is what the JavaScript host does for the same import.",
+        );
+
+        // ...and the body is really this function's, not an empty slice: a
+        // marker that matched a comment would make the check above vacuous.
+        assert!(
+            body.len() > 10_000,
+            "the scanned import body is {} bytes, which is too small to be \
+             this function -- the scan is broken, not the host clean",
+            body.len(),
         );
     }
 
@@ -3223,9 +3302,20 @@ fn define_kernel_host_imports(
             "host_clock_gettime",
             move |_c: Caller<'_, ()>, _clock_id: i32, sec_ptr: i32, nsec_ptr: i32| -> i32 {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-                unsafe {
-                    write_bytes(&mem, sec_ptr as u32 as usize, &(now.as_secs() as i64).to_le_bytes());
-                    write_bytes(&mem, nsec_ptr as u32 as usize, &(now.subsec_nanos() as i64).to_le_bytes());
+                // Two separate lends: the kernel names two independent
+                // 8-byte slots, and proving one says nothing about the other.
+                if let Err(errno) =
+                    write_lent(&mem, sec_ptr as u32 as u64, 8, &(now.as_secs() as i64).to_le_bytes())
+                {
+                    return errno;
+                }
+                if let Err(errno) = write_lent(
+                    &mem,
+                    nsec_ptr as u32 as u64,
+                    8,
+                    &(now.subsec_nanos() as i64).to_le_bytes(),
+                ) {
+                    return errno;
                 }
                 0
             },
@@ -3275,10 +3365,15 @@ fn define_kernel_host_imports(
                         1 => -libc_errno::EAGAIN, // not ready yet: block
                         2 => {
                             let n = HOST_STDIN_LINE.len().min(len as usize);
-                            unsafe {
-                                write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n])
-                            };
-                            n as i32
+                            match write_lent(
+                                &mem,
+                                buf_ptr as u32 as u64,
+                                len as u32,
+                                &HOST_STDIN_LINE[..n],
+                            ) {
+                                Ok(()) => n as i32,
+                                Err(errno) => errno,
+                            }
                         }
                         _ => 0, // EOF
                     };
@@ -3292,8 +3387,10 @@ fn define_kernel_host_imports(
                 });
                 match read {
                     Ok(n) => {
-                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &tmp[..n]) };
-                        n as i32
+                        match write_lent(&mem, buf_ptr as u32 as u64, len as u32, &tmp[..n]) {
+                            Ok(()) => n as i32,
+                            Err(errno) => errno,
+                        }
                     }
                     Err(errno) => -errno,
                 }
@@ -3421,14 +3518,17 @@ fn define_kernel_host_imports(
                     });
                     match meta {
                         Ok(m) => {
-                            unsafe {
-                                write_wasm_stat_from_cap_metadata(
-                                    &mem,
-                                    stat_ptr as u32 as usize,
-                                    &m,
-                                )
+                            let Some(dest) = KernelLent::prove(
+                                &mem,
+                                stat_ptr as u32 as u64,
+                                WASM_STAT_SIZE as u32,
+                            ) else {
+                                return -libc_errno::EFAULT;
                             };
-                            0
+                            match unsafe { write_wasm_stat_from_cap_metadata(&mem, dest, &m) } {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3462,8 +3562,10 @@ fn define_kernel_host_imports(
                         file.read_at(&mut tmp, offset).map_err(|e| errno_from_io(&e))
                     }) {
                         Ok(n) => {
-                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &tmp[..n]) };
-                            n as i32
+                            match write_lent(&mem, buf_ptr as u32 as u64, len as u32, &tmp[..n]) {
+                                Ok(()) => n as i32,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3544,20 +3646,30 @@ fn define_kernel_host_imports(
                 "host_fstat",
                 move |_c: Caller<'_, ()>, handle: i64, stat_ptr: i32| -> i32 {
                     let objects = fs.objects.lock().unwrap();
-                    let stat_ptr = stat_ptr as u32 as usize;
+                    // L-D3: the kernel's `stat_ptr` is proven once, here, and
+                    // travels as a region rather than as an address.
+                    let Some(dest) =
+                        KernelLent::prove(&mem, stat_ptr as u32 as u64, WASM_STAT_SIZE as u32)
+                    else {
+                        return -libc_errno::EFAULT;
+                    };
                     match objects.get(&handle) {
                         Some(HostObject::File(file)) => match file.metadata() {
-                            Ok(m) => {
-                                unsafe { write_wasm_stat_from_metadata(&mem, stat_ptr, &m) };
-                                0
-                            }
+                            Ok(m) => match unsafe {
+                                write_wasm_stat_from_metadata(&mem, dest, &m)
+                            } {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            },
                             Err(e) => -errno_from_io(&e),
                         },
                         Some(HostObject::Dir(dh)) => match dh.dir.dir_metadata() {
-                            Ok(m) => {
-                                unsafe { write_wasm_stat_from_cap_metadata(&mem, stat_ptr, &m) };
-                                0
-                            }
+                            Ok(m) => match unsafe {
+                                write_wasm_stat_from_cap_metadata(&mem, dest, &m)
+                            } {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            },
                             Err(e) => -errno_from_io(&e),
                         },
                         None => -libc_errno::EBADF,
@@ -3847,8 +3959,15 @@ fn define_kernel_host_imports(
                         Ok(target) => {
                             let bytes = target.into_os_string().into_encoded_bytes();
                             let n = bytes.len().min(buf_len as usize);
-                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &bytes[..n]) };
-                            n as i32
+                            match write_lent(
+                                &mem,
+                                buf_ptr as u32 as u64,
+                                buf_len as u32,
+                                &bytes[..n],
+                            ) {
+                                Ok(()) => n as i32,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3996,8 +4115,17 @@ fn define_kernel_host_imports(
                         .with_fd(handle, |fd| rustix::fs::fstatvfs(fd).map_err(errno_from_rustix))
                     {
                         Ok(vfs) => {
-                            unsafe { write_wasm_statfs(&mem, statfs_ptr as u32 as usize, &vfs) };
-                            0
+                            let Some(dest) = KernelLent::prove(
+                                &mem,
+                                statfs_ptr as u32 as u64,
+                                WASM_STATFS_SIZE as u32,
+                            ) else {
+                                return -libc_errno::EFAULT;
+                            };
+                            match unsafe { write_wasm_statfs(&mem, dest, &vfs) } {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -4029,9 +4157,14 @@ fn define_kernel_host_imports(
                     });
                     match result {
                         Ok(value) => {
-                            unsafe {
-                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())
-                            };
+                            if let Err(errno) = write_lent(
+                                &mem,
+                                value_ptr as u32 as u64,
+                                8,
+                                &value.to_le_bytes(),
+                            ) {
+                                return errno;
+                            }
                             0
                         }
                         Err(errno) => -errno,
@@ -4115,18 +4248,31 @@ fn define_kernel_host_imports(
                     match entry {
                         Ok(None) => 0, // end of directory
                         Ok(Some(entry)) => {
-                            unsafe {
-                                let dp = dirent_ptr as u32 as usize;
-                                write_bytes(&mem, dp, &entry.ino.to_le_bytes());
-                                write_bytes(&mem, dp + 8, &entry.d_type.to_le_bytes());
-                                write_bytes(
-                                    &mem,
-                                    dp + 12,
-                                    &(entry.name.len() as u32).to_le_bytes(),
-                                );
-                                write_bytes(&mem, name_ptr as u32 as usize, &entry.name);
+                            // Two lends, because the kernel names two buffers:
+                            // a 16-byte dirent record and a separate name
+                            // buffer whose capacity it already told us
+                            // (`name_len`, checked above for the CONTENT but
+                            // never for the ADDRESS until now).
+                            let mut record = [0u8; 16];
+                            record[..8].copy_from_slice(&entry.ino.to_le_bytes());
+                            record[8..12].copy_from_slice(&entry.d_type.to_le_bytes());
+                            record[12..].copy_from_slice(
+                                &(entry.name.len() as u32).to_le_bytes(),
+                            );
+                            if let Err(errno) =
+                                write_lent(&mem, dirent_ptr as u32 as u64, 16, &record)
+                            {
+                                return errno;
                             }
-                            1
+                            match write_lent(
+                                &mem,
+                                name_ptr as u32 as u64,
+                                name_len as u32,
+                                &entry.name,
+                            ) {
+                                Ok(()) => 1,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -4184,8 +4330,10 @@ fn define_kernel_host_imports(
                 }
                 let remaining = &bytes[offset..];
                 let n = remaining.len().min(buf_len as usize);
-                unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &remaining[..n]) };
-                n as i32
+                match write_lent(&mem, buf_ptr as u32 as u64, buf_len as u32, &remaining[..n]) {
+                    Ok(()) => n as i32,
+                    Err(errno) => errno,
+                }
             },
         )?;
     }
@@ -4202,8 +4350,10 @@ fn define_kernel_host_imports(
                 let mut buf = vec![0u8; len as usize];
                 match File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)) {
                     Ok(()) => {
-                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &buf) };
-                        len
+                        match write_lent(&mem, buf_ptr as u32 as u64, len as u32, &buf) {
+                            Ok(()) => len,
+                            Err(errno) => errno,
+                        }
                     }
                     Err(_) => -(libc_errno::EIO),
                 }
@@ -4298,9 +4448,17 @@ fn define_kernel_host_imports(
                 parent_of.remove(&child_pid);
                 drop(guard);
                 if status_ptr != 0 {
-                    unsafe {
-                        write_bytes(&kernel_mem, status_ptr as u32 as usize, &status_word.to_le_bytes())
-                    };
+                    // The reaping already happened above, so a bad status
+                    // pointer cannot un-reap the child: report EFAULT and let
+                    // the caller see the loss, rather than write through it.
+                    if let Err(errno) = write_lent(
+                        &kernel_mem,
+                        status_ptr as u32 as u64,
+                        4,
+                        &status_word.to_le_bytes(),
+                    ) {
+                        return errno;
+                    }
                 }
                 child_pid as i32
             },
