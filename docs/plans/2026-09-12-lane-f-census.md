@@ -2100,3 +2100,65 @@ to 0, adding a `host/src/fork-probe-temp.ts` fails `forkPlatformTypeScript is 3,
 above its ceiling of 0` while the banked surface stays at 249; adding a
 `host/src/fork-module-probe-temp.ts` instead fails `forkTypeScript is 252, above
 its ceiling of 249`. Each surface catches exactly the file kind it owns.
+
+## §38 — F3 scoped: the capture-side drive already has a socket to plug into
+
+§26 recorded that "there is no capture-side drive", and used that to defer
+provenance consumption and the unknown-tag upgrade to F3. That is true of the
+PLAN machinery and false of the MECHANISM, which changes how large F3 is.
+
+### The three facts that decide it
+
+**The guest already exports the capture entry point.**
+`WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT` — `__wpk_fork_ref_gc_encode_slot(slot)
+-> recipe` — is a guest EXPORT, not an import. `fork-instrument`'s own Node
+tests call it directly as `instance.exports.__wpk_fork_ref_gc_encode_slot(0)`:
+stage a value in the transit slot, call, get its recipe id. The exception side
+has the matching `__wpk_fork_ref_encode_exnref` and
+`__wpk_fork_ref_exn_encode_ingress`.
+
+**The module already drives guest exports through a table.**
+`__wpk_fork_drive_table` plus the injected `fm_drive_execute` `call_indirect` is
+exactly that mechanism, used today for `_gc_allocate` / `_gc_fill` /
+`wpk_fork_rewind_begin` and eight more.
+
+**And the table is explicitly designed to grow.**
+`DRIVE_SLOTS_PER_ACTIVATION` is 11, slots 0-10 assigned, and `drive_plan.rs`
+states the rule: "This is an EPHEMERAL runtime host<->module table-binding
+contract (not a wire/ABI format, not serialized), so **growing it is
+additive**." Binding `__wpk_fork_ref_gc_encode_slot` at offset 11 is therefore
+an additive change, not an ABI change, as long as every side derives its slots
+from `drive_table_base`.
+
+### What F3 actually decomposes into
+
+1. **Bind the capture exports at new drive slots.** Additive; the host already
+   binds eleven this way.
+2. **A capture-side walk.** The replay side has `build_drive_plan` +
+   `fm_drive_execute`; capture needs the mirror — stage, `call_indirect` encode,
+   record the recipe — with the same Rust-decides / wasm-calls split.
+3. **Delete the driver it replaces.** `fork-process-continuation` is 1,471 lines
+   with no atomics, no promises and no worker references, calling nine
+   fine-grained module entries (§23). That is the visible prize, and it is also
+   the largest single item in `workerMainTypeScript`'s orbit.
+
+### What it then unblocks, with no further design
+
+* Provenance WITNESS consumption (§24, §26): capture can intern each witness and
+  emit its recipe as `gc_define`'s provenance id.
+* `gc_capture_layout` and `gc_broker_encode`, two of the three remaining
+  shim-backed imports.
+* The unknown-tag path (§30) upgrading from a truthful refusal to real
+  cross-activation routing, because "ask the activation whose codec owns this
+  tag" becomes a drive-table call rather than an impossibility.
+
+### The risk worth naming up front
+
+The capture walk runs during the fork's critical section, and the
+`ABORT_UNWINDING` discipline the master plan records as having trapped or hung
+two prior attempts lives in exactly this region: `fm_parent_seal_capture` must
+not drive the guest's `wpk_fork_unwind_end` when a reserve failed mid-unwind.
+A capture-side drive adds another guest call into that window, so the sequencing
+has to inherit that discipline rather than rediscover it.
+
+Scoped, not started.
