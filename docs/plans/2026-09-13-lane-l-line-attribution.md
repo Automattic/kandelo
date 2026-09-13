@@ -604,11 +604,13 @@ declared-plus-checked accounts for every case. **Eight of nine cases are now
 checked in both hosts.** The range corpus already worked this way, with an
 explicit `rustOnly` marking; its floor was raised to track its size.
 
-**The refusals are still checked in one host only.** The TypeScript half
-writes two of them out by hand rather than reading the corpus, so the two
-saturating refusals and the new exact-fit boundary are Rust-only — and the two
-it does restate are the same knowledge written twice, which is the thing this
-lane exists to stop.
+**The refusals were checked in one host only; they are not now.** The
+TypeScript half wrote two of them out by hand rather than reading the corpus,
+so the two saturating refusals and the new exact-fit boundary were Rust-only —
+and the two it restated were the same knowledge written twice, which is the
+thing this lane exists to stop. All five are now driven from the corpus, and
+the two hand-written ones are gone. See "the last open item" below for what
+made that harder than it looks.
 
 ### The held branch left nothing behind
 
@@ -701,7 +703,7 @@ anchors no longer resolve, and the rot is invisible to anyone who does not
 follow them.** A shared corpus or a generated constant cannot rot this way,
 because nothing has to be re-stated to stay true.
 
-### Four items: three now fixed and verified, one still open
+### Four items: all four now fixed and verified
 
 **The two Rust items were applied and verified on 2026-09-13**, once the disk
 hold lifted. They were held as patches for nine hours because editing Rust
@@ -818,10 +820,45 @@ change in the same commit.**
   region that is not yet in scope at that line did not compile, so the test
   never ran and printed no verdict. A perturbation that does not build is not
   evidence the guard holds, and it looked exactly like a pass.
-- **Driving the TypeScript refusals from the corpus** needs BigInt-safe
-  parsing: a heap base of 2^63 is not a safe JavaScript integer, and
-  `layoutAddressIn` refuses an unsafe one with a different message than the
-  refusal under test, so a naive loop would pass for the wrong reason.
+- **Driving the TypeScript refusals from the corpus is done, and the recorded
+  blocker was half right.** All five refusals now come from the shared corpus;
+  the two the test used to write out by hand are gone, so the reject half of
+  "one rule, both hosts" is a checked fact rather than an intention.
+
+  The trap was real and is now reproduced as a perturbation. The corpus
+  carries a heap base of 2^63; handed to the entry point as a NUMBER, the
+  host's own `layoutAddressIn` refuses it as an unsafe integer —
+  `invalid heap base: ...` — before the shared rule runs at all. A loop that
+  asserted only "it threw" would pass on that and report agreement about a
+  rule it never reached. Handed a `bigint`, which this entry point has always
+  accepted, the request reaches the rule and the corpus message is what comes
+  back.
+
+  **The other half of the blocker was wrong, and perturbing it is what
+  showed that.** The note said JavaScript's parsing could not hold 2^63.
+  It holds it exactly — 2^63 is a power of two, so the double is the true
+  value and only its PRINTED form, 9223372036854776000, differs. Removing the
+  text-lifting step changes no verdict in this corpus, which the perturbation
+  confirmed by passing. It is kept because exactness then rests on structure
+  rather than on an argument, and the argument is narrow: the page ceiling is
+  a `u32`, so every heap base a layout can ACCEPT is below 2^48 and exactly
+  representable, and every one far above saturates to the same refusal.
+
+  Four perturbations, each rebuilt and run:
+  * Hand the entry point a number instead of a `bigint` — fails with exactly
+    the trap above, naming `invalid heap base` where the rule's message was
+    expected.
+  * Corrupt one expected message in the corpus — fails.
+  * Give a refusal an expected message that IS the host's argument check —
+    the second assertion fires on its own terms.
+  * Remove the text lifting — **passes**, which is the finding recorded above
+    rather than a result quietly dropped.
+
+  One defect was found in the check while perturbing it: the second assertion
+  first read `startsWith("invalid heap base")`, and the driver prefixes its
+  errors with the export name, so it could never have fired. A guard that
+  cannot fail, written into the same commit that argues against them. It
+  reads `includes` now, and the third perturbation above exists to prove it.
 
 ## A hole in the ratchet itself, found by the same question
 

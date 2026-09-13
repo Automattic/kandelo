@@ -2579,9 +2579,14 @@ classified as harmless**: `handle_spawn` passed the blob's length where
 `kernel_spawn_blob_decode` declares `buf_capacity`, so the kernel's own
 `blob_len > buf_capacity` refusal was fed the same number twice and could
 never fire — H-2 on the far side of the ABI, manufactured by a restated length
-on this one. **One remains open**: corpus-driving the TypeScript refusals,
-which needs BigInt-safe parsing because a heap base of 2^63 is not a safe
-JavaScript integer. See
+on this one. **The fourth is now done too**: all five corpus refusals are
+driven from the shared file, and the two the TypeScript test used to write out
+by hand are gone, so the REJECT half of "one rule, both hosts" is checked
+rather than intended. The recorded blocker was half right — a heap base of
+2^63 must reach the entry point as a `bigint`, or the host's own argument
+check refuses it first and a careless loop calls that agreement; but the claim
+that JavaScript could not hold the value was wrong, and perturbing it is what
+showed that. See
 `docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
 **The 3,600 target is not derived, and no number here replaces it.** The L1

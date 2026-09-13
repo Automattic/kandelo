@@ -40,14 +40,37 @@ import { PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE } from "../src/generated/abi";
 
 const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
-const CORPUS = JSON.parse(
-  readFileSync(
-    new URL(
-      "../../crates/shared/tests/process-memory-layouts.json",
-      import.meta.url,
-    ),
-    "utf8",
+const CORPUS_TEXT = readFileSync(
+  new URL(
+    "../../crates/shared/tests/process-memory-layouts.json",
+    import.meta.url,
   ),
+  "utf8",
+);
+
+/**
+ * Every `heapBase` literal lifted to a string BEFORE `JSON.parse` sees it.
+ *
+ * What matters on this path is that the value reaches the entry point as a
+ * `bigint`. The corpus carries a heap base of 2^63, and as a NUMBER that is
+ * not a safe integer, so the host's own `layoutAddressIn` rejects it —
+ * `invalid heap base: ...` — before the shared rule ever runs. A loop that
+ * only asserted "it threw" would pass on that and call it agreement about a
+ * rule it never reached.
+ *
+ * The text lifting is the narrower half, and its honest status is that
+ * removing it changes no verdict in today's corpus: 2^63 is exactly
+ * representable as a double, so `JSON.parse` returns the true value and only
+ * PRINTS it as 9223372036854776000. That is not luck that generalises — but
+ * it nearly does, because the page ceiling is a `u32`, so every heap base a
+ * layout can accept is below 2^48 and exactly representable, and every one
+ * far above it saturates to the same refusal. What the lifting buys is that
+ * exactness is structural rather than argued: a future corpus literal that a
+ * double cannot hold would otherwise be rounded on the way in, with nothing
+ * failing.
+ */
+const CORPUS = JSON.parse(
+  CORPUS_TEXT.replace(/("heapBase":\s*)(\d+)/g, '$1"$2"'),
 ) as {
   cases: readonly {
     name: string;
@@ -55,14 +78,30 @@ const CORPUS = JSON.parse(
       maximumPages: number;
       importedMinimumPages: number;
       requestedMinimumPages: number;
-      heapBase: number | null;
+      heapBase: string | null;
       threadSlotCount: number;
     };
     layout: Record<string, number>;
     /** Declared when only a program's bytes can present this case. */
     programBytesOnly?: boolean;
   }[];
+  refusals: readonly {
+    name: string;
+    request: {
+      maximumPages: number;
+      importedMinimumPages: number;
+      requestedMinimumPages: number;
+      heapBase: string | null;
+      threadSlotCount: number;
+    };
+    message: string;
+  }[];
 };
+
+/** A corpus heap base as the entry point wants it, exactly. */
+function corpusHeapBase(raw: string | null): bigint | null {
+  return raw === null ? null : BigInt(raw);
+}
 
 // ---------------------------------------------------------------------------
 // The oracle: the arithmetic this file's subject used to perform
@@ -268,7 +307,7 @@ describe("one process memory layout", () => {
         ptrWidth: 4,
         maxPages: entry.request.maximumPages,
         minPages: entry.request.requestedMinimumPages,
-        heapBase: entry.request.heapBase,
+        heapBase: corpusHeapBase(entry.request.heapBase),
         threadSlots: entry.request.threadSlotCount,
       });
       expect({ name: entry.name, ...layout }).toEqual({
@@ -350,13 +389,41 @@ describe("one process memory layout", () => {
     ).toBe(257);
   });
 
-  it("refuses a ceiling that cannot hold the syscall channel", () => {
-    expect(() => computeProcessMemoryLayout({ ptrWidth: 4, maxPages: 2 }))
-      .toThrow("invalid process maximum pages: 2");
-  });
-
-  it("refuses control memory that does not fit under the ceiling", () => {
-    expect(() => computeProcessMemoryLayout({ ptrWidth: 4, maxPages: 100 }))
-      .toThrow("initial pages 259 exceed process maximum 100");
+  it("refuses every corpus refusal, with the message the rule gives", () => {
+    // This replaces two hand-written refusals that restated corpus entries 0
+    // and 1 in the test file. Five are now driven from the corpus the Rust
+    // side reads, which is what "one rule, both hosts" has to mean for the
+    // reject half as well as the accept half.
+    expect(CORPUS.refusals.length).toBeGreaterThanOrEqual(5);
+    for (const refusal of CORPUS.refusals) {
+      // Not `.toThrow(refusal.message)` alone. A refusal is only evidence
+      // about the rule if the rule is what refused: `layoutAddressIn`
+      // rejects an out-of-range heap base with `invalid heap base: ...`
+      // BEFORE the request reaches the shared function, and a loop that
+      // only asserted "it threw" would pass on that and call it agreement.
+      let thrown: unknown;
+      expect(() => {
+        try {
+          computeProcessMemoryLayout({
+            ptrWidth: 4,
+            maxPages: refusal.request.maximumPages,
+            minPages: refusal.request.requestedMinimumPages,
+            heapBase: corpusHeapBase(refusal.request.heapBase),
+            threadSlots: refusal.request.threadSlotCount,
+          });
+        } catch (error) {
+          thrown = error;
+          throw error;
+        }
+      }).toThrow(refusal.message);
+      // `includes`, not `startsWith`: the driver prefixes its errors with
+      // the export name, so a prefix test here could never fire — a guard
+      // that cannot fail, which is the hazard this lane keeps filing.
+      expect(
+        `${(thrown as Error).message}`.includes("invalid heap base"),
+        `${refusal.name}: refused by the host's own argument check, not by `
+          + "the rule under test",
+      ).toBe(false);
+    }
   });
 });
