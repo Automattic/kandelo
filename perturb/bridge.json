@@ -120,6 +120,20 @@
       "scope_end": "\n  }\n",
       "find": "    for (let hop = 0; hop < 40; hop += 1) {",
       "replace": "    for (let hop = 0; hop < 4000000; hop += 1) {"
+    },
+    {
+      "name": "a load leaves the replay buffer holding what this bridge last sent",
+      "scope": "  loadImage(image: Uint8Array): number {",
+      "scope_end": "\n  }\n",
+      "find": "      this.lastMetadata = this.getImageMetadata();",
+      "replace": "      // the replay buffer is not refreshed"
+    },
+    {
+      "name": "getImageMetadata answers from the replay buffer instead of the module",
+      "scope": "  getImageMetadata(): VfsImageMetadata | null {",
+      "scope_end": "\n  }\n",
+      "find": "    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );",
+      "replace": "    return (this.lastMetadata as VfsImageMetadata | null) ?? null;\n    // eslint-disable-next-line no-unreachable\n    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
