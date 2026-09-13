@@ -60,6 +60,32 @@ describe("fork host identity floor", () => {
     expect(provenanceOf(token)).toBe(42);
   });
 
+  it("gives NO provenance to a handle-carrying value that never crossed the production site", () => {
+    // The distinction the whole map exists for, and the one thing that makes it
+    // more than a cache of `tryEncodeExternref`.
+    //
+    // Both values below carry a broker handle, so `tryEncodeExternref` answers
+    // for both. Only `produced` passed through the host-import body. A capture
+    // that treated `internalized` as host-produced would be the unsoundness the
+    // attic's `ForkExternrefProvenanceTable` names: a reverse lookup at capture
+    // time "cannot distinguish a genuine host-import production from a
+    // GC-internalized value that merely reached the same code path".
+    const produced = { tag: "produced" };
+    const internalized = { tag: "internalized" };
+    const { floor, provenanceOf } = createForkGuestHostFloor(
+      deps({
+        tryEncodeExternref: (v) =>
+          v === produced ? 7 : v === internalized ? 9 : undefined,
+      }),
+    );
+    floor.__wpk_fork_ref_provenance_externref(produced);
+    expect(provenanceOf(produced)).toBe(7);
+    // Never passed through the import body -- so no provenance, even though its
+    // handle is readable. Answering 9 here would pass a lookup-only
+    // implementation and lose the distinction entirely.
+    expect(provenanceOf(internalized)).toBeUndefined();
+  });
+
   it("records nothing for a value with no self-describing handle", () => {
     const plain = {};
     const { floor, provenanceOf } = createForkGuestHostFloor(deps());

@@ -26,6 +26,22 @@ export interface ForkGuestHostFloorDeps {
    * provenance to record, which is a documented boundary rather than an error.
    */
   readonly tryEncodeExternref: (value: unknown) => number | undefined;
+  // WHY THE RECORDING IS NOT REDUNDANT WITH THIS LOOKUP, which is the obvious
+  // simplification and an unsound one.
+  //
+  // `tryEncodeExternref(v)` answers "does this value carry a handle?", and it
+  // answers the same whenever it is asked. The provenance map answers a
+  // different question: "was this value PRODUCED by a host import during this
+  // capture?" -- and that is true only for values that passed through the
+  // production site below, at the moment they crossed it.
+  //
+  // Collapsing the two would make a reverse lookup at CAPTURE time, and the
+  // attic's `ForkExternrefProvenanceTable` states what that costs: such a
+  // lookup "cannot distinguish a genuine host-import production from a
+  // GC-internalized value that merely reached the same code path". Native's
+  // `ExternrefProvenanceRegistry` records at production for the same reason.
+  // See docs/plans/2026-09-05-n1-nodebrowser-reference-parity-grounding.md §1
+  // and census section 108.
 }
 
 export interface ForkGuestHostFloorHandle {

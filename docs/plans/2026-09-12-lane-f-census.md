@@ -5006,3 +5006,54 @@ the code disagreed, and working out which of us was right surfaced the hazard.
 That is an argument for asserting exact sequences rather than set membership: an
 assertion that merely checked "both coordinates were published" would have passed
 against either order and taught me nothing.
+
+## §108 — The same lens applied to `provenance_externref`, and it says no
+
+Section 106's lens -- "'this needs a host capability' is often a claim about one
+STEP, not about the function" -- moved `table_state_owned`. Pointing it at
+`provenance_externref` gives the opposite answer, and the checking is worth as
+much as the moving was.
+
+The function does five things: receive a live `externref`, decide it is an
+object, read the broker handle off it, record `value -> handle`, return the value
+unchanged. Two steps look movable.
+
+**Reading the handle** cannot move. An `externref` is opaque to wasm; the handle
+is a Symbol-keyed property on a frozen token, and only the host can read it. The
+module's `fm_externref_handle` is not a counterexample -- it maps a RECIPE id to
+a handle on the replay path, the opposite direction.
+
+**Recording the handle** looked movable, and following it produced the more
+interesting result. If `tryEncodeExternref(v)` can answer for any value at any
+time, why keep a `WeakMap` at all? Make `provenanceOf` call it and delete the
+map.
+
+That is unsound, and the attic file I was about to make redundant says so in its
+own header:
+
+> populated ONLY by `__wpk_fork_ref_provenance_externref`'s host-import body, at
+> the exact moment a host-import call site returns an externref value to the
+> guest -- NOT by inspecting an already-live value later at capture time. [...]
+> a lazily-populated reverse lookup at capture time cannot distinguish a genuine
+> host-import production from a GC-internalized value that merely reached the
+> same code path
+
+The two functions answer different questions. `tryEncodeExternref` answers "does
+this value carry a handle?" and answers it the same whenever asked. The map
+answers "was this value PRODUCED by a host import during this capture?", which is
+true only for values that crossed the production site, at the moment they crossed
+it. **The timing is the semantics.** Native's `ExternrefProvenanceRegistry`
+records at production for the same reason, so this is a parity requirement as
+well as a soundness one.
+
+Two things follow. `provenance_externref` is floor in BOTH halves and this is now
+checked rather than assumed. And the reason is now written where the next reader
+will hit it: the floor interface carries the argument, and a test pins the
+distinction directly -- two values that both carry handles, only one of which
+crossed the production site, and the other must have NO provenance. Perturbing
+`provenanceOf` into the lookup-only version fails that test, which is the point.
+
+I came within one edit of deleting a `WeakMap` as redundant. What stopped it was
+reading the file whose job I thought I was subsuming. That is the same habit that
+caught the election rule in section 95, and it has now paid twice: the argument
+for a piece of code is often in the piece of code, not in the interface.
