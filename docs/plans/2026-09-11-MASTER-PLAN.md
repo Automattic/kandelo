@@ -3983,6 +3983,53 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### The port's Rust half is done and defended: `xtask archive-extract-tree`
+
+**2026-09-13.** Three formats dispatched by MAGIC (gzip tar, zstd tar, zip),
+stdin via `--archive -`, traversal and links refused, bounds enforced on both
+paths, staging directory at `0o700`. **Path rules 10 of 11 trials killed** (the
+eleventh removed as provably subsumed); **extractor 13 of 13**.
+
+**Two parity gaps came from reading the TypeScript, not from a failing test** —
+which is the only way either could have been found. Mine dispatched on nothing
+and assumed zip, so a `.tar.gz` would have been read as a zip and failed
+confusingly rather than truly. And mine took the umask's permissions for the
+staging directory where the TypeScript takes `0o700`, leaving the tree
+world-readable for the whole time it is being populated.
+
+**Three survivors, three lessons that generalise past this lane.**
+
+**A test can pass because its FIXTURE could not express the case.** The setuid
+narrowing was "tested" by asking the `zip` crate for mode `0o104755`; that crate
+masks to `0o777` on write, so the archive carried `0o755` and the assertion was
+true for a reason unrelated to the code. Recorded as **H-14**.
+
+**Duplicated logic needs duplicated tests.** The tar path carries its own
+entry-count and expanded-size checks, because it streams where the zip path
+reads a central directory. The bounds test used a zip and therefore defended
+half the code while the suite reported coverage.
+
+**A memory bound cannot be tested with a finite fixture.** `.take(limit + 1)`
+looked redundant beside the length check — five bytes exceed a four-byte limit
+whether or not the read was bounded — but it is not deciding whether the archive
+is too big. It is stopping the process reading a hostile stream INTO MEMORY
+before finding out. Only a stream that never ends can observe that, so the test
+uses one that notices being over-read and fails in milliseconds rather than at
+the harness's fifteen-minute timeout.
+
+**And one trial was nearly shipped knowing it would survive**, because no unit
+test can hand the process a stdin. The read moved into `read_bounded` instead.
+The precedent for documenting an unkillable mutant applies when code genuinely
+cannot be reached — **not when it can be made reachable by putting it somewhere
+a test can call.**
+
+**Next: the cutover.** `materializeExactArchive` calls the verb and the
+TypeScript extraction is deleted. The seam is settled — `shell-vfs-build.ts`
+already spawns `cargo run -p xtask`, so the precedent exists, and `--archive -`
+means the caller that holds its archive as bytes from a VFS image needs no
+temporary file. **It changes a production build path**, so it wants a session
+that can exercise a real product build rather than the tail of one that cannot.
+
 ### The supply-chain port: `staged-product-inputs.ts` is two files in a trench coat
 
 **Started 2026-09-13** on the maintainer's reorder, `32bf6535e`.
