@@ -553,6 +553,35 @@ mod tests {
     }
 
     #[test]
+    fn each_tar_bound_refuses_on_its_own_too() {
+        // The tar path carries its OWN copies of the entry-count and expanded
+        // -size checks, because it streams where the zip path reads a central
+        // directory. `each_bound_refuses_on_its_own` above uses a ZIP, so it
+        // proves nothing about these — two mutants survived saying exactly
+        // that. Duplicated logic needs duplicated tests, or half of it is
+        // defended by nothing.
+        let scratch = Scratch::new("tarbounds");
+        let archive = scratch.write(
+            "a.tgz",
+            &targz_with(&[
+                ("a", b"aaaaaaaaaa", 0o644, false),
+                ("b", b"bbbbbbbbbb", 0o644, false),
+            ]),
+        );
+        let opts = || options(archive.clone(), scratch.out(), false, None);
+        assert!(extract_tree(&opts(), Limits::default()).is_ok(), "unbounded, it extracts");
+        assert!(
+            extract_tree(&opts(), Limits { entries: 1, ..Limits::default() }).is_err(),
+            "entry count",
+        );
+        assert!(
+            extract_tree(&opts(), Limits { expanded_bytes: 5, ..Limits::default() }).is_err(),
+            "expanded size — the bound a decompression bomb crosses while the \
+             archive on disk stays small",
+        );
+    }
+
+    #[test]
     fn a_tar_hardlink_is_refused_like_a_symlink() {
         // A hardlink names a target the archive does not control, and aliases
         // bytes that may already have been judged under another name.
