@@ -2537,6 +2537,53 @@ mod proc_bytes_tests {
         );
     }
 
+    /// This host places control memory above the program's OWN heap base.
+    ///
+    /// Not a restatement of `compute_layout`'s corpus, which checks the
+    /// rule. This checks that THIS HOST reaches it with the program's
+    /// `__heap_base` rather than with the fixed fallback — which is what it
+    /// used to do, and what no other test here can see: **not one of the 42
+    /// fixtures in `crates/host-native/fixtures/` exports `__heap_base`**, so
+    /// every integration test takes the `None` branch and lands on the same
+    /// 16 MiB fallback the old code produced. They prove nothing broke; they
+    /// cannot prove anything changed.
+    ///
+    /// The 32 MiB case is the one that mattered: with the fallback, control
+    /// memory landed at page 256 — INSIDE the static data of a program whose
+    /// own heap starts at page 512.
+    #[test]
+    fn a_guests_own_heap_base_decides_where_control_memory_goes() {
+        let guest = |heap_base: u32, pages: u32| {
+            wat::parse_str(&format!(
+                "(module (import \"env\" \"memory\" (memory {pages})) \
+                 (global (export \"__heap_base\") i32 (i32.const {heap_base})))"
+            ))
+            .expect("valid wat")
+        };
+
+        // 32 MiB is page 512, so the channel lands on page 513.
+        let high = guest(32 * 1024 * 1024, 1);
+        let layout = ProcessLayout::compute(1, &high).expect("places a layout");
+        assert_eq!(layout.channel_offset, 513 * 65536);
+        assert_eq!(layout.brk_base, 515 * 65536);
+        assert!(
+            layout.channel_offset > 32 * 1024 * 1024,
+            "the channel must sit ABOVE the guest's own static data, not at \
+             the 16 MiB fallback this host used to assume",
+        );
+
+        // Below the fallback, the heap base still decides.
+        let low = guest(2 * 1024 * 1024, 1);
+        let layout = ProcessLayout::compute(1, &low).expect("places a layout");
+        assert_eq!(layout.channel_offset, 33 * 65536);
+
+        // And with no `__heap_base` at all, the fallback — the shape every
+        // fixture in this crate has.
+        let none = wat::parse_str(r#"(module (import "env" "memory" (memory 1)))"#)
+            .expect("valid wat");
+        let layout = ProcessLayout::compute(1, &none).expect("places a layout");
+        assert_eq!(layout.channel_offset, 257 * 65536);
+    }
     /// Nothing in this host may reach the scratch allocator except through
     /// [`KernelScratch`].
     ///
