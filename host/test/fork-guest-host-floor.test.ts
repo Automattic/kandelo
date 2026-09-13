@@ -10,10 +10,7 @@ import { WPK_FORK_REQUIRED_IMPORTS } from "../src/generated/abi";
 function deps(overrides: Partial<Parameters<typeof createForkGuestHostFloor>[0]> = {}) {
   return {
     tryEncodeExternref: () => undefined,
-    locateFunction: () => undefined,
     ownsTableState: () => true,
-    commitTableMutation: () => undefined,
-    moduleExports: { fm_capture_intern: () => 7 },
     ...overrides,
   };
 }
@@ -73,33 +70,10 @@ describe("fork host identity floor", () => {
     expect(floor.__wpk_fork_ref_provenance_externref(null)).toBe(null);
   });
 
-  it("interns a located function through the MODULE, not itself", () => {
-    const seen: unknown[] = [];
-    const fn = () => undefined;
-    const { floor } = createForkGuestHostFloor(
-      deps({
-        locateFunction: (f) => (f === fn ? { activationId: 3, ordinal: 9 } : undefined),
-        moduleExports: {
-          fm_capture_intern: (...args: unknown[]) => {
-            seen.push(args);
-            return 11;
-          },
-        },
-      }),
-    );
-    expect(floor.__wpk_fork_ref_encode_funcref(fn)).toBe(11);
-    // The host resolved the coordinate; the recipe is the module's. If this
-    // file ever computed the recipe itself, two encoders would exist.
-    expect(seen).toEqual([[1, 3, 9]]);
-  });
-
-  it("refuses a function the loader never catalogued", () => {
-    const { floor } = createForkGuestHostFloor(deps());
-    // Inventing a coordinate would put a recipe in the graph that decodes to
-    // the WRONG function in the child -- worse than a refusal.
-    expect(floor.__wpk_fork_ref_encode_funcref(() => undefined)).toBe(-1);
-    expect(floor.__wpk_fork_ref_encode_funcref(null)).toBe(0);
-  });
+  // The two `encode_funcref` tests that stood here are gone with the member:
+  // the module serves `__wpk_fork_ref_encode_funcref` now, given the one host
+  // capability it needed. Its coverage moved to the V8 capture harness, where
+  // the scan runs against a real catalog.
 
   it("fails loud on the two throws rather than silently doing nothing", () => {
     const { floor } = createForkGuestHostFloor(deps());

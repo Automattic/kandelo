@@ -28,34 +28,28 @@ import {
 /**
  * The imports a JS host must implement itself, because wasm cannot.
  *
- * Every one of these either reads inside a reference or compares two of them:
  * `provenance_externref` reads a handle off a token and keys a map by object
- * identity; `encode_funcref` needs function equality, which no wasm instruction
- * provides on `funcref`; `table_state_owned` reports an election decided by
- * `WebAssembly.Table` object identity. The `table_mutation_commit` is here for a
- * different reason -- it is implementable in wasm and not yet implemented, so it
- * is a to-do rather than a floor; its `begin` and `abort` siblings have already
- * moved into the module. The two `exn_*` throws must re-enter wasm
+ * identity. `table_state_owned` reports an election decided by
+ * `WebAssembly.Table` object identity -- which coordinates name one PHYSICAL
+ * table is observable only by whoever holds those objects.
+ *
+ * `encode_funcref` and `table_mutation_commit` used to be here and are not any
+ * more: the module serves both, given the one host capability they needed
+ * (`__wpk_fork_host_func_identity`). The The two `exn_*` throws are here
+ * for a different reason: they must re-enter wasm THROWING a tagged exception,
+ * which a host import cannot do from JavaScript. The two `exn_*` throws must re-enter wasm
  * throwing, which a host import cannot do from JavaScript.
  */
 export interface ForkGuestHostFloor {
   readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;
-  readonly __wpk_fork_ref_encode_funcref: (fn: unknown) => number;
   readonly __wpk_fork_module_state_table_state_owned: (owner: number) => number;
-  readonly __wpk_fork_module_state_table_mutation_commit: (
-    owner: number,
-    firstIndex: bigint,
-    length: bigint,
-  ) => void;
   readonly __wpk_fork_ref_exn_ingress_throw: (recipe: number) => void;
   readonly __wpk_fork_ref_exn_broker_throw_recipe: (recipe: number) => void;
 }
 
 /** The floor's member names, for callers that need to reason about the set. */
 export const FORK_GUEST_HOST_FLOOR_NAMES = [
-  "__wpk_fork_module_state_table_mutation_commit",
   "__wpk_fork_module_state_table_state_owned",
-  "__wpk_fork_ref_encode_funcref",
   "__wpk_fork_ref_exn_broker_throw_recipe",
   "__wpk_fork_ref_exn_ingress_throw",
   "__wpk_fork_ref_provenance_externref",

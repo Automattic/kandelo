@@ -16,9 +16,6 @@
 
 import type { ForkGuestHostFloor } from "./fork-guest-imports";
 
-/** A reference kind the module's capture builder interns. */
-const CAPTURE_KIND_FUNCREF = 1;
-
 /** What the host must be able to look up, supplied per host. */
 export interface ForkGuestHostFloorDeps {
   /**
@@ -29,20 +26,8 @@ export interface ForkGuestHostFloorDeps {
    * provenance to record, which is a documented boundary rather than an error.
    */
   readonly tryEncodeExternref: (value: unknown) => number | undefined;
-  /** The catalog coordinate the loader assigned this function, if any. */
-  readonly locateFunction: (
-    fn: unknown,
-  ) => { readonly activationId: number; readonly ordinal: number } | undefined;
   /** Whether this coordinate owns the physical table's sparse state. */
   readonly ownsTableState: (owner: number) => boolean;
-  /** Publish a guest table mutation and release the archive writer. */
-  readonly commitTableMutation: (
-    owner: number,
-    firstIndex: bigint,
-    length: bigint,
-  ) => void;
-  /** The fork module, for turning a resolved coordinate into a recipe. */
-  readonly moduleExports: Record<string, unknown>;
 }
 
 export interface ForkGuestHostFloorHandle {
@@ -58,10 +43,6 @@ export function createForkGuestHostFloor(
   // Keyed by the value itself, so a reference the guest drops is not kept alive
   // by having once been recorded.
   const provenance = new WeakMap<object, number>();
-  const intern = deps.moduleExports.fm_capture_intern as
-    | ((kind: number, a: number, b: number) => number)
-    | undefined;
-
   const floor: ForkGuestHostFloor = {
     __wpk_fork_ref_provenance_externref(value: unknown): unknown {
       // Pass-through by contract: this runs at the value's production site, and
@@ -77,29 +58,8 @@ export function createForkGuestHostFloor(
       return value;
     },
 
-    __wpk_fork_ref_encode_funcref(fn: unknown): number {
-      if (fn === null || fn === undefined) return 0;
-      const located = deps.locateFunction(fn);
-      if (located === undefined || intern === undefined) {
-        // A function the loader never catalogued has no coordinate to name, and
-        // inventing one would put a recipe in the graph that decodes to the
-        // wrong function in the child.
-        return -1;
-      }
-      // The host resolved the coordinate; the module owns the recipe.
-      return intern(CAPTURE_KIND_FUNCREF, located.activationId, located.ordinal);
-    },
-
     __wpk_fork_module_state_table_state_owned(owner: number): number {
       return deps.ownsTableState(owner) ? 1 : 0;
-    },
-
-    __wpk_fork_module_state_table_mutation_commit(
-      owner: number,
-      firstIndex: bigint,
-      length: bigint,
-    ): void {
-      deps.commitTableMutation(owner, firstIndex, length);
     },
 
     __wpk_fork_ref_exn_ingress_throw(recipe: number): void {

@@ -4090,3 +4090,39 @@ codec's validation (§66) and the exception codec's tag extraction (§67).
 `workerMainTypeScript` BANKED 5958 -> 5906. The surface had 150 slack, so nothing
 forced this -- but the file is supposed to shrink, and slack left unbanked is
 what the next addition spends.
+
+## §81 — The floor shrinks to four, and a merged ratchet that was still gating
+
+`ForkGuestHostFloor` is down to four members. `encode_funcref` and
+`table_mutation_commit` left it because the module serves both now, given the one
+host capability they needed. What remains:
+
+- `provenance_externref` -- reads a handle off a token and keys a map by object
+  identity;
+- `table_state_owned` -- reports an election decided by `WebAssembly.Table`
+  object identity, observable only by whoever holds those objects;
+- the two `exn_*` throws, deferred by the maintainer, which must re-enter wasm
+  THROWING a tagged exception -- something a JavaScript import cannot do.
+
+The test that pins the floor's SIZE against the module's coverage is what forced
+this: it failed the moment the module took those two over, which is the drift it
+exists to catch in the other direction. Four is now the number, and it falling is
+what progress looks like on this surface.
+
+**A correction to the merged ratchet.** The maintainer merged
+`forkModuleHostDriveEntries` and `forkModuleEntriesWithoutProductionCaller` into
+`forkModuleHostEntries`, keeping both halves "reported for visibility". I
+implemented that by setting the sub-count's `slack` to its ceiling -- which only
+frees the LOWER bound. Its upper bound was still gating, so this commit's own
+change (the floor no longer calling `fm_capture_intern`, moving that entry back
+to the no-caller bucket) failed the build as if something had grown.
+
+Reported means not enforced. The sub-count's ceiling is the pair's total now, 46,
+which it cannot exceed by construction because the two buckets partition one set.
+It gates nothing; its target of 0 stays as the statement it was always meant to
+be -- an entry nothing calls is a defect -- and `forkModuleHostEntries` is the
+ratchet.
+
+Worth noting how this was found: not by reasoning about the JSON, but because a
+real change tripped it and the failure did not match what the merge was supposed
+to guarantee.

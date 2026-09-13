@@ -139,7 +139,11 @@ describe("fork guest imports", () => {
     // implementation, the host keeps running TypeScript nobody needs -- and
     // `forkGuestImportsUnserved` in docs/surface-budget.json would disagree with
     // this file. That is the drift this pins.
-    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(6);
+    // FOUR: two genuine capability floor (externref introspection, table
+    // object identity) and the two must-throws the maintainer deferred. It was
+    // six until the module took over encode_funcref and table_mutation_commit,
+    // and this number falling is what that progress looks like.
+    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(4);
     expect([...FORK_GUEST_HOST_FLOOR_NAMES]).toEqual(
       [...FORK_GUEST_HOST_FLOOR_NAMES].sort(),
     );
