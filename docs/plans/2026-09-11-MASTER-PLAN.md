@@ -3235,6 +3235,40 @@ measured across all four call sites — and it lives in the deferred payload the
 kernel carries without reading. Building an accessor for it would be a floor
 nobody stands on (H-1).
 
+### Gap 13 — the bridge could not register the commonest kind of deferred file. CLOSED 2026-09-12.
+
+Found while checking whether `registerLazyFile` could go on the builder
+interface: `MemoryFileSystem.registerLazyFile(path, url, size, mode)` registers
+a file fetched STANDALONE, and the bridge's registers an ARCHIVE MEMBER. They
+are different operations, and the bridge had only the second.
+
+**That is not the rarer case.** 79 files in the shipped shell image are
+URL-backed singles, and it is exactly the shape lane S's setuid defect has —
+`sudo` and `sudo-lite` are URL-backed, not archive members.
+
+Two things made it unreachable, and both are the same mistake in different
+places: **treating "deferred" as implying "from an archive".**
+`sm_register_lazy_file` declared an archive unconditionally and
+`declare_archive` refuses id 0 (correctly — 0 is the no-archive sentinel), so
+every registration asserted an archive existed. The export then looked one up
+for every deferred member and returned `EIO` when it found none.
+
+Now `archive_id == 0` means through the bridge what it means everywhere else in
+this format: no archive, no member path, and the payload is the whole of what
+says where the bytes are. The linkage rule is enforced at registration, so a
+half-specified one is refused where the caller can see it.
+
+**This completes what lane S needs from the format side.** A digest for a
+URL-backed setuid binary now has a home that survives load and export, through
+the path a builder actually uses rather than only through the kernel's own
+writer. Whether the digest is REQUIRED is still lane S's call.
+
+**A method-name match is not an operation match.** The interface work found
+this by comparing signatures rather than names — `registerLazyFile` on both
+sides, doing different things. Worth remembering for the rest of the repoint:
+the census counts what a file CALLS, and two implementations can answer the
+same call differently enough that one of them cannot answer it at all.
+
 ### What the repoint actually costs, measured per file — 2026-09-12
 
 **The importer count can reach 12 of 36.** Repointing the 24 files whose
