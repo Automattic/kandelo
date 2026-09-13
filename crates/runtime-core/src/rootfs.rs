@@ -4159,6 +4159,24 @@ pub fn archive_payloads() -> Vec<(u32, Vec<u8>)> {
     })
 }
 
+/// Replace one archive's fetch description.
+///
+/// The payload stays opaque here — this writes back whatever the caller hands
+/// over, exactly as [`declare_archive`] did. It exists because the description
+/// is not fully knowable at declaration time: a cohort digest covers every
+/// member, so the last member must be registered before any member's seal can
+/// be completed. The module completes them at export, which means rewriting a
+/// payload that was already stored.
+pub fn set_archive_payload(archive_id: u32, payload: &[u8]) -> Result<(), Errno> {
+    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
+        Some(entry) => {
+            entry.payload = payload.to_vec();
+            Ok(())
+        }
+        None => Err(Errno::ENOENT),
+    })
+}
+
 /// The image metadata this filesystem currently carries, if any.
 ///
 /// Set by [`set_image_metadata`] or restored by [`load_image`] from what the

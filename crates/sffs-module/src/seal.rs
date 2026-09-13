@@ -67,11 +67,36 @@ pub struct ArchiveSeal {
     pub descriptor_digest: [u8; 32],
 }
 
+/// What an archive's payload says about its cohort membership.
+///
+/// # Why PENDING is a state and not the absence of one
+///
+/// A cohort digest covers every member, so it cannot be computed when a member
+/// is registered — the last member is not known yet. The producer therefore
+/// records membership and the module completes the seal at export.
+///
+/// Between those two moments the payload says "in cohort X as member Y, digests
+/// not yet computed". **That must not be representable as `None`.** An image
+/// that reaches a consumer still pending is one the producer FAILED to seal,
+/// and if pending read as "no cohort" that failure would arrive looking exactly
+/// like an archive that was never meant to be in one. The difference between
+/// "no seal was wanted" and "a seal was wanted and never written" is the entire
+/// question, and two states cannot express it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SealState {
+    /// Not part of an activation cohort.
+    None,
+    /// Declared by the producer; digests owed.
+    Pending { id: Vec<u8>, member: Vec<u8> },
+    /// Completed at export.
+    Sealed(ArchiveSeal),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchivePayload {
     /// Opaque to everything but the fetcher: URL, transport, content digest.
     pub descriptor: Vec<u8>,
-    pub seal: Option<ArchiveSeal>,
+    pub seal: SealState,
 }
 
 fn put_u32(out: &mut Vec<u8>, value: u32) {
@@ -103,14 +128,19 @@ pub fn encode(payload: &ArchivePayload) -> Result<Vec<u8>, Errno> {
     put_u32(&mut out, PAYLOAD_VERSION);
     put_bytes(&mut out, &payload.descriptor)?;
     match &payload.seal {
-        None => out.push(0),
-        Some(seal) => {
+        SealState::None => out.push(0),
+        SealState::Sealed(seal) => {
             out.push(1);
             put_bytes(&mut out, &seal.id)?;
             put_bytes(&mut out, &seal.member)?;
             put_u32(&mut out, seal.expected_count);
             out.extend_from_slice(&seal.cohort_digest);
             out.extend_from_slice(&seal.descriptor_digest);
+        }
+        SealState::Pending { id, member } => {
+            out.push(2);
+            put_bytes(&mut out, id)?;
+            put_bytes(&mut out, member)?;
         }
     }
     Ok(out)
@@ -162,7 +192,7 @@ impl<'a> Reader<'a> {
 /// because `KLZY` carries no descriptor field at all.
 pub fn decode(bytes: &[u8]) -> Result<ArchivePayload, Errno> {
     if bytes.is_empty() {
-        return Ok(ArchivePayload { descriptor: Vec::new(), seal: None });
+        return Ok(ArchivePayload { descriptor: Vec::new(), seal: SealState::None });
     }
     let mut r = Reader { bytes, at: 0 };
     if r.u32()? != PAYLOAD_VERSION {
@@ -170,14 +200,18 @@ pub fn decode(bytes: &[u8]) -> Result<ArchivePayload, Errno> {
     }
     let descriptor = r.bytes()?;
     let seal = match r.byte()? {
-        0 => None,
-        1 => Some(ArchiveSeal {
+        0 => SealState::None,
+        1 => SealState::Sealed(ArchiveSeal {
             id: r.bytes()?,
             member: r.bytes()?,
             expected_count: r.u32()?,
             cohort_digest: r.digest()?,
             descriptor_digest: r.digest()?,
         }),
+        2 => SealState::Pending { id: r.bytes()?, member: r.bytes()? },
+        // A state this reader does not know. Refused rather than guessed,
+        // because a reader that cannot tell whether a seal was OWED cannot
+        // safely treat the archive as unsealed.
         _ => return Err(Errno::EINVAL),
     };
     // Trailing bytes mean this is not the record it claims to be. Ignoring them
@@ -237,8 +271,15 @@ pub fn verify_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<(), Errno> {
         // Decoded ONCE. Decoding twice would let a payload that parsed
         // differently on the second read pass a check made against the first.
         let payload = decode(bytes)?;
-        let Some(seal) = payload.seal else { continue };
         let descriptor = payload.descriptor;
+        let seal = match payload.seal {
+            SealState::None => continue,
+            // A seal that was WANTED and never written. Treating this as
+            // unsealed would let a producer's failure reach a consumer wearing
+            // the shape of an archive that was never in a cohort.
+            SealState::Pending { .. } => return Err(Errno::EPERM),
+            SealState::Sealed(seal) => seal,
+        };
 
         // 1. The descriptor is the one that was sealed.
         if sha256(&descriptor) != seal.descriptor_digest {
@@ -286,10 +327,20 @@ pub fn verify_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<(), Errno> {
 mod tests {
     use super::*;
 
+    /// Reach the seal of a payload the test itself just sealed. Panicking on
+    /// any other state is the point: a test that meant to perturb a seal and
+    /// found none has already stopped testing what it says it tests.
+    fn sealed_mut(payload: &mut ArchivePayload) -> &mut ArchiveSeal {
+        match &mut payload.seal {
+            SealState::Sealed(seal) => seal,
+            other => panic!("expected a sealed payload, found {other:?}"),
+        }
+    }
+
     fn sealed(id: &[u8], member: &[u8], count: u32, descriptor: &[u8]) -> ArchivePayload {
         ArchivePayload {
             descriptor: descriptor.to_vec(),
-            seal: Some(ArchiveSeal {
+            seal: SealState::Sealed(ArchiveSeal {
                 id: id.to_vec(),
                 member: member.to_vec(),
                 expected_count: count,
@@ -312,7 +363,7 @@ mod tests {
             .enumerate()
             .map(|(i, (name, descriptor))| {
                 let mut payload = sealed(id, name, count, descriptor);
-                payload.seal.as_mut().expect("seal").cohort_digest = digest;
+                sealed_mut(&mut payload).cohort_digest = digest;
                 (i as u32 + 1, encode(&payload).expect("encode"))
             })
             .collect()
@@ -321,11 +372,11 @@ mod tests {
     #[test]
     fn a_payload_round_trips_with_and_without_a_seal() {
         for payload in [
-            ArchivePayload { descriptor: b"{\"url\":\"https://x/y.zip\"}".to_vec(), seal: None },
+            ArchivePayload { descriptor: b"{\"url\":\"https://x/y.zip\"}".to_vec(), seal: SealState::None },
             sealed(b"group-1", b"tools", 2, b"{\"url\":\"https://x/y.zip\"}"),
             // Empty everything is still a payload: an archive may carry no
             // description, which is what a KLZY-described image always yields.
-            ArchivePayload { descriptor: Vec::new(), seal: None },
+            ArchivePayload { descriptor: Vec::new(), seal: SealState::None },
         ] {
             let bytes = encode(&payload).expect("encode");
             assert_eq!(decode(&bytes).expect("decode"), payload);
@@ -338,7 +389,7 @@ mod tests {
         // image arrives here empty. That is a state, not a fault.
         assert_eq!(
             decode(&[]).expect("decode"),
-            ArchivePayload { descriptor: Vec::new(), seal: None },
+            ArchivePayload { descriptor: Vec::new(), seal: SealState::None },
         );
     }
 
@@ -377,7 +428,10 @@ mod tests {
         let mut reversed = seal_cohort(b"shell", &[(b"docs", b"d2"), (b"tools", b"d1")], 2);
         reversed.reverse();
         let digest_of = |archives: &[(u32, Vec<u8>)]| {
-            decode(&archives[0].1).expect("decode").seal.expect("seal").cohort_digest
+            match decode(&archives[0].1).expect("decode").seal {
+                SealState::Sealed(seal) => seal.cohort_digest,
+                other => panic!("expected a sealed payload, found {other:?}"),
+            }
         };
         assert_eq!(digest_of(&forward), digest_of(&reversed));
     }
@@ -407,7 +461,7 @@ mod tests {
         // version of "which member is right" worth guessing at.
         let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1"), (b"docs", b"d2")], 2);
         let mut payload = decode(&archives[1].1).expect("decode");
-        payload.seal.as_mut().expect("seal").expected_count = 3;
+        sealed_mut(&mut payload).expected_count = 3;
         archives[1].1 = encode(&payload).expect("encode");
         assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
     }
@@ -418,7 +472,7 @@ mod tests {
         // twice, and the absent one would never be missed.
         let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1"), (b"docs", b"d2")], 2);
         let mut payload = decode(&archives[1].1).expect("decode");
-        payload.seal.as_mut().expect("seal").member = b"tools".to_vec();
+        sealed_mut(&mut payload).member = b"tools".to_vec();
         archives[1].1 = encode(&payload).expect("encode");
         assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
     }
@@ -436,7 +490,7 @@ mod tests {
         let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1")], 1);
         let mut payload = decode(&archives[0].1).expect("decode");
         // Re-sealed as a cohort of one, but still CLAIMING two.
-        payload.seal.as_mut().expect("seal").expected_count = 2;
+        sealed_mut(&mut payload).expected_count = 2;
         archives[0].1 = encode(&payload).expect("encode");
         assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
     }
@@ -450,7 +504,7 @@ mod tests {
         let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1"), (b"docs", b"d2")], 2);
         for (_, bytes) in archives.iter_mut() {
             let mut payload = decode(bytes).expect("decode");
-            payload.seal.as_mut().expect("seal").cohort_digest = [7u8; 32];
+            sealed_mut(&mut payload).cohort_digest = [7u8; 32];
             *bytes = encode(&payload).expect("encode");
         }
         assert_eq!(verify_cohorts(&archives), Err(Errno::EPERM));
@@ -471,7 +525,7 @@ mod tests {
         let archives: Vec<(u32, Vec<u8>)> = (0..2)
             .map(|i| {
                 let mut payload = sealed(b"shell", b"tools", 2, descriptor);
-                payload.seal.as_mut().expect("seal").cohort_digest = digest;
+                sealed_mut(&mut payload).cohort_digest = digest;
                 (i + 1, encode(&payload).expect("encode"))
             })
             .collect();
@@ -532,7 +586,7 @@ mod tests {
         // format capability into a requirement by accident.
         let unsealed = encode(&ArchivePayload {
             descriptor: b"{\"url\":\"https://x/y.zip\"}".to_vec(),
-            seal: None,
+            seal: SealState::None,
         })
         .expect("encode");
         let mut archives = seal_cohort(b"shell", &[(b"tools", b"d1")], 1);

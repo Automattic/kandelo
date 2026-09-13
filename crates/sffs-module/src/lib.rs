@@ -871,7 +871,24 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     // the shipped shell image actually have, which is also the shape lane S's
     // setuid defect is about.
     if archive_id != 0 {
-        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {
+        // THE MODULE OWNS THE PAYLOAD FORMAT, so it writes it. The caller hands
+        // over a DESCRIPTOR — a URL, a digest, whatever its fetcher needs — and
+        // this wraps it in the envelope the format defines.
+        //
+        // Gap 18 is what taught this. When the caller's bytes were stored as
+        // the payload directly, wiring the verifier made every archive payload
+        // a seal payload, and a plain JSON descriptor stopped decoding: its
+        // first four bytes read as a version word. Wrapping here makes every
+        // payload well formed BY CONSTRUCTION rather than by convention, and
+        // keeps TypeScript out of a format that lives in Rust.
+        let wrapped = match seal::encode(&seal::ArchivePayload {
+            descriptor: archive_payload.to_vec(),
+            seal: seal::SealState::None,
+        }) {
+            Ok(bytes) => bytes,
+            Err(e) => return err(e),
+        };
+        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, &wrapped) {
             return err(e);
         }
     }
@@ -2215,6 +2232,47 @@ mod tests {
     }
 
     #[test]
+    fn an_image_with_an_ordinary_archive_descriptor_still_loads() {
+        // GAP 18. Wiring the verifier made every archive payload a SEAL
+        // payload, and the bridge writes a plain JSON descriptor — so decoding
+        // read its first four bytes as a version word and refused the load.
+        //
+        // Each half was tested and the cross-product was not: the load test
+        // above uses a payload built by `seal::encode`, the bridge's archive
+        // test never reloads, and the shipped corpus carries EMPTY payloads
+        // that decode accepts early. This is the case none of them covered.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        let (pp, pl) = write_path(b"/opt/tool");
+        let (sp, sl) = write_path(b"tool");
+        let dp = sm_alloc(descriptor.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(descriptor.as_ptr(), dp as *mut u8, descriptor.len())
+        };
+        assert_eq!(
+            unsafe {
+                sm_register_lazy_file(
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+                )
+            },
+            0,
+        );
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        unsafe { sm_free(dp, descriptor.len()) };
+        let image = drain_export();
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(
+            load_image_bytes(&image) > 0,
+            "an archive carrying an ordinary descriptor must still load",
+        );
+    }
+
+    #[test]
     fn a_load_refuses_an_image_whose_seals_do_not_authenticate() {
         // The wiring, not the verifier. `seal::verify_cohorts` has its own ten
         // trials; this asserts that `sm_load_image` CALLS it — which it did not
@@ -2233,7 +2291,7 @@ mod tests {
         );
         let payload = seal::encode(&seal::ArchivePayload {
             descriptor: descriptor.to_vec(),
-            seal: Some(seal::ArchiveSeal {
+            seal: seal::SealState::Sealed(seal::ArchiveSeal {
                 id: b"shell".to_vec(),
                 member: b"tools".to_vec(),
                 expected_count: 2,
@@ -2244,24 +2302,34 @@ mod tests {
         .expect("encode");
 
         // Build an image carrying that single sealed archive.
+        //
+        // Registration cannot be handed a seal — it wraps the caller's
+        // DESCRIPTOR and writes `SealState::None`, which is what makes every
+        // payload well formed. Sealing is the module's own act, and until the
+        // producer half performs it at export, the only honest way to stand up
+        // a sealed archive is to write the payload where the producer will:
+        // straight into the stored archive.
         assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
             sm_mkdir(pp, pl, 0o755, 0, 0)
         }), 0);
         let (pp, pl) = write_path(b"/opt/tool");
         let (sp, sl) = write_path(b"tool");
-        let dp = sm_alloc(payload.len());
-        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), dp as *mut u8, payload.len()) };
+        let dp = sm_alloc(descriptor.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(descriptor.as_ptr(), dp as *mut u8, descriptor.len())
+        };
         assert_eq!(
             unsafe {
                 sm_register_lazy_file(
-                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, payload.len(),
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
                 )
             },
             0,
         );
         unsafe { sm_free(pp, pl) };
         unsafe { sm_free(sp, sl) };
-        unsafe { sm_free(dp, payload.len()) };
+        unsafe { sm_free(dp, descriptor.len()) };
+        rootfs::set_archive_payload(1, &payload).expect("seal the registered archive");
         let image = drain_export();
 
         assert_eq!(sm_reset(0o755, 0, 0), 0);
