@@ -1553,6 +1553,57 @@ mod tests {
     }
 
     #[test]
+    fn a_small_request_cannot_cost_a_tree_the_inodes_it_needs() {
+        // The convergence loop already re-raises the ceiling to whatever the
+        // DATA needs, so a tiny tree cannot tell a floor from a replacement.
+        // The inode requirement is the half that loop does not recompute: a
+        // hundred empty files need `(n + 2) * 4` blocks for their inodes and
+        // almost no blocks for their bytes. A request that REPLACED the
+        // requirement instead of flooring it would size this image by its
+        // bytes and leave it without room for its own inodes.
+        //
+        // In practice the writer refuses before that: the export returns
+        // ENOSPC partway through creating the hundredth file, and
+        // `drain_export` fails on the negative count. The ceiling assertion
+        // below is still the contract being stated — an image sized to hold
+        // its own inodes — and it is what would catch a future writer that
+        // grew quieter about running out.
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        const FILES: u64 = 100;
+        for i in 0..FILES {
+            let mut path = alloc::vec::Vec::from(&b"/f"[..]);
+            let mut n = i;
+            loop {
+                path.push(b'0' + (n % 10) as u8);
+                n /= 10;
+                if n == 0 {
+                    break;
+                }
+            }
+            let (pp, pl) = write_path(&path);
+            assert_eq!(unsafe { sm_write_file(pp, pl, 0o644, 0, 0) }, 0);
+            unsafe { sm_free(pp, pl) };
+        }
+
+        // One byte: as small a request as can be made without clearing it.
+        assert_eq!(unsafe { sm_set_image_options(1, 0, 0) }, 0);
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
+
+        // `total_inodes = max_blocks / 4` is the writer's rule, so the ceiling
+        // is where the inode count is observable from the artifact.
+        let inodes = ceiling / 4096 / 4;
+        assert!(
+            inodes >= FILES + 2,
+            "{FILES} files plus root and its spare need {} inodes; the image              allows {inodes}",
+            FILES + 2,
+        );
+    }
+
+    #[test]
     fn headroom_is_judged_with_the_numbers_behind_the_verdict() {
         sm_reset();
         assert_eq!(sm_init_root(0o755, 0, 0), 0);
