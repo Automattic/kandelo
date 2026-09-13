@@ -169,6 +169,20 @@
       "scope_end": "\n  }\n",
       "find": "    return st.deferred && st.archiveId === 0\n      ? { size: st.size, deferred: true }\n      : null;",
       "replace": "    return { size: st.size, deferred: true };"
+    },
+    {
+      "name": "the static metadata reader never loads the image it was handed",
+      "scope": "  static readImageMetadata(image: Uint8Array)",
+      "scope_end": "\n  }\n",
+      "find": "    fs.loadImage(image);",
+      "replace": "    void image;"
+    },
+    {
+      "name": "the static metadata reader answers from a fresh tree",
+      "scope": "  static readImageMetadata(image: Uint8Array)",
+      "scope_end": "\n  }\n",
+      "find": "    return fs.getImageMetadata();",
+      "replace": "    return null;"
     }
   ],
   "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
