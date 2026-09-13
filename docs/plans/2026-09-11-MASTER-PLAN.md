@@ -4035,6 +4035,40 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### Deleting a duplicate is a claim that needs proof, and twice it was false
+
+**2026-09-13.** With the Rust deciding, the TypeScript's copies could go —
+`vfs-product-builder-contract.ts` 1,316 → 1,060 lines. Twice, "this is a
+duplicate" turned out to be wrong, and in opposite directions.
+
+**`assertNormalizedRelativePath` was not ALL duplicate.** Three of its callers
+pass document fields, which the Rust now judges. Two do not: one checks the
+output path produced by `relative(reportRoot, absoluteOutputPath)`, the other
+checks a path immediately before walking it on disk. Those paths never appeared
+in the document, so the validator never saw them, and deleting the check would
+have removed a defence rather than a copy. It stays for exactly those two, with
+its scope written at the top and its remaining divergence recorded rather than
+inherited.
+
+**`outputName` was a duplicate that was STRONGER.** It refused any leading dot;
+the Rust refused exactly `.` and `..`. Deleting it would have quietly admitted
+`.hidden.vfs` — a published artifact that does not appear in an ordinary
+listing, which is a poor property for something whose whole job is to be found.
+**The Rust was strengthened to match first, with its own test, and only then was
+the TypeScript removed.** "Port it faithfully" would have produced the loosening
+and looked correct doing it.
+
+**The three scalar rules genuinely agreed**, and each was compared line by line
+rather than assumed: `/^[0-9a-f]{64}$/` against `validate_lower_hex(64)`,
+`/^[0-9a-f]{40}$/` against `validate_lower_hex(40)`,
+`/^[a-z0-9][a-z0-9._-]{0,127}$/` against `validate_stable_id`'s byte checks.
+
+**A trial technique worth reusing.** Where a rule was STRENGTHENED during a
+port, mutate it back to what the other side had — the exact form a
+faithful-looking port would have produced. A trial that breaks the rule outright
+proves the rule is tested; this proves the DIFFERENCE is, and the difference is
+what a future edit undoes while believing it is simplifying.
+
 ### Target 2's validator is complete but for the reference SHAPES: 26 trials, 0 survivors
 
 **2026-09-13.** Envelope, per-input core, the role/materialization matrix,
