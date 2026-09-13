@@ -1,0 +1,115 @@
+# Lane V9 census — what `memory-fs.ts` still needs `SharedFS` for
+
+**2026-09-13, written after lane Y closed and unblocked V9.**
+
+The master plan carries V9 as *"the real work: `memory-fs.ts` stops using
+`SharedFS`"* and *"the lane's only genuine unknown… genuinely large at 8,501
+lines"*. This census measures what that sentence is actually asking for.
+
+Every other lane in this campaign was censused before it was dispatched, and
+**six of eight censuses overturned the lane they were meant to confirm**. This
+one overturns V9's framing too, in the same direction: the population is much
+smaller than the line count suggests, and the hard part is somewhere other than
+where the estimate put it.
+
+## The measure everyone quotes, and why it misleads
+
+`memory-fs.ts` is 8,215 lines and uses **34 distinct `SharedFS` methods**. Read
+as "34 filesystem operations to reimplement", V9 is enormous.
+
+But `MemoryFileSystem` is not one thing. It is a TypeScript SFFS *client*
+bolted to a set of **host-owned duties that are not filesystem operations at
+all** — lazy-fetch transports, lazy URL rewriting, download event
+subscriptions. Those stay in TypeScript under the courier contract regardless
+of what happens to the block layer. Counting them into V9 is what makes the
+estimate large.
+
+## What the kernel already took
+
+**The kernel parses the `/` image itself.** `kernel-worker.ts` says so
+plainly:
+
+> `#maybeLoadKernelRootfs` installs a positioned window onto these bytes and
+> asks the kernel to parse the image itself (`kernel_rootfs_load_image`). **The
+> host resolves no names**: the kernel mounts the image's own filesystem, walks
+> it, and reads the image's own kernel-lazy (`KLZY`) section.
+
+**Phase 5 took the scratch mounts.** `KERNEL_TMPFS_OWNED_PREFIXES` lists
+`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`, and
+`filterMountSpecForKernelTmpfs` DROPS them from the spec before a backend is
+built. **Every scratch mount in `DEFAULT_MOUNT_SPEC` is in that list**, so the
+`MemoryFileSystem.create(sab)` branch in `resolveForBrowser` is **unreachable
+under the shipped mount spec**. It survives only for a caller supplying a
+scratch mount at some other path.
+
+## What is left, measured at the call sites
+
+| Runtime site | What it needs | Size |
+|---|---|---|
+| `browser-kernel-host.ts:346` | `create(sab)` and **discard the result** — it only formats the SAB | `mkfs` |
+| `node-kernel-worker-entry.ts:786` | same, plus one `chmod("/", 0o1777)` | `mkfs` + `chmod` |
+| `browser-kernel-worker-entry.ts` `/` backend | `rewriteLazyFileUrls`, `rewriteLazyArchiveUrls`, `setLazyFetcher`, `subscribeLazyDownloads`, `importLazyEntries` | **not block operations** |
+| `browser-kernel-worker-entry.ts:1596` | `readFileFromFs` — `open`/`fstat`/`read`/`close`, **one caller**, reading a log path | 4 calls |
+| **`/dev/shm` mount** | a real filesystem, served by the host, over a SAB | **the whole surface** |
+
+`default-mounts.ts` scratch backends are omitted because the shipped spec never
+reaches them.
+
+## The finding: V9's hard core is `/dev/shm`, not `/`
+
+Everything above except the last row is either formatting, four read calls, or
+duties that were never the block layer's. **`/dev/shm` is the one live mount
+whose backend is a `MemoryFileSystem` doing real filesystem work.**
+
+And it is the one that cannot be served by the `sffs-module` bridge as it
+stands, for a reason that is structural rather than a missing feature:
+
+* POSIX shared memory is **shared memory**. `/dev/shm`'s backing has to be a
+  `SharedArrayBuffer` that the host and the kernel both map, which is exactly
+  what `SharedFS` is for.
+* `SffsImageFs` holds its image in the **module's own linear memory**. It is a
+  builder's filesystem: it produces an image and hands over bytes. Nothing in
+  it addresses host-provided shared memory.
+
+So "point `memory-fs.ts` at the Rust SFFS" is not a small change to V9's plan;
+it is a different plan, because the two implementations do not have the same
+relationship to memory.
+
+## The recommendation, and the decision it needs
+
+**`/dev/shm` should move IN-KERNEL, the way tmpfs did in Phase 5, rather than
+having its filesystem reimplemented host-side.** The kernel already owns `/`
+and every scratch prefix; `/dev/shm` is the last host-served filesystem mount
+of this kind, and the kernel is the side that can address shared memory without
+a second SFFS implementation existing to let the host do it.
+
+If that lands, V9's remaining population is:
+
+1. `mkfs` into a SAB, twice, one of which also chmods the root — **or zero
+   times, if the kernel formats `/dev/shm` when it takes it**;
+2. one `readFileFromFs` helper, four calls, one caller;
+3. the host-owned lazy duties, which stay.
+
+**That is the decision this census exists to surface**, and it is not mine: it
+moves work into the kernel and changes where POSIX shm lives. What I can say
+from the measurement is that the alternative — keeping `/dev/shm` host-served —
+requires an SFFS implementation in TypeScript **forever**, which is the thing
+`sffsTypeScript`'s target of 0 says the campaign does not want.
+
+## What this census did NOT check
+
+Stated so the next person does not inherit my gaps as facts:
+
+* **The Node host's mount routing.** I read the browser worker's use of its
+  backends end to end; on Node I confirmed only that `shmfs` is created and
+  chmodded, and that `HostFileSystem` serves the host-directory mounts.
+* **Non-default mount specs.** Demos may supply scratch mounts outside
+  `KERNEL_TMPFS_OWNED_PREFIXES`, which would revive the `resolveForBrowser`
+  scratch branch. I did not enumerate every caller's spec.
+* **Build-time users.** `rootfs-overlay-export.ts`, `rootfs-overlay.ts` and
+  `apps/browser-demos/lib/kernel-owned-boot.ts` use `MemoryFileSystem` for image
+  work at build or boot time. Those are real users and are not counted above,
+  which measures the RUNTIME kernel path.
+* **Tests.** A large number of host tests construct `SharedFS` or
+  `MemoryFileSystem` directly. They are not a reason to keep an implementation,
+  but they are work in any deletion and I have not sized it.
