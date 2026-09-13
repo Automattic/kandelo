@@ -3047,3 +3047,53 @@ cannot derive -- it uses its OWNER's control block, not its own channel. That
 rides on `fm_set_format` like the archive coordinates, so it stays zero new
 entries. The checkpoint path is out of this lane's scope and named here so the
 cap does not read as an unhandled limit.
+
+## §58 — "Wasm can't compare funcrefs" — verified, not asserted
+
+The maintainer asked why not. Fair: section 50 asserted it. Measured with
+`wasm-tools validate --features all`, and with a passing control so a toolchain
+that rejected everything could not masquerade as evidence:
+
+| Attempt | Result |
+|---|---|
+| `ref.eq` on two `funcref` | `type mismatch: expected subtype of eqref, found funcref` |
+| `ref.cast` `funcref` -> `(ref eq)` | fails to validate |
+| `funcref` where `anyref` is expected | fails to validate |
+| `ref.eq` on two `eqref` (CONTROL) | **validates** |
+
+So it is not one missing instruction: `funcref` cannot reach the comparable
+hierarchy at all. `any`, `func`, `extern` and `exn` are disjoint roots and only
+the `any` side has `ref.eq`. That is deliberate in the GC proposal -- an engine
+may hand out distinct closure objects for the same function, so funcref identity
+is not something the spec guarantees. There is no `ref.hash` either, so the
+module cannot key a map by one instead.
+
+**Having the value does not help.** `fork-instrument` already wraps every
+`table.set` and holds the funcref. But a KFJP run needs `(activation_id,
+ordinal)` -- a CATALOG COORDINATE -- and that mapping belongs to the loader, not
+to the function. Holding the value, the module would still have to ask "which
+catalog slot is this?", which is the identity question again. The host path
+works because `tablePatchFunctions.encode(value)` is a `WeakMap` the loader
+populated when it ASSIGNED those ordinals.
+
+Two cases, and only one is stuck:
+
+- LOADER-initiated writes (dlopen/dlclose) already produce patches inside the
+  dylink session, which knows the ordinals because it just assigned them
+  (`HostRequest::JournalTableMutation`).
+- GUEST-initiated writes -- an arbitrary `table.set` in user code -- can name any
+  function, and only an identity map answers it.
+
+`table_mutation_commit` serves the second, so it is floor for the same root cause
+as `__wpk_fork_ref_encode_funcref`: not a missing instruction, a missing CONCEPT
+in the type system.
+
+One host capability would unlock both -- `__wpk_fork_host_func_identity(funcref)
+-> i32`, the exact twin of the already-approved `__wpk_fork_host_ref_identity`
+for anyref. That is 2 guest imports served for 1 host import, plus real logic
+moving to Rust (archive decode, run coalescing, record append, generation
+publish) -- a different trade from the 1-for-1 section 50 rejected for
+`encode_funcref` alone. It is the maintainer's call, because
+`forkModuleHostImports` is 5 with zero slack and this file calls the import
+obligation the expensive kind. AWAITING THAT DECISION; nothing is built on
+either branch.
