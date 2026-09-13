@@ -4704,3 +4704,60 @@ before it.
 
 None of these blocks the work: the composition test above, and the four commits
 before it, are all independent of them.
+
+## §100 — Two of the five non-function imports were never the host's to supply
+
+Section 98 counted five non-function `env` imports in a real instrumented guest
+and treated all five as things a host must bind. Checking what the fork module
+already EXPORTS says otherwise:
+
+```
+table   __wpk_fork_ref_gc_transit                     module exports it as table
+global  __wpk_fork_module_activation                  NOT exported by the module
+table   __wpk_fork_resume_table                       NOT exported by the module
+tag     __wpk_fork_unwind                             module exports it as tag
+global  __wpk_fork_module_state_table_generation_addr NOT exported by the module
+```
+
+Two of the five are things the module OWNS and hands out, and every host was
+supplying them by hand anyway because `buildForkGuestImports` only bound module
+exports that were `typeof value === "function"`. The non-function half of the
+module's own contract was invisible to the binder.
+
+It now binds them by name, before `extras`, for the same reason functions are
+bound before `extras`: the module is the authority on what it owns. Each host's
+obligation drops by two, which is the lane's actual objective rather than a side
+effect of it.
+
+The tag is the one that mattered. `forkUnwindTagFrom` already existed and its
+doc comment already said what goes wrong -- "a host that mints its own leaves
+that export dead AND makes the module and the guest disagree about the tag the
+moment the module throws one" -- but it was a helper a caller had to REMEMBER to
+call. A convention that is documented is still a convention. Now a host that
+passes its own tag in `extras` silently gets the module's instead, which is the
+correct outcome and needs nothing remembered.
+
+The composition test pins ownership rather than presence: it deliberately passes
+a host-minted tag and a differently-sized transit table in `extras` and asserts
+the bound values are the MODULE's objects by identity. Asserting they merely
+exist would pass with the host's, which is the bug.
+
+## §101 — What the host must still supply, and why each one
+
+After section 100 the list is three, and it is worth writing down because it is
+the answer to "what must each JS host implement" for non-function imports:
+
+  * `__wpk_fork_resume_table` -- a `WebAssembly.Table` of guest resume thunks.
+    Rust cannot hold a funcref and the module's `resume_peek` returns an index
+    INTO it, so the table must exist outside the module. Floor.
+  * `__wpk_fork_module_activation` -- this activation's id, as an immutable
+    global. Per-activation and known only at instantiation, which is host
+    territory by construction.
+  * `__wpk_fork_module_state_table_generation_addr` -- the address of the shared
+    generation fence. A per-process placement decision.
+
+None of the three is a candidate for the module: two are per-instantiation values
+the module cannot know before it is called, and one is a reference-typed table
+Rust cannot express. That is a floor with a reason for each entry, which is what
+sections 50 and 58 asked of the function-side floor and what this side did not
+have until now.

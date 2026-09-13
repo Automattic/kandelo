@@ -103,6 +103,30 @@ export function buildForkGuestImports(
   const label = options.label ?? "fork guest imports";
   const env: Record<string, unknown> = { ...extras };
   const missing: string[] = [];
+  // The module's NON-function exports, bound by name before anything else.
+  //
+  // Two of the guest's five non-function `env` imports are things the module
+  // itself owns -- the `__wpk_fork_ref_gc_transit` anyref table and the
+  // `__wpk_fork_unwind` tag -- and until now every host supplied them by hand.
+  // That made them a per-caller convention: a host that forgot got a link
+  // error, and a host that minted its OWN tag got something worse, because the
+  // module and the guest then disagree about the tag the moment the module
+  // throws one (see `forkUnwindTagFrom`).
+  //
+  // Binding them here removes two entries from every host's obligation and
+  // makes the module the single owner, which is the direction this whole lane
+  // travels. They are bound BEFORE `extras` is consulted for the same reason
+  // functions are: the module is the authority on what it owns.
+  for (const [name, value] of Object.entries(moduleExports)) {
+    if (typeof value === "function") continue;
+    if (
+      value instanceof WebAssembly.Table
+      || value instanceof WebAssembly.Global
+      || (typeof WebAssembly.Tag === "function" && value instanceof WebAssembly.Tag)
+    ) {
+      env[name] = value;
+    }
+  }
   for (const required of WPK_FORK_REQUIRED_IMPORTS) {
     if (required.module !== "env") continue;
     const fromModule = moduleExports[required.name];

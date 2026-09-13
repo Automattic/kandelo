@@ -73,6 +73,13 @@ function moduleExportsFor(guest: WebAssembly.Module): Record<string, unknown> {
     if (floorNames.has(imported.name)) continue;
     exports[imported.name] = () => 0;
   }
+  // The two non-function imports the real module OWNS and exports. A host does
+  // not supply these; the binder takes them from the module.
+  exports.__wpk_fork_ref_gc_transit = new WebAssembly.Table({
+    element: "anyref" as "externref",
+    initial: 1,
+  });
+  exports.__wpk_fork_unwind = new WebAssembly.Tag({ parameters: [] });
   return exports;
 }
 
@@ -91,12 +98,11 @@ describe("the thin layer composed against a real instrumented guest", () => {
     const env = buildForkGuestImports({
       moduleExports: moduleExportsFor(guest!),
       floor,
+      // Only THREE entries: the resume table the host owns, and the two
+      // per-process globals. The transit table and the unwind tag are not here
+      // -- the module exports them and the binder takes them from there.
       extras: {
         __wpk_fork_resume_table: resume.table,
-        __wpk_fork_ref_gc_transit: new WebAssembly.Table({
-          element: "anyref" as "externref",
-          initial: 1,
-        }),
         __wpk_fork_module_activation: new WebAssembly.Global(
           { value: "i32", mutable: false },
           0,
@@ -105,7 +111,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
           { value: "i32", mutable: false },
           0,
         ),
-        __wpk_fork_unwind: new WebAssembly.Tag({ parameters: [] }),
       },
       guestModule: guest!,
       label: "composition test",
@@ -139,23 +144,53 @@ describe("the thin layer composed against a real instrumented guest", () => {
           tryEncodeExternref: () => undefined,
           ownsTableState: () => false,
         }).floor,
-        extras: {
-          __wpk_fork_resume_table: new ForkResumeTable().table,
-          __wpk_fork_ref_gc_transit: new WebAssembly.Table({
-            element: "anyref" as "externref",
-            initial: 1,
-          }),
-        },
+        extras: { __wpk_fork_resume_table: new ForkResumeTable().table },
         guestModule: guest!,
         label: "composition test",
       });
     } catch (error) {
       message = (error as Error).message;
     }
-    // Both globals and the tag, each named, in one failure rather than three
-    // instantiation attempts.
+    // Both globals, each named, in one failure rather than two instantiation
+    // attempts. The TAG is absent from this list on purpose: the module exports
+    // it, so forgetting it is no longer something a host can do.
     expect(message).toContain("__wpk_fork_module_activation");
     expect(message).toContain("__wpk_fork_module_state_table_generation_addr");
-    expect(message).toContain("__wpk_fork_unwind");
+    expect(message).not.toContain("__wpk_fork_unwind");
+  });
+
+  guard("takes the transit table and the unwind tag from the MODULE", () => {
+    // The point is ownership, not presence. A host that mints its own tag makes
+    // the module and the guest disagree the moment the module throws one, and
+    // that disagreement is invisible until an unwind crosses the boundary.
+    const moduleExports = moduleExportsFor(guest!);
+    const env = buildForkGuestImports({
+      moduleExports,
+      floor: createForkGuestHostFloor({
+        tryEncodeExternref: () => undefined,
+        ownsTableState: () => false,
+      }).floor,
+      extras: {
+        __wpk_fork_resume_table: new ForkResumeTable().table,
+        __wpk_fork_module_activation: new WebAssembly.Global(
+          { value: "i32", mutable: false }, 0,
+        ),
+        __wpk_fork_module_state_table_generation_addr: new WebAssembly.Global(
+          { value: "i32", mutable: false }, 0,
+        ),
+        // A host trying to supply its own. The module's must win.
+        __wpk_fork_unwind: new WebAssembly.Tag({ parameters: [] }),
+        __wpk_fork_ref_gc_transit: new WebAssembly.Table({
+          element: "anyref" as "externref",
+          initial: 4,
+        }),
+      },
+      guestModule: guest!,
+      label: "composition test",
+    });
+    expect(env.__wpk_fork_unwind).toBe(moduleExports.__wpk_fork_unwind);
+    expect(env.__wpk_fork_ref_gc_transit).toBe(
+      moduleExports.__wpk_fork_ref_gc_transit,
+    );
   });
 });
