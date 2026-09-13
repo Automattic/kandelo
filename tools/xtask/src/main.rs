@@ -61,6 +61,7 @@ mod perturb;
 mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;
+mod archive_paths;
 mod build_deps;
 mod build_stamp;
 mod bundle_program;
