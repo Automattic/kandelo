@@ -1335,34 +1335,21 @@ pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
 /// one would decide a fetch bound by declaration order. An already-populated
 /// entry keeps its fetched bytes — this declares a length, it does not reset an
 /// archive.
-pub fn declare_archive(archive_id: u32, bytes: u64, payload: &[u8]) -> Result<(), Errno> {
+pub fn declare_archive(archive_id: u32, bytes: u64) -> Result<(), Errno> {
     if archive_id == 0 {
         return Err(Errno::EINVAL);
     }
-    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
-        return Err(Errno::EINVAL);
-    }
-    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
-        Some(existing) if existing.size == bytes => {
-            // The length agrees, so this is a re-declaration. A payload that
-            // arrives with it is kept, so a caller that declares the archive
-            // once per member need not carry the descriptor on every call —
-            // but a DIFFERENT non-empty payload is a conflict for the same
-            // reason a different length is.
-            if !payload.is_empty() {
-                if !existing.payload.is_empty() && existing.payload != payload {
-                    return Err(Errno::EINVAL);
-                }
-                existing.payload = payload.to_vec();
-            }
-            Ok(())
-        }
+    ROOTFS.with(|state| match state.archives.get(&archive_id) {
+        // The length agrees, so this is a re-declaration by another member of
+        // the same archive, which is the ordinary case: a builder registers
+        // members one at a time and each names the archive it belongs to.
+        Some(existing) if existing.size == bytes => Ok(()),
         Some(_) => Err(Errno::EINVAL),
         None => {
             state.archives.insert(
                 archive_id,
                 ArchiveEntry {
-                    payload: payload.to_vec(),
+                    payload: Vec::new(),
                     size: bytes,
                     raw: None,
                     directory: None,
@@ -4159,6 +4146,15 @@ pub fn archive_payloads() -> Vec<(u32, Vec<u8>)> {
     })
 }
 
+/// One archive's fetch description, or `None` if no such archive is declared.
+///
+/// Opaque, like every other reach into this store. The MODULE merges a new
+/// description into an existing one, because deciding when two descriptions
+/// agree means reading them, and reading them is the format's job.
+pub fn archive_payload(archive_id: u32) -> Option<Vec<u8>> {
+    ROOTFS.with(|state| state.archives.get(&archive_id).map(|entry| entry.payload.clone()))
+}
+
 /// Replace one archive's fetch description.
 ///
 /// The payload stays opaque here — this writes back whatever the caller hands
@@ -6363,7 +6359,8 @@ mod tests {
         // breaks this.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
         mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
-        declare_archive(3, 8_000_000, b"sha256:abc").expect("declare archive");
+        declare_archive(3, 8_000_000).expect("declare archive");
+        set_archive_payload(3, b"sha256:abc").expect("describe it");
         insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2, b"")
             .expect("archive member");
         write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
@@ -6635,7 +6632,7 @@ mod tests {
         // Declaring the length makes the same tree exportable, so the refusal
         // above is the missing length and not something else about the tree.
         reset_image_export();
-        declare_archive(3, 8_000_000, b"").expect("declare");
+        declare_archive(3, 8_000_000).expect("declare");
         let exported = drain_export(8192, &mut no_bytes());
         let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
         assert_eq!(

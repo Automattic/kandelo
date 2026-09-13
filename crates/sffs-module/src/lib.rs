@@ -871,24 +871,49 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     // the shipped shell image actually have, which is also the shape lane S's
     // setuid defect is about.
     if archive_id != 0 {
-        // THE MODULE OWNS THE PAYLOAD FORMAT, so it writes it. The caller hands
-        // over a DESCRIPTOR — a URL, a digest, whatever its fetcher needs — and
-        // this wraps it in the envelope the format defines.
+        // The length is the STORE's rule: one archive with two lengths has no
+        // correct reading, and it can say so without reading anything.
+        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {
+            return err(e);
+        }
+        // The description is the FORMAT's, so it is merged here. Registration
+        // is per file and a description is per archive, so a builder carries
+        // it on one member and omits it on the rest; deciding that an omitted
+        // description says nothing, and that two given ones must agree, means
+        // reading the payload, which only the module can do.
         //
-        // Gap 18 is what taught this. When the caller's bytes were stored as
-        // the payload directly, wiring the verifier made every archive payload
-        // a seal payload, and a plain JSON descriptor stopped decoding: its
-        // first four bytes read as a version word. Wrapping here makes every
-        // payload well formed BY CONSTRUCTION rather than by convention, and
-        // keeps TypeScript out of a format that lives in Rust.
-        let wrapped = match seal::encode(&seal::ArchivePayload {
-            descriptor: archive_payload.to_vec(),
-            seal: seal::SealState::None,
-        }) {
-            Ok(bytes) => bytes,
+        // Gap 18 is why the module writes the envelope at all: storing the
+        // caller's bytes made a plain JSON descriptor decode as a versioned
+        // record, and its first four bytes became a version word. Gap 19 is
+        // why the merge came here too — wrapping an OMITTED description
+        // produced a nine-byte envelope describing nothing, which the store
+        // saw as a second, different description of one archive and refused.
+        let existing = rootfs::archive_payload(archive_id).unwrap_or_default();
+        let mut payload = match seal::decode(&existing) {
+            Ok(payload) => payload,
             Err(e) => return err(e),
         };
-        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, &wrapped) {
+        if !archive_payload.is_empty() {
+            if !payload.descriptor.is_empty() && payload.descriptor != archive_payload {
+                return err(Errno::EINVAL);
+            }
+            payload.descriptor = archive_payload.to_vec();
+        }
+        // An archive with nothing to say keeps an EMPTY payload rather than an
+        // envelope describing nothing. Empty already means "no description" at
+        // every other layer -- it is what a `KLZY`-described image carries and
+        // what `decode` accepts early -- and encoding that same absence as
+        // nine bytes would put a deferred section into images that have no
+        // deferred anything to describe.
+        let wrapped = if payload.descriptor.is_empty() && payload.seal == seal::SealState::None {
+            alloc::vec::Vec::new()
+        } else {
+            match seal::encode(&payload) {
+                Ok(bytes) => bytes,
+                Err(e) => return err(e),
+            }
+        };
+        if let Err(e) = rootfs::set_archive_payload(archive_id, &wrapped) {
             return err(e);
         }
     }
@@ -2229,6 +2254,102 @@ mod tests {
         assert_eq!(field(4), 11, "and the gid");
         unsafe { sm_free(pp, pl) };
         unsafe { sm_free(buf, size) };
+    }
+
+    /// Register one member of `archive_id`, carrying `descriptor` (possibly
+    /// empty) as the archive's fetch description.
+    fn register_member(path: &[u8], archive_id: u32, source: &[u8], descriptor: &[u8]) -> i32 {
+        let (pp, pl) = write_path(path);
+        let (sp, sl) = write_path(source);
+        let dp = if descriptor.is_empty() { 0 } else { sm_alloc(descriptor.len()) };
+        if dp != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(descriptor.as_ptr(), dp as *mut u8, descriptor.len())
+            };
+        }
+        let rc = unsafe {
+            sm_register_lazy_file(
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+            )
+        };
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        if dp != 0 {
+            unsafe { sm_free(dp, descriptor.len()) };
+        }
+        rc
+    }
+
+    #[test]
+    fn an_archive_is_described_once_and_its_other_members_need_not_repeat_it() {
+        // GAP 19, and a regression from gap 18's own fix. The description is a
+        // property of the ARCHIVE while registration is per FILE, so a builder
+        // carries it on one member and omits it on the rest -- the shape the
+        // bridge's optional `archiveDescriptor` exists for.
+        //
+        // Wrapping the caller's bytes broke that. An omitted description used
+        // to arrive as an empty payload, which the store reads as "nothing new
+        // to say"; wrapped, it became a nine-byte envelope describing nothing,
+        // which is a DIFFERENT payload -- and a different payload for one
+        // archive is a conflict.
+        //
+        // The repair is not to special-case empty. It is that merging a
+        // description into an archive is a question about the FORMAT, and the
+        // format is the module's: the store keeps opaque bytes and has no
+        // business deciding when two of them agree.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        assert_eq!(register_member(b"/opt/one", 1, b"one", descriptor), 0);
+        assert_eq!(
+            register_member(b"/opt/two", 1, b"two", b""),
+            0,
+            "a second member of a described archive need not repeat the description",
+        );
+
+        // And the description SURVIVED the member that did not carry it.
+        let payloads = rootfs::archive_payloads();
+        let (_, stored) = payloads.iter().find(|(id, _)| *id == 1).expect("the archive");
+        assert_eq!(seal::decode(stored).expect("decode").descriptor, descriptor);
+    }
+
+    #[test]
+    fn an_archive_with_no_description_carries_no_payload_at_all() {
+        // "Nothing to say" is spelled the same way everywhere else in this
+        // format: an empty payload. A `KLZY`-described image carries exactly
+        // that, and `decode` accepts it early without reading a version word.
+        //
+        // Encoding the absence instead -- a version, a zero-length descriptor
+        // and a "no seal" byte -- would be nine bytes saying what zero bytes
+        // already say, and would put a deferred section into images that have
+        // no deferred description to carry.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        assert_eq!(register_member(b"/opt/one", 1, b"one", b""), 0);
+        let payloads = rootfs::archive_payloads();
+        let (_, stored) = payloads.iter().find(|(id, _)| *id == 1).expect("the archive");
+        assert!(stored.is_empty(), "an undescribed archive carries no payload");
+    }
+
+    #[test]
+    fn one_archive_cannot_be_given_two_descriptions() {
+        // The other half of the rule above, and the reason the merge cannot
+        // simply take the last value: two members describing one archive
+        // differently is a producer bug, and the image it would build fetches
+        // from whichever URL happened to be registered last.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        assert_eq!(register_member(b"/opt/one", 1, b"one", b"{\"url\":\"https://a/x.zip\"}"), 0);
+        assert_eq!(
+            register_member(b"/opt/two", 1, b"two", b"{\"url\":\"https://b/x.zip\"}"),
+            -(Errno::EINVAL as i32),
+        );
     }
 
     #[test]

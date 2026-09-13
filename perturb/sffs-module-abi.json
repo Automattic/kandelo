@@ -300,8 +300,36 @@
    "name": "registration stores the caller's bytes as the payload",
    "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
    "scope_end": "\n}\n",
-   "find": "rootfs::declare_archive(archive_id, archive_bytes, &wrapped)",
-   "replace": "rootfs::declare_archive(archive_id, archive_bytes, archive_payload)"
+   "find": "        if let Err(e) = rootfs::set_archive_payload(archive_id, &wrapped) {",
+   "replace": "        if let Err(e) = rootfs::set_archive_payload(archive_id, archive_payload) {"
+  },
+  {
+   "name": "an omitted description erases the one the archive has",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if !archive_payload.is_empty() {",
+   "replace": "        if true {"
+  },
+  {
+   "name": "a second description silently replaces the first",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "            if !payload.descriptor.is_empty() && payload.descriptor != archive_payload {",
+   "replace": "            if false {"
+  },
+  {
+   "name": "an absent description is stored as an envelope describing nothing",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        let wrapped = if payload.descriptor.is_empty() && payload.seal == seal::SealState::None {",
+   "replace": "        let wrapped = if false {"
+  },
+  {
+   "name": "the archive's length is never declared",
+   "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
+   "scope_end": "\n}\n",
+   "find": "        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {\n            return err(e);\n        }",
+   "replace": ""
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
