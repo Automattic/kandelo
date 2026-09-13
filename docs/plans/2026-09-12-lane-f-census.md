@@ -2026,3 +2026,62 @@ planner sets activation and ordinal to 0 for a clear, so the slot resolves to 0
 either way and the shim ignores it. The short-circuit is a robustness property,
 not a behaviour the fixture can exercise. Recorded rather than given a contrived
 test.
+
+## §36 — CORRECTION: `fork-mechanism-trace` is not misfiled
+
+§33 flagged `fork-mechanism-trace` as one of four modules worth a decision
+rather than a default, on the grounds that its single export
+`sampleProcessMemoryStats` "is process diagnostics, not fork mechanism" and
+"looks misfiled rather than unported". That was read from the function's NAME.
+Reading its call sites says otherwise.
+
+It is called either side of the fork memory clone in `process-lifecycle.ts` and
+its result feeds `traceVforkMechanism("fork_prepared", ...)` with a
+`liveMemories` DELTA across the clone. It is vfork mechanism tracing, filed
+exactly where it belongs.
+
+It is also genuinely host floor: it samples the host's
+`ProcessMemoryAllocator` and is gated on `isVforkMechanismTraceEnabled()`,
+neither of which the module can see. And it is small — `traceVforkMechanism`
+itself is a local function in `process-lifecycle.ts`, so this module owes only
+the one sampler.
+
+So the §33 list of four is really a list of three: `browser-fork-module-artifact`
+(a Vite `?url` shim with nothing to port), the externref broker/owner/mailbox
+trio (the named irreducible floor, where the open question is how thin it gets),
+and `fork-module-trampoline` (which may shrink to nothing under F3 coarsening).
+`fork-mechanism-trace` is ordinary stage-2 floor to rewrite thin.
+
+**Third time this session that a name was a worse guide than the call sites** —
+after `fork-early-reference-provider` (filed as dead, actually 13 live sites)
+and `fork-anyref-transit` (filed as replaced, actually carries the
+`Table.grow` sizing `CLAUDE.md` names as floor). §19 already recorded that
+`fork-mechanism-trace` was the doubtful case; it turned out doubtful in the
+other direction.
+
+## §37 — `forkTypeScript` is at 249 of 250, and the next piece needs a decision
+
+The ceiling of 250 was approved as HEADROOM for stage 2's module-facing half.
+That half is complete: `fork-module-host-capabilities.ts` (65) plus
+`fork-module-instance.ts` (184) measure **249**.
+
+Every remaining stage-2 file is a `host/src/fork-*.ts` and so counts against the
+same surface. `fork-mechanism-trace` is the smallest of them and still exceeds
+the one line of headroom left.
+
+This is the same decision shape as the 0 -> 250 approval, and deliberately not
+one this lane makes: the budget entry records that 250 is headroom rather than a
+measurement and must be banked to the real figure once the half stops moving.
+The honest sequence now is either
+
+* **bank it to 249** and open a separate allowance for the platform half, which
+  keeps the two halves independently ratcheted and matches how the module
+  surfaces were split in §10; or
+* **raise it once** to cover the platform half, with the same "headroom, bank it
+  later" note the current entry carries.
+
+The first is more in keeping with what splitting `forkModuleEntryPoints` by
+purpose already established: a ceiling that mixes a finished population with an
+unstarted one cannot be read.
+
+Recorded rather than chosen. Nothing in stage 2 proceeds until it is.
