@@ -365,17 +365,31 @@ function lazyState(
   fs: SffsImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
 ): string {
-  // `JSON.stringify` renders a `bigint` as a throw and a `Uint8Array` as an
-  // object of indices, so both are spelled out. The descriptor is rendered as
-  // hex because it is OPAQUE -- decoding it here to print something friendlier
-  // would make this comparison depend on a format the kernel promises not to
-  // read.
-  return JSON.stringify(lazyRecords(fs, omittedIdentities), (_key, value) =>
-    typeof value === "bigint"
-      ? value.toString()
-      : value instanceof Uint8Array
-        ? Buffer.from(value).toString("hex")
-        : value,
+  return stableJson(lazyRecords(fs, omittedIdentities));
+}
+
+/**
+ * Render a lazy record as text for comparison.
+ *
+ * `JSON.stringify` THROWS on a `bigint` and renders a `Uint8Array` as an object
+ * of indices, and a lazy record carries both: inode numbers are 64-bit and a
+ * fetch description is bytes. The descriptor is rendered as hex because it is
+ * OPAQUE -- decoding it to print something friendlier would make this
+ * comparison depend on a format the kernel promises not to read.
+ *
+ * It is ONE function because it was briefly two: `lazyState` got the replacer
+ * and `requirePreservedLazyState` kept a bare `JSON.stringify`, so the second
+ * threw "Do not know how to serialize a BigInt" in a product build that the
+ * test suites never reached. Two renderers of the same record could also drift
+ * into disagreeing about equality, which is worse than throwing.
+ */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner) =>
+    typeof inner === "bigint"
+      ? inner.toString()
+      : inner instanceof Uint8Array
+        ? Buffer.from(inner).toString("hex")
+        : inner,
   );
 }
 
@@ -436,19 +450,15 @@ function requirePreservedLazyState(
   label: string,
 ): void {
   const actual = lazyRecords(fs);
-  const actualFiles = new Set(
-    actual.files.map((entry) => JSON.stringify(entry)),
-  );
-  const actualTrees = new Set(
-    actual.trees.map((entry) => JSON.stringify(entry)),
-  );
+  const actualFiles = new Set(actual.files.map(stableJson));
+  const actualTrees = new Set(actual.trees.map(stableJson));
   for (const entry of expected.files) {
-    if (!actualFiles.has(JSON.stringify(entry))) {
+    if (!actualFiles.has(stableJson(entry))) {
       throw new Error(`${label} changed a rootfs lazy file identity`);
     }
   }
   for (const entry of expected.trees) {
-    if (!actualTrees.has(JSON.stringify(entry))) {
+    if (!actualTrees.has(stableJson(entry))) {
       throw new Error(`${label} changed a rootfs lazy tree identity`);
     }
   }
