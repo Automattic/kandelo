@@ -37,6 +37,20 @@
       "scope_end": "\n}\n",
       "find": "            growth_ceiling_bytes: fs\n                .growth_ceiling_bytes()\n                .map_err(|e| format!(\"{}: growth ceiling: {e:?}\", path.display()))?,",
       "replace": "            growth_ceiling_bytes: 0,"
+    },
+    {
+      "name": "the loader accepts an image describing its deferred files nowhere",
+      "scope": "fn load_into_kernel(",
+      "scope_end": "\n}\n",
+      "find": "    .map_err(|e| format!(\"{what}: {e:?}\"))",
+      "replace": "    .or(Ok(0))"
+    },
+    {
+      "name": "a load failure is reported as a successful load of nothing",
+      "scope": "fn load_into_kernel(",
+      "scope_end": "\n}\n",
+      "find": "        _ => Err(Errno::ENOSYS),",
+      "replace": "        _ => Ok(0),"
     }
   ]
 }

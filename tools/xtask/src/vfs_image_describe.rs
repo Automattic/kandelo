@@ -422,6 +422,32 @@ fn digest_file<S: sffs::BlockSource>(
 /// The container fields are reported rather than compared: an export chooses
 /// its own capacity and declares no `KLZY`, so a difference there is expected
 /// and interesting rather than a failure.
+/// Load a whole VFSI container into the kernel, the way a host does.
+///
+/// Shared by both loads in [`roundtrip`] so the re-entry cannot drift into
+/// asking an easier question than the first load asked. `what` names which load
+/// failed, because "the image will not load" and "the image this kernel just
+/// wrote will not load" are different bugs with the same errno.
+fn load_into_kernel(bytes: &[u8], what: &str) -> Result<usize, String> {
+    runtime_core::rootfs::load_image(bytes.len() as u64, |req, dst| match req {
+        runtime_core::rootfs::ByteReq::Image { offset } => {
+            let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+            if start >= bytes.len() {
+                return Ok(0);
+            }
+            let end = core::cmp::min(start.saturating_add(dst.len()), bytes.len());
+            let n = end - start;
+            dst[..n].copy_from_slice(&bytes[start..end]);
+            Ok(n)
+        }
+        // A load walks structure, never content. Anything else means the walk
+        // reached for bytes it should not need, and saying so is more useful
+        // than serving them.
+        _ => Err(Errno::ENOSYS),
+    })
+    .map_err(|e| format!("{what}: {e:?}"))
+}
+
 fn roundtrip(path: &Path, out: Option<&Path>) -> Result<(), String> {
     // `load_container` already handles the `.vfs.zst` every production image
     // but the rootfs ships as; reusing it rather than writing a second reader
@@ -432,25 +458,8 @@ fn roundtrip(path: &Path, out: Option<&Path>) -> Result<(), String> {
 
     // The kernel reads its own image through a positioned byte source; here
     // that source is the file we just read.
-    let entries = runtime_core::rootfs::load_image(original.len() as u64, |req, dst| {
-        match req {
-            runtime_core::rootfs::ByteReq::Image { offset } => {
-                let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
-                let end = core::cmp::min(start.saturating_add(dst.len()), original.len());
-                if start >= original.len() {
-                    return Ok(0);
-                }
-                let n = end - start;
-                dst[..n].copy_from_slice(&original[start..end]);
-                Ok(n)
-            }
-            // A load walks structure, never content. Anything else means the
-            // walk reached for bytes it should not need, and saying so is more
-            // useful than serving them.
-            _ => Err(Errno::ENOSYS),
-        }
-    })
-    .map_err(|e| format!("{}: load failed: {e:?}", path.display()))?;
+    let entries = load_into_kernel(&original, "load failed")
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     println!("  loaded {entries} entries");
 
     let exported = drain_container(&original)?;
@@ -459,6 +468,27 @@ fn roundtrip(path: &Path, out: Option<&Path>) -> Result<(), String> {
     if let Some(out) = out {
         std::fs::write(out, &exported).map_err(|e| format!("{}: {e}", out.display()))?;
         println!("  wrote the exported image to {}", out.display());
+    }
+
+    // RE-ENTER THE EXPORT AT THE DOOR THE ORIGINAL CAME IN BY (H-13). Comparing
+    // descriptions proves the DECODER understands what the export writes; it
+    // says nothing about whether the KERNEL can load it back, and those came
+    // apart: every image with no deferred files was refused by `load_image` as a
+    // stale artifact while this verb reported EQUIVALENT across the whole corpus
+    // (gap 15). A round-trip check that never re-enters its own output is
+    // checking a transform, not a round trip.
+    println!("  loading the export back into the kernel");
+    let reentered = load_into_kernel(&exported, "the export cannot be loaded back")
+        .map_err(|e| {
+            format!("{}: {e} -- the kernel wrote an image it cannot read", path.display())
+        })?;
+    println!("  loaded the export back: {reentered} entries");
+    if reentered != entries {
+        return Err(format!(
+            "{}: the export loads back as {reentered} entries, not the {entries} \
+             that were loaded from the original",
+            path.display(),
+        ));
     }
 
     let before = describe_container(&original, "original")?;
@@ -789,6 +819,28 @@ mod tests {
             "a content change with an unchanged size must still be visible"
         );
     }
+    /// The refusal the round trip's second load exists to hear.
+    ///
+    /// Before H-13, `roundtrip` compared decoded descriptions and never fed its
+    /// own output back in, so gap 15 -- the kernel refusing images it had just
+    /// written -- was invisible while the corpus reported EQUIVALENT. This pins
+    /// the half of that check which can silently go wrong: a loader that
+    /// accepts an image describing its deferred files NOWHERE would make the
+    /// re-entry vacuous, and the verb would go back to proving a transform.
+    #[test]
+    fn an_image_describing_its_deferred_files_nowhere_is_refused() {
+        // `build` writes a small tree and never calls `declare_deferred_section`,
+        // which is exactly the shape the TypeScript writer produces and the
+        // shape the loader must refuse.
+        let image = wrap_vfsi(&build(0o644, b"hello"));
+
+        let err = load_into_kernel(&image, "refused")
+            .expect_err("an image that describes its deferred files nowhere must be refused");
+        assert!(
+            err.contains("EINVAL"),
+            "refused for the stale-artifact reason, got {err}",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -892,4 +944,5 @@ mod corpus_tests {
         );
         eprintln!("{with_deferred} of {} images carry deferred entries", images.len());
     }
+
 }
