@@ -2608,11 +2608,53 @@ mod proc_bytes_tests {
         // "found 4" for two real call sites plus the two literals in this
         // test, which is a guard reporting a violation it invented.
         let needle = concat!("alloc_scratch", ".call(");
-        let calls = source.matches(needle).count();
+        // CODE lines only. Assembling the needle stops it matching itself,
+        // but it does not stop a COMMENT from matching -- and this check
+        // failed exactly that way while the escape rule below was being
+        // added, because the explanation quoted the call it was about. A
+        // guard that a comment can break teaches people not to explain
+        // things near it.
+        let calls = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .count();
         assert_eq!(
             calls, 2,
             "every kernel_alloc_scratch call must go through KernelScratch, \
              whose two constructors are its only permitted callers; found {calls}",
+        );
+
+        // The count above is of a SPELLING, and `cargo xtask perturb` walked
+        // past it: `let sneaky = &alloc_scratch; sneaky.call(..)` allocates
+        // bare and never writes the counted text. So the handle must also
+        // never escape to another name -- that is the invariant, and the
+        // call count is only its most visible consequence.
+        let binding = concat!("alloc_", "scratch");
+        let mut escapes = Vec::new();
+        for (number, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || !trimmed.contains(binding) {
+                continue;
+            }
+            // Binding the HANDLE, not the result of calling it. The first
+            // version flagged `let ptr = alloc_scratch.call(..)` inside the
+            // two constructors -- which is the allocation, the thing this
+            // type exists to do -- so the rule is the right-hand side being
+            // the bare identifier rather than any mention of it.
+            let Some(rest) = trimmed.strip_prefix("let ") else { continue };
+            let Some((_, value)) = rest.split_once('=') else { continue };
+            let value = value.trim().trim_end_matches(';').trim();
+            let value = value.trim_start_matches('&').trim_start_matches('*');
+            if value == binding {
+                escapes.push(format!("guest.rs:{}: {}", number + 1, trimmed));
+            }
+        }
+        assert!(
+            escapes.is_empty(),
+            "the scratch allocator was bound to another name, which reaches \
+             it without writing the text this check counts: {escapes:?}. \
+             Allocate through KernelScratch instead.",
         );
 
         // ...and both of them ARE those constructors, so the count cannot be

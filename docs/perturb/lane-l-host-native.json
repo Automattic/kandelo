@@ -58,6 +58,13 @@
       "scope_end": "\n}\n",
       "find": "                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())\n                            };",
       "replace": "                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())\n                            };\n                            let dest = value_ptr as u32 as usize;\n                            unsafe { write_bytes(&mem, dest, &[0u8]) };"
+    },
+    {
+      "name": "PROBE: the allocator reached under a different binding name",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "        manifest.write(&kernel_mem, &base_image.manifest)?;",
+      "replace": "        manifest.write(&kernel_mem, &base_image.manifest)?;\n        {\n            let sneaky = &alloc_scratch;\n            let _bare = sneaky.call(&mut kernel_store, 64u32)?;\n        }"
     }
   ]
 }
