@@ -4832,3 +4832,64 @@ fail the way a stale program does**, because the artifact policy that catches th
 second is not asked about the first. That is a platform-contract gap
 (`docs/agent-guidance/abi.md`: stale fork instrumentation "should fail loudly"),
 not a fork-inversion one, and it is recorded here rather than fixed here.
+
+## §104 — The restored-floor audit, and a target with an argument per line
+
+The maintainer asked for an audit of the two largest members before setting a
+`forkRestoredHostFloor` target. Measured, the surface is:
+
+```
+1165  fork-externref-import-mailbox.ts
+ 796  fork-worker-import-exceptions.ts
+ 521  fork-reference-broker.ts
+ 428  fork-host-import-runtime.ts
+ 285  vfork-lifetime.ts
+ 169  fork-replay-gate.ts
+ 160  fork-continuation.ts
+ 158  vfork-workspace.ts
+ 117  fork-resume-catalog.ts
+  95  fork-worker-exception-capability.ts
+     ----
+3894
+```
+
+**The mailbox (1165)** breaks down as 317 lines of owner endpoint, 278 of worker
+caller, 126 of shared-buffer layout arithmetic, 41 of handler catalog, and ~400
+of descriptors, types and error classes. Its purpose is a worker calling a host
+import that only the OWNER worker can serve, because externref identity lives
+there. Both peers are JavaScript workers. The module cannot mediate it -- it is
+not a host/module conversation at all -- so the Rust-first contract's
+"cross-worker host-import transport" clause names it floor, and no part of it
+has a migration target. The 126 lines of buffer layout are the only piece that
+LOOKS like a port candidate (a platform format parsed in TypeScript), and it is
+not one for the same reason: there is no Rust on either end of that wire.
+
+**The worker import exceptions (796)** is 226 lines of capability owner, 174 of
+local normalizer, 155 of JS-exception normalization (`describeThrown`,
+`validateRecipeShape`, `kindName`), and ~240 of descriptors and interfaces. The
+155 are irreducibly JavaScript: only JavaScript can look at a thrown JavaScript
+value and decide what it was. The rest is the same cross-worker transport.
+
+So the honest finding is that **neither large file has a migration path**, and
+this surface does not shrink the way the others in this lane have. What it
+contains is what the Rust-first contract already lists as the irreducible host
+floor: worker spawn, cross-worker transport, externref identity materialization,
+address-space lifetime, custom-section location.
+
+**One member does have a path.** `fork-replay-gate` (169) is a single `i32` in
+its own `SharedArrayBuffer` with a compare-exchange and `Atomics.wait`/`notify`.
+Section 23 called it "expressible in wasm once it moves out of its own
+SharedArrayBuffer", and there is now a precedent for exactly that: the dlopen
+control block lives at fixed negative offsets inside the guest's shared memory,
+and the module already has injected `memory.atomic.wait32`/`notify` (used for the
+archive writer lock). A gate word at a fixed offset is the same shape.
+
+**Proposed target: 3725** = 3894 - 169. It is the ceiling minus the one member
+with an identified and precedented migration, and nothing else. Deliberately
+NOT proposed: any reduction of the two large files. Their reduction would be
+simplification rather than migration, nobody has scoped it, and putting a number
+on unscoped simplification is precisely the invented budget the maintainer warned
+would then get spent.
+
+This number is a proposal, not a decision. The target stays parked at 3894 until
+the maintainer sets it.
