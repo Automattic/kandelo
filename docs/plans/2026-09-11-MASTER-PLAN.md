@@ -3919,6 +3919,64 @@ loading:** `fromImage`, `fromImagePreservingCapacity` and `readImageCapacity`
 all become `loadImage` plus the readers the bridge already has. `readImageMetadata`
 is the one that still needs the read-back decision.
 
+### The seal verifier is built and verified, and five survivors taught it
+
+**Landed 2026-09-13**: `63c43c028` (codec and verifier), `8731ad369` (the five
+tests that were missing), `dee51ba4b` (its own perturbation spec). **Ten trials,
+zero survivors.** `sha2` is linked and **the zero-import contract still holds** —
+verified by the build's own `wasm-objdump` check, not asserted.
+
+**The five survivors are the part worth keeping.** Half the trials survived the
+first run, and not one of them was a bug in the verifier: each was a TEST
+passing on a different check than the one it named. In a verifier that is the
+most dangerous shade of green — the suite reports coverage while four of six
+refusals are load-bearing nowhere.
+
+Each survivor named the attack its check is the only defence against:
+
+* **Re-sealing.** Dropping a member is caught by the cohort digest, because the
+  digest covers the member list. Dropping a member *and re-sealing the
+  remainder* is not — the result is internally perfect. What still says a member
+  is missing is the count the ORIGINAL seal declared. The count check is not
+  belt-and-braces; it is the only thing standing there.
+* **Two archives never sealed together**, each individually valid, which only
+  the cohort digest refuses.
+* **One archive listed twice under one name**, with the identity recomputed over
+  that list: it satisfies its own count while the second archive does not exist.
+* **Length prefixes.** Without them the identity's fields run together and two
+  different cohorts serialise identically — `"a"+X+"bc"+Y` versus
+  `"ab"+P+"c"+Y`, same id, same count, nothing else to separate them. The test
+  constructs that collision rather than asserting a prefix exists.
+* **Domain separation**, which is structural, so its test is structural.
+
+**The general lesson, and it generalises past this lane:** when several checks
+can refuse the same input, a test that merely asserts refusal proves nothing
+about WHICH check refused. Mutation testing is what tells them apart, and until
+it does, redundant-looking checks and load-bearing ones are indistinguishable
+from the suite.
+
+### The supply-chain port: `staged-product-inputs.ts` is two files in a trench coat
+
+**Started 2026-09-13** on the maintainer's reorder, `32bf6535e`.
+
+**The census framing needed one more cut.** This file is not "mechanism" — it is
+a PRODUCT half (`buildStagedPlatformRootfs` and its five siblings, which wire
+products together) and a MECHANISM half (archive extraction and path-traversal
+defence over untrusted input). Only the second ports; the first is recipe and
+stays. Reading it as one unit would have ported product configuration into Rust
+for no reason.
+
+**The rules landed first because they are pure and they are the dangerous part.**
+An archive entry names where its bytes will land, and these refuse any name that
+could land them elsewhere. `..` is REFUSED rather than normalised away —
+rewriting it silently relocates an entry, and a build cannot notice that.
+
+**Not yet called, and the file says so.** The half that calls them — an `xtask`
+verb extracting a whole tree, with the atomicity and bounds
+`archive-extract-member` already models for one member — is the next increment.
+The `allow(dead_code)` names it, so it is removed by the change that makes it
+false rather than by someone tidying.
+
 ### MAINTAINER DECISIONS, 2026-09-13: rebuild the bases; start the port now
 
 **1. No legacy seal verification. The shipped bases are rebuilt through the new
