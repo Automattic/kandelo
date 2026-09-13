@@ -372,6 +372,13 @@
    "scope_end": "\n}\n",
    "find": "        put_u32(&mut buf, entry.archive_id);",
    "replace": "        put_u32(&mut buf, 0);"
+  },
+  {
+   "name": "a normalized export timestamp is ignored",
+   "scope": "pub unsafe extern \"C\" fn sm_set_image_options",
+   "scope_end": "\n}\n",
+   "find": "    if let Err(e) = rootfs::set_export_timestamp(normalized) {\n        return err(e);\n    }",
+   "replace": ""
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

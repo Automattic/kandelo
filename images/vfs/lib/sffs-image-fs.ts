@@ -70,7 +70,10 @@ interface ModuleExports {
     cohortMember: number, cohortMemberLen: number,
     cohortExpectedCount: number,
   ): number;
-  sm_set_image_options(capacityBytes: bigint, p: number, pl: number): number;
+  sm_set_image_options(
+    capacityBytes: bigint, p: number, pl: number,
+    normalizeTimestampsMs: bigint,
+  ): number;
   sm_check_headroom(minBytes: bigint, minInodes: bigint, o: number, ol: number): number;
   sm_lazy_entries(o: number, ol: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
@@ -874,8 +877,38 @@ export class SffsImageFs {
     if (options?.metadata !== undefined) {
       this.setImageMetadata(options.metadata);
     }
+    if (options?.normalizeTimestampsMs !== undefined) {
+      this.setExportTimestamp(options.normalizeTimestampsMs);
+    }
+    if (options?.materializeAll) {
+      // Accepting an option and ignoring it is worse than not offering it: the
+      // caller believes the artifact is what it asked for. `materializeAll`
+      // means "fetch every deferred file and write its bytes in", and this
+      // module has no fetcher -- the transports are the host's. Saying so is
+      // the truthful answer; silently exporting a tree still full of deferred
+      // stubs, under a name that promised otherwise, is not.
+      throw new Error(
+        "sffs-module: materializeAll is not supported — the module carries " +
+          "deferred descriptions and does not fetch them",
+      );
+    }
     return this.exportImage();
   }
+
+  /**
+   * Stamp this millisecond on every inode the next export emits.
+   *
+   * A build that produces the same tree from the same inputs must produce the
+   * same BYTES, or every downstream cache keys on the wall clock. Only the
+   * detached artifact is normalised: the live tree keeps truthful timestamps
+   * while it is being worked on.
+   */
+  setExportTimestamp(ms: number | null): void {
+    this.normalizeTimestampsMs = ms;
+    this.setImageMetadata(this.lastMetadata);
+  }
+
+  private normalizeTimestampsMs: number | null = null;
 
   /**
    * Metadata the exported image will declare: the builder's statements about
@@ -945,6 +978,10 @@ export class SffsImageFs {
           BigInt(this.requestedCapacityBytes),
           bytes.byteLength === 0 ? 0 : p,
           pl,
+          // Negative means "each inode keeps its own times". There is no such
+          // instant, so the whole negative range is free to mean unset without
+          // stealing a representable value.
+          BigInt(this.normalizeTimestampsMs ?? -1),
         ),
         "setImageMetadata",
         "",

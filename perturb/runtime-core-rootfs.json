@@ -36,6 +36,20 @@
    "scope_end": "\n}\n",
    "find": "            if matches!(source, BaseSource::Host) && !inode.deferred_payload.is_empty() =>",
    "replace": "            if matches!(source, BaseSource::Host) =>"
+  },
+  {
+   "name": "a normalized export writes each inode's own times anyway",
+   "scope": "fn apply_export_metadata(",
+   "scope_end": "\n}\n",
+   "find": "        Some(fixed) => writer.set_times(sffs_ino, fixed, fixed, fixed),",
+   "replace": "        Some(_) => writer.set_times(sffs_ino, atime, mtime, ctime),"
+  },
+  {
+   "name": "a normalized export leaves the root stamped by a zero clock",
+   "scope": "pub fn build_export_image",
+   "scope_end": "\n}\n",
+   "find": "        now_ms: ROOTFS.with(|state| state.export_timestamp_ms).unwrap_or(0),",
+   "replace": "        now_ms: 0,"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

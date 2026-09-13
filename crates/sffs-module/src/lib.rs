@@ -916,6 +916,7 @@ pub unsafe extern "C" fn sm_set_image_options(
     capacity_bytes: u64,
     ptr: usize,
     len: usize,
+    normalize_timestamps_ms: i64,
 ) -> i32 {
     // Capacity and metadata travel together because they are the same KIND of
     // thing: statements a builder makes about the artifact it wants, as opposed
@@ -924,6 +925,22 @@ pub unsafe extern "C" fn sm_set_image_options(
     // that folded capacity into the headroom record instead of adding a second
     // query.
     if let Err(e) = rootfs::set_image_capacity(capacity_bytes) {
+        return err(e);
+    }
+    // A timestamp to stamp on every exported inode, or NEGATIVE for "use each
+    // inode's own". It rides here rather than through an entry point of its own
+    // for the same reason capacity and metadata do: it is a statement about the
+    // artifact the builder wants, not an operation on the tree.
+    //
+    // Negative rather than a separate flag because there is no such instant: a
+    // timestamp is milliseconds since the epoch, so the whole negative half of
+    // the range is free to mean "unset" without stealing a representable value.
+    let normalized = if normalize_timestamps_ms < 0 {
+        None
+    } else {
+        Some(normalize_timestamps_ms as u64)
+    };
+    if let Err(e) = rootfs::set_export_timestamp(normalized) {
         return err(e);
     }
     let bytes: &[u8] = if len == 0 {
@@ -1628,7 +1645,7 @@ mod tests {
         assert_eq!(sm_reset(0o755, 0, 0), 0);
         let metadata = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
         assert_eq!(
-            with_path(metadata, |p, l| unsafe { sm_set_image_options(0, p, l) }),
+            with_path(metadata, |p, l| unsafe { sm_set_image_options(0, p, l, -1) }),
             0
         );
 
@@ -1643,7 +1660,7 @@ mod tests {
         );
 
         // Clearing it removes the section rather than leaving an empty one.
-        assert_eq!(unsafe { sm_set_image_options(0, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
         let cleared = drain_export();
         assert!(runtime_core::sffs::metadata_section(&cleared).expect("walk").is_none());
     }
@@ -1897,7 +1914,7 @@ mod tests {
 
         // A request raises it. This is the number a product declares and its
         // publication gate checks the artifact against.
-        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
         let requested = ceiling_of();
         assert!(
             requested >= 64 * 1024 * 1024,
@@ -1908,7 +1925,7 @@ mod tests {
         // A request SMALLER than the tree needs is a floor, not a size: the
         // tree's own requirement still wins, because an image that cannot hold
         // its contents is not a smaller image, it is a broken one.
-        assert_eq!(unsafe { sm_set_image_options(1, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(1, 0, 0, -1) }, 0);
         assert_eq!(
             ceiling_of(),
             unrequested,
@@ -1916,7 +1933,7 @@ mod tests {
         );
 
         // And zero clears it.
-        assert_eq!(unsafe { sm_set_image_options(0, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
         assert_eq!(ceiling_of(), unrequested);
     }
 
@@ -2283,7 +2300,7 @@ mod tests {
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
-        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
 
         let image = drain_export();
         let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
@@ -2316,7 +2333,7 @@ mod tests {
         let meta = b"{\"kernelAbi\":44,\"createdBy\":\"the test\"}";
         let mp = sm_alloc(meta.len());
         unsafe { core::ptr::copy_nonoverlapping(meta.as_ptr(), mp as *mut u8, meta.len()) };
-        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, mp, meta.len()) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, mp, meta.len(), -1) }, 0);
         unsafe { sm_free(mp, meta.len()) };
         let original = drain_export();
 
@@ -2364,7 +2381,7 @@ mod tests {
         let meta = b"{\"version\":1,\"kernelAbi\":44}";
         let mp = sm_alloc(meta.len());
         unsafe { core::ptr::copy_nonoverlapping(meta.as_ptr(), mp as *mut u8, meta.len()) };
-        assert_eq!(unsafe { sm_set_image_options(0, mp, meta.len()) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(0, mp, meta.len(), -1) }, 0);
         unsafe { sm_free(mp, meta.len()) };
 
         let read = |expect: &[u8]| {
@@ -3009,7 +3026,7 @@ mod tests {
         }
 
         // One byte: as small a request as can be made without clearing it.
-        assert_eq!(unsafe { sm_set_image_options(1, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(1, 0, 0, -1) }, 0);
         let image = drain_export();
         let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
         let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
@@ -3114,7 +3131,7 @@ mod tests {
         // reflects the room the product declared, and it FALLS as the tree
         // grows into it. That is the property the assertion exists for, and it
         // was unreachable while the ceiling was derived from the tree.
-        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
         let (_, [roomy, _, _, _, _]) = read(0, 0);
         assert!(
             roomy > 60 * 1024 * 1024,
@@ -3132,7 +3149,7 @@ mod tests {
             after < roomy,
             "writing 4 MiB into the declared room consumes it: {roomy} -> {after}",
         );
-        assert_eq!(unsafe { sm_set_image_options(0, 0, 0) }, 0);
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
 
         unsafe { sm_free(buf, 32) };
     }

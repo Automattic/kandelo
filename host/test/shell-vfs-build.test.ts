@@ -54,6 +54,22 @@ function readFile(fs: MemoryFileSystem, path: string): string {
   return new TextDecoder().decode(bytes.subarray(0, count));
 }
 
+/**
+ * A product filesystem with a declared capacity, built the way a product build
+ * builds one.
+ *
+ * These used to be `MemoryFileSystem.create(new SharedArrayBuffer(16 MiB, {
+ * maxByteLength }), maxByteLength)` — a buffer sized now and a ceiling declared
+ * for later, which is the shape the module removes. Capacity is a number the
+ * export reads, so there is no buffer to size and no second argument to keep in
+ * step with the first.
+ */
+function productFs(maxByteLength: number): SffsImageFs {
+  const fs = SffsImageFs.create();
+  fs.setImageCapacity(maxByteLength);
+  return fs;
+}
+
 function lazyArchiveEntry(): ZipEntry {
   return {
     fileName: "usr/share/demo/archive.txt",
@@ -229,10 +245,7 @@ describe("shell VFS base composition", () => {
     const prior = process.env[key];
     process.env[key] = ambientFileDir;
     try {
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * MiB, { maxByteLength: 16 * MiB }),
-        16 * MiB,
-      );
+      const fs = productFs(16 * MiB);
       expect(() =>
         populateShellEnvironment(fs, {
           eagerBinaries: true,
@@ -373,10 +386,7 @@ describe("shell VFS base composition", () => {
 
   it("rejects an image that drifts from the standard product capacity", async () => {
     const largerProfile = 1024 * MiB;
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, { maxByteLength: largerProfile }),
-      largerProfile,
-    );
+    const fs = productFs(largerProfile);
     fs.setImageMetadata(shellImageMetadata(largerProfile));
     fs.mkdir("/etc", 0o755);
     fs.mkdir("/etc/kandelo", 0o755);
@@ -394,10 +404,7 @@ describe("shell VFS base composition", () => {
 
   it("rejects an explicit product profile below the standard capacity", () => {
     const smallerProfile = 512 * MiB;
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, { maxByteLength: smallerProfile }),
-      smallerProfile,
-    );
+    const fs = productFs(smallerProfile);
 
     expect(() =>
       saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst", {
@@ -412,12 +419,7 @@ describe("shell VFS base composition", () => {
   });
 
   it("rejects a derived product that has lost the shell metadata it owns", () => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, {
-        maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-      }),
-      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    );
+    const fs = productFs(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
 
     expect(() =>
       saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
@@ -505,12 +507,7 @@ describe("shell VFS base composition", () => {
   });
 
   it("rejects an unclassified or malformed source shell composition", () => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, {
-        maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-      }),
-      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    );
+    const fs = productFs(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
     const metadata = sourceShellImageMetadata(256 * MiB);
     delete metadata.shellComposition;
     fs.setImageMetadata(metadata);
@@ -540,12 +537,7 @@ describe("shell VFS base composition", () => {
       normalizeTimestampsMs?: number,
     ): Promise<Uint8Array> => {
       const now = vi.spyOn(Date, "now").mockReturnValue(runtimeTimestampMs);
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(16 * MiB, {
-          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-        }),
-        SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-      );
+      const fs = productFs(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
       const dir = mkdtempSync(join(tmpdir(), "shell-derived-reproducible-"));
       try {
         fs.setImageMetadata(shellImageMetadata(512 * MiB));
@@ -609,10 +601,7 @@ describe("shell VFS base composition", () => {
     profileMaxBytes,
     expectedMaxByteLength,
   ) => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, { maxByteLength: profileMaxBytes }),
-      profileMaxBytes,
-    );
+    const fs = productFs(profileMaxBytes);
     const inheritedMetadata = shellImageMetadata(512 * MiB);
     fs.setImageMetadata(inheritedMetadata);
     fs.mkdir("/etc", 0o755);

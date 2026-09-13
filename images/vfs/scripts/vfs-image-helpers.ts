@@ -14,10 +14,8 @@ import {
 } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 
@@ -114,10 +112,10 @@ export function walkAndWrite(
 }
 
 /**
- * Save a MemoryFileSystem image to disk as a zstd-compressed `.vfs.zst`
+ * Save a VFS image to disk as a zstd-compressed `.vfs.zst`
  * file. The empty regions of the SharedFS allocator compress to almost
  * nothing, so this typically shrinks images by 80–95%. The browser-side
- * loader (`MemoryFileSystem.fromImage`) detects the zstd magic and
+ * loader detects the zstd magic and
  * decompresses on load.
  *
  * `outFile` must end in `.vfs.zst` to make the on-disk format obvious.
@@ -244,29 +242,26 @@ export function assertVfsImageHeadroom(
     }
   }
 
-  // Prefer the filesystem that can JUDGE this, and compute it from the
-  // primitive for the one that cannot. The Rust bridge decides in the kernel;
-  // `MemoryFileSystem` can only report a `statfs`. The fallback is deleted
-  // along with that class, and this is its only call site.
-  let freeBytes: number;
-  let freeInodes: number;
-  if (fs.checkHeadroom) {
-    const verdict = fs.checkHeadroom(
-      headroom.minimumFreeBytes,
-      headroom.minimumFreeInodes,
-    );
-    freeBytes = verdict.freeBytes;
-    freeInodes = verdict.freeInodes;
-  } else if (fs.statfs) {
-    const stats = fs.statfs("/");
-    freeBytes = stats.bfree * stats.frsize;
-    freeInodes = stats.ffree;
-  } else {
+  // The filesystem JUDGES this; nothing here recomputes it from a primitive.
+  //
+  // The `statfs` arm that stood beside this one existed for
+  // `MemoryFileSystem`, which could only report free blocks and left the
+  // arithmetic — and therefore the decision — in TypeScript. Every builder now
+  // reaches the format through the module, which answers with a verdict AND
+  // the numbers behind it, so the arm is gone with its last caller rather than
+  // kept as a shape nothing fills.
+  if (!fs.checkHeadroom) {
     throw new Error(
-      `${label} cannot report headroom: the filesystem offers neither a ` +
-        `headroom verdict nor statfs`,
+      `${label} cannot report headroom: the filesystem offers no headroom ` +
+        `verdict`,
     );
   }
+  const verdict = fs.checkHeadroom(
+    headroom.minimumFreeBytes,
+    headroom.minimumFreeInodes,
+  );
+  const freeBytes = verdict.freeBytes;
+  const freeInodes = verdict.freeInodes;
   if (!Number.isSafeInteger(freeBytes) || freeBytes < 0) {
     throw new Error(`${label} reports an invalid free-byte count`);
   }
@@ -306,13 +301,14 @@ export function assertVfsImageCapacity(
       `${label} expectedMaxByteLength must be a positive safe integer`,
     );
   }
-  // Ask the producer when it can answer; parse the artifact only for the
-  // implementation that cannot. The ceiling lives in the container header and
-  // the SFFS superblock, so parsing it here is format knowledge on the wrong
-  // side — and this is its last call site.
+  // Ask the producer when there is one, and otherwise ask the MODULE to read
+  // the artifact. Neither branch parses a container here: the ceiling lives in
+  // the container header and the SFFS superblock, and reading it in TypeScript
+  // would be format knowledge on the wrong side of the boundary this lane
+  // exists to draw. Callers that hold only bytes take the second branch.
   const actualMaxByteLength = fs?.exportCapacityBytes
     ? fs.exportCapacityBytes()
-    : MemoryFileSystem.readImageCapacity(image).maxByteLength;
+    : SffsImageFs.readImageCapacity(image).maxByteLength;
   if (actualMaxByteLength !== expectedMaxByteLength) {
     throw new Error(
       `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +

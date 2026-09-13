@@ -291,6 +291,8 @@ struct RootfsState {
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
     archives: BTreeMap<u32, ArchiveEntry>,
+    /// Set by [`set_export_timestamp`]; overrides every emitted inode's times.
+    export_timestamp_ms: Option<u64>,
     /// The capacity a builder asked the next exported image to have, if any.
     ///
     /// A product declares this (`expectedMaxByteLength`) and its publication
@@ -359,6 +361,7 @@ impl RootfsState {
             free_dir_iters: Vec::new(),
             next_ino: 1,
             archives: BTreeMap::new(),
+            export_timestamp_ms: None,
             image: None,
             image_capacity_bytes: None,
             image_metadata: None,
@@ -3766,7 +3769,10 @@ fn apply_export_metadata(
     if !is_symlink {
         writer.set_mode(sffs_ino, mode)?;
     }
-    writer.set_times(sffs_ino, atime, mtime, ctime);
+    match ROOTFS.with(|state| state.export_timestamp_ms) {
+        Some(fixed) => writer.set_times(sffs_ino, fixed, fixed, fixed),
+        None => writer.set_times(sffs_ino, atime, mtime, ctime),
+    }
     Ok(())
 }
 
@@ -3863,7 +3869,13 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         // The kernel chooses this image's length; nothing caps growth but the
         // maximum above, so an underestimate costs a grow, not a failure.
         growable_to_bytes: u64::from(max_blocks) * 4096,
-        now_ms: 0,
+        // The writer's clock, which stamps the inodes IT creates -- the root
+        // above all, which `mkfs` makes before the walk starts and which the
+        // walk therefore never re-stamps. A normalised export has to set this
+        // too, or the root carries 0 while every other inode carries the
+        // requested instant, and the artifact is reproducible everywhere except
+        // its own root directory.
+        now_ms: ROOTFS.with(|state| state.export_timestamp_ms).unwrap_or(0),
     })?;
     // The kernel writes its deferred files into the body, so an export with
     // none says so explicitly rather than staying silent — silence is what
@@ -4148,6 +4160,24 @@ where
 /// Separate from the tree because it is a statement about the ARTIFACT, not
 /// about its contents — the same product profile that declares it also checks
 /// the published image against it.
+/// Write this timestamp on every inode the next export emits, instead of the
+/// inode's own.
+///
+/// A build that produces the same tree from the same inputs must produce the
+/// same BYTES, or every downstream cache keys on the wall clock. Capacity
+/// requests and product writes both stamp live times, so only the detached
+/// artifact is normalised -- the tree keeps truthful timestamps while it is
+/// being worked on, and the thing that gets published does not carry the
+/// minute it was published in.
+///
+/// `None` clears the request, and the export writes each inode's real times.
+pub fn set_export_timestamp(ms: Option<u64>) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        state.export_timestamp_ms = ms;
+    });
+    Ok(())
+}
+
 pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
     ROOTFS.with(|state| {
         state.image_capacity_bytes = if bytes == 0 { None } else { Some(bytes) };
