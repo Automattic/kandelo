@@ -682,6 +682,30 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-20 — editing ANY file in the lane worktree while a mutation run is in
+  flight invalidates that run, not just the file it mutates.** Done twice on
+  2026-09-13, the second time costing a 53-trial run.
+
+  The standing rule says not to edit the tree during a run, and both times I
+  reasoned my way past it: the spec mutates `sffs-module/src/lib.rs` and I was
+  editing `runtime-core/src/rootfs.rs`, so the harness's own revert could not
+  touch my work. **That is true and it is not the risk.** Every trial REBUILDS
+  the crate graph, so an edit to any crate the verifier compiles changes what
+  each trial measures. During a counterfactual check the tree briefly held a
+  DELIBERATELY BROKEN `rootfs.rs` — any trial verifying in that window reports a
+  kill my edit caused, not one the trial earned. A run with a false kill in it
+  is indistinguishable from a clean one.
+
+  Killing the run also left its mutation applied — `sm_lstat` reporting archive
+  id 0 — because the harness reverts on exit and a killed process does not. The
+  tree LOOKED clean to a casual `git status` glance, in that it had one expected
+  modification and one unexpected one.
+
+  **For every lane: while a run is in flight the only safe worktree is a
+  different one.** Plan edits, reading, and writing notes are fine; anything
+  under the lane tree waits. After killing a run, check `git status` and restore
+  every file the harness owns before trusting the tree.
+
 - **H-19 — an assertion that encodes an implementation's CHOICE rather than the
   property makes a gate intermittent, and an intermittent gate is worse than a
   loose one.** Measured 2026-09-13 on
