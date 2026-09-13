@@ -3040,6 +3040,13 @@ one that may hold a stale symlink.
 
 # LANE Y — VFS image builders write the image format in TypeScript
 
+> **CLOSED 2026-09-13** on its stated condition: zero files under `images/`
+> import `memory-fs` or `sharedfs-vendor`, down from 36. Two things it does NOT
+> cover remain open and are tracked above — **gap 21** (a legacy image's
+> standalone lazy file re-exports as a zero-length ordinary file, pinned by an
+> `it.fails` test) and the **base-image rebuild** through the Rust producer,
+> which is what makes the seal real rather than inert.
+
 **Status 2026-09-13: Y1, Y2, Y3, Y4 and Y6 DONE. Y5 is the lane's remaining
 work, and its acceptance number has moved twice: importers 36 -> 20 -> 11 -> 10,
 banked at every step. Ten files remain, and they do NOT divide by difficulty —
@@ -3442,8 +3449,10 @@ load-bearing for the funnel.
   file's bytes are present is metadata about the file. The second mattered
   twice over — adding `sm_lazy_info` would have raised a ceiling banked one
   increment earlier, which is the shape the budget exists to catch.
-- **Y5 — repoint the 36 files. NOT mechanical, and not a like-for-like
-  repoint** — see "Y5 is V5's production cutover" below.
+- **Y5 — repoint the 36 files. DONE 2026-09-13, 36 -> 0.** Not mechanical and
+  not like-for-like: see "Y5 is V5's production cutover" below, and the closure
+  entry above for what the last cutovers dissolved into and the two defects they
+  exposed.
 - **Y6 — replace the four `sharedfs-vendor` constants. ALREADY DONE**, by
   commit `c39d9d150` ("VFS: Generate errno and give the five constant-only
   consumers a leaf to import") — lane V's V7 landing. Verified 2026-09-12:
