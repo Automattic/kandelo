@@ -696,6 +696,26 @@ implied: `classify_additive_object_by_key` already existed and served
   valid and five invalid combinations already under test, because none of the
   nine touched that row's negative side.
 
+  **Sharpened 2026-09-13 by two more survivors: the dangerous cases sit at
+  INTERSECTIONS.** Both were rules about a product image meeting a reference
+  shape — kind crossed with shape, and placement crossed with shape — and the
+  suite covered each axis thoroughly while never crossing them. One test used
+  the product form with a package output; that is the MIRROR case and proves
+  nothing about a product image reaching the input form. Every placement test
+  used the default embedded value, so the rule refusing a lazily-fetched product
+  image was never reached at all.
+
+  So the habit is not "cover every value of every field" — that was already
+  true here — but **"cross the axes a rule actually joins"**. A rule that
+  mentions two things needs a case where both are wrong together, because each
+  being wrong alone is refused by something else.
+
+  **And a fixture is an input like any other.** Writing the test for this very
+  hazard, "a Pages URL is refused outside the canonical class" was built on a
+  base fixture that IS canonical — so the condition never occurred and the test
+  passed for the wrong reason. The cheap defence is to ASSERT the fixture is
+  what it claims before asserting anything about the code.
+
 - **H-14 — a test can pass because its FIXTURE could not express the condition
   under test.** Measured 2026-09-13. A test asserted that an extracted archive
   member never comes out setuid, built its fixture by asking the `zip` crate for
