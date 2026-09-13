@@ -1792,6 +1792,33 @@ where
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));
 
+    // WHAT THE IMAGE SAYS ABOUT ITSELF, KEPT (gap 16). Both of these were read
+    // only by the export and written only by their setters, so an image loaded
+    // and re-exported came back having forgotten its own declarations: a base
+    // declaring 256 MiB of room re-exported sized to its tree, and a base
+    // declaring a kernel ABI re-exported declaring nothing. A load preserves
+    // what the image states, or it is not a load.
+    //
+    // The capacity is a CEILING and not an allocation: it floors the export's
+    // `max_blocks` while `total_blocks` stays sized to the content, so
+    // restoring it costs the inode table its share and not the declared room.
+    let declared_capacity = filesystem.growth_ceiling_bytes()?;
+    let declared_metadata = match crate::sffs::metadata_span(&source)? {
+        Some((offset, len)) => {
+            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(len, 0u8);
+            source.read_exact_at(offset, &mut bytes)?;
+            Some(bytes)
+        }
+        None => None,
+    };
+    ROOTFS.with(|state| {
+        state.image_capacity_bytes = Some(declared_capacity);
+        state.image_metadata = declared_metadata;
+    });
+
     // The image's own deferred section, when it carries one. It is BOTH a
     // linkage source (below) and the place the opaque fetch descriptions live,
     // which is why it is read once and used twice.

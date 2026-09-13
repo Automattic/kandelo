@@ -1999,6 +1999,91 @@ mod tests {
     }
 
     #[test]
+    fn declaring_room_is_not_occupying_it() {
+        // The maintainer's rule, stated rather than assumed: "an image of
+        // capacity X should only take the size of its contents in memory when
+        // loaded. It should not take X in memory right away unless it is
+        // filled to capacity X already."
+        //
+        // This held before it was written down, and would have been lost
+        // quietly: the capacity test declares 64 MiB and passes only because
+        // `drain_export` gives up past 4 MiB, so a regression would have
+        // surfaced as a confusing drain failure rather than as this sentence.
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0) }, 0);
+
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+
+        assert!(
+            fs.growth_ceiling_bytes().expect("ceiling") >= 64 * 1024 * 1024,
+            "the room is declared",
+        );
+        // And not taken. The one cost that IS proportional is the inode table,
+        // which grows as `max_blocks / 4` -- about 2 MiB for this declaration,
+        // which is why the bound is generous rather than zero. It is still two
+        // orders of magnitude below the declared room.
+        assert!(
+            image.len() < 4 * 1024 * 1024,
+            "a five-byte tree declaring 64 MiB exported {} bytes",
+            image.len(),
+        );
+    }
+
+    #[test]
+    fn a_load_keeps_what_the_image_says_about_itself() {
+        // Gap 16. Both of these were written only by their setters and read
+        // only by the export, so an image loaded and re-exported came back
+        // having forgotten its own declarations.
+        sm_reset();
+        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let meta = b"{\"kernelAbi\":44,\"createdBy\":\"the test\"}";
+        let mp = sm_alloc(meta.len());
+        unsafe { core::ptr::copy_nonoverlapping(meta.as_ptr(), mp as *mut u8, meta.len()) };
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, mp, meta.len()) }, 0);
+        unsafe { sm_free(mp, meta.len()) };
+        let original = drain_export();
+
+        // A DIFFERENT filesystem, with nothing declared on it.
+        sm_reset();
+        assert!(load_image_bytes(&original) > 0);
+        let rewritten = drain_export();
+
+        let body = runtime_core::sffs::unwrap_vfsi(&rewritten).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        assert!(
+            fs.growth_ceiling_bytes().expect("ceiling") >= 64 * 1024 * 1024,
+            "the declared capacity survived the load",
+        );
+        assert_eq!(
+            runtime_core::sffs::metadata_span(&rewritten.as_slice())
+                .expect("span")
+                .map(|(offset, len)| {
+                    let start = offset as usize;
+                    rewritten[start..start + len as usize].to_vec()
+                })
+                .as_deref(),
+            Some(&meta[..]),
+            "and so did the metadata the image declared",
+        );
+
+        // And the room is still declared rather than taken.
+        assert!(
+            rewritten.len() < 4 * 1024 * 1024,
+            "the re-export took {} bytes",
+            rewritten.len(),
+        );
+    }
+
+    #[test]
     fn a_small_request_cannot_cost_a_tree_the_inodes_it_needs() {
         // The convergence loop already re-raises the ceiling to whatever the
         // DATA needs, so a tiny tree cannot tell a floor from a replacement.

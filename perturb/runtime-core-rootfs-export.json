@@ -219,6 +219,27 @@
       "scope_end": "\n    .map_err(|_| Errno::EIO)?;\n",
       "find": "        core::cmp::max(inode_requirement, 64),\n        requested_blocks,",
       "replace": "        requested_blocks,\n        requested_blocks,"
+    },
+    {
+      "name": "a load forgets the capacity the image declared",
+      "scope": "    let declared_capacity = filesystem.growth_ceiling_bytes()?;",
+      "scope_end": "\n    });\n",
+      "find": "        state.image_capacity_bytes = Some(declared_capacity);",
+      "replace": "        state.image_capacity_bytes = None;"
+    },
+    {
+      "name": "a load forgets the metadata the image declared",
+      "scope": "    let declared_capacity = filesystem.growth_ceiling_bytes()?;",
+      "scope_end": "\n    });\n",
+      "find": "        state.image_metadata = declared_metadata;",
+      "replace": "        state.image_metadata = None;"
+    },
+    {
+      "name": "the declared capacity is taken rather than declared",
+      "scope": "    let total_blocks = core::cmp::min(",
+      "scope_end": "\n    let total_blocks = core::cmp::max(total_blocks, 16);\n",
+      "find": "    let total_blocks = core::cmp::min(\n        max_blocks,",
+      "replace": "    let total_blocks = core::cmp::min(\n        u32::MAX,"
     }
   ]
 }
