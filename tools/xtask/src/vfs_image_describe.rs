@@ -443,6 +443,13 @@ fn load_into_kernel(bytes: &[u8], what: &str) -> Result<usize, String> {
         // A load walks structure, never content. Anything else means the walk
         // reached for bytes it should not need, and saying so is more useful
         // than serving them.
+        //
+        // NOT MUTATION-TESTABLE, and recorded rather than left as a permanent
+        // red. A load requests only `Image`, so this arm is unreachable during
+        // one and a mutant that serves zeroes here changes nothing a test can
+        // observe. A trial for it survives every time; writing a test that
+        // happened to pass would be worse than saying so. It stays because it
+        // is the guard that would fire if the walk ever did reach for content.
         _ => Err(Errno::ENOSYS),
     })
     .map_err(|e| format!("{what}: {e:?}"))
