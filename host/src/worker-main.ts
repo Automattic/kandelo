@@ -64,6 +64,7 @@ import {
   WPK_FORK_EXPORT_MODULE_STATE_RESTORE,
   WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
   WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
+  WPK_FORK_EXCEPTION_CODEC_SECTION,
   WPK_FORK_GC_CODEC_SECTION,
   WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
   WPK_FORK_REFERENCE_EXPORT_GC_FILL,
@@ -3798,42 +3799,17 @@ export async function centralizedWorkerMain(
           // never asserts an exact memory size, so its growth is invisible.
           const forkModuleStagingBase = forkModuleInstance.stagingBase;
           const forkModuleStagingBytes = forkModuleInstance.stagingBytes;
+          // The instance carries its own exports, drive table and staging
+          // slab, so none of those are threaded separately any more -- and the
+          // reserve/release region callbacks are gone with them: the backend
+          // stages into the module's OWN slab rather than asking the host for
+          // a region, so there is nothing for a host to hand over or reclaim.
           forkModuleBackend = new ForkModuleContinuationBackend({
-            exports: forkModuleInstance.exports,
-            // The coarse `parentReplay`/`parentAbort` entries drive each
-            // activation's guest begin export through this table (host binds the
-            // ref-typed slots; the module `call_indirect`s them).
-            driveTable: forkModuleInstance.driveTable,
+            instance: forkModuleInstance,
             memory,
             ptrWidth,
             format: linkedFrameFormat,
             catalogOrdinals,
-            // Option B: the module channel-mmaps its per-fork frame chunks + the
-            // journal image on demand via `SYS_mmap` → the kernel `find_gap`
-            // allocator (dynamic, kernel-tracked placement — no fork-depth cap
-            // and no carved-out guest region). `channelBase` also backs the
-            // small pre-fork catalog scratch and GC-codec staging.
-            channelBase: channelOffset,
-            reserveRegion: (size) =>
-              size <= forkModuleStagingBytes
-                ? forkModuleStagingBase
-                : continuationMmap(
-                    memory,
-                    channelOffset,
-                    size,
-                    `pid=${pid}: fork-module catalog scratch`,
-                  ),
-            releaseRegion: (addr, size) => {
-              if (addr === forkModuleStagingBase) return;
-              continuationMunmap(
-                memory,
-                channelOffset,
-                addr,
-                size,
-                `pid=${pid}: fork-module catalog scratch`,
-              );
-            },
-            pid,
             label: `pid=${pid}: fork-module`,
           });
           // Seed the linked-frame format + full resume catalog once, now, before
@@ -3996,7 +3972,7 @@ export async function centralizedWorkerMain(
       // captured in the planning block (where the compiled `modules` are in
       // scope) so the attach block can seed the co-resident fork-module's exnref
       // tag-validity admission gate. Null until a fork child computes them.
-      let childExceptionTags: Map<number, number[]> | null = null;
+      let childExceptionCodecBytes: Map<number, Uint8Array> | null = null;
       const referenceReplay = (): ProcessReferenceReplayImports =>
         earlyChildReferences ?? activationRegistry.currentReferences();
       const processContinuation = new ForkProcessContinuationCoordinator(
@@ -4529,20 +4505,21 @@ export async function centralizedWorkerMain(
             .filter((entry) => entry.exceptionDescriptor !== undefined)
             .map((entry) => entry.activationId)
             .sort((left, right) => left - right)[0] ?? 0xffff_ffff;
-        // Capture each activation's declared exnref tag ordinals for the module's
-        // exnref tag-validity admission gate (moved out of the host, below). The
-        // module re-checks every captured exnref recipe against these at the
-        // child-install entry, so a recipe naming an undeclared tag fails loud.
-        const exceptionTags = new Map<number, number[]>();
-        for (const entry of declarations) {
-          if (entry.exceptionDescriptor !== undefined) {
-            exceptionTags.set(
-              entry.activationId,
-              entry.exceptionDescriptor.tags.map((tag) => tag.tagOrdinal),
-            );
+        // Capture each activation's RAW exception codec section for the module's
+        // exnref tag-validity admission gate. The module derives the declared tag
+        // ordinals from the section itself -- decoding it here to hand over a
+        // `u32` array made this host a second decoder of a module-owned format.
+        const exceptionCodecBytes = new Map<number, Uint8Array>();
+        for (const [activationId, activationModule] of modules) {
+          const sections = WebAssembly.Module.customSections(
+            activationModule,
+            WPK_FORK_EXCEPTION_CODEC_SECTION,
+          );
+          if (sections.length === 1) {
+            exceptionCodecBytes.set(activationId, new Uint8Array(sections[0]!));
           }
         }
-        childExceptionTags = exceptionTags;
+        childExceptionCodecBytes = exceptionCodecBytes;
         // P2 (Path B): the co-resident module is the SOLE reconstructor whenever
         // it is active for this fork — there is no longer a per-kind host
         // admission gate, and no JS reconstruction fallback behind it. The former
@@ -5121,17 +5098,17 @@ export async function centralizedWorkerMain(
           // Seeded here — once per worker — alongside the GC codec; a COW child
           // re-seed is an idempotent no-op in the module. An activation that
           // declares no exnref tags is not seeded (nothing to declare).
-          if (!childExceptionTags) {
+          if (!childExceptionCodecBytes) {
             throw new Error(
-              `pid=${pid}: fork-module drive lost the captured exception tags`,
+              `pid=${pid}: fork-module drive lost the captured exception codecs`,
             );
           }
           for (const activation of sortedActivations) {
-            const tags = childExceptionTags.get(activation.activationId);
-            if (tags && tags.length > 0) {
-              forkModuleBackend.setActivationExceptionTags(
+            const bytes = childExceptionCodecBytes.get(activation.activationId);
+            if (bytes !== undefined) {
+              forkModuleBackend.setActivationExceptionCodec(
                 activation.activationId,
-                tags,
+                bytes,
               );
             }
           }
@@ -5365,7 +5342,7 @@ export async function centralizedWorkerMain(
                   port.postMessage({
                     type: "fork_module_frames",
                     pid,
-                    frames: Number(forkModuleBackend.framesCommitted()),
+                    frames: Number(forkModuleBackend.stat("framesCommitted")),
                   } satisfies WorkerToHostMessage);
                 }
                 continue;
@@ -5413,7 +5390,7 @@ export async function centralizedWorkerMain(
                 port.postMessage({
                   type: "fork_module_frames",
                   pid,
-                  frames: Number(forkModuleBackend.framesCommitted()),
+                  frames: Number(forkModuleBackend.stat("framesCommitted")),
                 } satisfies WorkerToHostMessage);
               }
               continue;
@@ -5445,7 +5422,7 @@ export async function centralizedWorkerMain(
                 port.postMessage({
                   type: "fork_module_frames",
                   pid,
-                  frames: Number(forkModuleBackend.framesCommitted()),
+                  frames: Number(forkModuleBackend.stat("framesCommitted")),
                 } satisfies WorkerToHostMessage);
               }
             }
@@ -5491,7 +5468,7 @@ export async function centralizedWorkerMain(
         port.postMessage({
           type: "fork_module_frames",
           pid,
-          frames: Number(forkModuleBackend.framesCommitted()),
+          frames: Number(forkModuleBackend.stat("framesCommitted")),
         } satisfies WorkerToHostMessage);
       }
 
@@ -5516,19 +5493,19 @@ export async function centralizedWorkerMain(
         // `fork-module` diagnostic that could race a consumer waiting for the
         // parent's frame count. A nonzero value is the positive proof the module
         // drove that kind's reconstruction rather than the JS reference fallback.
-        const references = Number(forkModuleBackend.referencesReconstructed());
-        const externrefs = Number(forkModuleBackend.externrefsResolved());
-        const exnrefs = Number(forkModuleBackend.exnrefsReconstructed());
-        const gcNodes = Number(forkModuleBackend.gcNodesReconstructed());
+        const references = Number(forkModuleBackend.stat("referencesReconstructed"));
+        const externrefs = Number(forkModuleBackend.stat("externrefsResolved"));
+        const exnrefs = Number(forkModuleBackend.stat("exnrefsReconstructed"));
+        const gcNodes = Number(forkModuleBackend.stat("gcNodesReconstructed"));
         // Phase 6 item 3c DRIVE proof-of-use: the module executed the typed-GC
         // drive plan (`fm_drive_execute`) rather than falling back to the JS
         // `materializeAllTyped` order. Distinct from `gcNodes`, which advances
         // merely by admitting the graph.
-        const driveSteps = Number(forkModuleBackend.driveStepsExecuted());
+        const driveSteps = Number(forkModuleBackend.stat("driveStepsExecuted"));
         // Static-root binder proof-of-use: the module republished an immutable
         // static root into the anyref transit (`fm_static_root_slot`) rather than
         // the JS `publishTransit` fallback.
-        const staticRoots = Number(forkModuleBackend.staticRootsPublished());
+        const staticRoots = Number(forkModuleBackend.stat("staticRootsPublished"));
         if (
           references > 0 ||
           externrefs > 0 ||
@@ -5557,7 +5534,7 @@ export async function centralizedWorkerMain(
         // value is the positive proof the child rewound through the module rather
         // than the JS fallback; a reference-free non-thread child that fell back
         // would leave this at 0 and stay silent.
-        const replayed = Number(forkModuleBackend.framesReplayed());
+        const replayed = Number(forkModuleBackend.stat("framesReplayed"));
         if (replayed > 0) {
           port.postMessage({
             type: "fork_module_child_frames",
@@ -6816,37 +6793,11 @@ export async function centralizedThreadWorkerMain(
         const threadForkModuleStagingBytes =
           threadForkModuleInstance.stagingBytes;
         threadForkModuleBackend = new ForkModuleContinuationBackend({
-          exports: threadForkModuleInstance.exports,
-          driveTable: threadForkModuleInstance.driveTable,
+          instance: threadForkModuleInstance,
           memory,
           ptrWidth,
           format: linkedFrameFormat,
           catalogOrdinals,
-          // Option B: the module channel-mmaps its per-fork frame chunks + the
-          // journal image on demand via `SYS_mmap` → the kernel `find_gap`
-          // allocator (dynamic, kernel-tracked). `channelBase` also backs the
-          // small pre-fork catalog scratch.
-          channelBase: channelOffset,
-          reserveRegion: (size) =>
-            size <= threadForkModuleStagingBytes
-              ? threadForkModuleStagingBase
-              : continuationMmap(
-                  memory,
-                  channelOffset,
-                  size,
-                  `pid=${pid} tid=${tid}: fork-module catalog scratch`,
-                ),
-          releaseRegion: (addr, size) => {
-            if (addr === threadForkModuleStagingBase) return;
-            continuationMunmap(
-              memory,
-              channelOffset,
-              addr,
-              size,
-              `pid=${pid} tid=${tid}: fork-module catalog scratch`,
-            );
-          },
-          pid,
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
@@ -7461,7 +7412,7 @@ export async function centralizedThreadWorkerMain(
       port.postMessage({
         type: "fork_module_frames",
         pid,
-        frames: Number(threadForkModuleBackend.framesCommitted()),
+        frames: Number(threadForkModuleBackend.stat("framesCommitted")),
       } satisfies WorkerToHostMessage);
     }
 

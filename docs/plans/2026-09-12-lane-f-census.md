@@ -3565,3 +3565,53 @@ The pattern in 1, 2 and 6 is the same: the check existed and reported, and
 something between the check and the conclusion inverted it. A fixture that could
 not tell two answers apart; a filter that matched the wrong case; an exit status
 taken from the wrong process. None was a missing test.
+
+## §69 — The module backend, rewritten thin, and the paired ratchet's third proof
+
+`host/src/fork-module-backend.ts` is the host's calls into the co-resident
+module: 170 code lines, replacing the 1239-line wrapper in the attic. It is the
+`fork-module-backend` import `worker-main.ts` had been carrying dangling, so the
+reconnection is done rather than deferred -- `host/src` goes 113 -> 105 tsc
+errors with NO new error messages of any kind.
+
+Two things account for the 86% reduction, and neither is compression.
+
+The module folded eleven `fm_*` counter exports into one `fm_stats(field)`; the
+host wrapper never followed, so reading a counter cost a method here AND a field
+constant. Eight one-line accessors became one `stat("name")`. The other half of
+the old wrapper served callers that no longer exist -- the capture/replay
+orchestration the module took over. Methods come back when a caller needs one,
+not in anticipation, which is what the 1239 lines were largely made of.
+
+The construction shrank with it. `instance` replaces `exports` + `driveTable` +
+`channelBase`, and `reserveRegion`/`releaseRegion` are GONE: the backend stages
+into the module's own slab rather than asking the host for a region, so there is
+nothing to hand over or reclaim. That is a host responsibility deleted, not
+moved.
+
+**Two duplicated constants came with it, both pinned.** The `fm_stats` field
+ORDER, because the host indexes by position and reading the wrong index returns a
+plausible number from the wrong counter -- a wrong diagnostic rather than an
+error. And `RESUME_CATALOG_CAP`, whose module-side comment already named this
+file as its counterpart; the module sizes a static `[u32; CAP]` arena from it, so
+a host staging more would write past its end. Perturbed at the source: reordering
+two counters and halving the cap each fail their pin.
+
+**And the exception codec reconnected properly.** `worker-main` no longer decodes
+the section to hand over a `u32` array -- it carries the RAW bytes per activation
+exactly as it already did for the GC codec, and `setActivationExceptionCodec`
+passes them through. §67's module-side change is now actually used.
+
+**The paired ratchet is proved a third time.** `forkModuleHostDriveEntries` 25 ->
+30 and `forkModuleEntriesWithoutProductionCaller` 21 -> 16: the backend gave five
+entries a production caller, so they changed bucket. THE PAIR'S TOTAL IS 46 BOTH
+TIMES. Three occurrences is no longer a coincidence to note -- these two numbers
+are halves of one migration, and the recommendation in the budget file is now
+explicit: they should become one ratchet.
+
+**`forkTypeScript` 249 -> 419, and the old number was measuring an incomplete
+set.** That surface was declared done, target == ceiling, "a floor to hold, not a
+gap to close" -- while its largest member sat in the attic. Same structural error
+as `forkPlatformTypeScript`'s glob (§64). The raise is argued by what it buys:
+170 lines for 1239. Target is set equal to ceiling again, so a rise without a new
+caller in `worker-main.ts` is the anticipation this rewrite removed.
