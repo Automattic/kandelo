@@ -165,6 +165,21 @@ pub const VFSI_CONTAINER_MAGIC: u32 = VFSI_MAGIC;
 /// The container version this repository writes and reads.
 pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
 
+/// The container's flag word.
+///
+/// The flags are the image's own statement about which sections it carries,
+/// and they are written from the WRITER's view of the tree rather than from
+/// the section a reader will actually parse. That difference is the whole
+/// reason this is exposed: a reader that finds a flag set and the
+/// corresponding description absent is looking at an image whose contents it
+/// cannot see, which is a refusal rather than an empty result.
+pub fn container_flags(source: &impl BlockSource) -> Result<u32, Errno> {
+    // Validates magic and version first, so a flag word is never read out of
+    // bytes that are not a container.
+    sffs_span(source)?;
+    source_u32(source, 8).map_err(container_errno)
+}
+
 /// Byte span of the image's metadata section, or `None` when it declares none.
 ///
 /// # Why the bytes stay opaque

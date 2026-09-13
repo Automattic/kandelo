@@ -1891,6 +1891,31 @@ where
         }
     }
 
+    // GAP 20. An image that SAYS it has lazy archives, through a carrier that
+    // describes none, is an image whose archives this reader cannot see.
+    //
+    // The refusal above catches an image that describes its deferred files
+    // nowhere. This catches the narrower and quieter case: a description that
+    // is present and PARTIAL. The legacy `KLZY` encoder skips any archive
+    // group whose raw byte length or transport it does not know -- documented
+    // there as a truthful gap, because bytes that cannot be validated should
+    // not be promised -- but the gap is truthful only at the writing end. Here
+    // it arrives as an archive that was never mentioned, so its members are
+    // walked as ordinary files and inserted with the zero length their stub
+    // inodes carry. A 4,096-byte binary becomes an empty file, the load
+    // reports success, and a build derived from it ships the emptiness.
+    //
+    // That is precisely the "wrong tree that looks like a right one" the
+    // neither-carrier refusal exists to prevent, reached one archive at a time
+    // instead of all at once. Same defect, same answer: a stale artifact fails
+    // loudly and is rebuilt.
+    let declared_flags = crate::sffs::container_flags(&source)?;
+    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0
+        && lazy_archives.is_empty()
+    {
+        return Err(Errno::EINVAL);
+    }
+
     let root_stat = filesystem.stat_ino(ROOT_INO)?;
     if file_type(root_stat.mode) != S_IFDIR {
         return Err(Errno::EINVAL); // `/` is not a directory in the image
@@ -6346,6 +6371,66 @@ mod tests {
             kernel_lazy: None,
         };
         crate::sffs_container::wrap(&body, &sections).expect("wrap")
+    }
+
+    /// An image whose header CLAIMS lazy archives while its `KLZY` describes
+    /// none -- the shape the legacy writer produces for an archive group whose
+    /// raw byte length it does not know.
+    fn image_claiming_archives_it_does_not_describe() -> Vec<u8> {
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        // A member whose inode is a zero-length stub, exactly as a deferred
+        // file's is. If the archive goes undescribed, this walks as an
+        // ordinary empty file and nothing says so.
+        w.create_deferred_file(root, b"php", 0o755, 4_242, 3, b"usr/bin/php", b"")
+            .expect("archive member");
+        w.declare_lazy_archive(3, 8_000_000, b"").expect("declare");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+
+        // A `KLZY` that mentions the member and NOT its archive, plus a header
+        // whose flags are written by hand because `ContainerSections::flags()`
+        // derives them from the sections present -- and the whole point is a
+        // header that disagrees with them.
+        let klzy = klzy_section(&[], &[(2, 4_242, 3, "usr/bin/php")]);
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: Some(&klzy),
+        };
+        let flags = sections.flags() | crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES;
+        let mut image = crate::sffs_container::header(body.len(), flags)
+            .expect("header")
+            .to_vec();
+        image.extend_from_slice(&body);
+        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
+        image
+    }
+
+    #[test]
+    fn an_image_claiming_archives_it_describes_nowhere_is_refused() {
+        let _guard = TestGuard::acquire();
+        // GAP 20. The neither-carrier refusal catches an image that describes
+        // its deferred files nowhere. This is the quieter case: a description
+        // that is PRESENT and partial.
+        //
+        // Accepting it builds a tree where an archive member is an ordinary
+        // empty file -- a 4,242-byte binary reporting zero -- and the load
+        // returns success. A build derived from that base ships the emptiness,
+        // and nothing anywhere reported a problem.
+        let image = image_claiming_archives_it_does_not_describe();
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            Errno::EINVAL,
+            "an image whose archives this reader cannot see is refused",
+        );
     }
 
     #[test]

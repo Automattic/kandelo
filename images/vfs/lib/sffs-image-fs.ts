@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { maybeDecompressImage } from "../../../host/src/vfs/vfs-image-transport";
 import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import type { ZipEntry } from "../../../host/src/vfs/zip";
@@ -973,6 +974,7 @@ export class SffsImageFs {
    * runs at build time where the cost is a few milliseconds.
    */
   static readImageMetadata(image: Uint8Array): VfsImageMetadata | null {
+    // `loadImage` decompresses, so this reads a `.vfs.zst` too.
     const fs = SffsImageFs.create();
     fs.loadImage(image);
     return fs.getImageMetadata();
@@ -994,7 +996,21 @@ export class SffsImageFs {
    * failure the module has not adopted it and this frees it, which is why the
    * free lives in a `catch` rather than a `finally`.
    */
-  loadImage(image: Uint8Array): number {
+  loadImage(
+    compressedOrPlain: Uint8Array,
+    options: { maxDecompressedBytes?: number } = {},
+  ): number {
+    // Shipped images are `.vfs.zst`. The module reads IMAGES, not archives, so
+    // a compressed one reached it as `EINVAL` -- a truthful refusal of the
+    // wrong question. Decompression is transport, and it happens here for the
+    // same reason it happened inside the filesystem this bridge replaces:
+    // callers should not have to know whether the bytes they were handed came
+    // from a `.vfs` or a `.vfs.zst`. The bound is the caller's, and the frame
+    // walk that enforces it runs before a byte is decompressed.
+    const image = maybeDecompressImage(
+      compressedOrPlain,
+      options.maxDecompressedBytes,
+    );
     const ptr = this.exports.sm_alloc(image.byteLength);
     if (ptr === 0) throw new Error("sffs-module: allocation failed");
     try {
