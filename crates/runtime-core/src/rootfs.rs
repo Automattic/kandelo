@@ -2200,20 +2200,26 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     return Err(Errno::ENOTDIR);
                 }
                 if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-                    if matches!(inode.kind, InodeKind::LazyMember { .. }) {
-                        // Truncating a lazy-archive placeholder would silently
-                        // discard its (archive_id, source_path, size) and hand
-                        // back an empty writable file instead of the real
-                        // content. Byte-serving/materialization is
-                        // TODO(3b-wiring.2): materialize via fetch_archive, so
-                        // this stays a truthful ENOSYS rather than a silent
-                        // conversion.
-                        return Err(Errno::ENOSYS);
-                    }
+                    // A lazy-archive member truncates like anything else, and
+                    // discarding its `(archive_id, source_path, size)` is the
+                    // POINT rather than a loss: `O_TRUNC` means "this file is
+                    // now empty", and what its bytes used to be backed by stops
+                    // mattering the moment they stop existing.
+                    //
+                    // This used to be a deliberate `ENOSYS` guarding against
+                    // "an empty writable file instead of the real content" --
+                    // which is a description of truncation. It cost the derived
+                    // image builders: replacing `/usr/bin/node` with eager
+                    // bytes is a whole-file replace, and it failed `ENOSYS`.
+                    //
+                    // The case that genuinely needs the old bytes is a PARTIAL
+                    // write, which does not set `O_TRUNC` and still reaches the
+                    // materialization path that cannot serve them.
                     if let Some(node) = state.get_mut(existing) {
                         let shrank = match &node.kind {
                             InodeKind::Regular(d) => !d.is_empty(),
                             InodeKind::BaseRegular { size, .. } => *size > 0,
+                            InodeKind::LazyMember { size, .. } => *size > 0,
                             _ => false,
                         };
                         node.kind = InodeKind::Regular(Vec::new());
@@ -5408,7 +5414,7 @@ mod tests {
     }
 
     #[test]
-    fn open_o_trunc_on_lazy_member_is_enosys_not_silent_conversion() {
+    fn open_o_trunc_on_a_lazy_member_truncates_it_like_any_other_file() {
         let _g = TestGuard::acquire();
         let mut m = alloc::vec::Vec::new();
         m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
@@ -5424,22 +5430,35 @@ mod tests {
         m.extend_from_slice(&1234u64.to_le_bytes());
         assert_eq!(load_manifest(&m).unwrap(), 2);
 
-        // Opening the lazy-archive placeholder with O_TRUNC for write must not
-        // silently convert it into an empty writable file (which would drop
-        // its archive_id/source_path/size and hand back fabricated success).
-        assert_eq!(
-            open(b"/g", O_WRONLY | O_TRUNC, 0, 0, 0).unwrap_err(),
-            Errno::ENOSYS
-        );
+        // REVERSED 2026-09-13. This asserted `ENOSYS`, on the grounds that
+        // truncating would "silently convert it into an empty writable file
+        // ... and hand back fabricated success". That is a description of what
+        // `O_TRUNC` MEANS: the file becomes empty, and what its bytes used to
+        // be backed by stops mattering the moment they stop existing. Nothing
+        // is fabricated, because nothing was promised -- a truncating open
+        // never needed the content.
+        //
+        // It cost the derived image builders. Replacing `/usr/bin/node` with
+        // eager bytes is a whole-file replace, and it failed `ENOSYS` in a
+        // product build. It was also a host/kernel DIVERGENCE: the filesystem
+        // this campaign is deleting allows the same truncate, so two
+        // implementations of one filesystem disagreed about a POSIX operation.
+        //
+        // The case that genuinely cannot be served is a PARTIAL write, which
+        // needs the old bytes, does not set `O_TRUNC`, and still reaches the
+        // materialization path that cannot fetch them.
+        let handle = open(b"/g", O_WRONLY | O_TRUNC, 0, 0, 0).expect("truncate succeeds");
+        release_handle(handle);
 
-        // The node is still a LazyMember afterward: metadata and the
-        // (archive_id, source_path) mapping are unchanged.
+        // It is now an ordinary empty file, and no longer claims a backing it
+        // does not have.
         let st = lstat(b"/g").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(st.st_size, 999);
-        let (archive_id, source_path) = lazy_member_source(b"/g").unwrap();
-        assert_eq!(archive_id, 7);
-        assert_eq!(source_path, b"bin/g".to_vec());
+        assert_eq!(st.st_size, 0, "truncated to nothing");
+        assert!(
+            lazy_member_source(b"/g").is_err(),
+            "a truncated file no longer names an archive member",
+        );
     }
 
     #[test]
