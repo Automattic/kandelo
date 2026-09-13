@@ -1799,10 +1799,38 @@ the setuid bit is not honoured on unverified bytes.
     it means changing `VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared` — ABI
     surface, snapshot regeneration — **for a section V5 retires anyway**;
   - `crates/runtime-core/src/sffs_deferred.rs` is the intended home and already
-    names *"integrity digest"* as part of the opaque payload it carries. **It
-    has no production caller.** Giving it one is V5, which lane Y gates.
+    names *"integrity digest"* among the things its payload carries. **It has
+    no production caller.** Giving it one is V5, which lane Y gates.
 
-  **So lane S resumes behind V5, which resumes behind lane Y.**
+  **So lane S resumes behind V5, which resumes behind lane Y** — but "a
+  production caller" understates the ask, and the handoff enumerates it.
+  **Two of the four things lane S needs are V5's design decisions**, not work
+  that can be added afterwards:
+
+  - **The digest cannot stay inside the opaque payload.** `sffs_deferred.rs` is
+    explicit that the payload is *"never inspected here. The kernel is a
+    courier"* — deliberate, because an image can arrive from a shared link.
+    S2's value is that the **kernel** verifies, so the kernel must read the
+    digest. Either it is promoted to a typed field on `DeferredRecord`, or
+    verification stays with whoever parses the payload — the host, which is the
+    shape this deferral rejected. Space is not the constraint
+    (`MAX_PAYLOAD_LEN` is 64 KiB); the contract is.
+  - **A whole-file sha256 does not compose with a positioned read.**
+    `host_fetch_deferred` takes an offset, so the kernel gets ranges. Either it
+    buffers a whole file before serving byte 0, or the digest is chunked.
+    Measured: deferred files are small — largest **4.3 MiB** in `rootfs.vfs`,
+    **9.9 MiB** in `shell.vfs.zst`, none over 32 MiB — so buffering costs
+    ~10 MiB transient and is cheaper than a Merkle layout. Still V5's call.
+
+  The other two are ordinary work: a sha256 in the kernel (none exists in
+  `kernel`, `runtime-core` or `shared`; `sha2` is already a transitive dep),
+  and recording the digest in `SffsWriter::create_deferred_file`.
+
+  **The useful negative: the set-ID half depends only on the first decision.**
+  It needs the digest's *presence* visible in the record — not the
+  verification, the positioned read or the hash — so it can travel with the
+  filesystem work rather than waiting for the rest. That is the half protecting
+  two setuid-root binaries, so it is the one worth unblocking first.
 
 ## Acceptance evidence
 
