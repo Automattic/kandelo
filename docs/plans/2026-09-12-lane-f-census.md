@@ -4893,3 +4893,49 @@ would then get spent.
 
 This number is a proposal, not a decision. The target stays parked at 3894 until
 the maintainer sets it.
+
+## §105 — Correcting §104: the replay gate is 60 migratable lines, not 169
+
+Section 104 proposed `forkRestoredHostFloor` target 3725 = 3894 - 169, on
+section 23's claim that `fork-replay-gate`'s "shared-i32 gate is expressible in
+wasm once it moves out of its own SharedArrayBuffer". I took that as a claim
+about the FILE. Reading the file, it is a claim about 60 of its lines.
+
+```
+  60  the gate MECHANISM   constants, gateView, create, commit, cancel, wait
+ 107  the COORDINATOR      ForkReplayGateCoordinator (48),
+                           observeForkReplayWorker (48), phase type, error
+```
+
+`ForkReplayGateCoordinator` holds a promise the fork handler awaits, a phase, and
+a cancellation reason; `observeForkReplayWorker` subscribes to the child
+worker's `message`/`error`/`exit` events and cancels the gate if the worker dies
+before it reports ready. That is worker lifecycle -- the first item the
+Rust-first contract lists as irreducible host floor -- and none of it is
+expressible in wasm.
+
+Worse for the proposal, the 60 are not cleanly migratable either. The WAITER is
+the child worker and could use the module's injected `memory.atomic.wait32`, as
+the archive writer lock already does. But the NOTIFIER is `process-lifecycle.ts`
+running on the kernel-worker side, which decides commit-or-cancel from worker
+lifecycle events. Moving the gate word into guest memory does not move that
+decision; it relocates the word and leaves the writer in TypeScript. The saving
+would be well under 60 lines, and it would buy them by adding another fixed
+offset into shared memory that host and module must both know -- the duplicated
+control-block constant that `host/test/fork-module-control-block.test.ts` exists
+to police.
+
+**Corrected proposal: leave the target parked at 3894**, which is what I
+recommended before the audit and what the audit now supports with evidence
+rather than with judgement. This surface holds worker spawn, cross-worker
+transport, externref identity, address-space lifetime and section location, and
+every one of those is named floor by the contract. It can still only fall; it
+just has no identified migration to fall by.
+
+The general lesson is about how section 23 was written and how I read it. It
+said "the shared-i32 gate", and it meant those words exactly. I substituted the
+filename, and a filename is a unit of storage rather than a unit of argument --
+the same substitution that put nine files in the attic by NAME in the first
+place (section 64) and that section 96's binder correction was also about. I
+proposed a number from a claim I had not opened. The number stood for about an
+hour before the code said otherwise.
