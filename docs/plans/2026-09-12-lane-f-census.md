@@ -1375,3 +1375,28 @@ first seed survives, and reverting to last-wins fails it.
 
 §22's assumption is therefore resolved rather than merely carried: a
 type-correct substitute IS sufficient, provided it is the earliest one.
+
+### §25a — the hazard, as a test
+
+`a_provenance_cycle_is_refused_but_the_acyclic_twin_plans`
+(`crates/fork-codec/src/drive_plan_hints.rs`) is the argument above turned into
+a fixture: the same two struct recipes, once cyclic and once not.
+
+* **Cyclic** — struct(0)'s seed is struct(1) and struct(1)'s seed is struct(0),
+  the shape a last-wins witness pool can produce. `build_drive_plan` returns
+  `EINVAL`.
+* **Acyclic** — struct(1)'s seed is the externref leaf instead, which is what a
+  FIRST-wins witness gives, because the earliest seed predates both objects.
+  The plan builds, and the seed is allocated before its dependent.
+
+Writing it also documented a decoder rule worth knowing: a layout carrying
+provenance must set `LAYOUT_FLAG_REQUIRES_PROVENANCE`, and `decode_gc_codec`
+rejects a non-zero provenance count without it. So the count and the flag cannot
+drift apart in a real descriptor. The first version of this fixture set the
+count alone and was refused — the decoder caught it immediately.
+
+Perturbed both ways: dropping the descriptor's provenance count to zero makes
+the seed edge stop being a dependency and the cyclic half no longer fails;
+pointing the acyclic twin's seed back at struct(0) makes the acyclic half fail.
+So the test is sensitive to the provenance dependency path specifically, not to
+some incidental cycle.

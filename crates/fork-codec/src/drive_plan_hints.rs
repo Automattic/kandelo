@@ -281,7 +281,7 @@ mod tests {
         build_drive_plan, drive_table_base, DriveStep, DRIVE_OP_ALLOC, DRIVE_OP_EXN,
         DRIVE_OP_EXTERNREF_TRANSIT, DRIVE_OP_FILL,
     };
-    use crate::gc_codec::decode_gc_codec;
+    use crate::gc_codec::{decode_gc_codec, LAYOUT_FLAG_REQUIRES_PROVENANCE};
     use alloc::vec;
 
     // The same committed descriptor the gc_codec decoder tests use: seven real
@@ -426,6 +426,69 @@ mod tests {
         assert_eq!(layout.fields.len(), 3);
         assert!(layout.fields[2].flags & FIELD_FLAG_ALLOCATION_DEPENDENCY != 0);
         assert_eq!(layout.fields[2].reference_ordinal, Some(1));
+    }
+
+    /// `struct_dep_descriptor` with one PROVENANCE reference, so `edges[0]` is
+    /// the constructor seed and the snapshot refs follow it.
+    fn struct_prov_descriptor() -> Vec<u8> {
+        let mut bytes = struct_dep_descriptor();
+        // A layout carrying provenance MUST declare it: `decode_gc_codec`
+        // rejects a non-zero provenance count without the flag, so the two can
+        // never drift apart in a real descriptor.
+        put_u16(&mut bytes, HDR + 10, LAYOUT_FLAG_REQUIRES_PROVENANCE);
+        put_u32(&mut bytes, HDR + 40, 1); // provenance reference count
+        bytes
+    }
+
+    /// Why the constructor-provenance WITNESS keeps the FIRST seed.
+    ///
+    /// A witness pool retains one instance per `(layout, ordinal)` instead of
+    /// recording each object's own seed. That is sound only while the resulting
+    /// provenance edges stay acyclic — and replay refuses a cycle outright. If
+    /// the pool kept the LATEST seed, the witness for a layout could be an
+    /// object constructed after one that depends on it, closing a cycle the
+    /// original execution never had. Keeping the FIRST seed follows the original
+    /// construction order, which is acyclic because a provenance field is
+    /// mutable, non-null and internal, so seeding one always required an
+    /// instance that already existed.
+    ///
+    /// This test is the hazard itself: the same two nodes, cyclic and acyclic.
+    /// See docs/plans/2026-09-12-lane-f-census.md section 25.
+    #[test]
+    fn a_provenance_cycle_is_refused_but_the_acyclic_twin_plans() {
+        let mut map = BTreeMap::new();
+        map.insert(0u32, decode_gc_codec(&struct_prov_descriptor()).unwrap());
+
+        // CYCLIC: struct(0)'s seed is struct(1), and struct(1)'s seed is
+        // struct(0). This is the shape a last-wins witness pool can produce.
+        let cyclic = vec![
+            struct_node(0, 0, 0, 1, vec![1, 2, 2]),
+            struct_node(1, 0, 0, 1, vec![0, 2, 2]),
+            entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+        ];
+        let hints = GcCodecHints::new(&cyclic, &map, None).unwrap();
+        assert_eq!(hints.allocation_dependencies(0)[0], 1, "seed edge is a dependency");
+        assert_eq!(
+            build_drive_plan(&cyclic, &hints),
+            Err(Errno::EINVAL),
+            "a provenance cycle is an unallocatable constructor cycle",
+        );
+
+        // ACYCLIC: struct(1)'s seed is the externref leaf instead, exactly as a
+        // FIRST-wins witness gives — the earliest seed predates both objects.
+        let acyclic = vec![
+            struct_node(0, 0, 0, 1, vec![1, 2, 2]),
+            struct_node(1, 0, 0, 1, vec![2, 2, 2]),
+            entry(2, ReferenceRecipeNode::Externref { handle: 9 }),
+        ];
+        let hints = GcCodecHints::new(&acyclic, &map, None).unwrap();
+        let plan = build_drive_plan(&acyclic, &hints).expect("acyclic provenance plans");
+        let allocs: Vec<u32> = plan
+            .iter()
+            .filter(|s| s.op == DRIVE_OP_ALLOC)
+            .map(|s| s.recipe)
+            .collect();
+        assert_eq!(allocs, vec![1, 0], "the seed is allocated before its dependent");
     }
 
     #[test]
