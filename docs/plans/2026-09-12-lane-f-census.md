@@ -2799,3 +2799,155 @@ from the host body's own statements or the wasm type system, not from a name or
 a comment. The two "not worth doing" verdicts are cost arguments, not capability
 ones — they are the maintainer's to overturn if the accounting is judged
 differently, and nothing about them is irreversible.
+
+## §51 — The raise given back, and a defect my own filter hid
+
+The `forkModuleHostDriveEntries` ceiling is 24 again. `fm_set_table_archive` is
+deleted, and with it the one host entry §48 spent.
+
+**Why it was never needed.** `worker-main.ts` computes
+`dlopenArchiveControlAddr = channelOffset - FORK_BUF_SIZE`, and lays a
+host-private control block at fixed negative offsets below it: the archive HEAD
+at 12 (wasm32) / 24 (wasm64), the writer lock at 20 / 40, the transaction owner
+at 24 / 36, the generation fence at 32 / 48. So the head is not something a host
+must compute and hand over — it is at a known address, and the module only needs
+the control address to reach it.
+
+That address became the third argument of `fm_set_format`, the call that already
+exists to seed once-per-worker format state and already resets it for a COW
+child. The owner id is the fourth, because it cannot be derived: it names which
+PHYSICAL table the patches belong to, and the archive does not say which of
+those is the one this worker holds.
+
+The lesson generalizes past this entry: **the first design that works is not
+evidence a new entry is needed.** Coarsening an existing entry is exactly what
+this surface's 3-5 target is asking for, and it was available the whole time —
+I reached for a new entry first because the reconcile felt like a new feature
+rather than more of the same per-worker setup.
+
+The borrowed-fork-child case fell out for free and would have been a bug in the
+deleted design: a borrowed child does not use its own channel's control block,
+it uses its OWNER's (`initData.forkOwnerControlAddr`). Passing the address
+through the per-worker seed handles that; deriving it inside the module from a
+channel base would not have.
+
+**A defect I shipped and then found.** Commit `cd1247f60` produced a wasm64
+artifact that fails validation: `expected i64, found i32`. A 64-bit table
+indexes with `i64`, and the injected `table.set` thunk passed the `u32` slot
+Rust declared. The injector's own validator caught it — the guard worked.
+
+I did not see it for three builds because my build command filtered output with
+`grep -E "^error|error\[|staged fork_module32"`. The failure line begins
+`Error:` with a capital E, and the wasm32 artifact staged successfully either
+way, so every run printed exactly the success line I was looking for. **A filter
+written to find the output you expect will hide the output you do not.** It
+surfaced only when `./run.sh local-build` refused to finish, which is also the
+reason the stale-artifact tier (H-9) bit a second time in this lane: the
+source-only projection could not update while the wasm64 build was failing.
+
+## §52 — The dlopen control block, written down
+
+Everything the mutation group needs is in one host-private block below
+`dlopenArchiveControlAddr`, which is itself `channelOffset - FORK_BUF_SIZE`
+(and, for a borrowed fork child, the OWNER's address from
+`initData.forkOwnerControlAddr` instead). Offsets are subtracted from the
+control address.
+
+| Slot | wasm32 | wasm64 | What it is |
+|---|---|---|---|
+| head | 12 | 24 | published KFLA archive header address |
+| lock | 20 | 40 | archive reader/writer arbitration (`Int32Array`) |
+| owner | 24 | 36 | worker identity holding the staged transaction lease |
+| generation | 32 | 48 | the u64 fence instrumented wasm polls |
+
+Lock values: `IDLE = 0`, `WRITER = -1`, and any positive value is a count of
+concurrent readers up to `MAX_READERS = 0x7fff_ffff`. Owner values: `IDLE = 0`,
+otherwise a positive worker identity. The writer path is a `compareExchange`
+from IDLE to WRITER with a re-check of the transaction owner afterwards, because
+acquiring the short lock does not prove no peer holds the long lease.
+
+The module can do all of this. A CAS on an arbitrary guest address is
+`&*(addr as *const AtomicI32)` and the module already builds with
+`-Ctarget-feature=atomics`. The two operations Rust cannot emit —
+`memory.atomic.wait32` and `memory.atomic.notify` — are the placeholder-import
+pattern's natural shape, and being injector-rewritten they add no host
+obligation, the same way `__wpk_fork_table_apply` did not.
+
+Only the head offset is duplicated into the module today, because that is all
+the reconcile needs; `host/test/fork-module-control-block.test.ts` pins it
+against the host layout and fails if they drift. The other three follow when the
+mutation entries do, under the same pin.
+
+## §53 — Correcting §49: the encoder exists, but it cannot append
+
+§49 projected the mutation group as "four imports served, zero new host
+obligations," resting partly on `fork_codec::dylink_archive_encode` already
+existing. It does exist, and it is not enough.
+
+`encode_dylink_archive(archive, addresses)` re-encodes the WHOLE image: it
+wants one address per record, resolves every `next` pointer and all four header
+cursors from them, and returns the full set of record images. Publishing a new
+table patch that way means supplying an address for every existing record too.
+
+And the decoded `DylinkArchive` does not retain record addresses. `DylinkModule`
+carries name, bytes, digest, bases, handle, dependencies, allocations — no
+address. So a module that decoded the archive cannot re-encode it in place; it
+could only lay the whole thing out somewhere new, which means copying every
+`module_bytes` — entire side-module images — on every `table.set`. That is not a
+cost to optimize later, it is a wrong design.
+
+What the commit path actually needs is an APPEND primitive: write one new KFJP
+record, patch the previous tail's `next` pointer, bump the header's table-patch
+cursor and count, then publish the generation. That is a new function in
+`fork-codec`, testable in Rust against the same fixture the reconcile uses, and
+it is a better primitive than the full encoder for this job regardless of who
+calls it — the real publisher already reuses the header's address for the life
+of the process rather than relaying it out.
+
+So §49's projection stands on outcome — no new host obligations — but not on
+effort: the mutation group needs an append encoder written first, not just
+wiring to something that already exists. Recorded before starting, because the
+cheaper reading was mine and I would rather correct a projection than discover
+it halfway through an implementation built on it.
+
+## §54 — The reconcile reported the wrong generation, and the fixture could not tell
+
+Found while reviewing what §48 landed, before it had a second commit on top.
+
+`__wpk_fork_module_state_table_reconcile` returned
+`planned_generation(patches, owner, applied)` — the highest generation among
+patches belonging to THIS worker's table. The contract is the snapshot's
+generation: the attic interface says "apply the latest process snapshot and
+return its exact generation," and the live replica computes
+`Math.max(published, state.generation)`.
+
+The difference is not cosmetic, because of what the guest does with the answer.
+`inject_table_reconcile_guard` emits:
+
+    if (fence != last_generation) { last_generation = reconcile(); }
+
+and `fence` is the process-wide published generation. So if any OTHER owner
+published last, an owner-filtered return leaves `last_generation` permanently
+below the fence, and the guard re-enters **on every table access, forever** —
+a full archive decode and replan per `table.set`. Not a wrong answer; a
+permanent one.
+
+Applying every patch for this owner up to `archive.generation` is exactly what
+makes the worker coherent with that snapshot, which is what the fence names. So
+the fix is `archive.generation.max(planned_generation(..))`, and the applied
+cursor advances to the same value.
+
+**The fixture could not see it.** In the published archive as it stands, the
+header generation and owner 3's newest patch are both 3, so a reconcile
+returning either looked right — the existing assertion passed against the bug.
+Making it visible needed a different archive SHAPE, not another assertion about
+the same one: raising the header's fence to 99, above every owner-3 patch, then
+asserting the reconcile reports 99 and explicitly `notEqual` to the
+owner-filtered value. Perturbing the implementation back to the old return now
+fails that assertion.
+
+This is the §19 pattern from the other side. Five tests earlier in this lane
+could not fail because they were written from what the implementation does. This
+one could not fail because the FIXTURE could not distinguish the right answer
+from the wrong one — the assertion was fine. A test needs an input that
+separates the hypotheses, not only a correct expectation.

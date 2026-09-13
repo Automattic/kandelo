@@ -1572,7 +1572,12 @@ mod wasm {
         Ok(ptr)
     }
 
-    fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
+    fn set_format_impl(
+        pointer_width: u32,
+        fixed_prefix_size: u32,
+        archive_control_addr: usize,
+        table_owner: u32,
+    ) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
         if abi::wpk_fork_linked_chunk_header_size(pointer_width as u8).is_none() {
             return Err(Errno::EINVAL);
@@ -1611,15 +1616,22 @@ mod wasm {
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
         HOST_EXCEPTION_OWNER.store(u32::MAX, Ordering::Relaxed);
         RESUME_CATALOG_LEN.store(0, Ordering::Relaxed);
-        // The dylink table archive resets for the same COW reason as the
-        // catalogs above, but with a worse failure mode if it did not: a child
+        // The dylink archive coordinates reset for the same COW reason as the
+        // catalogs above, but with a worse failure mode if they did not: a child
         // inheriting the parent's APPLIED generation would decide it is already
         // coherent and skip writes its own table never received. That is a
         // silent wrong answer rather than an errno, so the reset matters more
         // here than anywhere else in this block.
-        for word in &TABLE_ARCHIVE {
-            word.store(0, Ordering::Relaxed);
-        }
+        //
+        // Re-seeded, not just cleared, and this is why the coordinates are
+        // arguments to THIS call rather than to an entry of their own: a
+        // borrowed fork child does not use its own channel's control block, it
+        // uses its OWNER's, so the address is not derivable inside the module
+        // and has to arrive with the rest of the per-worker setup.
+        ARCHIVE_CONTROL.store(archive_control_addr, Ordering::Relaxed);
+        ARCHIVE_OWNER.store(table_owner, Ordering::Relaxed);
+        ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
+        ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
         FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
         Ok(())
@@ -4139,8 +4151,13 @@ mod wasm {
     /// module's `kandelo.wpk_fork.linked_frames` descriptor) before any
     /// `fm_begin_unwind`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_format(pointer_width: u32, fixed_prefix_size: u32) {
-        match set_format_impl(pointer_width, fixed_prefix_size) {
+    pub extern "C" fn fm_set_format(
+        pointer_width: u32,
+        fixed_prefix_size: u32,
+        archive_control_addr: usize,
+        table_owner: u32,
+    ) {
+        match set_format_impl(pointer_width, fixed_prefix_size, archive_control_addr, table_owner) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -5605,35 +5622,59 @@ mod wasm {
     // `crates/dylink` owns the protocol; `fork_codec::dylink_table_plan` decides
     // what a reconcile must write; this applies it. See census §32 and §34.
 
-    /// The published loader archive this worker reconciles against:
-    /// `[head, owner, generation_low, generation_high]`.
+    /// Byte offset of the archive HEAD slot below the dlopen control address,
+    /// by guest pointer width.
     ///
-    /// Seeded by the host because the archive is the dynamic linker's, not the
-    /// fork module's: it is not reachable from the fork module-state arena, and
-    /// the guest's own `table_generation_addr` import is the address of a FENCE
-    /// rather than of the archive (census §45).
-    static TABLE_ARCHIVE: [AtomicU32; 4] = [
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-        AtomicU32::new(0),
-    ];
+    /// DUPLICATED from `host/src/worker-main.ts` (`DLOPEN_HEAD_OFFSET_WASM32` /
+    /// `_WASM64`), which is the source of truth for this host-private control
+    /// block. The duplication is deliberate: these are not ABI constants and
+    /// putting them in the generated ABI surface would make a host-private
+    /// layout part of the versioned contract.
+    /// `host/test/fork-module-control-block.test.ts` fails if the copies drift.
+    const DLOPEN_HEAD_OFFSET_WASM32: usize = 12;
+    const DLOPEN_HEAD_OFFSET_WASM64: usize = 24;
 
-    /// Point this worker at the published loader archive it reconciles against.
+    /// This worker's dlopen control-block address, or 0 for a worker with no
+    /// archive at all -- which a reconcile reports as generation 0 rather than
+    /// as an error. `AtomicUsize`, not `AtomicU32`: this is a guest ADDRESS, and
+    /// truncating it would silently point a wasm64 worker at the wrong block.
+    static ARCHIVE_CONTROL: AtomicUsize = AtomicUsize::new(0);
+    /// The physical table whose patches this worker applies. Per worker rather
+    /// than per activation, because the module writes exactly one table: the
+    /// `__indirect_function_table` it imports.
+    static ARCHIVE_OWNER: AtomicU32 = AtomicU32::new(0);
+    /// The generation this worker has applied, low and high halves.
+    static ARCHIVE_APPLIED: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+    /// Read the published archive head out of the control block.
     ///
-    /// Called once per worker before any reconcile. A head of 0 means "no
-    /// archive published yet", which a reconcile reports as generation 0 rather
-    /// than as an error — a worker whose process has never published is
-    /// coherent by definition.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_table_archive(head: usize, owner: u32) {
-        let Ok(head) = u32::try_from(head) else {
-            set_err(Errno::EINVAL);
-            return;
+    /// The head is stored at a fixed negative offset from the control address,
+    /// so no host call is needed to learn it -- only the control address, which
+    /// arrives once with the rest of the per-worker format seed.
+    fn archive_head() -> Result<u64, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        if control == 0 {
+            return Ok(0);
+        }
+        let width = format()?.pointer_width;
+        let offset = match width {
+            4 => DLOPEN_HEAD_OFFSET_WASM32,
+            8 => DLOPEN_HEAD_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
         };
-        TABLE_ARCHIVE[0].store(head, Ordering::Relaxed);
-        TABLE_ARCHIVE[1].store(owner, Ordering::Relaxed);
-        set_ok();
+        let slot = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        let end = slot.checked_add(usize::from(width)).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds-checked above, and the module shares the guest's
+        // linear memory, so `slot` is a readable address in it.
+        Ok(unsafe {
+            match width {
+                4 => u64::from((slot as *const u32).read_unaligned()),
+                _ => (slot as *const u64).read_unaligned(),
+            }
+        })
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_table_reconcile() -> i64`.
@@ -5646,10 +5687,16 @@ mod wasm {
     /// yet. `-1` on failure, with the reason in `fm_last_errno`.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_table_reconcile() -> i64 {
-        let head = TABLE_ARCHIVE[0].load(Ordering::Relaxed);
-        let owner = TABLE_ARCHIVE[1].load(Ordering::Relaxed);
-        let applied = (u64::from(TABLE_ARCHIVE[3].load(Ordering::Relaxed)) << 32)
-            | u64::from(TABLE_ARCHIVE[2].load(Ordering::Relaxed));
+        let head = match archive_head() {
+            Ok(head) => head,
+            Err(errno) => {
+                set_err(errno);
+                return -1;
+            }
+        };
+        let owner = ARCHIVE_OWNER.load(Ordering::Relaxed);
+        let applied = (u64::from(ARCHIVE_APPLIED[1].load(Ordering::Relaxed)) << 32)
+            | u64::from(ARCHIVE_APPLIED[0].load(Ordering::Relaxed));
         if head == 0 {
             // Nothing published yet: coherent by definition.
             set_ok();
@@ -5659,7 +5706,7 @@ mod wasm {
             let pointer_width = format()?.pointer_width;
             let archive = fork_codec::dylink_archive::decode_dylink_archive(
                 &GuestArchiveBytes,
-                u64::from(head),
+                head,
                 pointer_width,
             )?;
             let steps = fork_codec::dylink_table_plan::plan_table_patches(
@@ -5667,10 +5714,21 @@ mod wasm {
                 owner,
                 applied,
             )?;
-            let reached = fork_codec::dylink_table_plan::planned_generation(
-                &archive.table_patches,
-                owner,
-                applied,
+            // The generation this worker has REACHED is the snapshot's, not the
+            // highest one its own owner appears in. The guest caches whatever
+            // this returns and compares it against the shared fence on the next
+            // table access: returning the owner-filtered generation would leave
+            // the cached value permanently below the fence whenever some OTHER
+            // owner published last, and the guard would then re-enter on every
+            // single table access forever. Applying every patch for this owner
+            // up to `archive.generation` is exactly what makes the worker
+            // coherent with that snapshot, which is what the fence names.
+            let reached = archive.generation.max(
+                fork_codec::dylink_table_plan::planned_generation(
+                    &archive.table_patches,
+                    owner,
+                    applied,
+                ),
             );
             for step in &steps {
                 let slot = if step.clear {
@@ -5684,8 +5742,8 @@ mod wasm {
         })();
         match reconciled {
             Ok(reached) => {
-                TABLE_ARCHIVE[2].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
-                TABLE_ARCHIVE[3].store((reached >> 32) as u32, Ordering::Relaxed);
+                ARCHIVE_APPLIED[0].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
+                ARCHIVE_APPLIED[1].store((reached >> 32) as u32, Ordering::Relaxed);
                 set_ok();
                 reached as i64
             }

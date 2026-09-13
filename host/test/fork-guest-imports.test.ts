@@ -1,0 +1,145 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  WPK_FORK_REQUIRED_IMPORTS,
+  WPK_FORK_REQUIRED_TABLE_IMPORTS,
+} from "../src/generated/abi";
+import {
+  buildForkGuestImports,
+  FORK_GUEST_HOST_FLOOR_NAMES,
+  type ForkGuestHostFloor,
+} from "../src/fork-guest-imports";
+
+/** A floor whose members exist but are never meant to be called here. */
+function stubFloor(): ForkGuestHostFloor {
+  const floor: Record<string, unknown> = {};
+  for (const name of FORK_GUEST_HOST_FLOOR_NAMES) {
+    floor[name] = () => {
+      throw new Error(`${name} was called by a binding test`);
+    };
+  }
+  return floor as unknown as ForkGuestHostFloor;
+}
+
+/** Module exports covering everything the floor does not. */
+function stubModuleExports(): Record<string, unknown> {
+  const exports: Record<string, unknown> = {};
+  const floorNames = new Set<string>(FORK_GUEST_HOST_FLOOR_NAMES);
+  for (const required of WPK_FORK_REQUIRED_IMPORTS) {
+    if (required.module !== "env" || floorNames.has(required.name)) continue;
+    exports[required.name] = () => undefined;
+  }
+  return exports;
+}
+
+const envImports = WPK_FORK_REQUIRED_IMPORTS.filter((i) => i.module === "env");
+
+/** The tables the contract requires, which every successful build must carry. */
+function requiredTables(): Record<string, unknown> {
+  const tables: Record<string, unknown> = {};
+  for (const table of WPK_FORK_REQUIRED_TABLE_IMPORTS) {
+    // The wire contract spells the funcref element type `funcref`; the JS
+    // Table constructor spells the same type `anyfunc`.
+    tables[table.name] = new WebAssembly.Table({
+      element: (table.element === "funcref" ? "anyfunc" : table.element) as "anyfunc",
+      initial: table.minimum,
+    });
+  }
+  return tables;
+}
+
+describe("fork guest imports", () => {
+  it("binds every import the generated contract requires", () => {
+    const env = buildForkGuestImports({
+      moduleExports: stubModuleExports(),
+      floor: stubFloor(),
+      extras: requiredTables(),
+    });
+    // Driven off the same table the binder reads, so a contract change cannot
+    // pass here by being absent from both.
+    expect(envImports.length).toBeGreaterThan(0);
+    for (const required of envImports) {
+      expect(typeof env[required.name], required.name).toBe("function");
+    }
+  });
+
+  it("names EVERY unbound import, not just the first", () => {
+    const exports = stubModuleExports();
+    const names = Object.keys(exports).slice(0, 3);
+    expect(names.length).toBe(3);
+    for (const name of names) delete exports[name];
+    let message = "";
+    try {
+      buildForkGuestImports({
+        moduleExports: exports,
+        floor: stubFloor(),
+        extras: requiredTables(),
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    // A binder that threw on the first gap would mention one name and send the
+    // caller round the loop twice more to discover the other two.
+    for (const name of names) expect(message).toContain(name);
+    expect(message).toContain("3 fork import(s)");
+  });
+
+  it("prefers the fork module over the host floor", () => {
+    // The floor is a fallback, not an override. If a host implementation won,
+    // an entry the module had taken over would keep running in TypeScript and
+    // the surface budget would never see the reduction.
+    const moduleImpl = () => 7;
+    const env = buildForkGuestImports({
+      moduleExports: {
+        ...stubModuleExports(),
+        __wpk_fork_ref_encode_funcref: moduleImpl,
+      },
+      floor: stubFloor(),
+      extras: requiredTables(),
+    });
+    expect(env.__wpk_fork_ref_encode_funcref).toBe(moduleImpl);
+  });
+
+  it("passes non-function imports through untouched", () => {
+    const table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
+    const env = buildForkGuestImports({
+      moduleExports: stubModuleExports(),
+      floor: stubFloor(),
+      extras: { ...requiredTables(), __wpk_fork_resume_table: table },
+    });
+    expect(env.__wpk_fork_resume_table).toBe(table);
+  });
+
+  it("refuses a build that is missing a required table", () => {
+    // Without this the omission surfaces at instantiation as a LinkError about
+    // a type mismatch, which names neither the import nor who should supply it.
+    const tables = requiredTables();
+    const dropped = Object.keys(tables)[0]!;
+    delete tables[dropped];
+    expect(() =>
+      buildForkGuestImports({
+        moduleExports: stubModuleExports(),
+        floor: stubFloor(),
+        extras: tables,
+      }),
+    ).toThrow(dropped);
+  });
+
+  it("keeps the floor exactly as large as the module's unserved set", () => {
+    // The floor list and the fork module's coverage are two descriptions of one
+    // split. If the module starts serving an entry and the floor keeps its
+    // implementation, the host keeps running TypeScript nobody needs -- and
+    // `forkGuestImportsUnserved` in docs/surface-budget.json would disagree with
+    // this file. That is the drift this pins.
+    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(8);
+    expect([...FORK_GUEST_HOST_FLOOR_NAMES]).toEqual(
+      [...FORK_GUEST_HOST_FLOOR_NAMES].sort(),
+    );
+    for (const name of FORK_GUEST_HOST_FLOOR_NAMES) {
+      expect(
+        envImports.some((i) => i.name === name),
+        `${name} must be a real required import`,
+      ).toBe(true);
+    }
+  });
+});

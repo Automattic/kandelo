@@ -1433,21 +1433,37 @@ fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
     let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
     let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
     let funcref = ValType::Ref(RefType::FUNCREF);
+    // A 64-bit table indexes with `i64`, and Rust declared the placeholder with
+    // `u32` slots because a slot ordinal is a small number on both widths. So
+    // widen here, per table: on wasm64 the two tables are indexed with `i64`
+    // even though the values passed are the same ordinals. Without this the
+    // emitted module fails validation with "expected i64, found i32" -- which
+    // is exactly how this was caught, by the injector's own validator on the
+    // wasm64 build.
+    let indirect_is_64 = module.tables.get(indirect).table64;
+    let catalog_is_64 = module.tables.get(catalog).table64;
 
     module
         .replace_imported_func(import_fn, |(body, args)| {
             let dest = args[0];
             let catalog_slot = args[1];
             let clear = args[2];
-            body.local_get(dest)
-                .local_get(clear)
+            body.local_get(dest);
+            if indirect_is_64 {
+                body.unop(UnaryOp::I64ExtendUI32);
+            }
+            body.local_get(clear)
                 .if_else(
                     Some(funcref),
                     |then| {
                         then.ref_null(RefType::FUNCREF);
                     },
                     |els| {
-                        els.local_get(catalog_slot).table_get(catalog);
+                        els.local_get(catalog_slot);
+                        if catalog_is_64 {
+                            els.unop(UnaryOp::I64ExtendUI32);
+                        }
+                        els.table_get(catalog);
                     },
                 )
                 .table_set(indirect);

@@ -219,7 +219,12 @@ export function instantiateForkModule(
   // GC-hierarchy values, and `any` and `extern` are disjoint roots, so the
   // wrong element type is rejected at instantiation.
   const emptyTable = (element: "anyfunc" | "anyref"): WebAssembly.Table =>
-    new WebAssembly.Table({ element, initial: 0 });
+    // The cast is at a TYPING boundary, not a capability one: every engine
+    // Kandelo runs on accepts an `anyref` table, but lib.dom still declares
+    // `TableKind` as `"anyfunc" | "externref"` -- it predates the GC proposal.
+    // Widening it here rather than in a global augmentation keeps the stale
+    // declaration visible at the one place that has to work around it.
+    new WebAssembly.Table({ element: element as "anyfunc", initial: 0 });
   const functionCatalog = emptyTable("anyfunc");
   const driveTable = emptyTable("anyfunc");
   const staticRootCatalog = emptyTable("anyref");

@@ -1338,15 +1338,13 @@ function i31Minter() {
     }
   };
 
-  // Every reconcile reads the worker's pointer width, so the once-per-worker
-  // format seed comes first -- the same order a real host uses. It also RESETS
-  // the archive, which is what a COW child depends on.
-  x.fm_set_format(4, 0);
-  assert.equal(lastErrno(), 0, "wasm32 is a valid pointer width");
+  // The archive coordinates arrive with the once-per-worker format seed, which
+  // also RESETS them -- what a COW child depends on. A control address of 0 is
+  // a worker with no dlopen archive at all.
+  x.fm_set_format(4, 0, 0, 0);
+  assert.equal(lastErrno(), 0, "wasm32 with no archive is a valid seed");
 
   // An unpublished worker is coherent by definition: generation 0, no error.
-  x.fm_set_table_archive(0, 0);
-  assert.equal(lastErrno(), 0, "seeding an empty archive is not an error");
   assert.equal(
     Number(x.__wpk_fork_module_state_table_reconcile()),
     0,
@@ -1355,10 +1353,18 @@ function i31Minter() {
   assert.equal(lastErrno(), 0, "and reports no error");
   assert.equal(added(), 0, "an unpublished reconcile writes nothing");
 
-  // The real archive. The fixture's owner is whichever one carries patches;
-  // owner 3 is the one `plans_against_the_real_published_archive` exercises.
-  x.fm_set_table_archive(FIXTURE_HEAD, 3);
-  assert.equal(lastErrno(), 0, "seeding the published head succeeds");
+  // The real archive. The module reads the head out of the control block at a
+  // fixed negative offset, so the harness writes the head there and passes the
+  // control address -- exactly what a host does. Owner 3 is the one
+  // `plans_against_the_real_published_archive` exercises.
+  const CONTROL = 64 * 1024;
+  const DLOPEN_HEAD_OFFSET_WASM32 = 12;
+  const seedControl = (head) => {
+    dv().setUint32(CONTROL - DLOPEN_HEAD_OFFSET_WASM32, head, true);
+    x.fm_set_format(4, 0, CONTROL, 3);
+    assert.equal(lastErrno(), 0, "seeding the control address succeeds");
+  };
+  seedControl(FIXTURE_HEAD);
   const reached = Number(x.__wpk_fork_module_state_table_reconcile());
   assert.equal(lastErrno(), 0, `reconcile errno=${lastErrno()}`);
   assert.ok(reached > 0, `a published archive reaches a real generation (${reached})`);
@@ -1387,8 +1393,31 @@ function i31Minter() {
   assert.equal(again, reached, "a second reconcile reaches the same generation");
   assert.equal(added(), 0, "and writes nothing, because nothing moved");
 
+  // The generation a reconcile REPORTS is the snapshot's, not the highest one
+  // this worker's own owner appears in.
+  //
+  // This needs its own archive shape to mean anything: in the fixture as
+  // published, the header generation and owner 3's newest patch are the SAME
+  // number, so a reconcile that returned either would look right. Raising the
+  // header's fence above every owner-3 patch separates them. It matters because
+  // the guest caches this value and compares it against the fence on the next
+  // table access -- report below the fence and the guard re-enters on every
+  // access, forever.
+  const HEADER_GENERATION_OFFSET = 40;
+  dv().setBigUint64(FIXTURE_HEAD + HEADER_GENERATION_OFFSET, 99n, true);
+  seedControl(FIXTURE_HEAD);
+  const fenced = Number(x.__wpk_fork_module_state_table_reconcile());
+  assert.equal(lastErrno(), 0, `fenced reconcile errno=${lastErrno()}`);
+  assert.equal(fenced, 99, "the reconcile reports the snapshot generation");
+  assert.notEqual(fenced, reached, "and that is NOT the owner-filtered value");
+  dv().setBigUint64(FIXTURE_HEAD + HEADER_GENERATION_OFFSET, BigInt(reached), true);
+  // Re-seeding reset the applied cursor, so that reconcile legitimately rewrote
+  // the table. Put it back to the placement state before the refusal cases,
+  // which measure that a REFUSED reconcile writes nothing.
+  resetIndirect();
+
   // A head that names no header is a malformed archive, not an empty one.
-  x.fm_set_table_archive(FIXTURE_HEAD + 8, 3);
+  seedControl(FIXTURE_HEAD + 8);
   assert.equal(
     Number(x.__wpk_fork_module_state_table_reconcile()),
     -1,
@@ -1399,7 +1428,7 @@ function i31Minter() {
 
   // A head past the end of memory is refused by the bounds check rather than
   // read out of the guest's memory.
-  x.fm_set_table_archive(memory.buffer.byteLength - 4, 3);
+  seedControl(memory.buffer.byteLength - 4);
   assert.equal(
     Number(x.__wpk_fork_module_state_table_reconcile()),
     -1,

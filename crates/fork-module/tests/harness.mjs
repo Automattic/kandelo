@@ -263,10 +263,10 @@ console.log("  ok: SENTINEL SURVIVED instantiation — module data/BSS/stack are
 // region). Success (errno 0) proves the instance is genuinely executable — the
 // call reaches real fork-module code, which only works if the start function
 // already relocated its passive data into the reserved region.
-x.fm_set_format(4, 128);
+x.fm_set_format(4, 128, 0, 0);
 assert.equal(errno(), 0, "fm_set_format errno");
 assertSentinelIntact("after fm_set_format");
-console.log("  ok: fm_set_format(4, 128) succeeded; SENTINEL SURVIVED a coordinator write");
+console.log("  ok: fm_set_format(4, 128, 0, 0) succeeded; SENTINEL SURVIVED a coordinator write");
 
 // -- M2: fm_externref_handle traps outside a seeded reference replay ----------
 //
