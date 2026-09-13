@@ -789,6 +789,20 @@ implied: `classify_additive_object_by_key` already existed and served
   skips — and "0 survived" from a spec whose trials no longer apply is a number
   that looks like information and is not.
 
+  **A SECOND ROT MODE, measured 2026-09-13: a trial can rot without its quoted
+  code changing at all.** Adding an error path to `sm_load_image` gave
+  `release_image();` a second occurrence in the same function. The trial quoting
+  it had not moved, and still read perfectly correctly — it simply stopped
+  identifying anything in particular. `--validate` reports it in the words that
+  say why: *an anchor matching several places reads identically to one that was
+  never applied.*
+
+  So the trigger is not only "the quoted code moved". It is **"the file grew
+  another copy of it"**, which no amount of reading the trial reveals and which
+  an author editing a DIFFERENT part of the function will never think to check.
+  Run the validator after touching a file any spec quotes — not after touching
+  the quoted LINES.
+
 - **H-11 — a mutant can be detected by HANGING, and an unbounded harness waits
   forever.** Measured 2026-09-12: a trial making the image export ignore its
   offset and always restart left a test's drain loop with no end condition. The
