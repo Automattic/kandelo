@@ -1141,10 +1141,28 @@ declares all eight in `pub mod dirent`; this host maps four and answers
 `DT_UNKNOWN` for everything else, which POSIX allows and which is why only
 four are named. They ask `shared` now.
 
-The other literals in that file are NOT this: channel status words and
-fork-coordination phases are host-side protocol with no shared declaration to
-drift from, and `KERNEL_MEMORY_MIN_PAGES` is this host's own choice. Seven
-transcriptions found, seven removed, and the rest checked rather than assumed.
+**That claim was wrong about the channel status words, and the error is the
+one this document is about.** The first pass said they were "host-side
+protocol with no shared declaration to drift from" — having checked
+`crates/shared`, found nothing, and reported about ALL sources. They are a
+mirror of `WASM_POSIX_CHANNEL_STATUS_*` in `libc/glue/abi_constants.h`, and
+the code's own comment says so. Checking one source and concluding about every
+source is the narrower-question error, committed while cataloguing it.
+
+**Their comment also claimed a pin that did not exist.** It read "pinned here
+against that generated header" — present tense, describing an intention.
+Nothing read that header. A reader checking this host against its own comment
+would have found them agreeing and learned nothing, which is exactly the
+`__heap_base` failure recorded above, in a different file. They cannot be
+asked of `wasm_posix_shared`, because it does not declare them — only the host
+and the guest glue touch the status word — so the header is the single source
+and a test reads it now.
+
+The remaining literals in that file are not transcriptions:
+fork-coordination phases are host-side protocol, and
+`KERNEL_MEMORY_MIN_PAGES` is this host's own sizing choice. Seven
+transcriptions removed, three more constants pinned to the source they mirror,
+and one claim of mine corrected.
 
 The dirent capacity was verified against the kernel before it was derived:
 `WasmDirent { d_ino: u64, d_type: u32, d_namlen: u32 }` is 16 bytes, the

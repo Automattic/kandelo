@@ -93,6 +93,13 @@
       "scope_end": "\n/// Size of the",
       "find": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;",
       "replace": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_BLK;"
+    },
+    {
+      "name": "L3: a channel status word drifts from the generated header",
+      "scope": "// --- Channel status word values",
+      "scope_end": "\n// --- Process memory layout",
+      "find": "const STATUS_PENDING: u32 = 1;",
+      "replace": "const STATUS_PENDING: u32 = 7;"
     }
   ]
 }

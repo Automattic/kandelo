@@ -95,8 +95,8 @@ use wasm_posix_shared::{ChannelStatus, Syscall};
 // the guest glue writes/reads. These are not exported by the shared Rust crate
 // because only the host and the guest glue (never the kernel) touch the status
 // word, so they are pinned here against that generated header.
-/// Documents the full status-word alphabet the guest cycles through; the pump
-/// only ever reads PENDING and writes COMPLETE.
+/// Three of the five values the header declares (`ERROR` and `TEARDOWN` are
+/// the others); the pump only ever reads PENDING and writes COMPLETE.
 #[allow(dead_code)]
 const STATUS_IDLE: u32 = 0;
 const STATUS_PENDING: u32 = 1;
@@ -2824,6 +2824,54 @@ mod proc_bytes_tests {
              this function -- the scan is broken, not the host clean",
             body.len(),
         );
+    }
+
+    /// The channel status words really are pinned against the header.
+    ///
+    /// Their comment says they are "pinned here against that generated
+    /// header" -- `WASM_POSIX_CHANNEL_STATUS_*` in
+    /// `libc/glue/abi_constants.h`, which the guest glue writes and reads.
+    /// Nothing pinned them. The comment described an intention in the
+    /// present tense, which is the same thing as a citation that has rotted:
+    /// a reader checking this host against its own comment would find them
+    /// agreeing and learn nothing.
+    ///
+    /// These cannot be asked of `wasm_posix_shared` -- it does not declare
+    /// them, because only the host and the guest glue touch the status word.
+    /// The header is the single source, so the test reads it.
+    #[test]
+    fn the_channel_status_words_match_the_generated_header() {
+        let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../libc/glue/abi_constants.h");
+        let text = std::fs::read_to_string(&header).unwrap_or_else(|error| {
+            panic!(
+                "{}: {error}. These constants mirror that header and have no \
+                 other source; if it moved, this host's status words are \
+                 unanchored.",
+                header.display(),
+            )
+        });
+
+        for (name, expected) in [
+            ("WASM_POSIX_CHANNEL_STATUS_IDLE", STATUS_IDLE),
+            ("WASM_POSIX_CHANNEL_STATUS_PENDING", STATUS_PENDING),
+            ("WASM_POSIX_CHANNEL_STATUS_COMPLETE", STATUS_COMPLETE),
+        ] {
+            let needle = format!("#define {name} ");
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(&needle))
+                .unwrap_or_else(|| panic!("{name} is gone from the header"));
+            let value: u32 = line[needle.len()..]
+                .trim()
+                .trim_end_matches('u')
+                .parse()
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                value, expected,
+                "{name} is {value} in the header and {expected} here",
+            );
+        }
     }
 
     /// The three record sizes still equal what they were written as.
