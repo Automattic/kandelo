@@ -674,6 +674,25 @@ mod tests {
     }
 
     #[test]
+    fn a_descriptors_digest_must_be_a_digest_even_when_its_reference_agrees() {
+        // The subtle case. The reference is checked against the descriptor's
+        // OWN digest field, so a malformed digest that the reference also
+        // carries is internally consistent — `sha256:not-a-digest` binds
+        // `not-a-digest` perfectly well. Only a check on the FORM of the digest
+        // refuses it, and every other fixture here carries a well-formed one.
+        let mut malformed = descriptor("not-a-digest");
+        malformed["reference"] = serde_json::json!("oci://example.invalid/meta@sha256:not-a-digest");
+        let value = with_input(serde_json::json!({
+            "kind": "package-output",
+            "descriptor": malformed,
+        }));
+        assert!(
+            check(&value).is_err(),
+            "a consistent pair of malformed values is still malformed",
+        );
+    }
+
+    #[test]
     fn a_descriptor_path_and_an_input_path_are_both_shape_checked() {
         for patch in [
             serde_json::json!({ "path": "files/../../escape" }),
