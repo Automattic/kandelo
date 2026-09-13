@@ -2522,3 +2522,31 @@ the pattern yet.
 
 **Not started, and not worked around.** Everything else about the increment is
 designed and the planner is already proven against the real published archive.
+
+## §46 — Category A, third probe: `fork-reference-segments` is not a deletion either
+
+§13 filed `fork-reference-segments` as work the module now does, on the grounds
+that `fm_decode_reference_graph` exists. Reading its call sites says the decode
+is still load-bearing, and the code says so itself.
+
+`worker-main.ts:4548` states the split exactly: the
+`decodedChildReferences` decode "no longer drives the host-side STRUCTURAL
+consumer — the static-root catalog mirror seeding reads node kinds +
+coordinates from the module's `fm_decoded_*` accessors now — but it is still
+held for the reconstruction WIRING it feeds (`ForkEarlyChildReferenceProvider`
++ the continuation `attachChild`)".
+
+So half of it HAS migrated, and the half that has not is passed as a value to
+three sites: the early-reference provider's `transaction`, and both
+`attachChild` / `attachBorrowedChild` calls.
+
+**That is three of three.** `fork-early-reference-provider` (filed dead, 13 live
+sites), `fork-anyref-transit` (filed replaced, carries the `Table.grow` sizing
+`CLAUDE.md` names as floor), and now this. §19 already downgraded that triage
+from a plan to a hypothesis list; this is the third piece of evidence and the
+pattern is consistent — **a module whose ALGORITHM moved into Rust usually still
+has WIRING on the host side, and the name does not distinguish them.**
+
+The useful consequence is that Category A is not a list of deletions. Each entry
+is a question of how much of its surface migrated, answerable only by reading
+its call sites, and several will shrink rather than disappear.
