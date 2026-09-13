@@ -1946,3 +1946,83 @@ must hold.
 
 **Not yet wired.** The five guest imports stay unserved until the shim and the
 archive address land; this is the half that can be proven without them.
+
+## §35 — The module side of reconcile: built, proven, then REVERTED by its own ratchet
+
+`fm_table_plan_build` / `fm_table_plan_step` / `fm_table_plan_generation` were
+written, built and proven end to end, then reverted. The reason is worth more
+than the code, which is preserved at `/tmp/lane-f-wip/*.patch` and reconstructible
+from this section.
+
+### What it did, and that it worked
+
+The module decoded the published archive IN PLACE out of guest memory —
+`ArchiveBytes` implemented over the guest's own linear memory, which the module
+shares — resolved each `(activation, ordinal)` to a merged catalog slot through
+the `func_catalog_base` map it already keeps, and stored a bounded plan.
+
+Proven from the capture harness by writing
+`testdata/dylink-archive-wasm32.bin` into guest memory at offset 0. The
+fixture's single patch is owner 3, activation 7, runs
+`[(2, null), (3, (activation 8, ordinal 4))]`, and the harness asserted that
+exact shape: five steps, clear flags `[1,1,0,0,0]`, consecutive destinations,
+each written slot resolving to `base 0 + ordinal 4`.
+
+### Why it was reverted
+
+`forkModuleEntriesWithoutProductionCaller` went 27 -> 30 and its ceiling is 27.
+The three exports have no production caller because the shim that would call
+them does not exist yet.
+
+**That is the ratchet working, not obstructing.** It says: do not land API ahead
+of its consumer. Completing the increment properly needs the injected shim that
+walks the plan AND a seeding export for the archive head and owner — which would
+trip `forkModuleInjectorHelpers` and `forkModuleHostDriveEntries` in turn. Three
+coordinated ceiling movements, with intricate walrus control flow, is not
+something to rush; this session has already found five tests that could not fail,
+and every one came from moving faster than the verification.
+
+So the next increment is the whole reconcile — planner exports, shim, seeding —
+landed together, or none of it.
+
+### A host-facing finding worth keeping
+
+While it was in the tree, the module's `dylink.0` tablesize went **0 -> 2**: the
+archive decoder's trait object erases to a `call_indirect`, so the module needs
+real `__indirect_function_table` slots. Both V8 harnesses hardcoded `initial: 0`
+and failed instantiation with "table import is smaller than initial 2".
+
+**`host/src/fork-module-instance.ts` and `crates/host-native` both passed
+unchanged** — they already size that table from `dylink.0` rather than assuming
+zero. The placement module written earlier this session absorbed a change that
+broke two hardcoded callers, which is the best evidence so far that reading
+`dylink.0` rather than guessing was right.
+
+The harnesses should be fixed to read the size from `dylink.0` when the
+increment returns; hardcoding zero is a latent break for any future module that
+needs an indirect call.
+
+### Two more tests that could not fail, found before the revert
+
+**The harness planned owner 0.** The fixture's only patch is owner 3, so every
+assertion ran against an empty plan, and "a refused build leaves no readable
+plan" passed because there was no plan either way.
+
+**The unregistered-activation refusal was unreachable.** `catalog_slot` treats a
+missing base as 0 when NO base is seeded (the single-activation worker, where 0
+is correct by definition) and as `EINVAL` when others are seeded (a graph naming
+an activation nobody registered). The harness never seeded a base, so the second
+arm could not run and deleting it changed nothing.
+
+Both fixed before the revert, and both are in the preserved patch. They are the
+fourth and fifth such tests this session, all from the same cause: the assertion
+written from what the implementation does rather than from the property that
+must hold.
+
+### One perturbation that is honestly not a guard
+
+Resolving a catalog slot for CLEAR steps too changes nothing observable: the
+planner sets activation and ordinal to 0 for a clear, so the slot resolves to 0
+either way and the shim ignores it. The short-circuit is a robustness property,
+not a behaviour the fixture can exercise. Recorded rather than given a contrived
+test.
