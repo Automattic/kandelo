@@ -4746,7 +4746,7 @@ flag word is the image's own statement about itself, written from the writer's
 view of the tree rather than from the section a reader parses, which is what
 makes the disagreement detectable at all.
 
-**GAP 21 — a deferred file re-exported as an empty one. OPEN, and PINNED.** A
+**GAP 21 — a deferred file re-exported as an empty one. CLOSED 2026-09-13.** A
 standalone URL-backed lazy file loaded from a legacy image keeps its real size
 and its deferred flag in the live tree — and is re-exported as a zero-length
 ORDINARY file. `KLZY` carries no fetch description, so the export has nothing to
@@ -4763,13 +4763,56 @@ while the defect stands and turns RED the moment it is fixed. That is deliberate
 over two alternatives: weakening the assertion would bless the loss, and
 deleting the test would remove its only witness.
 
-**The fix is a refusal at EXPORT, not at load.** Loading such an image is fine —
+**The fix was NOT the refusal planned here, and the correction is the useful
+part of this entry.** What follows was the plan; read on for why it was wrong.
+
+**~~The fix is a refusal at EXPORT, not at load.~~** Loading such an image is fine —
 the host has the URLs in its own JSON and the kernel serves the bytes — so a
 load-time refusal would break BOOTING a legacy image to fix a defect that only
 appears when re-exporting one. The lossy operation is the export, and that is
 where the refusal belongs. **It is sequenced after the base rebuild**, because
 the refusal makes any derived build from a legacy base fail, and the rebuild is
 what gives derived builds a base that can be re-exported faithfully.
+
+**WHAT ACTUALLY FIXED IT, and the mis-sequencing it undid.** The refusal above
+would have broken every derived build from a legacy base until the shipped
+images were rebuilt, which is why it was sequenced behind that rebuild — and the
+rebuild is blocked on the maintainer, so gap 21 sat blocked with it.
+
+It did not need to. **V5's own description already named this as the limit V4
+left**: *"an image carrying no SDEF still loses its URL-backed files on export,
+because there is nothing to retain from one."* Reading that reframed the fix.
+`KLZY` carries `(ino, size, archive_id, source_path)` and **no URL** — the URL
+always lived in host-side JSON the kernel does not read. So re-emitting such a
+file as a deferred record with an EMPTY payload is **exactly as informative as
+the input was**. The objection that stood in the way — that this would dress a
+file up as "a deferred file pointing nowhere" — does not apply, because the
+input pointed nowhere too.
+
+What was actually missing was a discriminator. A file that IS deferred but whose
+image said nothing about its bytes, and a base file the host WALKED, both
+arrived with an empty payload and were indistinguishable. Inodes now carry
+`deferred_base`; the loader sets it whether or not a description came with the
+file; the export and the enumeration both ask DEFERREDNESS rather than the
+presence of a description. The walked-base-file case is unchanged and still
+guarded by `a_base_file_with_no_description_still_exports_as_a_stub`.
+
+**Two existing trials encoded the old decision and were re-aimed rather than
+deleted**, because both rules they express survive the change: everything must
+not become a stub, and a walked base file must still not become a deferred
+record.
+
+**The `it.fails` pin is what caught it.** It turned red the moment the defect
+went, which is the whole reason it was written that way instead of by weakening
+an assertion — a weakened assertion would have stayed green through both the
+defect and the fix.
+
+**And the process lesson, which is the one to carry.** I had this recorded as
+blocked on a maintainer decision, and it was blocked only by MY choice of fix.
+**Re-reading the lane's own description of the same limit is what unblocked it**
+— the plan already contained the reframing, in a section I had read before and
+not connected. When something is blocked, check whether it is blocked by the
+problem or by the solution you picked.
 
 **The lesson worth carrying past these two.** Three gaps in a row (19, 20, 21)
 are all the same sentence: **an absence means something, and the two ends of a
