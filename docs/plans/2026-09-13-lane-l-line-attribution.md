@@ -981,6 +981,54 @@ was not visible from the corpus: two hosts get different guarantees from the
 same sentence, which is exactly why the sentence must exist once rather than
 be re-derived by whoever is writing the second host.
 
+### L-D3 — the transcription argument, with a SIGBUS under it
+
+Following L4's one-rule thread into `crates/host-native` found the strongest
+evidence this lane has produced, and it is not a line count.
+
+`copy_launch_entry` carries a doc comment naming the TypeScript it was
+transcribed from: *"mirroring the TS host's `copyEntry` contract
+(`host/src/worker-main.ts`)"*. It reproduced that contract's every errno —
+`EINVAL` for a bad index, the zero-capacity length query, `ERANGE` for a
+capacity below the entry, `EFAULT` for a null destination. **What it did not
+reproduce was the one step that is not an errno.** The TypeScript version calls
+`checkedWasmMemoryRange` and converts a refusal into `-EFAULT`; the Rust copy
+went straight to `copy_nonoverlapping`.
+
+So a `buf_ptr` that is a legal wasm32 address but past the end of this memory
+was a raw write into unmapped pages. **Reverting the fix and running the test
+does not produce a wrong errno — it kills the process with SIGBUS, "access to
+undefined memory".** The JavaScript host answers `-EFAULT` for the same input.
+
+**This is L-D1's class, one level up.** L-D1 was filed about the scratch
+allocator; the same shape was sitting at a launch-path import, in a function
+that cites its source and copied everything a reader would think to check. A
+transcription preserves the visible contract and silently drops the guarantees
+the source host's runtime supplied for free — which is the case for stating a
+rule once and consuming it twice, made concrete.
+
+Fixed: the site asks `checked_shared_range` and returns `-EFAULT`, the errno
+its own cited contract already specifies. No design decision was needed,
+because the answer was written in the comment above the bug.
+
+**The rest of the class is measured and NOT fixed.** `checked_shared_range`
+has six call sites covering three functions — `KernelScratch::write` and both
+sides of `proc_copy_in`/`proc_copy_out`, the cross-memory process copies.
+Against that, `guest.rs` has **75 raw `write_bytes` call sites**. A
+conservative classifier — it only recognises a closure signature written on
+one line — attributes **at least nine** of those to a pointer that arrived as
+an import parameter, and spot-reading shows more that it missed. The other
+sixty-odd write to addresses the host computed itself, mostly channel offsets
+derived from a layout the kernel placed.
+
+Those remaining sites are reported rather than changed, and the reason is
+narrow: this one had its errno decided for it by the contract it cites, and
+the others do not. What `host_fpathconf` should return when the kernel hands
+it an unmappable `value_ptr` is a design decision about the host↔kernel
+contract, taken once and applied consistently, and that belongs to the
+maintainer rather than to a lane that arrived here by following a different
+thread.
+
 ## A hole in the ratchet itself, found by the same question
 
 Asking "what would a WRONG version do" of the surface budget — the instrument

@@ -2567,6 +2567,20 @@ agreeing. **This is the V1 case (share code across hosts) in evidence rather
 than principle**, and it is stronger than the line-count case V4 makes. See
 `docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
+**L-D3, found by following that thread into the native host, and FIXED.**
+`copy_launch_entry` cites the TS `copyEntry` it was transcribed from and
+reproduced its every errno — EINVAL, the zero-capacity query, ERANGE, EFAULT
+for a null pointer — while dropping the one step that is not an errno: the TS
+version proves the range and returns `-EFAULT`. A legal wasm32 `buf_ptr` past
+the end of the memory went to `copy_nonoverlapping`. Reverting the fix does not
+give a wrong errno; it kills the process with **SIGBUS**. The JavaScript host
+answers `-EFAULT`. Fixed at the site, with a test that fails without it.
+**The rest of the class is measured and left alone**: `checked_shared_range`
+has 6 call sites covering 3 functions, against 75 raw `write_bytes` sites, at
+least 9 of which take an import-supplied pointer. Those need one decision about
+what the host↔kernel contract returns for an unmappable pointer, applied
+consistently — a maintainer's call, not a lane's.
+
 **"One rule" was then checked against the tree, not just the corpora.** The
 corpora pin the rule's answers; they cannot say whether some other site works
 it out for itself. L3: every `controlBase`/`channelOffset`/`brkBase`/`mmapBase`

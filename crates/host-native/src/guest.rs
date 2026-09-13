@@ -2629,6 +2629,53 @@ mod proc_bytes_tests {
             );
         }
     }
+    /// A launch entry is refused at a pointer past the end of the memory,
+    /// with the errno the TypeScript host gives.
+    ///
+    /// `copy_launch_entry`'s own doc comment says it mirrors `copyEntry` in
+    /// `host/src/worker-main.ts`, and it reproduced that contract's every
+    /// errno -- EINVAL for a bad index, the zero-capacity length query,
+    /// ERANGE for a capacity below the entry, EFAULT for a null destination.
+    /// What it did not reproduce was the step that is not an errno: the TS
+    /// version proves the range before copying and converts a refusal into
+    /// EFAULT. Without that, a `buf_ptr` inside wasm32 but past the end of
+    /// this memory reached `copy_nonoverlapping`.
+    ///
+    /// This is the transcription argument at its sharpest: the comment names
+    /// the source, the visible contract came across intact, and the
+    /// guarantee that was implicit in the source host went missing.
+    #[test]
+    fn a_launch_entry_past_the_end_of_memory_is_efault_not_a_raw_copy() {
+        let (_engine, guest, _kernel) = mems();
+        let entries = vec![b"PATH=/usr/bin".to_vec()];
+        let len = entries[0].len() as u32;
+
+        // In bounds: the copy happens and the length comes back.
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 256, len), len as i32);
+        assert_eq!(unsafe { read_bytes(&guest, 256, len as usize) }, entries[0]);
+
+        // One page memory, so this address is a legal wasm32 pointer that
+        // this memory does not own. The engine would refuse it in the
+        // JavaScript host; here only the rule does.
+        assert_eq!(
+            copy_launch_entry(&guest, &entries, 0, PAGE as u64, len),
+            -libc_errno::EFAULT,
+        );
+
+        // Straddling the end is refused too, which a "pointer < length"
+        // check would have allowed.
+        assert_eq!(
+            copy_launch_entry(&guest, &entries, 0, (PAGE - 4) as u64, len),
+            -libc_errno::EFAULT,
+        );
+
+        // The errnos that were already right stay right.
+        assert_eq!(copy_launch_entry(&guest, &entries, 7, 256, len), -libc_errno::EINVAL);
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 256, 0), len as i32);
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 256, len - 1), -libc_errno::ERANGE);
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 0, len), -libc_errno::EFAULT);
+    }
+
     /// A scratch pointer may not travel to a kernel export without the
     /// capacity of the SAME region beside it.
     ///
@@ -13690,7 +13737,16 @@ fn copy_launch_entry(
     if buf_ptr == 0 {
         return -libc_errno::EFAULT;
     }
-    unsafe { write_bytes(guest_mem, buf_ptr as usize, entry) };
+    // The TS `copyEntry` this mirrors proves the range before it copies and
+    // turns a refusal into `-EFAULT`. The transcription kept every errno and
+    // dropped the proof, so a `buf_ptr` inside wasm32 but past the end of
+    // this memory reached `copy_nonoverlapping` -- undefined behaviour here,
+    // where the JavaScript host gets a `RangeError` from the engine and
+    // answers `-EFAULT`. Same rule, same errno, now on both sides.
+    let Some(offset) = checked_shared_range(guest_mem, buf_ptr, len as u32) else {
+        return -libc_errno::EFAULT;
+    };
+    unsafe { write_bytes(guest_mem, offset, entry) };
     len as i32
 }
 
