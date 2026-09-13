@@ -97,9 +97,26 @@ fn require_value(
 }
 
 fn extract_tree(options: &Options, limits: Limits) -> Result<(), String> {
-    let label = options.archive.display().to_string();
-    let bytes = fs::read(&options.archive)
-        .map_err(|e| format!("archive-extract-tree: read {label}: {e}"))?;
+    // `--archive -` reads the archive from stdin.
+    //
+    // Not a convenience. The caller this replaces sometimes holds its archive
+    // as BYTES with no path — it reads them out of a VFS image — and the
+    // alternative is writing a quarter-gigabyte to a temporary file so a
+    // subprocess can read it straight back. A pipe is the same bytes without
+    // the round trip, and without a temporary file to leak or to leave
+    // world-readable.
+    let from_stdin = options.archive.as_os_str() == "-";
+    let label = if from_stdin {
+        "<stdin>".to_string()
+    } else {
+        options.archive.display().to_string()
+    };
+    let bytes = if from_stdin {
+        read_bounded(std::io::stdin(), limits.compressed_bytes, &label)?
+    } else {
+        fs::read(&options.archive)
+            .map_err(|e| format!("archive-extract-tree: read {label}: {e}"))?
+    };
     let len = bytes.len() as u64;
     if len == 0 || len > limits.compressed_bytes {
         return Err(format!("{label} is outside the accepted size bound"));
@@ -280,6 +297,29 @@ fn extract_tar<R: Read>(
         set_mode(&destination, entry.mode)?;
     }
     Ok(())
+}
+
+/// Read a stream, refusing one that exceeds `limit`.
+///
+/// Bounded AS it is read, not after. Reading a hostile stream to the end and
+/// then measuring it is the bound arriving too late to matter — the memory is
+/// already spent by the time the number is known.
+///
+/// A separate function so it can be tested with a slice standing in for the
+/// pipe: a test cannot hand this process a stdin, and a bound no test can
+/// reach is a bound nobody has checked.
+fn read_bounded(reader: impl Read, limit: u64, label: &str) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    // One byte past the limit, so exceeding it is observable rather than
+    // silently truncated into something that parses.
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut buffer)
+        .map_err(|e| format!("archive-extract-tree: read {label}: {e}"))?;
+    if buffer.len() as u64 > limit {
+        return Err(format!("{label} is outside the accepted size bound"));
+    }
+    Ok(buffer)
 }
 
 /// Create the staging directory at 0o700, as the TypeScript does.
@@ -636,6 +676,27 @@ mod tests {
         .expect("extracted");
         let mode = fs::metadata(scratch.out()).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o700, "the staging tree is the extractor's own");
+    }
+
+    #[test]
+    fn a_bounded_read_refuses_a_stream_that_exceeds_its_limit() {
+        // A slice stands in for the pipe. Reading to the end and then measuring
+        // would spend the memory before learning the number, so the refusal has
+        // to happen at the read.
+        assert_eq!(read_bounded(&b"abcd"[..], 10, "fixture").expect("under"), b"abcd");
+        assert_eq!(read_bounded(&b"abcd"[..], 4, "fixture").expect("exact"), b"abcd");
+        assert!(read_bounded(&b"abcde"[..], 4, "fixture").is_err(), "one byte over");
+    }
+
+    #[test]
+    fn a_dash_names_stdin_and_is_not_a_file_called_dash() {
+        // The parse, not the read: a test cannot hand this process a stdin,
+        // but it can pin that `-` is recognised rather than opened as a path.
+        // Proven end to end by piping a zip through the real verb; pinned here
+        // so a refactor cannot quietly turn `-` back into a filename.
+        let args = ["--archive", "-", "--out", "o"].map(str::to_string).to_vec();
+        let parsed = parse_args(args).expect("parsed");
+        assert_eq!(parsed.archive.as_os_str(), "-");
     }
 
     #[test]

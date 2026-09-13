@@ -87,6 +87,13 @@
       "scope_end": "\n}\n",
       "find": "        fs::set_permissions(out, fs::Permissions::from_mode(0o700))",
       "replace": "        fs::set_permissions(out, fs::Permissions::from_mode(0o755))"
+    },
+    {
+      "name": "a bounded read is unbounded",
+      "scope": "fn read_bounded(",
+      "scope_end": "\n}\n",
+      "find": "        .take(limit.saturating_add(1))",
+      "replace": "        .take(u64::MAX)"
     }
   ]
 }
