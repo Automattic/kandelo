@@ -72,6 +72,49 @@ nobody reads the merge as "lane Y is done".
 > registration, no new surface) and `source-rootfs-shell-overlay` (deferred-entry
 > enumeration, one entry point). Those take 11 → 9.
 
+> **UPDATE 2026-09-13 (later) — the seal landed, and so did most of the
+> supply-chain port. The maintainer settled two questions that shaped both.**
+>
+> **Decisions taken** (both recorded in the master plan with their reasoning):
+>
+> * **No legacy seal verification.** Shipped bases are rebuilt through the new
+>   producer — `abi.md`'s own rule, that a stale artifact fails loudly rather
+>   than being shimmed. This is what let the seal's canonical form be a byte
+>   layout defined once in Rust, instead of JavaScript's `JSON.stringify`
+>   reproduced in a `no_std` crate.
+> * **The supply-chain port starts before the constructor repoints**, because
+>   those repoints are exactly what waits on the rebuild.
+>
+> **What landed since the note above:**
+>
+> * **The seal**: payload codec and cohort verifier in `crates/sffs-module`,
+>   with `sha2` linked and **the zero-import contract still holding** —
+>   confirmed by the build's own `wasm-objdump` check, not asserted.
+> * **Supply-chain target 1 is cut over.** `xtask archive-extract-tree` reads
+>   three formats BY MAGIC, takes stdin, refuses traversal and links, bounds
+>   both paths, and stages at `0o700`. `staged-product-inputs.ts` lost its tar
+>   reader, zip reader, zstd path, traversal rules and writes: 1,975 → 1,816
+>   lines.
+> * **Supply-chain target 2's validation is complete** and **two real gaps are
+>   closed in production**: a manifest path containing a backslash (which the
+>   TypeScript SPLIT on, though on POSIX it is one legal filename) and one
+>   containing a NUL (which it never checked for at all) are now refused.
+> * **H-13, H-14 and H-15** recorded in the master plan's hazard list.
+>
+> **What a merge gets:** every one of those, plus ~222 mutation trials across
+> twelve specs. The module surface is still **20 entry points**, unchanged
+> across three capability additions, because each was paid for by retiring a
+> door rather than raising a ceiling.
+>
+> **Still the single gate:** the five seal-blocked builders need their base
+> images rebuilt through the new producer. That is a build to run, not code to
+> write, and it takes importers from 10 to roughly 4.
+>
+> **Not yet done, and honestly named:** both port targets still CARRY their
+> TypeScript validators. The Rust decides first, so the gaps are closed — but
+> the duplicates remain, and deleting them is what turns "the Rust decides"
+> into "the TypeScript no longer can".
+
 ## What is finished: lane V's V4
 
 **An image the Rust export writes is now one the kernel can load back**, with
