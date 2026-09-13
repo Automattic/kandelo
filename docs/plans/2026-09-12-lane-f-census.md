@@ -3511,3 +3511,57 @@ before every commit and READ ITS VERDICT LINES; I ran it, printed the verdict,
 and wired the exit code to the wrong thing. Redirect to a file and check
 `vitest`'s own exit status instead -- which is how the correcting commit was
 verified.
+
+## §68 — Consolidated state, measured rather than accumulated
+
+After a long run of changes, every suite re-run from scratch and gated on its
+own exit status (§67's lesson applied):
+
+| Suite | Result |
+|---|---|
+| `fork-codec` | 468 passed |
+| `fork-module-inject` | 4 passed |
+| `host-native` (full) | 62 passed, 4 ignored |
+| V8 capture harness | all assertions passed |
+| V8 co-residency harness | ALL PASS |
+| surface budget | 95 passed |
+| authored thin layer | 22 passed |
+| restored floor suites | 67 passed |
+| externref host parity | 6 passed |
+| `host/src` typecheck | 113 errors (parent: 25) |
+| full `host` suite | 3365 passed, 115 failed, 206 files failing to load |
+
+The 115 failures and 206 unloadable files are NOT all this lane's: the bulk are
+package-system, rootfs and spawn suites that need artifacts this worktree has not
+provisioned, and `./run.sh local-build` cannot complete here for a known
+unrelated reason (four packages fail on the `coreutils-docs` cold-cache blocker).
+What IS this lane's is the remaining dangling cluster in `worker-main.ts`.
+
+**Lane movement this run**, all banked in `docs/surface-budget.json`:
+
+| Surface | Start | Now |
+|---|---|---|
+| `forkGuestImportsUnserved` | 9 | 6 |
+| `forkModuleEntriesWithoutProductionCaller` | 27 | 21 |
+| `forkModuleHostImports` | 5 | 5 (unchanged, as required) |
+| `host/src` tsc errors | 144 | 113 |
+| full host suite passing | 2517 | 3365 |
+
+**Defects found in my own work**, for the record, because four of six were in
+code I had already committed and called green:
+
+1. The reconcile reported the owner-filtered generation, not the snapshot's --
+   would have re-entered the guard on every table access forever.
+2. A wasm64 validation failure (`expected i64, found i32`) hidden for three
+   builds by a `grep "^error"` that missed `Error:`.
+3. A `usize` -> `u32` truncation that would point a wasm64 worker at the wrong
+   control block.
+4. A dangling-import typecheck error in my own instantiation layer.
+5. A guard (`forkUnwindTagFrom`) no test covered, found by perturbing it.
+6. A commit that landed with the budget RED, because the gate was `... | grep
+   && commit` and grep succeeds when it FINDS the failure.
+
+The pattern in 1, 2 and 6 is the same: the check existed and reported, and
+something between the check and the conclusion inverted it. A fixture that could
+not tell two answers apart; a filter that matched the wrong case; an exit status
+taken from the wrong process. None was a missing test.
