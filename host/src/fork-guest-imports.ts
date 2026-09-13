@@ -71,6 +71,21 @@ export interface ForkGuestImportOptions {
    * nobody supplied.
    */
   readonly extras?: Record<string, unknown>;
+  /**
+   * The instrumented guest artifact, checked for completeness when supplied.
+   *
+   * The generated table says what to BIND; this says what the artifact actually
+   * needs, and the two are not the same question. `WPK_FORK_REQUIRED_IMPORTS`
+   * lists functions and `WPK_FORK_REQUIRED_TABLE_IMPORTS` lists tables -- so an
+   * imported GLOBAL was covered by neither, and `fork-instrument` emits one
+   * (`__wpk_fork_module_state_table_generation_addr`, the shared generation
+   * fence address). Nothing checked it. A guest missing it fails inside
+   * `WebAssembly.instantiate` with a type complaint that names no import.
+   *
+   * Asking the artifact closes that gap and every future one of its shape: an
+   * import kind nobody thought to add a list for is still an import this sees.
+   */
+  readonly guestModule?: WebAssembly.Module;
   readonly label?: string;
 }
 
@@ -108,6 +123,18 @@ export function buildForkGuestImports(
     if (table.module !== "env") continue;
     if (!(env[table.name] instanceof WebAssembly.Table)) {
       missing.push(`${table.name} (a ${table.element} table)`);
+    }
+  }
+  // The artifact's own account of what it needs, which catches the kinds the
+  // two generated lists do not enumerate. Reported with the kind, because
+  // "nobody bound this global" and "nobody bound this function" are fixed in
+  // different places.
+  if (options.guestModule !== undefined) {
+    for (const required of WebAssembly.Module.imports(options.guestModule)) {
+      if (required.module !== "env") continue;
+      if (required.name in env) continue;
+      if (missing.some((entry) => entry.startsWith(required.name))) continue;
+      missing.push(`${required.name} (a ${required.kind})`);
     }
   }
   if (missing.length > 0) {

@@ -156,6 +156,115 @@ describe("fork guest imports", () => {
   });
 });
 
+describe("the artifact's own import list", () => {
+  /**
+   * A module importing `env.<name>` of a kind the generated lists do not
+   * enumerate.
+   *
+   * Hand-assembled rather than built from a fixture because the point is the
+   * KIND: `fork-instrument` emits an imported GLOBAL
+   * (`__wpk_fork_module_state_table_generation_addr`, the shared generation
+   * fence address), and neither `WPK_FORK_REQUIRED_IMPORTS` (functions) nor
+   * `WPK_FORK_REQUIRED_TABLE_IMPORTS` (tables) covers a global.
+   */
+  function moduleImportingGlobal(
+    name: string,
+    fromModule = "env",
+  ): WebAssembly.Module {
+    const bytes: number[] = [
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ];
+    const moduleBytes = [...fromModule].map((c) => c.charCodeAt(0));
+    const nameBytes = [...name].map((c) => c.charCodeAt(0));
+    const entry = [
+      moduleBytes.length, ...moduleBytes,
+      nameBytes.length, ...nameBytes,
+      0x03,       // global
+      0x7f, 0x00, // i32, immutable
+    ];
+    bytes.push(0x02, entry.length + 1, 0x01, ...entry);
+    return new WebAssembly.Module(new Uint8Array(bytes));
+  }
+
+  it("reports an imported global that no generated list covers", () => {
+    const name = "__wpk_fork_module_state_table_generation_addr";
+    let message = "";
+    try {
+      buildForkGuestImports({
+        moduleExports: stubModuleExports(),
+        floor: stubFloor(),
+        extras: requiredTables(),
+        guestModule: moduleImportingGlobal(name),
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    // Without the artifact check this build SUCCEEDS -- every function and
+    // table is bound -- and the failure surfaces later inside
+    // `WebAssembly.instantiate` as a type complaint naming no import.
+    expect(message).toContain(name);
+    expect(message).toContain("global");
+  });
+
+  it("accepts the same artifact once the global is supplied", () => {
+    const name = "__wpk_fork_module_state_table_generation_addr";
+    const env = buildForkGuestImports({
+      moduleExports: stubModuleExports(),
+      floor: stubFloor(),
+      extras: {
+        ...requiredTables(),
+        [name]: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
+      },
+      guestModule: moduleImportingGlobal(name),
+    });
+    expect(env[name]).toBeInstanceOf(WebAssembly.Global);
+  });
+
+  it("does not report an import twice when both checks see it", () => {
+    // A missing TABLE is caught by the generated list and by the artifact. It
+    // must appear once: a caller counting names to size the gap would
+    // otherwise read one missing import as two.
+    const tables = requiredTables();
+    const [first] = Object.keys(tables);
+    delete tables[first!];
+    let message = "";
+    try {
+      buildForkGuestImports({
+        moduleExports: stubModuleExports(),
+        floor: stubFloor(),
+        extras: tables,
+        guestModule: moduleImportingGlobal(first!),
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message.split(first!).length - 1).toBe(1);
+  });
+
+  it("ignores imports from modules this binder does not own", () => {
+    // A fork-instrumented guest also imports from `wasi_snapshot_preview1`,
+    // `GOT.mem` and others, all bound by different machinery. Reporting those
+    // would make this layer fail on every real artifact while claiming they are
+    // fork imports nobody supplied.
+    const env = buildForkGuestImports({
+      moduleExports: stubModuleExports(),
+      floor: stubFloor(),
+      extras: requiredTables(),
+      guestModule: moduleImportingGlobal("clock_time_get", "wasi_snapshot_preview1"),
+    });
+    expect(env.clock_time_get).toBeUndefined();
+  });
+
+  it("is optional, so a caller without the artifact still binds", () => {
+    const env = buildForkGuestImports({
+      moduleExports: stubModuleExports(),
+      floor: stubFloor(),
+      extras: requiredTables(),
+    });
+    expect(Object.keys(env).length).toBeGreaterThan(0);
+  });
+});
+
 describe("activation frame trampolines", () => {
   /** A stand-in for the module's emitted table. */
   function table(activations: number): WebAssembly.Table {

@@ -4559,3 +4559,66 @@ The corrected version is perturbed seven ways, and P1 is the shipped defect
 itself -- "first-registered wins" now fails two tests. A perturbation that
 reproduces a bug you actually shipped is the most convincing kind, because you
 know for certain the code once looked like that.
+
+## §96 — The gap-free binder had a gap, and it was a whole import KIND
+
+`buildForkGuestImports` was built to be complete by construction: it iterates
+`WPK_FORK_REQUIRED_IMPORTS`, binds each name, and names every one it cannot.
+Section 50 called that "complete by construction", and it is -- for functions.
+
+`WPK_FORK_REQUIRED_TABLE_IMPORTS` was added for the second kind. Nobody added a
+third, and `fork-instrument` emits one:
+
+```rust
+let (table_generation_addr, _) = module.add_import_global(   // module_state.rs:921
+```
+
+An imported GLOBAL -- the address of the shared table-generation fence. Not a
+function, not a table, so covered by neither list and checked by nothing. A host
+that failed to bind it got a `LinkError` from `WebAssembly.instantiate` naming a
+type mismatch and no import, which is the exact failure mode this layer was
+written to eliminate.
+
+I found it while listing what `buildForkActivationStateImports` supplies, in
+preparation for deleting it. Thirty-four names; thirty-two are functions the
+module now serves; one is the transit TABLE; one is this global. If I had done
+the replacement without listing them, the global would have silently stopped
+being bound and the failure would have arrived as a type error in a fork
+somewhere downstream.
+
+The fix is not a third list. A third list has the same defect as the first two
+-- it enumerates what someone remembered. The binder now takes the guest
+artifact and asks IT:
+
+```ts
+for (const required of WebAssembly.Module.imports(options.guestModule)) {
+  if (required.module !== "env") continue;
+  if (required.name in env) continue;
+  if (missing.some((entry) => entry.startsWith(required.name))) continue;
+  missing.push(`${required.name} (a ${required.kind})`);
+}
+```
+
+The generated tables still say what to BIND; the artifact says what is NEEDED.
+Those are different questions and only the second one can be complete. This is
+the same move `fork-module-instance.ts` already made for the module's own host
+obligation -- the two directions of the contract were being held to different
+standards, which section 15 noted and I then repeated one layer up.
+
+## §97 — A filter that was load-bearing and untested
+
+Perturbing the `required.module !== "env"` filter away did not fail: every
+fixture in the test file imports from `env`, so the filter never mattered to
+them. In production it matters a great deal -- a fork-instrumented guest also
+imports from `wasi_snapshot_preview1` and `GOT.mem`, all bound by other
+machinery, and reporting those would make this layer reject every real artifact
+while claiming they were fork imports nobody supplied.
+
+So the guard was real and my test set was incomplete, which is the opposite of
+section 88's case (where the guard was real but the TEST could not see it) and
+of section 95's (where the CODE was wrong). Three different diagnoses from the
+same symptom -- a perturbation that stays green -- and the only way to tell them
+apart is to work out what the perturbed code would now do in production.
+
+The new case pins it: a module importing `clock_time_get` from
+`wasi_snapshot_preview1` must not be reported. Dropping the filter now fails.
