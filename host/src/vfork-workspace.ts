@@ -1,6 +1,16 @@
-import type {
-  ForkBorrowedReplayPrefixRequest,
-} from "./fork-process-continuation";
+/**
+ * One activation's prefix request against a borrowed vfork workspace.
+ *
+ * Declared here rather than imported from the continuation orchestrator: this
+ * file needs the SHAPE of a request, not the 1471-line coordinator that produces
+ * them, and that coordinator is replay orchestration the co-resident module now
+ * owns. Importing it to borrow three fields would keep the whole thing alive.
+ */
+export interface ForkBorrowedReplayPrefixRequest {
+  readonly activationId: number;
+  readonly byteLength: number;
+  readonly alignment: number;
+}
 import type { WasmGuestPointer } from "./wasm-guest-pointer";
 
 export interface BorrowedVforkWorkspaceLayout {

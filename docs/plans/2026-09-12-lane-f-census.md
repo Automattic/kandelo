@@ -3311,3 +3311,68 @@ then perturbed to accept a non-tag -- and the suite still passed, because
 nothing exercised it. Tests were added before the commit, not after: the module
 exporting no tag, a non-tag where the tag is required, and the transport being
 told apart from a program exception. All three perturbations now fail.
+
+## §64 — The attic sweep took nine files by filename that were never the target
+
+`49d7f6574` moved every `host/src/fork-*.ts` and `vfork-*.ts` aside. That glob
+was the fastest way to set the fork TypeScript down, and it was too broad: it
+took files that are not fork capture/replay logic at all.
+
+Found by asking, for each attic file, who still imports it and whether it has a
+test. The ones with consumers OUTSIDE `worker-main.ts` are the tell -- capture
+logic is called from the fork path, while lifecycle and transport are called from
+the kernel side.
+
+| Restored | Lines | Live consumers | Why it is not capture logic |
+|---|---|---|---|
+| `fork-replay-gate` | 169 | process-lifecycle, both kernel entries, worker-main, 3 tests | A one-i32 SharedArrayBuffer handshake for when a child's replay may commit |
+| `vfork-lifetime` | 285 | process-lifecycle, both kernel entries, kernel-worker | vfork process generations and lifetime phases |
+| `fork-reference-broker` | 521 | process-lifecycle + 2 | The externref broker the Rust-first contract names as floor |
+| `fork-externref-import-mailbox` | 1165 | process-lifecycle, worker-protocol | Cross-worker host-import transport |
+| `fork-worker-import-exceptions` | 796 | the mailbox chain | Host-import failure transport |
+| `fork-worker-exception-capability` | 95 | the mailbox chain | Capability gate for the above |
+| `fork-host-import-runtime` | 428 | process-lifecycle, both kernel entries, worker-protocol, worker-main | The host-import runtime both sides of the fork boundary share |
+| `fork-continuation` | 160 | 6, incl. 45 test files transitively | ABI constant re-exports, an anchor scalar read/write, a custom-section reader |
+| `vfork-workspace` | 158 | worker-main + 10 test files | A bump allocator over a host-supplied region |
+
+**What it cost to have them in the attic:** 38 test files could not load and 843
+passing assertions were dormant. The full host suite went from 246 failed files /
+2517 passing tests to 208 / 3360. `host/src` tsc errors went 142 to 117.
+
+**Two files were deliberately NOT restored, for opposite reasons.**
+
+`fork-module-state` (3825 lines) is a second implementation of the KFMS wire
+format the module owns (`fork_codec::module_state`, `module_state_records`,
+`module_state_writer`). Restoring it would reinstate the two-decoder drift the
+campaign exists to remove -- `dylink_archive`'s own doc names that failure mode:
+"two readers of the same wire format drift, and the drift surfaces as a fork
+child silently disagreeing with its parent."
+
+`fork-externref-process-owner` (220 lines) is floor in its ROLE -- it is the
+kernel-side externref grant owner -- but it reads the arena through
+`fork-module-state` and scans the reference wire with
+`scanSegmentedForkReferenceExternrefHandles`, a function deleted earlier in this
+lane as superseded. So it needs a PORT, not a restore. It was restored, measured,
+and returned to the attic once that was clear, rather than left in place with
+two dangling imports looking finished.
+
+`vfork-workspace` needed only a TYPE from the 1471-line continuation
+orchestrator. Three fields are declared locally instead, with a comment saying
+why: importing the coordinator to borrow a shape would keep the whole thing
+alive.
+
+**The budget had to split, and this is the same split the maintainer already
+ordered once.** `forkPlatformTypeScript` measured `host/src/fork-*.ts` by glob
+with a ceiling of 450. That was right while the directory was empty of
+everything else and wrong the moment nine files came back: 4003 against 450, with
+newly authored code and restored floor counted as one number. That is the
+population mixing the maintainer had `forkModuleEntryPoints` split for -- "it
+mixed four populations moving in opposite directions."
+
+So `forkPlatformTypeScript` is now the three files this lane authors, named
+rather than globbed (226 of 450), and `forkRestoredHostFloor` holds the restored
+files, BANKED at 3777 so it can only shrink. **Its target is parked equal to its
+ceiling on purpose: it is not mine to set.** Some of it should shrink -- 1165
+lines of externref mailbox is large for "floor" -- but inventing a number is
+exactly what the maintainer warned about, and the ratchet already works without
+one.

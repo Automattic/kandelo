@@ -186,9 +186,31 @@ const MEASURED: Record<string, () => number> = {
   // mixes a finished population with an empty one and cannot be read — the same
   // reason `forkModuleEntryPoints` was split into three.
   forkTypeScript: () => codeLineCount(["host/src/fork-module-*.ts"]),
+  // The thin layer this lane AUTHORS, listed file by file rather than globbed.
+  //
+  // A glob over `host/src/fork-*.ts` used to define this, which was right while
+  // every other fork file sat in the attic and wrong the moment any came back:
+  // it then measured newly written code and restored host floor as one number,
+  // which is the population mixing the maintainer had `forkModuleEntryPoints`
+  // split for. Naming the files keeps this surface about what it was set up to
+  // bound, and makes adding a file to it a visible decision.
   forkPlatformTypeScript: () =>
+    codeLineCount([
+      "host/src/fork-guest-imports.ts",
+      "host/src/fork-guest-host-floor.ts",
+      "host/src/fork-mechanism-trace.ts",
+    ]),
+  // Host floor restored from the attic: everything the `fork-*.ts` sweep took by
+  // FILENAME that turned out to be process lifecycle, cross-worker transport or
+  // memory placement rather than fork capture/replay logic.
+  forkRestoredHostFloor: () =>
     codeLineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]) -
-    codeLineCount(["host/src/fork-module-*.ts"]),
+    codeLineCount([
+      "host/src/fork-module-*.ts",
+      "host/src/fork-guest-imports.ts",
+      "host/src/fork-guest-host-floor.ts",
+      "host/src/fork-mechanism-trace.ts",
+    ]),
   workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
   sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),
   hostImportFunctions: () =>
