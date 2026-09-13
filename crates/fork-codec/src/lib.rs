@@ -43,6 +43,7 @@ pub mod catalogs;
 pub mod drive_plan;
 pub mod drive_plan_hints;
 pub mod dylink_archive;
+pub mod dylink_table_plan;
 pub mod exception_codec;
 pub mod gc_codec;
 pub mod imported_globals;

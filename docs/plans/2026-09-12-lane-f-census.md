@@ -1871,3 +1871,51 @@ Four are worth a decision rather than a default:
 Everything else falls into the two groups already measured: work the module now
 does, where the call site should be deleted (§13, as corrected by §19), and
 genuine floor (§23).
+
+## §34 — The reconcile planner, in Rust
+
+First piece of the mutation group, following §32's shape: `crates/dylink` keeps
+the protocol, the fork-module does the table access, and the decision about WHAT
+to write is one pure function rather than one per host.
+
+`crates/fork-codec/src/dylink_table_plan.rs` turns a published patch chain into
+a flat, ordered list of funcref table writes. It lives beside `drive_plan.rs`
+and uses the same split for the same reason: applying a patch means `table.set`
+on a funcref table, which Rust cannot emit, so Rust decides and an injected wasm
+shim writes.
+
+A `DylinkTablePatch` is run-length encoded — `length` consecutive slots set to a
+`(activation_id, ordinal)` catalog coordinate, or cleared to null. **That
+coordinate is the one the fork-module already resolves**: it imports
+`__wpk_fork_function_catalog` and `fm_funcref_ordinal` already maps a recipe to
+a merged catalog slot. Nothing new is needed to name a function.
+
+### What the planner refuses, and why each matters
+
+* **`>` not `>=` on the applied generation.** Re-applying the generation the
+  caller already holds would undo any newer LOCAL mutation made since.
+* **A disordered or repeating chain is refused, never sorted.** The order
+  records causality, and `crates/dylink`'s publication rule is that generations
+  strictly increase. Inventing an order would let two workers disagree about
+  what happened.
+* **A run past the table it describes is refused.** Silently truncating would
+  leave a replica partly updated and claiming a generation it had not reached.
+* **A null run CLEARS.** Writing catalog slot 0 instead would populate every
+  cleared slot with whichever function is first in the catalog — a plausible
+  bug with no symptom until something calls through it.
+* **Another owner's patches are skipped**, so a reconcile cannot cross owners.
+* **A plan beyond `MAX_PLAN_STEPS` is `E2BIG`**, because an unbounded chain
+  means the publisher is emitting history where a checkpoint was expected, and
+  applying millions of writes would turn a coherence bug into a hang.
+
+`planned_generation` is deliberately separate from the steps: the caller
+publishes it only AFTER the writes land, since storing it first would let a peer
+observe a generation whose entries are not there yet.
+
+Eight tests, and every guard above was perturbed until its own test failed —
+including the two silent ones, the `>=` skip and the null-run-as-slot-0, which
+are the failures that would otherwise surface as a child calling the wrong
+function.
+
+**Not yet wired.** The five guest imports stay unserved until the shim and the
+archive address land; this is the half that can be proven without them.
