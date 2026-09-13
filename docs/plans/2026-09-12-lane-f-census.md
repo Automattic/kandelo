@@ -2477,3 +2477,48 @@ hang.
 The honest sequence is to start these fresh rather than at the end of a long
 run: the design above is complete enough to pick up directly, and the branch is
 green, pushed and at a clean boundary.
+
+## §45 — The reconcile group needs ONE input the module cannot reach
+
+§34 landed the planner and §35 showed the module side works. Picking it up again
+with the placeholder-import pattern removes §35's blocker entirely:
+
+**The apply needs no loop in wasm and no new `fm_*` export.** Rust loops over
+the planned steps and calls a per-step placeholder — `table_apply(dest,
+catalog_slot, clear)` — which the injector rewrites into a local thunk doing one
+`table.get` from the function catalog and one `table.set` into the guest's
+indirect table, or a null store when clearing. Same shape as the three capture
+thunks. The guest-facing `__wpk_fork_module_state_table_reconcile` is a
+`__wpk_fork_*` export, so it touches no `fm_*` counter.
+
+**What still has no answer is where the archive head comes from.** The guest ABI
+is `reconcile() -> i64` with no arguments, and:
+
+* It is NOT in the fork module-state arena. `module_state.rs` has no dylink
+  reference at all; the loader archive and the fork arena are separate
+  structures.
+* `fm_restore_from_arena` / `fm_child_seed` carry a `module_state_root`, not an
+  archive head.
+* The guest's own `table_generation_addr` import is an ADDRESS OF A FENCE, not
+  of the archive.
+
+Three ways to supply it, each with a cost:
+
+1. **A new host-called seeding entry** (`fm_set_table_archive(head, owner)`).
+   Simplest, but it raises `forkModuleHostDriveEntries`, whose target is 5 — a
+   rise in a target-5 surface, which this lane treats as a design smell rather
+   than a budget need.
+2. **A module-state RECORD**, found with the `record_find` this module already
+   serves. No new entry and no ceiling movement — but no such record kind exists
+   and nothing writes one, so it means adding to the record-kind space, which is
+   ABI-adjacent.
+3. **A new guest or host import.** Grows the host obligation, which is the
+   campaign's primary measure.
+
+(2) looks best and is how the module-state mechanism is meant to be used — but
+choosing a record kind is a wire decision, and census §F1 already noted that
+`record_find` is declared by the guest and never called, so nothing establishes
+the pattern yet.
+
+**Not started, and not worked around.** Everything else about the increment is
+designed and the planner is already proven against the real published archive.
