@@ -2951,3 +2951,36 @@ could not fail because they were written from what the implementation does. This
 one could not fail because the FIXTURE could not distinguish the right answer
 from the wrong one — the assertion was fine. A test needs an input that
 separates the hypotheses, not only a correct expectation.
+
+## §55 — The append primitive §53 said was missing
+
+`fork_codec::dylink_archive::table_append` exists now: one function that plans
+the writes an appended KFJP record needs, as a sibling of `encode` and `walk`
+under `dylink_archive` for the reason those two are children — it reads the same
+field offsets the decoder reads, so the two cannot disagree about where a field
+lives.
+
+`plan_table_patch_append(archive, head, tail_address, record_address, patch)`
+returns the new record image, the previous tail's `next` pointer, the four
+header cursors that move, and — SEPARATELY — the generation to publish
+afterwards. The separation is the contract, not a convenience: a reader that saw
+a newer generation before the record it describes had landed would follow a
+`next` pointer into uninitialized memory. `crates/dylink`'s own publisher splits
+its header write around the generation fence for that reason, and this keeps the
+discipline on the incremental path.
+
+Five tests, and the one that matters applies the planned writes to the real
+fixture image and DECODES it again: the appended patch comes back with the right
+contents, every existing patch and module is unchanged, and
+`plan_table_patches` then hands a peer exactly the runs the new patch describes.
+Round-tripping through the decoder is what makes the offsets real; asserting on
+the bytes I wrote would only have confirmed I wrote what I meant to.
+
+Perturbed until each failed: accepting a generation that does not advance,
+accepting a `tail_address` that disagrees with the decoded chain (which would
+orphan the existing chain silently rather than erroring), publishing the
+generation as one of the writes, and leaving the header's patch count unchanged.
+
+What remains for the mutation group is the lock protocol from §52 — a CAS on the
+control block's lock word, plus `memory.atomic.wait32` / `notify` as injected
+thunks — and wiring `begin`/`commit`/`abort` onto it.
