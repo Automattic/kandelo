@@ -12,12 +12,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertStagedProductEnvironment,
   createRepositoryPathBundle,
   materializeRepositoryPathBundle,
   parseStagedProductInvocation,
+  materializeArchiveContents,
   readRepositoryPathBundle,
 } from "../../images/vfs/scripts/staged-product-inputs";
 
@@ -232,3 +234,61 @@ function sortJson(value: unknown): unknown {
       .map(([key, child]) => [key, sortJson(child)]),
   );
 }
+
+describe("archive extraction through the Rust extractor", () => {
+  function scratch(): string {
+    const dir = mkdtempSync(join(tmpdir(), "staged-archive-"));
+    cleanupDirectories.add(dir);
+    return dir;
+  }
+
+  /** A real gzipped tar, built by `tar(1)` rather than synthesised. */
+  function targz(files: Record<string, string>): Uint8Array {
+    const dir = scratch();
+    for (const [name, body] of Object.entries(files)) {
+      const path = join(dir, name);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, body);
+    }
+    const out = join(scratch(), "a.tgz");
+    // Entries named explicitly rather than `.`, because `tar -C dir .` writes
+    // them as `./bin/tool` and a `.` component is refused — by the Rust
+    // extractor and by the TypeScript it replaced, identically. That parity is
+    // deliberate and this fixture must not paper over it.
+    const result = spawnSync(
+      "tar",
+      ["-czf", out, "-C", dir, ...Object.keys(files)],
+      { encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    return new Uint8Array(readFileSync(out));
+  }
+
+  it("extracts an archive through the ported extractor", () => {
+    // The seam itself: bytes piped to a subprocess, a tree on the other side.
+    // The four tests above this one never reach `materializeExactArchive`, so
+    // without this the cutover would be "covered" by tests that do not run it.
+    const destination = join(scratch(), "out");
+    materializeArchiveContents(
+      targz({ "bin/tool": "tool bytes", "README": "readme" }),
+      destination,
+      "fixture archive",
+    );
+    expect(readFileSync(join(destination, "bin/tool"), "utf8")).toBe("tool bytes");
+    expect(readFileSync(join(destination, "README"), "utf8")).toBe("readme");
+  });
+
+  it("carries the extractor's own refusal back to the caller", () => {
+    // The extractor names which rule refused and for which member. Wrapping
+    // that in a generic failure would lose the only sentence saying what to
+    // fix, so the message is asserted and not merely the throw.
+    const destination = join(scratch(), "out");
+    expect(() =>
+      materializeArchiveContents(
+        new Uint8Array([0x00, 0x01, 0x02, 0x03]),
+        destination,
+        "fixture archive",
+      )
+    ).toThrow(/not a supported gzip\/zstd TAR or ZIP archive/);
+  });
+});
