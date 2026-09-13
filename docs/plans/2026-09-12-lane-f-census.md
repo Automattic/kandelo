@@ -2336,3 +2336,48 @@ Perturbations, and two of them trap rather than assert:
 `DRIVE_SLOTS_PER_ACTIVATION` are duplicated there. Both carry a comment saying
 which constant they must equal, and the wrong-slot perturbation above is what
 would catch drift. A better fix would be generating them; that is not done.
+
+## §42 — `capture_layout`, answered by asking the guest instead of remembering
+
+`__wpk_fork_ref_gc_capture_layout` is served by driving the guest's TYPE-TEST
+probe at a second capture drive slot (12).
+
+**The problem it avoided.** A layout is a per-OBJECT fact: two objects of one
+base type can be made by different constructors, and the fixture confirms
+derived layouts are real (`l6.base_layout_id == 3`, `l7.base_layout_id == 4`).
+So the witness trick that made provenance bounded does not apply here, and
+recording layout per object is exactly the unbounded storage problem of §20 in
+a new place.
+
+**What made it unnecessary.** The guest already exports
+`__wpk_fork_ref_gc_probe(slot) -> i64`, which reads the value from the anyref
+transit slot, `ref.test`s it against each dispatch layout, and returns
+`(type_ordinal << 32) | layout_id`, or 0 when nothing matches. The value is
+ALREADY staged when the guest asks which layout it is, so the module forwards
+the slot and unpacks the answer. **It keeps no map at all.**
+
+The caller's static `layout` argument is deliberately not trusted over the type
+test — the perturbation that returns it instead fails.
+
+0 is passed through rather than special-cased: it is the probe's own answer for
+a value this codec does not handle, and it is not a valid layout id, so a
+`gc_define` using it fails rather than defining against layout zero.
+
+### Perturbations
+
+* trust the caller's guess -> "the layout comes from the guest's type test"
+  fails
+* return the high half (type ordinal) instead of the layout -> same assertion
+  fails
+* aim the injector at drive slot 11 -> `RuntimeError: null function or function
+  signature mismatch`
+
+### A third hand-encoding caught by the assembler
+
+The probe stub's bytes were written by hand first, with the code-section length
+20 where the encoding requires 17. `wasm-tools` caught it, as it caught the
+`anyref` import probe earlier. Every stub in the harness is now assembled and
+the comment says so, because a wrong length does not fail loudly — it fails as
+a confusing instantiation error some distance from its cause.
+
+`forkGuestImportsUnserved` 11 -> 10, banked. Host obligation unchanged at 5.

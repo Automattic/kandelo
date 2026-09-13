@@ -80,8 +80,12 @@ const CAPTURE_WITNESS_THUNK_IMPORT: &str = "__wpk_fork_capture_witness";
 /// injector cannot link fork-codec, so the constant is duplicated and pinned by
 /// a test rather than left to drift.
 const DRIVE_SLOT_GC_ENCODE: i32 = 11;
+/// MUST equal `fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE`.
+const DRIVE_SLOT_GC_PROBE: i32 = 12;
+/// The capture-side probe placeholder, rewritten like the witness one.
+const CAPTURE_PROBE_THUNK_IMPORT: &str = "__wpk_fork_capture_probe";
 /// MUST equal `fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION`.
-const DRIVE_SLOTS_PER_ACTIVATION: i32 = 12;
+const DRIVE_SLOTS_PER_ACTIVATION: i32 = 13;
 /// The anyref transit slot a capture encode reads its value from.
 const CAPTURE_TRANSIT_SLOT: i32 = 0;
 /// The injected loop export the host calls to run a serialized plan.
@@ -982,6 +986,8 @@ fn main() -> Result<()> {
         .context("injecting __wpk_fork_ref_gc_provenance_ref")?;
     inject_capture_witness_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_witness into a thunk")?;
+    inject_capture_probe_thunk(&mut module)
+        .context("rewriting __wpk_fork_capture_probe into a thunk")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
@@ -1266,6 +1272,46 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
 /// could never encode itself.
 ///
 /// MUST run after `inject_gc_provenance_ref`, which creates the witness table.
+/// Rewrite `__wpk_fork_capture_probe(activation, slot)` into a local thunk that
+/// `call_indirect`s the guest's type-test probe.
+///
+/// Simpler than the witness thunk: the value is ALREADY in the transit slot
+/// when the guest asks which layout it is, so there is nothing to stage — just
+/// forward the slot and call through.
+fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != CAPTURE_PROBE_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        return Ok(());
+    };
+    let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
+    let probe_ty = module.types.add(&[ValType::I32], &[ValType::I64]);
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let activation = args[0];
+            let slot = args[1];
+            body.local_get(slot);
+            body.local_get(activation)
+                .i32_const(DRIVE_SLOTS_PER_ACTIVATION)
+                .binop(BinaryOp::I32Mul)
+                .i32_const(DRIVE_SLOT_GC_PROBE)
+                .binop(BinaryOp::I32Add);
+            body.instr(CallIndirect {
+                ty: probe_ty,
+                table: drive_table,
+            });
+        })
+        .with_context(|| format!("rewriting {CAPTURE_PROBE_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
 fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
     let import_fn = module.imports.iter().find_map(|import| {
         if import.module != IMPORT_MODULE || import.name != CAPTURE_WITNESS_THUNK_IMPORT {

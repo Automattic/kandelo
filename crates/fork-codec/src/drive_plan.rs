@@ -212,7 +212,7 @@ pub const DRIVE_OP_ABORT_END: u32 = 12;
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 12;
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 13;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -266,6 +266,20 @@ pub const DRIVE_SLOT_UNWIND_BEGIN: u32 = 10;
 /// that every offset stays distinct and inside the slice, so a future addition
 /// that forgets to bump the count fails rather than aliasing another entry.
 pub const DRIVE_SLOT_GC_ENCODE: u32 = 11;
+
+/// Drive-table slot offset the host binds `__wpk_fork_ref_gc_probe` into.
+///
+/// The second CAPTURE slot. The guest's probe is a TYPE TEST: it reads the
+/// value from the anyref transit slot, runs `ref.test` against each dispatch
+/// layout, and returns `(type_ordinal << 32) | layout_id`, or 0 when nothing
+/// matched.
+///
+/// That is what lets the module answer `__wpk_fork_ref_gc_capture_layout`
+/// WITHOUT any per-object bookkeeping. The alternative — recording which
+/// constructor made each object — is the unbounded per-object storage problem
+/// census §20 ran into; asking the guest to type-test the value it is holding
+/// costs nothing and stores nothing.
+pub const DRIVE_SLOT_GC_PROBE: u32 = 12;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -871,6 +885,7 @@ mod tests {
             ("ABORT_END", DRIVE_SLOT_ABORT_END),
             ("UNWIND_BEGIN", DRIVE_SLOT_UNWIND_BEGIN),
             ("GC_ENCODE", DRIVE_SLOT_GC_ENCODE),
+            ("GC_PROBE", DRIVE_SLOT_GC_PROBE),
         ];
         for (name, offset) in slots {
             assert!(
@@ -892,13 +907,13 @@ mod tests {
     }
 
     fn drive_table_base_reserves_slots_per_activation() {
-        // Twelve slots per activation (ALLOC, FILL, EXN, RESTORE,
+        // Thirteen slots per activation (ALLOC, FILL, EXN, RESTORE,
         // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,
-        // ABORT_END, UNWIND_BEGIN, GC_ENCODE).
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 12);
+        // ABORT_END, UNWIND_BEGIN, GC_ENCODE, GC_PROBE).
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 13);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 12);
-        assert_eq!(drive_table_base(3), 36);
+        assert_eq!(drive_table_base(1), 13);
+        assert_eq!(drive_table_base(3), 39);
     }
 
     #[test]

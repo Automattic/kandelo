@@ -1086,8 +1086,9 @@ function i31Minter() {
 // is how the witness CACHE is proven, not assumed.
 // ============================================================================
 {
-  const ACT = 0; // drive base = ACT * 12 = 0
+  const ACT = 0; // drive base = ACT * 13 = 0
   const DRIVE_SLOT_GC_ENCODE = 11;
+  const DRIVE_SLOT_GC_PROBE = 12;
 
   // `(func (export "encode") (param i32) (result i32))` that bumps an exported
   // global and returns recipe 1. Assembled with wasm-tools; bytes inlined so the
@@ -1102,8 +1103,8 @@ function i31Minter() {
 
   const transitTable = x.__wpk_fork_ref_gc_transit;
   const driveTable = importObject.env.__wpk_fork_drive_table;
-  driveTable.grow(ACT * 12 + DRIVE_SLOT_GC_ENCODE + 1 - driveTable.length);
-  driveTable.set(ACT * 12 + DRIVE_SLOT_GC_ENCODE, stub.exports.encode);
+  driveTable.grow(ACT * 13 + DRIVE_SLOT_GC_PROBE + 1 - driveTable.length);
+  driveTable.set(ACT * 13 + DRIVE_SLOT_GC_ENCODE, stub.exports.encode);
 
   x.fm_capture_begin();
   // Recipe 1: what the stub codec will claim every witness encodes to, so the
@@ -1140,7 +1141,7 @@ function i31Minter() {
   // The witness is CACHED: a second object of the same layout reuses the recipe
   // rather than re-encoding. Proven by clearing the drive slot first -- a
   // re-encode would now call a null table entry and trap.
-  driveTable.set(ACT * 12 + DRIVE_SLOT_GC_ENCODE, null);
+  driveTable.set(ACT * 13 + DRIVE_SLOT_GC_ENCODE, null);
   const second = x.fm_capture_claim_gc();
   const fields2 = buildVector([1]);
   x.__wpk_fork_ref_gc_define(
@@ -1149,6 +1150,37 @@ function i31Minter() {
   assert.equal(lastErrno(), 0, "a second object of the layout reuses the witness recipe");
   assert.equal(encodeCalls() - before, 1, "and does NOT drive the codec again");
   assert.equal(x.fm_capture_validate(), 0, "the graph still validates");
+
+  // -- capture_layout drives the guest's TYPE-TEST probe ---------------------
+  //
+  // A layout is a per-OBJECT fact, so the witness trick cannot make it bounded.
+  // Asking the guest to type-test the value it already staged costs nothing and
+  // stores nothing — the module keeps no map at all.
+  // `(func (export "probe") (param i32) (result i64))` returning
+  // (type_ordinal 2 << 32) | layout 21, and counting its calls.
+  // Bytes from wasm-tools, not written by hand: an earlier hand-encoding of
+  // this same module had the code-section length wrong (20 where the encoding
+  // requires 17), which is why every stub in this file is assembled rather than
+  // typed.
+  const probeBytes = new Uint8Array([
+    0,97,115,109,1,0,0,0,1,6,1,96,1,127,1,126,3,2,1,0,6,6,1,127,1,65,0,11,7,17,
+    2,5,99,97,108,108,115,3,0,5,112,114,111,98,101,0,0,10,17,1,15,0,35,0,65,1,
+    106,36,0,66,149,128,128,128,32,11,0,15,4,110,97,109,101,7,8,1,0,5,99,97,108,
+    108,115,
+  ]);
+  const probeStub = new WebAssembly.Instance(new WebAssembly.Module(probeBytes), {});
+  driveTable.set(ACT * 13 + DRIVE_SLOT_GC_PROBE, probeStub.exports.probe);
+
+  transitTable.set(0, 456);
+  const selected = x.__wpk_fork_ref_gc_capture_layout(0, ACT, 999);
+  assert.equal(lastErrno(), 0, "capture_layout succeeded");
+  assert.equal(
+    selected,
+    21,
+    "the layout comes from the guest's type test, not the caller's guess of 999",
+  );
+  assert.equal(probeStub.exports.calls.value, 1, "the probe ran exactly once");
+  transitTable.set(0, null);
 
   // A layout that recorded no witness needs no encode at all, which is the
   // ordinary case: most layouts have no mutable non-null internal field.

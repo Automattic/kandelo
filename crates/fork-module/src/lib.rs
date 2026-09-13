@@ -197,6 +197,20 @@ mod wasm {
         /// `activation`, returning its recipe id. Injector-rewritten to a
         /// `call_indirect` through the drive table (F3 step 2).
         fn __wpk_fork_capture_witness(activation: u32, witness_slot: u32) -> i32;
+
+        /// Type-test the value staged in anyref transit slot `slot`, returning
+        /// `(type_ordinal << 32) | layout_id`, or 0 when no layout matched.
+        /// Injector-rewritten to a `call_indirect` through the drive table.
+        fn __wpk_fork_capture_probe(activation: u32, slot: u32) -> i64;
+    }
+
+    /// Safe wrapper over the injector-wired probe placeholder.
+    fn capture_probe_via_injector(activation: u32, slot: u32) -> i64 {
+        // SAFETY: after injection this is a local thunk that `call_indirect`s
+        // the guest's `__wpk_fork_ref_gc_probe` through
+        // `drive_table[base(activation) + DRIVE_SLOT_GC_PROBE]`. The guest owns
+        // the type test; the module only unpacks the answer.
+        unsafe { __wpk_fork_capture_probe(activation, slot) }
     }
 
     /// Safe wrapper over the injector-wired capture placeholder.
@@ -5491,6 +5505,43 @@ mod wasm {
             ids.push(recipe as u32);
         }
         Ok(ids)
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_capture_layout(slot, activation,
+    /// layout) -> selected_layout`.
+    ///
+    /// Answers "which layout is the value staged in transit slot `slot`" by
+    /// driving the guest's own TYPE-TEST probe, which `ref.test`s the value
+    /// against each dispatch layout and returns
+    /// `(type_ordinal << 32) | layout_id`.
+    ///
+    /// # Why this needs no per-object bookkeeping
+    ///
+    /// A layout is a per-OBJECT fact — two objects of one base type can be made
+    /// by different constructors — so the witness trick that made provenance
+    /// bounded does not apply. Recording it per object is the unbounded storage
+    /// problem census §20 ran into.
+    ///
+    /// Asking the guest instead costs nothing and stores nothing: the value is
+    /// already in the transit slot, and the guest's generated codec can test it.
+    /// The module holds no map at all.
+    ///
+    /// Returns 0 when no layout matched, which is the probe's own answer for a
+    /// value this codec does not handle. 0 is not a valid layout id, so a
+    /// `gc_define` that used it fails rather than defining against layout zero.
+    /// The `layout` argument is the guest's static guess and is deliberately
+    /// NOT trusted over the type test.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_capture_layout(
+        slot: u32,
+        activation: u32,
+        _layout: u32,
+    ) -> i32 {
+        let packed = capture_probe_via_injector(activation, slot);
+        set_ok();
+        // Low 32 bits are the layout id; the high half is the type ordinal,
+        // which `gc_define` receives separately from the guest.
+        (packed as u64 & 0xffff_ffff) as i32
     }
 
     /// Guest-facing `env.__wpk_fork_ref_gc_define(...)`.
