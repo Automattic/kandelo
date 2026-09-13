@@ -26,8 +26,6 @@ export interface ForkGuestHostFloorDeps {
    * provenance to record, which is a documented boundary rather than an error.
    */
   readonly tryEncodeExternref: (value: unknown) => number | undefined;
-  /** Whether this coordinate owns the physical table's sparse state. */
-  readonly ownsTableState: (owner: number) => boolean;
 }
 
 export interface ForkGuestHostFloorHandle {
@@ -56,10 +54,6 @@ export function createForkGuestHostFloor(
       const handle = deps.tryEncodeExternref(value);
       if (handle !== undefined) provenance.set(value as object, handle);
       return value;
-    },
-
-    __wpk_fork_module_state_table_state_owned(owner: number): number {
-      return deps.ownsTableState(owner) ? 1 : 0;
     },
 
     __wpk_fork_ref_exn_ingress_throw(recipe: number): void {

@@ -4939,3 +4939,70 @@ the same substitution that put nine files in the attic by NAME in the first
 place (section 64) and that section 96's binder correction was also about. I
 proposed a number from a claim I had not opened. The number stood for about an
 hour before the code said otherwise.
+
+## §106 — `table_state_owned` moves, and electing turns out to be two jobs
+
+The maintainer approved spending an `fm_*` entry to close a guest import, on the
+framing that "the fork module will export a new function the guest process
+imports due to fork instrumentation". That is what happened, and the shape is
+worth recording because it generalises.
+
+`table_state_owned` looked like irreducible floor and section 50 argued it as
+such: the answer depends on comparing `WebAssembly.Table` OBJECT IDENTITY, which
+wasm cannot observe. That argument is still true -- and it is an argument about
+ELECTING, not about ANSWERING. The host function was doing both:
+
+  * elect: which of these coordinates names the same physical table, and which
+    one is canonical -- needs JavaScript, cannot move;
+  * answer: is coordinate `(activation, owner)` the canonical one -- a lookup in
+    a map, needs nothing.
+
+Splitting them moves the half that can move. The host elects and SEEDS the result
+once per coordinate through `fm_set_activation_table_state_owner`; the module
+serves `__wpk_fork_module_state_table_state_owned` from what it was told. Every
+JS host stops implementing a guest import and starts making a seeding call.
+
+The multi-activation path needed nothing new: the guest's import is frozen at one
+argument (`owner`) and the activation folds in through a SIXTH
+`__wpk_fork_activation_trampolines` slot, exactly as the five frame imports do.
+The single-activation path gets a plain export using `primary_activation()`, the
+same way `__wpk_fork_frame_reserve` already coexists with its trampoline.
+
+The generalisation: **"this needs a host capability" is often a claim about one
+STEP in a function, not about the function.** Two of this lane's other floor
+entries deserve re-reading with that lens. `provenance_externref` reads a handle
+off a token (host) and records it against an object (host) -- probably genuinely
+both halves. The two `exn_*` throws are one step and it is the impossible one.
+
+One naming note. The module export was `fm_table_state_owned` for about ten
+minutes, which broke `matches the slot ORDER the injector emits`: that test maps
+trampoline targets to guest names by replacing the `fm_` prefix with
+`__wpk_fork_`, and `__wpk_fork_table_state_owned` is not what the guest imports.
+Renaming the export to `fm_module_state_table_state_owned` restores the
+mechanical rule. Keeping the rule matters more than the shorter name -- the rule
+is what lets a test catch a slot binding to the wrong entry point, which is a
+wrong answer rather than a trap.
+
+## §107 — Demote before promote, found by writing the test's expectation
+
+The election publishes to the module, and the first version published in sorted
+order: the new owner at index 0 first, the demoted incumbent after. The test I
+wrote expected demote-then-promote, and it failed -- showing the implementation
+did the opposite.
+
+That ordering is a real hazard, not a test preference. Publishing the promotion
+first leaves a window in which the module answers 1 for BOTH coordinates, and a
+guest calling `table_state_owned` inside it gets two writers for one physical
+table. That does not trap; it rebuilds the child wrong. Demoting first leaves the
+opposite window, where the table momentarily has no owner and a write is SKIPPED.
+
+Neither window is reachable today -- registration is synchronous and the guest is
+not running during it -- so this is not a live bug. But one order is safe when it
+becomes reachable and the other is not, and the cost of choosing the safe one is
+nothing. `elect` now publishes demotions, then promotions, and says why.
+
+I did not reason my way to this. I wrote down what I expected the sequence to be,
+the code disagreed, and working out which of us was right surfaced the hazard.
+That is an argument for asserting exact sequences rather than set membership: an
+assertion that merely checked "both coordinates were published" would have passed
+against either order and taught me nothing.

@@ -267,7 +267,7 @@ const TRAMPOLINE_ACTIVATIONS: u32 = 64;
 
 /// Entries per activation, in this fixed order: frame_reserve, frame_commit,
 /// frame_peek, frame_next, resume_peek.
-const TRAMPOLINE_SLOTS: u32 = 5;
+const TRAMPOLINE_SLOTS: u32 = 6;
 
 /// The guest's own indirect call table -- the table a reconcile writes into.
 /// Named by the wasm tool convention, not by anything Kandelo chose.
@@ -1752,6 +1752,13 @@ fn inject_activation_trampolines(module: &mut Module) -> Result<()> {
         ("fm_frame_peek", true),
         ("fm_frame_next", true),
         ("fm_resume_peek", false),
+        // The guest's `table_state_owned(owner)` takes its activation the same
+        // way the frame imports do: folded in here. The host elects which
+        // coordinate owns a physical table (a `WebAssembly.Table` identity
+        // comparison wasm cannot make) and seeds the answer through
+        // `fm_set_activation_table_state_owner`; the module then serves the
+        // import itself.
+        ("fm_module_state_table_state_owned", true),
     ];
     let mut resolved = Vec::with_capacity(targets.len());
     for (name, forwards) in targets {
@@ -2253,6 +2260,7 @@ mod tests {
             "fm_frame_peek",
             "fm_frame_next",
             "fm_resume_peek",
+            "fm_module_state_table_state_owned",
         ];
         // Exhaustive, not spot-checked. An off-by-one in the index math, or a
         // body that folded a fresh counter instead of its own index, routes one

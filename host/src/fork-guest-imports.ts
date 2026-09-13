@@ -29,9 +29,14 @@ import {
  * The imports a JS host must implement itself, because wasm cannot.
  *
  * `provenance_externref` reads a handle off a token and keys a map by object
- * identity. `table_state_owned` reports an election decided by
- * `WebAssembly.Table` object identity -- which coordinates name one PHYSICAL
- * table is observable only by whoever holds those objects.
+ * identity.
+ *
+ * `table_state_owned` used to be here for a related reason and is not any more.
+ * The host still ELECTS which coordinate owns a physical table -- that compares
+ * `WebAssembly.Table` object identity, which wasm cannot do -- but it now SEEDS
+ * the answer through `fm_set_activation_table_state_owner` instead of answering
+ * a callback per call, so the module serves the import itself. Electing and
+ * answering were two jobs in one function; only the first needs JavaScript.
  *
  * `encode_funcref` and `table_mutation_commit` used to be here and are not any
  * more: the module serves both, given the one host capability they needed
@@ -44,14 +49,12 @@ import {
  */
 export interface ForkGuestHostFloor {
   readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;
-  readonly __wpk_fork_module_state_table_state_owned: (owner: number) => number;
   readonly __wpk_fork_ref_exn_ingress_throw: (recipe: number) => void;
   readonly __wpk_fork_ref_exn_broker_throw_recipe: (recipe: number) => void;
 }
 
 /** The floor's member names, for callers that need to reason about the set. */
 export const FORK_GUEST_HOST_FLOOR_NAMES = [
-  "__wpk_fork_module_state_table_state_owned",
   "__wpk_fork_ref_exn_broker_throw_recipe",
   "__wpk_fork_ref_exn_ingress_throw",
   "__wpk_fork_ref_provenance_externref",
@@ -186,6 +189,7 @@ export const FORK_ACTIVATION_TRAMPOLINE_SLOTS = [
   "__wpk_fork_frame_peek",
   "__wpk_fork_frame_next",
   "__wpk_fork_resume_peek",
+  "__wpk_fork_module_state_table_state_owned",
 ] as const;
 
 /**

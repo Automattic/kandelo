@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { describeWasmArtifactPolicyFailures } from "../src/constants";
-import { buildForkGuestImports } from "../src/fork-guest-imports";
+import {
+  buildForkGuestImports,
+  FORK_GUEST_HOST_FLOOR_NAMES,
+} from "../src/fork-guest-imports";
 import { createForkGuestHostFloor } from "../src/fork-guest-host-floor";
 import { ForkResumeTable } from "../src/fork-resume-table";
 import { ForkTableStateOwners } from "../src/fork-table-state-owners";
@@ -61,12 +64,11 @@ afterAll(() => {
 
 /** Everything the co-resident module would serve, stubbed by name. */
 function moduleExportsFor(guest: WebAssembly.Module): Record<string, unknown> {
-  const floorNames = new Set([
-    "__wpk_fork_module_state_table_state_owned",
-    "__wpk_fork_ref_exn_broker_throw_recipe",
-    "__wpk_fork_ref_exn_ingress_throw",
-    "__wpk_fork_ref_provenance_externref",
-  ]);
+  // Driven off the exported list, not a copy of it. A hand-kept copy is the
+  // same defect as a hand-kept import list: it stops matching the moment an
+  // entry leaves the floor, and then this test stubs a module export for
+  // something the module already serves -- passing while proving nothing.
+  const floorNames = new Set<string>(FORK_GUEST_HOST_FLOOR_NAMES);
   const exports: Record<string, unknown> = {};
   for (const imported of WebAssembly.Module.imports(guest)) {
     if (imported.module !== "env") continue;

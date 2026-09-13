@@ -82,6 +82,54 @@ describe("ForkTableStateOwners", () => {
     expect(owners.ownsState(0, 7)).toBe(false);
   });
 
+  it("publishes each election result exactly once, on change", () => {
+    const seen: Array<[number, number, boolean]> = [];
+    const owners = new ForkTableStateOwners((a, o, w) => seen.push([a, o, w]));
+    const t = table();
+    owners.register(3, 5, t);
+    owners.register(1, 9, t);
+    // 3:5 is elected, then DEMOTED when the lower 1:9 arrives and is elected.
+    // The demotion must come FIRST: the other order leaves a window in which
+    // the module answers 1 for both coordinates, and two writers for one
+    // physical table rebuild the child wrong without trapping.
+    expect(seen).toEqual([
+      [3, 5, true],
+      [3, 5, false],
+      [1, 9, true],
+    ]);
+  });
+
+  it("does not republish an unchanged election", () => {
+    const seen: Array<[number, number, boolean]> = [];
+    const owners = new ForkTableStateOwners((a, o, w) => seen.push([a, o, w]));
+    const t = table();
+    owners.register(1, 5, t);
+    owners.register(2, 6, t);
+    owners.register(3, 7, t);
+    // Each registration re-elects the whole table, but 1:5 stays the owner and
+    // 2:6 stays an alias. Republishing on every registration would make the
+    // module see a demote/promote flicker for the incumbent -- and the guest
+    // can call `table_state_owned` between those two seeds.
+    expect(seen).toEqual([
+      [1, 5, true],
+      [2, 6, false],
+      [3, 7, false],
+    ]);
+  });
+
+  it("publishes the promotion when the owner's activation releases", () => {
+    const seen: Array<[number, number, boolean]> = [];
+    const owners = new ForkTableStateOwners((a, o, w) => seen.push([a, o, w]));
+    const t = table();
+    owners.register(1, 5, t);
+    owners.register(2, 6, t);
+    seen.length = 0;
+    owners.releaseActivation(1, [t]);
+    // Without this the module keeps answering 0 for 2:6 and the table has no
+    // writer at all -- every later sparse write is lost rather than duplicated.
+    expect(seen).toEqual([[2, 6, true]]);
+  });
+
   it("rejects an activation id that is not a non-negative integer", () => {
     const owners = new ForkTableStateOwners();
     const t = table();

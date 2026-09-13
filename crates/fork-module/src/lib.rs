@@ -597,6 +597,87 @@ mod wasm {
         ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
     static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+    // -- Table sparse-state ownership ---------------------------------------
+    //
+    // Which `(activation, owner)` coordinate writes a physical table's sparse
+    // state. The host ELECTS: imported aliases name one `WebAssembly.Table`, and
+    // deciding which coordinate is canonical means comparing Table OBJECT
+    // IDENTITY, which wasm cannot observe -- there is no `table.eq` and this
+    // module does not import the activations' tables at all.
+    //
+    // But the host does not have to keep ANSWERING. It seeds the election result
+    // once per coordinate through `fm_set_activation_table_state_owner`, and the
+    // guest's `__wpk_fork_module_state_table_state_owned` import is then served
+    // from here instead of by a host callback. That moves one function off the
+    // host floor while leaving the part that genuinely needs JavaScript -- the
+    // identity comparison -- where it has to be.
+    //
+    // Storage is a flat array of live `[activation_id, owner_id, owns]` triples
+    // rather than a per-activation sub-array, because an activation usually has
+    // exactly ONE table coordinate and a rectangular map would be almost all
+    // padding. Lookup is a linear scan over the live prefix.
+    const TABLE_STATE_OWNER_MAX: usize = 256;
+
+    #[repr(C, align(4))]
+    struct ActTableStateOwners(UnsafeCell<[[u32; 3]; TABLE_STATE_OWNER_MAX]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActTableStateOwners {}
+    /// Each live entry is `[activation_id, owner_id, owns]`; only the first
+    /// `ACT_TABLE_STATE_OWNER_COUNT` entries are live.
+    static ACT_TABLE_STATE_OWNERS: ActTableStateOwners =
+        ActTableStateOwners(UnsafeCell::new([[0u32; 3]; TABLE_STATE_OWNER_MAX]));
+    static ACT_TABLE_STATE_OWNER_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// Seed one coordinate's election result.
+    ///
+    /// Re-seeding an existing coordinate UPDATES it rather than being refused,
+    /// which is the opposite of the once-per-worker catalogs above and is
+    /// deliberate: the host re-elects whenever a lower coordinate registers for
+    /// the same physical table, so the incumbent must be demotable. Refusing the
+    /// second seed would freeze the first election and leave two writers.
+    fn set_activation_table_state_owner_impl(
+        activation_id: u32,
+        owner_id: u32,
+        owns: u32,
+    ) -> Result<(), Errno> {
+        // Owner 0 is not a coordinate; the host rejects it too.
+        if owner_id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let count = ACT_TABLE_STATE_OWNER_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; the map is a static buffer.
+        let map = unsafe { &mut *ACT_TABLE_STATE_OWNERS.0.get() };
+        for entry in map.iter_mut().take(count) {
+            if entry[0] == activation_id && entry[1] == owner_id {
+                entry[2] = u32::from(owns != 0);
+                return Ok(());
+            }
+        }
+        if count >= TABLE_STATE_OWNER_MAX {
+            return Err(Errno::E2BIG);
+        }
+        map[count] = [activation_id, owner_id, u32::from(owns != 0)];
+        ACT_TABLE_STATE_OWNER_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Answer the guest's `table_state_owned` import for one coordinate.
+    ///
+    /// An UNSEEDED coordinate answers 0, never 1. Answering 1 by default would
+    /// make two aliases both write sparse state for one physical table, and that
+    /// duplicate does not trap -- it surfaces as a child rebuilt wrong.
+    fn table_state_owned_impl(activation_id: u32, owner_id: u32) -> u32 {
+        let count = ACT_TABLE_STATE_OWNER_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; read-only over the live prefix.
+        let map = unsafe { &*ACT_TABLE_STATE_OWNERS.0.get() };
+        for entry in map.iter().take(count) {
+            if entry[0] == activation_id && entry[1] == owner_id {
+                return entry[2];
+            }
+        }
+        0
+    }
+
     fn set_activation_catalog_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
         let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
         if count >= FUNC_CATALOG_BASE_MAX_ACTS {
@@ -1719,6 +1800,10 @@ mod wasm {
         ACT_CATALOG_ORD_USED.store(0, Ordering::Relaxed);
         ACT_FUNC_CATALOG_BASE_COUNT.store(0, Ordering::Relaxed);
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
+        // Table-state ownership resets for the same COW reason: a child
+        // inheriting the parent's election would answer for coordinates that
+        // belong to a table it no longer shares.
+        ACT_TABLE_STATE_OWNER_COUNT.store(0, Ordering::Relaxed);
         HOST_EXCEPTION_OWNER.store(u32::MAX, Ordering::Relaxed);
         RESUME_CATALOG_LEN.store(0, Ordering::Relaxed);
         // The dylink archive coordinates reset for the same COW reason as the
@@ -4143,6 +4228,19 @@ mod wasm {
     // `fm_frame_*(act, ...)` exports below — so these exports are unchanged and
     // no guest re-instrumentation is required.
 
+    /// `__wpk_fork_module_state_table_state_owned(owner) -> i32` for the
+    /// single-activation path, which binds the guest's frozen one-argument
+    /// signature straight to this export rather than through a trampoline.
+    ///
+    /// The multi-activation path reaches `fm_module_state_table_state_owned`
+    /// through `__wpk_fork_activation_trampolines` instead, which folds the
+    /// activation in. Both answer from the same seeded election; this one just
+    /// assumes the primary activation, exactly as the frame exports below do.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_state_owned(owner_id: u32) -> u32 {
+        table_state_owned_impl(primary_activation(), owner_id)
+    }
+
     /// `__wpk_fork_frame_reserve(size) -> payload`. Reserve the next frame node
     /// and return its payload pointer (0 on failure; check `fm_last_errno`).
     #[unsafe(no_mangle)]
@@ -4461,6 +4559,42 @@ mod wasm {
             }
             Err(errno) => set_err(errno),
         }
+    }
+
+    /// Seed one table coordinate's sparse-state election result.
+    ///
+    /// The HOST elects -- it compares `WebAssembly.Table` object identity, which
+    /// wasm cannot do -- and tells the module the answer here, once per
+    /// coordinate. The guest's `__wpk_fork_module_state_table_state_owned`
+    /// import is then served by `fm_module_state_table_state_owned` below instead of by a
+    /// host callback, which takes one function off every JS host's floor.
+    ///
+    /// Re-seeding a known coordinate UPDATES it. The host re-elects when a lower
+    /// coordinate registers for the same physical table, so an incumbent must be
+    /// demotable; refusing the second seed would freeze the first election and
+    /// leave the table with two writers. `owner_id` 0 is rejected (`EINVAL`) and
+    /// a 257th distinct coordinate is `E2BIG`. Check `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_table_state_owner(
+        activation_id: u32,
+        owner_id: u32,
+        owns: u32,
+    ) {
+        match set_activation_table_state_owner_impl(activation_id, owner_id, owns) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_state_owned(owner) -> i32`,
+    /// reached through the per-activation trampoline that folds the activation in.
+    ///
+    /// Infallible: an unseeded coordinate is 0, not an error. It does not touch
+    /// `fm_last_errno`, because the guest calls it on the table-mutation path and
+    /// a reader must not clobber the errno a caller is about to inspect.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_module_state_table_state_owned(activation_id: u32, owner_id: u32) -> u32 {
+        table_state_owned_impl(activation_id, owner_id)
     }
 
     /// Seed the FULL resume catalog for this worker: `[ptr, ptr + count*4)` is a

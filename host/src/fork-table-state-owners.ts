@@ -30,13 +30,30 @@ function key(coordinate: Coordinate): string {
   return `${coordinate.activationId}:${coordinate.ownerId}`;
 }
 
+/** Told the module whenever a coordinate's election result changes. */
+export type ForkTableStateOwnerSink = (
+  activationId: number,
+  ownerId: number,
+  owns: boolean,
+) => void;
+
 export class ForkTableStateOwners {
   /** Coordinates seen per physical table, kept sorted. */
   private readonly byTable = new WeakMap<WebAssembly.Table, Coordinate[]>();
   /** `activation:owner` -> owns the physical table's sparse state. */
   private readonly owns = new Map<string, boolean>();
 
-  constructor(private readonly label = "fork table state owners") {}
+  /**
+   * `publish` forwards each election result to the fork module, which serves the
+   * guest's `table_state_owned` import from it. Optional so the election can be
+   * unit-tested without a module, but a caller that omits it in production
+   * elects into a vacuum: the module answers 0 for every coordinate and no
+   * activation writes sparse state at all.
+   */
+  constructor(
+    private readonly publish?: ForkTableStateOwnerSink,
+    private readonly label = "fork table state owners",
+  ) {}
 
   /**
    * Register one coordinate against the physical table it names, and re-elect.
@@ -94,9 +111,35 @@ export class ForkTableStateOwners {
     }
   }
 
+  /**
+   * Re-run the election and publish only what CHANGED, demotions first.
+   *
+   * The order is the correctness-critical part. Publishing the new owner before
+   * demoting the incumbent leaves a window in which the module answers 1 for
+   * BOTH coordinates, and a guest calling `table_state_owned` inside that window
+   * gets two writers for one physical table -- which does not trap, it rebuilds
+   * the child wrong. Demoting first leaves the opposite window, where the table
+   * momentarily has no owner and a write is skipped rather than duplicated.
+   * Neither window is reachable today (registration is synchronous and the guest
+   * is not running), but one of them is safe when it becomes reachable and the
+   * other is not.
+   *
+   * Publishing only changes also keeps the incumbent from being re-seeded on
+   * every registration, which would reintroduce exactly that flicker.
+   */
   private elect(sorted: readonly Coordinate[]): void {
-    sorted.forEach((coordinate, index) => {
-      this.owns.set(key(coordinate), index === 0);
-    });
+    const changes = sorted
+      .map((coordinate, index) => ({ coordinate, owns: index === 0 }))
+      .filter(({ coordinate, owns }) => this.owns.get(key(coordinate)) !== owns);
+    for (const { coordinate, owns } of changes) {
+      if (owns) continue;
+      this.owns.set(key(coordinate), false);
+      this.publish?.(coordinate.activationId, coordinate.ownerId, false);
+    }
+    for (const { coordinate, owns } of changes) {
+      if (!owns) continue;
+      this.owns.set(key(coordinate), true);
+      this.publish?.(coordinate.activationId, coordinate.ownerId, true);
+    }
   }
 }
