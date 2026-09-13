@@ -4049,6 +4049,40 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### GAP 18 — wiring the verifier made every archive payload a seal payload
+
+**Found 2026-09-13 while designing the producer, and it is a regression I
+introduced two commits earlier.**
+
+`verify_cohorts` decodes EVERY archive payload. The bridge writes
+`JSON.stringify({url, sha256})` as that payload. `decode` reads the first four
+bytes as a version word — for `{"ur` that is `0x7275227b`, not 1 — so it returns
+`EINVAL`, and **the load refuses**. Any image carrying a bridge-registered lazy
+archive now fails to load.
+
+**Why no test caught it.** The module's own load test registers a lazy file with
+a payload built by `seal::encode`, so it is well formed. The bridge's archive
+test registers an archive and never loads the image back. The shipped corpus is
+`KLZY`-described and therefore carries EMPTY payloads, which `decode` accepts
+early. **Each half was tested and the cross-product was not** — H-15's
+intersection rule, arriving in the place I had just written it down.
+
+**The fix is the producer change already designed, brought forward.** The MODULE
+must encode the payload at registration, wrapping the caller's descriptor in the
+three-state envelope. Then every payload is well formed by construction, the
+bridge keeps passing plain descriptor bytes, and TypeScript never writes the
+format — which was the point of putting the format in Rust.
+
+**Do NOT "fix" it by making `verify_cohorts` tolerate an undecodable payload.**
+That would let a malformed seal pass as an absent one, which is the exact
+confusion the three-state design exists to prevent. A payload that does not
+decode is a payload whose seal status is unknown, and unknown is not none.
+
+**A compatibility note the maintainer should have:** images produced by the
+bridge BEFORE this fix carry raw descriptors and will not load afterwards. Under
+the rebuild decision that is acceptable — those images are being rebuilt anyway
+— but it is a break, and it is better stated than discovered.
+
 ### The seal's producer: a THIRD payload state, because "pending" must not read as "none"
 
 **Designed 2026-09-13. The decision recorded earlier — the module seals at
