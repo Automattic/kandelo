@@ -1719,3 +1719,52 @@ capture walk, the unknown-tag path becomes a routing question rather than a
 refusal.
 
 `forkGuestImportsUnserved` 13 -> 12, banked. Host obligation unchanged at 5.
+
+## §31 — The mutation group is dlopen's, not fork's
+
+§16 withdrew the "undefined journal format" blocker by showing the table state
+crosses as a reference graph in formats that already exist. That was right about
+the format and wrong about the owner. Reading the live implementation — in
+`host/src/worker-main.ts`, which SURVIVES, so no attic was needed — settles
+where these five imports belong.
+
+```
+beginMutation: options.dlopen.acquireArchiveWriter()
+abort:         options.dlopen.releaseArchiveWriter()
+commit:        options.registry.captureFuncrefTablePatch(...)
+               options.dlopen.loader().canPublishTablePatch(patch)
+               options.dlopen.loader().publishTablePatch(patch)
+reconcile:     options.dlopen.withArchiveWriter(reconcileLocked)
+```
+
+**Every operation runs on dynamic-linker machinery.** The writer ownership the
+protocol acquires is the dlopen ARCHIVE WRITER lock. The publication path is the
+dlopen loader's table-patch mechanism, with a full checkpoint as the fallback
+when an entry is typed or opaque. The replica whose generation is returned is
+`dylink-table-replica.ts`.
+
+None of that is attic'd: `dylink-artifact.ts`, `dylink-loader.ts`,
+`dylink-planner.ts`, `dylink-planner-wire.ts` and `dylink-table-replica.ts` are
+all intact, outside this lane's reversal, and `crates/dylink` owns the Rust
+half.
+
+### What that means for lane F
+
+The imports are spelled `__wpk_fork_module_state_table_*`, which is what made
+them look like fork state. They are not. They are the dynamic linker's table
+replication, reached through a fork-prefixed name because a forked child must
+reconcile replicas.
+
+Serving them in the fork-module would mean the fork-module acquiring dlopen's
+writer lock and driving dlopen's patch publication — reaching across a component
+boundary into a subsystem that is not mid-migration and has its own owner.
+
+**So the mutation group is NOT unblocked work for this lane**, and §16's
+"buildable, nothing owed" reads too optimistically. It is a boundary question:
+whether table replication moves into the fork-module, stays with dlopen, or
+moves into `crates/dylink` on the Rust side. The third is the most likely right
+answer, since `crates/dylink` already exists and the goal is Rust-first — but it
+is not lane F's call.
+
+`forkGuestImportsUnserved` therefore has a floor of 5 for this lane alone,
+unless that boundary question is answered differently.
