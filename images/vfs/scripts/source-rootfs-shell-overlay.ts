@@ -1,5 +1,6 @@
 import { statSync } from "node:fs";
 import type { SffsImageFs } from "../lib/sffs-image-fs";
+import { ERRNO } from "../../../host/src/generated/abi";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
@@ -21,6 +22,22 @@ export const PACKAGE_ROOTFS_SHELL_COMPOSITION = {
   kind: "package-rootfs-shell",
 } as const;
 
+/**
+ * Is `member` already a deferred archive member in this tree?
+ *
+ * A path that is not there yet answers `false`; anything else propagates. The
+ * narrow catch is the point -- swallowing every error would turn a broken tree
+ * into a silent re-registration.
+ */
+function memberAlreadyPresent(fs: SffsImageFs, member: string): boolean {
+  try {
+    return fs.isPathDeferred(member);
+  } catch (error) {
+    if ((error as { errno?: number }).errno === ERRNO.ENOENT) return false;
+    throw error;
+  }
+}
+
 /** Add the package-owned interactive toolset to an imported rootfs image. */
 export function populateSourceRootfsShellOverlay(
   fs: SffsImageFs,
@@ -33,8 +50,11 @@ export function populateSourceRootfsShellOverlay(
   // from boot rather than fetched lazily like the archives below.
   populateTerminfoDatabase(fs, resolveArtifact);
 
+  // `getLazyEntry` rather than `isPathDeferred`, because a path that is not
+  // there yet is a legitimate answer HERE -- a fresh rootfs carries none of
+  // these -- and `isPathDeferred` throws so a typo cannot pass as a `no`.
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
-    if (!fs.isPathDeferred(spec.vfsPath)) {
+    if (fs.getLazyEntry(spec.vfsPath) === null) {
       const source = resolveArtifact(spec.resolverPath, spec.id);
       fs.registerLazyFile(
         spec.vfsPath,
@@ -60,7 +80,11 @@ export function populateSourceRootfsShellOverlay(
   // because it names a path the archive must provide, so "already registered"
   // is "that path is here and still deferred".
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
-    if (!fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)) {
+    // Absence is a legitimate answer here too, and `getLazyEntry` cannot be
+    // used: it reports only files fetched STANDALONE, and this is an archive
+    // member. So the absence is caught where it is expected, and any other
+    // error still surfaces.
+    if (!memberAlreadyPresent(fs, `${spec.mountPrefix}${spec.requiredMember}`)) {
       // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man
       // on the imported rootfs; clear it first so mandoc's formatting `man`
       // wins the path instead of colliding (EEXIST) with the archive symlink.

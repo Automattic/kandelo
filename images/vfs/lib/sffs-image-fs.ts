@@ -807,8 +807,25 @@ export class SffsImageFs {
     return this.exportImageFacts().capacityBytes;
   }
 
+  /**
+   * Are the bytes this path REFERS TO absent from the image?
+   *
+   * Follows symlinks, and answers `false` for a path that does not exist.
+   * Both matter, and both were wrong when this used `lstat` and threw:
+   *
+   * * A symlink is never itself deferred, so `lstat` answered about the LINK
+   *   and said "not deferred" for every alias of a lazy binary. The shell
+   *   composer skips a binary that is already lazy, so it re-registered
+   *   `/bin/coreutils` and failed on an undeclared dependency — a product
+   *   build, not a test. The filesystem this replaces resolved the path, and
+   *   this is the faithful port of it.
+   * A path that does not exist still THROWS, deliberately. A caller asking
+   * "is this already registered" about a path it got wrong should hear about
+   * the typo rather than a confident `false`. Callers for which absence is a
+   * legitimate answer say so at their own call site.
+   */
   isPathDeferred(path: string): boolean {
-    return this.lstat(path).deferred;
+    return this.stat(path).deferred;
   }
 
   /**
@@ -843,7 +860,9 @@ export class SffsImageFs {
   getLazyEntry(path: string): { size: number; deferred: true } | null {
     let st;
     try {
-      st = this.lstat(path);
+      // Resolved, for the reason `isPathDeferred` gives: an alias of a lazy
+      // binary is a symlink, and `lstat` answers about the link.
+      st = this.stat(path);
     } catch {
       return null; // No such path is not a lazy registration.
     }
