@@ -3515,6 +3515,33 @@ interface to what the bridge already implements, then adding `statfs`,
 `getImageMetadata` and a `saveImage` shape to the bridge. The repoint becomes
 mechanical once the interface can honestly describe what a builder does.
 
+### Next: bridge image loading, at no cost to the surface
+
+**Scoped 2026-09-12.** Sixteen of the remaining twenty importers CONSTRUCT a
+filesystem; they stop importing `memory-fs` when they construct `SffsImageFs`
+instead. For the derived ones that needs the bridge to load a base image, which
+it cannot do at all.
+
+**Shape: one entry point, not three.** A zero-import module cannot call back
+into the host for bytes, so the obvious design is a push protocol —
+begin/write/finish — and that is three exports. It is unnecessary: the host
+already has `sm_alloc`, so it allocates, copies the image in, and calls
+`sm_load_image(ptr, len)`. One export. The loader needs the image randomly
+addressable (it walks directories and inodes), so streaming would not help
+anyway.
+
+**And it costs nothing, because one export can go.** `sm_stat_size()` exists
+only to report the `sm_lstat` record's length — a whole export for a constant.
+`sm_read_dir` already answers its own size question by being called with
+`out_len == 0`, and `sm_check_headroom` copies that convention. Making `sm_lstat`
+do the same deletes `sm_stat_size` and makes the ABI carry ONE size-probe
+convention instead of two.
+
+So: `sm_load_image` in, `sm_stat_size` out, surface stays at 20. **That is a
+better trade than a ceiling raise even if a raise would be defensible** — the
+argument for growth is strongest when you have first looked for what can shrink,
+and an export that returns a constant is exactly what to look for.
+
 ### Y5 MOVED: importers 36 -> 20, banked. 2026-09-12.
 
 **The acceptance number moved for the first time**, and what unlocked it was not
