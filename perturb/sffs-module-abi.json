@@ -188,8 +188,8 @@
       "name": "loading a second image leaks the first",
       "scope": "pub unsafe extern \"C\" fn sm_load_image",
       "scope_end": "\n}\n",
-      "find": "    release_image();",
-      "replace": "    // release_image();"
+      "find": "    release_image();\n    // SAFETY: single-threaded module.\n    unsafe { *IMAGE.0.get() = Some((ptr, len)) };",
+      "replace": "    // release_image();\n    // SAFETY: single-threaded module.\n    unsafe { *IMAGE.0.get() = Some((ptr, len)) };"
     },
     {
       "name": "a zero-length range is accepted as an image",
@@ -274,6 +274,27 @@
       "scope_end": "\n}\n",
       "find": "    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, uid, gid, 1))",
       "replace": "    let _ = (uid, gid);\n    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, 0, 0, 1))"
+    },
+    {
+      "name": "a load never verifies the seals of what it loaded",
+      "scope": "pub unsafe extern \"C\" fn sm_load_image",
+      "scope_end": "\n}\n",
+      "find": "            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {",
+      "replace": "            if let Err(e) = Ok::<(), Errno>(()) {"
+    },
+    {
+      "name": "an image that failed to authenticate stays mounted",
+      "scope": "pub unsafe extern \"C\" fn sm_load_image",
+      "scope_end": "\n}\n",
+      "find": "                rootfs::reset();\n                release_image();",
+      "replace": "                release_image();"
+    },
+    {
+      "name": "an image that failed to authenticate stays resident",
+      "scope": "pub unsafe extern \"C\" fn sm_load_image",
+      "scope_end": "\n}\n",
+      "find": "                rootfs::reset();\n                release_image();\n                return err(e);",
+      "replace": "                rootfs::reset();\n                return err(e);"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

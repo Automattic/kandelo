@@ -240,6 +240,13 @@
       "scope_end": "\n    let total_blocks = core::cmp::max(total_blocks, 16);\n",
       "find": "    let total_blocks = core::cmp::min(\n        max_blocks,",
       "replace": "    let total_blocks = core::cmp::max(\n        max_blocks,"
+    },
+    {
+      "name": "the archive accessor reports no archives at all",
+      "scope": "pub fn archive_payloads()",
+      "scope_end": "\n}\n",
+      "find": "            .map(|(id, entry)| (*id, entry.payload.clone()))",
+      "replace": "            .filter(|_| false)\n            .map(|(id, entry)| (*id, entry.payload.clone()))"
     }
   ]
 }
