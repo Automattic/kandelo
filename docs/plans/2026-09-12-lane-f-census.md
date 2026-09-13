@@ -3492,7 +3492,22 @@ refused, and neither could happen if nothing had been stored. Perturbing the
 module to store the section without decoding it fails the conflicting-re-seed
 assertion.
 
-**And the paired raise from §59 is withdrawn.** `forkModuleHostDriveEntries` is
-back to 24: `fm_capture_intern` regaining its caller is paid for by deleting a
-real entry rather than by moving a ceiling. The paired-ratchet question in the
-budget file now stands on its own merits instead of excusing a raise.
+**A correction to what I wrote one commit ago.** I claimed the §59 paired raise
+was withdrawn and lowered `forkModuleHostDriveEntries` to 24. That was wrong
+twice over.
+
+The measurement behind it was taken while `fm_set_host_exception_owner` was
+temporarily deleted -- and I then RESTORED that entry, for the reason above. So
+the reduction never existed. `fm_set_activation_exception_tags` is genuinely
+gone, but no production host called it, so it came out of the target-0 bucket
+rather than this one. The ceiling is 25 again and the paired raise stands.
+
+**And I committed with the budget RED.** The surface check failed (25 against a
+ceiling of 24) and the commit landed anyway, because the command was shaped
+`vitest | grep -E "AssertionError|Tests " && git commit` -- and `grep` SUCCEEDED,
+having found the failure line. An `&&` after a grep tests whether the grep
+matched, not whether the suite passed. The standing rule is to run the budget
+before every commit and READ ITS VERDICT LINES; I ran it, printed the verdict,
+and wired the exit code to the wrong thing. Redirect to a file and check
+`vitest`'s own exit status instead -- which is how the correcting commit was
+verified.
