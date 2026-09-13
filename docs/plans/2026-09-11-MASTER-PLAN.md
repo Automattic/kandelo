@@ -664,6 +664,38 @@ implied: `classify_additive_object_by_key` already existed and served
   rebuild and before believing any suite.** The scope document called this "the
   `build-wasm.sh` footgun" in a parenthesis; it belongs here, because the failure
   mode is a green suite.
+- **H-15 — a suite that only exercises VALID input says nothing about the
+  checks that reject invalid input, and reads identically to one that does.**
+  Measured six times in one session, 2026-09-13, across four modules. **Recorded
+  as a numbered hazard only after the sixth**, because the first few looked like
+  ordinary missing coverage; six in a day across unrelated code is a systematic
+  blind spot rather than an accident.
+
+  | what was undefended | why the suite missed it |
+  |---|---|
+  | four of six seal refusals | each test asserted "refused", and a DIFFERENT check was refusing |
+  | the archive entry-count and expanded-size bounds on the tar path | the bounds test extracted a zip |
+  | the document schema/kind identity | every fixture carried the right pair |
+  | the resolved-input count bound | nothing built 4,097 inputs |
+  | the local-fixture permission | nothing opened a build that was NOT allowed to ask |
+  | the `lazy` materialization row, and the input digest | no negative case in that row; every fixture's digest was well formed |
+
+  **The common shape:** a fixture is written once, valid, and then varied only
+  in the dimension the test is named for. Every OTHER rule it passes through is
+  exercised in its passing direction only — so the rule and its absence produce
+  identical results.
+
+  **Mutation testing is what distinguishes them, and nothing else does.** A
+  passing suite, a coverage report, and a careful reading of the assertion all
+  agree the rule is tested. Only removing the rule shows that nothing changes.
+
+  **For every lane, two habits.** Where several checks can refuse the same
+  input, write a case that ISOLATES each — otherwise the suite proves only that
+  something refused. And where a rule is a table, give every ROW a negative
+  case: the `lazy` row above could have been widened to a wildcard with four
+  valid and five invalid combinations already under test, because none of the
+  nine touched that row's negative side.
+
 - **H-14 — a test can pass because its FIXTURE could not express the condition
   under test.** Measured 2026-09-13. A test asserted that an extracted archive
   member never comes out setuid, built its fixture by asking the `zip` crate for
