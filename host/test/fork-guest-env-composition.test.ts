@@ -159,6 +159,35 @@ describe("the thin layer composed against a real instrumented guest", () => {
     expect(message).not.toContain("__wpk_fork_unwind");
   });
 
+  it("pins which object imports the built module actually serves", () => {
+    // `forkGuestObjectImportsUnserved` in the surface budget counts the object
+    // imports (tables, globals, the tag) the module does NOT serve, and it
+    // decides "served" by reading this artifact. This pins the answer so that
+    // a change to what the module exports moves a ratchet deliberately rather
+    // than silently.
+    //
+    // It used to decide by grepping `fork-module-inject/src/main.rs` for
+    // quoted `__wpk_fork*` literals, which a doc COMMENT satisfies: adding
+    // `// ... "__wpk_fork_resume_table" ...` to that file dropped the measure
+    // from 3 to 2 and moved the surface toward its target of 0 without the
+    // module serving anything. Measured against the artifact it stays 3.
+    const exports = new Set(
+      WebAssembly.Module.exports(
+        new WebAssembly.Module(
+          readFileSync(join(repoRoot, "host/wasm/fork_module32.wasm")),
+        ),
+      ).map((entry) => entry.name),
+    );
+    expect(exports.has("__wpk_fork_unwind")).toBe(true);
+    expect(exports.has("__wpk_fork_ref_gc_transit")).toBe(true);
+    // The three a JS host must still supply, each argued in census section 101.
+    expect(exports.has("__wpk_fork_resume_table")).toBe(false);
+    expect(exports.has("__wpk_fork_module_activation")).toBe(false);
+    expect(
+      exports.has("__wpk_fork_module_state_table_generation_addr"),
+    ).toBe(false);
+  });
+
   guard("takes the transit table and the unwind tag from the MODULE", () => {
     // The point is ownership, not presence. A host that mints its own tag makes
     // the module and the guest disagree the moment the module throws one, and

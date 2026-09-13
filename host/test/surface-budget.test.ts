@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -457,12 +457,30 @@ const MEASURED: Record<string, () => number> = {
     ]) {
       names.add(literal);
     }
-    const injected = readFileSync(
-      join(repoRoot, "crates/fork-module-inject/src/main.rs"),
-      "utf8",
-    );
+    // "Served" is decided by the BUILT ARTIFACT, not by grepping the
+    // injector's source for string literals.
+    //
+    // The grep was a proxy and it could only ever be approximate: a name
+    // mentioned in a COMMENT in `fork-module-inject/src/main.rs` counted as
+    // served, so this surface could silently shrink without the module
+    // exporting anything new. The two agreed when this changed (3 and 3) --
+    // the point is that the artifact cannot disagree with itself, and the
+    // grep can disagree with the artifact in either direction.
+    //
+    // This is the same correction `buildForkGuestImports` made: ask the thing
+    // itself rather than a list, or a grep, of what someone remembered.
+    const artifact = join(repoRoot, "host/wasm/fork_module32.wasm");
+    if (!existsSync(artifact)) {
+      throw new Error(
+        `surface budget: ${artifact} is missing, so what the fork module ` +
+          `serves cannot be measured. Build it with ` +
+          `crates/fork-module/build-wasm.sh.`,
+      );
+    }
     const served = new Set(
-      [...injected.matchAll(/"(__wpk_fork[a-z_0-9]+)"/g)].map((m) => m[1]),
+      WebAssembly.Module.exports(
+        new WebAssembly.Module(readFileSync(artifact)),
+      ).map((entry) => entry.name),
     );
     return [...names].filter((name) => !served.has(name)).length;
   },

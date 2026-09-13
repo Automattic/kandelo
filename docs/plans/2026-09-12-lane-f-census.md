@@ -4761,3 +4761,74 @@ the module cannot know before it is called, and one is a reference-typed table
 Rust cannot express. That is a floor with a reason for each entry, which is what
 sections 50 and 58 asked of the function-side floor and what this side did not
 have until now.
+
+## §102 — A ratchet that measured a grep of the injector's source
+
+`forkGuestObjectImportsUnserved` counts the object imports (tables, globals, the
+tag) the fork module does not serve. It decided "served" like this:
+
+```ts
+const injected = readFileSync(".../fork-module-inject/src/main.rs", "utf8");
+const served = new Set(
+  [...injected.matchAll(/"(__wpk_fork[a-z_0-9]+)"/g)].map((m) => m[1]),
+);
+```
+
+A quoted name anywhere in that file counts -- including inside a doc comment.
+Appending one line to the injector:
+
+```rust
+// a doc comment naming "__wpk_fork_resume_table" as future work
+```
+
+drops the measure from 3 to 2, moving the surface toward its target of 0 with
+the module serving nothing new. Measured against the built artifact it stays 3.
+
+The fix is the same correction `buildForkGuestImports` got in section 96 and the
+`fm_stats` accessor got before that: ask the thing itself. "Served" now means
+`WebAssembly.Module.exports(fork_module32.wasm)` contains the name. A missing
+artifact fails loud with the command that builds it, rather than reporting zero
+served and shrinking the surface to its target by accident.
+
+The two measures agree today (3 and 3), which is the point worth stating
+carefully: this is not a bug fix, it is the removal of a way the number could
+have become wrong without anyone touching what it measures. A proxy that agrees
+with the truth is still a proxy.
+
+## §103 — Why the module-state descriptor check is redundant at ONE site, not two
+
+The maintainer asked whether deleting the host's descriptor check is a bad idea
+rather than porting it. The answer differs per call site, and finding that out
+took reading a layer I had not looked at.
+
+`crates/wasm-artifact/src/policy.rs` is "the question asked on **every `exec`**,
+on every process launch, and at every point the resolver picks a binary". It
+calls `describe_fork_contract_failures`, which parses the module-state descriptor
+with the same `ModuleStateFormat::parse_descriptor` the TS mirrors, reports WHICH
+field failed by name, and cross-checks the declared pointer width against both
+the linked-frame descriptor and the module's actual memories.
+
+**Site 2** (`worker-main.ts` ~3522, the main program at process init) compares
+`moduleState.ptrWidth !== linkedFrameFormat.ptrWidth`. That is the identical
+comparison `check_module_state` already made, on an artifact that reached this
+point only by passing `describeWasmArtifactPolicyFailures` during exec
+(`process-lifecycle.ts` ~1750). Provably redundant, and the surviving check is
+STRONGER: it names the failing field where the TS throws a message that reads
+identically for a stale artifact and a byte-corrupted one.
+
+**Site 1** (`worker-main.ts` ~934, a dlopen side activation) is not redundant,
+because the dlopen path never runs the policy. `dylink-loader.ts` and
+`dylink-artifact.ts` contain no reference to `describeWasmArtifactPolicyFailures`
+or any artifact policy at all: side-module bytes arrive through
+`request.moduleBytes` and are compiled. So this host check is the ONLY validation
+that a dlopen'd side module's module-state descriptor is well-formed and matches
+the process.
+
+Two things follow. The deletion is correct for one site and wrong for the other,
+which is why "delete the redundant check" needed verifying rather than asserting
+-- I would have removed real coverage. And there is a finding here that belongs
+to a different lane: **a stale or mis-instrumented dlopen side module does not
+fail the way a stale program does**, because the artifact policy that catches the
+second is not asked about the first. That is a platform-contract gap
+(`docs/agent-guidance/abi.md`: stale fork instrumentation "should fail loudly"),
+not a fork-inversion one, and it is recorded here rather than fixed here.
