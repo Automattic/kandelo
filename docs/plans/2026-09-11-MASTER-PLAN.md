@@ -4565,6 +4565,46 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### The `images/` typecheck reaches a ZERO baseline, and what still blocks wiring it
+
+**2026-09-13.** `images/tsconfig.typecheck.json` was built earlier in this lane
+because no config covered `images/` at all — every builder was unchecked, so a
+broken import or a signature drift surfaced only when a builder was RUN, which
+needs a full sysroot and takes hours. Its first run found four type errors.
+**All four are now fixed and the baseline under `images/` is zero.**
+
+Two were fixed as side effects of the cutovers. The other two were recorded as
+needing maintainer judgement because they sat in *"code this lane did not
+otherwise touch"* — **which was wrong**: this lane reduced
+`staged-product-inputs.ts` from 1,975 lines to 1,816, as recorded three entries
+above. Neither needed behaviour judgement:
+
+* `keyof typeof STAGING_FLAGS` is a `Map`'s METHOD names — `get`, `size` and
+  friends — not its keys, so the cast asserted something both false and
+  useless. It also asserted the flag is a KNOWN one, **which is exactly what the
+  next line checks**. The map is now keyed by `string`, deliberately: the keys
+  are command-line arguments, so every lookup starts from an arbitrary string
+  and `get` returning `undefined` is how an unknown flag is rejected.
+* `kind` was left `unknown` by a ternary chain that narrows it for a reader and
+  not for the compiler, so the value reaching the returned record was never
+  actually known to be one of the three. Checking it before use also retires an
+  empty key list that stood in for "unsupported".
+
+**What still blocks wiring it as a gate is no longer a baseline.** `tsc` exits
+non-zero on five errors in `host/test/centralized-test-helper.ts`, which enters
+the program because `images/vfs/scripts/generate-coreutils-man.ts` imports
+`runCentralizedProgram` from it — **a production build script depending on TEST
+scaffolding**. That coupling is the real finding, and untangling it is a change
+to a script this lane has not touched, so it is recorded rather than done.
+
+**This is the second time today something was blocked by my classification
+rather than by the problem**, the first being gap 21. Both were freed by
+re-reading a note I had written myself. The habit that would have caught both
+earlier: when marking something blocked, name what it is blocked ON precisely
+enough that the claim can be checked later — "a scope question for the
+maintainer" was not checkable, and "this lane has not touched this file" was
+checkable and false.
+
 ### LANE Y IS CLOSED — 36 importers to 0, on the lane's own stated condition
 
 **2026-09-13.** Zero files under `images/` import `memory-fs` or
