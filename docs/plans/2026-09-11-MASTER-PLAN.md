@@ -4015,6 +4015,40 @@ about WHICH check refused. Mutation testing is what tells them apart, and until
 it does, redundant-looking checks and load-bearing ones are indistinguishable
 from the suite.
 
+### Target 2's validator is complete but for the reference SHAPES: 26 trials, 0 survivors
+
+**2026-09-13.** Envelope, per-input core, the role/materialization matrix,
+references, descriptors and paths — all judged in Rust, all defended. What
+remains is the scheme-specific reference forms (the two Pages URL shapes, the
+OCI form, the local-fixture form), each of which also binds the input id, the
+byte count and the ABI version. `bytes` is the last field carrying an
+`allow(dead_code)`, and those rules are what read it.
+
+**Three rules worth keeping beyond this lane.**
+
+**A descriptor belongs to a package output and nothing else.** Carried anywhere
+else it is metadata describing nothing, which nothing can validate against the
+thing it claims to describe. The test walks all four other kinds, because "not a
+package output" is four different values rather than one.
+
+**A descriptor's reference binds the DESCRIPTOR's digest, not the input's.**
+They are different files — one is a package, the other the metadata describing
+it. The mutation swapping them is the one that would pass review: both are
+`sha256` fields on adjacent lines, and the swap produces code that reads
+perfectly and fetches the package when asked for the metadata, then verifies it
+happily because the bytes really do match the digest it was handed.
+
+**A cross-check proves agreement, never validity.** The subtlest H-15 yet: the
+descriptor's reference is checked against the descriptor's own digest field, so
+`sha256:not-a-digest` binding `not-a-digest` passes every cross-check while the
+value is still not a digest. Only a check on the FORM refuses it, and four tests
+exercised the surrounding code without touching it.
+
+**Well-formed and present stay separate throughout.** Paths are shape-checked
+here; whether the file is there is asked where the file is read. A validator
+that required the whole repository present could not run in the places
+validation is most useful.
+
 ### The gap is closed in production: two documents that were accepted are now refused
 
 **2026-09-13**, `b0af50506`. The previous commit built the validator; **this one
