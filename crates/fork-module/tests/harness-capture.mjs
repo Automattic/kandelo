@@ -1357,7 +1357,7 @@ function i31Minter() {
   // The archive coordinates arrive with the once-per-worker format seed, which
   // also RESETS them -- what a COW child depends on. A control address of 0 is
   // a worker with no dlopen archive at all.
-  x.fm_set_format(4, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0, 0);
   assert.equal(lastErrno(), 0, "wasm32 with no archive is a valid seed");
 
   // An unpublished worker is coherent by definition: generation 0, no error.
@@ -1377,7 +1377,7 @@ function i31Minter() {
   const DLOPEN_HEAD_OFFSET_WASM32 = 12;
   const seedControl = (head) => {
     dv().setUint32(CONTROL - DLOPEN_HEAD_OFFSET_WASM32, head, true);
-    x.fm_set_format(4, 0, CONTROL, 3);
+    x.fm_set_format(4, 0, CONTROL, 3, 0);
     assert.equal(lastErrno(), 0, "seeding the control address succeeds");
   };
   seedControl(FIXTURE_HEAD);
@@ -1469,14 +1469,14 @@ function i31Minter() {
 
   // No archive at all: there is no lock word to take, and that is an error
   // rather than a silently ungoverned mutation.
-  x.fm_set_format(4, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0, 0);
   assert.equal(Number(x.__wpk_fork_module_state_table_mutation_begin()), -1);
   assert.equal(lastErrno(), EINVAL, "a worker with no archive cannot begin");
 
   // A real archive, unheld.
   dv().setUint32(CONTROL - 12, 4096, true); // the published head
   Atomics.store(lock, 0, 0);
-  x.fm_set_format(4, 0, CONTROL, 3);
+  x.fm_set_format(4, 0, CONTROL, 3, 0);
   const at = Number(x.__wpk_fork_module_state_table_mutation_begin());
   assert.equal(lastErrno(), 0, `begin errno=${lastErrno()}`);
   assert.ok(at > 0, `begin reports the generation it reached (${at})`);
@@ -1499,7 +1499,7 @@ function i31Minter() {
   // A failed begin holds nothing. Reconcile fails on a malformed head, and if
   // begin kept the writer through that, every other worker would wedge.
   dv().setUint32(CONTROL - 12, 4096 + 8, true);
-  x.fm_set_format(4, 0, CONTROL, 3);
+  x.fm_set_format(4, 0, CONTROL, 3, 0);
   assert.equal(Number(x.__wpk_fork_module_state_table_mutation_begin()), -1);
   assert.equal(lastErrno(), EINVAL, "a begin whose reconcile fails reports it");
   assert.equal(Atomics.load(lock, 0), 0, "and releases the writer it took");
@@ -1526,7 +1526,7 @@ function i31Minter() {
 
   dv().setUint32(CONTROL - 12, 4096, true);
   Atomics.store(lock, 0, 0);
-  x.fm_set_format(4, 0, CONTROL, 3);
+  x.fm_set_format(4, 0, CONTROL, 3, 0);
   assert.ok(
     Number(x.__wpk_fork_module_state_table_mutation_begin()) > 0,
     "the writer is held before the peer waits on it",
@@ -1611,7 +1611,7 @@ function i31Minter() {
 
   // A fresh worker: `fm_set_format` resets the per-activation catalogs, so these
   // activation ids are unseeded regardless of what ran above.
-  x.fm_set_format(4, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format reseeded");
 
   // The real fixture is accepted.
@@ -1653,7 +1653,7 @@ function i31Minter() {
   );
   const AT = SCRATCH_BASE + 24576;
 
-  x.fm_set_format(4, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format reseeded");
   u8().set(codecBytes, AT);
 
@@ -1704,7 +1704,7 @@ function i31Minter() {
   const beta = x.fm_capture_interned;
   const uncatalogued = x.fm_capture_claim_gc;
 
-  x.fm_set_format(4, 0, 0, 0);
+  x.fm_set_format(4, 0, 0, 0, 0);
   assert.equal(lastErrno(), 0, "format seeded");
   x.fm_capture_begin();
   assert.equal(lastErrno(), 0, "a capture session is open");
@@ -1764,6 +1764,80 @@ function i31Minter() {
   // is slot-minus-base. The coordinate lives in the serialized record PAYLOAD and
   // this harness decodes only record headers, so a perturbation interning the raw
   // slot passes everything above. Census section 73.
+}
+
+// ---- Publishing a guest table mutation -------------------------------------
+//
+// `commit` reads each changed slot, resolves the function there to a catalog
+// coordinate, coalesces runs, allocates a record, appends it and publishes the
+// generation -- then releases the writer `begin` took.
+//
+// The SUCCESS path is not reachable here: allocating the record issues SYS_MMAP
+// through the guest's syscall channel, and this harness has no kernel to service
+// it, so a publishing commit would block rather than fail. What IS reachable is
+// everything the module decides BEFORE that syscall, which is where its own
+// logic lives -- and the lock discipline, which matters most when things fail.
+{
+  const LOCK_OFFSET_WASM32 = 20;
+  const CONTROL = 64 * 1024;
+  const lock = new Int32Array(memory.buffer, CONTROL - LOCK_OFFSET_WASM32, 1);
+  const catalog = importObject.env.__wpk_fork_function_catalog;
+  const indirect = importObject.env.__indirect_function_table;
+
+  dv().setUint32(CONTROL - 12, 4096, true);
+  Atomics.store(lock, 0, 0);
+  x.fm_set_format(4, 0, CONTROL, 3, 0);
+  assert.equal(lastErrno(), 0, "format seeded with the control block");
+
+  // A zero-length mutation publishes nothing and is not an error: a zero-length
+  // `table.fill` is legal, and burning a generation for it would make every peer
+  // reconcile against a patch describing no change.
+  assert.ok(
+    Number(x.__wpk_fork_module_state_table_mutation_begin()) >= 0,
+    "the writer is taken",
+  );
+  assert.equal(Atomics.load(lock, 0), -1, "and held");
+  x.__wpk_fork_module_state_table_mutation_commit(3, 0n, 0n);
+  assert.equal(lastErrno(), 0, "a zero-length mutation commits cleanly");
+  assert.equal(Atomics.load(lock, 0), 0, "and releases the writer");
+
+  // A changed slot holding a function the loader never catalogued cannot be
+  // described as a coordinate. The commit must FAIL -- a patch that silently
+  // omitted it would tell peers the slot was cleared -- and it must still
+  // release the writer, or every other worker in the process wedges.
+  // Slot 100, NOT a low one: the module's own dylink entries occupy the start of
+  // this table and it calls them through `call_indirect`. Overwriting slot 1
+  // traps the module inside its own archive decoder -- which is how this test
+  // first failed.
+  const UNCATALOGUED_SLOT = 100;
+  const uncatalogued = x.fm_capture_gated_placeholder;
+  indirect.set(UNCATALOGUED_SLOT, uncatalogued);
+  assert.ok(
+    Number(x.__wpk_fork_module_state_table_mutation_begin()) >= 0,
+    "the writer is taken again",
+  );
+  x.__wpk_fork_module_state_table_mutation_commit(3, BigInt(UNCATALOGUED_SLOT), 1n);
+  // ENOENT, not EINVAL: every other failure in this path reports EINVAL, so
+  // asserting EINVAL here would pass for the wrong reason -- which it did, until
+  // a perturbation that recorded the slot as CLEARED went undetected.
+  const ENOENT = 2;
+  assert.equal(
+    lastErrno(),
+    ENOENT,
+    "an uncatalogued function in the changed range fails the commit",
+  );
+  assert.equal(
+    Atomics.load(lock, 0),
+    0,
+    "and a FAILED commit still releases the writer",
+  );
+  indirect.set(UNCATALOGUED_SLOT, null);
+
+  // Committing without holding the writer is refused rather than forced.
+  x.__wpk_fork_module_state_table_mutation_commit(3, 0n, 0n);
+  assert.notEqual(lastErrno(), 0, "committing without the writer is an error");
+  assert.equal(Atomics.load(lock, 0), 0, "and changes nothing");
+  void catalog;
 }
 
 console.log("fork-module capture harness: all assertions passed");

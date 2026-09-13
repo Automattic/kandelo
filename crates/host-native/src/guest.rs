@@ -5610,7 +5610,7 @@ pub struct ForkModule {
     /// 0, which the module reads as "no archive", not as an error. A host that
     /// grows dlopen support must pass its real control address here or its
     /// function table will never reconcile.
-    pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
+    pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
     pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
     pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
@@ -6129,7 +6129,7 @@ pub(crate) fn instantiate_fork_module(
         memory_base,
         region_bytes,
         catalog_scratch_base,
-        fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32) => ()),
+        fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32, u32) => ()),
         fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
         fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
@@ -6677,7 +6677,7 @@ fn spawn_guest_thread(
                     // import goes through the OLD direct-passthrough branch
                     // below).
                     if let Some(fmt) = fork_format.as_ref() {
-                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0)) {
+                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0)) {
                             eprintln!("fm_set_format failed: {e:#}");
                             return;
                         }
@@ -10079,7 +10079,7 @@ fn run_worker_thread(
             )?;
         }
         if let Some(fmt) = fork_format.as_ref() {
-            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0))?;
+            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0))?;
             let errno = fm.fm_last_errno.call(&mut store, ())?;
             anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
             if !fmt.catalog_ordinals.is_empty() {
@@ -13451,9 +13451,9 @@ mod fork_module_tests {
         // genuinely executable: the call reaches real fork-module code,
         // which itself only works if the module's start function already
         // relocated its passive data segments into the reserved region.
-        fork_module.fm_set_format.call(&mut fm_store, (4, 0, 0, 0))?;
+        fork_module.fm_set_format.call(&mut fm_store, (4, 0, 0, 0, 0))?;
         let errno = fork_module.fm_last_errno.call(&mut fm_store, ())?;
-        assert_eq!(errno, 0, "fm_set_format(4, 0, 0, 0) must succeed on a wasm32 guest");
+        assert_eq!(errno, 0, "fm_set_format(4, 0, 0, 0, 0) must succeed on a wasm32 guest");
 
         Ok(())
     }

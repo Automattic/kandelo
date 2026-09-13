@@ -3837,3 +3837,48 @@ status read from the wrong process, and an attribute an edit consumed. Cargo
 reported this one from the start. The failure was in reading a build's output
 through a filter shaped to find errors -- the same shape that hid the wasm64
 validation failure for three builds.
+
+## §75 — `table_mutation_commit` served: unserved guest imports reach 4
+
+The mutation group is complete. `commit` reads each changed
+`__indirect_function_table` slot, resolves the function there to a catalog
+coordinate, coalesces equal neighbours into runs, sizes and allocates the record
+with `SYS_MMAP` through the guest's own channel, plans the append (§55), applies
+it, publishes the generation LAST, and releases the writer `begin` took.
+
+The host's entire contribution is answering "are these the same function?".
+
+Three pieces made it possible, and each was found by asking what the module
+could not do rather than what the host already did:
+
+- `fm_indirect_slot_catalog_index(dest)` -- injected, because reading a table
+  slot and comparing functions are both things Rust cannot emit. It returns the
+  catalog slot, `-1` for a null slot, `-2` for an uncatalogued function. TWO
+  negative codes, because a null slot is a run recorded as `clear` while an
+  uncatalogued function is a mutation that cannot be described.
+- `fm_indirect_table_size()` -- injected. A patch records the table's LENGTH and
+  the decoder rejects a patch running past it, so the module reads it rather
+  than being told a number a host could get stale.
+- `channel_base`, a fifth `fm_set_format` argument. A borrowed fork child cannot
+  derive it from the archive control address, which belongs to its OWNER.
+
+**The success path is not testable here and that is stated, not implied.**
+Allocating the record issues `SYS_MMAP` through the syscall channel and the V8
+harness has no kernel to service it, so a publishing commit would BLOCK rather
+than fail. What is tested is every decision before that syscall, plus the lock
+discipline: a zero-length mutation commits cleanly without burning a generation,
+an uncatalogued function in the changed range fails, a FAILED commit still
+releases the writer, and committing without holding the writer is refused.
+
+**Two test defects this turned up, both mine.**
+
+A perturbation that recorded an uncatalogued function as a CLEARED SLOT passed.
+The commit still failed -- but with `EINVAL` from `channel_base`, the same code
+the intended path used, so the assertion could not tell the two apart. The fix
+is in the module, not the test: "no such catalog entry" is now `ENOENT`, which
+nothing else in that path returns. A test that cannot distinguish the right
+failure from a wrong one is the §19 pattern wearing a different hat.
+
+And the first version of the test clobbered `__indirect_function_table[1]` --
+inside the module's OWN dylink entries, which it calls through `call_indirect`.
+It trapped in the archive decoder. Slot 100 now, with the reason written down.

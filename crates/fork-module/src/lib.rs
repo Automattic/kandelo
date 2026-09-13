@@ -222,6 +222,15 @@ mod wasm {
         /// `memory.atomic.notify(addr, count) -> i32`, returning how many
         /// waiters were woken. Injector-rewritten into a local thunk.
         fn __wpk_fork_atomic_notify(addr: u32, count: u32) -> i32;
+
+        /// Which merged function-catalog slot holds the function at
+        /// `__indirect_function_table[dest]`: `-1` if the slot is null, `-2` if
+        /// the function is not catalogued. Injector-emitted; see
+        /// `inject_indirect_slot_catalog`.
+        fn fm_indirect_slot_catalog_index(dest: u32) -> i32;
+
+        /// `table.size` of the guest's indirect function table.
+        fn fm_indirect_table_size() -> i32;
     }
 
     /// Block until the i32 at `addr` stops being `expected`.
@@ -1672,6 +1681,7 @@ mod wasm {
         fixed_prefix_size: u32,
         archive_control_addr: usize,
         table_owner: u32,
+        channel_base: usize,
     ) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
         if abi::wpk_fork_linked_chunk_header_size(pointer_width as u8).is_none() {
@@ -1725,6 +1735,7 @@ mod wasm {
         // and has to arrive with the rest of the per-worker setup.
         ARCHIVE_CONTROL.store(archive_control_addr, Ordering::Relaxed);
         ARCHIVE_OWNER.store(table_owner, Ordering::Relaxed);
+        CHANNEL_BASE.store(channel_base, Ordering::Relaxed);
         ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
         ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
@@ -4251,8 +4262,15 @@ mod wasm {
         fixed_prefix_size: u32,
         archive_control_addr: usize,
         table_owner: u32,
+        channel_base: usize,
     ) {
-        match set_format_impl(pointer_width, fixed_prefix_size, archive_control_addr, table_owner) {
+        match set_format_impl(
+            pointer_width,
+            fixed_prefix_size,
+            archive_control_addr,
+            table_owner,
+            channel_base,
+        ) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -5770,6 +5788,8 @@ mod wasm {
     /// than per activation, because the module writes exactly one table: the
     /// `__indirect_function_table` it imports.
     static ARCHIVE_OWNER: AtomicU32 = AtomicU32::new(0);
+    /// This worker's syscall channel base; 0 until `fm_set_format` seeds it.
+    static CHANNEL_BASE: AtomicUsize = AtomicUsize::new(0);
     /// The generation this worker has applied, low and high halves.
     static ARCHIVE_APPLIED: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 
@@ -5909,6 +5929,226 @@ mod wasm {
         }
         set_ok();
         reached
+    }
+
+    /// The guest's indirect function table length, read rather than told.
+    fn indirect_table_length() -> u32 {
+        // SAFETY: after injection this is one `table.size` on the imported table.
+        let size = unsafe { fm_indirect_table_size() };
+        if size < 0 { 0 } else { size as u32 }
+    }
+
+    /// This worker's syscall channel base, seeded with the rest of the
+    /// per-worker format. Needed because publishing a patch allocates its record
+    /// with `SYS_MMAP` through the same channel the guest uses, and a borrowed
+    /// fork child cannot derive it from the archive control address -- that one
+    /// belongs to its owner.
+    fn channel_base() -> Result<u64, Errno> {
+        let base = CHANNEL_BASE.load(Ordering::Relaxed);
+        if base == 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(base as u64)
+    }
+
+    /// Address of the archive's LAST table-patch record, or `None` when it has
+    /// none.
+    ///
+    /// Read from the header's own tail cursor rather than by walking the chain:
+    /// the decoder does not retain record addresses, and re-deriving the tail by
+    /// walking would be a second reader of the same pointers.
+    fn archive_table_patch_tail(
+        archive: &fork_codec::dylink_archive::DylinkArchive,
+        head: u64,
+        _pointer_width: u8,
+    ) -> Result<Option<u64>, Errno> {
+        if archive.table_patches.is_empty() {
+            return Ok(None);
+        }
+        const HEADER_LAST_PATCH_OFFSET: u64 = 64;
+        let at = head.checked_add(HEADER_LAST_PATCH_OFFSET).ok_or(Errno::EINVAL)?;
+        let bytes = fork_codec::dylink_archive::ArchiveBytes::slice(&GuestArchiveBytes, at, 8)?;
+        let tail = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EINVAL)?);
+        if tail == 0 {
+            // The header says there are patches but names no tail, so the image
+            // is inconsistent with itself.
+            return Err(Errno::EINVAL);
+        }
+        Ok(Some(tail))
+    }
+
+    /// Write bytes into guest linear memory, bounds-checked.
+    fn write_guest_bytes(address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let start = usize::try_from(address).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(bytes.len()).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds-checked above, into the guest's shared linear memory.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                core::hint::black_box(start) as *mut u8,
+                bytes.len(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_commit(owner,
+    /// first_index, length)`.
+    ///
+    /// Publish what the guest just wrote into `__indirect_function_table`, then
+    /// release the archive writer `begin` took.
+    ///
+    /// Every step is the module's: read each changed slot, resolve the function
+    /// there to a catalog coordinate, coalesce equal neighbours into runs, size
+    /// and allocate the record with `SYS_MMAP` through the guest's own channel,
+    /// plan the append, apply it, and publish the generation LAST. The host's
+    /// only contribution is answering "are these the same function?" while the
+    /// coordinates are resolved.
+    ///
+    /// The writer is released on EVERY exit, including the failing ones. A commit
+    /// that failed while holding it would wedge every other worker in the
+    /// process, which is worse than the mutation being lost.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_mutation_commit(
+        owner: u32,
+        first_index: u64,
+        length: u64,
+    ) {
+        let result = commit_table_mutation_impl(owner, first_index, length);
+        // Release before reporting, so a caller that ignores errno still does not
+        // leave the process wedged.
+        let released = release_archive_writer();
+        match result.and(released) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    fn commit_table_mutation_impl(
+        owner: u32,
+        first_index: u64,
+        length: u64,
+    ) -> Result<(), Errno> {
+        let first = u32::try_from(first_index).map_err(|_| Errno::EINVAL)?;
+        let count = u32::try_from(length).map_err(|_| Errno::EINVAL)?;
+        if count == 0 {
+            // Nothing changed. Not an error -- a zero-length `table.fill` is
+            // legal -- and publishing an empty patch would burn a generation
+            // every peer then reconciles against for no reason.
+            return Ok(());
+        }
+        first.checked_add(count).ok_or(Errno::EINVAL)?;
+
+        // One run per maximal stretch of slots holding the same coordinate, which
+        // is what makes a bulk `table.fill` one record instead of `count` of them.
+        let mut runs: Vec<fork_codec::dylink_archive::DylinkTablePatchRun> = Vec::new();
+        for offset in 0..count {
+            let index = fm_indirect_slot_catalog_index_safe(first + offset)?;
+            let function = match index {
+                None => None,
+                Some(slot) => Some(catalog_slot_coordinate(slot)?),
+            };
+            match runs.last_mut() {
+                Some(last) if last.function == function => last.length += 1,
+                _ => runs.push(fork_codec::dylink_archive::DylinkTablePatchRun {
+                    length: 1,
+                    function,
+                }),
+            }
+        }
+
+        let head = archive_head()?;
+        if head == 0 {
+            return Err(Errno::EINVAL); // nothing published to append to
+        }
+        let pointer_width = format()?.pointer_width;
+        let archive = fork_codec::dylink_archive::decode_dylink_archive(
+            &GuestArchiveBytes,
+            head,
+            pointer_width,
+        )?;
+        let patch = fork_codec::dylink_archive::DylinkTablePatch {
+            generation: archive.generation.checked_add(1).ok_or(Errno::EINVAL)?,
+            // The guest's import signature carries no activation, and the planner
+            // reads each RUN's own activation rather than this field, so recording
+            // a guessed one would be a fiction nothing consumes.
+            activation_id: 0,
+            owner_id: owner,
+            start: u64::from(first),
+            table_length: u64::from(indirect_table_length()),
+            runs,
+        };
+        let size = fork_codec::dylink_archive::table_append::appended_record_size(&patch)?;
+        let record_at = channel_mmap(channel_base()?, size)?;
+        let plan = fork_codec::dylink_archive::table_append::plan_table_patch_append(
+            &archive,
+            head,
+            archive_table_patch_tail(&archive, head, pointer_width)?,
+            record_at,
+            &patch,
+        )?;
+        // Every write lands BEFORE the generation. A peer that saw the newer
+        // generation first would follow a `next` pointer into memory this
+        // mutation had not filled in yet.
+        for write in &plan.writes {
+            write_guest_bytes(write.address, &write.bytes)?;
+        }
+        write_guest_bytes(plan.generation_address, &plan.generation.to_le_bytes())?;
+        // This worker wrote it, so it already reflects it.
+        ARCHIVE_APPLIED[0].store((plan.generation & 0xffff_ffff) as u32, Ordering::Relaxed);
+        ARCHIVE_APPLIED[1].store((plan.generation >> 32) as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Safe wrapper over the injected indirect-slot lookup. `None` is a null
+    /// slot; an uncatalogued function is `EINVAL`.
+    fn fm_indirect_slot_catalog_index_safe(dest: u32) -> Result<Option<u32>, Errno> {
+        // SAFETY: after injection this reads one indirect-table slot and scans
+        // the imported catalog, both bounds-checked by wasm itself.
+        match unsafe { fm_indirect_slot_catalog_index(dest) } {
+            -1 => Ok(None),
+            // A function the loader never catalogued cannot be described as a
+            // coordinate, and a patch that omitted it would tell peers the slot
+            // was cleared.
+            //
+            // ENOENT rather than EINVAL, deliberately: "no such catalog entry" is
+            // a different event from "bad argument", and every other way this
+            // commit can fail reports EINVAL. Sharing one code made the two
+            // indistinguishable to a test -- which is how a perturbation that
+            // treated an uncatalogued function as a CLEARED SLOT passed.
+            -2 => Err(Errno::ENOENT),
+            slot => Ok(Some(slot as u32)),
+        }
+    }
+
+    /// Merged catalog slot -> the `(activation, ordinal)` a patch run records.
+    fn catalog_slot_coordinate(
+        slot: u32,
+    ) -> Result<fork_codec::dylink_archive::DylinkTableFunction, Errno> {
+        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
+        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        let mut owner: Option<(u32, u32)> = None;
+        for entry in map.iter().take(count) {
+            let (activation, base) = (entry[0], entry[1]);
+            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
+                owner = Some((activation, base));
+            }
+        }
+        match owner {
+            Some((activation, base)) => Ok(fork_codec::dylink_archive::DylinkTableFunction {
+                activation_id: activation,
+                ordinal: slot - base,
+            }),
+            None if count == 0 => Ok(fork_codec::dylink_archive::DylinkTableFunction {
+                activation_id: 0,
+                ordinal: slot,
+            }),
+            None => Err(Errno::EINVAL),
+        }
     }
 
     /// Guest-facing `env.__wpk_fork_module_state_table_mutation_abort()`.

@@ -71,6 +71,13 @@ export interface ForkModuleBackendOptions {
   readonly archiveControlAddr?: number;
   /** The physical table whose patches this worker applies. */
   readonly tableOwner?: number;
+  /**
+   * This worker's syscall channel base. Publishing a table patch allocates its
+   * record with SYS_MMAP through the same channel the guest uses, so the module
+   * needs it -- and a borrowed fork child cannot derive it from the archive
+   * control address, which belongs to its owner.
+   */
+  readonly channelBase?: number;
   readonly label?: string;
 }
 
@@ -120,6 +127,7 @@ export class ForkModuleContinuationBackend {
       this.options.format.fixedPrefixSize,
       this.options.archiveControlAddr ?? 0,
       this.options.tableOwner ?? 0,
+      this.options.channelBase ?? 0,
     );
     // The catalog is seeded AFTER the format, which resets it. Seeding first
     // would be silently discarded -- the bug the module's own reset comment
@@ -139,15 +147,19 @@ export class ForkModuleContinuationBackend {
     this.didSetup = true;
   }
 
-  /** One module counter, by name rather than by a method each. */
+  /**
+   * One module counter, by name rather than by a method each.
+   *
+   * No local "is that a real field?" check: `fm_stats` answers -1 for a field it
+   * does not have, and the module is the authority on which fields exist.
+   * Checking first here would be a second opinion on the same question, which is
+   * the duplication this lane has been removing everywhere else.
+   */
   stat(name: ForkModuleStat): bigint {
     const field = FORK_MODULE_STATS.indexOf(name);
-    if (field < 0) {
-      throw new RangeError(`${this.label}: no such stat ${name}`);
-    }
     const value = (this.exports.fm_stats as (f: number) => bigint)(field);
     if (value < 0n) {
-      throw new Error(`${this.label}: fm_stats rejected field ${field}`);
+      throw new Error(`${this.label}: fm_stats rejected field ${field} (${name})`);
     }
     return value;
   }

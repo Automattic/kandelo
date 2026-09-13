@@ -140,6 +140,13 @@ const HOST_FUNC_IDENTITY_IMPORT: &str = "__wpk_fork_host_func_identity";
 /// Guest-facing capture entry: `(funcref) -> recipe`.
 const ENCODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_encode_funcref";
 
+/// Reads one `__indirect_function_table` slot and reports which merged
+/// function-catalog slot holds the same function. See `inject_indirect_slot_catalog`.
+const INDIRECT_SLOT_CATALOG_IMPORT: &str = "fm_indirect_slot_catalog_index";
+
+/// `table.size` of the guest's indirect function table, which Rust cannot emit.
+const INDIRECT_TABLE_SIZE_IMPORT: &str = "fm_indirect_table_size";
+
 /// Rust helpers the scan calls once it has an answer.
 const FUNCREF_SLOT_TO_RECIPE_HELPER: &str = "fm_funcref_slot_to_recipe";
 const FUNCREF_UNCATALOGUED_HELPER: &str = "fm_funcref_uncatalogued";
@@ -504,6 +511,131 @@ fn inject_encode_funcref(module: &mut Module) -> Result<()> {
     }
     let shim = builder.finish(vec![wanted], &mut module.funcs);
     module.exports.add(ENCODE_FUNCREF_EXPORT, shim);
+    Ok(())
+}
+
+/// Rewrite `fm_indirect_slot_catalog_index(dest) -> i32` into a local thunk.
+///
+/// Publishing a guest table mutation means describing what the guest WROTE, and
+/// the description is a catalog coordinate. So for each changed slot the module
+/// asks the same question `encode_funcref` asks, about a function it reads out of
+/// the indirect table rather than one it was handed.
+///
+/// Returns the merged catalog slot, or:
+///   `-1` the indirect slot is null, a legitimate cleared entry;
+///   `-2` the function is not in the catalog at all.
+///
+/// Two codes rather than one because they are not the same event: a null slot is
+/// a run the patch records as `clear`, while an uncatalogued function is a
+/// mutation that cannot be described and must fail the commit.
+fn inject_indirect_slot_catalog(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, INDIRECT_SLOT_CATALOG_IMPORT) else {
+        return Ok(());
+    };
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
+    let identity = import_host_func_identity(module);
+    let catalog_is_64 = module.tables.get(catalog).table64;
+    let indirect_is_64 = module.tables.get(indirect).table64;
+    let want_id = module.locals.add(ValType::I32);
+    let i = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    let held = module.locals.add(ValType::Ref(RefType::FUNCREF));
+    let entry = module.locals.add(ValType::Ref(RefType::FUNCREF));
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let dest = args[0];
+            let mut loop_body = body.dangling_instr_seq(None);
+            let loop_id = loop_body.id();
+            loop_body
+                .local_get(i)
+                .local_get(size)
+                .binop(BinaryOp::I32GeU)
+                .if_else(
+                    None,
+                    |done| {
+                        done.i32_const(-2).return_();
+                    },
+                    |work| {
+                        work.local_get(i);
+                        if catalog_is_64 {
+                            work.unop(UnaryOp::I64ExtendUI32);
+                        }
+                        work.table_get(catalog).local_set(entry);
+                        work.local_get(entry).ref_is_null().if_else(
+                            None,
+                            |_null| {},
+                            |occupied| {
+                                occupied
+                                    .local_get(entry)
+                                    .call(identity)
+                                    .local_get(want_id)
+                                    .binop(BinaryOp::I32Eq)
+                                    .if_else(
+                                        None,
+                                        |found| {
+                                            found.local_get(i).return_();
+                                        },
+                                        |_| {},
+                                    );
+                            },
+                        );
+                        work.local_get(i)
+                            .i32_const(1)
+                            .binop(BinaryOp::I32Add)
+                            .local_set(i);
+                        work.instr(Br { block: loop_id });
+                    },
+                );
+            drop(loop_body);
+
+            body.local_get(dest);
+            if indirect_is_64 {
+                body.unop(UnaryOp::I64ExtendUI32);
+            }
+            body.table_get(indirect).local_set(held);
+            body.local_get(held).ref_is_null().if_else(
+                None,
+                |null| {
+                    null.i32_const(-1).return_();
+                },
+                |_| {},
+            );
+            body.local_get(held).call(identity).local_set(want_id);
+            body.table_size(catalog);
+            if catalog_is_64 {
+                body.unop(UnaryOp::I32WrapI64);
+            }
+            body.local_set(size);
+            body.i32_const(0).local_set(i);
+            body.instr(Loop { seq: loop_id });
+            body.i32_const(-2);
+        })
+        .with_context(|| format!("rewriting {INDIRECT_SLOT_CATALOG_IMPORT}"))?;
+    Ok(())
+}
+
+/// Rewrite `fm_indirect_table_size() -> i32` into a local thunk.
+///
+/// A published table patch records the table's LENGTH, and the decoder rejects a
+/// patch whose range runs past it. Rust cannot emit `table.size`, so without this
+/// the module would have to be TOLD a number it can read for itself -- and a host
+/// that told it a stale one would publish patches the decoder refuses.
+fn inject_indirect_table_size(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, INDIRECT_TABLE_SIZE_IMPORT) else {
+        return Ok(());
+    };
+    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
+    let is64 = module.tables.get(indirect).table64;
+    module
+        .replace_imported_func(import_fn, |(body, _args)| {
+            body.table_size(indirect);
+            if is64 {
+                body.unop(UnaryOp::I32WrapI64);
+            }
+        })
+        .with_context(|| format!("rewriting {INDIRECT_TABLE_SIZE_IMPORT}"))?;
     Ok(())
 }
 
@@ -1172,6 +1304,9 @@ fn main() -> Result<()> {
     inject_activation_trampolines(&mut module)
         .context("emitting the per-activation frame trampolines")?;
     inject_encode_funcref(&mut module).context("injecting __wpk_fork_ref_encode_funcref")?;
+    inject_indirect_slot_catalog(&mut module)
+        .context("injecting fm_indirect_slot_catalog_index")?;
+    inject_indirect_table_size(&mut module).context("injecting fm_indirect_table_size")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
     // Validate before writing. An injected function with a bad local index or a
