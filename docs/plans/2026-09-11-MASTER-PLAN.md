@@ -2572,11 +2572,16 @@ nine cases are checked in both hosts. **It was written without running
 anything and has since been run**, and running it caught a defect reading had
 not: the test oracle's LEB128 walk lost one byte per name, so it had silently
 reported "no imported memory" and fallen back to 16 MiB. Of four further items,
-**two are now applied and verified** — a dead branch, and three scratch call
-sites that restated a length the region already knows, now asking
-`.capacity()`. **Two remain open**: the source guard that would hold those
-sites, and corpus-driving the TypeScript refusals, which needs BigInt-safe
-parsing because a heap base of 2^63 is not a safe JavaScript integer. See
+**three are now applied and verified** — a dead branch, three scratch call
+sites that restated a length the region already knows, and the source guard
+that holds them. **Building the guard found a fourth site the reading had
+classified as harmless**: `handle_spawn` passed the blob's length where
+`kernel_spawn_blob_decode` declares `buf_capacity`, so the kernel's own
+`blob_len > buf_capacity` refusal was fed the same number twice and could
+never fire — H-2 on the far side of the ABI, manufactured by a restated length
+on this one. **One remains open**: corpus-driving the TypeScript refusals,
+which needs BigInt-safe parsing because a heap base of 2^63 is not a safe
+JavaScript integer. See
 `docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
 **The 3,600 target is not derived, and no number here replaces it.** The L1

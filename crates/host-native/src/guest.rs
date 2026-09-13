@@ -2629,6 +2629,105 @@ mod proc_bytes_tests {
             );
         }
     }
+    /// A scratch pointer may not travel to a kernel export without the
+    /// capacity of the SAME region beside it.
+    ///
+    /// The sibling check above guarantees every allocation goes through
+    /// [`KernelScratch`], and the type guarantees a write cannot exceed what
+    /// the allocator gave. Neither covers the length a call site hands to a
+    /// kernel export beside the pointer, which is the third place the two can
+    /// disagree — and where this host was still restating lengths after L5's
+    /// first pass.
+    ///
+    /// Writing this check is what found the last one. A site that binds the
+    /// pointer to a local first (`let s = region.<pointer>() as u32 as usize`)
+    /// reads like a base address for manual indexing, and was classified as
+    /// one; it then passed the BLOB's length where
+    /// `kernel_spawn_blob_decode` declares `buf_capacity`, so the kernel's own
+    /// `blob_len > buf_capacity` refusal was fed the same number twice and
+    /// could never fire. Hazard H-2 on the far side of the ABI, created by a
+    /// restated length on this one.
+    ///
+    /// Two exemptions, both genuine base addresses: the syscall channel's
+    /// base, stored on `GuestProcess` and indexed against
+    /// `MIN_CHANNEL_SIZE` for the life of the process. An exemption list
+    /// that grows silently is how a guard stops meaning anything, so the
+    /// count is pinned.
+    #[test]
+    fn a_scratch_pointer_never_travels_without_its_own_capacity() {
+        let source = include_str!("guest.rs");
+        // Assembled, like the sibling check: a literal needle would match
+        // inside this test and report violations it invented.
+        let pointer = concat!(".p", "tr()");
+        let capacity = concat!(".cap", "acity()");
+
+        let mut paired = 0usize;
+        let mut exempt = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+
+        let mut at = 0usize;
+        while let Some(found) = source[at..].find(pointer) {
+            let idx = at + found;
+            at = idx + pointer.len();
+
+            // The receiver is the identifier immediately before the call.
+            // An empty one means prose or a doc comment, not code.
+            let head = &source[..idx];
+            let region: String = head
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if region.is_empty() {
+                continue;
+            }
+
+            // The statement this use sits in, and the one after it: a site
+            // may bind the pointer to a local and pass it on the next line.
+            let rest = &source[at..];
+            let stmt_end = rest.find(';').map(|i| i + 1).unwrap_or(rest.len());
+            let stmt = &rest[..stmt_end];
+            let tail = &rest[stmt_end..];
+            let next_end = tail.find(';').map(|i| i + 1).unwrap_or(tail.len());
+            let window = format!("{stmt}{}", &tail[..next_end]);
+            let needle = format!("{region}{capacity}");
+
+            if window.contains(&needle) {
+                paired += 1;
+            } else if stmt.trim_start().starts_with("as u32 as usize;") {
+                // A base address kept for manual indexing. Named, counted,
+                // and capped below — never a silent fallthrough.
+                exempt += 1;
+            } else {
+                let line = source[..idx].lines().count();
+                offenders.push(format!("{region} at guest.rs:{line}"));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a scratch pointer reached a call without its own region's \
+             capacity beside it: {offenders:?}. Ask the region, do not \
+             restate the length — they are the two that can disagree.",
+        );
+        assert_eq!(
+            exempt, 2,
+            "exactly two scratch pointers are base addresses (the syscall \
+             channel, per process); found {exempt}. A new one is not \
+             automatically wrong, but it must be read and this count moved \
+             deliberately, never to make the check pass.",
+        );
+        assert!(
+            paired >= 9,
+            "only {paired} pointer/capacity pairs found; this check reads \
+             its own file, so a collapse to zero means the scan broke, not \
+             that the host got cleaner. Raise this floor when sites are \
+             added, never lower it to make a run pass.",
+        );
+    }
     /// The other half: a capacity that does not fit the memory at all is
     /// refused even when the bytes being written would have.
     #[test]
@@ -11957,8 +12056,13 @@ fn handle_spawn(
     };
     blob_scratch.write(kernel_mem, &blob_bytes)?;
     let scratch = blob_scratch.ptr() as u32 as usize;
-    let decoded_len =
-        spawn_blob_decode.call(&mut *kernel_store, (scratch as i32, blob_len as i32, blob_len as i32))?;
+    // Second argument is the REGION's capacity, not the blob's length: the
+    // kernel refuses `blob_len > buf_capacity`, and feeding it `blob_len`
+    // twice is what made that refusal unable to fire.
+    let decoded_len = spawn_blob_decode.call(
+        &mut *kernel_store,
+        (scratch as i32, blob_scratch.capacity() as i32, blob_len as i32),
+    )?;
     if decoded_len < 0 {
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -decoded_len);
     }
@@ -11966,7 +12070,9 @@ fn handle_spawn(
 
     // `kernel_spawn_blob_decode` overwrote `scratch` in place; re-stage the
     // untouched RAW blob bytes before `kernel_spawn_process`'s own parse.
-    unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
+    // Through the region, like the first staging above: a bare
+    // `write_bytes` here would be the same unchecked copy L-D1 filed.
+    blob_scratch.write(kernel_mem, &blob_bytes)?;
     let child_pid =
         spawn_process.call(&mut *kernel_store, (parent_pid, caller_tid, scratch as i32, blob_len as i32))?;
     if child_pid <= 0 {

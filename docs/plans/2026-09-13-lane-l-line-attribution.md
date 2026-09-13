@@ -701,7 +701,7 @@ anchors no longer resolve, and the rot is invisible to anyone who does not
 follow them.** A shared corpus or a generated constant cannot rot this way,
 because nothing has to be re-stated to stay true.
 
-### Four items: two now fixed and verified, two still open
+### Four items: three now fixed and verified, one still open
 
 **The two Rust items were applied and verified on 2026-09-13**, once the disk
 hold lifted. They were held as patches for nine hours because editing Rust
@@ -771,15 +771,53 @@ change in the same commit.**
   disagree. Of eleven `.ptr()` uses, five pair it with `.capacity()`, three
   are base addresses for manual indexing, and **three restated the length**:
   `manifest_len` at the rootfs manifest, and `prefixes.len()`/`roots.len()` at
-  the foreign-prefix and root calls. They equalled the allocation, which is
+  the foreign-prefix and root calls. **That census was wrong by one, and
+  building the guard is what found it — see below.** They equalled the allocation, which is
   "sound by construction" — the exact property the type's own doc comment says
   is not an invariant. **FIXED 2026-09-13**: all three now ask the region via
   `.capacity()`, so pointer and length come from the same object at every site,
   and `host-native`'s 69 tests pass with the change in.
-- **The guard that would hold those three** is a source check that no `.ptr()`
-  reaches a kernel call without `.capacity()` beside it. It has to tell a
-  pointer/length pair from a base address, which the existing contract test
-  does not have to do.
+- **The guard that would hold those three is BUILT, and it found a fourth
+  site.** `a_scratch_pointer_never_travels_without_its_own_capacity` scans this
+  host's own source: for every scratch pointer that reaches a call, the
+  capacity of the **same region** must appear beside it, within that statement
+  or the one after (a site may bind the pointer to a local first). Base
+  addresses are exempt, and the exemption is a pinned count rather than a
+  silent fallthrough.
+
+  **The fourth site had been classified as one of those base addresses.**
+  `handle_spawn` writes `let scratch = blob_scratch.ptr() as u32 as usize`,
+  which reads like manual indexing — and then passes `scratch` to two kernel
+  exports. At `kernel_spawn_blob_decode` it passed `blob_len` where the kernel
+  declares `buf_capacity`:
+
+  ```rust
+  // kernel: fn kernel_spawn_blob_decode(buf_ptr, buf_capacity, blob_len)
+  //   if blob_len == 0 || blob_len > buf_capacity { return -EINVAL }
+  spawn_blob_decode.call(.., (scratch as i32, blob_len as i32, blob_len as i32))
+  ```
+
+  **The kernel's own refusal was being fed the same number twice, so it could
+  never fire.** That is hazard H-2 on the far side of the ABI, manufactured by
+  a restated length on this side — the clearest argument yet for why "sound by
+  construction" is not the same as enforced. Fixed to ask
+  `blob_scratch.capacity()`. The same block also re-staged the raw blob with a
+  bare `write_bytes` after the kernel overwrote the region, while the FIRST
+  staging four lines above went through the region; it now does too.
+
+  Perturbed until it failed, three ways, each rebuilt and run:
+  * Restate `manifest_len` beside `manifest`'s pointer — flagged, by name and
+    line.
+  * Hand a site a DIFFERENT region's capacity (`root_scratch`'s pointer with
+    `prefix_scratch`'s capacity) — flagged. This is the one that matters: a
+    check satisfied by any nearby capacity would be answering a weaker
+    question than it claims.
+  * Introduce a third base-address binding — the pinned exemption count fails.
+
+  A fourth attempt is worth recording because it proved nothing: swapping in a
+  region that is not yet in scope at that line did not compile, so the test
+  never ran and printed no verdict. A perturbation that does not build is not
+  evidence the guard holds, and it looked exactly like a pass.
 - **Driving the TypeScript refusals from the corpus** needs BigInt-safe
   parsing: a heap base of 2^63 is not a safe JavaScript integer, and
   `layoutAddressIn` refuses an unsafe one with a different message than the
