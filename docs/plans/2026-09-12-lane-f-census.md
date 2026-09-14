@@ -7573,3 +7573,65 @@ selection, the re-seed key, the per-space kind validation, and -- in fork-codec
 -- the table election, its base-import fallback, the missing-declaration
 refusal, and the encoder's kind, ordering and length checks.
 
+---
+
+## §155 — The stride is all nine, and the compiler is the worklist
+
+The maintainer asked whether the strides are too small, and whether one stride
+should be all nine of `worker-main.ts`'s attic imports. It should, and section
+153 is the argument: **no test that boots a kernel can load until the last of
+the nine is gone**, so eight-of-nine measures exactly zero. Splitting work whose
+feedback cannot arrive until the end buys nothing and costs the ability to
+attribute anything.
+
+**The size, measured rather than guessed.** The nine modules are 13,132 lines of
+set-aside TypeScript, but `worker-main.ts` touches only their surface: 24
+symbols across 64 use sites.
+
+| module | lines | symbols | uses |
+|---|---|---|---|
+| `fork-module-state` | 3,825 | 5 | 11 |
+| `fork-activation-registry` | 2,098 | 4 | 13 |
+| `fork-early-reference-provider` | 1,619 | 1 | 3 |
+| `fork-process-continuation` | 1,471 | 2 | 8 |
+| `fork-imported-globals` | 1,229 | 4 | 10 |
+| `fork-reference-segments` | 1,098 | 2 | 4 |
+| `fork-gc-codec` | 905 | 2 | 4 |
+| `fork-exception-provider` | 507 | 3 | 8 |
+| `fork-table-snapshot` | 380 | 1 | 3 |
+
+**And the compiler already knows the whole of it.** `npm run typecheck` in
+`host/` reports 62 errors: 10 unresolved modules (the nine, plus
+`browser-fork-module-artifact` in `browser-kernel-host.ts`) and 40 implicit-any
+parameters cascading from them, with a dozen real type errors behind. That list
+is the worklist, and it shrinks monotonically as the stride proceeds. It is also
+the reason the stride is finishable: 62 errors, not 13,132 lines.
+
+**Acceptance.** `forkAtticImports` 9 → 0, the typecheck at zero unresolved
+modules, and the suite LOADING -- 201 failing files is a floor that cannot move
+until then, and the number it lands on afterwards is the first honest
+measurement this lane has had.
+
+**Not in this stride, and deliberately.** Forty-four files under `host/test`
+import the attic modules directly (19 of them `fork-module-state`). They fail
+now and will still fail after; they are tests OF the deleted implementation, and
+re-pointing or deleting them is its own decision, per test, about what the
+module should be proving instead. Bundling that would turn a finishable stride
+into an open-ended one.
+
+**Dispositions, three outcomes per symbol.** Call the module; keep a thin host
+floor with the capability limit named; or delete because the finished call site
+has no such call. Four are already settled by work in this lane:
+
+| symbol | disposition |
+|---|---|
+| `ForkImportedGlobalCapture` | module: the bindings are assembled at capture (§150, §152, §154); the host keeps only the recording import wrapper |
+| `ForkModuleStateArena` | module: `fm_module_state_arena`, waiting on this cutover for its first caller |
+| `computeForkModuleTemplateId` | host floor: a hash of module BYTES, seeded via `fm_set_activation_template_id` |
+| `forkGcCodecProviderFromInstance` | module: `fm_set_activation_gc_codec` already takes the seed |
+
+The remaining twenty are decided at the call site, which is where the question
+"what does the finished worker-main say here" can actually be answered. Recording
+them in this table as they land, rather than predicting them now, is the point of
+letting the consumer's end state drive.
+
