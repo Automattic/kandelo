@@ -8370,3 +8370,53 @@ session here -- were "safe to remove" by a reading of their consumers that was
 one layer too shallow. Both times the missing consumer was a call the removed
 code MADE, not an interface it exposed. The check that would have caught both:
 before deleting a caller, list what it CALLS as well as what calls it.
+
+---
+
+## §171 — The child planner, and the one entry it asks for
+
+With a child able to attach, the last piece of the imported-global port is the
+CHILD half: `ForkImportedGlobalPlanner`, 468 lines of the attic's
+`fork-imported-globals.ts`. This is the proposal, because it needs an entry on
+the surface the maintainer has questioned twice.
+
+**What the host irreducibly does.** A child's import object is a JavaScript
+object, and the values it carries are `WebAssembly.Global`s. Only JavaScript can
+make either. The planner's core is a Proxy overlay per namespace that answers
+the Nth read of a repeated `(module, name)` with the reconstructed value, and a
+resolver that turns a binding into a live Global -- from a provider activation's
+catalog export, or constructed from the raw bits or recipe the record carries.
+
+**What it does NOT need to be.** Everything around that is derivable from the
+binding records the module already decodes: which import ordinal each binding
+belongs to, whether it is overridden or left to the base imports, the
+topological instantiation order (a child instantiates providers before
+consumers), and the saved mutable-global snapshot a raw binding restores. The
+attic's planner does all of it in JavaScript because it read the records itself.
+
+**The capability limit, stated as D4b requires:** only JavaScript can construct
+a `WebAssembly.Global` and assemble an import object, so the host must be able
+to read the binding facts the module decoded. What the entry deletes is the
+planner's own record reading, matching, ordering and snapshot lookup -- and with
+it the last host reader of arena records on the child side.
+
+**The shape, and how it avoids a second entry.**
+
+```
+fm_child_binding(space, consumer_activation, index, field) -> i64
+```
+
+field selects `import_ordinal`, `kind`, `source_activation`, `source_owner`,
+`recipe_id`, `type_code` or `raw_bits`; `i64` because raw bits are 64 wide. An
+index past the end answers `-1` for the KIND field, which is never a legal kind
+and never a legal bit pattern for one, so the host walks `0, 1, 2 …` until the
+kind reads `-1` and no count entry is needed. That is one entry, 56 -> 57. The
+alternative follows the `fm_decoded_node_count` / `fm_decoded_node_field`
+precedent more closely at two.
+
+**Why I am asking rather than doing.** The maintainer authorised the child
+install ("wire it and let the failures teach us"), which I read as covering the
+work but not as a blanket for entry growth on a surface they have questioned
+twice and whose target is 5. One entry against 468 deleted lines is the trade;
+the ruling is theirs.
+
