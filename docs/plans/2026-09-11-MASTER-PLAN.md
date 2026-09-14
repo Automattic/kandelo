@@ -2004,6 +2004,68 @@ sealed rather than a thing mutated afterwards. **The second is the better shape
 and it is lane Y's door**, which is the first time in this campaign that V's
 remaining work has pointed back at Y rather than the other way round.
 
+### `lazyUrlBase` IS A DEPLOY-TIME FACT, SO THE SEAL COVERS THE STORED URL AND
+### THE BASE IS APPLIED ON THE WAY OUT — Lane V's decision, 2026-09-14
+
+The previous entry proposed applying the deployment base BEFORE sealing, at
+image build time, and called it lane Y's door. **Measured, that is wrong**, and
+the measurement is one line:
+
+```ts
+lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL
+```
+
+The base defaults to Vite's `BASE_URL` — the path the *site* is served from.
+The same image is served from `/` in dev, from `/kandelo/` in the assembled-site
+preview, and from whatever a deployment chooses. **Baking the base in at build
+time would mean rebuilding every image per deployment base**, which trades a
+real cost for a convenience and would make one image no longer one artifact.
+
+**So the rewrite genuinely has to happen after the image is built** — which is
+after sealing, which is the problem the previous entry identified correctly even
+though its proposed fix was unavailable.
+
+**The decision: the seal covers the STORED url, and the deployment base is
+applied when a descriptor is handed out.** The module already seals at export
+over the canonical stored form; if the base is applied on read-out rather than
+written back into the stored descriptor, then:
+
+* **no re-sealing.** `sha256(descriptor) == descriptor_digest` still holds,
+  because the stored bytes never change;
+* **no second implementation of the canonical form**, which is the hazard this
+  lane chose a byte layout to remove and then nearly reintroduced from the
+  other end;
+* **the host stops holding a private pre-seal snapshot**, which is the only
+  reason `MemoryFileSystem` could perform the rewrite and nothing else could.
+  That is the actual dependency being broken.
+
+**What it costs:** `sm_load_image` takes the base, and the module returns based
+URLs from its lazy-entry exports. **No new entry point** — the maintainer's
+approved ceiling raise stays unspent for a third time, which is the same
+argument that put seal verification inside the load rather than beside it.
+
+**What it does NOT settle:** whether a base may be applied to an absolute URL,
+and what happens to an archive with several transports. `resolveLazyUrl` is the
+incumbent's answer to the first; the second is why
+`rewriteLazyArchiveUrls` maps over `content.transports` rather than over a
+single `url`. Both are behaviour to preserve, not questions to reopen.
+
+### WHAT V5'S REMAINDER ACTUALLY IS — restated 2026-09-14 so it stops reading
+### as a separate item
+
+V5's own bullet says the remainder is *"`memory-fs.ts` is the last writer still
+emitting the JSON sections rather than SDEF"* and that retiring that writer is
+V9/V10's work. **So V5's remainder is steps 3, 4 and 5 of the pipe plan, under
+a different name.** There is no V5-specific work left to schedule:
+
+| V5 remainder | is | status |
+|---|---|---|
+| stop the host holding lazy state | step 3 | the `lazyUrlBase` decision above unblocks it |
+| free the tests from `MemoryFileSystem` | step 4 | Rust-first for ~38, repoint ~32, read ~6 |
+| delete the last JSON-section writer | step 5 | pays the 22nd entry point's debt |
+
+Anyone reading the plan for "what closes V5" should be sent to the five steps,
+not to a separate V5 backlog, because there is not one.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
