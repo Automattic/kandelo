@@ -7821,3 +7821,42 @@ own -- the coordinator owned one and handed it out through `continuationImports`
 mid-unwind reserve failure now seals and aborts through the module instead of
 `beginModuleCaptureAbort`, which is the same fix the process path got days ago.
 
+---
+
+## §159 — OPEN QUESTION for the maintainer: the last thing holding the registry
+
+With the coordinator gone, `fork-activation-registry` is next, and four more
+imports come off behind it (the arena, both codec providers, and the child
+install that reads arena records). One thing blocks it, and it sits next to a
+deferral that is the maintainer's, so it is a question rather than a plan.
+
+**What blocks it.** `ForkExceptionBroker` resolves exception recipes through
+`registry.currentReferences()`, and during a capture that surface is the
+`ForkCaptureSession` the registry builds. Its one capture-side method,
+`captureHostException`, is six module calls in a row -- intern the payload
+externref, claim a GC recipe, open a reference vector, append, finish, define
+the exnref node -- wrapped in a JavaScript object-identity map that dedupes
+repeated throws of the same exception object.
+
+**Why it is not obviously mine to decide.** Census 109 records that the two
+`exn_*` throw imports stay in the host floor for now because the maintainer
+deferred them last. This is adjacent but not the same thing: the throws are
+about re-entering wasm with a tagged exception, and this is about who runs the
+capture sequence.
+
+**The two shapes.**
+
+* **One module entry**, `fm_capture_host_exception(payload_handle) -> recipe_id`,
+  folding the six calls. The host keeps only the identity dedupe, which is
+  genuinely host-only (`Object.is` over JS values). Deletes roughly 40 lines of
+  host orchestration and the last consumer of the capture session. Costs entry
+  57 against a target of 5.
+* **A thin host file**, about 50 lines, making the same six calls in order. No
+  new entry; the host keeps the sequence, which is policy over module state --
+  the thing this lane has been moving the other way all week.
+
+I lean to the entry, on the campaign's own terms: it is the module absorbing
+work rather than the host keeping it, and the sequence is not something a second
+host should have to reimplement. But it is a seventh raise of a surface the
+maintainer has already questioned, so it is theirs to rule on.
+
