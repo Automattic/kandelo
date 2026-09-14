@@ -5253,3 +5253,75 @@ orchestration callers -- static-root decode, early GC transit, table mutation
 marks, funcref table patches, activation enumeration for the dirty-tracker
 binding -- and all eleven attic modules are still imported. The import feed is
 gone; the orchestration is untouched.
+
+## §114 — "Baseline green at 202" was hiding that most of the suite never runs
+
+Checking what the green verdict actually proved about the env stride turned up
+something I should have found long ago. Every test that exercises the dlopen
+fork path -- `fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e`,
+`dlopen-e2e`, `fork-module-multi-activation-funcref-replay` -- is in the
+expected-failure list. Site 1, the largest of the three replacements, has no e2e
+coverage at all.
+
+They fail for one reason:
+
+```
+Error: Cannot find module '../src/fork-externref-process-owner'
+  imported from host/test/centralized-test-helper.ts
+```
+
+**116 of the 202 expected failures import that helper**, and counting unresolved
+imports across the whole run gives 160 references to that one module. It is the
+dominant cause of the baseline by a wide margin, and everything behind it --
+every centralized program run -- has not executed since the attic sweep.
+
+The history is unambiguous. The file is present in `host/src` on main. It left in
+`49d7f6574`, whose own subject says "Set aside the entire host fork TypeScript;
+the build is now broken". The baseline was pinned afterwards in `28faaebbe`,
+which recorded that state as the reference.
+
+Breaking the build was the lane's sanctioned starting point -- the task was to
+set the TypeScript aside and rebuild through the module -- so the breakage is not
+the error. **The error is what I then said about it.** Commit after commit
+reported "suite baseline green at 202 expected failures" as validation, and the
+stride commit claimed "no regression across all three replaced sites" when site
+1's tests cannot load. Both statements are literally true and both imply coverage
+that does not exist.
+
+`suite-baseline.mjs` now prints what the failures are MADE OF, grouped by
+unresolved import, with the top five causes and a line saying that a dominant
+cause means most of the suite is not running. A count is not a diagnosis. This
+one hid a 160-reference fact behind a number I quoted as evidence perhaps a dozen
+times.
+
+## §115 — Restoring the externref process owner is a decision, not a git mv
+
+`ForkExternrefProcessOwner` (220 lines) is the kernel-Worker owner of opaque host
+references across process lifetimes: "Real JavaScript values stay in this owner".
+Three PRODUCTION files import it -- `process-lifecycle.ts` and both kernel-worker
+entries -- so this is not only a test problem.
+
+By the section 64 argument it is floor, and the same argument that restored
+`fork-externref-import-mailbox`. But restoring it is not the `git mv` that
+section 64 says this surface may move by, because of what it imports:
+
+  * `fork-worker-exception-capability` -- already restored, fine;
+  * `fork-module-state` -- `ForkModuleStateArena`, `ForkModuleStateRecordKind`,
+    `readForkModuleStateRoot`;
+  * `fork-reference-wire` -- `scanSegmentedForkReferenceExternrefHandles`.
+
+One method needs those: it reads the copied child's KFMS arena, inspects the
+sealed reference-recipe records, and scans them for externref handles to lease.
+That is a second KFMS decoder -- the exact thing refused when
+`fork-module-state` was left in the attic.
+
+And it cannot obviously be ported, because of WHERE it runs. This owner lives in
+the KERNEL worker, which has no fork-module instance; the module lives in the
+process worker. So "let the module decode it" needs either a module in the kernel
+worker or the process worker doing the scan and reporting handles across the
+worker boundary. That is an architecture decision about which worker owns the
+scan, and it is the maintainer's.
+
+Recorded rather than acted on. What is NOT deferred is the reporting problem in
+section 114, which is fixed here: the baseline now shows its own composition, so
+"green" cannot again stand in for coverage that does not exist.
