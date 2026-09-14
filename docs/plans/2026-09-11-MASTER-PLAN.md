@@ -2195,6 +2195,72 @@ a proof, and B38 stays filed until someone reproduces it deliberately. But the
 cheap reading is that a package whose declared inputs do not cover what it
 imports can resolve under one key and finalize under another, because the two
 computations disagree about what the closure contains.
+### THE CORPUS, SIZED A SIXTH TIME — and this one asks a different question
+### again, because the fifth was still the wrong one — 2026-09-14
+
+The fifth sizing asked *what methods does each file call?* That produced
+"~38 filesystem tests, ~20 read-back, ~32 fixture", and a plan to keep the ~20
+in TypeScript by repointing them onto `SffsImageFs`.
+
+**The maintainer refused that in one line: "Isn't the builder written in Rust?
+Why is 'repoint onto SffsImageFs, keep in TS' an option."** It is the right
+objection. `SffsImageFs` is a thin TypeScript bridge over the `sffs-module`
+wasm; a test repointed onto it asserts **Rust** behaviour through a bridge. The
+distinction the fifth sizing drew — tests of a filesystem versus tests of what
+the builder wrote — does not separate Rust from TypeScript at all, because
+**both the filesystem and the builder are Rust now.**
+
+**So the question is not where a test should live. It is what code the test
+exercises**, and a test only belongs in TypeScript if the code under test is
+TypeScript that survives.
+
+Measured that way, across **79 files that bind a `MemoryFileSystem`**:
+
+| what the test exercises | files | where it goes |
+|---|---|---|
+| pure fixture — builder calls, never asserted on | **37** | repoint the construction; the assertions never mention it |
+| asserts on the filesystem itself | **26** | Rust, unless the assertion is about surviving host TS |
+| fixture, but calls non-builder methods | **13** | read individually |
+| type import only | **9** | trivial |
+| **tests the TS bridge** (`SffsImageFs` present) | **3** | **stays TypeScript** |
+
+**Three, not twenty.** That is the measured answer to the maintainer's
+question, and it is the number the previous sizing would have got wrong by a
+factor of seven.
+
+### THE GATE IS FIVE METHODS, AND IT COSTS NO ENTRY POINT
+
+The 37 pure-fixture files call exactly eleven methods between them.
+`SffsImageFs` already has six. **Five are missing**, and they are the same five
+`vfs-image-filesystem.ts` already predicted would "stay on the concrete type
+until the bridge grows an equivalent":
+
+```
+createFileWithOwner   mkdirWithOwner
+registerLazyArchiveFromEntries   registerLazyTree   sealLazyAtomicGroup
+```
+
+**None of them needs a new module entry point**, which is the finding that
+matters, because the twenty-second entry point is a recorded debt and a
+twenty-third requires `memoryFsTypeScript` to reach 0 — a condition step 4 is
+upstream of, so a step-4 dependency on a new entry point would have been a
+deadlock.
+
+* `createFileWithOwner` and `mkdirWithOwner` are `sm_write_file` / `sm_mkdir`
+  followed by `sm_chown`.
+* The lazy-archive family is already expressible through `sm_register_lazy_file`
+  alone, whose eighteen parameters include `archive_id`, `archive_bytes`,
+  `archive_payload`, `cohort_id`, `cohort_member` and `cohort_expected_count`.
+  **An archive is registered by registering its members against a shared
+  archive id, and the module seals the cohort at the export door** — which is
+  this lane's own design, reached from the producer side and now met from the
+  consumer side.
+
+**So step 4 begins with five bridge methods and no ABI change at all**, and the
+37 follow mechanically. What is left after that is the 26 that assert on the
+filesystem plus the 13 that call non-builder methods, and those need reading
+rather than counting — but they are 39 files, not 76, and the corpus has been
+scoped by measurement rather than by name for the first time.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
