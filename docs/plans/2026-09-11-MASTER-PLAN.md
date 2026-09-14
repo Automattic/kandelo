@@ -1435,9 +1435,24 @@ reached outside its boundary once tonight for a defect that was blocking it.**
   committed with a sweeping add. The text landed in `abe910dcdc`, a commit
   about lane N's committed binaries. **The content survived; its reasoning did
   not** — the analysis is now recorded under an unrelated message, in a
-  campaign whose commit messages are where the reasoning lives. Stage on write
-  and run the pre-commit checks against the staged state; the
-  write-then-check-then-commit habit opens that window every time.
+  campaign whose commit messages are where the reasoning lives.
+
+  **The first mitigation recorded here was WRONG and is corrected.** It said to
+  stage on write. Staging does not protect: the index is per-worktree, so
+  another agent's `git commit` carries away staged changes too — and the second
+  occurrence, twenty minutes later, was worse than the first. A staged edit was
+  **discarded outright** by another agent's operation: not swept into their
+  commit, gone, and it had to be rewritten from the transcript.
+
+  **The mitigation that works is to write, add and commit in ONE shell
+  invocation**, so the window is milliseconds instead of the ~75 seconds a
+  pre-commit check takes. Where a check must run first, run it BEFORE the
+  write, against the tree the check actually measures — for a docs-only change
+  to this plan, the surface budget measures the lane worktree and is unaffected
+  by the edit.
+
+  **The broader point for anyone sharing this worktree: it is hostile to
+  concurrent agents, and not only for commit attribution. It loses work.**
 
 - **H-22 — a perturb spec whose verify uses a PREBUILT artifact can never
   fail, and a perturb run leaves the artifact built from its last mutation.**
