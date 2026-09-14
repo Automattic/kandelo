@@ -86,84 +86,20 @@ const EAGAIN = -11;
 const EIO = -5;
 const ENOENT = -2;
 const ENOSYS = -38;
-const O_RDONLY = 0;
-
-/**
- * Convert a kernel-facing absolute path (e.g. "/usr/bin") to the string the
- * backend's own methods expect (mount-relative). The `/` mount's convention is
- * injected so this module stays backend-agnostic and unit-testable.
- */
-export type ToBackendPath = (absolutePath: string) => string;
-
-/** Map a backend exception to a negative errno.
- *
- * A not-yet-materialized lazy file makes the backend's `open`/`read` throw an
- * error tagged `code === "EAGAIN"` (see
- * `MemoryFileSystem.guardSynchronousLazyAccess`, which also kicks the async
- * fetch off). Propagate that as EAGAIN so the kernel parks the read and
- * retries — the same park/retry an outstanding archive fetch uses — instead of
- * surfacing a spurious EIO. Every other failure is EIO. */
-function deferredFileErrno(error: unknown): number {
-  return (error as { code?: unknown })?.code === "EAGAIN" ? EAGAIN : EIO;
-}
-
-/**
- * Build the `HOST_DEFERRED_KIND_FILE` half of the provider: positioned reads of
- * a URL-backed lazy file, addressed by its inode number.
- *
- * The inode-to-path map comes from the lazy table itself, which is the only
- * place a URL-backed lazy file exists — no tree walk. That is a consequence of
- * the kernel serving image-backed bytes from the image: the host used to need
- * a path for EVERY regular file in the image, because any of them could be
- * asked for, and now it needs one only for the handful the image does not
- * carry (65 in the base image, 79 in every derived one).
- *
- * Hard links share one inode and therefore one entry, which is correct: the
- * bytes are the same bytes.
- *
- * Opens per call for now; an fd cache keyed by inode is a deliberate later
- * optimization (called out, not silently adopted) once the read path is
- * measured.
- */
-/**
- * What this reader actually needs of a backend: open a path, read from the
- * handle, close it.
- *
- * Declared as three methods rather than as `FileSystemBackend` because the
- * wider type overstates the requirement, and the overstatement is load-bearing:
- * it is the reason the host's `/` backend has to be a whole filesystem. What it
- * is really doing here is holding fetched bytes and handing them back by path —
- * `open` is what kicks the fetch off and throws `EAGAIN` until the bytes land.
- * A materialization cache can do that; it does not need a superblock, inodes,
- * or a `SharedArrayBuffer`.
- *
- * Narrowing it does not change behaviour — `MemoryFileSystem` satisfies this
- * as it satisfied the wider type — but it writes down which three methods the
- * kernel's deferred-byte path depends on, which is what V10 has to replace.
- */
-export interface DeferredByteSource {
-  open(path: string, flags: number, mode: number): number;
-  read(
-    handle: number,
-    buf: Uint8Array,
-    position: number | null,
-    length: number,
-  ): number;
-  close(handle: number): void;
-}
 
 /**
  * What the in-kernel rootfs overlay needs from the host's `/` image.
  *
  * `configureRootfsOverlayFromImage` was typed against `MemoryFileSystem`, the
- * 8,000-line class lane V is retiring, but read at the call site it asks for
- * only these six methods: the deferred byte trio above, the two lazy-entry
- * exports, and the image body. Naming the set is what lets the overlay be
- * handed something else — an `SffsImageFs`-backed adapter — without the
- * overlay knowing which filesystem it got. Same move as
- * `DeferredByteSource`, one level up.
+ * 8,000-line class lane V is retiring. It once asked for six methods; it now
+ * asks for TWO, and the four that went are the point of the pipe. The overlay
+ * used to need `open`/`read`/`close` so it could pull bytes THROUGH a
+ * filesystem that tracked whether they had arrived. It no longer does: the
+ * pipe fetches a URL and the kernel owns materialization, so nothing behind
+ * this interface has to be a filesystem at all. What is left is metadata the
+ * image declared.
  */
-export interface RootfsOverlayBaseImage extends DeferredByteSource {
+export interface RootfsOverlayBaseImage {
   exportLazyEntries(): LazyFileEntry[];
   exportLazyArchiveEntries(): SerializedLazyArchiveEntry[];
   // NOT `imageBodyBytes()`. A backend holding the whole CONTAINER cannot
@@ -230,11 +166,11 @@ function report(
  *
  * # Why this exists
  *
- * {@link createDeferredFileReader} reads through a `DeferredByteSource` —
- * today a `MemoryFileSystem` — whose `open` kicks an async materialization and
- * throws `EAGAIN` until it lands. That puts materialization STATUS in the
- * host: a preparation state machine, retry and integrity handling, progress
- * events, abort plumbing. Roughly 500 lines of it.
+ * The reader this replaced went through a filesystem — a `MemoryFileSystem`
+ * whose `open` kicked an async materialization and threw `EAGAIN` until it
+ * landed. That put materialization STATUS in the host: a preparation state
+ * machine, retry and integrity handling, progress events, abort plumbing.
+ * Roughly 500 lines of it, none of which the kernel was asking for.
  *
  * The kernel already owns that status. An inode is a `LazyMember` until it is
  * written through, at which point it becomes `Regular`; `ensure_materialized`
@@ -321,49 +257,6 @@ export function createDeferredUrlReader(
   };
 }
 
-export function createDeferredFileReader(
-  backend: DeferredByteSource,
-  lazyEntries: readonly LazyFileEntry[],
-  toBackendPath: ToBackendPath,
-): (ino: number, offset: bigint, dest: Uint8Array) => number {
-  const paths = new Map<number, string>();
-  for (const entry of lazyEntries) {
-    paths.set(entry.ino, toBackendPath(entry.path));
-  }
-  return (ino, offset, dest) => {
-    const path = paths.get(ino);
-    if (path === undefined) {
-      // The kernel only asks for inodes the image declared URL-backed lazy, and
-      // this map is built from the same lazy table the image was written from.
-      // An unknown inode is a contract violation between the two, not a missing
-      // file.
-      return ENOENT;
-    }
-    let handle: number;
-    try {
-      // A not-yet-materialized leaf throws EAGAIN here (open kicks the fetch
-      // off).
-      handle = backend.open(path, O_RDONLY, 0);
-    } catch (error) {
-      return deferredFileErrno(error);
-    }
-    if (handle < 0) {
-      return handle;
-    }
-    try {
-      return backend.read(handle, dest, Number(offset), dest.length);
-    } catch (error) {
-      return deferredFileErrno(error);
-    } finally {
-      try {
-        backend.close(handle);
-      } catch {
-        // A close failure does not change the bytes already read.
-      }
-    }
-  };
-}
-
 type ArchiveState = "idle" | "fetching" | Uint8Array | { error: true };
 
 interface ArchiveRecord {
@@ -382,7 +275,7 @@ interface ArchiveRecord {
  * fetcher, etc.) — the provider never invents its own transport.
  *
  * `deferredFileReader` answers the other kind, URL-backed lazy files; see
- * {@link createDeferredFileReader}. Omitting it is the no-URL-lazy boot: such
+ * {@link createDeferredUrlReader}. Omitting it is the no-URL-lazy boot: such
  * a read is reported as the unbacked seam it is (`ENOSYS`) rather than as a
  * missing file.
  */

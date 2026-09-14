@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   buildRootfsLazyWiring,
-  createDeferredFileReader,
   createDeferredUrlReader,
   HOST_DEFERRED_KIND_ARCHIVE,
   HOST_DEFERRED_KIND_FILE,
@@ -10,7 +9,6 @@ import type {
   LazyFileEntry,
   SerializedLazyArchiveEntry,
 } from "../src/vfs/memory-fs";
-import type { FileSystemBackend } from "../src/vfs/types";
 
 /** Let an in-flight async archive fetch (and its chained `.then`s) settle
  * before making assertions. A macrotask tick is used rather than a fixed
@@ -339,14 +337,6 @@ describe("the deferred provider routes by kind, not by id range", () => {
     fileReads: Array<{ ino: number; offset: bigint }>;
   } {
     const fileReads: Array<{ ino: number; offset: bigint }> = [];
-    const backend = {
-      open: () => 1,
-      read: (_h: number, dest: Uint8Array) => {
-        dest.set([0x01, 0x02]);
-        return 2;
-      },
-      close: () => 0,
-    } as unknown as FileSystemBackend;
     const lazyEntries: LazyFileEntry[] = [
       {
         ino: 1,
@@ -360,7 +350,9 @@ describe("the deferred provider routes by kind, not by id range", () => {
         size: 2,
       },
     ];
-    const reader = createDeferredFileReader(backend, lazyEntries, (p) => p);
+    const reader = createDeferredUrlReader(lazyEntries, async () =>
+      new Uint8Array([0x01, 0x02]),
+    );
     const { deferredProvider } = buildRootfsLazyWiring(
       [
         makeGroup({
@@ -390,18 +382,30 @@ describe("the deferred provider routes by kind, not by id range", () => {
     return { deferredProvider, fileReads };
   }
 
-  it("serves id 1 as a lazy FILE and id 1 as an ARCHIVE, differently", () => {
+  it("serves id 1 as a lazy FILE and id 1 as an ARCHIVE, differently", async () => {
     const { deferredProvider, fileReads } = wiringWithBothKinds();
 
     const fileDest = new Uint8Array(4);
+    // Both kinds start their transfer on the first ask and answer EAGAIN, so
+    // the ONE thing this test is about — that id 1 means two different objects
+    // depending on kind — has to be read from where each ask was routed, not
+    // from the first return value.
+    expect(deferredProvider(HOST_DEFERRED_KIND_FILE, 1n, 0n, fileDest)).toBe(-11);
+    await Promise.resolve();
+    await Promise.resolve();
+
     expect(deferredProvider(HOST_DEFERRED_KIND_FILE, 1n, 0n, fileDest)).toBe(2);
     expect(fileDest.subarray(0, 2)).toEqual(new Uint8Array([0x01, 0x02]));
-    expect(fileReads).toEqual([{ ino: 1, offset: 0n }]);
+    // The file half saw both asks; the archive half saw neither.
+    expect(fileReads).toEqual([
+      { ino: 1, offset: 0n },
+      { ino: 1, offset: 0n },
+    ]);
 
     // Same id, other kind: the archive fetch, which starts out in flight.
     expect(deferredProvider(HOST_DEFERRED_KIND_ARCHIVE, 1n, 0n, new Uint8Array(4)))
       .toBe(-11); // EAGAIN
-    expect(fileReads).toHaveLength(1);
+    expect(fileReads).toHaveLength(2);
   });
 
   it("reports ENOSYS for a lazy FILE read when no file reader was wired", () => {

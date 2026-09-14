@@ -33,14 +33,6 @@ import type { RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
 
 /** The bytes half: whatever can serve POSIX-shaped reads and an image window. */
 export interface ModuleImageSource {
-  open(path: string, flags: number, mode: number): number;
-  read(
-    handle: number,
-    buf: Uint8Array,
-    position: number | null,
-    length: number,
-  ): number;
-  close(handle: number): void;
   imageRead(offset: bigint, dest: Uint8Array): number;
 }
 
@@ -80,11 +72,11 @@ export function createModuleBaseImage(
     "VFS image lazy archive metadata",
   );
 
+  // No open/read/close. The overlay used to pull deferred bytes THROUGH this
+  // object; it now fetches them itself, so what remains is the metadata the
+  // image declared — which is the only part the module was ever authoritative
+  // about anyway.
   const baseImage: RootfsOverlayBaseImage = {
-    open: (path, flags, mode) => module.open(path, flags, mode),
-    read: (handle, buf, position, length) =>
-      module.read(handle, buf, position, length),
-    close: (handle) => module.close(handle),
     exportLazyEntries: () => (Array.isArray(lazy) ? lazy : []) as LazyFileEntry[],
     exportLazyArchiveEntries: () =>
       (Array.isArray(archives) ? archives : []) as SerializedLazyArchiveEntry[],
