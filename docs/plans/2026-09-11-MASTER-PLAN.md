@@ -1848,6 +1848,23 @@ which the item-4 census already answered — 26 methods, most already covered,
 about two genuinely new. **The ten-entry-point branch existed only to keep a
 class that should not be kept.**
 
+**The deletion worklist, measured.** Every non-test file that names the class
+by type, and the interface it actually needs — narrowing each is type-only,
+behaviour-free, and independently landable:
+
+| file | methods it needs |
+|---|---|
+| `vfs/load-image.ts` | **1** — `verifyImportedLazyAtomicGroupSeals` |
+| `vfs/package-deferred-tree.ts` | 6 — `exportLazyArchiveEntries` `isPathDeferred` `lstat` `materializeRegisteredDeferredTree` `readlink` `registerLazyTreeWithMaterializationHandle` |
+| `vfs/rootfs-overlay.ts` | 14 — the tree walker: `open`/`read`/`close`, `opendir`/`readdir`/`closedir`, `lstat`, `readlink`, `chmod`, `chown`, `write`, the two `*WithOwner` helpers, seal verification |
+| `vfs/rootfs-overlay-export.ts` | 15 — the metadata writer: the walker's set plus `createFileWithOwner`, `lchown`, `rmdir`, `unlink`, `utimensat`, `saveImage` |
+| `process-lifecycle.ts` | already narrowed to `RootfsOverlayBaseImage` (6) in `1c557f9be` |
+
+Union: about 20 distinct methods, which is the same builder-shaped surface the
+item-4 census found — a tree walker plus a metadata writer, not a
+`FileSystemBackend`. **`load-image.ts` is the next one to do**: one method, and
+it proves the pattern costs nothing.
+
 **What still has to be checked before deleting, rather than assumed.** Each of
 the 24 lazy-bookkeeping methods needs the same question asked individually —
 `verifyImportedLazyAtomicGroupSeals` in particular, because the courier contract
