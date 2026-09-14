@@ -1526,7 +1526,29 @@ unblocking, not the deletion.**
 **What a merger should know.** The 14 remaining browser failures are
 pre-existing and were shown not to be this lane's by reverting its changes and
 reproducing them — but they are still red, and should not become "the merge
-broke the browser" in a later bisect. `libc/musl` is dirty in 92 of 200
+broke the browser" in a later bisect. **Named here so the claim can be
+checked rather than taken on trust**, from
+`--grep-invert @slow --project=chromium --workers=1` on a provisioned tree:
+
+1. ABI 43 import reflection is identical across browser engines
+2. BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection
+3. Chromium drives the multi-node typed-GC fork reconstruction through the module
+4. Chromium reconstructs aliased Wasm GC state in a fresh child worker
+5. Kandelo gallery launch updates the browser URL with a VFS image
+6. Kandelo shell demo runs bash, vim, and NetHack
+7. OPFS reports path configuration from live paths and handles
+8. Rust advisory locks use exact OPFS identity, wake events, and bounded capacity
+9. WordPress SQLite reaches the installer like the browser WordPress SQLite demo
+10. an ordinary nonzero browser process exit is not a host diagnostic
+11. default browser profiles use the writable canonical maker home
+12. kernel allocations and reusable exports remain bounded under churn in Chromium
+13. thread patching ignores spoofed debug names in every browser
+14. virtual network still attaches machines and routes a UDP datagram
+
+**A failure OUTSIDE this list after merging is worth investigating; one inside
+it is not new.** Note also that an unprovisioned worktree reports roughly 103
+failures that are pure artifact — run `./run.sh setup` before reading any
+browser number at all. `libc/musl` is dirty in 92 of 200
 worktrees by design (lane B's B3); it is not this branch's doing.
 
 **What is left in V, and why it belongs on a fresh branch.** The adapter (both
