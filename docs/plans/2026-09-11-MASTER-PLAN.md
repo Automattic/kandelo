@@ -2039,10 +2039,41 @@ written back into the stored descriptor, then:
   reason `MemoryFileSystem` could perform the rewrite and nothing else could.
   That is the actual dependency being broken.
 
-**What it costs:** `sm_load_image` takes the base, and the module returns based
-URLs from its lazy-entry exports. **No new entry point** — the maintainer's
-approved ceiling raise stays unspent for a third time, which is the same
-argument that put seal verification inside the load rather than beside it.
+**CORRECTION, and this is the third pass over the same question — the last two
+answers were both over-built.** There is nothing for `sm_load_image` to take,
+because **the seal never covered the URL in the first place.** From
+`lazyAtomicDescriptorIdentityBytesFromValues`, in the code's own words:
+
+> *V3 deliberately excludes transport locations from descriptor identity
+> because image composition rewrites mirrors after sealing. The digest still
+> binds the exact byte hash/size, decoder bounds, complete source-to-namespace
+> projection, and producer-assigned member identity.*
+
+**Post-seal transport rewriting is a designed-for operation, not a violation of
+one.** A URL rewrite invalidates no digest, needs no re-seal, and needs no
+module parameter. `rewriteSealedLazyAtomicSnapshotTransports` exists precisely
+to do it.
+
+So what is `rewriteLazyArchiveUrls`'s seal-awareness actually for? **Choosing
+which COPY is authoritative.** `MemoryFileSystem` holds a public entry a caller
+can mutate and a private sealed snapshot it cannot, and the method rewrites from
+the private one so *"arbitrary public edits never become transport authority."*
+That is a tamper-resistance property of a mutable in-memory object with two
+copies of the same data.
+
+**Entries decoded from the image container have one copy, not two**, and their
+authenticity is established by seal verification — `verify_cohorts` in the
+module — before anything reads them. The duality the method defends against
+does not exist on that path, so the defence has nothing to do.
+
+**Step 3's archive half is therefore the same three-line map as its file half**,
+over `content.transports` rather than over a single `url`. Nothing in it is
+gated on the module, on a new parameter, or on the seal.
+
+**Three wrong answers in a row on one question, and the pattern in all three is
+the same:** each was reasoned from the incumbent's *shape* — a method is
+seal-aware, therefore the seal is involved — instead of from what the seal
+actually covers, which a single comment in the file states outright.
 
 **What it does NOT settle:** whether a base may be applied to an absolute URL,
 and what happens to an archive with several transports. `resolveLazyUrl` is the
@@ -2060,7 +2091,7 @@ a different name.** There is no V5-specific work left to schedule:
 
 | V5 remainder | is | status |
 |---|---|---|
-| stop the host holding lazy state | step 3 | the `lazyUrlBase` decision above unblocks it |
+| stop the host holding lazy state | step 3 | unblocked; the seal never covered the URL |
 | free the tests from `MemoryFileSystem` | step 4 | Rust-first for ~38, repoint ~32, read ~6 |
 | delete the last JSON-section writer | step 5 | pays the 22nd entry point's debt |
 
