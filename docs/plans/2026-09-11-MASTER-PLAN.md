@@ -1379,6 +1379,52 @@ not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
   `local-binaries/source-only-v1/`. Two of this lane's commits went green
   against the previous module before that was noticed.
 
+## ERRNO SWEEP — a cheap way to find untested error paths, and what it found
+
+**Method.** For each module, take the set of `Errno::X` the implementation can
+return, take the set any test in that module *names*, and subtract. It costs
+one script and finds branches that are implemented, documented, and asserted
+nowhere.
+
+**Two ways it lies, both seen.** It reports a *false positive* when tests
+reject thoroughly without naming the errno — `klzy.rs` looked uncovered and
+actually has 17 rejection tests, one per malformation. It reports a *false
+negative* the same way: a test asserting `is_err()` counts as nothing here,
+which is right, because `is_err()` does not distinguish ENOENT from EIO and for
+a POSIX kernel the errno **is** the contract. Treat every hit as a lead to read,
+never as a verdict.
+
+**In lane V/Y, it found four real gaps, now closed** (`92de3c589`, `d2c63b888`,
+`553301de5`, `a884a0463`): `rootfs` set-ID tested in one of four call sites with
+set-group-ID untested entirely; `rootfs::rename` promising four guarantees and
+asserting one; `sffs.rs` asserting *that* it failed rather than *how*; and
+`tmpfs` mount roots that could be `rmdir`-ed or renamed over with the suite
+green. No behaviour changed in any of them — each implementation was already
+correct — and each carries perturb trials. The campaign's trial count went
+272 to 282.
+
+**It also found honest negatives.** `rootfs`'s `EFBIG` and `ENOMEM` are
+unreachable on the host test target: `EFBIG` guards a `checked_add` that can
+only overflow where `usize` is 32 bits, and `ENOMEM` is a `try_reserve`
+failure. Recorded rather than chased.
+
+### Handed to other lanes — not this lane's code, and not mined
+
+| module | returns | never named in a test | lane |
+|---|---|---|---|
+| `exec_target.rs` | 12 | **9** — EACCES EBADF EFBIG EIO ENOENT ENOEXEC ENOMEM ENOTSUP **ETXTBSY** | X |
+| `process.rs` | 11 | 6 — ECHILD EFAULT ENETUNREACH ENOENT ENOSYS | X |
+| `syscalls.rs` | 46 | 5 — EADDRNOTAVAIL EDESTADDRREQ EISCONN EISDIR EXDEV | L |
+| `procfs.rs` | 7 | 5 — EACCES EBADF ELOOP ENOTDIR EOVERFLOW | — |
+| `pipe.rs` | 5 | 5 — EBADF EINVAL ENOMEM EOPNOTSUPP EOVERFLOW | L |
+
+**The one worth looking at first is `ETXTBSY` in `exec_target.rs`**: seven
+return sites, no test naming it. That is the "text file busy" rule — the kernel
+refusing to execute a file being written, or to write a file being executed.
+Seven branches enforcing one invariant, and nothing asserts the invariant.
+**Flagged, not fixed: `exec_target.rs` is lane X's, and this lane has already
+reached outside its boundary once tonight for a defect that was blocking it.**
+
 ## Known hazards
 
 - **The `ABORT_UNWINDING` discipline.** `fm_parent_seal_capture` must not drive
