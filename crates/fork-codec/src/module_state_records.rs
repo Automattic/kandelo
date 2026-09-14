@@ -200,6 +200,36 @@ pub fn decode_module_record(payload: &[u8]) -> Result<ModuleDescriptor, Errno> {
 /// (2 + 4), then `ptr` u64 @16 and `len` u64 @24. A zero ptr/len, wrong magic,
 /// unsupported version, or nonzero reserved field is a framing failure
 /// (`EINVAL`), matching the TS decoder's `throw`.
+/// Encode a `JournalImage` (kind 14) record payload into `out`.
+///
+/// The counterpart to [`decode_journal_image`]. The module serializes the
+/// child-inheritable journal into a chunk it channel-mmaps itself, so it is the
+/// only party that knows where the image landed — but the RECORD announcing
+/// that location was still written by the host, which meant the module had to
+/// hand the pair back out and trust someone else to record it faithfully.
+///
+/// Refuses a zero pointer or length for the reason the decoder refuses them: a
+/// zero here is an image that was never serialized, and a child that inherits
+/// such a record would seed its journal from address 0.
+pub fn encode_journal_image(out: &mut [u8], ptr: u64, len: u64) -> Result<(), Errno> {
+    if out.len() != abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize {
+        return Err(Errno::EINVAL);
+    }
+    if ptr == 0 || len == 0 {
+        return Err(Errno::EINVAL);
+    }
+    out.fill(0);
+    out[0..4].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_MAGIC);
+    out[4..6].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(&abi::WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE.to_le_bytes());
+    // flags, the two reserved fields and any trailer stay zero from the fill
+    // above -- the decoder rejects a nonzero reserved field, and a freshly
+    // channel-mmap'd chunk is not guaranteed to be zero.
+    out[16..24].copy_from_slice(&ptr.to_le_bytes());
+    out[24..32].copy_from_slice(&len.to_le_bytes());
+    Ok(())
+}
+
 pub fn decode_journal_image(payload: &[u8]) -> Result<(u64, u64), Errno> {
     if payload.len() != abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize {
         return Err(Errno::EINVAL); // truncated / oversized
@@ -566,6 +596,32 @@ mod tests {
     use crate::module_state::{decode_module_state, ModuleStateFormat};
 
     // -- Module record encoder (census section 139) --------------------------
+
+    #[test]
+    fn a_journal_image_record_round_trips_through_its_own_decoder() {
+        let mut payload = [0u8; abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize];
+        encode_journal_image(&mut payload, 0x1_0000, 4096).unwrap();
+        assert_eq!(decode_journal_image(&payload).unwrap(), (0x1_0000, 4096));
+    }
+
+    #[test]
+    fn a_journal_image_clears_the_reserved_fields_it_is_handed() {
+        // The record lands in a freshly channel-mmap'd chunk, which is not
+        // guaranteed zero, and the decoder rejects a nonzero reserved field.
+        let mut payload = [0xFFu8; abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize];
+        encode_journal_image(&mut payload, 0x2_0000, 64).unwrap();
+        assert_eq!(decode_journal_image(&payload).unwrap(), (0x2_0000, 64));
+    }
+
+    #[test]
+    fn a_journal_image_refuses_a_zero_pointer_or_length() {
+        // A zero here means an image that was never serialized. A child
+        // inheriting the record would seed its journal from address 0, which is
+        // the failure the decoder already refuses on the way back in.
+        let mut payload = [0u8; abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE as usize];
+        assert_eq!(encode_journal_image(&mut payload, 0, 4096), Err(Errno::EINVAL));
+        assert_eq!(encode_journal_image(&mut payload, 0x1000, 0), Err(Errno::EINVAL));
+    }
 
     #[test]
     fn a_module_record_round_trips_through_its_own_decoder() {

@@ -149,7 +149,7 @@ mod wasm {
     use fork_codec::{
         decode_journal_image, decode_module_state, decode_replay_events_image,
         decode_segmented_reference_transaction,
-        drive_plan, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
+        drive_plan, encode_journal_image, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
         GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
         ModuleStateWriter, ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent,
@@ -1444,7 +1444,62 @@ mod wasm {
             drive_plan_via_injector(plan, count);
         }
         finish_unwind_impl()?;
-        serialize_journal_alloc_impl(channel_base)
+        let image = serialize_journal_alloc_impl(channel_base)?;
+        // Announce where the image landed, in the arena, as the child reads it.
+        //
+        // The module channel-mmaps the image chunk itself, so it is the only
+        // party that knows the address -- and the record saying so was still
+        // written by the host, which meant handing the pair back out and
+        // trusting it to be recorded faithfully. `journal_image_from_arena` is
+        // the reader on the other side, in this same file.
+        //
+        // Only for an arena the module owns, for the reason the Module records
+        // above have: a writer with no root does not fail a reserve, it starts a
+        // second arena nothing reads.
+        if module_owns_arena_now() {
+            let len = match state().as_ref() { Some(st) => st.journal_image_len, None => 0 };
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            let size = u64::from(abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE);
+            let payload = module_state.reserve(
+                module_state_chunks,
+                mem,
+                abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
+                0,
+                0,
+                size,
+            )?;
+            let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size as usize).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: `[start, end)` is inside guest memory (checked above) and
+            // the base is non-null for any real payload offset.
+            let out: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::hint::black_box(start) as *mut u8,
+                    size as usize,
+                )
+            };
+            encode_journal_image(out, image, len)?;
+            module_state.commit(mem, payload)?;
+        }
+        Ok(image)
+    }
+
+    /// Whether the arena this fork is using was allocated by the module.
+    ///
+    /// The writer's root is only ever set by a reserve here or by `adopt`, so a
+    /// nonzero root that was not adopted means the module built it.
+    fn module_owns_arena_now() -> bool {
+        match state().as_ref() {
+            Some(module) => {
+                module.module_state.root() != 0 && !module.module_state.is_adopted()
+            }
+            None => false,
+        }
     }
 
     /// Build a REPLAY-FINISH drive plan: one `DRIVE_OP_REWIND_END` (`abort` false)

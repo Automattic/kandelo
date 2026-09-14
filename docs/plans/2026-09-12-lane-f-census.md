@@ -6998,11 +6998,26 @@ allocated so it can free one by root, or the snapshot arena stops being a
 separate arena. It should be settled before the cluster cut starts, because the
 answer changes what `fm_module_state_arena` needs to be.
 
-**So the next slice is large and that is a property of the code, not a choice.**
-The honest sequence is: settle the release-by-root question, then cut the arena
-and the registry together, and the other seven fall out as their last references
-go. Expect `forkAtticImports` to sit at 9 through that work and then drop
-several at once — which is the shape of the number, not a stall.
+**CORRECTION: the conclusion drawn from this table was wrong.** It said the next
+slice must be large, that the arena and registry have to come out together, and
+that a design question had to be settled first. Asked "didn't I encourage you to
+cut as you go? why are we talking about a cluster cut?", the answer is that I
+had invented a blocker out of a coarse instrument.
+
+What the table shows is true: `forkAtticImports` will not drop until some
+module's LAST reference goes. What does not follow is that references must be
+removed all at once. Nine coordinator call sites came out the same day this was
+written (22 -> 13), one at a time, each paired with the module capability that
+replaced it. That is the work. The counter staying at 9 means the counter is
+coarse, not that nothing happened.
+
+The release-by-root "blocker" dissolved the same way — section 145 retracts it;
+the module can walk the chunks with validation that is already written.
+
+**So: keep cutting references one at a time.** Each removal is paired with the
+module entry that makes it possible, tested against a live module before the
+host depends on it. The imports fall when the last reference to each falls, and
+that is a consequence rather than a plan.
 
 ## §145 — The arena a peer must free is one it never allocated
 
