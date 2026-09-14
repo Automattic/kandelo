@@ -6361,3 +6361,43 @@ describe and because the pieces built this way (the phase reader, the workspace
 sizing, `adopt`, the arena entry) each carry their own perturbed tests. But the
 restore route buys something I currently do not have at all, and the choice
 between them is not mine.
+
+## §135 — What "restore the chain" actually costs, measured
+
+Section 134 put the route choice to the maintainer with an estimate. Here is the
+measurement, because the estimate was low and one part of the cost is not a
+number.
+
+Taking `worker-main.ts`'s nine missing imports and closing over their own
+attic-internal imports transitively: **19 modules, 14,035 code lines.** Ten
+modules come along that worker-main never names --
+`fork-capture-session`, `fork-externref-provenance`, `fork-function-catalog`,
+`fork-module-reconstruction`, `fork-reference-contracts`,
+`fork-reference-recipes`, `fork-reference-scratch`, `fork-replay-events`,
+`fork-static-root-catalog`, and `fork-module-backend`.
+
+That last one is the part that is not a number. `fork-module-backend.ts` already
+exists in `host/src`, restored and deliberately REDUCED: 503 lines and 20
+methods, against the attic's 1,239 lines and 41. Its budget entry is explicit
+that this was the point -- "170 code lines against the 1239-line wrapper it
+supersedes, an 86% reduction ... methods come back when a caller needs one."
+
+So restoring the chain does not just add 14,000 lines to a surface. It brings
+back twenty-one backend methods that were deleted on purpose, and un-banks one
+of the few reductions this lane has actually landed. The suite would go green
+over a backend the campaign already decided against.
+
+Revised costs for the two routes in section 134:
+
+- **Restore first**: `forkRestoredHostFloor` 4,072 -> ~18,100, `forkTypeScript`
+  703 -> ~1,770, and the backend reduction reverted. In exchange, every port
+  from then on is verifiable the moment it lands, which is a thing this lane has
+  not had at any point.
+- **Port forward**: no ceiling movement beyond each piece's own, and no
+  executable check until the chain is rebuilt -- the condition under which two
+  of tonight's changes were wrong.
+
+A third shape exists and may be the real answer: restore ONLY what a fork needs
+to execute, rather than the transitive closure, and treat anything it drags in
+as the next thing to port rather than the next thing to keep. I have not costed
+that, because which modules those are depends on the route chosen first.
