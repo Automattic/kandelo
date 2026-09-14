@@ -15,17 +15,23 @@
 /** Slot 0 is the staging slot every publish passes through. */
 export const FORK_TRANSIT_STAGING_SLOT = 0;
 
-interface TransitModuleExports {
-  readonly __wpk_fork_ref_gc_transit: WebAssembly.Table;
-  readonly fm_transit_grow: (needed: number) => number;
-  readonly fm_last_errno: () => number;
-}
-
 export class ForkAnyrefTransitTable {
   private readonly table: WebAssembly.Table;
+  private readonly growTransit: (needed: number) => number;
+  private readonly lastErrno: () => number;
 
+  /**
+   * Takes the module's EXPORTS, and names the one that is missing.
+   *
+   * All three are read by name because the one production call site passed the
+   * transit TABLE instead of the exports. A table has no
+   * `__wpk_fork_ref_gc_transit` property, so the old constructor rejected it
+   * saying "the fork module exports no __wpk_fork_ref_gc_transit table" -- true
+   * of the argument and useless about the mistake -- and anything that got past
+   * that would have failed inside `grow` with `undefined is not a function`.
+   */
   constructor(
-    private readonly exports: TransitModuleExports,
+    exports: Record<string, unknown>,
     private readonly label = "fork anyref transit",
   ) {
     const table = exports.__wpk_fork_ref_gc_transit;
@@ -34,7 +40,17 @@ export class ForkAnyrefTransitTable {
         `${label}: the fork module exports no __wpk_fork_ref_gc_transit table`,
       );
     }
+    const grow = exports.fm_transit_grow;
+    const errno = exports.fm_last_errno;
+    if (typeof grow !== "function" || typeof errno !== "function") {
+      throw new TypeError(
+        `${label}: the fork module exports no ` +
+          `${typeof grow !== "function" ? "fm_transit_grow" : "fm_last_errno"}()`,
+      );
+    }
     this.table = table;
+    this.growTransit = grow as (needed: number) => number;
+    this.lastErrno = errno as () => number;
   }
 
   get length(): number {
@@ -56,8 +72,8 @@ export class ForkAnyrefTransitTable {
     if (this.table.length >= needed) return;
     // The MODULE grows its own table: it knows the element type and it is the
     // party that must still be able to index every slot afterwards.
-    const grown = this.exports.fm_transit_grow(needed);
-    const errno = this.exports.fm_last_errno();
+    const grown = this.growTransit(needed);
+    const errno = this.lastErrno();
     if (grown < 0 || errno !== 0) {
       throw new Error(
         `${this.label}: fm_transit_grow(${needed}) failed with errno ${errno}`,

@@ -130,8 +130,8 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 |---|---|---|---|
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
 | `forkTypeScript` | 672 | 811 | the backend's reduced-surface methods, the seeds, the sides staging |
-| `forkPlatformTypeScript` | 450 | **752** | `fork-phase.ts` (28), `fork-import-identity.ts` (214), `fork-activations.ts` (75) |
-| `workerMainTypeScript` | 5858 | 5781 | net −77; banked down three times, with +6 and +29 in between |
+| `forkPlatformTypeScript` | 450 | **759** | `fork-phase.ts`, `fork-import-identity.ts`, `fork-activations.ts`, the transit view's export checks |
+| `workerMainTypeScript` | 5858 | 5790 | net −68; banked down three times, with +6, +29 and +12 in between |
 
 The seven entries behind the first row, each with the reason recorded beside its
 number in `docs/surface-budget.json`:
@@ -8178,18 +8178,77 @@ own owner-1 table is short then walks `dirty_count(1)`, reaches a page beyond
 its own `table.size`, and TRAPS during capture. Both activations are legitimately
 state owners -- of different tables -- so neither is gated out.
 
-**The fix shape, and why I did not take it.** The mechanism already exists: give
-the mark an activation-aware entry (`fm_module_state_table_dirty_mark(activation,
-owner, first, count)`) and route the multi-activation guest to it through the
-same trampoline table that already carries `table_state_owned`. The guest's
-import signature does not change, so this is not an ABI break at the guest
-contract -- but it adds a trampoline slot, which changes what `fork_instrument`
-emits and therefore what a rebuilt artifact contains, and that is a decision
-about instrumented-artifact compatibility rather than a fork control-flow port.
+**The fix shape.** Give the three dirty-journal entries activation-aware
+versions and route the multi-activation guest to them through the same
+trampoline table that already carries `table_state_owned`. Section 167 works out
+what that actually costs, and corrects what this paragraph first said about
+it.
+
+**Saturation is not the safe direction either, and the comment says it is.**
+The module's own doc argues that over-approximating a capture is safe and
+under-approximating is wrong, "so saturation is the only safe direction to fail
+in". For one guest that holds. Across activations it does not, for the same
+reason: on saturation `count(owner)` answers `DIRTY_PAGES_PER_OWNER` (4096) for
+EVERY owner and `page(owner, i)` answers `i`, so every activation whose table is
+shorter than 4096 pages walks straight past its own `table.size` and traps.
+Saturation is fatal, not conservative. (It is also unlikely to fire: the page
+shift is 10, so 4096 pages is 4,194,304 table entries, and the owner table has
+32 slots. The collision above needs no saturation at all.)
 
 **What it means for this lane meanwhile.** Nothing blocks: the host-side
 `markTableMutation` port would pass the same owner the guest does, so it neither
-causes nor cures this. But it does mean a dlopen fork with table mutations is
-not currently sound, which is worth knowing before anyone reads a green
-single-activation fork as coverage.
+causes nor cures this.
 
+**But the lane is what is HIDING it.** All five dlopen and dylink fork tests --
+`examples/dlopen/test.test.ts`, `dlopen-e2e`, `dlopen-host-imports`,
+`fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e` -- are in the
+201-file expected-failure baseline, failing on the unresolved attic imports
+before they reach any of this. The two that would exercise a multi-activation
+capture are exactly the two that cannot run. So this surfaces the moment the
+nine imports are gone, along with anything else the broken host has been
+masking, which is an argument for expecting the first green suite to be a second
+round of work rather than an ending.
+
+---
+
+## §167 — Correcting section 166: the fix is in this lane, and here is its price
+
+Section 166 said the fix "changes what `fork_instrument` emits and therefore
+what a rebuilt artifact contains", and called that a decision about
+instrumented-artifact compatibility. That is wrong, and the correction matters
+because it moves the work from someone else's lane into this one.
+
+**`fork_instrument` emits no trampolines.** `fork-module-inject` does, into the
+MODULE:
+
+```rust
+const TRAMPOLINE_ACTIVATIONS: u32 = 64;
+const TRAMPOLINE_SLOTS: u32 = 6;
+```
+
+and the host binds a guest's frozen one-argument import to the right entry by
+index (`FORK_ACTIVATION_TRAMPOLINE_SLOTS` in `fork-guest-imports.ts`, pinned
+against the injector by a test). A guest imports by NAME with an unchanged
+signature; which function object it gets is the host's decision. So adding slots
+touches the injector, the module and that host list -- **no guest rebuild, no
+ABI change, no artifact compatibility question.**
+
+**What it costs, honestly.** Three slots, not one: the guest's save walk reads
+`dirty_count(owner)` and `dirty_page(owner, ordinal)` as well as marking, and
+all three are keyed the same wrong way. So:
+
+* `fork-module-inject`: slots 6 → 9, and the trampoline builder generalized to
+  forward every parameter after the activation -- it currently takes exactly one
+  (`params().get(1)`), because every existing target has one;
+* `crates/fork-module`: three activation-aware entries and a `DirtyState` keyed
+  by `(activation, owner)` rather than `owner`;
+* `host/src/fork-guest-imports.ts`: three more names in the slot list, in the
+  injector's order, which the existing pin test checks;
+* `forkModuleHostEntries` +3, because that surface counts an `fm_*` entry no
+  `host/src` caller reaches, and these are reached by the GUEST through a table.
+
+**Why I am asking rather than doing.** It is a real correctness fix in the Rust
+module, which is normally mine by the "fix defects in the Rust replacement"
+rule. But it is outside the nine-import stride, and it costs three entries on
+the surface the maintainer has already questioned twice. Those two facts
+together make it a routing decision rather than a judgement call.

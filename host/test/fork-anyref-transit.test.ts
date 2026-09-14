@@ -46,6 +46,25 @@ describe("fork anyref transit", () => {
     ).toThrow(/no __wpk_fork_ref_gc_transit/);
   });
 
+  it("names the growth export it is missing, rather than failing at grow", () => {
+    // The production call site passed the transit TABLE instead of the module's
+    // exports, which the table check above rejected with a message about a
+    // missing table -- true of the argument and useless about the mistake.
+    // Anything that got past it would have failed much later, inside `grow`,
+    // with `undefined is not a function`.
+    const { table, exports } = moduleWith(2);
+    expect(
+      () => new ForkAnyrefTransitTable({ __wpk_fork_ref_gc_transit: table }),
+    ).toThrow(/no fm_transit_grow/);
+    expect(
+      () =>
+        new ForkAnyrefTransitTable({
+          __wpk_fork_ref_gc_transit: table,
+          fm_transit_grow: exports.fm_transit_grow,
+        }),
+    ).toThrow(/no fm_last_errno/);
+  });
+
   it("grows through the MODULE for a recipe slot", () => {
     const { table, exports } = moduleWith(2);
     const transit = new ForkAnyrefTransitTable(exports);

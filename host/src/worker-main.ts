@@ -3725,7 +3725,10 @@ export async function centralizedWorkerMain(
         // same table the module's drive integrity check reads after each ALLOC
         // step. Before this, a distinct table was minted here and handed to the
         // registry while the module used its own — a mismatch on flag-on.
-        forkGcTransit = new ForkAnyrefTransitTable(forkModuleInstance.gcTransitTable);
+        forkGcTransit = new ForkAnyrefTransitTable(
+          forkModuleInstance.exports,
+          `pid=${pid}: anyref transit`,
+        );
         if (borrowedForkChild) {
           // Remember the ON-DEMAND region so the child releases it when its one
           // borrowed replay finishes (channel-munmap; see after `finishReplay`).
@@ -6639,6 +6642,11 @@ export async function centralizedThreadWorkerMain(
     // catalog, so an overflow is a genuine module-capacity boundary, never a
     // silent drop to the (Phase 4: to-be-deleted) JS continuation twin.
     let threadForkModuleInstance: ForkModuleInstance | null = null;
+    // The MODULE owns the unwind tag and exports it; a host that mints its own
+    // leaves that export dead and makes the two disagree the moment the module
+    // throws one. Read from the module below, exactly as the process path has
+    // since `forkUnwindTagFrom` landed.
+    let threadModuleUnwindTag: WebAssembly.Tag | undefined;
     let threadForkModuleBackend: ForkModuleContinuationBackend | null = null;
     if (hasForkInstrumentation && threadActivationRegistry) {
       const forkModuleModule = initData.forkModuleModule;
@@ -6720,6 +6728,10 @@ export async function centralizedThreadWorkerMain(
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
+        threadModuleUnwindTag = forkUnwindTagFrom(
+          threadForkModuleInstance.exports,
+          `pid=${pid} tid=${tid} unwind`,
+        );
         // Built here rather than beside the registry above, because it publishes
         // straight into this thread's module and there is no module before this
         // point. Nothing reads it earlier.
@@ -6940,7 +6952,13 @@ export async function centralizedThreadWorkerMain(
     }
     const threadLongjmpTag = createLongjmpTag(ptrWidth);
     const threadCppExceptionTag = createCppExceptionTag(ptrWidth);
-    const threadForkUnwindTag = createForkUnwindTag();
+    // This called a function that no longer exists, so a fork-instrumented
+    // pthread worker failed at startup with a ReferenceError.
+    const threadForkUnwindTag = (): WebAssembly.Tag =>
+      requireForkUnwindTag(
+        threadModuleUnwindTag,
+        `pid=${pid} tid=${tid}: fork unwind`,
+      );
     const replicaActivationOwner =
       hasDylinkForkRole &&
       threadActivationRegistry &&
@@ -6950,7 +6968,7 @@ export async function centralizedThreadWorkerMain(
             memory,
             ptrWidth,
             channelOffset,
-            forkUnwindTag: threadForkUnwindTag,
+            forkUnwindTag: threadForkUnwindTag(),
             resumeTable: threadResumeTable,
             registry: threadActivationRegistry,
             // A pthread replica gets its own floor over ITS token cache and
@@ -7000,7 +7018,7 @@ export async function centralizedThreadWorkerMain(
       hasDylinkForkRole
         ? undefined
         : `pid=${pid} tid=${tid}: main artifact lacks the dylink fork role capability`,
-      threadForkUnwindTag,
+      threadForkUnwindTag(),
       (table, firstIndex, length) => {
         threadActivationRegistry?.markTableMutation(table, firstIndex, length);
       },
@@ -7111,7 +7129,7 @@ export async function centralizedThreadWorkerMain(
       ptrWidth,
       threadLongjmpTag,
       threadCppExceptionTag,
-      threadForkUnwindTag,
+      threadForkUnwindTag(),
       (timedOutPtr, vmInterruptPtr, seconds) => {
         port.postMessage({
           type: "vm_interrupt_timer",
@@ -7278,7 +7296,7 @@ export async function centralizedThreadWorkerMain(
               : resumeThread!(fnPtr, threadArg);
           result = Number(raw);
         } catch (e) {
-          if (isForkUnwindException(e, threadForkUnwindTag)) {
+          if (isForkUnwindException(e, threadForkUnwindTag())) {
             transportedForkUnwind = true;
           } else if (
             isWasmUnreachableTrap(e) && kernelThreadExitStatus !== null
