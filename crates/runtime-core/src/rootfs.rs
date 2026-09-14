@@ -4968,6 +4968,52 @@ mod tests {
         release_handle(h);
     }
 
+    /// The three halves of `clear_setid_on_modify` that `write_clears_setuid_bit`
+    /// does not reach: that a no-op does NOT clear, that truncate does, and that
+    /// set-group-ID survives on a file the group cannot execute.
+    ///
+    /// `tmpfs.rs` asserts all three for its own twin of this method
+    /// (`write_and_truncate_clear_setid_only_on_real_modification`); rootfs —
+    /// the filesystem that owns `/` — asserted only that a real write clears
+    /// set-user-ID. The set-group-ID condition in particular was a live branch
+    /// with nothing behind it.
+    #[test]
+    fn setid_clears_only_on_real_modification_and_respects_group_exec() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/suid", 7, 3, 0o6755, 0, 0, 2).unwrap();
+        let (mut blob, _) =
+            make_byte_source(alloc::vec![(7u64, b"abc".to_vec())], alloc::vec::Vec::new());
+        let h = open(b"/suid", 2, 0, 0, 0).unwrap();
+
+        // A zero-length write is not a modification: both bits survive.
+        write(h, 0, b"", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o6755);
+
+        // A real write clears set-user-ID, and set-group-ID too because the
+        // file is group-executable.
+        write(h, 0, b"Z", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o0755);
+
+        // Truncating to the size it already has changes nothing, so the bits
+        // stay; a real shrink clears them.
+        chmod(b"/suid", 0o6755).unwrap();
+        let len = size(h).unwrap();
+        truncate_handle(h, len, &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o6755);
+        truncate_handle(h, 0, &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o0755);
+
+        // Set-group-ID on a file the GROUP CANNOT EXECUTE is not a
+        // privilege the write invalidates, so it survives while set-user-ID
+        // goes. This is the `S_IXGRP` branch, which no test reached before.
+        chmod(b"/suid", 0o6745).unwrap();
+        write(h, 0, b"Y", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o2745);
+
+        release_handle(h);
+    }
+
     #[test]
     fn otrunc_discards_base_without_reading_blob() {
         let _g = TestGuard::acquire();
