@@ -2112,8 +2112,15 @@ fn is_devfs_namespace_path(path: &[u8]) -> bool {
     crate::devfs::is_namespace_path(path)
 }
 
-fn is_host_backed_devfs_path(path: &[u8]) -> bool {
-    crate::devfs::is_host_backed_path(path)
+/// Whether a `/dev` path is served by an authority OTHER than devfs.
+///
+/// The gates below all read `is_devfs_namespace_path(p) && !…(p)`, meaning
+/// "devfs owns this name, so an unknown one is `ENOENT` rather than a peek at
+/// the rootfs". `/dev/shm` is the one subtree that is not devfs's, and it is
+/// now the in-kernel tmpfs's rather than a host mount's -- so the predicate
+/// asks tmpfs, and the gates keep their shape.
+fn is_delegated_devfs_path(path: &[u8]) -> bool {
+    crate::devfs::is_delegated_path(path)
 }
 
 /// Inspect one canonical namespace path without following its final symlink.
@@ -2168,7 +2175,7 @@ fn namespace_lstat_raw(
     // Like procfs, kernel devfs owns its namespace. `/dev/shm` is the one
     // explicit host-backed subtree; unknown names elsewhere must not reveal a
     // hidden rootfs entry.
-    if is_devfs_namespace_path(path) && !is_host_backed_devfs_path(path) {
+    if is_devfs_namespace_path(path) && !is_delegated_devfs_path(path) {
         return Err(Errno::ENOENT);
     }
     if let Some(st) = fifo_path_stat_raw(host, path, false)? {
@@ -2346,7 +2353,7 @@ fn resolve_namespace_path_from(
             Err(Errno::ENOENT) if is_final && options.allow_missing_final => {
                 if is_procfs_namespace_path(&candidate)
                     || (is_devfs_namespace_path(&candidate)
-                        && !is_host_backed_devfs_path(&candidate))
+                        && !is_delegated_devfs_path(&candidate))
                 {
                     return Err(Errno::EROFS);
                 }
@@ -2478,7 +2485,7 @@ pub fn resolve_existing_namespace_path(
 
 fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
     if is_procfs_namespace_path(path)
-        || (is_devfs_namespace_path(path) && !is_host_backed_devfs_path(path))
+        || (is_devfs_namespace_path(path) && !is_delegated_devfs_path(path))
         || synthetic_file_content(path).is_some()
     {
         return Err(Errno::EROFS);
@@ -2656,7 +2663,7 @@ pub fn open_prepared_exec_target(
     // GAP: Linux resolves `/dev/fd/N` to the file behind descriptor N, so
     // `execve("/dev/fd/3")` runs it. Kandelo does not implement that, and this
     // reports the truthful EACCES rather than pretending the name is unknown.
-    if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+    if is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved) {
         return Err(Errno::EACCES);
     }
 
@@ -3320,7 +3327,7 @@ pub fn sys_open(
     }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
-    if !is_host_backed_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
+    if !is_delegated_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
         return crate::devfs::devfs_open_dir(proc, resolved, oflags);
     }
 
@@ -7749,7 +7756,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return procfs_entry_stat(proc, host, &entry, true);
     }
-    if !is_host_backed_devfs_path(&resolved) {
+    if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
             &resolved,
             proc.effective_uid(),
@@ -7795,7 +7802,7 @@ pub fn sys_lstat(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return procfs_entry_stat(proc, host, &entry, false);
     }
-    if !is_host_backed_devfs_path(&resolved) {
+    if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
             &resolved,
             proc.effective_uid(),
@@ -8311,7 +8318,7 @@ pub fn sys_readlink(
     // family answered above, so anything still here is not a symlink: EINVAL
     // per POSIX. Without this the path fell through to the host filesystem,
     // where the `/dev` mount answered on the kernel's behalf.
-    if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+    if is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved) {
         return Err(Errno::EINVAL);
     }
 
@@ -8559,7 +8566,7 @@ pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Re
     }
     check_access(proc, &st, R_OK | X_OK)?;
     if is_procfs_namespace_path(&resolved.path)
-        || (is_devfs_namespace_path(&resolved.path) && !is_host_backed_devfs_path(&resolved.path))
+        || (is_devfs_namespace_path(&resolved.path) && !is_delegated_devfs_path(&resolved.path))
     {
         // Kernel-owned procfs/devfs directory iteration is implemented by
         // open(O_DIRECTORY)+getdents64. This legacy directory-stream API has
@@ -13273,7 +13280,7 @@ pub fn sys_bind(
                 // ignores `O_EXCL`: `bind(fd, "/dev/null")` *succeeded* and
                 // registered a socket endpoint at a path `unlink` then refuses
                 // to remove, because unlink under `/dev` is EROFS.
-                if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+                if is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved) {
                     return Err(Errno::EADDRINUSE);
                 }
                 check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
@@ -15124,7 +15131,7 @@ pub fn sys_openat(
     }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
-    if !is_host_backed_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
+    if !is_delegated_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
         return crate::devfs::devfs_open_dir(proc, resolved, oflags);
     }
 
@@ -15298,7 +15305,7 @@ pub fn sys_fstatat(
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         return procfs_entry_stat(proc, host, &entry, follow);
     }
-    if !is_host_backed_devfs_path(&resolved) {
+    if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
             &resolved,
             proc.effective_uid(),
@@ -17451,7 +17458,7 @@ pub fn sys_pathconf(
         return terminal_pathconf_value(name);
     }
     if is_procfs_namespace_path(&resolved)
-        || (is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved))
+        || (is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved))
     {
         return virtual_filesystem_pathconf_value(name);
     }
@@ -17536,7 +17543,7 @@ pub fn sys_fpathconf(
             if is_terminal {
                 terminal_pathconf_value(name)
             } else if is_procfs_namespace_path(&path)
-                || (is_devfs_namespace_path(&path) && !is_host_backed_devfs_path(&path))
+                || (is_devfs_namespace_path(&path) && !is_delegated_devfs_path(&path))
             {
                 virtual_filesystem_pathconf_value(name)
             } else if host_handle >= 0 {
@@ -18301,7 +18308,7 @@ pub fn sys_readlinkat(
     // family answered above, so anything still here is not a symlink: EINVAL
     // per POSIX. Without this the path fell through to the host filesystem,
     // where the `/dev` mount answered on the kernel's behalf.
-    if is_devfs_namespace_path(&resolved) && !is_host_backed_devfs_path(&resolved) {
+    if is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved) {
         return Err(Errno::EINVAL);
     }
 
@@ -18644,7 +18651,7 @@ fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
     {
         return Some(procfs_statfs());
     }
-    if (!is_host_backed_devfs_path(resolved) && crate::devfs::match_devfs_dir(resolved).is_some())
+    if (!is_delegated_devfs_path(resolved) && crate::devfs::match_devfs_dir(resolved).is_some())
         || match_virtual_device(resolved).is_some()
         || resolved == b"/dev/ptmx"
         || resolved == b"/dev/tty"

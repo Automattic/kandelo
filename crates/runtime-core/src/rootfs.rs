@@ -4716,7 +4716,14 @@ mod tests {
         let _g = TestGuard::acquire();
         // Baseline: with nothing registered, sibling `/` paths are overlay-owned.
         assert!(owns_path(b"/run/kandelo-run/work/1-1.wasm"));
-        assert!(owns_path(b"/dev/shm/sem.foo"));
+        assert!(owns_path(b"/mnt/data/file"));
+
+        // `/dev/shm` is NOT one of them any more: the in-kernel tmpfs serves it,
+        // so the overlay never owned it regardless of what the host registers.
+        // It used to be the example here, which stopped being true the moment
+        // POSIX shared memory moved in-kernel.
+        assert!(!owns_path(b"/dev/shm/sem.foo"));
+        assert!(crate::tmpfs::owns_path(b"/dev/shm/sem.foo"));
 
         // The host registers the sibling mounts that remain after dropping `/`.
         let n = set_foreign_prefixes(b"/dev/shm\0/run/kandelo-run\0/mnt/data\0");
@@ -4726,8 +4733,6 @@ mod tests {
         // fall through to the sibling host mount.
         assert!(!owns_path(b"/run/kandelo-run"));
         assert!(!owns_path(b"/run/kandelo-run/work/1-1.wasm"));
-        assert!(!owns_path(b"/dev/shm"));
-        assert!(!owns_path(b"/dev/shm/sem.foo"));
         assert!(!owns_path(b"/mnt/data/file"));
 
         // Siblings that share a leading path segment but are NOT under a
