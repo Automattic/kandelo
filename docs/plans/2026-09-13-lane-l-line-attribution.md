@@ -1605,7 +1605,17 @@ rather than a matter of care:
 | `[ -x path ] \|\| refuse` | false for a dangling symlink | closed |
 | `suite \| grep 'Tests'` then read the line | pipeline status is GREP's; a suite that died before printing shows nothing to read | **OPEN** |
 | a mutation harness backgrounded across a laptop sleep | the trial applies, the process dies, the revert never runs — the tree is left MUTATED | **FIXED** |
+| `pgrep -fc "xtask perturb"` to ask "is the harness alive?" | returns 0 while it IS alive — during a trial the live process is the verifier it spawned, not the harness | **OPEN** |
 | `set -- $pair` in zsh, then `[ "$2" -eq 0 ]` | no word split: `$2` is empty, the test errors | **OPEN** |
+
+**The last row is the one that did damage.** The other entries in this table
+fail toward permission; that one fails toward a confident WRONG ANSWER, which
+is worse, because it invites action. Reading it as "the harness is dead" is
+what justified restoring a file another process owned, mid-verify. The fix is
+to ask a question the answer can be checked against — `git status` plus the
+harness's own output plus whether the log is still advancing — rather than one
+process-name match. All three were available and two of them said the run was
+alive.
 
 **The dangerous shape is a NUMERIC comparison inside an `if` whose else branch
 is the permissive path.** `[` treats a non-integer operand as an error, and an
