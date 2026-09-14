@@ -892,6 +892,40 @@ describe("the binding records the module assembles at capture", () => {
     expect(plan, "and gets an install plan").toBeGreaterThan(0);
   });
 
+  it("refuses a child install whose inherited binding record is corrupt", () => {
+    // The same arena, one byte apart. The intact case attaches; flipping a
+    // binding's kind to one no child could materialise is refused, before the
+    // reference graph is even decoded. Without that check the corrupt record
+    // would be read much later, by the host building the child's imports, and
+    // by then it is a wrong child rather than a refused fork.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7);
+    identity(SPACE_GLOBAL, 9, 5, 7);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "seal").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    const bindings = arenaRecords(f.memory, root).find(
+      (r) => r.kind === RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+    );
+    expect(bindings, "a KFBG record to corrupt").toBeDefined();
+    bindings!.payload.setUint8(24 + 32, 99);
+
+    const child = childModule(f);
+    (child.fm_attach_child as (root: number, pid: number) => number)(root, 1);
+    expect(
+      (child.fm_last_errno as () => number)(),
+      "the corrupt record is refused",
+    ).toBe(22);
+  });
+
   it("falls back to a base import when no activation provides the object", () => {
     // Same fork with the owner's catalog entry removed: every member of the
     // group imports the global, so nobody can hand it to a child and it comes

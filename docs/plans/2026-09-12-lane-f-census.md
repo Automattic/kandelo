@@ -8302,10 +8302,13 @@ no input panics. Each guard perturbed until the test naming it failed. They are
 validated because these bytes come out of an arena the PARENT mapped and the
 child inherited -- shared memory another process wrote.
 
-**What did not land, and why.** I added an admission check to `fm_attach_child`:
-decode both records, refuse a corrupt one before the reference graph is even
-decoded. It is the same shape as the exnref tag gate beside it and I believe it
-is right. I could not make it FAIL, so I reverted it.
+**What did not land THEN, and does now.** I added an admission check to
+`fm_attach_child` -- decode both records, refuse a corrupt one before the
+reference graph is even decoded -- and reverted it because I could not make it
+fail. Section 170 supplied the discriminator: an intact attach now SUCCEEDS, so
+a corrupt one refusing is attributable. The check is back, and perturbing it
+away makes the corrupt record attach silently, which is the failure mode it
+exists for.
 
 The problem is attribution. A hand-built arena cannot get past the reference
 replay seed, and a real inherited arena needs a second module instance -- which

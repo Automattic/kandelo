@@ -5043,6 +5043,61 @@ mod wasm {
         Ok(activations)
     }
 
+    /// Decode the imported-binding records this child inherited, and refuse a
+    /// record it cannot read.
+    ///
+    /// The bytes come out of an arena the PARENT mapped and this process
+    /// inherited -- shared memory another process wrote -- so they are checked
+    /// rather than trusted. Checked HERE, beside the exnref admission gate,
+    /// for the same reason that one is here: a record that decodes to nonsense
+    /// would otherwise be read much later, when a child builds its imports from
+    /// coordinates describing nothing, and by then the failure is a wrong child
+    /// rather than a refused fork.
+    ///
+    /// Decoding and discarding is the point. Nothing here needs the bindings
+    /// yet -- the host builds the child's import object, because only
+    /// JavaScript can construct a `WebAssembly.Global` -- so this is the
+    /// admission check, not the read.
+    fn assert_inherited_bindings_decodable(module_state_root: u64) -> Result<(), Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+        for record in &module_state.records {
+            let globals =
+                record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS;
+            let tables =
+                record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS;
+            if !globals && !tables {
+                continue;
+            }
+            let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+            let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
+            if globals {
+                fork_codec::decode_imported_global_bindings(payload)?;
+            } else {
+                fork_codec::decode_imported_table_bindings(payload)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Child-install ENTRY (the module-owned `fm_attach_child`, which serves the
     /// COW and the vfork borrowed child alike). Seeds the reference replay driver/feed AND
     /// builds ONE drive plan that first reconstructs the reference graph
@@ -5061,6 +5116,11 @@ mod wasm {
     /// the host-side child-private replay-prefix reservation (raw memory floor, no
     /// reference values), and that never entered this module.
     fn attach_from_arena_impl(module_state_root: u64, pid: u32) -> Result<usize, Errno> {
+        // FIRST, before the reference graph is decoded: a pure structural read
+        // of bytes another process wrote, depending on nothing the seed below
+        // establishes. The cheapest check that can refuse a corrupt inheritance
+        // should be the one that does.
+        assert_inherited_bindings_decodable(module_state_root)?;
         begin_reference_replay_impl(module_state_root, pid)?;
         // Exnref tag-validity ADMISSION gate (fail-loud SECURITY boundary). Runs
         // right after the graph is decoded and BEFORE the reconstruction drive plan
