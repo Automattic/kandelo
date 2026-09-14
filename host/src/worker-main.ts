@@ -4919,79 +4919,6 @@ export async function centralizedWorkerMain(
           // allocate/fill/exn topological order (`fm_build_gc_plan` +
           // `fm_drive_execute`) in place of the JS `materializeAllTyped` sub-loop
           // for a flag-on qualifying child. A flag-off fork skips this entirely.
-          const driveTable = forkModuleInstance.driveTable;
-          const driveTableBase = forkModuleInstance.exports
-            .fm_drive_table_base as (activation: number) => number;
-          // Op / slot offsets within an activation's drive-table slice (see
-          // `fork_codec::drive_plan` DRIVE_OP_ALLOC / DRIVE_OP_FILL / DRIVE_OP_EXN
-          // and DRIVE_SLOT_RESTORE / DRIVE_SLOT_FINISH_RESTORE).
-          const DRIVE_OP_ALLOC = 0;
-          const DRIVE_OP_FILL = 1;
-          const DRIVE_OP_EXN = 2;
-          const DRIVE_SLOT_RESTORE = 3;
-          const DRIVE_SLOT_FINISH_RESTORE = 4;
-          for (const activation of sortedActivations) {
-            const slotBase = driveTableBase(activation.activationId);
-            const allocate =
-              activation.instance.exports[WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE];
-            const fill =
-              activation.instance.exports[WPK_FORK_REFERENCE_EXPORT_GC_FILL];
-            // A fork whose guest carries no typed-GC codec exports no
-            // allocate/fill; leave those slots empty (they are never driven).
-            if (typeof allocate !== "function" || typeof fill !== "function") {
-              continue;
-            }
-            // The exnref materialize export is present only when the guest ships
-            // an exception codec; bind it when it exists so an exnref DRIVE step
-            // (`DRIVE_OP_EXN`) resolves. A struct/array/i31-only guest omits it,
-            // and no exnref step is ever emitted for it.
-            const materialize =
-              activation.instance.exports[WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE];
-            const hasExn = typeof materialize === "function";
-            const needed = slotBase + (hasExn ? DRIVE_OP_EXN : DRIVE_OP_FILL) + 1;
-            if (driveTable.length < needed) {
-              driveTable.grow(needed - driveTable.length);
-            }
-            driveTable.set(slotBase + DRIVE_OP_ALLOC, allocate);
-            driveTable.set(slotBase + DRIVE_OP_FILL, fill);
-            if (hasExn) {
-              driveTable.set(slotBase + DRIVE_OP_EXN, materialize);
-            }
-          }
-          // Child-install binding (Phase 6 `fm_attach_child`): bind EVERY
-          // activation's guest `wpk_fork_module_state_restore` /
-          // `wpk_fork_module_state_finish_restore` into its drive-table slice so
-          // the module-owned attach plan's `DRIVE_OP_RESTORE` /
-          // `DRIVE_OP_FINISH_RESTORE` steps `call_indirect` them. UNLIKE the
-          // allocate/fill/exn binding above this is NOT gated on a typed-GC codec:
-          // restore/finish reconstruct an activation's global/table state (which
-          // exists even for a reference-free activation in a multi-activation
-          // fork), so every `Module`-record activation the module enumerates for
-          // the plan must have its restore/finish bound.
-          for (const activation of sortedActivations) {
-            const slotBase = driveTableBase(activation.activationId);
-            const restore =
-              activation.instance.exports[WPK_FORK_EXPORT_MODULE_STATE_RESTORE];
-            const finishRestore =
-              activation.instance.exports[
-                WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE
-              ];
-            if (
-              typeof restore !== "function" ||
-              typeof finishRestore !== "function"
-            ) {
-              throw new Error(
-                `pid=${pid}: activation ${activation.activationId} is missing ` +
-                  "module-state restore/finish exports for the module attach drive",
-              );
-            }
-            const needed = slotBase + DRIVE_SLOT_FINISH_RESTORE + 1;
-            if (driveTable.length < needed) {
-              driveTable.grow(needed - driveTable.length);
-            }
-            driveTable.set(slotBase + DRIVE_SLOT_RESTORE, restore);
-            driveTable.set(slotBase + DRIVE_SLOT_FINISH_RESTORE, finishRestore);
-          }
           // The module-backed reference replay path always carries a backend (it
           // was set up alongside `forkModuleInstance` and `enableModuleReferenceReplay`
           // below drives through it). Assert it so the seed calls are well-typed
@@ -5000,6 +4927,28 @@ export async function centralizedWorkerMain(
           if (!forkModuleBackend) {
             throw new Error(
               `pid=${pid}: fork-module reference replay requires a backend`,
+            );
+          }
+          // Bind every activation's guest exports into the module's drive
+          // table so `fm_drive_execute` can `call_indirect` them. The module is
+          // instantiated BEFORE the guests -- it supplies their frame-flip
+          // imports -- so it cannot import them directly; the host's whole job
+          // here is to put them somewhere the module can reach.
+          //
+          // This was two loops binding five of the thirteen slots between them,
+          // and that is why the JS host could drive typed reconstruction and
+          // nothing else: the unwind/rewind/abort quartet the entire fork
+          // lifecycle runs on was never bound at all. An unbound slot is a
+          // `call_indirect` on null, not a missing feature, so the gap could
+          // only ever have surfaced as a trap. The binding table now lives
+          // beside the module wrapper, covers the full stride, and is pinned
+          // slot by slot against `fork_codec::drive_plan` by
+          // `host/test/fork-module-backend.test.ts` -- including a test that no
+          // slot in the stride is left unbound.
+          for (const activation of sortedActivations) {
+            forkModuleBackend.bindActivationDrive(
+              activation.activationId,
+              activation.instance.exports as Record<string, unknown>,
             );
           }
           // Phase 6 item 3c: seed the module's typed-GC drive planner from the

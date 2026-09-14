@@ -64,13 +64,60 @@ describe("activation drive bindings", () => {
       ["__wpk_fork_ref_gc_allocate", constant("DRIVE_OP_ALLOC")],
       ["__wpk_fork_ref_gc_fill", constant("DRIVE_OP_FILL")],
       ["__wpk_fork_exception_materialize", constant("DRIVE_OP_EXN")],
+      ["wpk_fork_module_state_restore", constant("DRIVE_SLOT_RESTORE")],
+      [
+        "wpk_fork_module_state_finish_restore",
+        constant("DRIVE_SLOT_FINISH_RESTORE"),
+      ],
+      ["wpk_fork_rewind_begin", constant("DRIVE_SLOT_REWIND_BEGIN")],
+      ["wpk_fork_abort_begin", constant("DRIVE_SLOT_ABORT_BEGIN")],
+      ["wpk_fork_unwind_end", constant("DRIVE_SLOT_UNWIND_END")],
+      ["wpk_fork_rewind_end", constant("DRIVE_SLOT_REWIND_END")],
+      ["wpk_fork_abort_end", constant("DRIVE_SLOT_ABORT_END")],
+      ["wpk_fork_unwind_begin", constant("DRIVE_SLOT_UNWIND_BEGIN")],
       ["__wpk_fork_ref_gc_encode_slot", constant("DRIVE_SLOT_GC_ENCODE")],
       ["__wpk_fork_ref_gc_probe", constant("DRIVE_SLOT_GC_PROBE")],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
-    for (const [slot, name] of FORK_ACTIVATION_DRIVE_BINDINGS) {
+    for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {
       expect(slot, name).toBe(expected.get(name));
     }
+  });
+
+  it("leaves no slot in the stride unbound", () => {
+    // The reason the lifecycle slots were added: the JS host bound five of
+    // thirteen, so the module could drive typed reconstruction and nothing
+    // else. Every unbound slot in the stride is a fork operation the module
+    // cannot perform -- and it fails as a `call_indirect` on null, not as a
+    // missing capability. A gap here is that class of bug, pre-committed.
+    const bound = new Set(FORK_ACTIVATION_DRIVE_BINDINGS.map((b) => b.slot));
+    const missing = [];
+    for (let slot = 0; slot < FORK_ACTIVATION_DRIVE_SLOTS; slot += 1) {
+      if (!bound.has(slot)) missing.push(slot);
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("requires exactly the exports every fork-capable guest emits", () => {
+    // The unwind/rewind/abort quartet plus unwind_begin come from the
+    // instrumentation runtime itself, so a guest without them is a broken
+    // artifact and must fail loudly. Everything else is conditional on what the
+    // guest CONTAINS -- no typed-GC codec, no allocate; no mutable globals, no
+    // module-state save -- and the module emits no step for what is not there,
+    // so marking one of those required would reject a perfectly good guest.
+    const required = FORK_ACTIVATION_DRIVE_BINDINGS.filter((b) => b.required)
+      .map((b) => b.name)
+      .sort();
+    expect(required).toEqual([
+      "wpk_fork_abort_begin",
+      "wpk_fork_abort_end",
+      "wpk_fork_module_state_finish_restore",
+      "wpk_fork_module_state_restore",
+      "wpk_fork_rewind_begin",
+      "wpk_fork_rewind_end",
+      "wpk_fork_unwind_begin",
+      "wpk_fork_unwind_end",
+    ]);
   });
 
   it("reserves the stride fork-codec reserves", () => {
@@ -82,7 +129,7 @@ describe("activation drive bindings", () => {
   it("binds no slot outside the per-activation slice", () => {
     // Without this, a binding at an offset past the stride would silently write
     // into the NEXT activation's slice and pass the mapping test above.
-    for (const [slot, name] of FORK_ACTIVATION_DRIVE_BINDINGS) {
+    for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {
       expect(slot, name).toBeLessThan(FORK_ACTIVATION_DRIVE_SLOTS);
     }
   });

@@ -108,12 +108,47 @@ export const FORK_ACTIVATION_DRIVE_SLOTS = 13;
  * into a JavaScript object the host then called. The module calls them now, so
  * the host only has to put them somewhere the module can reach.
  */
-export const FORK_ACTIVATION_DRIVE_BINDINGS = [
-  [0, "__wpk_fork_ref_gc_allocate"],
-  [1, "__wpk_fork_ref_gc_fill"],
-  [2, "__wpk_fork_exception_materialize"],
-  [11, "__wpk_fork_ref_gc_encode_slot"],
-  [12, "__wpk_fork_ref_gc_probe"],
+export interface ForkActivationDriveBinding {
+  /** Slot offset within the activation's slice, from `fork-codec`'s drive plan. */
+  readonly slot: number;
+  /** The guest export bound there. */
+  readonly name: string;
+  /**
+   * Whether a fork-instrumented guest must export it.
+   *
+   * The unwind/rewind/abort quartet is emitted by the instrumentation runtime
+   * for every fork-capable guest, so a missing one is a broken artifact and has
+   * to fail loudly -- the module WILL drive that slot, and an unbound slot is a
+   * `call_indirect` on null.
+   *
+   * The module-state restore pair is required for the same reason, and the
+   * binding it replaces said so explicitly: restore and finish reconstruct an
+   * activation's global and table state, which exists even for an activation
+   * carrying no references at all, so every activation the attach plan
+   * enumerates must have them bound.
+   *
+   * The rest are conditional on what the guest actually contains: no typed-GC
+   * codec means no allocate/fill, and no exception codec means no materialize.
+   * The module emits no step for what a guest does not have, so an unbound
+   * optional slot is never driven.
+   */
+  readonly required: boolean;
+}
+
+export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding[] = [
+  { slot: 0, name: "__wpk_fork_ref_gc_allocate", required: false },
+  { slot: 1, name: "__wpk_fork_ref_gc_fill", required: false },
+  { slot: 2, name: "__wpk_fork_exception_materialize", required: false },
+  { slot: 3, name: "wpk_fork_module_state_restore", required: true },
+  { slot: 4, name: "wpk_fork_module_state_finish_restore", required: true },
+  { slot: 5, name: "wpk_fork_rewind_begin", required: true },
+  { slot: 6, name: "wpk_fork_abort_begin", required: true },
+  { slot: 7, name: "wpk_fork_unwind_end", required: true },
+  { slot: 8, name: "wpk_fork_rewind_end", required: true },
+  { slot: 9, name: "wpk_fork_abort_end", required: true },
+  { slot: 10, name: "wpk_fork_unwind_begin", required: true },
+  { slot: 11, name: "__wpk_fork_ref_gc_encode_slot", required: false },
+  { slot: 12, name: "__wpk_fork_ref_gc_probe", required: false },
 ] as const;
 
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
@@ -382,17 +417,25 @@ export class ForkModuleContinuationBackend {
   ): void {
     const base = this.call("fm_drive_table_base", activationId);
     const table = this.options.instance.driveTable;
+    // Grow by the FULL per-activation stride, not by the highest slot this
+    // activation happens to bind. The module derives every slot from
+    // `fm_drive_table_base`, so a table grown to the last BOUND slot leaves the
+    // tail of the slice off the end of the table -- and the next activation's
+    // base is past it. Growing to the stride makes the slice exist whether or
+    // not this guest fills all of it.
     const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
     if (table.length < needed) table.grow(needed - table.length);
-    for (const [offset, name] of FORK_ACTIVATION_DRIVE_BINDINGS) {
+    for (const { slot, name, required } of FORK_ACTIVATION_DRIVE_BINDINGS) {
       const fn = guestExports[name];
       if (typeof fn !== "function") {
+        if (!required) continue;
         throw new Error(
           `${this.label}: activation ${activationId} exports no ${name}; the ` +
-            `module cannot drive its typed reference reconstruction`,
+            `module drives that slot on every fork, so an unbound one is a ` +
+            `call_indirect on null rather than a missing feature`,
         );
       }
-      table.set(base + offset, fn);
+      table.set(base + slot, fn);
     }
   }
 
