@@ -77,6 +77,7 @@ interface ModuleExports {
   sm_check_headroom(minBytes: bigint, minInodes: bigint, o: number, ol: number): number;
   sm_lazy_entries(o: number, ol: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
+  sm_image_read(offset: bigint, o: number, ol: number): number;
 }
 
 /**
@@ -1210,6 +1211,38 @@ export class SffsImageFs {
       return { files, archives };
     } finally {
       this.exports.sm_free(ptr, Math.max(required, 1));
+    }
+  }
+
+  /**
+   * Read the LOADED image's bytes at `offset` into `dest`, returning the
+   * number copied and `0` at or past the end.
+   *
+   * This is the window the in-kernel rootfs overlay reads base-file content
+   * through for the life of a session, which `MemoryFileSystem.imageBodyBytes`
+   * serves today by handing out a view of its SharedArrayBuffer. It is NOT
+   * `exportImage`: that one builds an image from the current tree and streams
+   * it in order, so using it here would rebuild the whole image on every
+   * base-file read — and, because the export seals cohorts at offset 0, would
+   * make a read mutate the tree it is reading.
+   */
+  imageRead(offset: bigint, dest: Uint8Array): number {
+    const ptr = this.exports.sm_alloc(dest.length);
+    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    try {
+      const n = this.check(
+        this.exports.sm_image_read(offset, ptr, dest.length),
+        "imageRead",
+        "",
+      );
+      if (n > 0) {
+        // A fresh view: the module may have grown its memory since `sm_alloc`,
+        // which detaches any view taken before it.
+        dest.set(this.mem.subarray(ptr, ptr + n));
+      }
+      return n;
+    } finally {
+      this.exports.sm_free(ptr, dest.length);
     }
   }
 

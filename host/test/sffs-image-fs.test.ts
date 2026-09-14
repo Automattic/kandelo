@@ -231,6 +231,46 @@ describe("SffsImageFs", () => {
     );
   });
 
+  it("reads the loaded image at any offset, in any order, while the tree mutates", () => {
+    // The window the in-kernel overlay reads base-file content through for a
+    // whole session. `exportImage` cannot serve it: that builds from the
+    // current tree and streams in order, and seals cohorts at offset 0 — so
+    // using it here would rebuild the image per read AND let a read mutate the
+    // tree it is reading.
+    const source = SffsImageFs.create();
+    source.mkdir("/d", 0o755);
+    source.writeFile("/d/f", new Uint8Array(9000).fill(0x5a), 0o644);
+    const image = source.exportImage();
+
+    const fs = SffsImageFs.create();
+    fs.loadImage(image);
+
+    // Any offset, and deliberately out of order.
+    const mid = new Uint8Array(64);
+    expect(fs.imageRead(4096n, mid)).toBe(64);
+    expect(Array.from(mid)).toEqual(Array.from(image.subarray(4096, 4160)));
+
+    const head = new Uint8Array(64);
+    expect(fs.imageRead(0n, head)).toBe(64);
+    expect(Array.from(head)).toEqual(Array.from(image.subarray(0, 64)));
+
+    // A short read at the end, then zero past it — the contract the kernel's
+    // provider relies on to stop, rather than an error it would report as a
+    // corrupt image.
+    const tail = new Uint8Array(128);
+    const n = fs.imageRead(BigInt(image.byteLength - 32), tail);
+    expect(n).toBe(32);
+    expect(fs.imageRead(BigInt(image.byteLength), tail)).toBe(0);
+    expect(fs.imageRead(BigInt(image.byteLength + 4096), tail)).toBe(0);
+
+    // Mutating the live tree does not disturb the window: it reads the image
+    // that was LOADED, not one rebuilt from the tree.
+    fs.mkdir("/after", 0o755);
+    const again = new Uint8Array(64);
+    expect(fs.imageRead(0n, again)).toBe(64);
+    expect(Array.from(again)).toEqual(Array.from(head));
+  });
+
   it("answers whether a path's bytes are in the image", () => {
     // The question builder recipes ask: "is this resident?" They asked it of
     // the TypeScript filesystem, which is the only reason they needed the

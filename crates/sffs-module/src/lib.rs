@@ -880,6 +880,43 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
 ///
 /// # Safety
 /// `out_ptr`/`out_len` must describe a writable range when `out_len` is nonzero.
+/// Read the LOADED image at `offset` — the random-access window the kernel
+/// reads base-file content through for the life of a session.
+///
+/// # Why this is not `sm_export_image_read`
+///
+/// That one BUILDS an image from the current tree at offset 0 and streams
+/// from that build, and its contract forbids interleaved mutation. It is a
+/// serializer. The kernel needs the opposite: arbitrary offsets, in any
+/// order, against a filesystem that is live, for as long as the session
+/// lasts. Serving that from the export stream would mean rebuilding a 249 MiB
+/// image on every base-file read.
+///
+/// # Why this is not a pointer to the body
+///
+/// Handing the host an offset and a length into module memory would be one
+/// call instead of many, and would make the host an aliaser of this module's
+/// allocator — a wider capability than reading bytes, and one that breaks the
+/// moment linear memory grows. A bounded copy costs a call and keeps the
+/// module the only thing that knows where its image lives.
+///
+/// Returns the number of bytes copied, `0` at or past the end of the image,
+/// or a negative errno. `EIO` when no image is loaded.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_image_read(offset: i64, out_ptr: usize, out_len: usize) -> i32 {
+    if out_ptr == 0 || offset < 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    match image_source(rootfs::ByteReq::Image { offset: offset as u64 }, out) {
+        Ok(n) => i32::try_from(n).unwrap_or(i32::MAX),
+        Err(e) => err(e),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sm_image_metadata(out_ptr: usize, out_len: usize) -> i32 {
     let metadata = rootfs::image_metadata();
