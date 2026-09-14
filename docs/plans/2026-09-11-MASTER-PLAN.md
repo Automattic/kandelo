@@ -2928,7 +2928,12 @@ the capacity invariant's test was shown failing before it was shown passing.
   flipping one byte of the same fixture's code makes it fail. The peer host
   refuses the mismatch with `ENOEXEC`
   (`host/src/process-lifecycle.ts:1761`), so this is a host parity gap with no
-  platform boundary behind it. Import linkage does NOT cover it either:
+  **The epoch half is CLOSED (2026-09-14)**: `guest_module_for_this_epoch`
+  refuses a guest declaring a different epoch at all three compile sites and
+  allows a pre-marker one through, matching the peer host; all 72 host-native
+  tests pass unchanged, and two harness trials plus a synthetic-bytes unit
+  test keep it honest. What remains open is the import half.
+  Import linkage does NOT cover it either:
   `spawn_guest_thread` trap-stubs imports it cannot find by NAME, so a renamed
   or dropped kernel import instantiates fine and traps only if called. Six of
   the sixteen distinct kernel imports across the fixtures are stubbed today

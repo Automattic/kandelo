@@ -41,16 +41,21 @@ OUT=crates/host-native/fixtures
   -o "$OUT/native_hello.wasm"
 ```
 
-The program's `__abi_version` export must match the kernel's ABI.
+The program's `__abi_version` export must match the kernel's ABI, and as of
+2026-09-14 this host enforces that -- `guest_module_for_this_epoch` in
+`../src/guest.rs`, applied at all three places a guest program is compiled
+(boot, spawn, exec). A program declaring a different epoch is refused; one
+declaring none is allowed through, because predating the marker is a
+different fact from being stale. That is the peer host's rule, so the two
+cannot answer one question two ways.
 
-**This host does not check that, and this file used to claim it did.** The
-sentence here said the host "asserts this at load", so a stale fixture "fails
-loudly rather than running wrong". It does not. `EXPECTED_ABI_VERSION` is
-compared against the KERNEL's `__abi_version` (`guest.rs`, at the boot
-module); nothing reads a GUEST's. Renaming the export out of a fixture --
-`__abi_version` to `__abi_versioZ` -- leaves every test passing, while
-flipping one byte of its code makes the same test fail, so the fixture bytes
-are reaching the host and the marker is simply never looked up.
+**It did not, for months, and this file asserted that it did.** The sentence
+here said the host "asserts this at load", so a stale fixture "fails loudly
+rather than running wrong". `EXPECTED_ABI_VERSION` was compared against the
+KERNEL's marker only; nothing read a GUEST's. That was shown by running, not
+by reading: renaming the export out of a fixture left every test passing,
+while flipping one byte of its code made the same test fail -- so the bytes
+were reaching the host and the marker was simply never looked up.
 
 **Import linkage does not cover the gap either, and the first version of this
 correction said it did.** A guest names between 1 and 16 `kernel.*` functions
@@ -75,12 +80,11 @@ current one. Drift in the syscall channel's LAYOUT -- where most of the ABI
 lives, and the one kind of staleness these fixtures actually exhibit -- is
 invisible to every check the native host performs.
 
-The peer host does enforce this: `host/src/process-lifecycle.ts` refuses a
-launch with `ENOEXEC` when a program declares an ABI that disagrees with the
-kernel's, and allows a `null` (pre-marker) binary through. Closing that parity
-gap here is filed as **L-D4** in
-`docs/plans/2026-09-13-lane-l-line-attribution.md`; all 43 committed fixtures
-declare ABI 44 and would pass such a check today.
+**What is still open.** The epoch check above catches a bump that left a
+program behind. It does not catch a renamed or dropped import, and nothing on
+either host catches channel-LAYOUT drift -- which is the only kind these
+fixtures actually exhibit. The remainder stays filed as **L-D4** in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
 ## `native_fork.instrumented.wasm`
 

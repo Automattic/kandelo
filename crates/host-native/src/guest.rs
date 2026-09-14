@@ -1861,6 +1861,38 @@ pub fn run_guest(
     })
 }
 
+/// Compile a guest program, refusing one that declares a DIFFERENT ABI epoch.
+///
+/// L-D4. This host used to read no guest `__abi_version` at all -- only the
+/// kernel's -- so a program built for another epoch instantiated normally and
+/// failed later, or not at all, while
+/// `crates/host-native/fixtures/README.md` asserted the opposite.
+///
+/// The rule is the peer host's, so the two cannot answer one question two
+/// ways: `host/src/process-lifecycle.ts` refuses a declared epoch that
+/// disagrees with the kernel's and lets a binary declaring NONE through,
+/// because predating the marker is a different fact from being stale. The
+/// reader is `wasm_artifact::read_abi_version`, the same one the kernel's own
+/// provenance report uses.
+///
+/// This does NOT close L-D4. An import the host cannot find by NAME is still
+/// stubbed by `define_unknown_imports_as_traps` rather than refused -- six of
+/// the sixteen kernel imports these fixtures declare are stubbed today -- and
+/// nothing here sees channel-LAYOUT drift. What it catches is an epoch bump
+/// that left a program behind.
+fn guest_module_for_this_epoch(engine: &Engine, program_bytes: &[u8]) -> anyhow::Result<Module> {
+    if let Some(declared) = wasm_artifact::read_abi_version(program_bytes) {
+        if declared != crate::EXPECTED_ABI_VERSION {
+            anyhow::bail!(
+                "guest program declares ABI {declared}, but this host runs ABI {}; \
+                 rebuild it against this branch's libc",
+                crate::EXPECTED_ABI_VERSION,
+            );
+        }
+    }
+    Ok(Module::new(engine, program_bytes)?)
+}
+
 fn run_guest_inner(
     kernel_wasm: &Path,
     guest_wasm: &[u8],
@@ -1870,7 +1902,7 @@ fn run_guest_inner(
 
     // --- Guest module, layout, and memory (created first so kernel host imports
     // that touch process memory — e.g. host_futex_wake — can reference it) -----
-    let guest_module = Module::new(&engine, guest_wasm)?;
+    let guest_module = guest_module_for_this_epoch(&engine, guest_wasm)?;
     let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 
     // --- Kernel instance (this thread owns it and the pump) -----------------
@@ -2960,6 +2992,67 @@ mod proc_bytes_tests {
     /// This is the transcription argument at its sharpest: the comment names
     /// the source, the visible contract came across intact, and the
     /// guarantee that was implicit in the source host went missing.
+    /// A guest that declares a DIFFERENT ABI epoch is refused; one that
+    /// declares NONE is not.
+    ///
+    /// Built from synthetic bytes rather than a fixture on purpose. Every
+    /// committed fixture declares 44, so a mutation that weakens
+    /// `guest_module_for_this_epoch` would SURVIVE a run over the corpus --
+    /// the guard would be one no test could fail. These bytes are the two
+    /// cases the corpus cannot supply.
+    fn wasm_declaring(name: &[u8; 13], epoch: u8) -> Vec<u8> {
+        let mut m: Vec<u8> = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        m.extend_from_slice(&[0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f]); // () -> i32
+        m.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]); // one func, type 0
+        m.extend_from_slice(&[0x07, 0x11, 0x01, 0x0d]); // export section, one name of 13
+        m.extend_from_slice(name);
+        m.extend_from_slice(&[0x00, 0x00]); // kind func, index 0
+        m.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, epoch, 0x0b]); // i32.const
+        m
+    }
+
+    #[test]
+    fn a_guest_from_another_abi_epoch_is_refused_and_a_pre_marker_one_is_not() {
+        let engine = Engine::default();
+        let expected = crate::EXPECTED_ABI_VERSION as u8;
+
+        let current = wasm_declaring(b"__abi_version", expected);
+        assert_eq!(
+            wasm_artifact::read_abi_version(&current),
+            Some(crate::EXPECTED_ABI_VERSION),
+            "the synthetic module must actually declare the epoch, or this test \
+             proves nothing about either case below",
+        );
+        assert!(
+            guest_module_for_this_epoch(&engine, &current).is_ok(),
+            "a guest declaring THIS host's epoch must run",
+        );
+
+        let stale = wasm_declaring(b"__abi_version", expected - 1);
+        let err = guest_module_for_this_epoch(&engine, &stale)
+            .expect_err("a guest declaring a different epoch must be refused");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("declares ABI") && rendered.contains("rebuild it"),
+            "the refusal must name the epoch and say what to do, got: {rendered}",
+        );
+
+        // The peer host lets a binary predating the marker through, because
+        // that is a different fact from being stale. Same name length, so the
+        // module's section sizes are unchanged and only the NAME differs.
+        let unmarked = wasm_declaring(b"__abi_versioX", expected - 1);
+        assert_eq!(
+            wasm_artifact::read_abi_version(&unmarked),
+            None,
+            "the unmarked module must genuinely carry no marker",
+        );
+        assert!(
+            guest_module_for_this_epoch(&engine, &unmarked).is_ok(),
+            "a guest declaring NO epoch must still run, as host/src/\
+             process-lifecycle.ts allows",
+        );
+    }
+
     #[test]
     fn a_launch_entry_past_the_end_of_memory_is_efault_not_a_raw_copy() {
         let (_engine, guest, _kernel) = mems();
@@ -12669,12 +12762,12 @@ fn handle_spawn(
     // `host/src/exec-target.ts:453`), not a host/kernel malfunction. The
     // target is still retained at this point (never committed), so cancel
     // it before reclaiming the child.
-    let child_module = match Module::new(engine, &program_bytes) {
+    let child_module = match guest_module_for_this_epoch(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
             rollback_exec_target(
                 kernel_store, exec_target_cancel, remove_process, child_pid, token,
-                "a Module::new compile failure (non-wasm exec target bytes)",
+                "a rejected exec target (a different ABI epoch, or non-wasm bytes)",
             );
             return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOEXEC);
         }
@@ -13353,12 +13446,12 @@ fn handle_exec_common(
     // `handle_spawn`'s `child_module` handling exactly. The target is still
     // retained at this point (never committed), so cancel it before
     // resuming the caller.
-    let new_module = match Module::new(engine, &program_bytes) {
+    let new_module = match guest_module_for_this_epoch(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
             cancel_exec_target(
                 kernel_store, exec_target_cancel, pid, token,
-                "a Module::new compile failure (non-wasm exec target bytes)",
+                "a rejected exec target (a different ABI epoch, or non-wasm bytes)",
             );
             return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOEXEC)
                 .map(|()| None);

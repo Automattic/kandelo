@@ -1338,19 +1338,49 @@ Drift in the syscall channel's LAYOUT is caught by neither host's import
 check — and that is precisely where the staleness measured above actually
 was.
 
-**The fix is measured as safe but is not made here.** All 43 committed
-fixtures declare ABI 44, which is `EXPECTED_ABI_VERSION`, so the check would
-pass for every one of them today. That was decoded from each artifact rather
-than assumed, and the decoder was perturbed: a copy of `native_hello.wasm`
-edited to declare 43 is reported as 43. A first attempt read the symbol table
-and called 18 fixtures "no export" — instrumentation strips symbols while the
-export survives, the same hazard as every other check in this document that
-answered a narrower question than it was asked.
+**The fix was measured safe before it was made.** All 43 committed fixtures
+declare ABI 44, which is `EXPECTED_ABI_VERSION`, so the check could not break
+any of them. That was decoded from each artifact rather than assumed, and the
+decoder was perturbed: a copy of `native_hello.wasm` edited to declare 43 is
+reported as 43. A first attempt read the symbol table and called 18 fixtures
+"no export" — instrumentation strips symbols while the export survives, the
+same hazard as every other check in this document that answered a narrower
+question than it was asked.
 
-It is left unmade because it is a behaviour change in the native host's launch
-path, discovered after this lane's increments were set, and **a deferral is
-the maintainer's call, not mine.** The safe half — a README that no longer
-promises a guard that does not exist — is landed.
+**The maintainer took the epoch half, and it is landed.**
+`guest_module_for_this_epoch` sits at all three places a guest program is
+compiled — boot, spawn, exec — and refuses a declared epoch that is not this
+host's, while letting a binary that declares none through. Both of the exec
+paths' diagnostics were corrected in the same change: they said "a
+`Module::new` compile failure (non-wasm exec target bytes)", which would now
+be a lie for half the refusals they report.
+
+Four demonstrations, because a guard nobody has seen fail is not a guard:
+
+- A fixture edited to declare ABI 43 makes `smoke_runs_trivial_guest_through_
+  channel` fail with "declares ABI 43, but this host runs ABI 44". Restored,
+  and its SHA checked against the backup.
+- The same fixture with its export renamed away — a pre-marker binary — still
+  passes, so the permissive half was not broken while adding the strict one.
+- Two harness trials in `docs/perturb/lane-l-guest-abi-epoch.json`: the
+  comparison stops refusing anything; a pre-marker binary is refused instead
+  of allowed. Both killed.
+- All 72 host-native tests pass unchanged, which is the measured-safe claim
+  arriving as a result rather than a prediction.
+
+**Those trials needed a test the corpus could not supply.** Every committed
+fixture declares 44, so a mutation weakening the check would have SURVIVED a
+run over them — a guard no test could fail, which is hazard H-2 wearing the
+shape of a passing suite. The unit test builds two modules from synthetic
+bytes, one declaring 43 and one declaring nothing, which are the two cases
+the corpus does not contain.
+
+**The import half is NOT closed**, and should not be closed the obvious way.
+Making an unknown `kernel.*` import an error would refuse every fixture here
+today, because six names are deliberately stubbed. Closing it properly means
+defining those six as named traps first, so the catch-all can become an
+error — and that list is L-D2's shape unless it is derived from the kernel's
+own exports. That is a design decision, not a patch.
 
 Two measurement mistakes are recorded with it, both the same shape. The first
 count of proofs was read BEFORE the smoke suite ran, because the reporting
@@ -1915,7 +1945,7 @@ change to a root config every lane shares, so it is reported here rather than
 made: **the convention the repository documents and the invocation it supports
 are not the same, in 178 places.**
 
-**9 specs, 26 trials, 0 survived, 0 invalid.** The run that establishes this
+**10 specs, 28 trials, 0 survived, 0 invalid.** The run that establishes this
 executed THIRTY, because four trials were carried by two specs at once; all
 thirty died, and the four duplicates were then removed, which is what makes
 the scoped verifier below an actual saving rather than a notional one. The
