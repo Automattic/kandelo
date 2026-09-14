@@ -1898,6 +1898,75 @@ are fork/GC reconstruction, OPFS, networking, the allocator, the Vite cache
 boundary and ABI reflection — other lanes' surfaces. That is a weaker claim than
 a name-level diff and it is the strongest one the evidence supports.
 
+### STEP 2 LANDED, AND STEP 3 SPLITS IN TWO — 2026-09-14
+
+**Step 2's reader half is done** (`d2763568a`). `createDeferredFileReader` is
+gone, and with it the three things that existed only to serve it:
+`DeferredByteSource`, `deferredFileErrno`, and `ToBackendPath` as a production
+export. The interfaces narrowed with it — `RootfsOverlayBaseImage` from six
+methods to two, `ModuleImageSource` from four to one — and that narrowing is
+the real result: **the four methods that went are why the thing behind the
+interface had to be a filesystem at all.**
+
+Two tests went with the function. They pinned positioned reads, end-of-file, an
+undeclared inode and the EAGAIN/EIO mapping, and every one is already pinned
+for the pipe against a real fetch rather than against a filesystem's throw.
+The id-overlap guard was repointed and strengthened, and then perturbed:
+`deferred-url-reader.json` now has a fourth trial that widens the archive
+branch to swallow FILE reads. **4 trials, 0 survived.**
+
+**No budgeted surface covers `rootfs-lazy-archives.ts`**, so there was nothing
+to bank. That is worth saying plainly rather than quietly: a 242-line deletion
+moved no campaign number, because the campaign measures `memory-fs.ts`,
+`sharedfs-vendor.ts` and the worker entries, and this file is none of them.
+
+### Step 2's memory-fs half is NOT reachable yet, and step 3 is why
+
+The plan said step 2 would also delete memfs's ~503-line fetch engine. Measured,
+it cannot: **both worker entries still call `memfs.setLazyFetcher(...)`**, and
+memfs is still the object handed to the overlay
+(`browser-kernel-worker-entry.ts:871`, `node-kernel-worker-entry.ts:939` — the
+only two production construction sites there are).
+
+The engine is now *unreachable in production* — its only triggers are
+`MemoryFileSystem.open` and `read`, and the one production caller that reached
+them was the reader just deleted. But unreachable is not deleted, and removing
+the `setLazyFetcher` calls alone buys nothing while the class stays. **So the
+memfs half belongs to step 5, not to step 2**, and the plan's ordering was
+wrong about which step pays it.
+
+### The finding that actually matters: step 3 has a files half and an
+### archives half, and only one of them is mechanical
+
+Repointing the two construction sites onto `createModuleBaseImage` means the
+lazy metadata stops coming from a mutated `MemoryFileSystem` table and starts
+coming from the container's own JSON. The `lazyUrlBase` rewrite that both entry
+points apply has to move with it — and the two rewrites are not the same kind
+of thing:
+
+* **`rewriteLazyFileUrls` is three lines.** It walks the lazy file table and
+  replaces each `url`. As a pure function over decoded entries it is the same
+  three lines. Mechanical.
+* **`rewriteLazyArchiveUrls` is seal-aware**, and that is the whole problem. It
+  distinguishes a sealed atomic group from an ordinary one, re-derives the
+  sealed group's content, `url` and `integrity` from a PRIVATE snapshot, and
+  documents why: *"URL rewriting is the one authorized post-seal deployment
+  mutation. Replace both private and public values from the private snapshot so
+  arbitrary public edits never become transport authority."*
+
+**Reimplementing that over decoded JSON in TypeScript would be writing the seal
+contract a second time**, which is exactly the hazard this lane already argued
+against when it chose a byte layout over `JSON.stringify` — *there is no
+serialiser to imitate and no escaping rule to get subtly wrong, because the
+canonical form is the format.* Doing it in TS to unblock step 3 would recreate
+the drift from the other end.
+
+**So step 3's archive half is gated on the Rust seal, and the Rust seal is
+already designed in this plan and already argued to be unblocked** (see *"the
+seal work is NOT blocked, and I treated a question as a veto"*). That is not a
+new dependency discovered late; it is the same dependency, reached from the
+consumer side, which is the direction this campaign says to work in.
+
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
