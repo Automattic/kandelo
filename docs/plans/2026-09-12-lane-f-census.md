@@ -7003,3 +7003,49 @@ The honest sequence is: settle the release-by-root question, then cut the arena
 and the registry together, and the other seven fall out as their last references
 go. Expect `forkAtticImports` to sit at 9 through that work and then drop
 several at once — which is the shape of the number, not a stall.
+
+## §145 — The arena a peer must free is one it never allocated
+
+Section 144 flagged `releaseArena(root)` as a design question and guessed the
+answer was "the module remembers the arenas it allocated". Tracing it, that
+answer does not work, and the reason is worth having before anyone starts the
+cluster cut.
+
+The one call site is in `publishLocked`: capture a new table snapshot into a
+fresh arena, publish its root, then free the PREVIOUS generation's arena by root.
+The previous root comes from `dylink-loader`'s
+`publishTableState`, which reads it out of `this.#session` — the SHARED archive
+session, the same state `DylinkForkTableReplica` exists to replicate across peer
+workers. `dylink-loader`'s own comment says the previous root "comes back so its
+arena can be released — but only after the new generation is visible".
+
+So the arena being freed was, in general, allocated by a DIFFERENT worker. The
+module instance doing the freeing has no record of it and cannot get one: its
+`module_state_chunks` only ever held what it allocated itself. Remembering more
+does not help, because the thing to free was never its to remember.
+
+That leaves the host's current mechanism as the only one that works today, and
+it works precisely by doing what section 133 wants retired: `attach(root)` WALKS
+the linked chunk list out of guest memory to discover the addresses, then
+munmaps them. Freeing a foreign arena requires discovering a foreign allocation,
+and guest memory is the only place that discovery currently lives.
+
+**So this is not a port blocked on effort; it is a missing ownership protocol.**
+Three shapes, and the third is the one I would argue for:
+
+1. **Keep the walk in the host**, classified as floor. Honest, and it keeps a
+   guest-controlled structure steering `munmap` — the exact exposure section 133
+   set out to remove.
+2. **Give the module the walk.** Moves the exposure rather than removing it, and
+   puts it somewhere with less validation than the host version has.
+3. **Publish the chunk list with the root.** Whoever allocates an arena records
+   its `(addr, size)` chunks alongside the root in the shared archive session, so
+   a peer frees by reading host/kernel-owned metadata instead of walking
+   guest-controlled memory. The discovery stops being a parse of untrusted
+   memory and becomes a lookup, which is what makes the whole class go away.
+
+Three is a change to what the dylink session carries, which is shared archive
+state and therefore not mine to redefine unilaterally. It is also the one that
+lets the arena move into the module without relocating the hazard, so the answer
+determines whether the cluster cut can proceed cleanly or has to leave the walk
+behind in the host.
