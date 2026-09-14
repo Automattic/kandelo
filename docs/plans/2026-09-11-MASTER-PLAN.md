@@ -2727,6 +2727,37 @@ the assertion needs re-expressing against that call rather than dropping with
 the method, and saying "no caller" is not the same as saying "no contract".
 
 
+#### The adapter is writable today — mapping, not capability
+
+With the seam changed, an `SffsImageFs`-backed `RootfsOverlayBaseImage` needs
+no further ABI. Measured against what the overlay asks for:
+
+| overlay needs | module side | gap |
+|---|---|---|
+| the image window | `imageRead(offset, dest)` -> `sm_image_read` | **none, direct** — same container coordinates |
+| `open` / `read` / `close` (`DeferredByteSource`) | already on `SffsImageFs` | none |
+| `exportLazyEntries(): LazyFileEntry[]` | `lazyEntries().files` | a mapping, below |
+| `exportLazyArchiveEntries()` | `lazyEntries().archives` | a mapping |
+
+**The mapping, and why each difference is the design rather than a shortfall.**
+`LazyFileEntry` is `{ino, generation?, dataSequence?, path, paths?, url,
+size}`; the module returns `{path, ino, size, archiveId, sourcePath,
+descriptor}`.
+
+* **`url` is absent from the module by design.** KLZY carries no fetch
+  description — the URL lives in host-side JSON only the host parses, which is
+  the courier contract. The bridge hands back that payload as `descriptor`, and
+  the adapter reads the URL out of it host-side. The module never learns it.
+* **`paths` is derivable.** `lazy_walk` emits one entry per NAME, so hard links
+  appear as several entries sharing an ino; grouping by ino reconstructs the
+  alias set.
+* **`generation` and `dataSequence` are omitted**, and the type already permits
+  that. They are `SharedFS` identity fields, and the V9 design section explains
+  why the protocol they serve does not survive into the kernel-owned path.
+
+**So the remaining work on this seam is a mapping function and four repointed
+construction sites, with no ABI growth beyond the entry point already landed.**
+
 **5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
 closes.
 
