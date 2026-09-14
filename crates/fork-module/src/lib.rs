@@ -1813,6 +1813,115 @@ mod wasm {
     /// (e.g. the child-inheritable image chunk could not be channel-mmap'd) is a
     /// truthful errno (`fm_last_errno`) with a 0 return, so the host can reroute a
     /// seal-time OOM to abort-replay rather than trap.
+    /// The per-segment copy window the reference segments writer uses, matching
+    /// the one the JavaScript session passed for as long as it did the writing.
+    const CAPTURE_SEGMENT_WINDOW: usize = 1 << 16;
+
+    /// Write the capture graph into the arena, as the records a child decodes.
+    ///
+    /// **Without this a child cannot be installed at all.** `fm_attach_child`
+    /// begins with `decode_reference_transaction_from_arena`, which reads the
+    /// `KFRS` sections and the `KFRV` manifest out of the arena's records. The
+    /// only thing that ever wrote them was the JavaScript capture session's
+    /// `sealInto`, draining `fm_capture_serialize` into `arena.appendRecord` --
+    /// and that stopped running when the seal moved into this module. The
+    /// serializer stayed; its only caller went. So a module-sealed arena has
+    /// carried no reference transaction since, and every child install would
+    /// have failed on the first record it looked for.
+    ///
+    /// Written here rather than handed back out for the same reason the journal
+    /// image's own record is: the module builds the graph, so the module
+    /// records it, and there is no pair of numbers for a host to carry
+    /// faithfully.
+    ///
+    /// Only for an arena this module owns -- a reserve with no writer root does
+    /// not fail, it starts a second arena nothing reads (census 142).
+    fn write_reference_transaction(segment_window: usize) -> Result<(), Errno> {
+        if !module_owns_arena_now() {
+            return Ok(());
+        }
+        let stream = {
+            let g = capture_builder()?;
+            let writer = ReferenceSegmentsWriter::new(
+                abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER,
+                segment_window,
+            )?;
+            let mut stream: Vec<u8> = Vec::new();
+            let mut sink =
+                |kind: u16, activation_id: u32, owner: u32, payload: &[u8]| -> Result<(), Errno> {
+                    let len = u32::try_from(payload.len()).map_err(|_| Errno::EINVAL)?;
+                    stream.extend_from_slice(&kind.to_le_bytes());
+                    stream.extend_from_slice(&0u16.to_le_bytes());
+                    stream.extend_from_slice(&activation_id.to_le_bytes());
+                    stream.extend_from_slice(&owner.to_le_bytes());
+                    stream.extend_from_slice(&len.to_le_bytes());
+                    stream.extend_from_slice(payload);
+                    Ok(())
+                };
+            writer.write(&mut sink, g)?;
+            stream
+        };
+
+        let mut at = 0usize;
+        while at < stream.len() {
+            let header_end = at.checked_add(CAPTURE_RECORD_HEADER).ok_or(Errno::EINVAL)?;
+            if header_end > stream.len() {
+                return Err(Errno::EINVAL);
+            }
+            let kind = u16::from_le_bytes([stream[at], stream[at + 1]]);
+            let activation_id = u32::from_le_bytes([
+                stream[at + 4],
+                stream[at + 5],
+                stream[at + 6],
+                stream[at + 7],
+            ]);
+            let owner_id = u32::from_le_bytes([
+                stream[at + 8],
+                stream[at + 9],
+                stream[at + 10],
+                stream[at + 11],
+            ]);
+            let len = u32::from_le_bytes([
+                stream[at + 12],
+                stream[at + 13],
+                stream[at + 14],
+                stream[at + 15],
+            ]) as usize;
+            let payload_end = header_end.checked_add(len).ok_or(Errno::EINVAL)?;
+            if payload_end > stream.len() {
+                return Err(Errno::EINVAL);
+            }
+
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem_mut_ref = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            let payload = module_state.reserve(
+                module_state_chunks,
+                mem_mut_ref,
+                kind,
+                activation_id,
+                owner_id,
+                len as u64,
+            )?;
+            let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let out: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::hint::black_box(start) as *mut u8,
+                    len,
+                )
+            };
+            out.copy_from_slice(&stream[header_end..payload_end]);
+            module_state.commit(mem_mut_ref, payload)?;
+            at = payload_end;
+        }
+        Ok(())
+    }
+
     fn seal_capture_impl(channel_base: u64) -> Result<u64, Errno> {
         let plan = build_seal_plan_impl()?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
@@ -1820,6 +1929,12 @@ mod wasm {
             drive_plan_via_injector(plan, count);
         }
         finish_unwind_impl()?;
+        // BEFORE the journal image, because the graph must be complete and
+        // validated before anything else claims the capture is sealed. The
+        // builder owns that validation (pending GC placeholders, open vectors,
+        // edge bounds) and fails loud on any fault.
+        capture_builder()?.validate()?;
+        write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
         let image = serialize_journal_alloc_impl(channel_base)?;
         // Announce where the image landed, in the arena, as the child reads it.
         //

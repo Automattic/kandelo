@@ -8321,7 +8321,49 @@ nothing -- it would pass with the check deleted.
 attach SUCCEED once -- a capture carrying a reference transaction, a second
 module instance, the seeds a child worker gets -- turns every child-side refusal
 into something that can be shown, and the child install is three of the eight
-remaining imports. Until then, anything written for the child is unverifiable,
-which is exactly the position section 154 described and section 160 escaped by
-building forty lines of reader.
+remaining imports. Section 170 is that, and finding out WHY an intact attach
+failed turned out to be the more important half.
 
+---
+
+## §170 — The seal wrote no reference transaction, so no child could ever attach
+
+Chasing section 169's harness gap found the reason an intact attach failed, and
+it was not the harness.
+
+**`fm_attach_child` starts with `decode_reference_transaction_from_arena`**,
+which reads the `KFRS` sections and the `KFRV` manifest out of the arena's
+records. **Nothing wrote them.** `fm_capture_serialize` produces exactly that
+record stream and its only caller was the JavaScript capture session's
+`sealInto`, draining it into `arena.appendRecord`. When the seal moved into the
+module, the serializer stayed and its caller went. A module-sealed arena has
+carried no reference transaction since.
+
+**And nothing OPENED the graph either.** `fm_capture_begin` is documented as the
+first module call of a capture fork -- it is the fork's single bump-heap reset
+point -- and its only caller was the same session, through
+`registry.beginCapture`. So section 165 was incomplete: I checked who consumed
+the session's SURFACE (the two dead import builders) and concluded nobody
+needed it. The session also had a job nothing else did: open the module's
+reference graph at the start of a fork and seal it into the arena at the end.
+
+**Both halves are now where they belong.** The module writes the transaction at
+seal, beside the `Module`, binding and journal-image records it already writes,
+because it builds the graph and there is no pair of numbers for a host to carry
+faithfully. The OPEN stays a host call -- three lines in `worker-main.ts`,
+`ForkReferenceCaptureModule.begin()` at the fork syscall -- because the module's
+own contract says it must be the first call of the fork, before the guest
+unwinds.
+
+**And the child attaches.** A second `instantiateForkModule` over the same
+memory, at its own base, decodes what the parent sealed and builds its install
+plan: `fm_attach_child` returns a plan and `fm_last_errno` is 0. Perturbing the
+seal to skip the transaction write fails exactly that test. That is the first
+time in this lane a child has read a parent's arena, and it is the harness every
+remaining child-side port needed.
+
+**What this says about the method.** Two ports in a row -- the arena in 161, the
+session here -- were "safe to remove" by a reading of their consumers that was
+one layer too shallow. Both times the missing consumer was a call the removed
+code MADE, not an interface it exposed. The check that would have caught both:
+before deleting a caller, list what it CALLS as well as what calls it.

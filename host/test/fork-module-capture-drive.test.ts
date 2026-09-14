@@ -74,6 +74,8 @@ const CHANNEL_BASE = 4 * PAGE;
 const MODULE_BASE = 8 * 1024 * 1024;
 /** Where the responder hands out mappings from: above everything else in use. */
 const MMAP_FLOOR = 12 * 1024 * 1024;
+/** Where a CHILD worker's own module instance sits in the shared memory. */
+const CHILD_MODULE_BASE = 20 * 1024 * 1024;
 
 /**
  * A worker that answers the module's channel syscalls.
@@ -233,6 +235,7 @@ describe("capture begin, driven through a serviced channel", () => {
     seedTemplateId(f, 0, 2048);
     expect(f.errno()).toBe(0);
 
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       0, // ask the module to allocate the arena
@@ -253,6 +256,7 @@ describe("capture begin, driven through a serviced channel", () => {
     // reads, while the caller's arena keeps only what the caller wrote.
     const f = fixture();
     seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       MMAP_FLOOR - PAGE, // the caller's own arena root
@@ -274,6 +278,7 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_IDLE);
 
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno()).toBe(0);
     expect(phase(), "a capture is open").toBe(PHASE_CAPTURE);
@@ -299,6 +304,7 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     seedTemplateId(f, 0, 2048);
     const workspace = f.x.fm_borrowed_replay_workspace as (field: number) => bigint;
 
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     // Mid-capture the activation set is still growing and the scratch
     // high-water has not peaked, so an answer would be an undercount.
@@ -355,7 +361,8 @@ describe("the backend's lifecycle methods, against a live module", () => {
     const { f, backend } = backendFixture();
     const phase = () => Number((f.x.fm_phase as () => number)());
 
-    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_capture_begin as () => void)();
+    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0, []);
     expect(anchor, "activation 0's module-buffer anchor").toBeGreaterThan(0);
     expect(phase()).toBe(PHASE_CAPTURE);
     // Passing 0 has to reach the module as 0. It is the difference between the
@@ -384,7 +391,8 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // it reaches sealed-parent, which is what lets the abort replay run over
     // the frames that did commit.
     const { f, backend } = backendFixture();
-    backend.parentBeginCapture(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_capture_begin as () => void)();
+    backend.parentBeginCapture(CHANNEL_BASE, 0, []);
     const phase = () => Number((f.x.fm_phase as () => number)());
     expect(phase()).toBe(PHASE_CAPTURE);
 
@@ -432,7 +440,8 @@ describe("the backend's lifecycle methods, against a live module", () => {
     // the module mid-phase, because every later entry refuses from the wrong one
     // and the worker would be wedged rather than broken.
     const { f, backend } = backendFixture();
-    backend.parentBeginCapture(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_capture_begin as () => void)();
+    backend.parentBeginCapture(CHANNEL_BASE, 0, []);
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_CAPTURE);
     backend.abort();
     expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_IDLE);
@@ -464,6 +473,7 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     // then decodes for no reason.
     const f = fixture();
     seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "capture with no imported globals").toBe(0);
   });
@@ -490,6 +500,7 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     ) => void)(0 /* globals */, 0, 1, 4 /* ACTIVATION_GLOBAL */, 0 /* in no catalog */, 0n);
     expect(f.errno(), "provenance published").toBe(0);
 
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "capture must refuse rather than bind blind").not.toBe(0);
   });
@@ -726,6 +737,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 99, 0n);
     saveWrites(f, 0, 1);
 
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "capture").toBe(0);
 
@@ -767,6 +779,7 @@ describe("the binding records the module assembles at capture", () => {
     const { identity, provenance } = publish(f);
     identity(SPACE_GLOBAL, 0, 1, 7);
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
       CHANNEL_BASE,
       MMAP_FLOOR - PAGE, // the caller's own arena root
@@ -800,6 +813,7 @@ describe("the binding records the module assembles at capture", () => {
       channelBase: CHANNEL_BASE,
       label: "sealed arena",
     });
+    (f.x.fm_capture_begin as () => void)();
     backend.parentBeginCapture(CHANNEL_BASE, 0, []);
     expect(f.errno(), "capture").toBe(0);
     backend.sealCaptureAndSerialize();
@@ -822,6 +836,62 @@ describe("the binding records the module assembles at capture", () => {
     );
   });
 
+  /**
+   * A SECOND fork-module over the same memory: the child's side of a fork.
+   *
+   * Production's shape, not a trick. A fork child is a fresh worker with its own
+   * module instance over the same `SharedArrayBuffer`, attaching an arena the
+   * parent mapped. One module cannot stand in for both: attach demands the idle
+   * phase, and a finish releases the arena.
+   */
+  function childModule(f: Fixture): Record<string, unknown> {
+    const needed = CHILD_MODULE_BASE + 8 * 1024 * 1024;
+    if (f.memory.buffer.byteLength < needed) {
+      f.memory.grow(Math.ceil((needed - f.memory.buffer.byteLength) / PAGE));
+    }
+    const child = instantiateForkModule({
+      module: new WebAssembly.Module(
+        readFileSync(resolveBinary("fork_module32.wasm")),
+      ),
+      memory: f.memory,
+      ptrWidth: 4,
+      reserve: () => CHILD_MODULE_BASE,
+      label: "child module",
+    });
+    const cx = child.exports as Record<string, unknown>;
+    (cx.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+    return cx;
+  }
+
+  it("hands a child an arena it can actually attach", () => {
+    // The whole point of a sealed arena, and the first test in this lane to
+    // prove it: a second module instance -- a child worker -- decodes what the
+    // parent sealed and builds its install plan from it. Until the seal wrote
+    // the reference transaction, this failed on the first record it looked for.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7);
+    identity(SPACE_GLOBAL, 9, 5, 7);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture").toBe(0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "seal").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    const child = childModule(f);
+    const plan = (child.fm_attach_child as (root: number, pid: number) => number)(
+      root,
+      1,
+    );
+    expect((child.fm_last_errno as () => number)(), "the child attaches").toBe(0);
+    expect(plan, "and gets an install plan").toBeGreaterThan(0);
+  });
+
   it("falls back to a base import when no activation provides the object", () => {
     // Same fork with the owner's catalog entry removed: every member of the
     // group imports the global, so nobody can hand it to a child and it comes
@@ -834,6 +904,7 @@ describe("the binding records the module assembles at capture", () => {
     provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
     saveWrites(f, 0, 1);
 
+    (f.x.fm_capture_begin as () => void)();
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
     expect(f.errno(), "capture").toBe(0);
 

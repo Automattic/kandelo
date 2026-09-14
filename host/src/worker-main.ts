@@ -3986,14 +3986,21 @@ export async function centralizedWorkerMain(
       // come from `capturedValues` / the transit table (originals), so the
       // parent's live-reference identity is preserved. Non-module forks (flag
       // off) keep the JS capture graph.
-      if (forkModuleInstance) {
-        activationRegistry.setCaptureModule(
-          new ForkReferenceCaptureModule(
-            forkModuleInstance.exports,
-            memory,
-            `pid=${pid}: fork reference capture module`,
-          ),
-        );
+      // Kept as a local as well: the JS capture session used to OPEN this
+      // builder at every fork (`beginCapture`) and seal it into the arena. The
+      // session is gone, the module does the sealing, and the open is the half
+      // that still has to be issued from here -- it is documented as the first
+      // module call of a capture fork, before the guest unwinds, because it is
+      // the fork's single bump-heap reset point.
+      const processCaptureModule = forkModuleInstance
+        ? new ForkReferenceCaptureModule(
+          forkModuleInstance.exports,
+          memory,
+          `pid=${pid}: fork reference capture module`,
+        )
+        : null;
+      if (processCaptureModule) {
+        activationRegistry.setCaptureModule(processCaptureModule);
       }
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
@@ -4300,6 +4307,7 @@ export async function centralizedWorkerMain(
           // seeded template ids. And it ran each activation's `moduleState.save()`,
           // which is the `DRIVE_OP_MODULE_STATE_SAVE` step in the module's own
           // plan. Keeping it would have meant two save walks into two arenas.
+          processCaptureModule?.begin();
           publishProcessLaunchRoot(0);
           publishProcessLaunchRoot(
             forkModule().parentBeginCapture(
@@ -6594,6 +6602,7 @@ export async function centralizedThreadWorkerMain(
     threadForkRegistry = threadActivationRegistry;
     let threadImportedStateCapture: ForkImportIdentity | null = null;
     let threadForkActivations: ForkActivations | null = null;
+    let threadCaptureModule: ForkReferenceCaptureModule | null = null;
     const threadResumeTable = new ForkResumeTable(
       `pid=${pid} tid=${tid}: fork resume table`,
     );
@@ -6755,13 +6764,12 @@ export async function centralizedThreadWorkerMain(
         // `setCaptureModule` above). Peer-table replication is module-only now,
         // so a pthread that publishes a full table checkpoint needs the capture
         // module just as the process parent does.
-        threadActivationRegistry?.setCaptureModule(
-          new ForkReferenceCaptureModule(
-            threadForkModuleInstance.exports,
-            memory,
-            `pid=${pid} tid=${tid}: fork reference capture module`,
-          ),
+        threadCaptureModule = new ForkReferenceCaptureModule(
+          threadForkModuleInstance.exports,
+          memory,
+          `pid=${pid} tid=${tid}: fork reference capture module`,
         );
+        threadActivationRegistry?.setCaptureModule(threadCaptureModule);
       }
     }
     const processArchiveHeadOffset =
@@ -6918,6 +6926,7 @@ export async function centralizedThreadWorkerMain(
         }
 
         try {
+          threadCaptureModule?.begin();
           publishThreadLaunchRoot(0);
           publishThreadLaunchRoot(
             threadForkModule().parentBeginCapture(
