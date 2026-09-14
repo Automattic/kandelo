@@ -1904,33 +1904,68 @@ retry loop and the alias set are not ported or simplified — they are
 path-to-identity aliases. That mirror exists to serve a path-keyed CAS. Remove
 the path key and the mirror has no consumer left.
 
-**Entry-point cost: two, not the five operations the scoping read enumerated.**
+**Entry-point cost: zero for the race, and that is the second finding.** The
+first draft of this section costed it at two new entry points — an inode-keyed
+apply and a cohort form. Reading the kernel's own deferred path shows even that
+is more than the problem needs, because **the kernel already materializes
+deferred files and it has no window to defend.**
+
+`rootfs::ensure_materialized` is **synchronous**. Its byte source is
+`FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>`, and when the bytes are not
+ready the host answers `EAGAIN`, which the documented contract at
+`rootfs.rs:1616` propagates untouched: *"Any other errno means the HOST is
+wrong, or busy: `ENOSYS` (no image source installed), `EAGAIN` (bytes not
+ready), `EIO` (transport)."* The syscall unwinds and the guest retries, so
+materialization is never suspended half-applied and no other filesystem
+operation interleaves inside it. The kernel's own re-check says as much in its
+comment — *"no reentrancy in the single-threaded kernel, but keep the store the
+source of truth"* — and it compares the **inode kind**, not a counter: an inode
+that was written through simply stops being a `LazyMember`, so staleness is
+structural rather than something a `dataSequence` has to detect.
+
+So the identity comparison does not move kernel-side. Under the retry-from-the-
+top model **it stops existing**, because nothing carries identity across a
+suspension that no longer happens:
 
 | Operation | Where it goes |
 |---|---|
-| `replaceIfIdentity` | `sm_materialize_if_identity(ino, generation, data_sequence, bytes)` — **new** |
-| `replaceManyIfIdentities` | a cohort form applying N all-or-nothing — **new** |
-| `identityState` | deleted with the host alias mirror |
+| `replaceIfIdentity` | eliminated by the control-flow model, not ported |
+| `replaceManyIfIdentities` | eliminated; see the cohort note below |
+| `identityState` | deleted with the host alias mirror it feeds |
 | `snapshotState` | folds into the existing export path; `sm_export_image_read` already emits the container |
 | `createLazyStub` | already `sm_register_lazy_file`'s shape |
 
-The cohort form earns its slot for a reason independent of the race:
-`replaceManyIfIdentities` also commits an activation cohort all-or-nothing, and
-that transactional duty cannot be expressed as N separate calls without leaving
-a half-activated cohort reachable after a mid-sequence failure.
+**The cohort duty is already answered structurally.**
+`ensure_archive_member` fetches the **whole archive once**, caches it as
+`state.archives[id].raw`, and inflates every member from those cached bytes.
+There is no state in which some members of an archive are fetchable and others
+are not, so an all-or-nothing cohort commit has nothing left to protect against
+— which is why it needs neither `replaceManyIfIdentities` nor a replacement for
+it.
 
 **The data model needs no change**, which is the cheap part and was already
 true: `sffs.rs:345` carries `generation` on the inode, and `sffs_write.rs`
 keeps `INO_DATA_SEQUENCE` at offset 120 and already bumps it on write and on
 truncate. Only the operations over those fields are missing.
 
-**The ceiling stays at 21 until the code lands.** This section is the argument
-`docs/surface-budget.json` demands, not the raise. The search for an export
-that could go instead was made: the five identity operations collapse to two
-*because* three of them stop existing, which is the reduction — there is no
-unrelated entry point that can be surrendered to pay for these, and pretending
-otherwise would be the fold-two-different-things-behind-a-flag trade the
-twenty-first entry's record already rejected.
+**The ceiling stays at 21, and on this reading it is not asked to move.** The
+budget's question — can an export go before one comes — answers itself here:
+all five identity operations go, and none arrives to replace them. That is the
+reduction, and it is available because the kernel's control-flow model is
+better than the one being ported, not because the surface was squeezed.
+
+**What this does NOT establish — the boundary of the claim.** It is proven that
+the *kernel's* deferred path has no window. It is **not** proven that the host's
+lazy path can simply adopt that model. The precedent is strong: the kernel
+already drives `/`'s deferred files this way, asking the host for archive N's
+bytes while the URL stays in host-side JSON the kernel never parses, which is
+the courier contract working exactly as designed. But `memory-fs.ts`'s lazy
+entries additionally carry per-entry URLs, cohort seals and download
+subscriptions that the kernel path does not model, and restructuring
+host-driven async materialization into kernel-driven `EAGAIN`-and-retry is the
+real content of the port. **That restructuring is V9's work; this section only
+establishes that it removes the concurrency protocol rather than reimplementing
+it.**
 
 **What this does not establish, stated so the next reader is not misled.** The
 regression harness exists and is good — `host/test/sharedfs-safety.test.ts`,
