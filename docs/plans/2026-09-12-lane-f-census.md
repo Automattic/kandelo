@@ -5550,3 +5550,63 @@ The maintainer's instruction alongside that: run the full baseline LESS OFTEN,
 not before every commit. This batch is validated by the surface budget plus the
 six test files it touches -- 117 assertions, with the only two failing FILES
 already banked for missing attic modules.
+
+## §120 — Step 1 attempted and withdrawn: the arena also owns memory
+
+The module-state step was drafted carefully -- two Rust entries matching the
+file's own idiom, kind-filtered so `TablePage` volume could not blow the cap, and
+a host handle that typechecked strict and carried the six lifecycle operations
+`worker-main` actually uses. It built first try and the entries appeared in both
+artifact tiers. Then it failed for a reason none of the reading had surfaced.
+
+`ForkModuleStateArena` is constructed with ALLOCATE and RELEASE callbacks:
+
+```ts
+new ForkModuleStateArena(memory, ptrWidth, allocate, release, label)
+```
+
+So `arena.release()` does not forget an arena, it FREES one -- the chunk memory
+goes back through a channel munmap. The handle I drafted only forgot. Counting
+"eighteen of twenty-nine calls are state queries" was right about the queries and
+wrong about what the remaining eleven were: the arena is bookkeeping plus format
+plus MEMORY LIFECYCLE, and I had accounted for the first two.
+
+The one call site that looked self-contained is the proof:
+
+```ts
+const releaseArena = (root: number): void => {
+  if (root === 0) return;
+  const arena = options.newArena();
+  arena.attach(root);
+  arena.release();          // <- the entire purpose: free the region
+};
+```
+
+That function exists ONLY for its side effect. A handle whose `release()` clears
+three fields turns it into a leak.
+
+The other apparently-isolable use hands the arena straight to a consumer:
+`arena.attach(snapshot.tableStateRoot); options.tableSnapshot.restore(arena)`.
+`ForkTableSnapshot` is attic and wants the real thing.
+
+So step 1 has no wirable consumer, which makes the handle and both entries
+anticipation -- `forkTypeScript` 672 -> 739 and `forkModuleHostEntries` 49 -> 51
+for code nothing calls. That is precisely what this lane refused for the backend
+lifecycle methods, and refusing it for my own work is the same rule. Reverted:
+source, artifact and both tiers are back in sync.
+
+What the next attempt must carry that this one did not:
+
+  * the arena's allocate/release callbacks are channel mmap/munmap -- host
+    operations that must live somewhere, not disappear;
+  * `releaseArena` frees by construction, so "attach then release" is an idiom
+    for "free this root", not a lifecycle query;
+  * `ForkTableSnapshot.restore(arena)` takes the arena itself, so the table
+    snapshot has to move in the same step or keep it alive.
+
+The estimate that failed was "one small host type, two or three entries". The
+reading that produced it was real -- eighteen of twenty-nine calls ARE state
+queries -- but a correct count of one part is not a scope for the whole. Four
+corrections in this file came from reading the implementation rather than the
+interface; this one came from reading the implementation and still missing the
+constructor.
