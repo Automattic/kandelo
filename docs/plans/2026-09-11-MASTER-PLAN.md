@@ -1871,6 +1871,79 @@ generated `OPEN_FLAGS`) rather than through `sharedfs-vendor.ts`'s
 `export *`. The remaining import is `SharedFS` and four of its types, so what
 V10 must delete is stated in the import list instead of hidden in it.
 
+### V9 DESIGN — where the compare-and-swap lives. Lane V's call, 2026-09-13
+
+`docs/plans/2026-09-12-lane-v9-scoping.md` closed listing this as what it did
+not establish: *"Whether the CAS belongs kernel-side or host-side once the
+kernel owns the filesystem and the host owns the fetch — the compare has to
+cross that boundary and this read did not design it."* This designs it. No code
+has changed; this is the argument the surface budget asks for before an entry
+point is added.
+
+**The CAS is kernel-side.** The host cannot hold a filesystem lock across a
+network fetch — that would park the filesystem on the network — and the only
+other way to compare host-side is to expose the namespace lock through the
+module boundary, which grows the host's API in the direction the campaign
+exists to shrink. So the sequence is: the host captures the identity, fetches
+the bytes, and makes **one** call that compares and applies atomically inside
+the filesystem, returning whether it applied. That is `replaceIfIdentity`'s
+existing shape, moved behind one entry point.
+
+**The CAS is keyed on the inode, not the path — and that is the finding.** The
+TypeScript call is `replaceIfIdentity(path, ino, generation, dataSequence,
+bytes)`. It takes a *path*, and that is precisely why `materializePath` carries
+a candidate-alias set (`new Set([path, ...entry.paths])`) and a three-attempt
+retry loop: a rename invalidates the path while leaving the inode alone, so the
+path-keyed call misses and has to be re-aimed. `{ino, generation}` already
+identifies the inode across every rename. Key the apply on the inode and the
+retry loop and the alias set are not ported or simplified — they are
+**unnecessary by construction**.
+
+**So `identityState` does not port; it deletes.** All 13 of its call sites feed
+`reconcileLazyIdentityState`, which maintains the host's mirror of
+path-to-identity aliases. That mirror exists to serve a path-keyed CAS. Remove
+the path key and the mirror has no consumer left.
+
+**Entry-point cost: two, not the five operations the scoping read enumerated.**
+
+| Operation | Where it goes |
+|---|---|
+| `replaceIfIdentity` | `sm_materialize_if_identity(ino, generation, data_sequence, bytes)` — **new** |
+| `replaceManyIfIdentities` | a cohort form applying N all-or-nothing — **new** |
+| `identityState` | deleted with the host alias mirror |
+| `snapshotState` | folds into the existing export path; `sm_export_image_read` already emits the container |
+| `createLazyStub` | already `sm_register_lazy_file`'s shape |
+
+The cohort form earns its slot for a reason independent of the race:
+`replaceManyIfIdentities` also commits an activation cohort all-or-nothing, and
+that transactional duty cannot be expressed as N separate calls without leaving
+a half-activated cohort reachable after a mid-sequence failure.
+
+**The data model needs no change**, which is the cheap part and was already
+true: `sffs.rs:345` carries `generation` on the inode, and `sffs_write.rs`
+keeps `INO_DATA_SEQUENCE` at offset 120 and already bumps it on write and on
+truncate. Only the operations over those fields are missing.
+
+**The ceiling stays at 21 until the code lands.** This section is the argument
+`docs/surface-budget.json` demands, not the raise. The search for an export
+that could go instead was made: the five identity operations collapse to two
+*because* three of them stop existing, which is the reduction — there is no
+unrelated entry point that can be surrendered to pay for these, and pretending
+otherwise would be the fold-two-different-things-behind-a-flag trade the
+twenty-first entry's record already rejected.
+
+**What this does not establish, stated so the next reader is not misled.** The
+regression harness exists and is good — `host/test/sharedfs-safety.test.ts`,
+1,009 lines, roughly 25 identity cases including *"does not apply a delayed
+fetch to a replacement inode"*, *"does not overwrite a same-inode write that
+wins after fetch"* and *"finishes one materialization call after a peer rename
+during fetch"*. But those tests build the peer as a **second
+`MemoryFileSystem` over the same SharedArrayBuffer** via `fromExisting`, and
+after the swap there is no shared buffer to mount twice. Re-expressing "peer"
+as an interleaved kernel operation is real work inside the port and is not
+costed here. Neither is the fd-and-metadata half of the backend, which is
+separate from the identity question this section answers.
+
 ## Acceptance evidence
 
 `sffsTypeScript` reaches **0** in the budget. Nothing short of deletion counts:
