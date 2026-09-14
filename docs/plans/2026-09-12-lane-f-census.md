@@ -6250,3 +6250,57 @@ discovering.
 seven that frees memory, it is the reason the previous attempt at this step was
 reverted, and getting it wrong is a leak or a double-free in the child rather
 than a wrong number.
+
+## §133 — `release()` frees the module's allocations, and that is the design
+
+Section 132 said to design `release()` first. Doing that turned up the fact the
+whole arena port turns on, and it is not what the file's name suggests.
+
+I went looking for a leak. The guest's `__wpk_fork_module_state_record_reserve`
+allocates KFMS chunks through the MODULE's own `module_state_chunks`
+(`ForkChunkList` on the parent's channel), and nothing in the module ever
+releases them: `release_fork_chunks` drains each activation's frame arena and
+the journal-image chunk, and does not touch `module_state_chunks`. On its face
+that is a mapping leaked per fork.
+
+It is not a leak. `ForkModuleStateArena.attach(root)` calls `validateChunks`,
+which WALKS the linked chunk list in guest memory from the root and populates
+`this.chunks` with every chunk it finds -- the module's allocations included.
+`release()` then munmaps that whole list. So the ownership is split on purpose:
+**the module allocates the KFMS arena and the host frees it**, by rediscovering
+the allocations from shared memory rather than from any handover.
+
+That explains why an earlier attempt at this step was withdrawn, and it makes
+the port harder than a method swap. `release()` cannot move to the module one
+side at a time. Either the module starts releasing `module_state_chunks` and the
+host stops walking-and-freeing in the same change, or a fork leaks the arena (if
+neither frees) or double-munmaps it (if both do).
+
+**And the port makes a real property stronger, which is the argument for doing
+it rather than leaving it.** The attic carries this, load-bearing enough to be
+worth quoting:
+
+> Publish ownership only after the complete guest-controlled arena passes
+> structural and semantic validation. Failed attachment must not release
+> mappings that this host never safely adopted.
+
+That guard exists because the host is freeing addresses it learned from a
+GUEST-CONTROLLED data structure. Everything around it -- the cycle check, the
+chain-length bound against memory size, the page-alignment check, the per-chunk
+validation, the deliberate ordering that publishes `this.chunks` only after all
+of it passes -- is there to stop a malformed arena from steering a host munmap.
+A module that frees its own `module_state_chunks` needs none of it: it munmaps
+exactly the addresses it mapped, from a list the guest cannot reach. The whole
+class of "guest points the host at an address to unmap" disappears rather than
+being defended against.
+
+So `release()` is the right first piece, for a better reason than "it is the
+hard one". It is the one where moving the code removes an attack surface instead
+of relocating it.
+
+The pairing it has to preserve: `attachBorrowed` + `detachBorrowed`, where a
+vfork child adopts the parent's arena read-only and must drop its indexes
+WITHOUT unmapping anything. In the module that is the distinction already drawn
+by `ForkChunkList::new_channel(0)` for a replay-only child -- an allocator that
+owns nothing and therefore frees nothing. The borrowed case may need no new code
+at all, only the right constructor, which is worth checking before writing any.
