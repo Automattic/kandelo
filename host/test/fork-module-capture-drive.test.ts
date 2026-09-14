@@ -58,6 +58,7 @@ const PHASE_IDLE = 0;
 const PHASE_CAPTURE = 1;
 const PHASE_SEALED_PARENT = 2;
 const PHASE_PARENT_REPLAY = 3;
+const PHASE_ABORT_REPLAY = 5;
 
 /** `fm_borrowed_replay_workspace` fields. */
 const WORKSPACE_PREFIX = 0;
@@ -368,6 +369,38 @@ describe("the backend's lifecycle methods, against a live module", () => {
 
     backend.parentFinish(false);
     expect(phase()).toBe(PHASE_IDLE);
+  });
+
+  it("seals a partial capture for abort without driving unwind-end", () => {
+    // The mid-unwind failure path: a frame reserve came back 0, so the capture
+    // cannot complete. A failed reserve leaves no pending frame, so the
+    // committed chain is whole and seal-able -- and the seal must NOT drive the
+    // guest's unwind-end, because the guest is still mid-unwind and driving it
+    // there corrupts the unwind state machine. What is observable here is that
+    // it reaches sealed-parent, which is what lets the abort replay run over
+    // the frames that did commit.
+    const { f, backend } = backendFixture();
+    backend.parentBeginCapture(CHANNEL_BASE, 0, 0, 0);
+    const phase = () => Number((f.x.fm_phase as () => number)());
+    expect(phase()).toBe(PHASE_CAPTURE);
+
+    backend.parentAbortSeal();
+    expect(phase(), "sealed for abort").toBe(PHASE_SEALED_PARENT);
+
+    // And the abort replay runs from there, which is the whole point of
+    // sealing a capture that cannot complete. It has its OWN phase rather than
+    // sharing the parent-replay one -- an abort finish drives the guest's
+    // `wpk_fork_abort_end` where a normal finish drives `wpk_fork_rewind_end`,
+    // so the two cannot be the same state.
+    backend.parentReplay(true);
+    expect(phase()).toBe(PHASE_ABORT_REPLAY);
+    backend.parentFinish(true);
+    expect(phase()).toBe(PHASE_IDLE);
+  });
+
+  it("refuses an abort seal from a phase with no capture open", () => {
+    const { backend } = backendFixture();
+    expect(() => backend.parentAbortSeal()).toThrow(/errno 16/);
   });
 
   it("returns the module to idle on abort", () => {

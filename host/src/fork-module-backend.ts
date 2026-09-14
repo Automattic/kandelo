@@ -405,6 +405,24 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Seal a PARTIAL capture for abort, without the guest unwind-end drive or the
+   * journal serialization a normal seal does.
+   *
+   * The mid-unwind failure path: a frame reserve came back 0, so the capture
+   * cannot complete, but a failed reserve leaves no pending frame — the
+   * committed chain is whole and seal-able. Sealing it moves the module to
+   * sealed-parent so the abort replay can run over the frames that did commit,
+   * and the parent survives with `fork()` returning -errno.
+   *
+   * Distinct from `sealCaptureAndSerialize` precisely because it must NOT drive
+   * the guest's `wpk_fork_unwind_end`: the guest is still mid-unwind, and
+   * driving it there corrupts the unwind state machine.
+   */
+  parentAbortSeal(): void {
+    this.call("fm_parent_abort_seal");
+  }
+
+  /**
    * Begin the parent's replay, or its abort replay when `abort` is set.
    *
    * Drives each activation's `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`

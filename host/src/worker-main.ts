@@ -4706,9 +4706,14 @@ export async function centralizedWorkerMain(
                   const moduleErrno = forkModuleBackend
                     ? forkModuleBackend.lastErrno()
                     : STARTUP_ENOMEM;
-                  processContinuation.beginModuleCaptureAbort(
-                    moduleErrno > 0 ? moduleErrno : STARTUP_ENOMEM,
-                  );
+                  // Mid-unwind reserve failure: seal the partial capture
+                  // WITHOUT driving the guest's unwind-end (it is still
+                  // mid-unwind), then replay the frames that did commit as an
+                  // abort so the parent survives and fork() returns -errno.
+                  forkAbortErrno =
+                    moduleErrno > 0 ? moduleErrno : STARTUP_ENOMEM;
+                  forkModule().parentAbortSeal();
+                  forkModule().parentReplay(true);
                 }
                 return payload;
               },
