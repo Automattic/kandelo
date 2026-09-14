@@ -1498,6 +1498,59 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 ## V AFTER THE MERGE — the debt, and three findings that make it harder
 
+### THE CORPUS, MEASURED BY WHAT EACH FILE CALLS — 2026-09-14
+
+Sizing the test corpus was got wrong four times, by keyword buckets and file
+counts. This is the fifth attempt and it asks a different question: **for each
+file, which methods does it actually call on the filesystem?**
+
+Of 76 files that bind a `MemoryFileSystem`:
+
+| what pushes a file past fixture use | files | assessment |
+|---|---|---|
+| nothing — `saveImage`/`writeFile`/`mkdir`/`chmod` only | **32** | pure fixture |
+| `stat`/`lstat`/`read`/`readlink` — reading back what they wrote | ~20 | `SffsImageFs` has all four; effectively fixture |
+| lazy registration and export | ~12 | follows the lazy decision, not a filesystem question |
+| genuine fd/POSIX surface — `fstat` `seek` `append` `fchmod` `fsync` `link` | **~6** | the real residue |
+
+**`binary-resolver.test.ts` is the proof of the pattern.** It is the single
+largest block of unclassified assertions — 77 — and it binds one variable and
+calls **one method on it: `saveImage()`**. Its filesystem is a fixture factory
+named `vfsImage`. Those 77 assertions are package-resolution policy, not
+filesystem behaviour, and they move when one helper moves.
+
+**So the corpus should be attacked HELPER-FIRST**: repoint the fixture
+factories, then look at what is left. The residue is by definition the tests
+that need `MemoryFileSystem` to be a filesystem, which is the only population
+worth reasoning about individually.
+
+**Treat ~6 as "small", not as exactly six.** This is the fifth sizing; what is
+different is that it comes from measured call sites rather than from names.
+
+### ARCHIVE DOWNLOAD PROGRESS IS ALREADY DEAD FOR `/` — found 2026-09-14
+
+Not a consequence of any planned change; it is already true, and it looks
+unnoticed.
+
+Lazy **files** under `/` still report progress: the kernel asks the host for
+deferred bytes, `deferredFileReader` opens the path on `MemoryFileSystem`,
+whose fetch emits `lazyDownload` events that reach `App.tsx` and
+`Inspector.tsx` through the worker.
+
+Lazy **archives** do not. The overlay fetches them through
+`lazyArchiveFetcher`, which is
+`async (url) => new Uint8Array(await (await fetcher(url)).arrayBuffer())` —
+**no emission anywhere**. So the biggest downloads a user waits on, the
+interpreter bundles, are silent, and have been since the host `/` mount was
+dropped in the Phase 5 cutover.
+
+**The distinction that matters for the dumb-pipe work:** *transfer progress* is
+a property of the fetch, and the fetch is unambiguously the host's — it stays
+in the pipe. *Materialization status* is the kernel's. They are separable, so
+the architecture does not require trading the feature away. **Whether to
+restore archive progress is a product decision for the browser lane.**
+
+
 **The twenty-second entry point is a DEBT and `25537ca84` records it as one.**
 `sm_image_read` was granted on the promise that it retires
 `imageBodyBytes` and unlocks roughly 11,900 lines. The deletion did not land in
