@@ -37,6 +37,33 @@ restore closure measured 19 modules and 14,035 code lines, and would have
 un-banked `fork-module-backend.ts` — already cut this lane from 1,239 lines and
 41 methods to 503 and 20.
 
+**What D1 does NOT forbid, because the difference is easy to blur and the lane
+stalls if it is read wrong.** D1 bans restoring the CHAIN — bringing set-aside
+modules back so that `worker-main.ts` loads and the suite goes green, intending
+to delete them later. It does not ban implementing irreducible host floor in
+`host/src`.
+
+Some of what sits in the attic must exist in the host in some form, and the Rust
+side says so itself: `crates/fork-codec/src/imported_globals.rs` states in its
+own header that the LIVE half of `fork-imported-globals.ts` is deliberately
+deferred to the host, because it observes raw JavaScript import values at real
+`WebAssembly.Instance` boundaries and resolves `WebAssembly.Global` / `Table`
+identities. That is not a port target; that is the floor.
+
+The test is the one already written down: *not-deleted does not mean
+must-be-host* — read the call graph, never the comments, and ask whether the
+work is a Wasm capability limit or a JavaScript object identity the module
+cannot hold. When the answer is yes, the file comes back **rewritten thin and
+reclassified**, argued file by file, measured on `forkRestoredHostFloor`, never
+copied wholesale. The lane already has precedent for that shape:
+`fork-externref-process-owner.ts` and `fork-reference-capture-module.ts` both
+returned that way.
+
+The distinction in one line: **floor is implemented, chains are not restored.**
+If a file is coming back because something else needs to keep calling it, that
+is the chain and D1 says no. If it is coming back because the host is the only
+place the work can happen, write the thin version and argue it.
+
 **Consequence, accepted rather than negotiated:** nothing is verifiable end to
 end until enough of the chain is rebuilt. That is a reason to work in small
 pieces with their own perturbed tests, to read `crates/host-native`'s
