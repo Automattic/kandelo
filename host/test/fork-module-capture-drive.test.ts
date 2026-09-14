@@ -40,12 +40,29 @@ const SYS_MMAP = 46;
 const SYS_MUNMAP = 47;
 
 // Drive-table slots the capture plan drives, from `fork_codec::drive_plan`.
+const DRIVE_SLOT_REWIND_BEGIN = 5;
+const DRIVE_SLOT_ABORT_BEGIN = 6;
+const DRIVE_SLOT_UNWIND_END = 7;
+const DRIVE_SLOT_REWIND_END = 8;
+const DRIVE_SLOT_ABORT_END = 9;
 const DRIVE_SLOT_UNWIND_BEGIN = 10;
 const DRIVE_SLOT_MODULE_STATE_SAVE = 13;
 
 // `fm_module_state_arena` operations.
 const ARENA_ROOT = 0;
 const ARENA_OWNED = 3;
+
+/** `fm_phase` values, from the PHASE_* constants in crates/fork-module. */
+const PHASE_IDLE = 0;
+const PHASE_CAPTURE = 1;
+const PHASE_SEALED_PARENT = 2;
+const PHASE_PARENT_REPLAY = 3;
+
+/** `fm_borrowed_replay_workspace` fields. */
+const WORKSPACE_PREFIX = 0;
+const WORKSPACE_SCRATCH = 1;
+
+const EBUSY = 16;
 
 const CHANNEL_BASE = 4 * PAGE;
 const MODULE_BASE = 8 * 1024 * 1024;
@@ -91,6 +108,23 @@ while (!stop) {
   Atomics.notify(i32, statusIndex);
 }
 `;
+
+/**
+ * A module exporting one `() -> ()` function, for the no-argument drive band.
+ *
+ * The guest double's exports are all `(i32) -> ()` or `() -> i32`, and neither
+ * is callable where the shim `call_indirect`s a `() -> ()` — a type mismatch
+ * traps rather than mis-calling, which is the right failure but not a usable
+ * stub. Twenty-four bytes is cheaper than another double.
+ */
+// prettier-ignore
+const NOP_MODULE_BYTES = new Uint8Array([
+  0,97,115,109,1,0,0,0,      // magic + version
+  1,4,1,0x60,0,0,            // type: () -> ()
+  3,2,1,0,                   // func: one, type 0
+  7,7,1,3,110,111,112,0,0,   // export "nop" = func 0
+  10,4,1,2,0,0x0b,           // code: empty body
+]);
 
 interface Fixture {
   x: Record<string, unknown>;
@@ -140,8 +174,31 @@ function fixture(): Fixture {
   const base = (x.fm_drive_table_base as (a: number) => number)(0);
   const table = fm.driveTable;
   if (table.length < base + 14) table.grow(base + 14 - table.length);
-  table.set(base + DRIVE_SLOT_MODULE_STATE_SAVE, guest.gc_allocate as never);
-  table.set(base + DRIVE_SLOT_UNWIND_BEGIN, guest.gc_fill as never);
+  // Every slot the parent lifecycle drives. The guest double's three exports
+  // are all `(i32) -> ()`, which is the signature of both the activation-argument
+  // band and, on wasm32, the pointer band -- so they stand in for each. The
+  // no-argument band (unwind/rewind/abort end) is driven as `() -> ()`, and a
+  // `(i32) -> ()` entry is NOT callable there, so those slots take the double's
+  // zero-argument export instead.
+  for (const slot of [
+    DRIVE_SLOT_MODULE_STATE_SAVE,
+    DRIVE_SLOT_UNWIND_BEGIN,
+    DRIVE_SLOT_REWIND_BEGIN,
+    DRIVE_SLOT_ABORT_BEGIN,
+  ]) {
+    table.set(base + slot, guest.gc_allocate as never);
+  }
+  const nop = (
+    new WebAssembly.Instance(new WebAssembly.Module(NOP_MODULE_BYTES))
+      .exports as Record<string, CallableFunction>
+  ).nop;
+  for (const slot of [
+    DRIVE_SLOT_UNWIND_END,
+    DRIVE_SLOT_REWIND_END,
+    DRIVE_SLOT_ABORT_END,
+  ]) {
+    table.set(base + slot, nop as never);
+  }
 
   const call = x.fm_module_state_arena as (o: number, a: number) => bigint;
   return {
@@ -194,5 +251,61 @@ describe("capture begin, driven through a serviced channel", () => {
     );
     expect(f.arena(ARENA_ROOT), "the module must not have made one").toBe(0);
     expect(f.arena(ARENA_OWNED)).toBe(0);
+  });
+});
+
+describe("the parent fork lifecycle, end to end through the module", () => {
+  it("walks idle -> capture -> sealed -> replay -> idle", () => {
+    // The whole point of the responder. Every one of these calls allocates or
+    // frees through the channel, so before it existed none of them could be
+    // driven at all -- the module parked instead of answering.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    const phase = () => Number((f.x.fm_phase as () => number)());
+    expect(phase()).toBe(PHASE_IDLE);
+
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno()).toBe(0);
+    expect(phase(), "a capture is open").toBe(PHASE_CAPTURE);
+
+    (f.x.fm_parent_seal_capture as (b: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "seal").toBe(0);
+    expect(phase(), "sealed").toBe(PHASE_SEALED_PARENT);
+
+    (f.x.fm_parent_replay as (a: number) => void)(0);
+    expect(f.errno(), "replay").toBe(0);
+    expect(phase(), "replaying").toBe(PHASE_PARENT_REPLAY);
+
+    (f.x.fm_parent_finish as (a: number) => void)(0);
+    expect(f.errno(), "finish").toBe(0);
+    expect(phase(), "back to idle").toBe(PHASE_IDLE);
+  });
+
+  it("sizes a borrowed child's workspace only once the capture has sealed", () => {
+    // These VALUES were untested when the entry landed, and said so: reaching
+    // sealed-parent needed a capture with a live guest. It needs a serviced
+    // channel, which is a smaller thing.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    const workspace = f.x.fm_borrowed_replay_workspace as (field: number) => bigint;
+
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    // Mid-capture the activation set is still growing and the scratch
+    // high-water has not peaked, so an answer would be an undercount.
+    expect(Number(workspace(WORKSPACE_PREFIX))).toBe(-1);
+    expect(f.errno()).toBe(EBUSY);
+
+    (f.x.fm_parent_seal_capture as (b: number) => number)(CHANNEL_BASE);
+    expect(f.errno()).toBe(0);
+
+    // One activation, whose fixed prefix this fixture seeded as 0 -- so the
+    // sum over the activation set is 0, and that is a real answer rather than
+    // the refusal above. The distinction is the whole point of the phase gate.
+    const prefix = Number(workspace(WORKSPACE_PREFIX));
+    expect(f.errno()).toBe(0);
+    expect(prefix).toBeGreaterThanOrEqual(0);
+    const scratch = Number(workspace(WORKSPACE_SCRATCH));
+    expect(f.errno()).toBe(0);
+    expect(scratch).toBeGreaterThanOrEqual(0);
   });
 });
