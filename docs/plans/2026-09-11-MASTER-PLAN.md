@@ -1551,6 +1551,31 @@ failures that are pure artifact — run `./run.sh setup` before reading any
 browser number at all. `libc/musl` is dirty in 92 of 200
 worktrees by design (lane B's B3); it is not this branch's doing.
 
+**THE MERGE WAS DRY-RUN IN A THROWAWAY WORKTREE, so this is tested rather than
+predicted.** A file-list intersection suggested three conflicts; actually
+merging produced one.
+
+* **`Cargo.lock` and `docs/surface-budget.json` AUTO-MERGE.** The budget's
+  auto-merge was checked and is the correct union — `sffsModuleEntryPoints` 22,
+  `kernelWorkerTypeScript` 32717, `memoryFsTypeScript` 8141,
+  `committedBinariesWithoutProducer` 15, 21 surfaces. **No manual union is
+  needed**, and an earlier draft of this guidance wrongly said it was.
+* **`tools/xtask/src/perturb.rs` is the single conflict, and it is semantic.**
+  HEAD adds `let _ = std::fs::remove_file(&sentinel);`. The lane adds
+  `let status = match ran { Ran::Exited(ok) => ok, Ran::TimedOut => { … continue; } };`.
+  **Keep both, sentinel removal FIRST** — before the match, so a trial that
+  hangs and takes the `continue` does not leak its sentinel into the next
+  trial — then `if status {`.
+
+That resolution was applied and `cargo check -p xtask` passes (one pre-existing
+unused-import warning). Nothing else requires a decision.
+
+**After merging, before validating**, rebuild the staged module and refresh the
+index: `bash crates/sffs-module/build-wasm.sh` then `./run.sh setup`.
+`crates/sffs-module/src/lib.rs` changed, and a stale artifact or projection
+index surfaces later as *"Package artifact closure is incomplete"* in unrelated
+browser specs — it reads like a provisioning defect and is not one (H-23).
+
 **What is left in V, and why it belongs on a fresh branch.** The adapter (both
 halves read the container's host-side JSON), four construction sites, **71
 mechanical test repoints and 16 test rewrites** whose single shared concern is
