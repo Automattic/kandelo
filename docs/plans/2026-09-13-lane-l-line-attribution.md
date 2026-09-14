@@ -1320,15 +1320,20 @@ check; inbound is a `usize`.
 So the fix has a shape and it is already written, twice: once in TypeScript at
 the inbound boundary, once in Rust at the outbound one.
 
-Those remaining sites are reported rather than changed, and the reason is
-narrow: `copy_launch_entry` had its errno decided for it by the contract it
-cites, and the others do not. `write_wasm_statfs` returns no errno at all —
-its caller does — so giving it a refusal path is a decision about the
-host↔kernel contract rather than a transcription repair. What `host_fpathconf` should return when the kernel hands
-it an unmappable `value_ptr` is a design decision about the host↔kernel
-contract, taken once and applied consistently, and that belongs to the
-maintainer rather than to a lane that arrived here by following a different
-thread.
+**They were reported before they were changed, and the split held up.**
+`copy_launch_entry` had its errno decided for it by the contract it cites, so
+it was fixed immediately; the other fifteen turned on one question —
+what this host returns when the kernel hands it an unmappable pointer —
+which is a decision about the host↔kernel contract rather than a
+transcription repair, and so was put to the maintainer rather than taken by a
+lane that arrived here following a different thread.
+
+The maintainer took it, and the answer is above: `-EFAULT` everywhere,
+against a first instinct to trap, because the tree had already answered the
+same question twice. All sixteen are converted. The two helpers that returned
+nothing (`write_wasm_statfs`, `write_wasm_stat_fields`) return
+`Result<(), i32>` now, so their callers can answer — which is what removed
+the last place where trapping would have been the only option.
 
 ## A hole in the ratchet itself, found by the same question
 
@@ -1707,7 +1712,37 @@ records and the harness has no way to express.
 **The evidence is otherwise reproducible rather than asserted.** Every
 perturbation claim elsewhere in this document is a transcript of a run
 somebody has to take on trust; the specs are a command:
-`cargo xtask perturb docs/perturb/lane-l-*.json`, **20 trials, 0 survived**.
+
+```sh
+for spec in docs/perturb/lane-l-*.json; do
+  cargo xtask perturb "$spec" || break
+done
+```
+
+**Six specs, 20 trials, 0 survived, 0 invalid — verified per spec, not in
+one run.** That distinction is the same one this section makes about
+transcripts, so it is stated rather than glossed: the five small specs each
+completed in a single invocation, and the host-native spec's fourteen were
+verified as thirteen in one completed run plus the status-word trial on its
+own, because the long run has twice been interrupted by the machine rather
+than by a failing trial.
+
+**Both interruptions left a mutation in the tree**, which is the fail-open in
+the table below arriving twice in one session: once across a laptop sleep,
+once when a backgrounded loop stopped between applying a trial and reverting
+it. Neither cost anything — each diff was read before it was discarded and was
+exactly the trial's own line — but "run the whole set in one command" is
+advice this lane cannot honestly give until the harness's revert survives its
+own process dying.
+
+The loop is not decoration. `xtask perturb` takes ONE spec — it reads
+`args.first()` and ignores the rest — so the obvious
+`cargo xtask perturb docs/perturb/lane-l-*.json` runs the first file the glob
+expands to, reports its 14 trials, and exits 0. A reader would take that for
+the whole set. This document carried exactly that command for one commit: a
+reproduction instruction that silently measures a fifth of what it claims,
+which is the subject of this document appearing in its own reproduction
+steps.
 
 **That count was audited rather than assumed.** Claiming "every guard on this
 branch has been seen to fail" is the kind of sentence this document exists to

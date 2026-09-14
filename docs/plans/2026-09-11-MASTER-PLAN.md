@@ -2602,21 +2602,37 @@ version proves the range and returns `-EFAULT`. A legal wasm32 `buf_ptr` past
 the end of the memory went to `copy_nonoverlapping`. Reverting the fix does not
 give a wrong errno; it kills the process with **SIGBUS**. The JavaScript host
 answers `-EFAULT`. Fixed at the site, with a test that fails without it.
-**The rest of the class is measured, listed and left alone**:
-`checked_shared_range` has 6 call sites covering 3 functions, against 73 raw
-`write_bytes` sites, of which **sixteen** write through a pointer the kernel
+**The whole class is FIXED, on the maintainer's decision.**
+`checked_shared_range` had 6 call sites covering 3 functions, against 73 raw
+`write_bytes` sites, of which **sixteen** wrote through a pointer the kernel
 handed in (thirteen until a mutation probe found `host_readdir` writing four
-times through a local the name-based count could not see) — `host_clock_gettime`, `host_read` (twice), `host_pread`,
-`host_readlinkat`, `host_fpathconf`, `host_readdir`, `host_fetch_deferred`,
+times through a local that a name-based count could not see) —
+`host_clock_gettime`, `host_read` (twice), `host_pread`, `host_readlinkat`,
+`host_fpathconf`, `host_readdir` (four), `host_fetch_deferred`,
 `host_getrandom`, `host_waitpid`, and the two `write_wasm_stat*` helpers those
-imports call. The attribution document carries the table. Those need one decision about
-what the host↔kernel contract returns for an unmappable pointer, applied
-consistently — a maintainer's call, not a lane's. **The shape of the fix is
-already written twice**: the TypeScript host proves the kernel's
-`(ptr, capacity)` pair once at the inbound boundary and hands downstream code
-a frozen `RustLentKernelDestination` token, and `crates/host-native` has that
-exact type for regions it ALLOCATES (`KernelScratch`) and no mirror for
-regions the kernel LENDS it.
+imports call.
+
+All sixteen prove the lent range now. **`KernelLent` is the mirror that was
+missing**: the inbound counterpart of `KernelScratch`, and the Rust equivalent
+of the TypeScript host's `RustLentKernelDestination`. The guard is no longer a
+count — `write_bytes` does not appear in `define_kernel_host_imports` at all.
+
+**The errno went against the maintainer's first instinct and the reason is in
+the tree.** Trapping was the instinct — the kernel is the arbiter of reality.
+But this host already answers this condition in the only two places it proved
+a kernel range, `proc_copy_in`/`proc_copy_out`, and it answers `-EFAULT`; so
+would the JavaScript host for the identical bug. Trapping would have made one
+host answer one condition two ways. Where trapping IS right is where there is
+no errno to return, and after this change no such place is left: the two
+helpers that returned nothing now return `Result<(), i32>`.
+
+**Two caveats carried, not buried.** Five of the eleven converted imports —
+`readlinkat`, `fpathconf`, `readdir`, `getrandom`, `fstatfs` — are never
+executed by any test in this repository, so their conversions are
+compile-checked only; covering them needs guest fixtures. And the cost is
+measured by frequency rather than a micro-benchmark: 203 proofs across the
+whole `host-native` suite, with `waitpid` the hot import at 801 calls, which
+refutes "hot path" for what the suite covers and nothing more.
 
 **Two callers swallow the new answer, and neither is lane L's.** Giving
 sixteen imports the ability to return `-EFAULT` means asking who reads it.
