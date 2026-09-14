@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -343,6 +343,39 @@ const MEASURED: Record<string, () => number> = {
       ).trim(),
       10,
     ),
+  // Committed binaries must have a producer that still exists, or a recorded
+  // decision to freeze them. Filename inference is NOT reliable here:
+  // rtfs-v3-lazy.bin is produced by gen-rtfs-v3-fixture.mts, which shares only
+  // a prefix. So this reads an explicit declaration and counts two failures --
+  // an undeclared binary, and a declared producer that has been deleted. The
+  // second is how dylink-archive and rtfs-v3-lazy became fossils unnoticed.
+  committedBinariesWithoutProducer: () => {
+    const tracked = execFileSync(
+      "/bin/sh",
+      [
+        "-c",
+        "git ls-files | grep -iE '\\.(wasm|bin|so|a|o|dylib)$' || true",
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    )
+      .split("\n")
+      .filter((line) => line.length > 0);
+    let declared: Record<string, { producer?: string; frozen?: string }> = {};
+    try {
+      declared = JSON.parse(
+        readFileSync(join(repoRoot, "docs/committed-binaries.json"), "utf8"),
+      );
+    } catch {
+      return tracked.length; // no manifest yet: nothing is accounted for
+    }
+    return tracked.filter((path) => {
+      const entry = declared[path];
+      if (!entry) return true; // committed but undeclared
+      if (entry.frozen) return false; // a decision was recorded
+      if (!entry.producer) return true; // declared with neither
+      return !existsSync(join(repoRoot, entry.producer)); // producer deleted
+    }).length;
+  },
   parseShebangReferences: () =>
     lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
       ? Number.parseInt(

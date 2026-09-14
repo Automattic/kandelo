@@ -176,6 +176,13 @@
       "slack": 10,
       "target": 150,
       "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration \u2014 the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
+    },
+    "committedBinariesWithoutProducer": {
+      "measure": "committed binaries with no entry in docs/committed-binaries.json, or whose declared producer no longer exists on disk",
+      "ceiling": 15,
+      "slack": 0,
+      "target": 0,
+      "why": "Lane N. The maintainer's policy is that nothing binary is committed unless hand-compiled; everything else is generated, because it has to change with the source. Lane L took the repository from 58 committed binaries to 15. The remaining 15 cannot be classified by filename \u2014 rtfs-v3-lazy.bin is produced by gen-rtfs-v3-fixture.mts, which shares only a prefix with it \u2014 so the gate reads an explicit declaration instead of guessing. It counts two failures: a committed binary nobody declared, and a declared producer that has since been DELETED. The second is the one that matters: dylink-archive-wasm32.bin's writer died with the TypeScript ld.so, and rtfs-v3-lazy.bin's emitter (emitRootfsManifest in host/src/vfs/rootfs-manifest.ts) was deleted by 1f2ed5d84 and now survives only in test files. Both became fossils silently."
     }
   },
   "lanes": {
@@ -422,6 +429,17 @@
         }
       ],
       "why": "Goal V2 and the repo's Rust-tools preference. Still does NOT serve V4 and stays ranked last. But the U1 census separates a cheap tier-1 subset (one Rust digest primitive replacing two shell copies, plus the manifest emitter lane S already needs) with already-realised failure modes, from the tier-2 bulk the census recommends not migrating."
+    },
+    "N": {
+      "title": "Committed binaries without producers",
+      "status": "open",
+      "closure": [
+        {
+          "surface": "committedBinariesWithoutProducer",
+          "atMost": 0
+        }
+      ],
+      "why": "The maintainer's binaries policy, made enforceable. Not lane F's to own even though lane F's deletions make it urgent: F would be deciding the fate of fixtures that guard the code it is removing. The clock is set by THREE lanes, not one \u2014 F, V and Y are all deleting producers."
     }
   }
 }

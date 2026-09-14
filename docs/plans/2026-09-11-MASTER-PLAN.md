@@ -2785,11 +2785,27 @@ deferred members, in which case the export reconstructs them from the tree
 rather than from the archive entry. **That is a guess. It has not been
 checked.**
 
-**So the honest statement is: the file half is a mapping; the archive half is
-an open question, and whoever takes it should start by asking where each
-`SerializedLazyArchiveEntry` field comes from once `MemoryFileSystem` is not
-there to remember it.** This lane has repeatedly generalised from the half it
-looked at, and the correction is recorded here rather than discovered later.
+**ANSWERED — the question was the right one and the answer is better than the
+worry.** Asking where each field comes from shows they do not come from the
+filesystem at all. `serializeLazyArchiveEntries` reads
+`this.sealedLazyAtomicStates` and `this.ordinaryLazyTreeDefinitions` —
+`snapshot.content`, `snapshot.inventory`, `snapshot.url`,
+`snapshot.mountPrefix`, `snapshot.integrity`. **It is host-side registration
+bookkeeping**, which the module could never have supplied because it was never
+in the image body.
+
+And on the load path it is not lost: the container carries it in a **host-side
+JSON section**. The layout is
+`header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson | u32 metadataLen | metadataJson | u32 kernelLazyLen | kernelLazy`,
+and `archiveJson` is exactly this record. The host parses it on import; the
+kernel never does. That is the courier contract doing its job — the fetch
+description stays where the fetcher is.
+
+**So the archive half needs no module change either.** The state moves from
+being a field of an 8,215-line filesystem to being a small record beside the
+bridge, populated the same two ways it is today: by registration, and by
+parsing `archiveJson` on load. **No ABI growth, and the last unknown between
+here and deleting `memory-fs.ts` is closed.**
 
 **5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
 closes.
