@@ -17,6 +17,7 @@
  * module entry that failed silently would surface as a wrong fork much later.
  */
 
+import type { ForkSideActivation } from "./fork-activations";
 import type { ForkModuleInstance } from "./fork-module-instance";
 import {
   ContinuationAllocationError,
@@ -472,15 +473,27 @@ export class ForkModuleContinuationBackend {
   parentBeginCapture(
     channelBase: number,
     arenaRoot: number,
-    sidesPtr: number,
-    sidesCount: number,
+    sides: readonly ForkSideActivation[],
   ): number {
+    // Staged here rather than by the caller: the module reads the list as
+    // `(id, fixedPrefix)` u32 pairs out of guest memory, and where they are
+    // written is this wrapper's business, not worker-main's.
+    let at = 0;
+    if (sides.length > 0) {
+      const bytes = new Uint8Array(sides.length * 8);
+      const view = new DataView(bytes.buffer);
+      sides.forEach((side, index) => {
+        view.setUint32(index * 8, side.id >>> 0, true);
+        view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
+      });
+      at = this.stage(bytes, `${sides.length} side activation(s)`);
+    }
     return this.call(
       "fm_parent_begin_capture",
       channelBase,
       arenaRoot,
-      sidesPtr,
-      sidesCount,
+      at,
+      sides.length,
     );
   }
 

@@ -129,9 +129,9 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 | Surface | Before | After | Bought |
 |---|---|---|---|
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
-| `forkTypeScript` | 672 | 801 | the backend's reduced-surface methods, the import seeds, the table-owner wire |
-| `forkPlatformTypeScript` | 450 | **677** | `fork-phase.ts` (28), then `fork-import-identity.ts` (214) |
-| `workerMainTypeScript` | 5858 | 5792 | net −66; banked down twice, then +6 (below) |
+| `forkTypeScript` | 672 | 811 | the backend's reduced-surface methods, the seeds, the sides staging |
+| `forkPlatformTypeScript` | 450 | **730** | `fork-phase.ts` (28), `fork-import-identity.ts` (214), `fork-activations.ts` (53) |
+| `workerMainTypeScript` | 5858 | 5821 | net −37; banked down twice, then +6 and +29 (below) |
 
 The seven entries behind the first row, each with the reason recorded beside its
 number in `docs/surface-budget.json`:
@@ -155,7 +155,20 @@ the block using it — exactly the two things the process path already carries
 (`forkAbortErrno` and `forkModule()`). It is parity cost, not new machinery, and
 the session's net on this surface is −66.
 
-**`forkPlatformTypeScript` at 671 is past its TARGET of 500**, which that
+**The +29 is the activation record being wired before what it replaces can go.**
+`ForkActivations` is load-bearing the moment it lands — it binds each
+activation's drive slots at registration (which used to happen in one sweep at
+child-install time, so a PARENT's slots were unbound until it forked) and it
+answers the ordered list three loops in the child install now use. What it does
+NOT do yet is delete `forkActivationRegistrationFromInstance` or the
+coordinator's `registerActivation`, because the coordinator's own `beginCapture`
+still depends on that bookkeeping, and `beginCapture` in turn cannot go until
+the exception broker stops resolving recipes through `registry.currentReferences()`
+— which is the exn work census 109 records as deferred. So this is an addition
+whose deletion is blocked behind a deferral, and saying so is better than
+letting the ledger imply the deletion is merely next.
+
+**`forkPlatformTypeScript` at 730 is past its TARGET of 500**, which that
 surface's own text calls a stop-and-talk line rather than an allowance. Raising
 it is what the maintainer's instruction with that number said to do -- "do the
 work provisionally and RAISE IT WITH THEM rather than stopping" -- so it is

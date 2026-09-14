@@ -168,6 +168,7 @@ import {
   type ForkWasmImports,
   type PreparedForkParentActivation,
 } from "./fork-import-identity";
+import { ForkActivations } from "./fork-activations";
 import { ForkTableStateOwners } from "./fork-table-state-owners";
 import { ForkImportedGlobalPlanner } from "./fork-imported-globals";
 import {
@@ -791,6 +792,8 @@ interface ProcessDylinkActivationOwnerOptions {
   readonly coordinator: ForkProcessContinuationCoordinator;
   readonly registry: ForkActivationRegistry;
   readonly importedStateCapture?: ForkImportIdentity;
+  /** The host's record of live activations; see `fork-activations.ts`. */
+  readonly activations?: ForkActivations;
   readonly tableReplication?: ForkActivationTableReplication;
   /**
    * The child planner needs the copied dlopen archive, while the archive
@@ -1102,6 +1105,16 @@ function createProcessDylinkActivationOwner(
             registration,
             forkResumeTargetsFromInstance(request.module, instance),
           );
+          // Remembering it here also BINDS its drive slots, so the module can
+          // `call_indirect` this guest's unwind/rewind/abort entry points. That
+          // used to happen in one sweep over the registry during the child
+          // install, which left a parent's slots unbound until it forked.
+          options.activations?.register({
+            activationId,
+            module: request.module,
+            instance,
+            fixedPrefixSize: continuation.format.fixedPrefixSize,
+          });
           registered = true;
           prepared = false;
           childImportedStatePlanner?.registerInstance(activationId, instance);
@@ -1141,6 +1154,7 @@ function createProcessDylinkActivationOwner(
             if (registered) {
               try {
                 options.coordinator.unregisterActivation(activationId);
+                options.activations?.forget(activationId);
               } catch (error) {
                 failure = error;
               }
@@ -3819,6 +3833,11 @@ export async function centralizedWorkerMain(
             ptrWidth,
             format: linkedFrameFormat,
             catalogOrdinals,
+            // The module channel-mmaps its own arena and journal image, through
+            // this worker's syscall channel. It was never told where that is:
+            // every capture and seal would have asked the module to issue a
+            // syscall at address 0.
+            channelBase: channelOffset,
             label: `pid=${pid}: fork-module`,
           });
           // Seed the linked-frame format + full resume catalog once, now, before
@@ -3943,6 +3962,12 @@ export async function centralizedWorkerMain(
       // into the module rather than keeping a manifest of its own: the module
       // assembles the binding records at capture, so nothing here has to be
       // asked for them later.
+      // The host's whole memory of this process's activations: four fields
+      // each, and the drive bind that registration performs. See census 157.
+      const forkActivations = new ForkActivations(
+        requireForkModuleBackend(forkModuleBackend, pid),
+        `pid=${pid}: fork activations`,
+      );
       const importedStateCapture = new ForkImportIdentity(
         requireForkModuleBackend(forkModuleBackend, pid),
         `pid=${pid}: imported activation state`,
@@ -4339,6 +4364,7 @@ export async function centralizedWorkerMain(
             forkUnwindTag: processForkUnwindTag(),
             coordinator: processContinuation,
             registry: activationRegistry,
+            activations: forkActivations,
             importedStateCapture,
             tableReplication: tableReplicationImports,
             importedStatePlanner: initData.isForkChild
@@ -4780,6 +4806,12 @@ export async function centralizedWorkerMain(
         throw error;
       }
       processInstance = instance;
+      forkActivations.register({
+        activationId: 0,
+        module,
+        instance,
+        fixedPrefixSize: linkedFrameFormat.fixedPrefixSize,
+      });
       mainImportedStatePreparation?.complete(instance);
       mainExceptionProvider = forkExceptionProviderFromInstance(0, instance);
       const mainTypedReferenceProvider = forkGcCodecProviderFromInstance(
@@ -4897,14 +4929,16 @@ export async function centralizedWorkerMain(
           // defaults base 0), so its mirror + reconstruction is byte-identical to
           // D6.1. Activation 0 is registered first (sorted), so its base is 0 and
           // its funcrefs still map to raw ordinals.
-          const sortedActivations = [...activationRegistry.activations()].sort(
-            (left, right) => left.activationId - right.activationId,
-          );
+          // Ascending by id, from the host's own record rather than the
+          // registry: every loop below needs the same order the module drives
+          // activations in, and the record already answers in it.
+          const sortedActivations = forkActivations.ordered();
           const mirror = forkModuleInstance.functionCatalog;
           const multiActivation = sortedActivations.length > 1;
           let base = 0;
           for (const activation of sortedActivations) {
-            const guestCatalog = activation.functionCatalog;
+            const guestCatalog = activation.instance.exports
+              .__wpk_fork_function_catalog as WebAssembly.Table;
             const needed = base + guestCatalog.length;
             if (mirror.length < needed) {
               mirror.grow(needed - mirror.length);
@@ -4962,12 +4996,6 @@ export async function centralizedWorkerMain(
           // slot by slot against `fork_codec::drive_plan` by
           // `host/test/fork-module-backend.test.ts` -- including a test that no
           // slot in the stride is left unbound.
-          for (const activation of sortedActivations) {
-            forkModuleBackend.bindActivationDrive(
-              activation.activationId,
-              activation.instance.exports as Record<string, unknown>,
-            );
-          }
           // Phase 6 item 3c: seed the module's typed-GC drive planner from the
           // raw KFGC section bytes captured in the pre-instantiation planning
           // block (`childGcCodecBytes`). Each activation's codec supplies the
@@ -6590,6 +6618,10 @@ export async function centralizedThreadWorkerMain(
         )
       : null;
     let threadImportedStateCapture: ForkImportIdentity | null = null;
+    let threadForkActivations: ForkActivations | null = null;
+    // The frame format is read where the fork-module is built, which is a
+    // narrower block than the registration below.
+    let threadFixedPrefixSize = 0;
     threadProcessContinuation = threadActivationRegistry
       ? new ForkProcessContinuationCoordinator(
           memory,
@@ -6734,6 +6766,7 @@ export async function centralizedThreadWorkerMain(
           ptrWidth,
           format: linkedFrameFormat,
           catalogOrdinals,
+          channelBase: channelOffset,
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
@@ -6743,6 +6776,11 @@ export async function centralizedThreadWorkerMain(
         // point. Nothing reads it earlier.
         if (threadActivationRegistry) {
           const backend = threadForkModuleBackend;
+          threadForkActivations = new ForkActivations(
+            backend,
+            `pid=${pid} tid=${tid}: fork activations`,
+          );
+          threadFixedPrefixSize = linkedFrameFormat.fixedPrefixSize;
           threadImportedStateCapture = new ForkImportIdentity(
             backend,
             `pid=${pid} tid=${tid}: imported activation state`,
@@ -7161,6 +7199,12 @@ export async function centralizedThreadWorkerMain(
         }),
         forkResumeTargetsFromInstance(module, instance),
       );
+      threadForkActivations?.register({
+        activationId: 0,
+        module,
+        instance,
+        fixedPrefixSize: threadFixedPrefixSize,
+      });
       try {
         // The pthread bootstrap consumes passive element segments, so static
         // root harvesting and table-dirty registration must precede it just as
@@ -7169,6 +7213,7 @@ export async function centralizedThreadWorkerMain(
       } catch (error) {
         threadTableReplication?.abortActiveMutations();
         threadProcessContinuation.unregisterActivation(0);
+        threadForkActivations?.forget(0);
         threadExceptionProvider = null;
         throw error;
       }
