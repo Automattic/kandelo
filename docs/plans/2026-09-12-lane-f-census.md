@@ -7226,3 +7226,49 @@ That single port collapses the rest: `beginCapture` converts, the other three
 coordinator calls become unreferenced, `fork-process-continuation` and
 `fork-imported-globals` both leave the import list, and the host stops owning an
 arena at all — which is what `fork-module-state` was gating.
+
+## §149 — What the capture shim needs, and the one entry it implies
+
+Section 148 put everything behind one port. Reading `appendTo` to size it, its
+whole arena dependency is three methods:
+
+    arena.recordsForCapture()
+    arena.appendImportedGlobalBindings(bindings)
+    arena.appendImportedTableBindings(tableBindings)
+
+The two appends are straightforward — the host has the bytes and writes them
+through the module's `__wpk_fork_module_state_record_reserve` / `_commit`
+imports instead of a host-owned arena. `recordsForCapture` is the interesting
+one, and I twice guessed it away before reading it.
+
+**First guess: the records are only a cross-check.** `appendTo` uses them to
+find each descriptor's `GlobalSnapshot` and compare type codes, which looked
+like validating one module-owned artifact against another — something the module
+could do itself, removing the host's need to read records at all. Wrong.
+`captureBinding` also reads `snapshot.recipeId`, and for a reference-typed
+import with no `WebAssembly.Global` carrier the binding IS that recipe id: the
+child has nothing else to reconstruct the reference from. It is data, not a
+check.
+
+**So the host must enumerate the arena's records.** Two ways, and only one fits
+the direction:
+
+- The host decodes the arena from its root. That reintroduces host-side decoding
+  of a module-owned format, which is the duplication this campaign removes.
+- The module decodes and the host reads fields by index — the shape
+  `fm_decoded_node_field(index, selector)` already established for the reference
+  graph. The Rust side already has `decode_mutable_global`; the host needs only
+  scalars: per record its kind, activation and owner, and for a global its type
+  code and recipe id.
+
+The second costs one entry, `fm_module_state_record_field(index, selector)`,
+with a count. That is the price of the host never parsing a module-owned format
+again, and it is the same trade `fm_decoded_node_field` already made and the
+budget already absorbed.
+
+**Worth noting how this went.** Three times today a shortcut through this lane's
+hard parts did not survive reading the code that produces the data — the arena
+"ownership protocol", the "cluster cut", and now twice over this one file.
+Each time the shortcut was plausible and each time the code said otherwise. The
+pattern is specific enough to name: I reason about what data MUST mean from its
+shape, and the answer is in what reads it.
