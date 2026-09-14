@@ -442,3 +442,50 @@ describe("the backend's lifecycle methods, against a live module", () => {
     expect(() => backend.parentFinish(false)).toThrow(/errno 16/);
   });
 });
+
+describe("imported-global bindings, assembled by the module at capture", () => {
+  /** A valid, empty KFIG section: 16-byte header, zero records. */
+  function emptyKfig(): Uint8Array {
+    const bytes = new Uint8Array(16);
+    const view = new DataView(bytes.buffer);
+    bytes.set([0x4b, 0x46, 0x49, 0x47], 0);
+    view.setUint16(4, 1, true);
+    view.setUint16(6, 16, true);
+    return bytes;
+  }
+
+  it("writes no binding record when nothing imports a global", () => {
+    // A guest with no imported globals produced an arena without this record
+    // before, and must still. Writing an empty one would put a record the child
+    // then decodes for no reason.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture with no imported globals").toBe(0);
+  });
+
+  it("refuses to bind provenance with no matching declaration", () => {
+    // The host published provenance for an import the activation's KFIG section
+    // does not declare. That is the two halves of the contract disagreeing, and
+    // binding it anyway would wire a child's import from a coordinate nothing
+    // describes.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    const kfig = emptyKfig();
+    new Uint8Array(f.memory.buffer, 6144, kfig.length).set(kfig);
+    (f.x.fm_set_activation_imported_globals as (a: number, p: number, n: number) => void)(
+      0,
+      6144,
+      kfig.length,
+    );
+    expect(f.errno(), "empty section seeded").toBe(0);
+    // Provenance for owner 1, which the empty section does not declare.
+    (f.x.fm_set_imported_global_provenance as (
+      a: number, o: number, k: number, sa: number, so: number, bits: bigint,
+    ) => void)(0, 1, 5 /* BASE_IMPORT */, 0, 0, 0n);
+    expect(f.errno(), "provenance published").toBe(0);
+
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture must refuse rather than bind blind").not.toBe(0);
+  });
+});

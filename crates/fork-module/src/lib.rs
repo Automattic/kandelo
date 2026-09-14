@@ -149,7 +149,8 @@ mod wasm {
     use fork_codec::{
         decode_journal_image, decode_module_state, decode_replay_events_image,
         decode_segmented_reference_transaction,
-        drive_plan, encode_journal_image, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
+        build_imported_global_bindings, drive_plan, encode_imported_global_bindings,
+        encode_journal_image, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
         GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
         ModuleStateWriter, ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent,
@@ -1735,6 +1736,121 @@ mod wasm {
             module_state.commit(mem, payload)?;
         }
         Ok(image)
+    }
+
+    /// Assemble and write this capture's imported-global BINDINGS record.
+    ///
+    /// The four pieces meeting: the declarations the host seeded from each
+    /// activation's KFIG section, the snapshots the guest's save walk just wrote
+    /// into the arena, the provenance only JavaScript could resolve, and the
+    /// builder and encoder in `fork_codec`.
+    ///
+    /// Runs at the END of capture-begin, after the save drive, because the
+    /// snapshots have to exist first — which is exactly where the JS
+    /// `appendTo` ran relative to the loop it replaces.
+    ///
+    /// A capture with no imported globals writes no record, matching the arena a
+    /// guest without imports produced before.
+    fn write_imported_global_bindings() -> Result<(), Errno> {
+        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
+        if count == 0 || !module_owns_arena_now() {
+            return Ok(());
+        }
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let provenance: Vec<fork_codec::ImportedGlobalProvenance> = table
+            .iter()
+            .take(count)
+            .map(|e| fork_codec::ImportedGlobalProvenance {
+                consumer_activation: e.consumer_activation,
+                consumer_owner: e.consumer_owner,
+                kind: e.kind as u8,
+                source_activation: e.source_activation,
+                source_owner: e.source_owner,
+                raw_bits: e.raw_bits,
+            })
+            .collect();
+
+        // Declarations, from each activation's seeded KFIG section.
+        let activations: Vec<u32> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations.keys().copied().collect()
+        };
+        let mut declarations: Vec<fork_codec::ImportedGlobalDeclaration> = Vec::new();
+        for activation in activations {
+            let Some(bytes) = activation_imported_globals(activation) else {
+                continue; // an activation with no imported globals seeds nothing
+            };
+            let decoded = fork_codec::imported_globals::decode_imported_globals(bytes)?;
+            for global in &decoded.globals {
+                declarations.push(fork_codec::ImportedGlobalDeclaration {
+                    activation,
+                    owner: global.owner_id,
+                    type_code: global.type_code,
+                });
+            }
+        }
+
+        // Snapshots, from the arena this module owns.
+        let root = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.module_state.root()
+        };
+        let fmt = module_state_format()?;
+        let mem = unsafe { mem_ref() };
+        let decoded = decode_module_state(mem, root, &fmt)?;
+        let mut snapshots: Vec<fork_codec::ImportedGlobalSnapshotFact> = Vec::new();
+        for record in &decoded.records {
+            if record.kind != abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL {
+                continue;
+            }
+            let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+            let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
+            let snapshot = fork_codec::decode_mutable_global(payload)?;
+            snapshots.push(fork_codec::ImportedGlobalSnapshotFact {
+                activation: record.activation_id,
+                owner: record.owner_id,
+                type_code: snapshot.type_code,
+                recipe_id: snapshot.recipe_id,
+            });
+        }
+
+        let bindings = build_imported_global_bindings(&provenance, &declarations, &snapshots)?;
+        let size = fork_codec::imported_global_bindings_size(bindings.len())? as u64;
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem_mut_ref = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = st;
+        let payload = module_state.reserve(
+            module_state_chunks,
+            mem_mut_ref,
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+            0,
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER,
+            size,
+        )?;
+        let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(size as usize).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        let out: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(
+                core::hint::black_box(start) as *mut u8,
+                size as usize,
+            )
+        };
+        encode_imported_global_bindings(out, &bindings)?;
+        module_state.commit(mem_mut_ref, payload)?;
+        Ok(())
     }
 
     /// Whether the arena this fork is using was allocated by the module.
@@ -3350,6 +3466,12 @@ mod wasm {
         if count > 0 {
             drive_plan_via_injector(plan, count);
         }
+        // AFTER the drive, because the guest's save walk is what produces the
+        // snapshots this reads. Same position in the sequence the JS
+        // `importedStateCapture.appendTo(arena)` held: immediately after the
+        // capture opened and the save ran, before anything else touches the
+        // arena.
+        write_imported_global_bindings()?;
         Ok(root0)
     }
 
