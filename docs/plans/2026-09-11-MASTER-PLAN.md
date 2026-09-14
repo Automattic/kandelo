@@ -1923,6 +1923,17 @@ source of truth"* — and it compares the **inode kind**, not a counter: an inod
 that was written through simply stops being a `LazyMember`, so staleness is
 structural rather than something a `dataSequence` has to detect.
 
+**The obvious objection was checked and does not hold.** Comparing the inode
+*kind* rather than a generation looks unsafe against slot recycling — a delayed
+apply landing on a different file that happens to occupy the same slot is
+exactly what `generation` protects against on the TypeScript side, and
+`sharedfs-safety.test.ts` has a case for it. It cannot happen here. Both
+callers of `ensure_materialized` derive their index from
+`file_handle_to_inode(handle)`, and `RootfsState::maybe_free` reclaims a slot
+only at `nlink == 0 && open_count == 0` — POSIX unlink-while-open, which the
+kernel implements. An open handle pins its slot, so the index cannot come to
+mean a different inode between the fetch and the apply.
+
 So the identity comparison does not move kernel-side. Under the retry-from-the-
 top model **it stops existing**, because nothing carries identity across a
 suspension that no longer happens:
