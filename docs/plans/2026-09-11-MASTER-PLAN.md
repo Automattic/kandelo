@@ -1873,6 +1873,17 @@ V10 must delete is stated in the import list instead of hidden in it.
 
 ### V9 DESIGN — where the compare-and-swap lives. Lane V's call, 2026-09-13
 
+> **Where this stands, so the layered corrections below do not have to be
+> reconstructed.** The kernel's deferred path has no race window and needs no
+> identity comparison — proven, and it survived every correction. The host's
+> async compare-and-swap path still exists, but **both worker entries drop the
+> host `/` mount**, so guest-facing lazy materialization already runs the
+> kernel's windowless path on Node and in the browser. V9 therefore **retires**
+> the identity protocol rather than porting or migrating it, and the reason is
+> reachability, not concurrency. **Gate before deleting:** a caller census
+> proving no host-initiated path still drives `materializePath`.
+
+
 `docs/plans/2026-09-12-lane-v9-scoping.md` closed listing this as what it did
 not establish: *"Whether the CAS belongs kernel-side or host-side once the
 kernel owns the filesystem and the host owns the fetch — the compare has to
@@ -1964,6 +1975,132 @@ budget's question — can an export go before one comes — answers itself here:
 all five identity operations go, and none arrives to replace them. That is the
 reduction, and it is available because the kernel's control-flow model is
 better than the one being ported, not because the surface was squeezed.
+
+**HOW THIS WAS GOT WRONG TWICE, AND WHAT WAS FINALLY VERIFIED.** Recorded
+because the wrong versions were committed and a reader deserves the trail.
+
+*First wrong answer:* the identity machinery defends against a peer that no
+longer exists, because nothing mounts a second view of the SharedArrayBuffer.
+The grep was right, the inference was not — the peer is another process in the
+same kernel, and `docs/plans/2026-09-12-lane-v9-scoping.md` already said so.
+
+*Second wrong answer:* the host's lazy path is live on both hosts for `/`, so
+the protocol must be migrated rather than retired. The observation behind it is
+true — `DEFAULT_MOUNT_SPEC` carries `{ path: "/", source: "image" }`, and a
+`MemoryFileSystem` really is constructed for it on both hosts — but the
+conclusion skipped the next twenty lines of the file.
+
+*What is actually the case,* checked in both worker entries:
+
+* **Both hosts drop the host `/` mount before the guest sees it.**
+  `const guestMounts = mounts.filter((m) => m.mountPoint !== "/")` appears in
+  `browser-kernel-worker-entry.ts` and `node-kernel-worker-entry.ts` alike,
+  under a comment calling the in-kernel rootfs overlay *"the unconditional sole
+  `/` authority"* and noting that leaving it mounted *"would double-fetch lazy
+  archives"*.
+* **`memfs` survives in a different role**, which those comments name: the
+  `blob_read` byte store and the lazy-group source.
+* **The workers never ask it to materialize.** Their entire direct surface on
+  it is `setLazyFetcher`, `subscribeLazyDownloads`, `rewriteLazyFileUrls`,
+  `rewriteLazyArchiveUrls`, `importLazyEntries` and
+  `importVerifiedLazyArchiveEntries` — transport wiring and metadata handoff,
+  no compare-and-swap.
+* **`preparePath` cannot reach it either.** `vfs.ts:268` routes to
+  `resolved.backend.preparePath`, and `/` is not among the mounted backends.
+
+So guest-facing lazy materialization for `/` **already runs the kernel's
+windowless path on both hosts**. The identity protocol is not migrated and not
+dissolved by an argument about peers: it is retired because **the path that
+needs it is no longer the guest's path**. The first answer reached the right
+end by the wrong route, which is why it had to be taken apart before it could
+be trusted.
+
+**THE GATE IS NOW ANSWERED — caller census, 2026-09-13.** Deleting the
+protocol needed proof that no host-initiated path still drives it, not just
+that the workers do not. Every route into host-side materialization:
+
+| Caller | Reaches the host CAS? |
+|---|---|
+| `vfs.ts` `readPreparedPlatformFile` -> `io.preparePath` | No — routes to a *mounted* backend, and `/` is not mounted |
+| `exec-target.ts` -> `materializePath` -> `kernel-worker.ts` -> `io.preparePath` | No — same routing |
+| `rootfs-overlay.ts`, `rootfs-overlay-export.ts`, `rootfs-lazy-archives.ts` | No — none of the three calls it at all |
+| `apps/browser-demos/pages/benchmark/main.ts:94` — `fs.ensureMaterialized(path)` | **Yes**, directly, on a `MemoryFileSystem` of its own |
+
+So there is **exactly one** live caller, and it is a demo page reading bytes out
+of its own filesystem rather than the worker's `/`. It is **not** inert, which
+was checked rather than assumed: that page calls
+`buildFs.registerLazyFile(e.path, e.url, e.size, 0o755)` at line 162 and then
+reads `/usr/sbin/mariadbd` back through `readVfsBytes` at line 648, so its lazy
+maps are populated and `materializePath` does real work. **That one caller is
+the whole of what V9 has to handle before the identity operations can go** — it
+is not a reason to keep them, and it is named here so the deletion does not
+discover it by breaking it.
+
+Note what it is, though: a demo assembling an image and reading a file back out
+of it — the **builder** use of `MemoryFileSystem`, not the runtime one. It wants
+whatever replaces the builder, which is the same question the fd-and-metadata
+half answers, rather than a reason to keep a concurrency protocol alive.
+
+### V9 IMPLEMENTATION ORDER — derived from the census, 2026-09-13
+
+Every surviving role of `MemoryFileSystem`, and what takes it. This is the
+order to land them in, cheapest and most-verifiable first.
+
+**1. The lazy-metadata handoff — already built.** The workers call
+`importLazyEntries` / `importVerifiedLazyArchiveEntries` to hand the lazy tree
+to the overlay, and the producers are `exportLazyEntries` /
+`exportLazyArchiveEntries`. Lane Y's `sm_lazy_entries` (the twenty-first entry
+point) already enumerates every deferred file and declared archive. Nothing new
+is needed; this is a repoint.
+
+**2. The `baseImage` byte provider — the last runtime role, and it is small.**
+`configureRootfsOverlayFromImage({ baseImage: memfs, ... })` hands `memfs` to
+the overlay as the host-side byte store behind the kernel's base files. The
+worker comments spell out that this is all it is: *"a write into the host's
+restored `MemoryFileSystem` would land in a tree nothing reads."*
+
+Read at the call site (`process-lifecycle.ts:4400`), the parameter is typed
+`MemoryFileSystem` but the contract is **four things**:
+
+* `exportLazyArchiveEntries()`
+* `exportLazyEntries()`
+* `imageBodyBytes()`
+* being passed to `createDeferredFileReader`, whose requirement was already
+  narrowed to `DeferredByteSource` — `open` / `read` / `close` — in `39044ce8e`
+
+So the first code increment is a **type narrowing with no behaviour change**:
+give that set a name, change the parameter from `MemoryFileSystem` to it, and
+the overlay stops depending on the class while still being handed the same
+object. Node-verifiable on its own, and it converts "swap the backend" into
+"satisfy six methods". The same move worked one level down for
+`createDeferredFileReader` and is the cheapest thing in this whole lane.
+
+**3. The identity operations — retire.** Per the census above, one live caller
+(`pages/benchmark/main.ts`), and it is a builder, not a runtime consumer. It
+follows item 4 rather than blocking it.
+
+**4. The builder half — the actual work.** Build-time assembly
+(`kernel-owned-boot.ts`), the three `mkrootfs` CLI verbs, and the demo pages.
+`SffsImageFs` covers most of the shape already and lacks the fd-and-metadata
+methods: `fstat`, `lseek`, `ftruncate`, `readAt`, `writeAt`, `append`,
+`utimens`, `fchmod`, `fchown`, `lchown`, `statfs`, `rmdir`, `rename`, `link`.
+**Count what the builders actually call before adding any of them** — the
+surface budget's standing question is whether an export can go before one
+comes, and a builder that only ever writes whole files does not need `lseek`.
+
+**5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
+closes.
+
+**Why this order.** Items 1 and 2 are repoints against surfaces that already
+exist, are Node-verifiable, and touch the runtime path — so they carry the
+browser risk and should land while the browser suite is green and watched.
+Item 4 is the largest but touches only builders, where a mistake shows up as a
+broken image at build time rather than a broken machine at run time.
+
+**What this order does NOT do.** It does not restructure `/`'s lazy
+materialization, because the census showed that work is already done — the
+kernel's overlay owns it on both hosts. An earlier draft of this plan had that
+as V9's central task. It is not.
 
 **What this does NOT establish — the boundary of the claim.** It is proven that
 the *kernel's* deferred path has no window. It is **not** proven that the host's
@@ -2969,6 +3106,14 @@ X's neighbours, unattributed), ~19 unclassified.
 **Status: DEPRIORITIZED by the maintainer.** *"I don't care about browser
 coverage yet — I'd rather push implementation further before we pay the heavy
 cost of checking in the browser."*
+
+**2026-09-13: the mechanical cause of that zero is now fixed.** The browser
+kernel worker died during init on an unguarded `process.platform` in
+`platform/native-metadata.ts`, taking 103 of 184 fast specs with it. Lane Y/V
+found and fixed it (`dba8d1f47`) because it gated the browser validation those
+lanes owe. **Deprioritizing this lane also deprioritized the only owner of a
+defect that blocked every other lane's browser evidence** — worth weighing if
+the status is revisited.
 
 Recorded so it is not mistaken for an oversight: there is **zero browser
 evidence on this branch**. Fourteen Playwright specs call `resolveBinary`
@@ -4804,7 +4949,7 @@ strictly stronger.
 `host/src/kernel-worker.ts` mention `shmfs`. That file is off-limits to this
 lane and they are comments, not behaviour.
 
-### BROWSER VALIDATION IS BLOCKED — the kernel worker dies before it boots, and not from this lane
+### BROWSER VALIDATION WAS BLOCKED — root cause found and fixed 2026-09-13
 
 **Found 2026-09-13 while trying to close the browser gap the entry below names.**
 The browser demo suite is broadly broken on this branch:
@@ -4841,6 +4986,47 @@ import graph. `host/src/binary-resolver.ts`, `binary-tiers.ts` and
 `native-positioned-write.ts` all read `process.env` or `process.platform` at
 module scope and are Node-only — an import path that now reaches one of them
 would explain it exactly.
+
+**RESOLVED (`dba8d1f47`).** The hypothesis was the right shape and the wrong
+file. Walking the browser worker entry's value-import graph with the TypeScript
+compiler API found **exactly one** unguarded Node global across 152 modules,
+and it was none of the three guessed at above:
+`host/src/platform/native-metadata.ts` computed
+`const SYNTHESIZE_POSIX_MODE = process.platform === "win32"` at module scope.
+The chain is
+
+    browser-kernel-worker-entry -> process-lifecycle -> vfs/index
+      -> vfs/host-fs -> platform/native-metadata
+
+so the worker threw while that module was still evaluating and the kernel never
+initialised. It arrived with `7c0b9c47c1 Host: Synthesize POSIX permissions for
+Windows mounts`, where nothing flagged that the file had a browser reader.
+
+`typeof process` guards it, which is also the honest value rather than a
+work-around: a browser host has no native filesystem whose Windows ACLs would
+need synthesizing. Node and Windows behaviour are unchanged.
+
+**A guard now covers the class**, `host/test/browser-worker-node-globals.test.ts`:
+it walks the worker entry's value-import graph and fails on any Node-only global
+evaluated at module load, skipping function bodies and instance-field
+initializers because those do not run at import. It asserts its own graph is
+non-empty and contains a known member, so a resolver that resolved nothing
+cannot pass vacuously. `perturb/browser-worker-node-globals.json`, **3 trials,
+3 killed, 0 survived** — the shipped unguarded read, the `||` spelling, and a
+`typeof` naming a different global than the one used.
+
+**Writing those trials found a defect in the guard itself**, which is recorded
+because the trial earned it: the first version treated `&&` and `||` as equally
+protective. They are not — `typeof p !== "undefined" || p.x` evaluates `p.x`
+precisely when `p` is undefined. The check is now polarity-aware.
+
+**The ownership lesson, which is the part worth keeping.** This defect blocked
+every browser claim on the branch for two lanes that each correctly proved it
+was not theirs, while the lane that would own it — **H, browser** — is
+deprioritized. Two accurate "not mine" findings and one deprioritized owner
+summed to nobody looking, and the cost was the whole campaign's browser
+evidence. **A defect that blocks more than one lane needs an owner even when no
+lane's scope contains it.**
 
 ### The `/dev/shm` move is VERIFIED against the product build — and what is not
 
