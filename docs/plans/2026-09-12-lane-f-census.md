@@ -6664,3 +6664,46 @@ arena methods cannot. They have to be designed against the module's own
 `ModuleStateWriter` and `ForkChunkList` semantics, which is what sections 132,
 133 and 137 have been doing, and why that work has been slower per line than the
 rest of the lane. That is the expected cost, not a sign of going wrong.
+
+## §139 — Next step, specified: the module writes the Module record
+
+The capture-side save walk now has a drive op, so what remains before
+`begin_capture_impl` can produce a complete arena on its own is the ONE record
+the host still writes: the per-activation `Module` record (kind 1), written by
+`ForkModuleStateArena.appendModule({ activationId, templateId })` inside the JS
+registry's `beginCapture`.
+
+It matters more than its size suggests. The module already READS these records —
+`attach_from_arena_impl` filters on
+`WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE` to enumerate which activations the
+attach plan must drive. So an arena without them has no activation set, and the
+child install drives nothing.
+
+The payload is fixed and small: a 32-byte template id, a `u32` flags word, and a
+`u32` reserved that must be zero (`WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_`
+`SIZE`). `fork-codec` has the DECODER (`decode_module_record`) and no encoder.
+
+**Shape of the work:**
+
+1. The template id is host knowledge — it is a hash of the guest module bytes
+   (`computeForkModuleTemplateId`), which only the host holds. So it is seeded,
+   not computed: one entry taking `(activation, ptr_to_32_bytes)`, in the same
+   family as `fm_set_activation_catalog_base` and
+   `fm_set_activation_exception_codec`.
+2. An encoder beside `decode_module_record`, so the two stay in one file and a
+   round-trip test can pin them against each other.
+3. `begin_capture_impl` reserves and commits one record per activation, before
+   the save steps it already appends — the JS loop it replaces wrote them in
+   exactly that order, and for the same reason: the save walk's own records go
+   into an arena whose activation set is already declared.
+
+Cost: one module entry (`forkModuleHostEntries` 52 -> 53) against the removal of
+the host's `appendModule` loop and, with it, the last writer into the arena that
+is not the module.
+
+**What that does NOT finish.** `ForkImportedGlobalCapture.appendTo(arena)` also
+writes records, and it is host floor under D1's clarification — it observes raw
+JavaScript import values at `WebAssembly.Instance` boundaries. Its records have
+to reach the arena through the module's reserve/commit imports rather than a
+host-side arena writer, which is a separate piece and the one that decides
+whether the host needs an arena object at all.
