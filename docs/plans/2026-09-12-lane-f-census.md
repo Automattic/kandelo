@@ -129,9 +129,9 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 | Surface | Before | After | Bought |
 |---|---|---|---|
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
-| `forkTypeScript` | 672 | 789 | the backend's reduced-surface methods, and the three import seeds |
-| `forkPlatformTypeScript` | 450 | **671** | `fork-phase.ts` (28), then `fork-import-identity.ts` (208) |
-| `workerMainTypeScript` | 5858 | 5824 | nothing — this one FELL, and the ceiling was banked down to the measurement |
+| `forkTypeScript` | 672 | 801 | the backend's reduced-surface methods, the import seeds, the table-owner wire |
+| `forkPlatformTypeScript` | 450 | **677** | `fork-phase.ts` (28), then `fork-import-identity.ts` (214) |
+| `workerMainTypeScript` | 5858 | 5786 | nothing — this one FELL twice, and the ceiling was banked down each time |
 
 The seven entries behind the first row, each with the reason recorded beside its
 number in `docs/surface-budget.json`:

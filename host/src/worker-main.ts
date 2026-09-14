@@ -164,11 +164,12 @@ import {
 } from "./fork-reference-broker";
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import {
-  ForkImportedGlobalCapture,
-  ForkImportedGlobalPlanner,
+  ForkImportIdentity,
   type ForkWasmImports,
   type PreparedForkParentActivation,
-} from "./fork-imported-globals";
+} from "./fork-import-identity";
+import { ForkTableStateOwners } from "./fork-table-state-owners";
+import { ForkImportedGlobalPlanner } from "./fork-imported-globals";
 import {
   checkedWasmGuestPointerOffset,
   type WasmGuestPointer,
@@ -789,7 +790,7 @@ interface ProcessDylinkActivationOwnerOptions {
   readonly forkUnwindTag: WebAssembly.Tag | undefined;
   readonly coordinator: ForkProcessContinuationCoordinator;
   readonly registry: ForkActivationRegistry;
-  readonly importedStateCapture?: ForkImportedGlobalCapture;
+  readonly importedStateCapture?: ForkImportIdentity;
   readonly tableReplication?: ForkActivationTableReplication;
   /**
    * The child planner needs the copied dlopen archive, while the archive
@@ -1110,16 +1111,6 @@ function createProcessDylinkActivationOwner(
             registration,
             typedReferenceProvider,
           );
-          options.importedStateCapture?.bindTableDirtyTrackers(
-            new Map(
-              options.registry
-                .activations()
-                .map((activation) => [
-                  activation.activationId,
-                  activation.tableDirty,
-                ]),
-            ),
-          );
           if (
             options.isPthreadReplica &&
             request.replayActivationId !== undefined
@@ -1161,15 +1152,7 @@ function createProcessDylinkActivationOwner(
                 failure = error;
               }
             }
-            if (importedStateRegistered) {
-              try {
-                options.importedStateCapture!.unregisterActivation(
-                  activationId,
-                );
-              } catch (error) {
-                failure ??= error;
-              }
-            } else if (importedStatePreparation) {
+            if (!importedStateRegistered && importedStatePreparation) {
               try {
                 importedStatePreparation.abort();
               } catch (error) {
@@ -3956,9 +3939,19 @@ export async function centralizedWorkerMain(
         forkGcTransit,
       );
       // Every process instance, including a freshly reconstructed child, owns
-      // the provenance manifest for any fork it may issue later.
-      const importedStateCapture = new ForkImportedGlobalCapture(
+      // the provenance manifest for any fork it may issue later. It publishes
+      // into the module rather than keeping a manifest of its own: the module
+      // assembles the binding records at capture, so nothing here has to be
+      // asked for them later.
+      const importedStateCapture = new ForkImportIdentity(
+        requireForkModuleBackend(forkModuleBackend, pid),
         `pid=${pid}: imported activation state`,
+        new ForkTableStateOwners((activationId, ownerId, owns) =>
+          requireForkModuleBackend(
+            forkModuleBackend,
+            pid,
+          ).setActivationTableStateOwner(activationId, ownerId, owns),
+        ),
       );
       let importedStatePlanner: ForkImportedGlobalPlanner | null = null;
       let earlyChildReferences: ForkEarlyChildReferenceProvider | null = null;
@@ -4310,7 +4303,6 @@ export async function centralizedWorkerMain(
         try {
           arena.begin();
           processContinuation.beginCapture(arena);
-          importedStateCapture?.appendTo(arena);
         } catch (error) {
           // Both halves ask the MODULE now, which is what makes this safe. It
           // was left on the coordinator's mirror earlier because the two could
@@ -4816,16 +4808,6 @@ export async function centralizedWorkerMain(
           mainTypedReferenceProvider,
         );
       }
-      importedStateCapture?.bindTableDirtyTrackers(
-        new Map(
-          activationRegistry
-            .activations()
-            .map((activation) => [
-              activation.activationId,
-              activation.tableDirty,
-            ]),
-        ),
-      );
       if (!initData.isForkChild) {
         try {
           // Registration harvests static roots before bootstrap consumes the
@@ -5505,7 +5487,6 @@ export async function centralizedWorkerMain(
       forkModule().abort();
       resumeTable.clear();
       releaseProcessForkArchiveReader();
-      importedStateCapture?.clear();
       externrefTokens.clear();
       processHostImportRuntime.clear();
       port.postMessage({
@@ -6608,11 +6589,7 @@ export async function centralizedThreadWorkerMain(
             ),
         )
       : null;
-    const threadImportedStateCapture = threadActivationRegistry
-      ? new ForkImportedGlobalCapture(
-          `pid=${pid} tid=${tid}: imported activation state`,
-        )
-      : null;
+    let threadImportedStateCapture: ForkImportIdentity | null = null;
     threadProcessContinuation = threadActivationRegistry
       ? new ForkProcessContinuationCoordinator(
           memory,
@@ -6761,6 +6738,19 @@ export async function centralizedThreadWorkerMain(
         });
         threadForkModuleBackend.setup();
         threadProcessContinuation.enableModuleBacking(threadForkModuleBackend);
+        // Built here rather than beside the registry above, because it publishes
+        // straight into this thread's module and there is no module before this
+        // point. Nothing reads it earlier.
+        if (threadActivationRegistry) {
+          const backend = threadForkModuleBackend;
+          threadImportedStateCapture = new ForkImportIdentity(
+            backend,
+            `pid=${pid} tid=${tid}: imported activation state`,
+            new ForkTableStateOwners((activationId, ownerId, owns) =>
+              backend.setActivationTableStateOwner(activationId, ownerId, owns),
+            ),
+          );
+        }
         // Path-A A4 parity: route this pthread worker's peer-table CAPTURE
         // through the co-resident module (the process path does this at
         // `setCaptureModule` above). Peer-table replication is module-only now,
@@ -6924,7 +6914,6 @@ export async function centralizedThreadWorkerMain(
         try {
           arena.begin();
           threadProcessContinuation.beginCapture(arena);
-          threadImportedStateCapture?.appendTo(arena);
         } catch (error) {
           if (arena.hasActiveArena()) arena.release();
           releasePthreadForkLock();
@@ -7169,16 +7158,6 @@ export async function centralizedThreadWorkerMain(
         // root harvesting and table-dirty registration must precede it just as
         // they do for the process-main bootstrap.
         threadBootstrap();
-        threadImportedStateCapture?.bindTableDirtyTrackers(
-          new Map(
-            threadActivationRegistry
-              .activations()
-              .map((activation) => [
-                activation.activationId,
-                activation.tableDirty,
-              ]),
-          ),
-        );
       } catch (error) {
         threadTableReplication?.abortActiveMutations();
         threadProcessContinuation.unregisterActivation(0);

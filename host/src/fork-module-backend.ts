@@ -363,6 +363,30 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Publish which `(activation, owner)` coordinate WRITES a physical table's
+   * sparse state, which the module then serves to the guest's
+   * `__wpk_fork_module_state_table_state_owned` import.
+   *
+   * Imported aliases name one `WebAssembly.Table`, and only the canonical
+   * coordinate writes its state; the others still contribute mutation marks.
+   * Deciding which is canonical is host floor -- it compares Table OBJECT
+   * IDENTITY, which wasm cannot observe -- and `ForkTableStateOwners` makes
+   * that decision. This is only the wire it leaves on.
+   */
+  setActivationTableStateOwner(
+    activationId: number,
+    ownerId: number,
+    owns: boolean,
+  ): void {
+    this.call(
+      "fm_set_activation_table_state_owner",
+      activationId,
+      ownerId,
+      owns ? 1 : 0,
+    );
+  }
+
+  /**
    * Hand the module one activation's raw import declarations: the KFIG section
    * for `space` 0, the KFIT section for 1.
    *

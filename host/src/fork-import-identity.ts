@@ -110,9 +110,19 @@ export class ForkImportIdentity {
   private nextGroup = 1;
   private readonly preparing = new Set<number>();
 
+  /**
+   * `tables` is the OTHER election over the same objects, and it is deliberately
+   * not this one: which coordinate WRITES a shared table's sparse state, rather
+   * than which one provides the object to a child. That one is made here because
+   * it needs no KFIT -- lowest coordinate wins outright -- and it is fed from
+   * this walk so the catalog exports are read once rather than twice.
+   */
   constructor(
     private readonly sink: ForkImportSeedSink,
     private readonly label: string,
+    private readonly tables?: {
+      register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
+    },
   ) {}
 
   /**
@@ -216,6 +226,9 @@ export class ForkImportIdentity {
         const owner = catalogOwner(name, prefix, this.label);
         if (owner === null) continue;
         this.sink.setIdentityGroup(space, activationId, owner, this.group(value as object));
+        if (space === FORK_IMPORT_SPACE_TABLE && value instanceof WebAssembly.Table) {
+          this.tables?.register(activationId, owner, value);
+        }
       }
     }
   }
