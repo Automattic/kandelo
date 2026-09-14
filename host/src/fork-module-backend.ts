@@ -46,24 +46,26 @@ export const FORK_MODULE_STATS = [
 ] as const;
 
 /**
- * Size a vfork BORROWED child's private workspace, refusing a missing module.
+ * The backend, or a loud failure naming what was missing.
  *
- * The backend handle is nullable everywhere in the worker, and the two call
- * sites are on a path that cannot be reached without it: a vfork only gets here
- * having sealed a capture, and only the module can seal one. A bare `!` would
- * be right and would also mean that if the impossible ever happened the failure
- * would name a JavaScript property rather than the thing that was missing.
+ * The handle is nullable everywhere in the worker, and every fork path that
+ * reaches these calls has one by construction — a fork only gets here having
+ * instantiated the module. A bare `!` would be right and would also mean that
+ * if the impossible ever happened, the failure would name a JavaScript property
+ * rather than the thing that was absent.
+ *
+ * One guard rather than one per call site: this replaced a
+ * `borrowedReplayWorkspaceOf` that did the same job for exactly one method,
+ * which stopped being the right shape as soon as a second caller needed it.
  */
-export function borrowedReplayWorkspaceOf(
+export function requireForkModuleBackend(
   backend: ForkModuleContinuationBackend | null,
   pid: number,
-): ForkBorrowedReplayWorkspace {
+): ForkModuleContinuationBackend {
   if (backend === null) {
-    throw new Error(
-      `pid=${pid}: a vfork sealed its capture with no fork-module backend`,
-    );
+    throw new Error(`pid=${pid}: this fork path needs a fork-module backend`);
   }
-  return backend.borrowedReplayWorkspace();
+  return backend;
 }
 
 /** Sizes a vfork BORROWED child's host-reserved private workspace. */

@@ -109,7 +109,7 @@ import {
 import { ForkReferenceCaptureModule } from "./fork-reference-capture-module";
 import {
   type ForkBorrowedReplayWorkspace,
-  borrowedReplayWorkspaceOf,
+  requireForkModuleBackend,
   FORK_MODULE_RESUME_CATALOG_CAP,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
@@ -3557,6 +3557,25 @@ export async function centralizedWorkerMain(
       // frames route to its own writer/driver in the shared module. Null unless
       // the module-backed path is active.
       let forkModuleFrameExports: Record<string, unknown> | null = null;
+      /**
+       * The module backend, narrowed. Every fork path that reaches a lifecycle
+       * call has one by construction; this is where that stops being an
+       * assumption and starts being a named failure.
+       */
+      const forkModule = (): ForkModuleContinuationBackend =>
+        requireForkModuleBackend(forkModuleBackend, pid);
+
+      /**
+       * The errno an abort replay will report, remembered from the host call
+       * that started it.
+       *
+       * This was `ForkProcessContinuationCoordinator.abortErrno()`, which stored
+       * the value the host passed to `beginAbortReplay` and handed it back at
+       * the finish. The module has no use for it -- an abort replay is an abort
+       * replay whatever number the host means to return -- so it stays here,
+       * as the one line it always was rather than a coordinator method.
+       */
+      let forkAbortErrno = 0;
       let useForkModule = false;
       // Phase 6 item 4: a borrowed (vfork) child instantiates its OWN fork-module
       // at a distinct `__memory_base` by channel-mmapping a fresh region on
@@ -4208,7 +4227,7 @@ export async function centralizedWorkerMain(
             );
           }
           try {
-            processContinuation.finishReplay();
+            forkModule().parentFinish(false);
           } finally {
             releaseProcessForkArchiveReader();
           }
@@ -4254,9 +4273,9 @@ export async function centralizedWorkerMain(
               `pid=${pid}: fork abort mode ${mode} does not match captured mode ${forkMode}`,
             );
           }
-          const errno = processContinuation.abortErrno();
+          const errno = forkAbortErrno;
           try {
-            processContinuation.finishAbortReplay();
+            forkModule().parentFinish(true);
           } finally {
             releaseProcessForkArchiveReader();
           }
@@ -4280,21 +4299,18 @@ export async function centralizedWorkerMain(
           processContinuation.beginCapture(arena);
           importedStateCapture?.appendTo(arena);
         } catch (error) {
-          // STILL THE COORDINATOR'S MIRROR, and reverted to it deliberately.
-          // Converting this read looked one-line-safe and is not: the
-          // coordinator sets `this.phase = "capture"` BEFORE the module call
-          // that opens the capture, so inside that window the two disagree. The
-          // argument that they re-converge was that `cancelCapture` runs in the
-          // window's own catch and calls `moduleBackend.abort()` -- but the
-          // restored `ForkModuleContinuationBackend` has no `abort` method at
-          // all (it is a deliberate subset of the 1239-line wrapper it
-          // replaced), so that call throws into `cancelCapture`'s own swallow
-          // and the MODULE's phase is never reset. Host says idle, module says
-          // capture, and this branch would flip. It converts when the
-          // coordinator does, not before.
-          if (processContinuation.phaseName() !== "idle") {
+          // Both halves ask the MODULE now, which is what makes this safe. It
+          // was left on the coordinator's mirror earlier because the two could
+          // disagree: the coordinator sets its phase to capture BEFORE the
+          // module call that opens one, and the argument that they re-converge
+          // rested on `cancelCapture` calling `moduleBackend.abort()` -- which
+          // the reduced backend did not have, so the module's phase was never
+          // reset. It has it now, and more to the point neither side of this
+          // branch consults the coordinator: ask the module whether it is idle,
+          // tell the module to abort if it is not. No mirror left to disagree.
+          if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
             try {
-              processContinuation.abort();
+              forkModule().abort();
             } catch {
               // Preserve the capture failure; abort has already made the
               // transaction unreachable before attempting cleanup.
@@ -5228,7 +5244,8 @@ export async function centralizedWorkerMain(
                 const errno =
                   sealError.errno > 0 ? sealError.errno : STARTUP_ENOMEM;
                 forkResult = -errno;
-                processContinuation.beginAbortReplay(errno);
+                forkAbortErrno = errno;
+                forkModule().parentReplay(true);
                 if (forkModuleBackend && !initData.isForkChild) {
                   port.postMessage({
                     type: "fork_module_frames",
@@ -5266,7 +5283,8 @@ export async function centralizedWorkerMain(
                   `See docs/fork-reference-support.md.`,
               );
               forkResult = -FORK_REFERENCE_EOPNOTSUPP;
-              processContinuation.beginAbortReplay(FORK_REFERENCE_EOPNOTSUPP);
+              forkAbortErrno = FORK_REFERENCE_EOPNOTSUPP;
+              forkModule().parentReplay(true);
               // Path B P4 proof-of-use: when the co-resident module is enabled,
               // `beginAbortReplay` above routed through the module's OWN abort
               // path (`beginModuleAbortReplay` -> `fm_begin_abort`), replaying
@@ -5304,7 +5322,7 @@ export async function centralizedWorkerMain(
               );
             }
             const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-              ? borrowedReplayWorkspaceOf(forkModuleBackend, pid)
+              ? forkModule().borrowedReplayWorkspace()
               : undefined;
             const childPid = sendForkSyscall(
               memory,
@@ -5314,9 +5332,10 @@ export async function centralizedWorkerMain(
             );
             forkResult = childPid;
             if (childPid < 0) {
-              processContinuation.beginAbortReplay(-childPid);
+              forkAbortErrno = -childPid;
+              forkModule().parentReplay(true);
             } else {
-              processContinuation.beginParentReplay();
+              forkModule().parentReplay(false);
               // Phase 6 D5/D7a.1a proof-of-use, emitted from the PARENT's active
               // run loop (not the worker tail). A fork parent stays alive and its
               // channel is drained normally, so this reaches the host reliably
@@ -5355,10 +5374,10 @@ export async function centralizedWorkerMain(
         if (isWasmUnreachableTrap(e) && kernelExitStatus !== null) {
           exitCode = kernelExitStatus;
         } else {
-          // Same disagreement as the capture-path read above; same reason.
-          if (processContinuation.phaseName() !== "idle") {
+          // Same shape as the capture-path guard above: both halves ask the module.
+          if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
             try {
-              processContinuation.abort();
+              forkModule().abort();
             } catch {
               // Preserve the execution failure; abort already made its
               // transaction state unreachable before attempting deallocation.
@@ -7288,7 +7307,7 @@ export async function centralizedThreadWorkerMain(
             continue;
           }
           const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-            ? borrowedReplayWorkspaceOf(threadForkModuleBackend, pid)
+            ? requireForkModuleBackend(threadForkModuleBackend, pid).borrowedReplayWorkspace()
             : undefined;
           const childPid = sendForkSyscall(
             memory,

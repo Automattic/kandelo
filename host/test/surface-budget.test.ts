@@ -655,6 +655,39 @@ const MEASURED: Record<string, () => number> = {
   // like a raise in isolation. Their SUM only falls when the module absorbs work
   // or an entry is deleted, which is what this surface is for. The two are still
   // reported separately below for visibility; neither is ratcheted alone.
+  // Imports in `host/src` that resolve into the attic instead of into
+  // `host/src`.
+  //
+  // THE ONLY SURFACE THAT MEASURES THIS LANE'S ACTUAL GOAL. Every other number
+  // here counts code that EXISTS; this one counts code the host still DEPENDS
+  // on. That distinction was invisible and it mattered: a session spent moving
+  // work into the module and cutting coordinator calls showed up as the host
+  // surfaces GROWING, because the replacement is measured and the 14,035 attic
+  // lines being replaced are measured by nothing. Progress looked like
+  // regression, and the only reason anyone noticed was the maintainer asking.
+  //
+  // It counts distinct modules, not call sites: cutting the last reference to a
+  // file is the event worth ratcheting, and cutting the first four of nine
+  // references to it changes nothing about whether the file can be deleted.
+  forkAtticImports: () => {
+    const atticDir = join(repoRoot, "attic/fork-typescript-do-not-use");
+    const sources = execFileSync(
+      "/bin/sh",
+      ["-c", "ls host/src/*.ts 2>/dev/null || true"],
+      { cwd: repoRoot, encoding: "utf8" },
+    )
+      .split("\n")
+      .filter((f) => f.length > 0);
+    const unresolved = new Set<string>();
+    for (const rel of sources) {
+      const text = readFileSync(join(repoRoot, rel), "utf8");
+      for (const [, specifier] of text.matchAll(/from "\.\/([a-z0-9-]+)"/g)) {
+        if (existsSync(join(repoRoot, "host/src", `${specifier}.ts`))) continue;
+        if (existsSync(join(atticDir, `${specifier}.ts`))) unresolved.add(specifier);
+      }
+    }
+    return unresolved.size;
+  },
   forkModuleHostEntries: () => {
     const entries = forkModuleEntries();
     return entries.hostCalled + entries.noProductionCaller;
