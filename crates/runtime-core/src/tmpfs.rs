@@ -1463,6 +1463,27 @@ mod tests {
         assert_eq!(lstat(b"/var/run/s.sock").unwrap_err(), Errno::ENOENT);
     }
 
+    /// A guest must not be able to remove or rename a mount root out from
+    /// under the mount. Both guards return EBUSY and neither was asserted;
+    /// `rename_moves_replaces_and_guards` covers the subtree EINVAL but not
+    /// these. `/dev/shm` is included because this campaign moved it in-kernel,
+    /// so it is the newest mount root and the one least covered by habit.
+    #[test]
+    fn a_mount_root_cannot_be_removed_or_renamed_over() {
+        assert_eq!(rmdir(b"/tmp").unwrap_err(), Errno::EBUSY);
+        assert_eq!(rmdir(b"/dev/shm").unwrap_err(), Errno::EBUSY);
+
+        // Renaming a file ONTO a mount root is refused for the same reason.
+        // Kept within one mount so the answer is EBUSY and not EXDEV.
+        let h = open(b"/tmp/mr_victim", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(h);
+        assert_eq!(rename(b"/tmp/mr_victim", b"/tmp").unwrap_err(), Errno::EBUSY);
+
+        // The mounts survived every attempt.
+        assert!(is_dir(b"/tmp"));
+        assert!(is_dir(b"/dev/shm"));
+    }
+
     #[test]
     fn hard_link_shares_inode_and_survives_unlink() {
         let h = open(b"/tmp/hl_a", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
