@@ -1554,6 +1554,69 @@ mod tests {
         Ok(())
     }
 
+    /// The five host imports that no test in this repository executed.
+    ///
+    /// L-D3 converted sixteen sites that wrote at a pointer the kernel handed
+    /// in. A per-import counter over the whole suite then showed five of them
+    /// were never called by anything: `host_readlinkat`, `host_fpathconf`,
+    /// `host_readdir`, `host_getrandom` and `host_fstatfs`. Their capacities
+    /// were derived by reading the kernel's declared buffer sizes and their
+    /// conversions type-checked, but nothing ran them, so a wrong capacity
+    /// there would not have been caught by anything in the tree.
+    ///
+    /// They are host-FS imports, so reaching them takes a MOUNTED native
+    /// directory -- an in-kernel overlay path never asks the host. The guest
+    /// returns a distinct exit code per step so a failure names the import
+    /// rather than only the test.
+    #[test]
+    fn smoke_host_metadata_imports() -> anyhow::Result<()> {
+        let Some(path) = kernel_path_or_skip() else {
+            return Ok(());
+        };
+        let guest = include_bytes!("../fixtures/native_host_metadata.wasm");
+
+        let host_dir = std::env::temp_dir().join(format!(
+            "kandelo-host-native-metadata-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&host_dir)?;
+        std::fs::write(host_dir.join("greeting.txt"), b"hello\n")?;
+        // A relative symlink, so `readlink` has a target to return through
+        // `host_readlinkat` and the buffer it fills is the lent one.
+        std::os::unix::fs::symlink("greeting.txt", host_dir.join("link.txt"))?;
+
+        let options = guest::GuestOptions {
+            mounts: vec![guest::NativeMount {
+                mount_point: "/host".to_string(),
+                host_dir: host_dir.clone(),
+                readonly: false,
+            }],
+            ..Default::default()
+        };
+        let outcome = guest::run_guest(&path, guest, &options);
+        let _ = std::fs::remove_dir_all(&host_dir);
+        let outcome = outcome?;
+
+        assert_eq!(
+            outcome.exit_code,
+            0,
+            "guest exit code names the failing import: 10/11 readlink, \
+             20-23 open/fpathconf/fstatvfs, 30/31 readdir, 40-42 getrandom \
+             (stdout: {:?}, stderr: {:?})",
+            String::from_utf8_lossy(&outcome.stdout),
+            String::from_utf8_lossy(&outcome.stderr),
+        );
+        assert_eq!(
+            outcome.stdout,
+            b"host metadata imports ok\n".as_slice(),
+        );
+        Ok(())
+    }
+
     /// N1-I1 final review: a non-canonical `mount_point` (here, `"host"` with
     /// no leading slash) must still work, because the foreign-prefix
     /// registration in `run_guest` and the mount-path stripping in `HostFs`

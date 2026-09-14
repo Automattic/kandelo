@@ -93,6 +93,34 @@
       "scope_end": "\n/// Size of the",
       "find": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;",
       "replace": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_BLK;"
+    },
+    {
+      "name": "L-D3 coverage: host_readlinkat proves the wrong capacity",
+      "scope": "\"host_readlinkat\"",
+      "scope_end": "\n            )?;",
+      "find": "                                buf_len as u32,",
+      "replace": "                                0u32,"
+    },
+    {
+      "name": "L-D3 coverage: host_fpathconf proves the wrong capacity",
+      "scope": "\"host_fpathconf\"",
+      "scope_end": "\n            )?;",
+      "find": "                                8,",
+      "replace": "                                0,"
+    },
+    {
+      "name": "L-D3 coverage: host_getrandom proves the wrong capacity",
+      "scope": "\"host_getrandom\"",
+      "scope_end": "\n        )?;",
+      "find": "write_lent(&mem, buf_ptr as u32 as u64, len as u32, &buf)",
+      "replace": "write_lent(&mem, buf_ptr as u32 as u64, 0u32, &buf)"
+    },
+    {
+      "name": "L-D3 coverage: host_fstatfs proves the wrong capacity",
+      "scope": "\"host_fstatfs\"",
+      "scope_end": "\n            )?;",
+      "find": "                                WASM_STATFS_SIZE as u32,",
+      "replace": "                                0u32,"
     }
   ]
 }
