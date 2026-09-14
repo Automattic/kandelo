@@ -121,6 +121,20 @@
       "target": 2650,
       "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction \u2014 4,774 x (40/72) \u2014 a consequence of the lane succeeding rather than an independent goal, and it is not a measurement."
     },
+    "workerEntryTypeScript": {
+      "measure": "line count of host/src/browser-kernel-worker-entry.ts, host/src/node-kernel-worker-entry.ts and host/src/browser-kernel-protocol.ts",
+      "ceiling": 3585,
+      "slack": 150,
+      "target": 1800,
+      "why": "The worker entries are where host-side sequencing accumulates, and nothing measured them. On 2026-09-14 three deletions landed in them \u2014 a lazy-registration protocol nobody sent, and the rootfs overlay repointed off MemoryFileSystem \u2014 and no campaign number moved at all. An unbanked reduction silently funds the next change's growth, which is the failure the banking rule exists to stop. **The target is a DIRECTION, not a measured floor.** The irreducible part is worker spawn, the syscall-channel transport and the Node/browser platform bridges; nobody has measured how much of these files that is."
+    },
+    "hostVfsTypeScript": {
+      "measure": "line count of host/src/vfs/*.ts excluding memory-fs.ts and sharedfs-vendor.ts, which memoryFsTypeScript and sffsTypeScript already count",
+      "ceiling": 11048,
+      "slack": 200,
+      "target": 2000,
+      "why": "Lane V's two budgeted files are the large halves, but 11,048 lines of VFS TypeScript sit beside them unmeasured: transports, container parsing, lazy-archive planning, materialization plans. Deleting 242 of them on 2026-09-14 moved no campaign number. The exclusions prevent double-counting, because a line counted twice is banked twice. **The target is a DIRECTION:** the plan's stated floor is that the host fetches deferred bytes and reads host-backed mounts, neither of which needs a filesystem \u2014 but that floor has not been measured."
+    },
     "hostKernelPlumbingTypeScript": {
       "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
       "ceiling": 5853,
