@@ -3062,6 +3062,39 @@ anywhere in it.
   path stops being documented. **Stamping was considered and rejected** — the
   installer is handed a caller-supplied file and cannot know its provenance, so
   a stamp there turns "cannot be verified" into "claims to have been verified".
+- **B3 (NEW, measured 2026-09-14) — the musl submodule is permanently dirty in
+  every worktree that has built, and the dirt is version-skewed.**
+  `scripts/build-musl.sh` says it in its own header: step 1 *"copies overlay
+  files from `libc/musl-overlay/` into `libc/musl/arch/<ARCH>/`"*. So the build
+  writes the overlay into the tracked submodule working tree, and a dirty
+  `libc/musl` is the designed steady state after a build rather than an
+  accident.
+
+  **Measured across the repository: of 200 worktrees, 92 have a dirty
+  `libc/musl` and 122 have a sysroot** — the main checkout among them, at 59
+  modified files.
+
+  **The part that makes this lane's business rather than cosmetic noise: the
+  counts disagree.** 33, 41, 42, 48, 56, 59, 60 modified files in different
+  worktrees, against **175 overlay files today**. Worktrees built at different
+  times are carrying **different overlay versions applied into their sources,
+  with nothing that says theirs is stale.** That is a freshness gate that does
+  not exist, in exactly the place this lane says the provisioning path and the
+  freshness gate must agree.
+
+  **Three fixes, and two of them make it worse in the way this lane cares
+  about.** `submodule.libc/musl.ignore = dirty` in `.gitmodules` is one
+  committed line and silences it everywhere — but since the overlay is applied
+  *into* tracked sources, it also permanently hides a genuine accidental edit
+  to musl, trading a persistent false positive for a possible false negative.
+  Per-worktree `git config` is the same trade, ninety-two times. **Applying the
+  overlay out-of-tree** — copy musl to a scratch dir, overlay there, build there
+  — leaves the submodule pristine and gives `git status` its meaning back. It
+  is the only one of the three that removes the skew rather than hiding it.
+
+  **Flagged, not fixed: this is lane B's, and the two cheap options are
+  repo-wide changes no single lane should make alone.**
+
 - **B2 — the fixtures are unstamped.** `build-programs.sh` builds through the
   SDK, and only the local-build engine stamps, so every test fixture carries no
   `kandelo.abi.contract`. Lane X's probe surfaced this by treating it as fatal.
