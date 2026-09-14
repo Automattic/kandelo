@@ -294,9 +294,36 @@ The full corpus is 286 declared trials across 26 spec files. Running all of
 them is hours and was not done — these five were chosen because they are the
 ones this merge rests on.
 
-**NOT established here:** lane Y's browser figure of 167 passed / 14 failed,
-and the remaining 273 trials of the full corpus. The browser number is blocked
-by B40 below and remains the lane's.
+**The browser suite WAS run here, 2026-09-14**, once B39's fix let
+`./run.sh setup` reach `"outcome":"succeeded"` with exit code 0. B40 did not
+bite on that run because bash's cache key had not moved, so no download was
+attempted; B40 remains a real latent defect, not a cleared one.
+
+Result inside `scripts/dev-shell.sh`: **162 passed / 16 failed / 6 skipped /
+10 did not run**, against the lane's 167 / 14 / 6 / 7.
+
+Reconciled against the fourteen named failures rather than re-derived:
+
+- **13 of the 14 reproduce.**
+- **`WordPress SQLite reaches the installer` now PASSES** — better than the
+  lane's run, not worse.
+- **2 failures are not on the list**, `accept-signal.spec.ts` and
+  `vite-binary-cache-boundary.spec.ts`. Both were re-run in isolation and
+  **both passed, exit code 0**. They are flaky under full-suite load, not
+  regressions.
+
+So no failure in this suite is attributable to the merges, and the lane's
+browser claim stands up.
+
+**A methodology note worth keeping.** The first attempt ran `npx playwright
+test` directly rather than through `scripts/dev-shell.sh` and reported 17
+failures. Four of those were `spawnSync wasm32posix-cc ENOENT` and a fallback
+to Xcode's clang: specs that compile fixtures at test time cannot work without
+the SDK on PATH. A browser number taken outside the dev shell is not a browser
+number.
+
+**Still NOT established here:** the remaining 273 trials of the full perturb
+corpus.
 
 ## Starting a lane — briefs in `docs/plans/lane-briefs/`
 
