@@ -211,3 +211,89 @@ function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
     throw new Error("zstd VFS image contains no data frame");
   }
 }
+
+export const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
+export const VFS_IMAGE_VERSION = 1;
+export const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
+export const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
+export const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
+export const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
+
+export interface ParsedImageHeader {
+  image: Uint8Array;
+  view: DataView;
+  flags: number;
+  sabLen: number;
+}
+
+export function parseImageHeader(
+  input: Uint8Array,
+  maxDecompressedBytes?: number,
+): ParsedImageHeader {
+  const image = maybeDecompressImage(input, maxDecompressedBytes);
+
+  if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
+    throw new Error("VFS image too small");
+  }
+
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  const magic = view.getUint32(0, true);
+  if (magic !== VFS_IMAGE_MAGIC) {
+    throw new Error(
+      `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
+    );
+  }
+  const version = view.getUint32(4, true);
+  if (version !== VFS_IMAGE_VERSION) {
+    throw new Error(
+      `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
+    );
+  }
+  const flags = view.getUint32(8, true);
+  const sabLen = view.getUint32(12, true);
+
+  if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
+    throw new Error("VFS image truncated");
+  }
+
+  return { image, view, flags, sabLen };
+}
+
+export function sectionOffsetAfterArchives(
+  image: Uint8Array,
+  view: DataView,
+  flags: number,
+  sabLen: number,
+): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
+  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
+  const lazyLen = view.getUint32(lazyOffset, true);
+  if (lazyLen > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
+    throw new Error(
+      `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
+    );
+  }
+  if (image.byteLength < lazyOffset + 4 + lazyLen) {
+    throw new Error("VFS image truncated (lazy metadata section)");
+  }
+  const archiveOffset = lazyOffset + 4 + lazyLen;
+  let metadataOffset = archiveOffset;
+
+  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
+    if (image.byteLength < archiveOffset + 4) {
+      throw new Error("VFS image truncated (lazy archive section)");
+    }
+    const archiveLen = view.getUint32(archiveOffset, true);
+    if (archiveLen > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
+      throw new Error(
+        `VFS image lazy archive metadata exceeds ` +
+          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
+      );
+    }
+    if (image.byteLength < archiveOffset + 4 + archiveLen) {
+      throw new Error("VFS image truncated (lazy archive payload)");
+    }
+    metadataOffset = archiveOffset + 4 + archiveLen;
+  }
+
+  return { lazyLen, archiveOffset, metadataOffset };
+}

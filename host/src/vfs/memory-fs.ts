@@ -7,11 +7,20 @@ import type {
 } from "../types";
 import {
   maybeDecompressImage,
+  parseImageHeader,
+  sectionOffsetAfterArchives,
+  VFS_IMAGE_FLAG_HAS_LAZY,
+  VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES,
+  VFS_IMAGE_FLAG_HAS_METADATA,
+  VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES,
+  VFS_IMAGE_MAGIC,
+  VFS_IMAGE_VERSION,
   VFS_IMAGE_HEADER_SIZE,
   VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
   VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES,
   VFS_IMAGE_MAX_LAZY_METADATA_BYTES,
   VFS_IMAGE_MAX_METADATA_BYTES,
+  type ParsedImageHeader,
 } from "./vfs-image-transport";
 import {
   hostFileLimitForNumberBackend,
@@ -477,12 +486,6 @@ export interface VfsImageCapacity {
 
 
 // VFS image binary format constants
-const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
-const VFS_IMAGE_VERSION = 1;
-const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
-const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
-const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
-const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
 const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
 const { DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK } = DIRENT_TYPES;
 const O_RDONLY = OPEN_FLAGS.O_RDONLY;
@@ -607,84 +610,8 @@ function encodeMetadata(metadata: VfsImageMetadata | null): Uint8Array {
 }
 
 
-interface ParsedImageHeader {
-  image: Uint8Array;
-  view: DataView;
-  flags: number;
-  sabLen: number;
-}
 
-function parseImageHeader(
-  input: Uint8Array,
-  maxDecompressedBytes?: number,
-): ParsedImageHeader {
-  const image = maybeDecompressImage(input, maxDecompressedBytes);
 
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
-    throw new Error("VFS image too small");
-  }
-
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  const magic = view.getUint32(0, true);
-  if (magic !== VFS_IMAGE_MAGIC) {
-    throw new Error(
-      `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
-    );
-  }
-  const version = view.getUint32(4, true);
-  if (version !== VFS_IMAGE_VERSION) {
-    throw new Error(
-      `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
-    );
-  }
-  const flags = view.getUint32(8, true);
-  const sabLen = view.getUint32(12, true);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
-    throw new Error("VFS image truncated");
-  }
-
-  return { image, view, flags, sabLen };
-}
-
-function sectionOffsetAfterArchives(
-  image: Uint8Array,
-  view: DataView,
-  flags: number,
-  sabLen: number,
-): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
-  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-  const lazyLen = view.getUint32(lazyOffset, true);
-  if (lazyLen > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
-    throw new Error(
-      `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
-    );
-  }
-  if (image.byteLength < lazyOffset + 4 + lazyLen) {
-    throw new Error("VFS image truncated (lazy metadata section)");
-  }
-  const archiveOffset = lazyOffset + 4 + lazyLen;
-  let metadataOffset = archiveOffset;
-
-  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-    if (image.byteLength < archiveOffset + 4) {
-      throw new Error("VFS image truncated (lazy archive section)");
-    }
-    const archiveLen = view.getUint32(archiveOffset, true);
-    if (archiveLen > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
-      throw new Error(
-        `VFS image lazy archive metadata exceeds ` +
-          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
-      );
-    }
-    if (image.byteLength < archiveOffset + 4 + archiveLen) {
-      throw new Error("VFS image truncated (lazy archive payload)");
-    }
-    metadataOffset = archiveOffset + 4 + archiveLen;
-  }
-
-  return { lazyLen, archiveOffset, metadataOffset };
-}
 
 /**
  * Locate the image's binary kernel-facing lazy-linkage (`KLZY`) section.
