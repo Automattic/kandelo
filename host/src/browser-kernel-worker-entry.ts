@@ -210,15 +210,8 @@ const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook();
 let defaultEnv: string[] = [];
 
-type LazyRegistrationMessage = Extract<
-  MainToKernelMessage,
-  { type: "register_lazy_files" | "register_lazy_archives" }
->;
-
 let initReady = false;
 let initFailure: string | null = null;
-const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
-let lazyRegistrationTail: Promise<void> = Promise.resolve();
 let vforkMechanismTraceEnabled = false;
 let injectVforkWorkerStartFailure = false;
 let injectedVforkWorkerStartFailure = false;
@@ -606,102 +599,7 @@ function resetBridgePendingRequests(): void {
 }
 
 
-function respondIfRequested(
-  msg: { requestId?: number },
-  result: unknown,
-): void {
-  if (typeof msg.requestId === "number") {
-    respond(msg.requestId, result);
-  }
-}
 
-function respondErrorIfRequested(
-  msg: { requestId?: number },
-  error: string,
-): void {
-  if (typeof msg.requestId === "number") {
-    respondError(msg.requestId, error);
-  }
-}
-
-
-async function applyLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
-  if (msg.type === "register_lazy_files") {
-    memfs.importLazyEntries(msg.entries);
-  } else {
-    await memfs.importVerifiedLazyArchiveEntries(msg.entries);
-  }
-  respondIfRequested(msg, true);
-}
-
-function failPendingLazyRegistrations(error: string): void {
-  const pending = pendingLazyRegistrationMessages.splice(0);
-  for (const msg of pending) {
-    respondErrorIfRequested(msg, error);
-  }
-}
-
-function scheduleLazyRegistration(
-  msg: LazyRegistrationMessage,
-): Promise<void> {
-  // WHY: worker message handlers may overlap after an await. Serialize trust
-  // checks so two registrations cannot both authenticate against an obsolete
-  // view and then publish in a different order.
-  const scheduled = lazyRegistrationTail.then(async () => {
-    const releaseMutation = rootfsSnapshotGate.beginMutation(
-      "register lazy rootfs entries",
-    );
-    try {
-      await applyLazyRegistration(msg);
-    } finally {
-      releaseMutation();
-    }
-  });
-  lazyRegistrationTail = scheduled.catch(() => {});
-  return scheduled;
-}
-
-function reportLazyRegistrationFailure(
-  msg: LazyRegistrationMessage,
-  err: unknown,
-): void {
-  const error = formatError(err);
-  respondErrorIfRequested(msg, error);
-  reportWorkerProtocolError(`${msg.type} failed: ${error}`);
-}
-
-async function flushPendingLazyRegistrations(): Promise<void> {
-  // Keep init closed while draining. Messages delivered while a digest yields
-  // join this queue and must be authenticated before the worker reports ready.
-  while (pendingLazyRegistrationMessages.length !== 0) {
-    const msg = pendingLazyRegistrationMessages.shift()!;
-    try {
-      await scheduleLazyRegistration(msg);
-    } catch (err) {
-      reportLazyRegistrationFailure(msg, err);
-      throw err;
-    }
-  }
-}
-
-async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
-  if (initFailure) {
-    respondErrorIfRequested(msg, initFailure);
-    reportWorkerProtocolError(
-      `${msg.type} rejected because kernel worker init failed: ${initFailure}`,
-    );
-    return;
-  }
-  if (!initReady) {
-    pendingLazyRegistrationMessages.push(msg);
-    return;
-  }
-  try {
-    await scheduleLazyRegistration(msg);
-  } catch (err) {
-    reportLazyRegistrationFailure(msg, err);
-  }
-}
 
 
 
@@ -1040,7 +938,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
-  await flushPendingLazyRegistrations();
   // No await separates the final queue check from opening init, so a message
   // cannot slip past both the pending queue and the serialized live path.
   initReady = true;
@@ -1449,7 +1346,6 @@ async function performDestroy() {
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
-  failPendingLazyRegistrations(initFailure);
   gracefulDetachComplete = settleDestroyedRealmAllocator(gracefulDetachComplete);
   return kernelRealmDestroyResult(gracefulDetachComplete);
 }
@@ -1621,7 +1517,6 @@ sw.onmessage = (e: MessageEvent) => {
         const error = formatError(err);
         initReady = false;
         initFailure = error;
-        failPendingLazyRegistrations(error);
         console.error("[kernel-worker] init failed:", err);
         post({ type: "init_error", error });
       });
@@ -1654,8 +1549,6 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": void handleLazyRegistration(msg); break;
-    case "register_lazy_archives": void handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the
