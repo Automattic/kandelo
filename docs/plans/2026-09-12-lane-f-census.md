@@ -5875,3 +5875,54 @@ Specified rather than started: this is a multi-hour change to the capture path
 with no e2e coverage watching until it lands, and a half-applied version of it is
 worse than none. The preceding sections are what a fresh attempt needs; this one
 is the plan.
+
+## §126 — The check section 125 demanded, and it revises the plan
+
+Section 125 said whoever starts the arena port must first settle whether any
+guest-written record has to SURVIVE a fork. It does. `reserve_static_record` in
+`fork-instrument` emits `record_reserve` calls for:
+
+```
+WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL   (per imported/owned global)
+WPK_FORK_MODULE_STATE_RECORD_KIND_TABLE            (per table descriptor)
+...                                                 (a segment bitmap record)
+```
+
+Mutable globals and table descriptors are exactly the state a child must
+inherit. So the guest's records are not scratch -- they are part of what a fork
+carries.
+
+That matters because of where each population lives. Reading both sides:
+
+  * the guest's `record_reserve` goes to `module.module_state`, whose chunks come
+    from `ForkModule.module_state_chunks`, a `ForkChunkList` of its own;
+  * the root published into the activation's module-buffer -- the one a child
+    uses -- is the HOST's `arena_root`, written by `write_module_state_root`,
+    whose doc says plainly: "this writes the arena root into word 1 so a COW
+    child copy finds the inherited arena from its module buffer";
+  * `fm_attach_child(module_state_root, ...)` decodes that same host-supplied
+    root, and a replay child's own writer is inert by construction (section 124).
+
+Taken at face value those are two chunk populations with one of them published.
+That cannot be the whole story for a working system -- the guest's mutable
+globals demonstrably survive forks today -- so one of these is true and I have
+not yet found which:
+
+  1. the two chunk lists allocate into one arena that is linked somewhere not yet
+     read, and the roots agree by construction; or
+  2. the host's arena append path copies or absorbs the guest-written records
+     before seal; or
+  3. the guest's records reach the child by a route other than this arena
+     entirely.
+
+Which one holds decides whether section 125's plan is right or needs rewriting.
+If (1), the plan stands: move the host's three record kinds into the module and
+the arena unifies. If (2), the absorption is a real host job that has to move
+too. If (3), part of section 125's reasoning about "the inheritance vehicle" is
+simply wrong.
+
+Not guessed. A wrong answer here does not fail a test -- it produces a child
+whose globals or tables are silently stale, which is the failure mode this whole
+campaign was started to remove. `register_unwind_activation` and the per-activation
+`ForkChunkList` are where the next session should start; the evidence above is
+what it needs to not re-derive.
