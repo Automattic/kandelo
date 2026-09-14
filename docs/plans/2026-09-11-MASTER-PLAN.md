@@ -1428,6 +1428,17 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 ## Known hazards
 
+- **H-24 — in a shared worktree, writing an edit and committing it must be ONE
+  step.** On 2026-09-14 a lane V analysis of the archive-entry fields was
+  written into `MASTER-PLAN.md`, the surface budget was run before committing
+  it as the rules require, and in that two-minute window another agent
+  committed with a sweeping add. The text landed in `abe910dcdc`, a commit
+  about lane N's committed binaries. **The content survived; its reasoning did
+  not** — the analysis is now recorded under an unrelated message, in a
+  campaign whose commit messages are where the reasoning lives. Stage on write
+  and run the pre-commit checks against the staged state; the
+  write-then-check-then-commit habit opens that window every time.
+
 - **H-22 — a perturb spec whose verify uses a PREBUILT artifact can never
   fail, and a perturb run leaves the artifact built from its last mutation.**
   Both halves were hit on 2026-09-14 writing `sffs-module-image-read.json`.
