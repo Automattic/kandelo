@@ -515,6 +515,7 @@ const CHUNK_HEADER_SIZE_32 = 40;
 const RECORD_KIND_IMPORTED_GLOBAL_BINDINGS = 9;
 const RECORD_KIND_IMPORTED_TABLE_BINDINGS = 11;
 const RECORD_KIND_MUTABLE_GLOBAL = 3;
+const RECORD_KIND_JOURNAL_IMAGE = 14;
 const GLOBAL_TYPE_I32 = 1;
 const SPACE_GLOBAL = 0;
 const SPACE_TABLE = 1;
@@ -773,6 +774,52 @@ describe("the binding records the module assembles at capture", () => {
       0,
     );
     expect(f.errno(), "capture must refuse rather than drop the record").toBe(22);
+  });
+
+  it("carries a whole capture through to a sealed arena the child can read", () => {
+    // The cycle the production path takes, with records in it: begin, seal,
+    // parent-replay, finish. Until the module owned the arena, the seal wrote
+    // no journal image and the capture wrote no bindings -- both were skipped
+    // on the ownership guard, silently, and the tests below could not see it
+    // because they stop at begin.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7);
+    identity(SPACE_GLOBAL, 9, 5, 7);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    saveWrites(f, 0, 1);
+
+    const backend = new ForkModuleContinuationBackend({
+      instance: f.instance,
+      memory: f.memory,
+      ptrWidth: 4,
+      format: { fixedPrefixSize: 0 } as never,
+      catalogOrdinals: [],
+      channelBase: CHANNEL_BASE,
+      label: "sealed arena",
+    });
+    backend.parentBeginCapture(CHANNEL_BASE, 0, []);
+    expect(f.errno(), "capture").toBe(0);
+    backend.sealCaptureAndSerialize();
+    expect(Number((f.x.fm_phase as () => number)()), "sealed").toBe(
+      PHASE_SEALED_PARENT,
+    );
+
+    // Everything a child reads out of the inherited arena, in one place: the
+    // activation set, the snapshot the guest saved, the bindings the module
+    // elected, and the journal image the seal serialized.
+    const kinds = arenaRecords(f.memory, f.arena(ARENA_ROOT)).map((r) => r.kind);
+    expect(kinds).toContain(RECORD_KIND_MUTABLE_GLOBAL);
+    expect(kinds).toContain(RECORD_KIND_IMPORTED_GLOBAL_BINDINGS);
+    expect(kinds, "the seal's journal image").toContain(RECORD_KIND_JOURNAL_IMAGE);
+
+    backend.parentReplay(false);
+    backend.parentFinish(false);
+    expect(Number((f.x.fm_phase as () => number)()), "back to idle").toBe(
+      PHASE_IDLE,
+    );
   });
 
   it("falls back to a base import when no activation provides the object", () => {
