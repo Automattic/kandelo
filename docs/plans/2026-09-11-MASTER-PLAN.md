@@ -332,6 +332,25 @@ is why that churn turned into a permanent, misattributed link failure rather
 than a retry. Three `ncurses-6.5-rev8` trees with different hashes coexist on
 this machine.
 
+**B39 IS A CLASS, surveyed 2026-09-14.** Fifteen recipes skip reconfigure when
+a cached configure artifact exists AND bake a resolved dependency prefix into
+CPPFLAGS/LDFLAGS. The precondition for going stale is a source tree that
+PERSISTS between builds, which narrows it to `less`, `wget` and `texlive`.
+
+- **`less` was already broken**, and is FIXED `ef42a2746`. Its
+  `less-src/Makefile` and `config.status`, both 2026-09-06, named the same
+  dead `ncurses-...c3401e5f...` prefix that broke vim; it had simply not been
+  rebuilt since. Verified by build: the guard fired, less succeeded, and the
+  dead prefix is gone from its Makefile.
+- **`wget`** carries the pattern but its prefixes are live, so it is latent.
+  Left alone deliberately — fix it when there is evidence, not on principle.
+- **`texlive`** declares an in-repo source dir with nothing on disk here.
+
+The survey method, for whoever extends it: grep for recipes that both guard
+configure behind `[ ! -f <artifact> ]` and interpolate a `$*_PREFIX` into
+compiler flags, then check which of those keep their source tree inside
+`packages/registry/<pkg>/`.
+
 ## B41 — three perturb trials stopped anchoring when the graph moved under them
 
 OPEN, found 2026-09-14 while re-running lane Y's trials rather than taking
@@ -408,6 +427,24 @@ The env override cannot fix this: `tools/xtask/src/build_deps.rs` sets
 `WASM_POSIX_DEP_SOURCE_URL` from `package.toml`, so the URL is repo data, not
 environment. Changing the pin trades GNU's official redirector for one host,
 which is why it is the maintainer's call rather than a fix applied in passing.
+
+**The scope is 14 packages, not one:** `bc bash coreutils diffutils gawk
+findutils grep gzip m4 make nano sed tar wget` all pin `ftpmirror.gnu.org`.
+bash is merely the one that broke first.
+
+**A mirror list is the fix for the class, and the pattern already exists in
+this repo.** `cpython`, `less` and `libxml2` each carry a `DOWNLOAD_URLS`
+array and loop until one host succeeds; less even reports "failed to download
+from all configured mirrors". What is missing is that the mechanism lives in
+three recipes instead of in `kandelo_package_stage_verified_source`, so every
+package going through the shared helper gets a single URL and a `curl --retry`
+that retries the SAME url — useless against a redirector that deterministically
+picks the same broken mirror.
+
+Redundancy is unusually safe here because the sha256 is pinned: content
+identity does not depend on which host serves the bytes, so trying N hosts
+costs nothing in integrity. The work is lifting an existing, proven pattern
+into the shared helper and the `[source]` schema, not inventing one.
 
 This is the last thing between the campaign and browser validation.
 
