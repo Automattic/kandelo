@@ -82,3 +82,23 @@ Every census and derived target in the master plan — lane L's 3600, lane K's
 12000, lane I's 1200 — was derived in whole lines. Lane S scales them by each
 surface's comment ratio, which preserves them in real terms but means the
 plan's prose figures and the gate's figures no longer read the same.
+
+---
+
+## Provenance note, added 2026-09-14
+
+This file's first 84 lines were committed under `0d76072b4`, *"Docs: A parity
+test disproved the file-half mapping, and the contract is why"* — a commit
+from a different session about unrelated work. The content is intact and
+unmodified; only the commit message and attribution are wrong for it.
+
+The cause is hazard H-24, recorded in the master plan in the same window by
+the session that hit it first: this shared worktree is hostile to concurrent
+agents. `git add` and `git commit` were two steps here, and another session's
+`commit` ran in the gap and swept the staged file into its own commit.
+
+The history is forward-only, so this is recorded rather than rewritten. The
+operational lesson, which H-24 already states and this confirms from a second
+direction: in this worktree, staging and committing must be a single command,
+and the commit must be path-limited (`git commit -- <paths>`) so it cannot
+pick up work that is not its own.
