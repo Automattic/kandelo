@@ -5814,14 +5814,33 @@ mod wasm {
     /// Guest-facing `env.__wpk_fork_module_state_record_find(kind, activation,
     /// owner, ordinal) -> payload_ptr`, or 0 when there is no such record.
     ///
-    /// **`ordinal` is a design decision, not a recovered fact.** The guest
-    /// declares this import and NEVER calls it — `fork-instrument` stores the
-    /// `FunctionId` in `ModuleStateImports` and emits no `call` to it — so the
-    /// meaning of the fourth argument could not be derived from a call site.
-    /// It is taken as "the Nth record matching the first three", which is the
-    /// only reading that makes the triple useful when a kind repeats per
-    /// activation (table pages do). A guest that starts calling this should be
-    /// checked against that choice rather than assumed to agree with it.
+    /// **`ordinal` is a design decision, not a recovered fact.** The guest DOES
+    /// call this — `fork-instrument`'s `find_record` emits `call(imports.find)`
+    /// from three sites (`emit_restore_helper` per restorable global,
+    /// `emit_restore_segments`, `emit_restore_table`) — but every one of
+    /// them passes a literal `0`, so no call site constrains the fourth
+    /// argument. It is taken as "the Nth record matching the first three",
+    /// which is the only reading that makes the triple useful when a kind
+    /// repeats per activation (table pages do). A guest that starts passing a
+    /// nonzero ordinal should be checked against that choice rather than
+    /// assumed to agree with it.
+    ///
+    /// **A child always gets 0 from this, whatever it asks for.** `root` below
+    /// is the writer's, and a replay-only child's writer is deliberately inert
+    /// (`ModuleStateWriter::new` + `new_channel(0)`; see the child construction
+    /// in `begin_child_replay_impl`), so `root == 0` and every lookup misses.
+    /// The parent's arena root IS known during replay, but only as the
+    /// `module_state_root` ARGUMENT threaded through `attach_from_arena_impl`
+    /// and friends — it is never stored anywhere this function can see. That
+    /// asymmetry is inert today because nothing in production drives the
+    /// guest's `wpk_fork_module_state_restore`: its only entries,
+    /// `fm_attach_child` / `fm_attach_borrowed_child`, have no caller in
+    /// `host/src`, and the scalar globals a live fork actually depends on
+    /// (`__stack_pointer` among them) are restored by the continuation buffer
+    /// instead, via `fork_instrument::runtime::emit_restore_globals`. It stops
+    /// being inert the moment that drive is wired up — the guest would then
+    /// load its restored global from linear address 0. Whoever wires it must
+    /// give this function the replay root first.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_module_state_record_find(
         kind: u32,

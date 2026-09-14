@@ -5978,3 +5978,66 @@ claim being made. What it does do is answer section 126: the two record
 populations really are separate, and the guest's records do NOT reach a child
 through the host's arena. That was option (3) of the three that section offered,
 and it means section 125's plan was describing the wrong vehicle.
+
+## §128 — §127's experiment, run: dormant, and one comment was false
+
+Section 127 ended on an inference and asked for an experiment: a guest with a
+module-owned mutable global, set before `fork()`, read back in the child. I
+started to build that and stopped, because the guest binaries already answer it
+and the source answers it more exactly than a fixture would.
+
+**The scalar half is not at risk at all, and never was.**
+`fork_instrument::runtime` walks every mutable global before it adds its own two
+and snapshots them into the fork save buffer (`emit_save_globals`), restoring
+them on rewind (`emit_restore_globals`, reached from `emit_rewind_begin`). The
+walk skips exactly two populations: reference-typed globals, which it hands to
+the typed module-state helper, and `env.__channel_base`, which is deliberately
+rebound to the child's channel. Everything else — imported or local — round
+trips. `__stack_pointer` is in that set, which is the proof that this path is
+live and correct: a fork whose child did not get the parent's stack pointer
+would not survive its first return, and forks work.
+
+So the experiment as section 127 framed it would have come back green and told
+me nothing. The population it should have named is the reference-typed globals,
+the ones `runtime.rs` skips on purpose.
+
+**For those, the asymmetry is real, and it is exactly where section 127 guessed
+— but it is dormant.** `__wpk_fork_module_state_record_find` answers from
+`module.module_state.root()`. A replay-only child's writer is constructed inert
+on purpose (`ModuleStateWriter::new` over `ForkChunkList::new_channel(0)`, with
+a comment saying a child decodes rather than writes), and `root` is assigned in
+exactly one place: `ModuleStateWriter::reserve`. A child never reserves, so its
+root stays 0 and every lookup misses. The parent's arena root is known during
+replay, but only as the `module_state_root` argument threaded through
+`attach_from_arena_impl`; nothing stores it where `record_find` can reach it.
+
+What keeps that from being a live defect is that nothing drives the other side.
+The guest's `wpk_fork_module_state_restore` has two entries, `fm_attach_child`
+and `fm_attach_borrowed_child`. Neither has a caller anywhere in `host/src` —
+the only mentions there are three comments in `worker-main.ts` describing what
+they would do. Every actual invocation is in `host/test`. The production child
+path restores its globals from the continuation buffer, per the scalar half
+above, and never asks the arena for anything.
+
+**The verdict is therefore "dormant asymmetry", not "live defect"** — section
+127's second branch. It becomes live the moment the attach drive is wired up,
+and the failure would not be subtle: `record_find` returns 0, and the guest's
+emitted restore helper loads its value from `0 + header` and `global.set`s it.
+Whoever wires that drive has to give `record_find` the replay root first. I have
+written that requirement into the function's own doc comment rather than leaving
+it here, because here is not where someone wiring it up will be reading.
+
+**Along the way, a comment that was simply false.** That same doc comment said
+the guest "declares this import and NEVER calls it — `fork-instrument` ... emits
+no `call` to it", and used that to justify the meaning chosen for `ordinal`.
+`find_record` emits `call(imports.find)`, and three emitters reach it:
+`emit_restore_helper` (once per restorable global), `emit_restore_segments`, and
+`emit_restore_table`. The conclusion the comment drew survives, but for a
+different reason than the one it gave: all three sites pass a literal `0`, so no
+call site constrains the fourth argument, and "the Nth record matching the first
+three" is still a free choice. Corrected in place.
+
+This is worth flagging beyond the paperwork, because the false half was
+load-bearing for a reader: it says this import is dead, and a reader trusting it
+would conclude the whole find path is unreachable and could be simplified or
+dropped. It is reachable; it is merely undriven.
