@@ -1,20 +1,21 @@
 {
+ "_comment": "The overlay's base image, read out of the container. Trials 1-2 were rewritten when createModuleBaseImage became createBaseImageFromContainer and the module stopped being the shape the function was built around; 4-6 cover the deployment-base rebase, which is the behaviour that moved out of MemoryFileSystem.rewriteLazy*Urls.",
  "file": "host/src/vfs/module-base-image.ts",
  "verify": "cd host && npx vitest run test/module-base-image.test.ts >/dev/null 2>&1",
  "trials": [
   {
    "name": "the window subtracts the header, as a body-holding backend would",
-   "scope": "    imageRead: (at, dest) =>",
-   "scope_end": "\n  };\n",
-   "find": "    imageRead: (at, dest) => module.imageRead(BigInt(at), dest),",
-   "replace": "    imageRead: (at, dest) => module.imageRead(BigInt(at - 16), dest),"
+   "scope": "  return { baseImage, imageRead };",
+   "scope_end": "\n}\n",
+   "find": "  return { baseImage, imageRead };",
+   "replace": "  return { baseImage, imageRead: (at, dest) => imageRead(at - 16, dest) };"
   },
   {
    "name": "the lazy entries come back empty instead of from the container",
    "scope": "    exportLazyEntries: () =>",
-   "scope_end": ",\n",
-   "find": "    exportLazyEntries: () => (Array.isArray(lazy) ? lazy : []) as LazyFileEntry[],",
-   "replace": "    exportLazyEntries: () => [] as LazyFileEntry[],"
+   "scope_end": "      ),\n",
+   "find": "      (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>",
+   "replace": "      ([] as LazyFileEntry[]).map((entry) =>"
   },
   {
    "name": "the lazy half is read from the archive section",
@@ -22,6 +23,27 @@
    "scope_end": "\n  );\n",
    "find": "    lazySectionBytes(parsed, sections),",
    "replace": "    archiveSectionBytes(parsed, sections),"
+  },
+  {
+   "name": "the deployment base is never applied, so a relative URL stays relative",
+   "scope": "  const rebaseUrl = (url: string): string =>",
+   "scope_end": ";\n",
+   "find": "    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);",
+   "replace": "    url;"
+  },
+  {
+   "name": "the base is prepended to absolute and rooted URLs too",
+   "scope": "  const rebaseUrl = (url: string): string =>",
+   "scope_end": ";\n",
+   "find": "    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);",
+   "replace": "    lazyUrlBase === undefined ? url : lazyUrlBase + url;"
+  },
+  {
+   "name": "an archive rebases its transports but keeps its stale url",
+   "scope": "  const rebaseArchive = (",
+   "scope_end": "\n  };\n",
+   "find": "      url: transports[0] ?? entry.url,",
+   "replace": "      url: entry.url,"
   }
  ]
 }
