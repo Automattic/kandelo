@@ -1058,7 +1058,10 @@ mod tests {
         let dir = fs.lookup(ROOT_INO, b"dir").unwrap();
         assert_eq!(fs.stat_ino(dir).unwrap().mode & 0xf000, 0x4000);
         assert!(fs.lookup(dir, b"nested.txt").is_ok());
-        assert!(fs.lookup(ROOT_INO, b"nope").is_err());
+        assert_eq!(fs.lookup(ROOT_INO, b"nope").unwrap_err(), Errno::ENOENT);
+        // A component that is not a directory is ENOTDIR, not ENOENT: the
+        // name exists, it just cannot be descended into.
+        assert_eq!(fs.lookup(fs.lookup(ROOT_INO, b"hello.txt").unwrap(), b"x").unwrap_err(), Errno::ENOTDIR);
     }
 
     #[test]
@@ -1106,8 +1109,13 @@ mod tests {
     #[test]
     fn stat_ino_rejects_out_of_range_ino() {
         let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
-        assert!(fs.stat_ino(u32::MAX).is_err());
-        assert!(fs.stat_ino(0).is_err());
+        // The errno is the contract, not merely that it failed: a reader
+        // returning EIO here would look identical to `is_err()`.
+        // `.err()` rather than `unwrap_err()`: the Ok type is `SffsStat`,
+        // which is not `Debug`, and a production struct should not grow a
+        // derive to satisfy a test.
+        assert_eq!(fs.stat_ino(u32::MAX).err(), Some(Errno::ENOENT));
+        assert_eq!(fs.stat_ino(0).err(), Some(Errno::ENOENT));
     }
 
     #[test]
