@@ -64,7 +64,12 @@ import {
   retryKernelEntryResult,
   retryKernelEntryResultForGeneration,
 } from "./kernel-entry-retry";
-import { readPreparedPlatformFile } from "./vfs";
+// NOT from "./vfs": that barrel re-exports `resolveForNode` and `HostFileSystem`,
+// which import `node:fs` and `node:path`. This module is in the BROWSER kernel
+// worker's graph, so importing the barrel drags three Node-only modules into a
+// browser bundle for one function that lives in a Node-free file. See
+// `host/test/browser-worker-node-globals.test.ts`.
+import { readPreparedPlatformFile } from "./vfs/vfs";
 import type { PlatformIO } from "./types";
 import {
   describeWasmArtifactPolicyFailures,

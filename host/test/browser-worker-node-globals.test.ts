@@ -79,15 +79,19 @@ function resolveSpecifier(fromFile: string, spec: string): string | null {
  * Every module the entry pulls in for its VALUE. `import type` is erased
  * before the bundle exists, so a type-only edge cannot make anything evaluate.
  */
-function valueImportGraph(entry: string): string[] {
+function valueImportGraph(entry: string): {
+  modules: string[];
+  nodeBuiltins: { from: string; specifier: string }[];
+} {
   const seen = new Set<string>();
-  const order: string[] = [];
+  const modules: string[] = [];
+  const nodeBuiltins: { from: string; specifier: string }[] = [];
   const queue = [entry];
   while (queue.length > 0) {
     const file = queue.shift() as string;
     if (seen.has(file)) continue;
     seen.add(file);
-    order.push(file);
+    modules.push(file);
     const source = parse(file);
     for (const statement of source.statements) {
       let spec: ts.Expression | undefined;
@@ -99,11 +103,15 @@ function valueImportGraph(entry: string): string[] {
         spec = statement.moduleSpecifier;
       }
       if (spec === undefined || !ts.isStringLiteral(spec)) continue;
+      if (spec.text.startsWith("node:")) {
+        nodeBuiltins.push({ from: relative(SRC, file), specifier: spec.text });
+        continue;
+      }
       const resolved = resolveSpecifier(file, spec.text);
       if (resolved !== null) queue.push(resolved);
     }
   }
-  return order;
+  return { modules, nodeBuiltins };
 }
 
 interface Offence {
@@ -260,17 +268,32 @@ function offencesIn(file: string): Offence[] {
 
 describe("browser kernel worker import graph", () => {
   it("pulls in a real graph, so a green result means something was checked", () => {
-    const graph = valueImportGraph(ENTRY);
+    const { modules } = valueImportGraph(ENTRY);
     // Guards the guard: a resolver that silently resolved nothing would make
     // every assertion below vacuously true.
-    expect(graph.length).toBeGreaterThan(50);
-    expect(graph).toContain(join(SRC, "vfs/host-fs.ts"));
+    expect(modules.length).toBeGreaterThan(50);
+    expect(modules).toContain(join(SRC, "vfs/vfs.ts"));
   });
 
   it("evaluates no Node-only global when its modules load", () => {
-    const offences = valueImportGraph(ENTRY).flatMap(offencesIn);
+    const offences = valueImportGraph(ENTRY).modules.flatMap(offencesIn);
     expect(
       offences.map((o) => `${o.where} [${o.global}] ${o.text}`),
+    ).toEqual([]);
+  });
+
+  /**
+   * The same leak, one level up. A `node:fs` import does not throw at load the
+   * way a bare `process` does — the bundler externalizes it and the module
+   * evaluates fine, so the failure is deferred to whenever something touches
+   * an export, and a browser build stays quiet about it. That deferral is the
+   * reason to catch it here: the graph either reaches Node builtins or it does
+   * not, and a browser worker has no business reaching them at all.
+   */
+  it("value-imports no Node builtin", () => {
+    const { nodeBuiltins } = valueImportGraph(ENTRY);
+    expect(
+      nodeBuiltins.map((b) => `${b.from} -> ${b.specifier}`),
     ).toEqual([]);
   });
 });
