@@ -74,6 +74,29 @@ if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
 fi
 echo "==> ncurses at $NCURSES_PREFIX"
 
+# --- Invalidate a configure result that was made against a different ncurses ---
+# `configure` bakes $NCURSES_PREFIX into CFLAGS and LDFLAGS as an ABSOLUTE,
+# content-addressed path, and records it in both src/auto/config.mk and
+# autoconf's own src/auto/config.cache. The prefix changes whenever ncurses'
+# cache key changes, which is routine -- several ncurses-6.5-rev8 trees with
+# different hashes can coexist on one machine.
+#
+# Without this, the "configure only if config.mk is absent" test below keeps a
+# stale result forever: the resolver hands over a live prefix, the guard above
+# passes against it, and the link still runs against the dead one, failing with
+# `wasm-ld: error: unable to find library -lncursesw`. Observed 2026-09-14
+# against a config.mk eight days old. Re-running configure without clearing
+# config.cache does not help either; autoconf refuses outright with "`CFLAGS'
+# has changed since the previous run ... run `make distclean' and/or `rm
+# auto/config.cache'".
+CONFIG_MARKER="$SRC_DIR/.kandelo-vim-config"
+expected_config_marker="$NCURSES_PREFIX"
+if [ -f "$SRC_DIR/src/auto/config.mk" ] && \
+   [ "$(cat "$CONFIG_MARKER" 2>/dev/null || true)" != "$expected_config_marker" ]; then
+    echo "==> ncurses prefix changed since the last configure; reconfiguring"
+    rm -f "$SRC_DIR/src/auto/config.mk" "$SRC_DIR/src/auto/config.cache"
+fi
+
 # --- Download Vim source ---
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading vim $VIM_VERSION..."
@@ -181,6 +204,7 @@ if [ ! -f src/auto/config.mk ]; then
         --with-modified-by="" \
         2>&1 | tail -30
 
+    printf '%s\n' "$expected_config_marker" >"$CONFIG_MARKER"
     echo "==> Configure complete."
 
 fi
