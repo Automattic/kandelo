@@ -1150,7 +1150,10 @@ the code's own comment says so. Checking one source and concluding about every
 source is the narrower-question error, committed while cataloguing it.
 
 **Their comment also claimed a pin that did not exist.** It read "pinned here
-against that generated header" — present tense, describing an intention.
+against that generated header" — present tense, describing an intention. The
+pin is real now and perturbed: drift `STATUS_PENDING` to 7 and the test says
+*"WASM_POSIX_CHANNEL_STATUS_PENDING is 1 in the header and 7 here"*, naming
+the constant and both values.
 Nothing read that header. A reader checking this host against its own comment
 would have found them agreeing and learned nothing, which is exactly the
 `__heap_base` failure recorded above, in a different file. They cannot be
@@ -1585,6 +1588,7 @@ rather than a matter of care:
 | `if [ "${x:-0}" != 1 ]; then block; fi` | string compare, no error | closed |
 | `[ -x path ] \|\| refuse` | false for a dangling symlink | closed |
 | `suite \| grep 'Tests'` then read the line | pipeline status is GREP's; a suite that died before printing shows nothing to read | **OPEN** |
+| a mutation harness backgrounded across a laptop sleep | the trial applies, the process dies, the revert never runs — the tree is left MUTATED | **OPEN** |
 | `set -- $pair` in zsh, then `[ "$2" -eq 0 ]` | no word split: `$2` is empty, the test errors | **OPEN** |
 
 **The dangerous shape is a NUMERIC comparison inside an `if` whose else branch
