@@ -2195,6 +2195,33 @@ the curation budget is tight, three is where to spend it — but the two
 campaign-wide items inside it, the ratchet hole and the harness revert, belong
 wherever other lanes will see them.
 
+## The messages were rewrapped, and what that cost
+
+Two commit messages carried body lines at 73 columns, against the project's
+72. Fixing a message that is not the tip means rewriting history, so it was
+done the way the build-and-docs contract asks: the filter was tested first —
+confirmed byte-identical on messages that were already correct — then run on a
+SCRATCH branch, and the real branch was moved only after `range-diff` reported
+zero content differences, the tree at HEAD matched, and the commit count was
+unchanged. Afterwards: one author, and no commit missing either trailer. A
+rewrite that silently dropped `Co-Authored-By` across fifty-two commits would
+have been easy to miss and unpleasant to find in review.
+
+**Thirteen commits have new SHAs; thirty-nine do not.** A commit's identity
+moves only if its content, message or parents move, so the rewrite began at
+`643552ea` — the first message that actually changed — and everything before
+it kept its hash. That matters because this document cites commits, and a
+history rewrite is the fastest way to create exactly the rotted citations it
+spends a section on. None of the thirteen is cited anywhere; the off-branch
+hashes in these documents belong to other lanes.
+
+**Establishing that took two attempts, and the first was the usual mistake.**
+`git cat-file -e <sha>` answers "does this object exist", which stays true for
+dangling objects a rewrite left behind — so every stale hash would have
+reported healthy. The question worth asking is `git merge-base --is-ancestor
+<sha> HEAD`: is it on this branch. Same shape as every other entry in this
+document, in a throwaway command, caught because the answer looked too good.
+
 ## What this did not establish
 
 - **Whether the 1,711-line capacity system is right-sized.** It was attributed,
