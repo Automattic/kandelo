@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import {
   assertVfsImageCapacity,
   assertVfsImageHeadroom,
@@ -133,9 +134,15 @@ describe("VFS image save/restore", () => {
     );
 
     it("rejects malformed serialized capacity state", () => {
+      // The MODULE judges this now — `assertVfsImageCapacity` without a
+      // producer calls `SffsImageFs.readImageCapacity`, because reading a
+      // container header in TypeScript would be format knowledge on the wrong
+      // side of the boundary. So the refusal arrives as an errno rather than
+      // as the prose the TypeScript parser used to produce, and the errno is
+      // what this asserts: message text is not the contract.
       expect(() =>
         assertVfsImageCapacity(new Uint8Array(0), 1, "test image")
-      ).toThrow(/VFS image too small/);
+      ).toThrow(/EINVAL/);
     });
 
     it("rejects an encoded ceiling hidden by a smaller runtime buffer before writing", async () => {
@@ -184,37 +191,43 @@ describe("VFS image save/restore", () => {
     });
 
     it("checks free blocks and free inodes as independent resources", () => {
-      const mfs = createMemfs();
-      const stats = mfs.statfs("/");
-      const freeBytes = stats.bfree * stats.frsize;
+      // The FILESYSTEM judges headroom now, and reports the numbers behind its
+      // verdict — that is what `sm_check_headroom` was added for. Taking the
+      // thresholds from `statfs` and a `MemoryFileSystem` tested the arithmetic
+      // that moved into the module, against a filesystem that no longer
+      // answers the question.
+      const fs = SffsImageFs.create();
+      fs.writeFile("/probe", new Uint8Array(8), 0o644);
+      const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
 
-      expect(() => assertVfsImageHeadroom(mfs, {
+      expect(() => assertVfsImageHeadroom(fs, {
         minimumFreeBytes: freeBytes,
-        minimumFreeInodes: stats.ffree,
+        minimumFreeInodes: freeInodes,
       }, "test image")).not.toThrow();
-      expect(() => assertVfsImageHeadroom(mfs, {
+      expect(() => assertVfsImageHeadroom(fs, {
         minimumFreeBytes: freeBytes + 1,
-        minimumFreeInodes: stats.ffree,
+        minimumFreeInodes: freeInodes,
       }, "test image")).toThrow(
         /test image lacks runtime VFS headroom: .* free bytes remain/,
       );
-      expect(() => assertVfsImageHeadroom(mfs, {
+      expect(() => assertVfsImageHeadroom(fs, {
         minimumFreeBytes: freeBytes,
-        minimumFreeInodes: stats.ffree + 1,
+        minimumFreeInodes: freeInodes + 1,
       }, "test image")).toThrow(
         /test image lacks runtime VFS headroom: .* free inodes remain/,
       );
     });
 
     it("enforces the declared reserve before writing a product image", async () => {
-      const mfs = createMemfs();
-      const stats = mfs.statfs("/");
+      const fs = SffsImageFs.create();
+      fs.writeFile("/probe", new Uint8Array(8), 0o644);
+      const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
       const dir = mkdtempSync(join(tmpdir(), "vfs-headroom-"));
       try {
-        await expect(saveImage(mfs, join(dir, "full.vfs.zst"), {
+        await expect(saveImage(fs, join(dir, "full.vfs.zst"), {
           headroom: {
-            minimumFreeBytes: stats.bfree * stats.frsize + 1,
-            minimumFreeInodes: stats.ffree + 1,
+            minimumFreeBytes: freeBytes + 1,
+            minimumFreeInodes: freeInodes + 1,
           },
         })).rejects.toThrow(/lacks runtime VFS headroom.*free bytes.*free inodes/);
       } finally {
