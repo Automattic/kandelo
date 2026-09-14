@@ -7514,3 +7514,62 @@ suite will stay exactly this red until the last one lands. So the suite cannot
 choose the order for me; dependency between the modules has to, and the count
 above must not be mistaken for a measurement of blocking.
 
+---
+
+## §154 — The table half, for no new entries
+
+Imported TABLES need the same treatment as imported globals: a `KFBT` record
+(kind 11) saying which activation provides each imported `WebAssembly.Table`,
+built from the same identity-versus-KFIT split. Done the obvious way that is
+three more entries -- a KFIT seed, a table identity group, a table provenance --
+against a surface whose target is 5 and whose ceiling I have already moved seven
+times.
+
+**So the three global seeds took a `space` selector instead**, and the entry
+count did not move:
+
+| before | after |
+|---|---|
+| `fm_set_activation_imported_globals(activation, ptr, len)` | `fm_set_activation_imports(space, activation, ptr, len)` |
+| `fm_set_global_identity_group(activation, owner, group)` | `fm_set_identity_group(space, activation, owner, group)` |
+| `fm_set_imported_global_provenance(consumer, ordinal, kind, group, bits)` | `fm_set_import_provenance(space, consumer, ordinal, kind, group, bits)` |
+
+`space` is 0 for globals and 1 for tables. This was cheap ONLY because none of
+the three has a production caller yet; generalising a seeded entry after a host
+depends on it is a different and worse job. That is the argument for doing this
+kind of widening at the moment the second case appears, not later.
+
+**The kind numberings overlap, and the space is what disambiguates them.** 1 is
+`RAW_NUMBER` among globals and `ACTIVATION_TABLE` among tables; 2 is
+`RAW_BIGINT` against `BASE_IMPORT`. A kind byte means nothing without its space,
+which the first version of the kind test discovered by passing when it should
+have failed -- it asserted that `RAW_NUMBER` is not a table kind, and 1 is a
+perfectly good table kind.
+
+**What the module now does at capture.** `write_imported_table_bindings` runs
+beside its global twin: decode each activation's KFIT, translate the host's
+import ordinals to owner ids, elect a provider per identity group (the same
+`elect_group_provider`, since the rule is identical -- an importer cannot
+provide), and write the `KFBT` record. It writes nothing when no activation
+imports a table, so an arena gains a record only when there is something in it.
+
+**One guard is NOT covered, and saying so is the point.** The identity table is
+keyed by `(space, activation, owner)`. Dropping `space` from that key leaves the
+suite green: the test publishes the same coordinate in both spaces and can only
+observe the errno, which is 0 either way, because nothing reads the groups back.
+The only observable consequence is the elected provider inside the binding
+record, and no host test decodes the arena's records yet -- there is no KFMS
+reader on the host side at all now that the 3,825-line one is in the attic.
+
+That is a real gap in this lane's test coverage, not a note about one guard:
+`write_imported_global_bindings` and `write_imported_table_bindings` are both
+tested only for what they REFUSE. What they WRITE is unverified. The reader
+belongs with the arena port, and this is the second thing waiting on it.
+
+The other five guards were perturbed and each failed the test that names it:
+the unknown-space refusal (with valid KFIT bytes, so the refusal is
+attributable to the space rather than to the decoder), the per-space decoder
+selection, the re-seed key, the per-space kind validation, and -- in fork-codec
+-- the table election, its base-import fallback, the missing-declaration
+refusal, and the encoder's kind, ordering and length checks.
+

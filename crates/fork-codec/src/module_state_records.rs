@@ -304,6 +304,157 @@ fn elect_group_provider(
         .min()
 }
 
+/// One imported-table binding, as `KFBT` (record kind 11) stores it.
+///
+/// The table twin of [`ImportedGlobalBinding`], and deliberately smaller: a
+/// table import is always a `WebAssembly.Table`, so there are no raw values to
+/// carry and no type code to agree with a snapshot. What is left is the same
+/// question -- which activation provides the object -- answered the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedTableBinding {
+    pub consumer_activation: u32,
+    pub consumer_owner: u32,
+    pub source_activation: u32,
+    pub source_owner: u32,
+    /// `ACTIVATION_TABLE` or `BASE_IMPORT`, the latter only ever from the
+    /// election in [`build_imported_table_bindings`].
+    pub kind: u8,
+}
+
+/// One activation's imported-table declaration, as KFIT records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedTableDeclaration {
+    pub activation: u32,
+    pub owner: u32,
+}
+
+/// What only the HOST can determine about one imported table: which object it
+/// is. Identity again, as a group id -- see [`ImportedGlobalProvenance`] for why
+/// the coordinate is not what travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedTableProvenance {
+    pub consumer_activation: u32,
+    pub consumer_owner: u32,
+    /// The identity group of the imported table, or 0 when the object appears
+    /// in no activation's catalog.
+    pub group_id: u32,
+}
+
+/// Payload size for `count` imported-table bindings.
+pub fn imported_table_bindings_size(count: usize) -> Result<usize, Errno> {
+    let entries = count
+        .checked_mul(abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE as usize)
+        .ok_or(Errno::EINVAL)?;
+    entries
+        .checked_add(abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE as usize)
+        .ok_or(Errno::EINVAL)
+}
+
+/// Encode the `KFBT` record the child reads to rebuild its table imports.
+pub fn encode_imported_table_bindings(
+    out: &mut [u8],
+    bindings: &[ImportedTableBinding],
+) -> Result<(), Errno> {
+    let header = abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE as usize;
+    let entry = abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE as usize;
+    if out.len() != imported_table_bindings_size(bindings.len())? {
+        return Err(Errno::EINVAL);
+    }
+    let count = u32::try_from(bindings.len()).map_err(|_| Errno::EINVAL)?;
+    // Zero first: reserved fields and each entry's trailing padding must read as
+    // zero, and the chunk this lands in is freshly channel-mmap'd.
+    out.fill(0);
+    out[0..4].copy_from_slice(&abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC);
+    out[4..6]
+        .copy_from_slice(&abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION.to_le_bytes());
+    out[6..8].copy_from_slice(
+        &abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE.to_le_bytes(),
+    );
+    out[8..10].copy_from_slice(
+        &abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE.to_le_bytes(),
+    );
+    out[12..16].copy_from_slice(&count.to_le_bytes());
+
+    let mut previous: Option<(u32, u32)> = None;
+    for (index, binding) in bindings.iter().enumerate() {
+        if !matches!(
+            binding.kind,
+            abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE
+                | abi::WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT
+        ) {
+            return Err(Errno::EINVAL);
+        }
+        let key = (binding.consumer_activation, binding.consumer_owner);
+        if let Some(prev) = previous {
+            if key <= prev {
+                return Err(Errno::EINVAL); // unsorted or duplicated consumer
+            }
+        }
+        previous = Some(key);
+
+        let at = header + index * entry;
+        out[at..at + 4].copy_from_slice(&binding.consumer_activation.to_le_bytes());
+        out[at + 4..at + 8].copy_from_slice(&binding.consumer_owner.to_le_bytes());
+        out[at + 8..at + 12].copy_from_slice(&binding.source_activation.to_le_bytes());
+        out[at + 12..at + 16].copy_from_slice(&binding.source_owner.to_le_bytes());
+        out[at + 20] = binding.kind;
+    }
+    Ok(())
+}
+
+/// Build the imported-table binding set: the same election, over tables.
+///
+/// `WebAssembly.Table` identity is as invisible to wasm as Global identity --
+/// there is no `table.eq` and this module does not import the activations'
+/// tables -- so the host groups and this elects. A member KFIT declares as an
+/// import cannot provide the table to anyone, and when no member remains the
+/// child takes it from its own base imports.
+pub fn build_imported_table_bindings(
+    provenance: &[ImportedTableProvenance],
+    declarations: &[ImportedTableDeclaration],
+    groups: &[GlobalIdentityGroup],
+) -> Result<Vec<ImportedTableBinding>, Errno> {
+    // `elect_group_provider` excludes importers by coordinate and never reads a
+    // type code, so the two declaration shapes project onto one another.
+    let importers: Vec<ImportedGlobalDeclaration> = declarations
+        .iter()
+        .map(|d| ImportedGlobalDeclaration {
+            activation: d.activation,
+            owner: d.owner,
+            type_code: 0,
+        })
+        .collect();
+    let mut out: Vec<ImportedTableBinding> = Vec::with_capacity(provenance.len());
+    for p in provenance {
+        // The consumer must be a table this activation actually imports; the
+        // alternative is binding a child's import from a coordinate that
+        // describes nothing.
+        if !declarations
+            .iter()
+            .any(|d| d.activation == p.consumer_activation && d.owner == p.consumer_owner)
+        {
+            return Err(Errno::EINVAL);
+        }
+        let mut binding = ImportedTableBinding {
+            consumer_activation: p.consumer_activation,
+            consumer_owner: p.consumer_owner,
+            source_activation: 0,
+            source_owner: 0,
+            kind: abi::WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT,
+        };
+        if let Some((activation, owner)) =
+            elect_group_provider(p.group_id, groups, &importers)
+        {
+            binding.kind = abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE;
+            binding.source_activation = activation;
+            binding.source_owner = owner;
+        }
+        out.push(binding);
+    }
+    out.sort_by_key(|b| (b.consumer_activation, b.consumer_owner));
+    Ok(out)
+}
+
 /// One activation's imported-global declaration, as KFIG records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportedGlobalDeclaration {
@@ -1015,6 +1166,116 @@ mod tests {
                 &[snap((3, 1), I32, None)],
                 &[],
             ),
+            Err(Errno::EINVAL),
+        );
+    }
+
+    // -- Imported-table binding builder (census section 154) ----------------
+
+    fn tdecl(consumer: (u32, u32)) -> ImportedTableDeclaration {
+        ImportedTableDeclaration { activation: consumer.0, owner: consumer.1 }
+    }
+    fn tprov(consumer: (u32, u32), group_id: u32) -> ImportedTableProvenance {
+        ImportedTableProvenance {
+            consumer_activation: consumer.0,
+            consumer_owner: consumer.1,
+            group_id,
+        }
+    }
+
+    #[test]
+    fn a_table_is_provided_by_the_member_that_does_not_import_it() {
+        // Same election as the globals, and the owner again carries the highest
+        // coordinate so that leaving the importers in would pick the wrong one.
+        let built = build_imported_table_bindings(
+            &[tprov((3, 1), 7)],
+            &[tdecl((3, 1)), tdecl((5, 2))],
+            &[group((9, 4), 7), group((3, 1), 7), group((5, 2), 7)],
+        )
+        .unwrap();
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].kind, abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE);
+        assert_eq!((built[0].source_activation, built[0].source_owner), (9, 4));
+    }
+
+    #[test]
+    fn a_table_no_activation_provides_becomes_a_base_import() {
+        let built = build_imported_table_bindings(
+            &[tprov((3, 1), 0)],
+            &[tdecl((3, 1))],
+            &[group((1, 4), 0)],
+        )
+        .unwrap();
+        assert_eq!(built[0].kind, abi::WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT);
+        assert_eq!((built[0].source_activation, built[0].source_owner), (0, 0));
+    }
+
+    #[test]
+    fn table_provenance_with_no_declaration_is_refused() {
+        // The host named a table the activation's KFIT section does not declare:
+        // the two halves of the contract disagreeing.
+        assert_eq!(
+            build_imported_table_bindings(&[tprov((3, 1), 0)], &[tdecl((3, 2))], &[]),
+            Err(Errno::EINVAL),
+        );
+    }
+
+    #[test]
+    fn built_table_bindings_encode_at_the_size_they_report() {
+        // The builder and the encoder are a pair: sorted, unique consumers is
+        // what one produces and what the other demands.
+        let built = build_imported_table_bindings(
+            &[tprov((2, 1), 0), tprov((0, 9), 0), tprov((0, 1), 0)],
+            &[tdecl((2, 1)), tdecl((0, 9)), tdecl((0, 1))],
+            &[],
+        )
+        .unwrap();
+        let keys: Vec<(u32, u32)> =
+            built.iter().map(|b| (b.consumer_activation, b.consumer_owner)).collect();
+        assert_eq!(keys, alloc::vec![(0, 1), (0, 9), (2, 1)]);
+        let mut out = alloc::vec![0u8; imported_table_bindings_size(built.len()).unwrap()];
+        assert!(encode_imported_table_bindings(&mut out, &built).is_ok());
+        // The header the child's decoder checks, and the count it walks by.
+        assert_eq!(&out[0..4], &abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC);
+        assert_eq!(
+            u32::from_le_bytes([out[12], out[13], out[14], out[15]]),
+            3,
+            "count",
+        );
+        // A buffer of the wrong length is refused rather than partly written.
+        let mut short = alloc::vec![0u8; out.len() - 1];
+        assert_eq!(
+            encode_imported_table_bindings(&mut short, &built),
+            Err(Errno::EINVAL),
+        );
+    }
+
+    #[test]
+    fn the_table_encoder_refuses_what_no_child_could_read() {
+        // Both refusals are about the CHILD's decoder, which walks entries in
+        // order and switches on the kind byte. An undefined kind leaves it with
+        // no way to materialise the import, and a repeated consumer leaves it
+        // binding one import twice -- the second write silently winning.
+        let binding = ImportedTableBinding {
+            consumer_activation: 0,
+            consumer_owner: 1,
+            source_activation: 0,
+            source_owner: 0,
+            kind: abi::WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT,
+        };
+        let mut out = alloc::vec![0u8; imported_table_bindings_size(1).unwrap()];
+        assert!(encode_imported_table_bindings(&mut out, &[binding]).is_ok());
+
+        let mut undefined = binding;
+        undefined.kind = 0;
+        assert_eq!(
+            encode_imported_table_bindings(&mut out, &[undefined]),
+            Err(Errno::EINVAL),
+        );
+
+        let mut two = alloc::vec![0u8; imported_table_bindings_size(2).unwrap()];
+        assert_eq!(
+            encode_imported_table_bindings(&mut two, &[binding, binding]),
             Err(Errno::EINVAL),
         );
     }

@@ -16,6 +16,10 @@ import { instantiateForkModule } from "../src/fork-module-instance";
 
 const EINVAL = 22;
 
+/** `fm_set_activation_imports` / `fm_set_import_provenance` spaces. */
+const SPACE_GLOBAL = 0;
+const SPACE_TABLE = 1;
+
 /** A valid, empty KFIG section: 16-byte header, zero records. */
 function emptySection(): Uint8Array {
   const bytes = new Uint8Array(16);
@@ -46,19 +50,22 @@ function fixture() {
   return {
     memory,
     errno: () => (x.fm_last_errno as () => number)(),
-    seed: x.fm_set_activation_imported_globals as (
-      a: number,
-      p: number,
-      n: number,
+    seed: x.fm_set_activation_imports as (
+      space: number,
+      activation: number,
+      ptr: number,
+      byteLength: number,
     ) => void,
-    provenance: x.fm_set_imported_global_provenance as (
+    provenance: x.fm_set_import_provenance as (
+      space: number,
       consumerActivation: number,
       importOrdinal: number,
       kind: number,
       groupId: number,
       rawBits: bigint,
     ) => void,
-    identity: x.fm_set_global_identity_group as (
+    identity: x.fm_set_identity_group as (
+      space: number,
       activation: number,
       owner: number,
       groupId: number,
@@ -72,13 +79,25 @@ function place(memory: WebAssembly.Memory, at: number, bytes: Uint8Array): numbe
   return at;
 }
 
+/** A valid, empty KFIT section: 16-byte header, zero records. */
+function emptyTableSection(): Uint8Array {
+  const bytes = new Uint8Array(16);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4b, 0x46, 0x49, 0x54], 0); // "KFIT"
+  view.setUint16(4, 1, true); // version
+  view.setUint16(6, 16, true); // header size
+  view.setUint32(8, 0, true); // record count
+  view.setUint32(12, 0, true); // reserved
+  return bytes;
+}
+
 describe("imported-global section seeding", () => {
   it("accepts one section per activation", () => {
     const f = fixture();
     const section = emptySection();
-    f.seed(0, place(f.memory, 4096, section), section.length);
+    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, section), section.length);
     expect(f.errno()).toBe(0);
-    f.seed(1, place(f.memory, 8192, section), section.length);
+    f.seed(SPACE_GLOBAL, 1, place(f.memory, 8192, section), section.length);
     expect(f.errno()).toBe(0);
   });
 
@@ -89,7 +108,7 @@ describe("imported-global section seeding", () => {
     const f = fixture();
     const bad = emptySection();
     bad[0] = 0x00; // wrong magic
-    f.seed(0, place(f.memory, 4096, bad), bad.length);
+    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, bad), bad.length);
     expect(f.errno()).toBe(EINVAL);
   });
 
@@ -99,9 +118,9 @@ describe("imported-global section seeding", () => {
     // against the wrong module's declarations.
     const f = fixture();
     const section = emptySection();
-    f.seed(0, place(f.memory, 4096, section), section.length);
+    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, section), section.length);
     expect(f.errno()).toBe(0);
-    f.seed(0, place(f.memory, 8192, section), section.length);
+    f.seed(SPACE_GLOBAL, 0, place(f.memory, 8192, section), section.length);
     expect(f.errno()).toBe(EINVAL);
   });
 
@@ -111,7 +130,7 @@ describe("imported-global section seeding", () => {
     // whatever is there, and rejects the magic -- so the test passes with the
     // bounds check REMOVED, which is what it is supposed to be guarding.
     const f = fixture();
-    f.seed(0, f.memory.buffer.byteLength + 4096, 16);
+    f.seed(SPACE_GLOBAL, 0, f.memory.buffer.byteLength + 4096, 16);
     expect(f.errno()).toBe(EINVAL);
   });
 });
@@ -124,9 +143,9 @@ const KIND_BASE_IMPORT = 5;
 describe("imported-global provenance, the part only the host can resolve", () => {
   it("accepts an identity group and a raw value, keyed by import ordinal", () => {
     const f = fixture();
-    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    f.provenance(SPACE_GLOBAL, 3, 1, KIND_ACTIVATION_GLOBAL, 7, 0n);
     expect(f.errno()).toBe(0);
-    f.provenance(0, 2, KIND_RAW_NUMBER, 0, 0x4059_0000_0000_0000n);
+    f.provenance(SPACE_GLOBAL, 0, 2, KIND_RAW_NUMBER, 0, 0x4059_0000_0000_0000n);
     expect(f.errno()).toBe(0);
   });
 
@@ -137,9 +156,9 @@ describe("imported-global provenance, the part only the host can resolve", () =>
     // existed. Refusing would freeze the first answer and leave a child wiring
     // two activations to separate globals they are supposed to share.
     const f = fixture();
-    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    f.provenance(SPACE_GLOBAL, 3, 1, KIND_ACTIVATION_GLOBAL, 0, 0n);
     expect(f.errno()).toBe(0);
-    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 5, 0n);
+    f.provenance(SPACE_GLOBAL, 3, 1, KIND_ACTIVATION_GLOBAL, 5, 0n);
     expect(f.errno()).toBe(0);
   });
 
@@ -148,9 +167,9 @@ describe("imported-global provenance, the part only the host can resolve", () =>
     // not something it can fall back from, and this is the boundary where the
     // host's answer enters the module.
     const f = fixture();
-    f.provenance(0, 0, 0, 0, 0n);
+    f.provenance(SPACE_GLOBAL, 0, 0, 0, 0, 0n);
     expect(f.errno()).toBe(EINVAL);
-    f.provenance(0, 0, 99, 0, 0n);
+    f.provenance(SPACE_GLOBAL, 0, 0, 99, 0, 0n);
     expect(f.errno()).toBe(EINVAL);
   });
 
@@ -160,7 +179,7 @@ describe("imported-global provenance, the part only the host can resolve", () =>
     // distinguish an activation that OWNS a catalog global from one that merely
     // imports it. The module reaches BASE_IMPORT by election instead.
     const f = fixture();
-    f.provenance(3, 1, KIND_BASE_IMPORT, 0, 0n);
+    f.provenance(SPACE_GLOBAL, 3, 1, KIND_BASE_IMPORT, 0, 0n);
     expect(f.errno()).toBe(EINVAL);
   });
 });
@@ -170,9 +189,9 @@ describe("global identity groups, the fact wasm cannot compute", () => {
     // Two activations naming the same WebAssembly.Global. There is no
     // `global.eq` in wasm, so this equality can only arrive from JavaScript.
     const f = fixture();
-    f.identity(1, 5, 7);
+    f.identity(SPACE_GLOBAL, 1, 5, 7);
     expect(f.errno()).toBe(0);
-    f.identity(3, 1, 7);
+    f.identity(SPACE_GLOBAL, 3, 1, 7);
     expect(f.errno()).toBe(0);
   });
 
@@ -180,9 +199,9 @@ describe("global identity groups, the fact wasm cannot compute", () => {
     // Same reason provenance is re-publishable: a dlopen can introduce an
     // activation that changes who shares what.
     const f = fixture();
-    f.identity(1, 5, 7);
+    f.identity(SPACE_GLOBAL, 1, 5, 7);
     expect(f.errno()).toBe(0);
-    f.identity(1, 5, 8);
+    f.identity(SPACE_GLOBAL, 1, 5, 8);
     expect(f.errno()).toBe(0);
   });
 
@@ -192,7 +211,84 @@ describe("global identity groups, the fact wasm cannot compute", () => {
     // a member in the group that no activation can provide, and the election
     // would hand a child a coordinate that resolves to nothing.
     const f = fixture();
-    f.identity(1, 0, 7);
+    f.identity(SPACE_GLOBAL, 1, 0, 7);
     expect(f.errno()).toBe(EINVAL);
   });
 });
+
+/** `WPK_FORK_IMPORTED_TABLE_BINDING_*` kinds. */
+const KIND_ACTIVATION_TABLE = 1;
+const KIND_TABLE_BASE_IMPORT = 2;
+
+describe("one seed surface over two import spaces", () => {
+  it("keeps a global section and a table section for the same activation", () => {
+    // The spaces are separate namespaces, not a single per-activation slot. An
+    // activation normally has both, and a seed of one must not read as a
+    // re-seed of the other.
+    const f = fixture();
+    const globals = emptySection();
+    const tables = emptyTableSection();
+    f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, globals), globals.length);
+    expect(f.errno()).toBe(0);
+    f.seed(SPACE_TABLE, 0, place(f.memory, 8192, tables), tables.length);
+    expect(f.errno(), "a table section is not a re-seed").toBe(0);
+    f.seed(SPACE_TABLE, 0, place(f.memory, 12288, tables), tables.length);
+    expect(f.errno(), "but a second table section is").toBe(EINVAL);
+  });
+
+  it("decodes each space against its own section format", () => {
+    // KFIG bytes in the table space are not a table catalog. Accepting them
+    // would store a section whose records the capture then reads as tables.
+    const f = fixture();
+    const globals = emptySection();
+    f.seed(SPACE_TABLE, 0, place(f.memory, 4096, globals), globals.length);
+    expect(f.errno()).toBe(EINVAL);
+  });
+
+  it("refuses a space that names neither catalog", () => {
+    // The section here is a VALID KFIT one, deliberately. Seeding space 2 with
+    // KFIG bytes proves nothing: the seed would then refuse them for failing to
+    // decode as tables, and the space check could be deleted with this test
+    // still passing. Bytes that would be accepted under a known space are what
+    // make the refusal attributable to the space.
+    const f = fixture();
+    const section = emptyTableSection();
+    f.seed(2, 0, place(f.memory, 4096, section), section.length);
+    expect(f.errno()).toBe(EINVAL);
+    f.identity(2, 1, 5, 7);
+    expect(f.errno()).toBe(EINVAL);
+    f.provenance(2, 3, 1, KIND_ACTIVATION_TABLE, 7, 0n);
+    expect(f.errno()).toBe(EINVAL);
+  });
+
+  it("holds each space to its own binding kinds", () => {
+    // A table import is always a WebAssembly.Table, so the value kinds a global
+    // can take are not sayable about one -- and BASE_IMPORT stays an election
+    // result in both spaces.
+    //
+    // THE TWO KIND NUMBERINGS OVERLAP, which is why the space has to reach the
+    // check at all: 1 is RAW_NUMBER among globals and ACTIVATION_TABLE among
+    // tables, and 2 is RAW_BIGINT against BASE_IMPORT. A kind byte means
+    // nothing without the space beside it, so the global-only kind used here is
+    // 4, which no table kind claims.
+    const f = fixture();
+    f.provenance(SPACE_TABLE, 3, 1, KIND_ACTIVATION_TABLE, 7, 0n);
+    expect(f.errno(), "identity is all a table import can carry").toBe(0);
+    f.provenance(SPACE_TABLE, 3, 2, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    expect(f.errno(), "a global kind is not a table kind").toBe(EINVAL);
+    f.provenance(SPACE_TABLE, 3, 3, KIND_TABLE_BASE_IMPORT, 0, 0n);
+    expect(f.errno(), "BASE_IMPORT is the module's conclusion").toBe(EINVAL);
+  });
+
+  it("keeps the two spaces' identity groups apart", () => {
+    // Group 7 of the globals and group 7 of the tables are different objects.
+    // One table keyed only by (activation, owner) would have the second
+    // publication overwrite the first.
+    const f = fixture();
+    f.identity(SPACE_GLOBAL, 1, 5, 7);
+    expect(f.errno()).toBe(0);
+    f.identity(SPACE_TABLE, 1, 5, 9);
+    expect(f.errno()).toBe(0);
+  });
+});
+

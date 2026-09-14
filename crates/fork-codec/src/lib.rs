@@ -92,8 +92,11 @@ pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };
 pub use module_state_records::{
-    build_imported_global_bindings, decode_data_segments, decode_element_segments,
+    build_imported_global_bindings, build_imported_table_bindings, decode_data_segments,
+    decode_element_segments,
     decode_journal_image, decode_module_record, decode_mutable_global,
+    encode_imported_table_bindings, imported_table_bindings_size,
+    ImportedTableBinding, ImportedTableDeclaration, ImportedTableProvenance,
     encode_imported_global_bindings, imported_global_bindings_size, ImportedGlobalBinding,
     GlobalIdentityGroup, ImportedGlobalDeclaration, ImportedGlobalProvenance,
     ImportedGlobalSnapshotFact,

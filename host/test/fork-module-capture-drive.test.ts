@@ -473,16 +473,17 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     seedTemplateId(f, 0, 2048);
     const kfig = emptyKfig();
     new Uint8Array(f.memory.buffer, 6144, kfig.length).set(kfig);
-    (f.x.fm_set_activation_imported_globals as (a: number, p: number, n: number) => void)(
+    (f.x.fm_set_activation_imports as (s: number, a: number, p: number, n: number) => void)(
+      0 /* globals */,
       0,
       6144,
       kfig.length,
     );
     expect(f.errno(), "empty section seeded").toBe(0);
     // Provenance for owner 1, which the empty section does not declare.
-    (f.x.fm_set_imported_global_provenance as (
-      a: number, o: number, k: number, group: number, bits: bigint,
-    ) => void)(0, 1, 4 /* ACTIVATION_GLOBAL */, 0 /* in no catalog */, 0n);
+    (f.x.fm_set_import_provenance as (
+      s: number, a: number, o: number, k: number, group: number, bits: bigint,
+    ) => void)(0 /* globals */, 0, 1, 4 /* ACTIVATION_GLOBAL */, 0 /* in no catalog */, 0n);
     expect(f.errno(), "provenance published").toBe(0);
 
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);

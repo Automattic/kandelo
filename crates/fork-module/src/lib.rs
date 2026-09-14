@@ -615,19 +615,23 @@ mod wasm {
     const GLOBAL_IDENTITY_MAX: usize = 512;
 
     #[repr(C, align(4))]
-    struct GlobalIdentityGroups(UnsafeCell<[[u32; 3]; GLOBAL_IDENTITY_MAX]>);
+    struct GlobalIdentityGroups(UnsafeCell<[[u32; 4]; GLOBAL_IDENTITY_MAX]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for GlobalIdentityGroups {}
-    /// Each live entry is `[activation_id, owner_id, group_id]`.
+    /// Each live entry is `[space, activation_id, owner_id, group_id]`.
     static GLOBAL_IDENTITY: GlobalIdentityGroups =
-        GlobalIdentityGroups(UnsafeCell::new([[0u32; 3]; GLOBAL_IDENTITY_MAX]));
+        GlobalIdentityGroups(UnsafeCell::new([[0u32; 4]; GLOBAL_IDENTITY_MAX]));
     static GLOBAL_IDENTITY_COUNT: AtomicU32 = AtomicU32::new(0);
 
-    fn set_global_identity_group_impl(
+    fn set_identity_group_impl(
+        space: u32,
         activation_id: u32,
         owner_id: u32,
         group_id: u32,
     ) -> Result<(), Errno> {
+        if space != IMPORT_SPACE_GLOBAL && space != IMPORT_SPACE_TABLE {
+            return Err(Errno::EINVAL);
+        }
         if owner_id == 0 {
             return Err(Errno::EINVAL); // catalog owners are 1-based
         }
@@ -635,32 +639,35 @@ mod wasm {
         // SAFETY: single-threaded per worker.
         let table = unsafe { &mut *GLOBAL_IDENTITY.0.get() };
         for entry in table.iter_mut().take(count) {
-            if entry[0] == activation_id && entry[1] == owner_id {
-                entry[2] = group_id; // re-publish updates, as provenance does
+            if entry[0] == space && entry[1] == activation_id && entry[2] == owner_id {
+                entry[3] = group_id; // re-publish updates, as provenance does
                 return Ok(());
             }
         }
         if count >= GLOBAL_IDENTITY_MAX {
             return Err(Errno::E2BIG);
         }
-        table[count] = [activation_id, owner_id, group_id];
+        table[count] = [space, activation_id, owner_id, group_id];
         GLOBAL_IDENTITY_COUNT.store(count as u32 + 1, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Publish that `(activation, owner)`'s catalog global is object `group_id`.
+    /// Publish that `(space, activation, owner)`'s catalog entry is object
+    /// `group_id`.
     ///
-    /// Entries sharing a group id are the same `WebAssembly.Global`. Assigning
-    /// the ids is the host's job because wasm cannot compare object identity;
-    /// deciding which member PROVIDES the object is this module's, because that
-    /// needs the KFIG section it is seeded with.
+    /// Entries sharing a group id within a space are the same
+    /// `WebAssembly.Global` or `WebAssembly.Table`. Assigning the ids is the
+    /// host's job because wasm cannot compare object identity; deciding which
+    /// member PROVIDES the object is this module's, because that needs the KFIG
+    /// or KFIT section it is seeded with.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_global_identity_group(
+    pub extern "C" fn fm_set_identity_group(
+        space: u32,
         activation_id: u32,
         owner_id: u32,
         group_id: u32,
     ) {
-        match set_global_identity_group_impl(activation_id, owner_id, group_id) {
+        match set_identity_group_impl(space, activation_id, owner_id, group_id) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -693,6 +700,7 @@ mod wasm {
 
     #[derive(Clone, Copy)]
     struct ProvenanceEntry {
+        space: u32,
         consumer_activation: u32,
         import_ordinal: u32,
         kind: u32,
@@ -709,6 +717,7 @@ mod wasm {
     static IMPORTED_GLOBAL_PROVENANCE: ImportedGlobalProvenanceTable =
         ImportedGlobalProvenanceTable(UnsafeCell::new(
             [ProvenanceEntry {
+                space: 0,
                 consumer_activation: 0,
                 import_ordinal: 0,
                 kind: 0,
@@ -718,7 +727,8 @@ mod wasm {
         ));
     static IMPORTED_GLOBAL_PROVENANCE_COUNT: AtomicU32 = AtomicU32::new(0);
 
-    fn set_imported_global_provenance_impl(
+    fn set_import_provenance_impl(
+        space: u32,
         consumer_activation: u32,
         import_ordinal: u32,
         kind: u32,
@@ -726,13 +736,23 @@ mod wasm {
         raw_bits: u64,
     ) -> Result<(), Errno> {
         let k = u8::try_from(kind).map_err(|_| Errno::EINVAL)?;
-        if !matches!(
-            k,
-            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
-                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
-                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
-                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
-        ) {
+        let known = if space == IMPORT_SPACE_GLOBAL {
+            matches!(
+                k,
+                abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
+                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
+                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
+                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
+            )
+        } else if space == IMPORT_SPACE_TABLE {
+            // A table import is always a `WebAssembly.Table`, so identity is the
+            // only thing the host can say about one. `BASE_IMPORT` is excluded
+            // here for the same reason as in the global space.
+            k == abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE
+        } else {
+            false
+        };
+        if !known {
             // `BASE_IMPORT` is excluded on purpose, and it is the interesting
             // case: it is a DEFINED kind the host may not publish. Saying it
             // would be saying no activation provides the object, which needs
@@ -750,6 +770,7 @@ mod wasm {
         // SAFETY: single-threaded per worker.
         let table = unsafe { &mut *IMPORTED_GLOBAL_PROVENANCE.0.get() };
         let entry = ProvenanceEntry {
+            space,
             consumer_activation,
             import_ordinal,
             kind,
@@ -757,7 +778,8 @@ mod wasm {
             raw_bits,
         };
         for existing in table.iter_mut().take(count) {
-            if existing.consumer_activation == consumer_activation
+            if existing.space == space
+                && existing.consumer_activation == consumer_activation
                 && existing.import_ordinal == import_ordinal
             {
                 *existing = entry;
@@ -785,14 +807,16 @@ mod wasm {
     /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind,
     /// `E2BIG` past the table.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_imported_global_provenance(
+    pub extern "C" fn fm_set_import_provenance(
+        space: u32,
         consumer_activation: u32,
         import_ordinal: u32,
         kind: u32,
         group_id: u32,
         raw_bits: u64,
     ) {
-        match set_imported_global_provenance_impl(
+        match set_import_provenance_impl(
+            space,
             consumer_activation,
             import_ordinal,
             kind,
@@ -804,23 +828,37 @@ mod wasm {
         }
     }
 
-    // -- Per-activation imported-global declarations (KFIG) -----------------
+    // -- Per-activation import declarations (KFIG globals, KFIT tables) -----
     //
-    // The guest's own `kandelo.wpk_fork.imported_globals` custom section, one
-    // per activation. The module needs it to build the imported-global BINDINGS
-    // a child reads: the section says which globals an activation imports and
-    // at what type, which is half of every binding.
+    // The guest's own `kandelo.wpk_fork.imported_globals` and
+    // `.imported_tables` custom sections, one pair per activation. The module
+    // needs them to build the BINDINGS a child reads: a section says which
+    // globals or tables an activation imports, at what type, and under which
+    // private owner ordinal -- and that owner is what every other seed is keyed
+    // by, so without the section a provenance record names nothing.
     //
     // Seeded rather than read, and the limit is specific: a custom section lives
     // in the `WebAssembly.Module`, and only the host can get it out
     // (`WebAssembly.Module.customSections`). The module cannot reach its own
     // guests' modules. Same shape and same reason as the GC codec seed above.
     //
-    // Storage mirrors it too: a fixed BSS byte arena plus an index, so it
-    // survives the per-fork bump reset. Overflow is a truthful `E2BIG`; a
-    // re-seeded activation is `EINVAL`.
+    // ONE ENTRY OVER BOTH SPACES. The two sections differ only in their decoder,
+    // and the host's obligation is identical for each, so an `space` selector
+    // costs one argument where a second entry would cost a permanent widening of
+    // the surface this lane is trying to shrink. Same reasoning for the identity
+    // groups and the provenance below.
+    //
+    // Storage: a fixed BSS byte arena plus an index, so it survives the per-fork
+    // bump reset. Overflow is a truthful `E2BIG`; a re-seeded activation is
+    // `EINVAL`.
+
+    /// Imported globals -- the KFIG section.
+    const IMPORT_SPACE_GLOBAL: u32 = 0;
+    /// Imported tables -- the KFIT section.
+    const IMPORT_SPACE_TABLE: u32 = 1;
+
     const ACT_KFIG_BYTES_CAP: usize = 65_536;
-    const ACT_KFIG_MAX_ACTS: usize = 64;
+    const ACT_KFIG_MAX_ACTS: usize = 128;
 
     #[repr(C, align(8))]
     struct ActKfigBytes(UnsafeCell<[u8; ACT_KFIG_BYTES_CAP]>);
@@ -829,22 +867,26 @@ mod wasm {
     static ACT_KFIG_BYTES: ActKfigBytes =
         ActKfigBytes(UnsafeCell::new([0u8; ACT_KFIG_BYTES_CAP]));
 
-    /// Each live entry is `[activation_id, offset, byte_len]` into the arena.
+    /// Each live entry is `[space, activation_id, offset, byte_len]`.
     #[repr(C, align(4))]
-    struct ActKfigIndex(UnsafeCell<[[u32; 3]; ACT_KFIG_MAX_ACTS]>);
+    struct ActKfigIndex(UnsafeCell<[[u32; 4]; ACT_KFIG_MAX_ACTS]>);
     // SAFETY: single-threaded per worker (see HeapCell).
     unsafe impl Sync for ActKfigIndex {}
     static ACT_KFIG_INDEX: ActKfigIndex =
-        ActKfigIndex(UnsafeCell::new([[0u32; 3]; ACT_KFIG_MAX_ACTS]));
+        ActKfigIndex(UnsafeCell::new([[0u32; 4]; ACT_KFIG_MAX_ACTS]));
 
     static ACT_KFIG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_KFIG_BYTES_USED: AtomicU32 = AtomicU32::new(0);
 
-    fn set_activation_imported_globals_impl(
+    fn set_activation_imports_impl(
+        space: u32,
         activation_id: u32,
         ptr: u64,
         byte_len: u64,
     ) -> Result<(), Errno> {
+        if space != IMPORT_SPACE_GLOBAL && space != IMPORT_SPACE_TABLE {
+            return Err(Errno::EINVAL);
+        }
         let byte_len = usize::try_from(byte_len).map_err(|_| Errno::EINVAL)?;
         let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
         let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
@@ -865,14 +907,18 @@ mod wasm {
         // host's bug and belongs at the seed, not at the capture that finally
         // reads it -- by then the fork is mid-flight and the truthful failure
         // has become a trap.
-        fork_codec::imported_globals::decode_imported_globals(incoming)?;
+        if space == IMPORT_SPACE_GLOBAL {
+            fork_codec::imported_globals::decode_imported_globals(incoming)?;
+        } else {
+            fork_codec::imported_tables::decode_imported_tables(incoming)?;
+        }
 
         let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
         let used = ACT_KFIG_BYTES_USED.load(Ordering::Relaxed) as usize;
         // SAFETY: single-threaded per worker.
         let index = unsafe { &mut *ACT_KFIG_INDEX.0.get() };
         for entry in index.iter().take(act_count) {
-            if entry[0] == activation_id {
+            if entry[0] == space && entry[1] == activation_id {
                 return Err(Errno::EINVAL); // re-seeded activation
             }
         }
@@ -886,14 +932,14 @@ mod wasm {
         // SAFETY: single-threaded per worker; the range is inside the arena.
         let arena = unsafe { &mut *ACT_KFIG_BYTES.0.get() };
         arena[used..next].copy_from_slice(incoming);
-        index[act_count] = [activation_id, used as u32, byte_len as u32];
+        index[act_count] = [space, activation_id, used as u32, byte_len as u32];
         ACT_KFIG_ACT_COUNT.store(act_count as u32 + 1, Ordering::Relaxed);
         ACT_KFIG_BYTES_USED.store(next as u32, Ordering::Relaxed);
         Ok(())
     }
 
-    /// One activation's seeded KFIG bytes, or `None` if the host seeded none.
-    fn activation_imported_globals(activation_id: u32) -> Option<&'static [u8]> {
+    /// One activation's seeded section bytes, or `None` if none was seeded.
+    fn activation_imports(space: u32, activation_id: u32) -> Option<&'static [u8]> {
         let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
         // SAFETY: single-threaded per worker.
         let index = unsafe { &*ACT_KFIG_INDEX.0.get() };
@@ -901,24 +947,27 @@ mod wasm {
         index
             .iter()
             .take(act_count)
-            .find(|entry| entry[0] == activation_id)
+            .find(|entry| entry[0] == space && entry[1] == activation_id)
             .map(|entry| {
-                let at = entry[1] as usize;
-                &arena[at..at + entry[2] as usize]
+                let at = entry[2] as usize;
+                &arena[at..at + entry[3] as usize]
             })
     }
 
-    /// Seed one activation's imported-global (KFIG) custom section.
+    /// Seed one activation's imported-global (KFIG) or imported-table (KFIT)
+    /// custom section. `space` is 0 for globals, 1 for tables.
     ///
-    /// `EINVAL` for an out-of-range pointer, a malformed section, or a re-seed;
-    /// `E2BIG` past the arena or activation cap. Check `fm_last_errno`.
+    /// `EINVAL` for an unknown space, an out-of-range pointer, a malformed
+    /// section, or a re-seed; `E2BIG` past the arena or activation cap. Check
+    /// `fm_last_errno`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_imported_globals(
+    pub extern "C" fn fm_set_activation_imports(
+        space: u32,
         activation_id: u32,
         ptr: usize,
         byte_len: usize,
     ) {
-        match set_activation_imported_globals_impl(activation_id, ptr as u64, byte_len as u64) {
+        match set_activation_imports_impl(space, activation_id, ptr as u64, byte_len as u64) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -1829,6 +1878,108 @@ mod wasm {
     ///
     /// A capture with no imported globals writes no record, matching the arena a
     /// guest without imports produced before.
+    /// One space's identity groups, in the shape the election takes them.
+    fn identity_groups(space: u32) -> Vec<fork_codec::GlobalIdentityGroup> {
+        let count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*GLOBAL_IDENTITY.0.get() };
+        table
+            .iter()
+            .take(count)
+            .filter(|g| g[0] == space)
+            .map(|g| fork_codec::GlobalIdentityGroup {
+                activation: g[1],
+                owner: g[2],
+                group_id: g[3],
+            })
+            .collect()
+    }
+
+    /// Write the `KFBT` imported-table binding record for this capture.
+    ///
+    /// The table twin of `write_imported_global_bindings`, and the same split:
+    /// the host published which catalog tables are one `WebAssembly.Table`, and
+    /// the election here decides which activation provides each. No snapshots
+    /// are consulted -- a table's contents travel as the sparse-table records,
+    /// not as part of its binding.
+    ///
+    /// Writes nothing when no activation imports a table, so an arena gains a
+    /// record only when there is something in it.
+    fn write_imported_table_bindings() -> Result<(), Errno> {
+        let activations: Vec<u32> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations.keys().copied().collect()
+        };
+        let mut declarations: Vec<fork_codec::ImportedTableDeclaration> = Vec::new();
+        // (activation, import_ordinal) -> owner_id, the translation the host is
+        // spared; see the global twin for why an ordinal is enough.
+        let mut by_ordinal: Vec<(u32, u32, u32)> = Vec::new();
+        for activation in activations {
+            let Some(bytes) = activation_imports(IMPORT_SPACE_TABLE, activation) else {
+                continue; // an activation with no imported tables seeds nothing
+            };
+            let decoded = fork_codec::imported_tables::decode_imported_tables(bytes)?;
+            for table in &decoded.tables {
+                declarations.push(fork_codec::ImportedTableDeclaration {
+                    activation,
+                    owner: table.owner_id,
+                });
+                by_ordinal.push((activation, table.import_ordinal, table.owner_id));
+            }
+        }
+
+        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let mut provenance: Vec<fork_codec::ImportedTableProvenance> = Vec::new();
+        for e in table.iter().take(count).filter(|e| e.space == IMPORT_SPACE_TABLE) {
+            let owner = by_ordinal
+                .iter()
+                .find(|(a, o, _)| *a == e.consumer_activation && *o == e.import_ordinal)
+                .map(|(_, _, owner)| *owner)
+                .ok_or(Errno::EINVAL)?;
+            provenance.push(fork_codec::ImportedTableProvenance {
+                consumer_activation: e.consumer_activation,
+                consumer_owner: owner,
+                group_id: e.group_id,
+            });
+        }
+        if provenance.is_empty() {
+            return Ok(());
+        }
+
+        let groups = identity_groups(IMPORT_SPACE_TABLE);
+        let bindings =
+            fork_codec::build_imported_table_bindings(&provenance, &declarations, &groups)?;
+        let size = fork_codec::imported_table_bindings_size(bindings.len())? as u64;
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem_mut_ref = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = st;
+        let payload = module_state.reserve(
+            module_state_chunks,
+            mem_mut_ref,
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS,
+            0,
+            abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER,
+            size,
+        )?;
+        let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(size as usize).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        let out: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(
+                core::hint::black_box(start) as *mut u8,
+                size as usize,
+            )
+        };
+        fork_codec::encode_imported_table_bindings(out, &bindings)?;
+        module_state.commit(mem_mut_ref, payload)?;
+        Ok(())
+    }
+
     fn write_imported_global_bindings() -> Result<(), Errno> {
         let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
         if count == 0 || !module_owns_arena_now() {
@@ -1848,7 +1999,7 @@ mod wasm {
         // host can name an import without reading this section at all.
         let mut by_ordinal: Vec<(u32, u32, u32)> = Vec::new();
         for activation in activations {
-            let Some(bytes) = activation_imported_globals(activation) else {
+            let Some(bytes) = activation_imports(IMPORT_SPACE_GLOBAL, activation) else {
                 continue; // an activation with no imported globals seeds nothing
             };
             let decoded = fork_codec::imported_globals::decode_imported_globals(bytes)?;
@@ -1866,7 +2017,7 @@ mod wasm {
         let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
         let mut provenance: Vec<fork_codec::ImportedGlobalProvenance> =
             Vec::with_capacity(count);
-        for e in table.iter().take(count) {
+        for e in table.iter().take(count).filter(|e| e.space == IMPORT_SPACE_GLOBAL) {
             // An ordinal the activation's section does not declare as a global
             // is the host naming an import that is not one.
             //
@@ -1895,18 +2046,7 @@ mod wasm {
         // The identity groups the host published, verbatim; the election over
         // them happens in `build_imported_global_bindings`, where it can be
         // tested without a worker.
-        let identity_count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
-        // SAFETY: single-threaded per worker.
-        let identity = unsafe { &*GLOBAL_IDENTITY.0.get() };
-        let groups: Vec<fork_codec::GlobalIdentityGroup> = identity
-            .iter()
-            .take(identity_count)
-            .map(|g| fork_codec::GlobalIdentityGroup {
-                activation: g[0],
-                owner: g[1],
-                group_id: g[2],
-            })
-            .collect();
+        let groups = identity_groups(IMPORT_SPACE_GLOBAL);
 
         // Snapshots, from the arena this module owns.
         let root = {
@@ -3590,6 +3730,7 @@ mod wasm {
         // capture opened and the save ran, before anything else touches the
         // arena.
         write_imported_global_bindings()?;
+        write_imported_table_bindings()?;
         Ok(root0)
     }
 
