@@ -6041,3 +6041,64 @@ This is worth flagging beyond the paperwork, because the false half was
 load-bearing for a reader: it says this import is dead, and a reader trusting it
 would conclude the whole find path is unreachable and could be simplified or
 dropped. It is reachable; it is merely undriven.
+
+## §129 — Every remaining task adds to a surface that has no headroom
+
+I built the approved `fm_phase` change end to end -- the module export, the host
+reader, four guards each perturbed until it failed -- and then could not commit
+it. Not because it was wrong. Because there is nowhere to put it.
+
+The numbers. `fm_phase` takes `forkModuleHostEntries` from 49 to 50, which is
+the raise the maintainer approved. What that approval did not cover, because I
+did not know it when I asked, is the host side: the reader is 29 code lines in a
+new `host/src/fork-module-*.ts`, and the call-site plumbing is 8 lines in
+`worker-main.ts`. Those land on `forkTypeScript` (672) and
+`workerMainTypeScript` (5858). Both surfaces measure EXACTLY their ceiling
+today, because both were banked at their measurement. So do
+`forkModuleHostEntries` (49) and, within 15 lines, `forkPlatformTypeScript`
+(435 of 450 -- and the reader does not fit in 15).
+
+This is not a fact about the phase change. It is the shape of everything left:
+
+- Porting a decoder into the module adds `fm_*` entries. `forkModuleHostEntries`
+  is at its ceiling with a TARGET of 5, so the budget is asking for a fourfold
+  reduction in exactly the population each port grows.
+- Restoring host floor from the attic adds host lines. `fork-imported-globals.ts`
+  is the clean case -- `crates/fork-codec/src/imported_globals.rs` says in its
+  own header that the live half is deliberately deferred to the host, because it
+  observes raw JavaScript import values at `WebAssembly.Instance` boundaries --
+  and it is 1229 lines.
+- Writing the thin shared layer this lane exists to produce adds host lines,
+  which is what `forkPlatformTypeScript` is FOR, and it has 15 left.
+
+Every route is additive, and the additions are the work.
+
+**The resolution is the order, and the maintainer already gave it.** "Why aren't
+you just removing references to the attic builder while you are adding the new
+implementation?" A cut frees the room the addition needs, so the cut comes
+first and the addition rides in the same commit. An addition that has to wait
+for a ceiling raise is an addition that skipped its deletion. The budget is not
+obstructing the work; it is refusing to let the work be half-done, which is what
+it was built to refuse.
+
+So `fm_phase` is parked rather than committed, and the phase reader will land
+with the coordinator cut that deletes the host mirror it replaces. That is the
+cut that pays for it, and it is the next approved task anyway.
+
+**One thing here is the maintainer's call and not mine.** Approving 49 -> 50 was
+approving a trade whose second half I could not quote at the time. If the answer
+is "raise the two host ceilings by 37 and land it now", say so and it lands
+tonight; the work is built and green apart from the budget. I am not raising
+them on my own, because "never raise a ceiling to make a check pass" does not
+have an exception for a ceiling I would rather not be under.
+
+**A mistake worth recording.** Writing that test, I created
+`host/test/fork-module-phase.test.ts` without checking -- and a 186-line test of
+that exact name already existed, from `81b0e76d3`. `Write` reported success and
+the suite stayed green, with the old assertions simply gone. I restored it from
+HEAD. Its header says something I had forgotten I wrote: it considered an
+`fm_phase()` accessor and REMOVED it, "it adds an `fm_*` entry to a surface the
+campaign is driving toward five, and it does so for a caller that is a test."
+That reasoning does not settle the present case -- these callers are production,
+not a test -- but I reached the identical wall from the other side two days
+later, which suggests the wall is real rather than a bad estimate.
