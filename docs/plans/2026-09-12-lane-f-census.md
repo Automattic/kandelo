@@ -129,8 +129,8 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 | Surface | Before | After | Bought |
 |---|---|---|---|
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
-| `forkTypeScript` | 672 | 757 | the backend's reduced-surface methods (workspace accessor, `abort`, the drive bindings) |
-| `forkPlatformTypeScript` | 450 | 463 | `host/src/fork-phase.ts` (28 lines; this surface's target is 500) |
+| `forkTypeScript` | 672 | 789 | the backend's reduced-surface methods, and the three import seeds |
+| `forkPlatformTypeScript` | 450 | **671** | `fork-phase.ts` (28), then `fork-import-identity.ts` (208) |
 | `workerMainTypeScript` | 5858 | 5824 | nothing — this one FELL, and the ceiling was banked down to the measurement |
 
 The seven entries behind the first row, each with the reason recorded beside its
@@ -145,6 +145,15 @@ number in `docs/surface-budget.json`:
 | `fm_set_activation_imported_globals` | the KFIG declarations half of `appendTo` |
 | `fm_set_imported_global_provenance` | the rest of `appendTo`: matching, typing, sorting, encoding |
 | `fm_set_global_identity_group` | the provider election — see section 152 |
+
+**`forkPlatformTypeScript` at 671 is past its TARGET of 500**, which that
+surface's own text calls a stop-and-talk line rather than an allowance. Raising
+it is what the maintainer's instruction with that number said to do -- "do the
+work provisionally and RAISE IT WITH THEM rather than stopping" -- so it is
+raised and reported here, not spent quietly. The 208 lines are argued line-group
+by line-group beside the number in `docs/surface-budget.json`; the short version
+is that every one of them is a JavaScript capability the module does not have,
+and that the child half of the same port is still to come and will add to it.
 
 The one to question is `forkModuleHostEntries`: its target is **5**, and seven
 raises moved it the other way. Each bought a deleted host mirror or a deleted

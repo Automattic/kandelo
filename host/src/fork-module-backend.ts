@@ -215,8 +215,10 @@ export class ForkModuleContinuationBackend {
     return (this.exports.fm_last_errno as () => number)();
   }
 
-  private call(name: string, ...args: number[]): number {
-    const fn = this.exports[name] as ((...a: number[]) => number) | undefined;
+  private call(name: string, ...args: (number | bigint)[]): number {
+    const fn = this.exports[name] as
+      | ((...a: (number | bigint)[]) => number)
+      | undefined;
     if (fn === undefined) {
       throw new Error(`${this.label}: fork-module exports no ${name}`);
     }
@@ -358,6 +360,60 @@ export class ForkModuleContinuationBackend {
   setActivationGcCodec(activationId: number, bytes: Uint8Array): void {
     const at = this.stage(bytes, `activation ${activationId} GC codec`);
     this.call("fm_set_activation_gc_codec", activationId, at, bytes.length);
+  }
+
+  /**
+   * Hand the module one activation's raw import declarations: the KFIG section
+   * for `space` 0, the KFIT section for 1.
+   *
+   * Raw and undecoded, like the two codec sections above. The module refuses a
+   * malformed one HERE rather than at the capture that finally reads it.
+   */
+  setActivationImports(space: number, activationId: number, bytes: Uint8Array): void {
+    const at = this.stage(bytes, `activation ${activationId} imports ${space}`);
+    this.call("fm_set_activation_imports", space, activationId, at, bytes.length);
+  }
+
+  /**
+   * Tell the module that one catalog entry is the object `groupId` names.
+   *
+   * Entries sharing a group are one `WebAssembly.Global` or `WebAssembly.Table`.
+   * The host assigns the ids because only JavaScript can compare object
+   * identity; which member PROVIDES the object is the module's election, since
+   * that needs the KFIG/KFIT sections it is seeded with.
+   */
+  setIdentityGroup(
+    space: number,
+    activationId: number,
+    ownerId: number,
+    groupId: number,
+  ): void {
+    this.call("fm_set_identity_group", space, activationId, ownerId, groupId);
+  }
+
+  /**
+   * Tell the module what one imported global or table turned out to be.
+   *
+   * `BASE_IMPORT` is not a kind a host may publish: it asserts that no
+   * activation provides the object, which is the election's conclusion.
+   */
+  setImportProvenance(
+    space: number,
+    consumerActivation: number,
+    importOrdinal: number,
+    kind: number,
+    groupId: number,
+    rawBits: bigint,
+  ): void {
+    this.call(
+      "fm_set_import_provenance",
+      space,
+      consumerActivation,
+      importOrdinal,
+      kind,
+      groupId,
+      rawBits,
+    );
   }
 
   /**
