@@ -750,7 +750,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Legacy fsSab path keeps the prior 3-mount layout intact — its caller
   // controls the rootfs contents directly via kernel.fs and would lose
   // control if the spec dictated additional scratch mounts.
-  const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
   // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
@@ -782,10 +781,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     rootfsLazyFetcher = corsProxyLazyFetcher;
     memfs.setLazyFetcher(rootfsLazyFetcher);
   }
-  const mounts: MountConfig[] = [
-    { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
-    ...specMounts,
-  ];
+  // `/dev/shm` is NOT mounted here. POSIX shared memory moved into the
+  // in-kernel tmpfs, which already serves every other scratch prefix, so a
+  // host backend for it would be a second authority the kernel never consults.
+  const mounts: MountConfig[] = [...specMounts];
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });

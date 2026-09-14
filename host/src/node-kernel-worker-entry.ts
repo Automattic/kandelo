@@ -782,9 +782,6 @@ async function buildVirtualPlatformIO(
     cleanupSessionDir();
     throw error;
   }
-  const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
-  const shmfs = MemoryFileSystem.create(shmSab);
-  shmfs.chmod("/", 0o1777);
   const extras: MountConfig[] = (extraMounts ?? []).map((m) => ({
     mountPoint: m.mountPoint,
     backend: new HostFileSystem(m.hostPath, m.mountPoint, {
@@ -794,8 +791,11 @@ async function buildVirtualPlatformIO(
     }),
     readonly: m.readonly,
   }));
+  // `/dev/shm` is NOT mounted here. POSIX shared memory moved into the
+  // in-kernel tmpfs, which already serves `/tmp` and every other scratch
+  // prefix, so a host backend for it would be a second authority the kernel
+  // never consults.
   const mounts = [
-    { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
     ...specMounts,
     ...extras,
   ];

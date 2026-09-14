@@ -81,17 +81,14 @@ async function buildBrowserMounts(image: Uint8Array): Promise<{
   io: VirtualPlatformIO;
   rootfs: MemoryFileSystem;
 }> {
-  const shmSab = new SharedArrayBuffer(64 * 1024);
-  const shmfs = MemoryFileSystem.create(shmSab);
   const specMounts = await resolveForBrowser(BROWSER_SCRATCH_MOUNT_SPEC, image, {
     scratchSabBytes: TINY_SCRATCH,
   });
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("BROWSER_SCRATCH_MOUNT_SPEC missing / mount");
-  const mounts: MountConfig[] = [
-    { mountPoint: "/dev/shm", backend: shmfs },
-    ...specMounts,
-  ];
+  // No `/dev/shm` mount: POSIX shared memory moved into the in-kernel tmpfs,
+  // so the host no longer backs any part of `/dev`.
+  const mounts: MountConfig[] = [...specMounts];
   return {
     mounts,
     io: new VirtualPlatformIO(mounts, new BrowserTimeProvider()),
@@ -106,14 +103,13 @@ describe("browser host mount layering", () => {
     image = await buildFixtureImage();
   });
 
-  it("produces 9 mounts: 8 from spec + /dev/shm", async () => {
+  it("produces exactly the spec's mounts and nothing under /dev", async () => {
     const { mounts } = await buildBrowserMounts(image);
-    expect(mounts).toHaveLength(BROWSER_SCRATCH_MOUNT_SPEC.length + 1);
+    expect(mounts).toHaveLength(BROWSER_SCRATCH_MOUNT_SPEC.length);
     const points = mounts.map((m) => m.mountPoint).sort();
     expect(points).toEqual(
       [
         "/",
-        "/dev/shm",
         "/home/dev",
         "/opt/admin",
         "/opt/run",
@@ -125,20 +121,20 @@ describe("browser host mount layering", () => {
     );
   });
 
-  // `/dev` is no longer a host mount: the kernel owns that namespace and
-  // `/dev/shm` is the only host-backed subtree in it. So the router's job here
-  // is to claim `/dev/shm` and to claim nothing else under `/dev` — a path the
-  // kernel never routes to a host filesystem in the first place.
-  it("claims /dev/shm and leaves the rest of /dev to the kernel", async () => {
+  // `/dev` is wholly the kernel's now. `/dev/shm` was its one host-backed
+  // subtree and moved to the in-kernel tmpfs, so NO host mount claims any part
+  // of the namespace — which is what this asserts, because a host mount that
+  // reappeared there would be a second authority the kernel never consults.
+  it("leaves the whole of /dev to the kernel", async () => {
     const { io, rootfs } = await buildBrowserMounts(image);
-    const shm = io.resolve("/dev/shm/sem.x");
-    expect(shm.relativePath).toBe("/sem.x");
-    // No device mount claims it, so the router hands it to `/` unchanged. The
-    // worker entries then drop `/` from the guest-facing mounts, which is why
-    // no `/dev` path reaches a host filesystem at runtime.
-    const dev = io.resolve("/dev/null");
-    expect(dev.backend).toBe(rootfs);
-    expect(dev.relativePath).toBe("/dev/null");
+    for (const path of ["/dev/shm/sem.x", "/dev/null"]) {
+      // No device mount claims it, so the router hands it to `/` unchanged.
+      // The worker entries then drop `/` from the guest-facing mounts, which is
+      // why no `/dev` path reaches a host filesystem at runtime.
+      const resolved = io.resolve(path);
+      expect(resolved.backend).toBe(rootfs);
+      expect(resolved.relativePath).toBe(path);
+    }
   });
 
   it("rootfs files reach the image backend through the router", async () => {

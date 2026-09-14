@@ -274,7 +274,6 @@ export class BrowserKernel {
   private initialized = false;
   /** POSIX shared-memory / semaphore SAB shared with the kernel worker. Small
    *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
-  private shmSab: SharedArrayBuffer;
   private maxPages: number;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
@@ -342,8 +341,6 @@ export class BrowserKernel {
     // The kernel worker owns the VFS. The main thread allocates only the
     // small shared-memory SAB (POSIX shm/semaphores), never a VFS buffer, so
     // nothing large accumulates on the main thread across image switches.
-    this.shmSab = new SharedArrayBuffer(1024 * 1024);
-    MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
   }
 
   /**
@@ -562,7 +559,6 @@ export class BrowserKernel {
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
-          shmSab: this.shmSab,
           workerEntryUrl,
           config: {
             maxWorkers: this.options.maxWorkers,
