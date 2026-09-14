@@ -108,6 +108,8 @@ import {
 } from "./fork-module-instance";
 import { ForkReferenceCaptureModule } from "./fork-reference-capture-module";
 import {
+  type ForkBorrowedReplayWorkspace,
+  borrowedReplayWorkspaceOf,
   FORK_MODULE_RESUME_CATALOG_CAP,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
@@ -149,7 +151,6 @@ import {
 import {
   type ForkActivationContinuation,
   ForkProcessContinuationCoordinator,
-  type ForkBorrowedReplayWorkspaceRequirements,
 } from "./fork-process-continuation";
 import {
   forkResumeTargetsFromInstance,
@@ -5342,7 +5343,7 @@ export async function centralizedWorkerMain(
               );
             }
             const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-              ? processContinuation.borrowedReplayWorkspaceRequirements()
+              ? borrowedReplayWorkspaceOf(forkModuleBackend, pid)
               : undefined;
             const childPid = sendForkSyscall(
               memory,
@@ -5888,7 +5889,7 @@ function sendForkSyscall(
   memory: WebAssembly.Memory,
   channelOffset: number,
   mode: ProcessForkMode,
-  borrowedReplay?: ForkBorrowedReplayWorkspaceRequirements,
+  borrowedReplay?: ForkBorrowedReplayWorkspace,
 ): number {
   const view = new DataView(memory.buffer);
   view.setInt32(
@@ -7325,7 +7326,7 @@ export async function centralizedThreadWorkerMain(
             continue;
           }
           const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-            ? threadProcessContinuation.borrowedReplayWorkspaceRequirements()
+            ? borrowedReplayWorkspaceOf(threadForkModuleBackend, pid)
             : undefined;
           const childPid = sendForkSyscall(
             memory,

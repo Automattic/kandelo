@@ -2050,6 +2050,18 @@ mod wasm {
     static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new([0u8; SCRATCH_SIZE]));
     static SCRATCH_TOP: AtomicUsize = AtomicUsize::new(0);
 
+    /// The deepest `SCRATCH_TOP` reached since the last per-fork reset.
+    ///
+    /// The scratch stack is strictly nested (reserve/release around a recursive
+    /// encode), so its CURRENT top is 0 again by the time a capture seals and
+    /// says nothing about how much room the encode actually needed. A vfork
+    /// BORROWED child re-runs the decode side of that same graph in memory it
+    /// must own privately, and the capture high-water is the bound the host
+    /// reserves from. Kept beside the allocator that moves it, and reset with
+    /// it, because a high-water carried across forks would over-reserve every
+    /// later child by the worst fork the worker ever ran.
+    static SCRATCH_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
     fn scratch_align(len: usize) -> usize {
         (len.wrapping_add(15)) & !15
     }
@@ -2113,6 +2125,7 @@ mod wasm {
         // on the scratch stack. Reclaim them with the bump, or the next fork in
         // this worker starts with a stack that never comes back down.
         SCRATCH_TOP.store(0, Ordering::Relaxed);
+        SCRATCH_HIGH_WATER.store(0, Ordering::Relaxed);
         CAPTURE_ARMED.store(0, Ordering::Relaxed);
         // SAFETY: single-threaded per worker; only one fork drives these at a time.
         unsafe {
@@ -5933,6 +5946,9 @@ mod wasm {
             _ => wasm_intr::unreachable(),
         };
         SCRATCH_TOP.store(next, Ordering::Relaxed);
+        if next > SCRATCH_HIGH_WATER.load(Ordering::Relaxed) {
+            SCRATCH_HIGH_WATER.store(next, Ordering::Relaxed);
+        }
         (SCRATCH.0.get() as usize).wrapping_add(top)
     }
 
@@ -7533,6 +7549,102 @@ mod wasm {
     ///
     /// Returns the counter value, or `-1` for an unknown field index (the
     /// counters are monotonic non-negative, so `-1` is an unambiguous sentinel).
+    /// Child-private workspace a vfork BORROWED child will need, by field:
+    /// `0` continuation-prefix bytes, `1` reference-scratch bytes.
+    ///
+    /// Ported from `ForkProcessContinuationCoordinator.borrowedReplayWorkspaceRequirements`.
+    /// A vfork child runs a FRESH module instance inside the SAME shared memory
+    /// as the still-parked parent, so it cannot write the parent's fixed
+    /// runtime prefix or reuse the parent's scratch. The host reserves it a
+    /// private region and needs its size BEFORE issuing the fork syscall, which
+    /// is why this is a read rather than something the child asks for later.
+    ///
+    /// The two halves are measured differently because they behave differently.
+    /// Prefixes stay LIVE through the whole inherited-frame rewind, so every
+    /// active activation needs its own simultaneously and they sum. Reference
+    /// scratch is stack-disciplined -- reserve and release nest around a
+    /// recursive encode -- so its current top is back to 0 at seal and only its
+    /// capture HIGH-WATER bounds what the child's decode will need. Summing the
+    /// scratch too would over-reserve; taking the prefix high-water instead of
+    /// the sum would under-reserve, and under-reserving means one activation's
+    /// rewind writing into another's prefix.
+    ///
+    /// Why the module and not the host. The host had to reach into each
+    /// activation's frame format for `fixedPrefixSize` and into the capture
+    /// session for the scratch high-water, which is per-activation module state
+    /// and the module's own allocator respectively. Neither is host knowledge;
+    /// the host was reading the module's bookkeeping through a JS mirror of it.
+    ///
+    /// Legal only at `PHASE_SEALED_PARENT`, which is the same rule the JS
+    /// `requirePhase("sealed-parent", ...)` enforced -- now enforced by the
+    /// phase machine instead of a copy of it. Earlier than that the activation
+    /// set is still growing and the scratch high-water has not peaked, so an
+    /// answer would be an undercount rather than an error, which is the worst
+    /// kind. Answers `EBUSY` and `-1` off-phase, `EINVAL` and `-1` for an
+    /// unknown field.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_borrowed_replay_workspace(field: u32) -> i64 {
+        // Field BEFORE phase, deliberately. Which fields exist is a static
+        // property of this entry, true in every phase, so a caller asking for
+        // one that does not exist is wrong now and would still be wrong after a
+        // seal. Checking the phase first would answer `EBUSY` to that caller and
+        // invite it to retry forever -- and would make the two refusals
+        // indistinguishable from idle, which is the only phase a test can reach
+        // this entry from without driving a whole capture.
+        if field > 1 {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        // Propagated, not re-minted: `require_phase` is the one place that names
+        // the wrong-phase errno, and a second literal here would break the pin
+        // keeping that errno to exactly one meaning.
+        if let Err(e) = require_phase(PHASE_SEALED_PARENT) {
+            set_err(e);
+            return -1;
+        }
+        let bytes = if field == 0 {
+            let Some(module) = state().as_ref() else {
+                set_err(Errno::EINVAL);
+                return -1;
+            };
+            let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
+            if alignment == 0 {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+            let mut total: u64 = 0;
+            // Ascending activation id, matching the host's `orderedActivations()`
+            // sort. The running total is aligned BEFORE each prefix is added, so
+            // the order is part of the answer and both sides must walk it alike.
+            for frames in module.activations.values() {
+                total = match total
+                    .checked_add(alignment - 1)
+                    .map(|v| v / alignment * alignment)
+                    .and_then(|v| v.checked_add(frames.format.fixed_prefix_size as u64))
+                {
+                    Some(next) => next,
+                    None => {
+                        set_err(Errno::EINVAL);
+                        return -1;
+                    }
+                };
+            }
+            total
+        } else {
+            SCRATCH_HIGH_WATER.load(Ordering::Relaxed) as u64
+        };
+        match i64::try_from(bytes) {
+            Ok(value) => {
+                set_ok();
+                value
+            }
+            Err(_) => {
+                set_err(Errno::EINVAL);
+                -1
+            }
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_stats(field: u32) -> i64 {
         // Index a table of references rather than `match`-ing over the eleven

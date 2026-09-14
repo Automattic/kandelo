@@ -45,6 +45,33 @@ export const FORK_MODULE_STATS = [
   "externrefHandlesScanned",
 ] as const;
 
+/**
+ * Size a vfork BORROWED child's private workspace, refusing a missing module.
+ *
+ * The backend handle is nullable everywhere in the worker, and the two call
+ * sites are on a path that cannot be reached without it: a vfork only gets here
+ * having sealed a capture, and only the module can seal one. A bare `!` would
+ * be right and would also mean that if the impossible ever happened the failure
+ * would name a JavaScript property rather than the thing that was missing.
+ */
+export function borrowedReplayWorkspaceOf(
+  backend: ForkModuleContinuationBackend | null,
+  pid: number,
+): ForkBorrowedReplayWorkspace {
+  if (backend === null) {
+    throw new Error(
+      `pid=${pid}: a vfork sealed its capture with no fork-module backend`,
+    );
+  }
+  return backend.borrowedReplayWorkspace();
+}
+
+/** Sizes a vfork BORROWED child's host-reserved private workspace. */
+export interface ForkBorrowedReplayWorkspace {
+  readonly prefixBytes: number;
+  readonly scratchBytes: number;
+}
+
 export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
 
 /**
@@ -207,6 +234,38 @@ export class ForkModuleContinuationBackend {
       throw new Error(`${this.label}: fm_stats rejected field ${field} (${name})`);
     }
     return value;
+  }
+
+  /**
+   * Child-private workspace a vfork BORROWED child needs, sized by the module.
+   *
+   * Ported out of the JS coordinator, which reached into each activation's
+   * frame format for its fixed prefix and into the capture session for the
+   * scratch high-water -- per-activation module state and the module's own
+   * allocator, read through a JS mirror of both. The module walks its own
+   * activations now; this is the read.
+   *
+   * Legal only once the capture has sealed. The module answers `EBUSY` off
+   * phase rather than an undercount, because before the seal the activation set
+   * is still growing and the scratch high-water has not peaked -- and an
+   * undersized reservation means one activation's rewind writing into another's
+   * prefix, which is silent.
+   */
+  borrowedReplayWorkspace(): ForkBorrowedReplayWorkspace {
+    const read = (field: number): number => {
+      const value = Number(
+        (this.exports.fm_borrowed_replay_workspace as (f: number) => bigint)(
+          field,
+        ),
+      );
+      if (value < 0) {
+        throw new Error(
+          `${this.label}: fm_borrowed_replay_workspace rejected field ${field}`,
+        );
+      }
+      return value;
+    };
+    return { prefixBytes: read(0), scratchBytes: read(1) };
   }
 
   setActivationCatalogBase(activationId: number, base: number): void {
