@@ -2714,6 +2714,10 @@ mod wasm {
         sides_ptr: u64,
         sides_count: u64,
     ) -> Result<u64, Errno> {
+        // A fresh capture records a fresh externref set. Without this a COW child,
+        // which inherits this module's memory, would report the handles its
+        // PARENT interned and lease references it does not hold.
+        reset_captured_externrefs();
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
@@ -5476,7 +5480,10 @@ mod wasm {
                 set_err(Errno::EINVAL);
                 return -1;
             }
-            INTERN_KIND_EXTERNREF => g.intern_externref(a),
+            INTERN_KIND_EXTERNREF => {
+                record_captured_externref(a);
+                g.intern_externref(a)
+            }
             INTERN_KIND_I31 => g.intern_i31(a as i32),
             _ => {
                 set_err(Errno::EINVAL);
@@ -5484,6 +5491,75 @@ mod wasm {
             }
         };
         capture_ok_id(id)
+    }
+
+    // -- Captured externref handles -----------------------------------------
+    //
+    // Every broker handle interned into this capture, in intern order.
+    //
+    // The KERNEL worker needs this set to lease the parent's externrefs to the
+    // child's generation. Today it derives the set itself, by reading the parked
+    // parent's KFMS arena and running the full segmented-transaction parser and
+    // semantic validator over it -- roughly 4,956 lines of host decoder that
+    // duplicate what this module already did when the handle was interned here.
+    //
+    // Recording it at intern time removes that decode entirely rather than
+    // relocating it: the parent knows its own externrefs, and the kernel worker
+    // is the one thread every process's syscalls serialize through, so parsing
+    // there blocks unrelated processes.
+    //
+    // Capture-scoped: cleared when a capture begins, so a child that inherits
+    // this module's memory does not report its parent's handles.
+    const CAPTURED_EXTERNREF_MAX: usize = 4096;
+
+    #[repr(C, align(4))]
+    struct CapturedExternrefs(UnsafeCell<[u32; CAPTURED_EXTERNREF_MAX]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for CapturedExternrefs {}
+    static CAPTURED_EXTERNREFS: CapturedExternrefs =
+        CapturedExternrefs(UnsafeCell::new([0u32; CAPTURED_EXTERNREF_MAX]));
+    static CAPTURED_EXTERNREF_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Set when a capture interned more handles than the arena holds, so the
+    /// host is told to fall back rather than silently leasing a truncated set.
+    static CAPTURED_EXTERNREF_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+
+    fn record_captured_externref(handle: u32) {
+        let count = CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed) as usize;
+        if count >= CAPTURED_EXTERNREF_MAX {
+            CAPTURED_EXTERNREF_OVERFLOW.store(1, Ordering::Relaxed);
+            return;
+        }
+        // SAFETY: single-threaded; `count < CAPTURED_EXTERNREF_MAX` above.
+        let arena = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
+        arena[count] = handle;
+        CAPTURED_EXTERNREF_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+    }
+
+    fn reset_captured_externrefs() {
+        CAPTURED_EXTERNREF_COUNT.store(0, Ordering::Relaxed);
+        CAPTURED_EXTERNREF_OVERFLOW.store(0, Ordering::Relaxed);
+    }
+
+    /// How many externref handles this capture interned, or -1 if it interned
+    /// more than the module can record (the host must then not trust the list).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_captured_externref_count() -> i32 {
+        if CAPTURED_EXTERNREF_OVERFLOW.load(Ordering::Relaxed) != 0 {
+            return -1;
+        }
+        CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed) as i32
+    }
+
+    /// One recorded handle by index, or -1 if the index is past the count.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_captured_externref(index: u32) -> i64 {
+        let count = CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed);
+        if index >= count {
+            return -1;
+        }
+        // SAFETY: single-threaded; `index < count <= CAPTURED_EXTERNREF_MAX`.
+        let arena = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
+        i64::from(arena[index as usize])
     }
 
     /// Claim a fresh graph identity for a GC value before its fields are known,

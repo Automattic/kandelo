@@ -82,7 +82,10 @@ import {
   ForkHostImportOwnerRuntime,
   type ForkHostImportOwnerWorker,
 } from "./fork-host-import-runtime";
-import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
+import {
+  ForkExternrefProcessOwner,
+  readCapturedExternrefHandover,
+} from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import type {
   ForkModuleProofMessage,
@@ -2586,13 +2589,18 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
             : undefined;
       const forkBufAddr = activeForkBufAddr;
+      // The PARENT reports which externref handles its capture interned; this
+      // worker no longer decodes the parked parent's arena to re-derive them.
+      // See `forkGenerationFromCapturedHandles` for what that trades.
       const externrefGrant = externrefProcessOwner
-        .forkGenerationFromContinuation(
+        .forkGenerationFromCapturedHandles(
           parentInfo.externrefGeneration,
           childPid,
-          parentMemory,
-          ptrWidth,
-          forkBufAddr,
+          readCapturedExternrefHandover(
+            parentMemory,
+            parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
+            `fork child pid=${childPid}: externref handover`,
+          ),
         );
       childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
@@ -3347,12 +3355,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             ? { ...parentInfo.forkReplayContext, forkBufAddr }
             : undefined;
       const externrefGrant =
-        externrefProcessOwner.forkGenerationFromContinuation(
+        externrefProcessOwner.forkGenerationFromCapturedHandles(
           parentInfo.externrefGeneration,
           childPid,
-          parentMemory,
-          ptrWidth,
-          forkBufAddr,
+          readCapturedExternrefHandover(
+            parentMemory,
+            parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
+            `fork child pid=${childPid}: externref handover`,
+          ),
         );
       childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };

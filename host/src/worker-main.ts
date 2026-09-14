@@ -130,6 +130,7 @@ import {
 } from "./fork-activation-registry";
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
 import { createForkGuestHostFloor } from "./fork-guest-host-floor";
+import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
 import {
   ForkExceptionBroker,
   forkExceptionProviderFromInstance,
@@ -5321,6 +5322,23 @@ export async function centralizedWorkerMain(
                 } satisfies WorkerToHostMessage);
               }
               continue;
+            }
+            // Hand the kernel worker the externref handles this capture
+            // interned, so it does not have to decode this parked worker's
+            // arena to re-derive them. Written AFTER the seal (the set is
+            // complete) and BEFORE the syscall (the kernel reads it while
+            // handling the fork). See `fork-externref-process-owner`.
+            if (forkModuleBackend) {
+              const captured = forkModuleBackend.capturedExternrefHandles();
+              const staged = captured.length === 0
+                ? 0
+                : forkModuleBackend.stageExternrefHandover(captured);
+              writeCapturedExternrefHandover(
+                memory,
+                channelOffset - FORK_SAVE_BUFFER_SIZE,
+                staged,
+                captured.length,
+              );
             }
             const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
               ? processContinuation.borrowedReplayWorkspaceRequirements()

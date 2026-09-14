@@ -337,6 +337,60 @@ export class ForkModuleContinuationBackend {
     }
   }
 
+  /**
+   * Every externref broker handle this capture interned, in intern order.
+   *
+   * The kernel worker needs this set to lease the parent's externrefs to the
+   * child's generation. It used to DERIVE the set, by reading the parked
+   * parent's KFMS arena and running the full segmented-transaction parser over
+   * it. The module already had the handles -- they are passed to it on every
+   * `fm_capture_intern` -- so deriving them again was ~4,956 lines of host
+   * decoder duplicating work, on the one thread every process's syscalls
+   * serialize through.
+   *
+   * Throws on overflow rather than returning a short list. A truncated lease
+   * set is silent corruption: the child would hold references the parent
+   * believes it passed on, and nothing would report the difference.
+   */
+  capturedExternrefHandles(): number[] {
+    const count = Number(
+      (this.exports.fm_captured_externref_count as () => number)(),
+    );
+    if (count < 0) {
+      throw new Error(
+        `${this.label}: this capture interned more externref handles than the ` +
+          `module records, so the inherited set cannot be trusted`,
+      );
+    }
+    const read = this.exports.fm_captured_externref as (i: number) => bigint | number;
+    const handles: number[] = [];
+    for (let index = 0; index < count; index++) {
+      const handle = Number(read(index));
+      if (handle < 0) {
+        throw new Error(
+          `${this.label}: externref handle ${index} of ${count} is missing`,
+        );
+      }
+      handles.push(handle);
+    }
+    return handles;
+  }
+
+  /**
+   * Stage the captured handle list into guest memory and return its address.
+   *
+   * Uses the same staging slab every other pre-fork buffer goes through, so a
+   * COPIED child reusing this region does not grow its memory relative to the
+   * parent's -- the reason `setup()`'s comment gives for staging rather than
+   * mmapping per call.
+   */
+  stageExternrefHandover(handles: readonly number[]): number {
+    const bytes = new Uint8Array(handles.length * 4);
+    const view = new DataView(bytes.buffer);
+    handles.forEach((handle, index) => view.setUint32(index * 4, handle >>> 0, true));
+    return this.stage(bytes, "externref handover");
+  }
+
   /** Make a child's decoded reference graph resident for the accessors below. */
   decodeReferenceGraph(moduleStateRoot: number): void {
     this.call("fm_decode_reference_graph", moduleStateRoot);

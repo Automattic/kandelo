@@ -5325,3 +5325,50 @@ scan, and it is the maintainer's.
 Recorded rather than acted on. What is NOT deferred is the reporting problem in
 section 114, which is fixed here: the baseline now shows its own composition, so
 "green" cannot again stand in for coverage that does not exist.
+
+## §116 — The scan moves to the parent, and ten test files come back
+
+The maintainer's direction: move the externref-handle scan to the parent worker,
+and prioritise getting the suite running again over further reduction.
+
+`ForkExternrefProcessOwner` is restored to `host/src` -- three PRODUCTION files
+import it, so this was not only a test problem. Seven of its eight methods had no
+attic coupling. The eighth read the parked parent's KFMS arena and ran the full
+segmented-transaction parser to re-derive which externref handles the fork
+carried, which is why the file had stayed out: it would have dragged back
+`fork-module-state` (3825 lines) and `fork-reference-wire` (1131).
+
+It does not any more. The module is GIVEN each broker handle on
+`fm_capture_intern`, so it records them as it interns; the parent reads them back
+after seal, stages them, and writes the address and count into the host-private
+control prefix; the kernel worker reads a flat `u32` array. About 4,956 lines of
+duplicate decoder avoided rather than restored, and the decode does not move --
+it disappears, because the parent already knew.
+
+Three properties of that, in the order they matter:
+
+  * it leaves the KERNEL worker, the one thread every process's syscalls
+    serialize through, where a per-fork parse stalls unrelated processes;
+  * it stops this worker reading a parked parent's live arena, a constraint the
+    old code called out in its own comment;
+  * what is given up is bounded by the broker, not by trust: `acquireFork`
+    refuses any handle the parent does not hold, so a wrong list can only mis-
+    claim WITHIN the parent's own generation and can never reach another
+    process's references.
+
+**Ten expected-failure files now pass**, 202 -> 192, and three of them are the
+ones that make this lane's last commit checkable at all:
+`fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e` and `dlopen-e2e`.
+Section 114 recorded that site 1 of the env stride had NO e2e coverage. It has
+coverage now, and it passes.
+
+The dominant baseline cause has moved on to `fork-reference-capture-module` (153
+references). That is the next layer, and the shape of this work is now clear: the
+helper's blockers come off one at a time, each one either a reclassification or a
+port, and each one returns a block of real tests.
+
+Four ceilings rose, each argued in `docs/surface-budget.json`:
+`forkRestoredHostFloor` 3894 -> 4072 (the reclassification section 64 sanctions,
+minus the ported method), `forkModuleHostEntries` 47 -> 49 (the two capture
+accessors), `forkTypeScript` 484 -> 513 and `workerMainTypeScript` 5845 -> 5858
+(both with production callers in the same commit).
