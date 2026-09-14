@@ -1211,14 +1211,36 @@ kernel passes `&mut dirent as *mut WasmDirent as *mut u8`, and the host writes
 exactly those three fields — so the hand-written 16 was right, and is now the
 shared type's own answer.
 
-So `waitpid` is the hot one, not the clock, and the five zeros are
-**compile-checked only**: their conversions type-check and their capacity
-arguments were derived by reading the kernel's declared buffer size, but no
-test runs them. A wrong capacity there would not be caught by anything in this
-repository today. Exercising them needs guest fixtures that call
-`readlink`, `pathconf`, `getdents`, `getrandom` and `statfs` — which is a
-piece of work with an owner, and the owner is whoever wants those paths
-covered rather than a lane that arrived here from a bounds rule.
+So `waitpid` is the hot one, not the clock — and the five zeros were
+**compile-checked only**: their conversions type-checked and their capacity
+arguments came from reading the kernel's declared buffer size, but no test ran
+them, so a wrong capacity there would have been caught by nothing.
+
+**The maintainer asked for that covered before merge, and it is.**
+`crates/host-native/fixtures/native_host_metadata.c` calls all five against a
+MOUNTED native directory, which is what routes them to the host at all — an
+in-kernel overlay path never asks. Each step returns its own exit code, so a
+failure names the import rather than only the test.
+
+**The test passing was not taken as evidence that it reaches them.** A
+temporary per-import counter says it does: `readlinkat=1`, `fpathconf=1`,
+`readdir=3`, `getrandom=2`, `fstatfs=1` — counts that match the fixture's
+shape, three readdir calls for two entries plus the terminating one, and two
+getrandom draws because one could not tell real entropy from a buffer nobody
+wrote.
+
+**And they are perturbed.** Four trials give one import at a time a capacity
+of zero where it proves the kernel's declared size; all four are killed, with
+a verifier scoped to the covering test so the set costs two minutes rather
+than twenty. Sixteen of sixteen L-D3 sites are now both executed and proven to
+fail when broken.
+
+One thing the fixture work turned up and did NOT fix: rebuilding it rebuilt
+all 24 existing fixtures, each about **2,251 bytes smaller** than what is
+committed — a consistent delta suggesting this worktree's sysroot differs from
+whatever produced them. They were restored rather than committed, because 24
+unexplained binary changes do not belong in this lane, and which side is stale
+was not determined.
 
 Two measurement mistakes are recorded with it, both the same shape. The first
 count of proofs was read BEFORE the smoke suite ran, because the reporting
@@ -2240,13 +2262,15 @@ document, in a throwaway command, caught because the answer looked too good.
   unchecked claims is not the same as showing they are wrong. Each needs
   reading the code against a smaller design, which is what the census meant by
   "nobody has audited it".
-- **That L-D3's fix works at five of its sixteen sites.** `readlinkat`,
-  `fpathconf`, `readdir`, `getrandom` and `fstatfs` are never executed by any
-  test in this repository — measured, not assumed, with a per-import counter.
-  Their conversions type-check and their capacities were derived by reading
-  the buffer size the kernel declares, and one of them (`fstatfs`) is now
-  immune to drift because that size is asked of the shared type. None of that
-  is the same as running them.
+- ~~**That L-D3's fix works at five of its sixteen sites.**~~ **RESOLVED.**
+  This entry said `readlinkat`, `fpathconf`, `readdir`, `getrandom` and
+  `fstatfs` were never executed by any test here — measured with a per-import
+  counter, not assumed. The maintainer asked for it covered before merge, and
+  a guest fixture now calls all five against a mounted native directory, a
+  counter confirms it reaches them, and four perturbation trials give each a
+  zero capacity and are killed. It is struck through rather than deleted
+  because a list of things a document could not establish is worth more when
+  it shows which ones later were.
 - **That the range proofs are free in a real workload.** What was measured is
   FREQUENCY, in one suite: 203 proofs across every machine boot and process
   lifecycle `host-native` performs, with `waitpid` the hot import at 801

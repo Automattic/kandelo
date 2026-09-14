@@ -2651,7 +2651,11 @@ helpers that returned nothing now return `Result<(), i32>`.
 **Two caveats carried, not buried.** Five of the eleven converted imports —
 `readlinkat`, `fpathconf`, `readdir`, `getrandom`, `fstatfs` — are never
 executed by any test in this repository, so their conversions are
-compile-checked only; covering them needs guest fixtures. And the cost is
+compile-checked only. **Covered on the maintainer's decision**: a guest
+fixture calls all five against a mounted native directory, a counter confirms
+it reaches them, and four perturbation trials give each a zero capacity and
+are killed. Sixteen of sixteen sites are now executed and proven to fail when
+broken. And the cost is
 measured by frequency rather than a micro-benchmark: 203 proofs across the
 whole `host-native` suite, with `waitpid` the hot import at 801 calls, which
 refutes "hot path" for what the suite covers and nothing more.
@@ -2672,8 +2676,8 @@ tests. At that rate the per-call cost cannot matter. It says nothing about a
 WordPress boot or sustained syscall traffic, and is not offered as if it did.
 **Split per import, five of the eleven are never called by the suite at all**
 — `readlinkat`, `fpathconf`, `readdir`, `getrandom`, `fstatfs` — so those
-conversions are compile-checked and not execution-checked, which is the
-caveat this fix carries. `waitpid` is the hot one at 801 calls, not the clock.
+conversions were compile-checked and not execution-checked; a fixture and
+four killed trials have since closed that, so the caveat no longer stands. `waitpid` is the hot one at 801 calls, not the clock.
 
 **"One rule" was then checked against the tree, not just the corpora.** The
 corpora pin the rule's answers; they cannot say whether some other site works
