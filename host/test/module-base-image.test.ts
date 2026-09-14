@@ -127,6 +127,28 @@ describe("a module-backed base image", () => {
     // `url` pointing at the un-based mirror would fetch from the wrong place
     // while looking rewritten.
     source.registerLazyArchiveFromEntries("archives/vim.zip", [zipEntry()], "/");
+    // And a tree archive, whose ordered transports are the shape whose `url`
+    // is DERIVED rather than stored. Without one, the derived-url branch is
+    // never reached and a mutant that drops the derivation survives.
+    source.registerLazyTree(
+      {
+        decoder: "zip-v1" as const,
+        mediaType: "application/zip" as const,
+        sha256: "a".repeat(64),
+        bytes: 1,
+        expandedBytes: 1,
+        sourceEntryCount: 1,
+        transports: ["archives/tree.zip", "mirrors/tree.zip"],
+      },
+      [{
+        vfsPath: "/opt/tree",
+        sourcePath: "opt/tree",
+        type: "file" as const,
+        mode: 0o755,
+        size: 1,
+        inodeGroup: "/opt/tree",
+      }],
+    );
     const container = await source.saveImage();
 
     const incumbent = MemoryFileSystem.fromImage(container);
@@ -142,12 +164,18 @@ describe("a module-backed base image", () => {
       ({ url: e.url, transports: e.content?.transports });
     const actual = baseImage.exportLazyArchiveEntries().map(shape);
     expect(actual).toEqual(incumbent.exportLazyArchiveEntries().map(shape));
-    // Guards the guard: an image with no archives would satisfy the equality.
-    expect(actual.length).toBe(1);
-    expect(actual[0].url).toBe("/kandelo/archives/vim.zip");
-    for (const transport of actual[0].transports ?? []) {
-      expect(transport.startsWith("/kandelo/")).toBe(true);
-    }
+    // Guards the guard: an image with no archives would satisfy the equality,
+    // and one carrying only the legacy shape would never reach the branch
+    // where `url` is derived from the first transport.
+    expect(actual.length).toBe(2);
+    const derived = actual.find((a) => a.transports !== undefined)!;
+    const legacy = actual.find((a) => a.transports === undefined)!;
+    expect(legacy.url).toBe("/kandelo/archives/vim.zip");
+    expect(derived.transports).toEqual([
+      "/kandelo/archives/tree.zip",
+      "/kandelo/mirrors/tree.zip",
+    ]);
+    expect(derived.url).toBe("/kandelo/archives/tree.zip");
   });
 
   it("leaves every URL untouched when no deployment base is given", async () => {
