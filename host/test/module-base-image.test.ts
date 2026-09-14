@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { resolveLazyUrl } from "../src/vfs/lazy-url";
+import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
 import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { createBaseImageFromContainer } from "../src/vfs/module-base-image";
 import {
@@ -118,6 +119,37 @@ describe("a module-backed base image", () => {
       .toBe("/already/rooted.bin");
   });
 
+  it("rebases an archive's transports AND the url derived from them", async () => {
+    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
+    // A legacy archive carries only a `url`; a tree archive carries ordered
+    // transports whose first element IS the url. Those are rebaseArchive's two
+    // branches, and an implementation that rewrote transports while leaving
+    // `url` pointing at the un-based mirror would fetch from the wrong place
+    // while looking rewritten.
+    source.registerLazyArchiveFromEntries("archives/vim.zip", [zipEntry()], "/");
+    const container = await source.saveImage();
+
+    const incumbent = MemoryFileSystem.fromImage(container);
+    incumbent.rewriteLazyArchiveUrls((url) => resolveLazyUrl("/kandelo/", url));
+
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      "/kandelo/",
+    );
+
+    const shape = (e: SerializedLazyArchiveEntry) =>
+      ({ url: e.url, transports: e.content?.transports });
+    const actual = baseImage.exportLazyArchiveEntries().map(shape);
+    expect(actual).toEqual(incumbent.exportLazyArchiveEntries().map(shape));
+    // Guards the guard: an image with no archives would satisfy the equality.
+    expect(actual.length).toBe(1);
+    expect(actual[0].url).toBe("/kandelo/archives/vim.zip");
+    for (const transport of actual[0].transports ?? []) {
+      expect(transport.startsWith("/kandelo/")).toBe(true);
+    }
+  });
+
   it("leaves every URL untouched when no deployment base is given", async () => {
     const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
     source.mkdirWithOwner("/opt", 0o755, 0, 0);
@@ -131,3 +163,20 @@ describe("a module-backed base image", () => {
     expect(baseImage.exportLazyEntries()[0].url).toBe("assets/rel.bin");
   });
 });
+
+/** The minimal ZIP member a legacy archive registration accepts. */
+function zipEntry() {
+  return {
+    fileName: "bin/vim",
+    fileNameBytes: new TextEncoder().encode("bin/vim"),
+    compressedSize: 1,
+    uncompressedSize: 1,
+    compressionMethod: 0,
+    localHeaderOffset: 0,
+    mode: 0o755,
+    isDirectory: false,
+    isSymlink: false,
+    externalAttrs: 0,
+    creatorOS: 3,
+  };
+}
