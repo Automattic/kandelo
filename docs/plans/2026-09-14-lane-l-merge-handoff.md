@@ -8,7 +8,11 @@ Verified against parent `brandonpayton/rust-first-abi44-reconcile` at
 89 commits since the fork point, all in `docs/`, touching neither lane L's
 text nor `docs/surface-budget.json`. The only file both sides changed is
 `docs/plans/2026-09-11-MASTER-PLAN.md`, and lane L's two budget checks were
-run against the MERGED 8,185-line version, not just this branch's copy.
+run against the MERGED version of it, not just this branch's copy. No line
+count is given for that file on purpose: both sides keep adding to it, so any
+number here would be stale before it was read. The check is the claim, and it
+is cheap to repeat -- extract the merged file from `git merge-tree
+--write-tree`, swap it in, run the two suites, swap back.
 
 **If the parent has moved since, re-run `git merge-tree` before trusting
 that.**
@@ -44,7 +48,9 @@ instructions written for this lane omitted it.
 
 1. **`flake.nix` + `scripts/bin/cargo-xtask` +
    `scripts/check-dev-shell-tools.sh`.** `cargo xtask <verb>` was written in
-   178 places and ran nowhere. No cargo alias can fix it: `[build] target =
+   **178 places when this was found** and ran nowhere. (The count moves:
+   prose that states it is itself a match, this sentence included.) No cargo
+   alias can fix it: `[build] target =
    "wasm32-unknown-unknown"` makes the alias build a host tool for wasm and
    `getrandom` refuses; cargo offers no portable override from inside an alias
    (an array will not merge into a string, an empty string is rejected), and a
