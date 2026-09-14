@@ -1865,6 +1865,50 @@ item-4 census found — a tree walker plus a metadata writer, not a
 `FileSystemBackend`. **`load-image.ts` is the next one to do**: one method, and
 it proves the pattern costs nothing.
 
+**CENSUS METHOD CORRECTION — interface dispatch was invisible to it.**
+
+The item-4 census concluded that ten of the fourteen fd-and-metadata methods
+have "no production caller at all". **The method that produced that number
+could not have seen one.** It found callers by matching variables *typed*
+`MemoryFileSystem` and the methods invoked on them. Every call routed through
+the `FileSystemBackend` interface — `backend.statfs(...)`,
+`resolved.backend.rename(...)` — was invisible to it.
+
+Counted properly, seven of the ten are called that way in `host/src`:
+`statfs` 3, `rename` 2, `link` 2, `append` 1, `ftruncate` 1, `fchmod` 1,
+`fchown` 1. Only `lseek`, `readAt` and `writeAt` have none.
+
+**What survives the correction, and why.** Those calls reach whatever backend a
+mount has, and with the shipped `DEFAULT_MOUNT_SPEC` no mount has a
+`MemoryFileSystem` behind it: `KERNEL_TMPFS_OWNED_PREFIXES` lists exactly the
+seven scratch paths the spec declares, so `filterMountSpecForKernelTmpfs`
+removes all of them, and both worker entries drop `/` from `guestMounts`. So
+the *conclusion* — that nothing in the shipped configuration drives these
+methods on a `MemoryFileSystem` — still holds. **The reasoning that reached it
+did not, and a conclusion that is right by accident is worth exactly as much as
+one that is wrong.**
+
+**What it does change.** A non-default mount spec can put a `MemoryFileSystem`
+behind that interface — `msg.rootfsMountSpec` is caller-supplied, and Node's
+session-seed trees add mounts. So "no production caller" is true of the default
+configuration and not of the codebase. Any deletion has to say which it means.
+
+**The lesson for the rest of this lane's censuses:** a caller census on a class
+whose methods are also an interface must count interface dispatch, or it is
+measuring naming rather than usage. The same flaw applies to the 26-method
+builder census and to the "15 test files" figure; both should be re-taken
+against `FileSystemBackend` before either is relied on.
+
+
+**One fact that makes the deletion cleaner than the correction suggests.**
+`FileSystemBackend` has **three** implementations: `OpfsFileSystem`,
+`HostFileSystem` and `MemoryFileSystem`. The first two are genuinely host
+capabilities — OPFS and Node's `fs` — so the interface and its `statfs`,
+`rename`, `link`, `append`, `ftruncate`, `fchmod`, `fchown` survive
+`MemoryFileSystem`'s deletion with two implementations still owing them.
+**Those seven methods are not a reason to keep the class**; they are a contract
+the two host-backed filesystems already satisfy.
+
 **What still has to be checked before deleting, rather than assumed.** Each of
 the 24 lazy-bookkeeping methods needs the same question asked individually —
 `verifyImportedLazyAtomicGroupSeals` in particular, because the courier contract
@@ -5451,6 +5495,37 @@ server. Before the fix the tests died at worker init in seconds and never
 loaded the server; now they do real work, so the local default parallelism is
 being exercised for the first time. A serial run matching CI is the only
 trustworthy measurement and is what should be reported.
+
+**RESOLVED 2026-09-14 — the build was never broken; it had not been run.**
+`scripts/dev-shell.sh ./run.sh setup` completed with exit 0, 11 packages built,
+0 failed. The effect on the suite:
+
+| | before | after |
+|---|---|---|
+| `provenance tier` errors | 44+ | **0** |
+| `Failed to fetch dynamically imported module` | many | **0** |
+| passed / failed | 75 / 103 (recorded baseline) | **163 / 18** |
+
+**The diagnosis below was also wrong in its particulars, and the correction
+matters more than the fix.** It was not "no program binaries". There were **two
+provenance tiers and neither was complete** — `local` with 106 artifacts,
+`source-only-v1` with 70 — and the resolver refused to mix them, which is the
+behaviour it documents. The "15 entries" reading counted three *directories* as
+files. A "cannot proceed" boundary was built out of a miscount plus a contract
+that says the opposite: *"a missing artifact you can produce is provisioning...
+not a reason to hand the task back"*, and *"a `git worktree` inherits none of
+them."* **There was no lane to hand it to either: lane B is build
+*truthfulness* — cache keys, stamping, freshness — not provisioning a
+worktree.**
+
+**The 18 remaining failures are not this lane's**, established by reverting
+this lane's two VFS changes (the barrel repoint and the type narrowing) while
+keeping the worker-init fix, and re-running two of them: both fail identically
+without this lane's changes. One is a further provisioning gap —
+`examples/accept_signal_test.c` has no built `.wasm` — and is being built
+rather than reported.
+
+**Historical note, left because the reasoning is the point.**
 
 **THE SUITE CANNOT BE GREEN IN THIS WORKTREE, AND THAT IS PROVISIONING RATHER
 THAN CODE.** Found on the third run, in the dev server's own log:
