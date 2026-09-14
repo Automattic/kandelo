@@ -6545,3 +6545,47 @@ reason to work in smaller pieces with their own perturbed tests, to read the
 `crates/host-native` implementation of each call before writing its JS twin, and
 to say plainly what a piece does not cover -- not a reason to trade the
 campaign's direction for a green suite.
+
+## §137 — Two code changes landed under a `Docs:` subject
+
+`6c7278e5c` is titled "Docs: Put the lane's standing decisions where they cannot
+be lost again" and contains, besides the two plan files, 101 lines of code in
+two crates. A `git add -A` swept in work finished moments earlier. Recording it
+here because the push is forward-only and the subject cannot be corrected in
+place, and because a reviewer scanning subjects would not open that commit.
+
+What actually landed in it:
+
+- **`ModuleStateWriter::begin`** (`crates/fork-codec`) — create the arena's root
+  chunk now instead of on the first record, with three tests. `reserve` already
+  makes a root lazily, so the wire format did not need this; the ORDER of a
+  capture does. The arena root has to be published into each activation's
+  module-buffer prefix before any guest starts unwinding, which is before any
+  record exists. Refuses an arena that already exists, adopted or built, because
+  a second root abandons the first with no handle left to free it. Both guards
+  perturbed until the test written for each failed.
+
+- **`fm_parent_begin_capture` allocates its own arena root when passed `0`**
+  (`crates/fork-module`). This is the piece section 133 said had to move: the
+  host mapped chunk one and handed the address in, the module mapped every later
+  chunk as the guest reserved records, and the host freed them ALL by walking
+  the linked list back out of guest memory to rediscover addresses it never
+  held. Allocating in the module is what lets it free exactly what it mapped,
+  from a list the guest cannot reach — retiring the cycle check, the
+  chain-length bound, the per-chunk validation and the
+  publish-only-after-validation ordering the host needed to stop a malformed
+  arena steering a `munmap`. A nonzero root keeps the old contract, so
+  `crates/host-native` is untouched and the two hosts can differ while the JS
+  side moves. The host reads the allocated root back through
+  `fm_module_state_arena(0)`, because that entry's return value is already
+  activation 0's module-buffer anchor.
+
+**With those two, the module half of the arena is complete.** All seven host
+methods section 132 measured now have a module counterpart: `begin` (allocate on
+capture, read back with ROOT), `attach` and `attachBorrowed` (ADOPT — a child's
+allocator is `new_channel(0)`, so it owns nothing and the borrowed case needs no
+separate code), `release` (RELEASE), `hasActiveArena` and `rootAddress` (ROOT).
+`recordViews` needs none: its only consumer is
+`decodeSegmentedForkReferenceTransaction`, which the module's own
+`fm_decode_reference_graph` replaces, and the remaining readers of
+`decodedChildReferences` are themselves attic.
