@@ -5720,3 +5720,60 @@ changes with which artifacts a worktree happens to have built is recording two
 different things under one name. Worth solving -- probably by treating a skipped
 file as distinct from a passing one -- but recorded here rather than fixed in the
 same breath.
+
+## §123 — Deletion runs top-down, and the arena has two writers
+
+The maintainer's answer reframed the order, and my framing had obscured it:
+"Why not delete these? Isn't the goal? Then we fix bugs until the tests pass?"
+
+The only reason the ten unblocked leaves cannot go first is that the HUB imports
+them -- the registry imports `fork-gc-codec`, `fork-function-catalog`,
+`fork-static-root-catalog` and the rest. That is an argument about ORDER, not
+about restoring. I had been reasoning bottom-up because that is the order for
+PORTING: the registry cannot be replaced until module-state is handled. Deletion
+runs the other way. Cut `worker-main`'s use of the hub, the hub becomes
+unreferenced, and the leaves fall with it. Nothing is restored at any point.
+
+That also dissolves the circularity of section 122. "We need the e2e tests green
+BEFORE porting" is the wrong requirement; the acceptance criterion is that they
+are green AFTER. Porting without e2e coverage stops being a risk to avoid and
+becomes the expected middle of the work.
+
+So the direction is settled: no restoration, cut top-down, fix until the suite
+passes. The lane will look worse before better -- the e2e fork tests will fail
+for real reasons rather than missing imports, and the expected-failure count will
+rise.
+
+Starting that at the arena turned up the fact the whole port turns on, and it is
+not the one section 121 predicted.
+
+Section 121 said the arena should move wholly into the module because the module
+already channel-mmaps. Both halves are true, and the module goes further than
+that: it ALREADY HAS a `ModuleStateWriter` and a `ChunkAllocator` over
+`channel_mmap`, constructed at two sites. It is not a candidate to own an arena;
+it owns one today. Those writers serve the GUEST's three imports --
+`__wpk_fork_module_state_record_{reserve,commit,find}` -- which the module now
+answers.
+
+So there are TWO writers over this format: the guest's, through the module, and
+the host's, through `ForkModuleStateArena` and `continuationMmap`. And the
+pointers do not obviously agree:
+
+  * `write_module_state_root(root0, arena_root)` writes the HOST's root into
+    activation 0's module-buffer prefix;
+  * `__wpk_fork_module_state_record_find` searches `module.module_state.root()`,
+    the MODULE's writer;
+  * `ModuleStateWriter::new(format)` starts empty, so its root is 0 until its
+    own first reserve allocates a chunk.
+
+Either these are one arena linked somewhere I have not found, or they are two,
+and which it is decides the entire shape of the port. If one, the host's arena is
+a second VIEW and deleting it is bookkeeping. If two, then host-written records
+are invisible to `record_find` and guest-written records are invisible to
+`recordViews()`, and the port has to reconcile that before anything is deleted.
+
+Stopping here rather than guessing. Getting this wrong does not fail a test, it
+corrupts a forked child's state -- and this session has already produced five
+corrections that came from reading one more level down. This is the level to read
+next, and it is the first question of the next stride rather than the tail of
+this one.
