@@ -41,7 +41,6 @@
 
 import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
 import type { LazyFileEntry, SerializedLazyArchiveEntry } from "./memory-fs";
-import type { FileSystemBackend } from "./types";
 
 /**
  * Which deferred resource a `host_fetch_deferred` call is about. Mirrors
@@ -121,8 +120,35 @@ function deferredFileErrno(error: unknown): number {
  * optimization (called out, not silently adopted) once the read path is
  * measured.
  */
+/**
+ * What this reader actually needs of a backend: open a path, read from the
+ * handle, close it.
+ *
+ * Declared as three methods rather than as `FileSystemBackend` because the
+ * wider type overstates the requirement, and the overstatement is load-bearing:
+ * it is the reason the host's `/` backend has to be a whole filesystem. What it
+ * is really doing here is holding fetched bytes and handing them back by path —
+ * `open` is what kicks the fetch off and throws `EAGAIN` until the bytes land.
+ * A materialization cache can do that; it does not need a superblock, inodes,
+ * or a `SharedArrayBuffer`.
+ *
+ * Narrowing it does not change behaviour — `MemoryFileSystem` satisfies this
+ * as it satisfied the wider type — but it writes down which three methods the
+ * kernel's deferred-byte path depends on, which is what V10 has to replace.
+ */
+export interface DeferredByteSource {
+  open(path: string, flags: number, mode: number): number;
+  read(
+    handle: number,
+    buf: Uint8Array,
+    position: number | null,
+    length: number,
+  ): number;
+  close(handle: number): void;
+}
+
 export function createDeferredFileReader(
-  backend: FileSystemBackend,
+  backend: DeferredByteSource,
   lazyEntries: readonly LazyFileEntry[],
   toBackendPath: ToBackendPath,
 ): (ino: number, offset: bigint, dest: Uint8Array) => number {
