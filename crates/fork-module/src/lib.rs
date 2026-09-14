@@ -597,6 +597,134 @@ mod wasm {
         ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
     static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+    // -- Imported-global provenance (host-resolved) -------------------------
+    //
+    // The one thing about an imported global the module cannot determine. Two
+    // facts, both living only in the host's JavaScript:
+    //
+    //   * whether the import's value is a `WebAssembly.Global`, and if so which
+    //     activation EXPORTS that same object. Wasm cannot compare object
+    //     identity -- there is no `global.eq`, and this module does not import
+    //     the activations' globals at all. In the child, two activations that
+    //     imported one shared Global must be wired back to ONE reconstructed
+    //     object or they silently stop sharing and drift apart.
+    //   * for a plain scalar import, the value itself, which lives in the import
+    //     object rather than in any section or snapshot.
+    //
+    // Everything else a binding needs is derivable here, which is why only this
+    // much crosses: the type code comes from the activation's KFIG section and
+    // the recipe id from the snapshot the guest wrote into the arena.
+    //
+    // Re-seeding a coordinate UPDATES it rather than being refused, matching
+    // `fm_set_activation_table_state_owner` and for the same kind of reason: a
+    // `dlopen` can add an activation that exports a global an earlier one
+    // imported, and the host must be able to correct the provenance it
+    // published before that activation existed.
+    const IMPORTED_GLOBAL_PROVENANCE_MAX: usize = 256;
+
+    #[derive(Clone, Copy)]
+    struct ProvenanceEntry {
+        consumer_activation: u32,
+        consumer_owner: u32,
+        kind: u32,
+        source_activation: u32,
+        source_owner: u32,
+        raw_bits: u64,
+    }
+
+    #[repr(C, align(8))]
+    struct ImportedGlobalProvenanceTable(
+        UnsafeCell<[ProvenanceEntry; IMPORTED_GLOBAL_PROVENANCE_MAX]>,
+    );
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ImportedGlobalProvenanceTable {}
+    static IMPORTED_GLOBAL_PROVENANCE: ImportedGlobalProvenanceTable =
+        ImportedGlobalProvenanceTable(UnsafeCell::new(
+            [ProvenanceEntry {
+                consumer_activation: 0,
+                consumer_owner: 0,
+                kind: 0,
+                source_activation: 0,
+                source_owner: 0,
+                raw_bits: 0,
+            }; IMPORTED_GLOBAL_PROVENANCE_MAX],
+        ));
+    static IMPORTED_GLOBAL_PROVENANCE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn set_imported_global_provenance_impl(
+        consumer_activation: u32,
+        consumer_owner: u32,
+        kind: u32,
+        source_activation: u32,
+        source_owner: u32,
+        raw_bits: u64,
+    ) -> Result<(), Errno> {
+        let k = u8::try_from(kind).map_err(|_| Errno::EINVAL)?;
+        if !matches!(
+            k,
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT
+        ) {
+            return Err(Errno::EINVAL); // a kind the record format does not define
+        }
+        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &mut *IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let entry = ProvenanceEntry {
+            consumer_activation,
+            consumer_owner,
+            kind,
+            source_activation,
+            source_owner,
+            raw_bits,
+        };
+        for existing in table.iter_mut().take(count) {
+            if existing.consumer_activation == consumer_activation
+                && existing.consumer_owner == consumer_owner
+            {
+                *existing = entry;
+                return Ok(());
+            }
+        }
+        if count >= IMPORTED_GLOBAL_PROVENANCE_MAX {
+            return Err(Errno::E2BIG);
+        }
+        table[count] = entry;
+        IMPORTED_GLOBAL_PROVENANCE_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Publish what only the host can resolve about one imported global.
+    ///
+    /// `kind` is a `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` value. `source_*` matter
+    /// for `ACTIVATION_GLOBAL`; `raw_bits` for `RAW_NUMBER` / `RAW_BIGINT`.
+    /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind,
+    /// `E2BIG` past the table.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_imported_global_provenance(
+        consumer_activation: u32,
+        consumer_owner: u32,
+        kind: u32,
+        source_activation: u32,
+        source_owner: u32,
+        raw_bits: u64,
+    ) {
+        match set_imported_global_provenance_impl(
+            consumer_activation,
+            consumer_owner,
+            kind,
+            source_activation,
+            source_owner,
+            raw_bits,
+        ) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     // -- Per-activation imported-global declarations (KFIG) -----------------
     //
     // The guest's own `kandelo.wpk_fork.imported_globals` custom section, one

@@ -51,6 +51,14 @@ function fixture() {
       p: number,
       n: number,
     ) => void,
+    provenance: x.fm_set_imported_global_provenance as (
+      consumerActivation: number,
+      consumerOwner: number,
+      kind: number,
+      sourceActivation: number,
+      sourceOwner: number,
+      rawBits: bigint,
+    ) => void,
   };
 }
 
@@ -100,6 +108,45 @@ describe("imported-global section seeding", () => {
     // bounds check REMOVED, which is what it is supposed to be guarding.
     const f = fixture();
     f.seed(0, f.memory.buffer.byteLength + 4096, 16);
+    expect(f.errno()).toBe(EINVAL);
+  });
+});
+
+/** `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` kinds. */
+const KIND_RAW_NUMBER = 1;
+const KIND_ACTIVATION_GLOBAL = 4;
+const KIND_BASE_IMPORT = 5;
+
+describe("imported-global provenance, the part only the host can resolve", () => {
+  it("accepts a carrier coordinate and a raw value", () => {
+    const f = fixture();
+    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 0, 7, 0n);
+    expect(f.errno()).toBe(0);
+    f.provenance(0, 2, KIND_RAW_NUMBER, 0, 0, 0x4059_0000_0000_0000n);
+    expect(f.errno()).toBe(0);
+  });
+
+  it("updates a coordinate rather than refusing it", () => {
+    // Deliberately unlike the once-only catalogs. A dlopen can add an
+    // activation that exports a global an earlier one imports, so the host must
+    // be able to correct provenance it published before that activation
+    // existed. Refusing would freeze the first answer and leave a child wiring
+    // two activations to separate globals they are supposed to share.
+    const f = fixture();
+    f.provenance(3, 1, KIND_BASE_IMPORT, 0, 0, 0n);
+    expect(f.errno()).toBe(0);
+    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 1, 5, 0n);
+    expect(f.errno()).toBe(0);
+  });
+
+  it("refuses a kind the record format does not define", () => {
+    // The kind drives how a child materialises the import; an undefined one is
+    // not something it can fall back from, and this is the boundary where the
+    // host's answer enters the module.
+    const f = fixture();
+    f.provenance(0, 0, 0, 0, 0, 0n);
+    expect(f.errno()).toBe(EINVAL);
+    f.provenance(0, 0, 99, 0, 0, 0n);
     expect(f.errno()).toBe(EINVAL);
   });
 });
