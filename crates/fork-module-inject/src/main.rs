@@ -216,7 +216,7 @@ const DRIVE_OP_RESTORE: i32 = 5;
 /// ALLOC family passes, so the shim reconstructs the pointer from the step's
 /// `recipe` (high 32) / `arg` (low 32) fields and `call_indirect`s it through a
 /// `(ptr) -> ()` type. MUST match `fork_codec::drive_plan::DRIVE_OP_REWIND_BEGIN`.
-const DRIVE_OP_REWIND_BEGIN: i32 = 7;
+const DRIVE_OP_REWIND_BEGIN: i32 = 8;
 /// op == the FIRST no-argument `() -> ()` guest-drive op. Every op
 /// `>= DRIVE_OP_UNWIND_END` drives a NO-argument guest state flip
 /// (`wpk_fork_unwind_end` capture-seal = 9, `wpk_fork_rewind_end` replay-finish =
@@ -225,13 +225,13 @@ const DRIVE_OP_REWIND_BEGIN: i32 = 7;
 /// share the `>= DRIVE_OP_RESTORE` "install/control" class (excluded from the
 /// reconstruction counter), so the `>= DRIVE_OP_UNWIND_END` void check runs
 /// BEFORE the `>= DRIVE_OP_REWIND_BEGIN` pointer-drive branch (their op values,
-/// 10/11/12, are all also `>= DRIVE_OP_REWIND_BEGIN`). The capture-BEGIN op
+/// 11/12/13, are all also `>= DRIVE_OP_REWIND_BEGIN`). The capture-BEGIN op
 /// `DRIVE_OP_UNWIND_BEGIN` (9) is a POINTER-argument drive that sits in the
 /// `[DRIVE_OP_REWIND_BEGIN, DRIVE_OP_UNWIND_END)` band, so it takes the
 /// pointer-drive branch (not this void one) with no dedicated injector constant.
 /// MUST match `fork_codec::drive_plan::DRIVE_OP_UNWIND_END` (and its
 /// REWIND_END/ABORT_END successors, which take the SAME void branch).
-const DRIVE_OP_UNWIND_END: i32 = 10;
+const DRIVE_OP_UNWIND_END: i32 = 11;
 
 /// The Rust helper the injected shim calls to map a recipe id to a catalog
 /// ordinal (or the null sentinel). Exported by `crates/fork-module/src/lib.rs`.

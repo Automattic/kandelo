@@ -2836,6 +2836,23 @@ mod wasm {
                 .collect()
         };
         let mut steps = Vec::new();
+        // The CAPTURE-side guest save walk, driven before any unwind begins.
+        //
+        // This is what a module-driven capture was missing. The module could
+        // drive the child's RESTORE (`append_attach_steps`) and never the
+        // parent's SAVE, because no drive op existed for it -- so a capture
+        // sequenced entirely by the module produced an arena with no global or
+        // table records in it, silently. The JS `ForkActivationRegistry`
+        // `beginCapture` loop was the only thing calling
+        // `wpk_fork_module_state_save`.
+        //
+        // Order matters both ways and matches that loop. AFTER the arena root
+        // is published above, because the guest save reserves its records
+        // through the module's own record-reserve import and there must be an
+        // arena to reserve into. BEFORE `wpk_fork_unwind_begin`, because the
+        // save is capturing the state the unwind is about to walk away from.
+        let save_activations: Vec<u32> = roots.iter().map(|(id, _)| *id).collect();
+        drive_plan::append_module_state_save_steps(&mut steps, &save_activations);
         drive_plan::append_unwind_begin_steps(&mut steps, &roots);
         let plan = serialize_and_store_plan(&steps)?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);

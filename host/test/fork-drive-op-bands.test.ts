@@ -77,7 +77,7 @@ describe("drive-op numbering, across the two files that must agree", () => {
     // Derived from what each guest export actually takes, NOT from the current
     // numbering -- otherwise this would agree with any renumbering, including a
     // wrong one.
-    const activationArg = ["RESTORE", "FINISH_RESTORE"];
+    const activationArg = ["RESTORE", "FINISH_RESTORE", "MODULE_STATE_SAVE"];
     const pointerArg = ["REWIND_BEGIN", "ABORT_BEGIN", "UNWIND_BEGIN"];
     const noArg = ["UNWIND_END", "REWIND_END", "ABORT_END"];
     const reconstruction = ["ALLOC", "FILL", "EXN", "STATIC_ROOT", "EXTERNREF_TRANSIT"];
@@ -110,7 +110,7 @@ describe("drive-op numbering, across the two files that must agree", () => {
     // op gets called as a void one.
     const classified = new Set([
       "ALLOC", "FILL", "EXN", "STATIC_ROOT", "EXTERNREF_TRANSIT",
-      "RESTORE", "FINISH_RESTORE",
+      "RESTORE", "FINISH_RESTORE", "MODULE_STATE_SAVE",
       "REWIND_BEGIN", "ABORT_BEGIN", "UNWIND_BEGIN",
       "UNWIND_END", "REWIND_END", "ABORT_END",
     ]);

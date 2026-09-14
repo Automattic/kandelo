@@ -92,7 +92,7 @@ export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
  * derives every slot from `fm_drive_table_base`, so a host that grew the table
  * by a smaller stride would leave later activations overlapping earlier ones.
  */
-export const FORK_ACTIVATION_DRIVE_SLOTS = 13;
+export const FORK_ACTIVATION_DRIVE_SLOTS = 14;
 
 /**
  * One activation's guest exports, bound into the module's drive table so the
@@ -149,6 +149,7 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   { slot: 10, name: "wpk_fork_unwind_begin", required: true },
   { slot: 11, name: "__wpk_fork_ref_gc_encode_slot", required: false },
   { slot: 12, name: "__wpk_fork_ref_gc_probe", required: false },
+  { slot: 13, name: "wpk_fork_module_state_save", required: true },
 ] as const;
 
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */

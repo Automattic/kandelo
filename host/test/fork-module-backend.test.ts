@@ -77,6 +77,7 @@ describe("activation drive bindings", () => {
       ["wpk_fork_unwind_begin", constant("DRIVE_SLOT_UNWIND_BEGIN")],
       ["__wpk_fork_ref_gc_encode_slot", constant("DRIVE_SLOT_GC_ENCODE")],
       ["__wpk_fork_ref_gc_probe", constant("DRIVE_SLOT_GC_PROBE")],
+      ["wpk_fork_module_state_save", constant("DRIVE_SLOT_MODULE_STATE_SAVE")],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {
@@ -113,6 +114,7 @@ describe("activation drive bindings", () => {
       "wpk_fork_abort_end",
       "wpk_fork_module_state_finish_restore",
       "wpk_fork_module_state_restore",
+      "wpk_fork_module_state_save",
       "wpk_fork_rewind_begin",
       "wpk_fork_rewind_end",
       "wpk_fork_unwind_begin",
