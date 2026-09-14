@@ -7489,8 +7489,8 @@ clothes. Fixed by stripping SGR escapes once, before anything parses the output
 stripped text now. The evidence is the same captured run: raw text fails the
 guard, stripped text passes it and yields the summary above.
 
-**What the census inside it says, which is the more useful finding.** The
-dominant cause of the 201 is one module:
+**The census inside it, and what it does NOT mean.** The comparator ranks the
+missing modules named in the output:
 
 | missing module | occurrences |
 |---|---|
@@ -7499,13 +7499,18 @@ dominant cause of the 201 is one module:
 | `host/src/fork-activation-registry` | 5 |
 | `host/src/fork-function-catalog` | 4 |
 
-`fork-table-snapshot` is not the biggest attic file and it is not the one this
-lane has been porting. It is the one `worker-main.ts` imports at line 118, and
-because worker-main is the entry point every kernel-booting test loads, one
-unresolved import there fails 334 test files. The imported-globals work I am in
-the middle of unblocks none of them.
+I first read that as a lead: one module blocking 334 test files, and not the one
+I have been porting. **It is not a lead, and reading it that way would have set
+the port order by an artifact.** `worker-main.ts` has NINE unresolved attic
+imports, at lines 118, 129, 135, 143, 144, 148, 152, 156 and 171. A module
+loader reports the FIRST specifier it cannot resolve and stops, so every test
+file that loads worker-main reports line 118 and never mentions the other eight.
+The 334 is the number of test files that load worker-main. It ranks nothing.
 
-That is worth saying plainly: the port order I have been following is driven by
-what I understand best, not by what the suite says is blocking. The next slice
-should be chosen from this table.
+The real fact it carries is harder and worth having: **no test file that boots a
+kernel can pass until ALL NINE imports are gone.** The 201-file baseline is a
+floor, not a gradient — porting eight of the nine moves it by zero, and the
+suite will stay exactly this red until the last one lands. So the suite cannot
+choose the order for me; dependency between the modules has to, and the count
+above must not be mistaken for a measurement of blocking.
 
