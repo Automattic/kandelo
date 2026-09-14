@@ -472,6 +472,164 @@ pub struct ImportedGlobalSnapshotFact {
     pub recipe_id: Option<u32>,
 }
 
+/// Decode the `KFBG` imported-global binding record a child inherits.
+///
+/// The read half of [`encode_imported_global_bindings`]. A child gets these
+/// records and nothing else about its parent's imports: which activation
+/// provides each one, or the raw bits or recipe that stands in for it.
+///
+/// Validated rather than trusted, because the bytes come out of an arena the
+/// parent mapped and the child inherited -- shared memory another process
+/// wrote. A record that decodes to nonsense would otherwise bind a fresh
+/// child's imports from coordinates describing nothing, which is the silent
+/// wrong child this whole path exists to avoid. Refuses a wrong magic or
+/// version, a header or entry size the writer did not use, unknown flags, a
+/// length that disagrees with the count, an undefined kind, a zero consumer
+/// owner, and consumers that are not strictly ascending -- the same set the
+/// encoder refuses to produce.
+pub fn decode_imported_global_bindings(
+    payload: &[u8],
+) -> Result<Vec<ImportedGlobalBinding>, Errno> {
+    let header = abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE as usize;
+    let entry = abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE as usize;
+    let count = decode_bindings_header(
+        payload,
+        &abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_MAGIC,
+        abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_VERSION,
+        header,
+        entry,
+        abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_KNOWN_FLAGS,
+    )?;
+    let mut out: Vec<ImportedGlobalBinding> = Vec::with_capacity(count);
+    let mut previous: Option<(u32, u32)> = None;
+    for index in 0..count {
+        let at = header + index * entry;
+        let binding = ImportedGlobalBinding {
+            consumer_activation: r_u32(payload, at)?,
+            consumer_owner: r_u32(payload, at + 4)?,
+            source_activation: r_u32(payload, at + 8)?,
+            source_owner: r_u32(payload, at + 12)?,
+            recipe_id: r_u32(payload, at + 20)?,
+            raw_bits: r_u64(payload, at + 24)?,
+            kind: *payload.get(at + 32).ok_or(Errno::EINVAL)?,
+            flags: *payload.get(at + 33).ok_or(Errno::EINVAL)?,
+            type_code: *payload.get(at + 34).ok_or(Errno::EINVAL)?,
+        };
+        if !matches!(
+            binding.kind,
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
+                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT
+        ) {
+            return Err(Errno::EINVAL);
+        }
+        previous = Some(check_binding_order(
+            previous,
+            binding.consumer_activation,
+            binding.consumer_owner,
+        )?);
+        out.push(binding);
+    }
+    Ok(out)
+}
+
+/// Decode the `KFBT` imported-table binding record a child inherits.
+pub fn decode_imported_table_bindings(
+    payload: &[u8],
+) -> Result<Vec<ImportedTableBinding>, Errno> {
+    let header = abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_HEADER_SIZE as usize;
+    let entry = abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_ENTRY_SIZE as usize;
+    let count = decode_bindings_header(
+        payload,
+        &abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC,
+        abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION,
+        header,
+        entry,
+        abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_KNOWN_FLAGS,
+    )?;
+    let mut out: Vec<ImportedTableBinding> = Vec::with_capacity(count);
+    let mut previous: Option<(u32, u32)> = None;
+    for index in 0..count {
+        let at = header + index * entry;
+        let binding = ImportedTableBinding {
+            consumer_activation: r_u32(payload, at)?,
+            consumer_owner: r_u32(payload, at + 4)?,
+            source_activation: r_u32(payload, at + 8)?,
+            source_owner: r_u32(payload, at + 12)?,
+            kind: *payload.get(at + 20).ok_or(Errno::EINVAL)?,
+        };
+        if !matches!(
+            binding.kind,
+            abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE
+                | abi::WPK_FORK_IMPORTED_TABLE_BINDING_BASE_IMPORT
+        ) {
+            return Err(Errno::EINVAL);
+        }
+        previous = Some(check_binding_order(
+            previous,
+            binding.consumer_activation,
+            binding.consumer_owner,
+        )?);
+        out.push(binding);
+    }
+    Ok(out)
+}
+
+/// The header both binding records share, validated; returns the entry count.
+fn decode_bindings_header(
+    payload: &[u8],
+    magic: &[u8; 4],
+    version: u16,
+    header: usize,
+    entry: usize,
+    known_flags: u16,
+) -> Result<usize, Errno> {
+    if payload.len() < header {
+        return Err(Errno::EINVAL); // truncated header
+    }
+    if payload.get(0..4) != Some(&magic[..]) {
+        return Err(Errno::EINVAL);
+    }
+    if r_u16(payload, 4)? != version
+        || r_u16(payload, 6)? != header as u16
+        || r_u16(payload, 8)? != entry as u16
+    {
+        return Err(Errno::EINVAL); // a writer this decoder does not know
+    }
+    if r_u16(payload, 10)? & !known_flags != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let count = usize::try_from(r_u32(payload, 12)?).map_err(|_| Errno::EINVAL)?;
+    let expected = count.checked_mul(entry).and_then(|b| b.checked_add(header));
+    if expected != Some(payload.len()) {
+        return Err(Errno::EINVAL); // count and length disagree
+    }
+    Ok(count)
+}
+
+/// Consumers must be unique and strictly ascending, as the encoder demands.
+///
+/// A repeated consumer is the case worth naming: a child binding one import
+/// twice takes whichever entry it reads last, silently.
+fn check_binding_order(
+    previous: Option<(u32, u32)>,
+    activation: u32,
+    owner: u32,
+) -> Result<(u32, u32), Errno> {
+    if owner == 0 {
+        return Err(Errno::EINVAL); // owner ordinals are 1-based
+    }
+    let key = (activation, owner);
+    if let Some(prev) = previous {
+        if key <= prev {
+            return Err(Errno::EINVAL);
+        }
+    }
+    Ok(key)
+}
+
 /// Build the binding set from host provenance plus module-owned facts.
 ///
 /// This is the matching loop that used to live in TypeScript's `appendTo`. It
@@ -1248,6 +1406,145 @@ mod tests {
             encode_imported_table_bindings(&mut short, &built),
             Err(Errno::EINVAL),
         );
+    }
+
+    // -- Binding record decoders (census section 169) ------------------------
+
+    fn encoded_globals() -> Vec<u8> {
+        let built = build_imported_global_bindings(
+            &[
+                prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER),
+                prov((3, 2), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL),
+            ],
+            &[decl((0, 1), I32), decl((3, 2), I32)],
+            &[snap((0, 1), I32, None), snap((3, 2), I32, None)],
+            &[group((9, 4), 0)],
+        )
+        .unwrap();
+        let mut out = alloc::vec![0u8; imported_global_bindings_size(built.len()).unwrap()];
+        encode_imported_global_bindings(&mut out, &built).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_global_binding_record_round_trips_field_for_field() {
+        // The child reads what the parent wrote and nothing else, so the pair
+        // has to agree on every field -- a decoder that silently dropped one
+        // would bind an import from a default.
+        let bytes = encoded_globals();
+        let decoded = decode_imported_global_bindings(&bytes).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(
+            (decoded[0].consumer_activation, decoded[0].consumer_owner),
+            (0, 1),
+        );
+        assert_eq!(decoded[0].kind, abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER);
+        assert_eq!(decoded[0].type_code, I32);
+        assert_eq!(
+            (decoded[1].consumer_activation, decoded[1].consumer_owner),
+            (3, 2),
+        );
+        // Group 0 elected nobody, so the builder wrote a base import.
+        assert_eq!(decoded[1].kind, abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT);
+    }
+
+    #[test]
+    fn a_table_binding_record_round_trips() {
+        let built = build_imported_table_bindings(
+            &[tprov((2, 1), 5)],
+            &[tdecl((2, 1))],
+            &[group((7, 3), 5)],
+        )
+        .unwrap();
+        let mut bytes =
+            alloc::vec![0u8; imported_table_bindings_size(built.len()).unwrap()];
+        encode_imported_table_bindings(&mut bytes, &built).unwrap();
+        let decoded = decode_imported_table_bindings(&bytes).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!((decoded[0].source_activation, decoded[0].source_owner), (7, 3));
+        assert_eq!(decoded[0].kind, abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE);
+    }
+
+    #[test]
+    fn a_binding_record_from_another_writer_is_refused() {
+        // These bytes come out of an arena the PARENT mapped and this process
+        // inherited -- shared memory another process wrote. Every framing field
+        // is therefore checked rather than trusted.
+        let good = encoded_globals();
+
+        let mut wrong_magic = good.clone();
+        wrong_magic[0] = b'X';
+        assert_eq!(decode_imported_global_bindings(&wrong_magic), Err(Errno::EINVAL));
+
+        let mut wrong_version = good.clone();
+        wrong_version[4] = 9;
+        assert_eq!(decode_imported_global_bindings(&wrong_version), Err(Errno::EINVAL));
+
+        let mut wrong_entry_size = good.clone();
+        wrong_entry_size[8] = 41;
+        assert_eq!(
+            decode_imported_global_bindings(&wrong_entry_size),
+            Err(Errno::EINVAL),
+        );
+
+        let mut unknown_flags = good.clone();
+        unknown_flags[10] = 1;
+        assert_eq!(decode_imported_global_bindings(&unknown_flags), Err(Errno::EINVAL));
+
+        let mut count_disagrees = good.clone();
+        count_disagrees[12] = 7;
+        assert_eq!(
+            decode_imported_global_bindings(&count_disagrees),
+            Err(Errno::EINVAL),
+        );
+
+        assert_eq!(
+            decode_imported_global_bindings(&good[..good.len() - 1]),
+            Err(Errno::EINVAL),
+            "a truncated record",
+        );
+    }
+
+    #[test]
+    fn a_binding_record_that_would_bind_one_import_twice_is_refused() {
+        // A repeated consumer leaves the child taking whichever entry it reads
+        // last, silently. An undefined kind leaves it with no way to
+        // materialise the import at all, and a zero owner names nothing.
+        let header = abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_HEADER_SIZE as usize;
+        let entry = abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_ENTRY_SIZE as usize;
+
+        let mut repeated = encoded_globals();
+        let first_consumer: Vec<u8> = repeated[header..header + 8].to_vec();
+        repeated[header + entry..header + entry + 8].copy_from_slice(&first_consumer);
+        assert_eq!(decode_imported_global_bindings(&repeated), Err(Errno::EINVAL));
+
+        let mut undefined_kind = encoded_globals();
+        undefined_kind[header + 32] = 99;
+        assert_eq!(
+            decode_imported_global_bindings(&undefined_kind),
+            Err(Errno::EINVAL),
+        );
+
+        let mut zero_owner = encoded_globals();
+        zero_owner[header + 4..header + 8].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(decode_imported_global_bindings(&zero_owner), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn arbitrary_corruption_of_a_binding_record_never_panics() {
+        // The bytes are guest-visible, so every single-byte corruption has to
+        // come back as an error rather than an index panic inside the module.
+        let good = encoded_globals();
+        for index in 0..good.len() {
+            for bit in 0..8 {
+                let mut bytes = good.clone();
+                bytes[index] ^= 1 << bit;
+                let _ = decode_imported_global_bindings(&bytes);
+            }
+        }
+        for length in 0..good.len() {
+            let _ = decode_imported_global_bindings(&good[..length]);
+        }
     }
 
     #[test]

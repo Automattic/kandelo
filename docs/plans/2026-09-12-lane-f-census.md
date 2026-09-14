@@ -8285,3 +8285,43 @@ skips eight cases, each labelled with where it IS covered
 browser binary-dependency suite skips two. Those files still report, so the
 ratchet sees them.
 
+---
+
+## §169 — The child cannot be tested yet, and that is the thing to fix next
+
+Wrote the read half of the two binding records -- `decode_imported_global_bindings`
+and `decode_imported_table_bindings` -- because the child install needs them and
+the module has never read one. Then tried to give them a consumer, and could
+not. Recording both halves.
+
+**What landed:** the decoders, with round-trip tests against the encoders, a
+per-field refusal test (wrong magic, wrong version, an entry size no writer
+used, unknown flags, a count that disagrees with the length, a truncated
+record), a repeated-consumer test, and a single-bit corruption sweep that asserts
+no input panics. Each guard perturbed until the test naming it failed. They are
+validated because these bytes come out of an arena the PARENT mapped and the
+child inherited -- shared memory another process wrote.
+
+**What did not land, and why.** I added an admission check to `fm_attach_child`:
+decode both records, refuse a corrupt one before the reference graph is even
+decoded. It is the same shape as the exnref tag gate beside it and I believe it
+is right. I could not make it FAIL, so I reverted it.
+
+The problem is attribution. A hand-built arena cannot get past the reference
+replay seed, and a real inherited arena needs a second module instance -- which
+is production's shape, a fresh child worker over the same `SharedArrayBuffer`.
+That part works: a second `instantiateForkModule` at its own base, after growing
+the memory, instantiates and accepts `fm_attach_child`. But an INTACT arena from
+this fixture's capture still fails the attach, because the capture carries no
+reference transaction for the replay seed to find. So the corrupt case and the
+intact case both answer `EINVAL`, and a test asserting the refusal proves
+nothing -- it would pass with the check deleted.
+
+**So the next piece is the child harness, not the next port.** Making an intact
+attach SUCCEED once -- a capture carrying a reference transaction, a second
+module instance, the seeds a child worker gets -- turns every child-side refusal
+into something that can be shown, and the child install is three of the eight
+remaining imports. Until then, anything written for the child is unverifiable,
+which is exactly the position section 154 described and section 160 escaped by
+building forty lines of reader.
+
