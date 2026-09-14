@@ -6955,3 +6955,51 @@ the plan — not that the records are correct. Reading them back needs either a
 record accessor on `fm_module_state_arena` or a real guest, and both are separate
 work. The point of this increment is that the function is no longer a place where
 bugs are found only by rereading.
+
+## §144 — The nine attic imports are one cluster; there is no cheap first cut
+
+With `forkAtticImports` now measuring the thing that matters, the obvious move is
+to find the module with the fewest references and zero it. There isn't one. Every
+one of the nine reaches the others, and they all reach the same two:
+
+| Module | Remaining uses | Why it cannot go alone |
+|---|---|---|
+| `fork-table-snapshot` | 3 | `capture(arena)` / `restore(arena)` take the arena |
+| `fork-early-reference-provider` | 3 | built from `arena.recordViews()` + the decoded transaction |
+| `fork-gc-codec` | 4 | its provider flows into the registry and the early provider |
+| `fork-reference-segments` | 4 | decodes `childArena.recordViews()` |
+| `fork-exception-provider` | 8 | flows into the registry's activation registration |
+| `fork-process-continuation` | 8 | takes the arena; drives the registry |
+| `fork-imported-globals` | 10 | `appendTo(arena)` |
+| `fork-module-state` | 11 | **the arena itself** |
+| `fork-activation-registry` | 13 | **the hub** |
+
+So the count goes 9 → 8 only when the LAST reference to some module goes, and
+every module's last reference is behind `fork-module-state` or
+`fork-activation-registry`. That is section 132's finding arriving from the other
+direction: the arena is the gate, and the registry is the thing holding the gate.
+
+**One concrete blocker found while sizing it**, because it changes the design
+rather than just the order. `createProcessTableReplicationOwner` has:
+
+    const releaseArena = (root) => { const a = options.newArena();
+                                     a.attach(root); a.release(); };
+
+Attach-then-release means "free the arena at this root" — and the host can do it
+because `attach` WALKS the chunk list out of guest memory to discover what to
+free. The module cannot do the same thing today: an adopted arena owns nothing
+(section 133), so `RELEASE` on it frees nothing, by design. That design is right
+— it is what retires the guest-controlled walk — but it leaves a real gap: a
+peer-table snapshot arena is created at one point and freed by ROOT later, and
+under module ownership nothing can free it.
+
+That is a design question, not a port: either the module remembers the arenas it
+allocated so it can free one by root, or the snapshot arena stops being a
+separate arena. It should be settled before the cluster cut starts, because the
+answer changes what `fm_module_state_arena` needs to be.
+
+**So the next slice is large and that is a property of the code, not a choice.**
+The honest sequence is: settle the release-by-root question, then cut the arena
+and the registry together, and the other seven fall out as their last references
+go. Expect `forkAtticImports` to sit at 9 through that work and then drop
+several at once — which is the shape of the number, not a stall.
