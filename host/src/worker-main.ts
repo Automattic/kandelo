@@ -90,7 +90,11 @@ import {
   writeForkContinuationAnchor,
 } from "./fork-continuation";
 import {
+  buildForkGuestImports,
   forkActivationFrameImports,
+  FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
+  FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
+  type ForkGuestHostFloor,
   forkUnwindTagFrom,
   isForkUnwindException,
   requireForkUnwindTag,
@@ -119,7 +123,6 @@ import {
   readForkModuleStateRoot,
 } from "./fork-module-state";
 import {
-  buildForkActivationStateImports,
   ForkActivationRegistry,
   forkActivationRegistrationFromInstance,
   type ForkActivationTableReplication,
@@ -127,8 +130,8 @@ import {
   type ForkActivationRegistration,
 } from "./fork-activation-registry";
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
+import { createForkGuestHostFloor } from "./fork-guest-host-floor";
 import {
-  buildForkExceptionImports,
   ForkExceptionBroker,
   forkExceptionProviderFromInstance,
   type ForkExceptionReferenceReplayImports,
@@ -800,6 +803,14 @@ interface ProcessDylinkActivationOwnerOptions {
     registration: ForkActivationRegistration,
     typedReferenceProvider: ForkGcCodecProvider,
   ) => void;
+  /**
+   * The process's host identity floor, shared by every activation.
+   *
+   * Process-level rather than per-activation because both members are: the
+   * externref provenance map is keyed by object identity across the whole
+   * capture, and the exception throwers route by owner inside the broker.
+   */
+  readonly forkHostFloor: ForkGuestHostFloor;
   readonly isForkChild: boolean;
   /**
    * A pthread owns a separate instance graph but adopts the process archive's
@@ -824,20 +835,6 @@ interface ProcessDylinkActivationOwnerOptions {
     readonly moduleExports: Record<string, unknown>;
     readonly backend: ForkModuleContinuationBackend;
   };
-  /**
-   * Phase 6 D7a.1b: when a dlopen fork's whole reference graph is admitted for
-   * module reconstruction (`moduleReferenceKindsSupported`), every side
-   * activation's `__wpk_fork_ref_decode_funcref` import is flipped to the SAME
-   * shared module export — the merged, activation-namespaced catalog makes one
-   * export correct for every activation. Returns the import override to spread
-   * into each side activation's env, or `{}` to keep the JS reference decode.
-   * Resolved lazily at side-module instantiation (which happens AFTER the
-   * predicate is computed), so it reads the final `moduleReferenceKindsSupported`.
-   */
-  readonly forkModuleReferenceFlip?: () => Record<
-    string,
-    WebAssembly.ImportValue
-  >;
   readonly label: string;
 }
 
@@ -966,57 +963,53 @@ function createProcessDylinkActivationOwner(
         );
       }
 
-      const env: Record<string, WebAssembly.ImportValue> = {
-        fork: (): number => options.invokeProcessFork(),
-        [FORK_UNWIND_TAG_IMPORT_NAME]: requireForkUnwindTag(
-          options.forkUnwindTag,
-          `${request.name}: fork activation`,
-        ) as unknown as WebAssembly.ImportValue,
-        ...options.coordinator.continuationImports(activationId),
-        // Phase 6 D7a.1a FRAME FLIP: for a module-backed dlopen fork, this side
-        // activation's five frozen frame/resume imports route through its own
-        // trampoline (folding in the activation id) to the shared module. Placed
-        // AFTER `continuationImports` so these five keys win; everything else it
-        // returns — crucially the JS `__wpk_fork_resume_table` funcref table the
-        // module's `resume_peek` indexes — is kept. References stay JS this slice.
-        ...(options.forkModuleFrameFlip
-          ? forkActivationFrameImports(
-              options.forkModuleFrameFlip.moduleExports,
+      // The co-resident module is the ONLY capture/replay implementation on this
+      // path (Phase 4 point of no return), so a side activation without one is a
+      // programming error rather than a reason to fall back.
+      if (!options.forkModuleFrameFlip) {
+        throw new Error(
+          `${request.name}: side activation ${activationId} has no fork module; ` +
+            "there is no JavaScript continuation to fall back to",
+        );
+      }
+      const activationLabel = `${request.name}: fork activation`;
+      const guestImports = buildForkGuestImports({
+          moduleExports: options.forkModuleFrameFlip.moduleExports,
+          floor: options.forkHostFloor,
+          // What a JS host genuinely supplies, and only that. Everything else
+          // the guest imports comes from the module, and anything neither side
+          // provides fails here BY NAME rather than as a LinkError naming a type.
+          extras: {
+            fork: (): number => options.invokeProcessFork(),
+            // The resume table is host floor: the module's `resume_peek` returns
+            // an index INTO it and Rust cannot hold a funcref.
+            ...options.coordinator.continuationImports(activationId),
+            [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]: new WebAssembly.Global(
+              { value: "i32", mutable: false },
               activationId,
-              `${request.name}: fork activation`,
-            )
-          : {}),
-        ...buildForkActivationStateImports(
-          activationId,
-          options.registry,
-          options.referenceReplay,
-          options.tableReplication,
-        ),
-        ...buildForkExceptionImports({
-          activationId,
-          ptrWidth: options.ptrWidth,
-          registry: options.registry,
-          broker: options.exceptionBroker,
-          provider: () => {
-            if (!exceptionProvider) {
-              throw new Error(
-                `${request.name}: exception codec called before activation registration`,
-              );
-            }
-            return exceptionProvider;
+            ),
+            ...(options.tableReplication
+              ? {
+                  [FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT]:
+                    options.tableReplication.generationAddress,
+                }
+              : {}),
           },
-          referenceReplay: options.referenceReplay,
-        }),
-        // Phase 6 D7a.1b REFERENCE FLIP: for a module-backed dlopen fork whose
-        // whole reference graph is admitted, flip this side activation's
-        // `__wpk_fork_ref_decode_funcref` to the SHARED module export (the same
-        // one every activation uses — the merged, activation-namespaced catalog
-        // resolves each funcref against its own activation's slice). Placed AFTER
-        // `buildForkActivationStateImports` so this key wins over the JS decode.
-        // `{}` (references on the JS path, or no module) leaves it byte-identical.
-        ...(options.forkModuleReferenceFlip
-          ? options.forkModuleReferenceFlip()
-          : {}),
+          guestModule: request.module,
+          label: activationLabel,
+      }) as Record<string, WebAssembly.ImportValue>;
+      const env: Record<string, WebAssembly.ImportValue> = {
+        ...guestImports,
+        // Phase 6 D7a.1a FRAME FLIP: this side activation's five frozen
+        // frame/resume imports route through its OWN trampoline, folding in the
+        // activation id. After the binder on purpose: the module's plain
+        // `__wpk_fork_frame_*` exports assume the primary activation, so a side
+        // activation binding those would write its frames into activation 0's.
+        ...(forkActivationFrameImports(
+          options.forkModuleFrameFlip.moduleExports,
+          activationId,
+          activationLabel,
+        ) as Record<string, WebAssembly.ImportValue>),
       };
 
       return {
@@ -3847,27 +3840,6 @@ export async function centralizedWorkerMain(
       // reads the SAME whole-graph module feed), and only when the whole graph is
       // admitted; a flag-off / non-admitted fork keeps the byte-identical JS
       // reference path (this returns `{}`, leaving the JS provider imports intact).
-      const moduleReferenceFeedFlip = (): Record<
-        string,
-        WebAssembly.ImportValue
-      > =>
-        moduleReferenceKindsSupported && forkModuleInstance
-          ? {
-              __wpk_fork_ref_vector_get:
-                forkModuleInstance.exports.fm_ref_vector_get,
-              __wpk_fork_ref_gc_route:
-                forkModuleInstance.exports.fm_ref_gc_route,
-              __wpk_fork_ref_gc_payload_len:
-                forkModuleInstance.exports.fm_ref_gc_payload_len,
-              __wpk_fork_ref_gc_load: forkModuleInstance.exports.fm_ref_gc_load,
-              __wpk_fork_ref_exn_route:
-                forkModuleInstance.exports.fm_ref_exn_route,
-              __wpk_fork_ref_exn_load:
-                forkModuleInstance.exports.fm_ref_exn_load,
-              __wpk_fork_ref_exn_cache_index:
-                forkModuleInstance.exports.fm_ref_exn_cache_index,
-            }
-          : {};
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
       // The co-resident Rust module owns all frame/journal/resume storage
       // (Phase 4 point of no return); the coordinator only needs the format.
@@ -4052,6 +4024,21 @@ export async function centralizedWorkerMain(
             value,
           ),
       );
+
+      // The process's host identity floor: the two things a JS host must do
+      // itself. Built once and shared by every activation, because both are
+      // process-scoped -- the provenance map is keyed by object identity across
+      // the whole capture, and the broker routes a throw to its owner.
+      const forkHostFloor = createForkGuestHostFloor(
+        {
+          tryEncodeExternref: (value) =>
+            externrefTokens.encode(value) ?? undefined,
+          // Re-enter wasm by calling the guest's exported thrower; a JavaScript
+          // throw would reach the guest with the wrong tag. See census 109.
+          exceptionThrower: () => exceptionBroker,
+        },
+        `pid=${pid}: fork host floor`,
+      ).floor;
       let mainExceptionProvider: ForkExceptionProvider | null = null;
       const registerChildReferenceActivation = (
         activationId: number,
@@ -4337,6 +4324,7 @@ export async function centralizedWorkerMain(
             registerChildReferenceActivation: initData.isForkChild
               ? registerChildReferenceActivation
               : undefined,
+            forkHostFloor,
             isForkChild: Boolean(initData.isForkChild),
             invokeProcessFork: () => {
               const fork = processInstance?.exports.fork;
@@ -4354,33 +4342,6 @@ export async function centralizedWorkerMain(
                     backend: forkModuleBackend,
                   }
                 : undefined,
-            // Phase 6 D7a.1b: resolved lazily per side-module instantiation,
-            // AFTER `moduleReferenceKindsSupported` is computed for this child.
-            // When the whole reference graph is admitted, every side activation's
-            // funcref decode flips to the ONE shared module export (correct for
-            // all activations because the merged catalog is activation-namespaced).
-            forkModuleReferenceFlip: forkModuleInstance
-              ? (): Record<string, WebAssembly.ImportValue> =>
-                  moduleReferenceKindsSupported
-                    ? {
-                        __wpk_fork_ref_decode_funcref:
-                          forkModuleInstance.exports
-                            .__wpk_fork_ref_decode_funcref,
-                        // M2: mirror the funcref flip for externref decode —
-                        // every side activation's codec reads the SAME
-                        // whole-graph module export (activation-namespaced by
-                        // recipe coordinate, not per instance).
-                        __wpk_fork_ref_decode_externref:
-                          forkModuleInstance.exports
-                            .__wpk_fork_ref_decode_externref,
-                        // Phase 6 item 3a: each dlopen'd side activation's guest
-                        // codec also reads the RESTORE data-feed through the SAME
-                        // whole-graph module exports (the feed is activation-
-                        // namespaced by recipe coordinate, not per instance).
-                        ...moduleReferenceFeedFlip(),
-                      }
-                    : {}
-              : undefined,
             label: `pid=${pid}: dylink activations`,
           })
         : undefined;
@@ -4658,13 +4619,37 @@ export async function centralizedWorkerMain(
           );
         }
       }
+      if (!forkModuleInstance) {
+        throw new Error(
+          `pid=${pid}: fork-instrumented process has no co-resident module; ` +
+            "there is no JavaScript continuation to fall back to",
+        );
+      }
       const forkEnvImports: Record<string, WebAssembly.ImportValue> = {
-        ...processContinuation.continuationImports(0),
+        // Everything the module serves plus the host floor, with the three
+        // object imports a JS host genuinely supplies. Anything neither side
+        // provides fails HERE by name instead of as a LinkError naming a type.
+        ...(buildForkGuestImports({
+          moduleExports: forkModuleInstance.exports as Record<string, unknown>,
+          floor: forkHostFloor,
+          extras: {
+            // `continuationImports` contributes only the host-owned
+            // `__wpk_fork_resume_table` funcref table the module's
+            // `resume_peek` indexes.
+            ...processContinuation.continuationImports(0),
+            [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]: new WebAssembly.Global(
+              { value: "i32", mutable: false },
+              0,
+            ),
+            [FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT]:
+              tableReplicationImports.generationAddress,
+          },
+          guestModule: module,
+          label: `pid=${pid}: fork imports`,
+        }) as Record<string, WebAssembly.ImportValue>),
         // Phase 6 D5 IMPORT FLIP: the guest calls the co-resident module's
         // frame/resume exports directly (wasm->wasm over shared memory); the
-        // module is the ONLY frame/journal implementation. `continuationImports`
-        // contributes only the host-owned `__wpk_fork_resume_table` funcref
-        // table the module's `resume_peek` indexes. Guest ABI names and
+        // module is the ONLY frame/journal implementation. Guest ABI names and
         // signatures are unchanged; no guest re-instrumentation.
         ...(useForkModule && forkModuleInstance
           ? {
@@ -4695,64 +4680,13 @@ export async function centralizedWorkerMain(
                 }
                 return payload;
               },
-              __wpk_fork_frame_commit:
-                forkModuleInstance.exports.__wpk_fork_frame_commit,
-              __wpk_fork_frame_peek:
-                forkModuleInstance.exports.__wpk_fork_frame_peek,
-              __wpk_fork_frame_next:
-                forkModuleInstance.exports.__wpk_fork_frame_next,
-              __wpk_fork_resume_peek:
-                forkModuleInstance.exports.__wpk_fork_resume_peek,
-            }
-          : {}),
-        ...buildForkActivationStateImports(
-          0,
-          activationRegistry,
-          referenceReplay,
-          tableReplicationImports,
-        ),
-        ...buildForkExceptionImports({
-          activationId: 0,
-          ptrWidth,
-          registry: activationRegistry,
-          broker: exceptionBroker,
-          provider: () => {
-            if (!mainExceptionProvider) {
-              throw new Error(
-                `pid=${pid}: exception codec called before registration`,
-              );
-            }
-            return mainExceptionProvider;
-          },
-          referenceReplay,
-        }),
-        // Phase 6 D6.1 REFERENCE IMPORT FLIP: for a funcref-only child fork,
-        // replace ONLY the JS `__wpk_fork_ref_decode_funcref` (supplied by
-        // `buildForkActivationStateImports` above) with the module export, which
-        // reads the imported `__wpk_fork_function_catalog` mirror table with
-        // `table.get`. Placed AFTER `buildForkActivationStateImports` so this
-        // key wins. Every other reference import stays JS (unused for a
-        // funcref/null graph). Flag-off / non-funcref forks skip this entirely.
-        //
-        // M2: `__wpk_fork_ref_decode_externref` flips alongside it, to the
-        // module's own injected decode export (calls the single
-        // `env.resolve_externref` host import instead of the JS
-        // `referenceReplay().decodeExternref`). Same gate, same "every other
-        // reference import stays JS" scoping.
-        ...(moduleReferenceKindsSupported && forkModuleInstance
-          ? {
-              __wpk_fork_ref_decode_funcref:
-                forkModuleInstance.exports.__wpk_fork_ref_decode_funcref,
-              __wpk_fork_ref_decode_externref:
-                forkModuleInstance.exports.__wpk_fork_ref_decode_externref,
             }
           : {}),
         // Phase 6 item 3a REFERENCE DATA-FEED FLIP: replace the seven JS RESTORE
-        // data-feed imports (supplied by `buildForkActivationStateImports` /
-        // `buildForkExceptionImports` above) with the module exports for an
+        // data-feed imports (supplied by `buildForkGuestImports` above) with
+        // the module exports for an
         // admitted graph. Placed AFTER those builders so these keys win. Flag-off
         // / non-admitted forks get `{}` and keep the JS reference path.
-        ...moduleReferenceFeedFlip(),
       };
       const importObject = buildImportObject(
         module,
@@ -5356,7 +5290,7 @@ export async function centralizedWorkerMain(
               throw sealError;
             }
             // GATED REFERENCE KIND: a capture-side record-stub in
-            // `buildForkActivationStateImports` marked this fork as carrying a
+            // the reference transaction marked this fork as carrying a
             // reference kind the platform cannot faithfully reconstruct in a
             // fresh child (e.g. a live externref or typed Wasm-GC value). Abort
             // the fork cleanly with EOPNOTSUPP instead of launching a child:
@@ -6785,7 +6719,7 @@ export async function centralizedThreadWorkerMain(
         // constructed after the module. Instead, ADOPT the module's own
         // exported transit table into the already-built registry so the
         // guest's `__wpk_fork_ref_gc_transit` import (bound later by
-        // `buildForkActivationStateImports`, well below) and the module's
+        // `buildForkGuestImports`, well below) and the module's
         // drive integrity check read the exact same table. This happens
         // before any activation import is built and before any fork capture.
         threadActivationRegistry!.adoptGcTransit(
@@ -7005,6 +6939,18 @@ export async function centralizedThreadWorkerMain(
             coordinator: threadProcessContinuation,
             registry: threadActivationRegistry,
             exceptionBroker: threadExceptionBroker,
+            // A pthread replica gets its own floor over ITS token cache and
+            // broker: externref identity is per-worker (the generation id
+            // differs), so sharing the process floor here would key provenance
+            // against tokens this worker never minted.
+            forkHostFloor: createForkGuestHostFloor(
+              {
+                tryEncodeExternref: (value) =>
+                  threadExternrefTokens?.encode(value) ?? undefined,
+                exceptionThrower: () => threadExceptionBroker,
+              },
+              `pid=${pid} tid=${tid}: fork host floor`,
+            ).floor,
             importedStateCapture: threadImportedStateCapture ?? undefined,
             tableReplication: threadTableReplicationImports,
             isForkChild: false,
@@ -7071,7 +7017,37 @@ export async function centralizedThreadWorkerMain(
     const threadForkEnvImports =
       threadCoordinator && threadActivationRegistry && threadExceptionBroker
         ? {
-            ...threadCoordinator.continuationImports(0),
+            // Everything the module serves plus this worker's floor, with the
+            // three object imports a JS host supplies. Fails by NAME here if
+            // anything is unbound, rather than as an opaque LinkError.
+            ...(threadForkModuleInstance
+              ? (buildForkGuestImports({
+                  moduleExports: threadForkModuleInstance.exports as Record<
+                    string,
+                    unknown
+                  >,
+                  floor: createForkGuestHostFloor(
+                    {
+                      tryEncodeExternref: (value) =>
+                        threadExternrefTokens?.encode(value) ?? undefined,
+                      exceptionThrower: () => threadExceptionBroker,
+                    },
+                    `pid=${pid} tid=${tid}: fork host floor`,
+                  ).floor,
+                  extras: {
+                    ...threadCoordinator.continuationImports(0),
+                    [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]:
+                      new WebAssembly.Global(
+                        { value: "i32", mutable: false },
+                        0,
+                      ),
+                    [FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT]:
+                      threadTableReplicationImports.generationAddress,
+                  },
+                  guestModule: module,
+                  label: `pid=${pid} tid=${tid}: fork imports`,
+                }) as Record<string, WebAssembly.ImportValue>)
+              : { ...threadCoordinator.continuationImports(0) }),
             // Phase 6 D7b IMPORT FLIP (mirrors the main worker path): when the
             // fork-module is wired into this pthread parent, the thread's guest
             // calls the module's frame/resume exports directly (wasm->wasm over
@@ -7103,36 +7079,8 @@ export async function centralizedThreadWorkerMain(
                     }
                     return payload;
                   },
-                  __wpk_fork_frame_commit:
-                    threadForkModuleInstance.exports.__wpk_fork_frame_commit,
-                  __wpk_fork_frame_peek:
-                    threadForkModuleInstance.exports.__wpk_fork_frame_peek,
-                  __wpk_fork_frame_next:
-                    threadForkModuleInstance.exports.__wpk_fork_frame_next,
-                  __wpk_fork_resume_peek:
-                    threadForkModuleInstance.exports.__wpk_fork_resume_peek,
                 }
               : {}),
-            ...buildForkActivationStateImports(
-              0,
-              threadActivationRegistry,
-              undefined,
-              threadTableReplicationImports,
-            ),
-            ...buildForkExceptionImports({
-              activationId: 0,
-              ptrWidth,
-              registry: threadActivationRegistry,
-              broker: threadExceptionBroker,
-              provider: () => {
-                if (!threadExceptionProvider) {
-                  throw new Error(
-                    `pid=${pid} tid=${tid}: exception codec called before registration`,
-                  );
-                }
-                return threadExceptionProvider;
-              },
-            }),
           }
         : undefined;
     const importObject = buildImportObject(

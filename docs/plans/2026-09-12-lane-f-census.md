@@ -5148,3 +5148,77 @@ DIRECTION TAKEN (maintainer, 2026-09-13): do the replacement, remove the attic
 references in the same edit that adds the new implementation, and do the whole
 set of replacements as one stride before committing rather than landing
 intermediate states that each have to argue with a ratchet.
+
+## §111 — All three env sites replaced, and a flip that had been binding `undefined`
+
+Done as one stride, per the maintainer's direction: delete the attic reference in
+the same edit that adds its replacement, and do all three sites before
+committing. The per-site arithmetic shows why that mattered.
+
+Replacing site 1 alone took `workerMainTypeScript` from 5899 to 5921 -- +22, and
+the ratchet refuses it. The two builders it deletes live in the ATTIC, which no
+surface counts, so worker-main sees only a call-site swap plus two new floor
+constructions. After all three sites: 5925. Still up.
+
+The reduction came from what the binder made REDUNDANT. `buildForkGuestImports`
+binds the module's export for every contract name, so four existing override
+blocks were re-assigning values that were already assigned:
+
+  * site 2 and site 3 each re-bound `__wpk_fork_frame_{commit,peek,next}` and
+    `__wpk_fork_resume_peek` from the same module exports (site 2's
+    `frame_reserve` wrapper STAYS -- it adds abort-on-zero, which is not a
+    re-binding);
+  * site 2 re-bound both `__wpk_fork_ref_decode_*` under the admission gate;
+  * the whole `forkModuleReferenceFlip` option did the same for side activations.
+
+Deleting those four took 5925 -> 5858, banked. Net **-41** for the stride.
+
+**One of them was not redundant, it was broken.** `moduleReferenceFeedFlip` bound
+seven guest imports like this:
+
+```ts
+__wpk_fork_ref_vector_get: forkModuleInstance.exports.fm_ref_vector_get,
+```
+
+The module exports the GUEST spelling and not the `fm_ref_*` one:
+
+```
+__wpk_fork_ref_vector_get      guest-name: true   fm-name: false
+__wpk_fork_ref_gc_route        guest-name: true   fm-name: false
+... all seven the same
+```
+
+So every one of those seven was `undefined` whenever that flip fired. It fired
+only when `moduleReferenceKindsSupported` -- a module present, a child, and a
+decoded reference transaction -- which is why a green suite never showed it. The
+names must have been renamed to the `__wpk_fork_*` spelling at some point and the
+flip was not updated; nothing checked, because nothing verified that a flip's
+right-hand side EXISTS.
+
+The binder does check. It would have reported these by name at instantiation
+instead of binding `undefined`, which is the argument for it stated as an
+incident rather than as a principle.
+
+## §112 — What the stride did and did not buy
+
+Did: three `env` sites now build imports from one gap-checked place; both attic
+import builders are gone from `worker-main.ts`; `forkModuleReferenceFlip` and
+`moduleReferenceFeedFlip` are deleted; `host/src` typecheck errors 105 -> 96;
+worker-main banked 5899 -> 5858.
+
+Did not: the attic module COUNT is unchanged at 11. Those files supply other
+symbols -- `ForkActivationRegistry` itself, `forkExceptionProviderFromInstance`,
+`forkActivationRegistrationFromInstance`, the coordinator -- and the import
+builders were only two of the thirty symbols. The registry survives this commit
+with its ~16 direct call sites (static roots, early GC transit, table mutation
+marks, activation enumeration) untouched.
+
+Worth stating plainly because the headline number is tempting: 41 lines and 9
+typecheck errors is what removing the IMPORT FEED looks like. The orchestration
+is the other job.
+
+The two `exn_*` throws are bound as they were, through the broker's existing
+throwers, via a new optional `exceptionThrower` on the floor. That is the
+implementation route section 109 established and it preserves today's behaviour
+exactly -- it does not resolve the maintainer's deferral about where those two
+should ultimately live.

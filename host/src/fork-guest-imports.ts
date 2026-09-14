@@ -64,6 +64,40 @@ export const FORK_GUEST_HOST_FLOOR_NAMES = [
   "__wpk_fork_ref_provenance_externref",
 ] as const;
 
+/**
+ * The `env` imports a JS host must supply that are NOT functions, with the
+ * reason each one cannot come from the module.
+ *
+ * A real instrumented guest imports five non-function things. The module serves
+ * two of them -- the `__wpk_fork_ref_gc_transit` table and the
+ * `__wpk_fork_unwind` tag -- and `buildForkGuestImports` binds those from its
+ * exports. These three are what is left, and none is a module candidate:
+ *
+ *   * `__wpk_fork_resume_table` -- a `WebAssembly.Table` of guest resume thunks.
+ *     Rust cannot hold a funcref, and the module's `resume_peek` returns an
+ *     index INTO this table, so it has to exist outside the module.
+ *   * `__wpk_fork_module_activation` -- this activation's id as an immutable
+ *     global. Per-activation and known only at instantiation.
+ *   * `__wpk_fork_module_state_table_generation_addr` -- the address of the
+ *     shared generation fence. A per-process placement decision.
+ *
+ * Named here rather than imported from the attic registry that used to spell
+ * them, so a host binding its `env` does not depend on code this campaign is
+ * deleting. Census section 101 argues each entry.
+ */
+export const FORK_GUEST_RESUME_TABLE_IMPORT = "__wpk_fork_resume_table" as const;
+export const FORK_GUEST_ACTIVATION_GLOBAL_IMPORT =
+  "__wpk_fork_module_activation" as const;
+export const FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT =
+  "__wpk_fork_module_state_table_generation_addr" as const;
+
+/** The three above, for callers that need to reason about the set. */
+export const FORK_GUEST_HOST_OBJECT_IMPORTS = [
+  FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
+  FORK_GUEST_RESUME_TABLE_IMPORT,
+  FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
+] as const;
+
 export interface ForkGuestImportOptions {
   /** The co-resident fork module's exports, after injection. */
   readonly moduleExports: Record<string, unknown>;

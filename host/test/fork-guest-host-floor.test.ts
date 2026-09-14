@@ -60,6 +60,54 @@ describe("fork host identity floor", () => {
     expect(provenanceOf(token)).toBe(42);
   });
 
+  it("delegates both throws to the activation's exported throwers", () => {
+    // The implementation route section 109 established: the import does not
+    // throw from JavaScript -- which would reach the guest with the wrong tag --
+    // it calls a guest EXPORT that raises a tagged exception in wasm.
+    const calls: Array<[string, number]> = [];
+    const thrower = {
+      throwIngress: (token: number): never => {
+        calls.push(["ingress", token]);
+        throw new Error("wasm raised");
+      },
+      throwRecipe: (recipe: number): never => {
+        calls.push(["recipe", recipe]);
+        throw new Error("wasm raised");
+      },
+    };
+    const { floor } = createForkGuestHostFloor(
+      deps({ exceptionThrower: () => thrower }),
+    );
+    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(11)).toThrow(/wasm raised/);
+    expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(22)).toThrow(
+      /wasm raised/,
+    );
+    expect(calls).toEqual([
+      ["ingress", 11],
+      ["recipe", 22],
+    ]);
+  });
+
+  it("still fails loud if a bound thrower RETURNS instead of throwing", () => {
+    // A thrower that returns normally is a defect, and letting it through would
+    // continue the replay past an exception that was never delivered -- the
+    // exact silent corruption the unbound case guards against.
+    const { floor } = createForkGuestHostFloor(
+      deps({
+        exceptionThrower: () => ({
+          throwIngress: (() => undefined) as unknown as (t: number) => never,
+          throwRecipe: (() => undefined) as unknown as (r: number) => never,
+        }),
+      }),
+    );
+    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(
+      /did not throw/,
+    );
+    expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(1)).toThrow(
+      /did not throw/,
+    );
+  });
+
   it("gives NO provenance to a handle-carrying value that never crossed the production site", () => {
     // The distinction the whole map exists for, and the one thing that makes it
     // more than a cache of `tryEncodeExternref`.
@@ -113,9 +161,9 @@ describe("fork host identity floor", () => {
     // -- which would arrive with the wrong tag -- never happens. They are
     // unbound because the maintainer deferred them, not because a host cannot
     // do it. Census section 109.
-    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(/not bound/);
+    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(/did not throw/);
     expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(1)).toThrow(
-      /not bound/,
+      /did not throw/,
     );
     // And the message must not tell a reader it is impossible, which is what
     // sent this lane's census down the wrong path once already.
@@ -126,6 +174,6 @@ describe("fork host identity floor", () => {
       message = (error as Error).message;
     }
     expect(message).not.toMatch(/cannot|impossible/i);
-    expect(message).toContain("deferred by maintainer decision");
+    expect(message).toContain("Deferred by maintainer decision");
   });
 });

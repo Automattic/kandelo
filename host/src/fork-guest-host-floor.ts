@@ -42,6 +42,31 @@ export interface ForkGuestHostFloorDeps {
   // `ExternrefProvenanceRegistry` records at production for the same reason.
   // See docs/plans/2026-09-05-n1-nodebrowser-reference-parity-grounding.md §1
   // and census section 108.
+
+  /**
+   * The activation's exported throwers, resolved lazily.
+   *
+   * OPTIONAL, and its absence is the interesting case. Both `exn_*` members
+   * below must re-enter wasm raising a TAGGED exception, which they do by
+   * calling a guest EXPORT that throws -- never by throwing from JavaScript,
+   * which would arrive with the wrong tag (census section 109). When this is
+   * supplied they delegate; when it is not they refuse loudly, because a fork
+   * replay that continues past an exception it never delivered is silent
+   * corruption.
+   *
+   * Lazy because the exports do not exist when the import object is built: the
+   * instance that owns them is created FROM that object. The caller resolves it
+   * after registration, exactly as `fork-exception-provider` does.
+   */
+  readonly exceptionThrower?: () => ForkGuestExceptionThrower;
+}
+
+/** The two guest exports that raise a tagged exception back into wasm. */
+export interface ForkGuestExceptionThrower {
+  /** Throw the exception an ingress token names. Never returns normally. */
+  readonly throwIngress: (token: number) => never;
+  /** Throw the exception a recipe id names. Never returns normally. */
+  readonly throwRecipe: (recipe: number) => never;
 }
 
 export interface ForkGuestHostFloorHandle {
@@ -86,20 +111,25 @@ export function createForkGuestHostFloor(
     // them: it already calls guest exports through `__wpk_fork_drive_table`.
     // They stay unimplemented because the MAINTAINER deferred them to last, not
     // because they cannot be done. See census section 109.
-    __wpk_fork_ref_exn_ingress_throw(recipe: number): void {
+    __wpk_fork_ref_exn_ingress_throw(token: number): void {
+      deps.exceptionThrower?.().throwIngress(token);
+      // Only reachable with no thrower bound, or if one returned without
+      // throwing -- which is itself a defect worth naming rather than letting
+      // the replay continue past an exception it never delivered.
       throw new Error(
-        `${label}: __wpk_fork_ref_exn_ingress_throw(${recipe}) is not bound. `
-          + `It is implementable -- call the activation's exported thrower, as `
-          + `fork-exception-provider does -- and is deferred by maintainer `
-          + `decision, not by a capability limit. A host reaching this has `
-          + `replaced a working exception path with this floor.`,
+        `${label}: __wpk_fork_ref_exn_ingress_throw(${token}) did not throw. `
+          + `Bind an exceptionThrower so this can call the activation's `
+          + `exported thrower; a JavaScript throw here would reach the guest `
+          + `with the wrong tag. Deferred by maintainer decision, not by a `
+          + `capability limit -- see census section 109.`,
       );
     },
 
     __wpk_fork_ref_exn_broker_throw_recipe(recipe: number): void {
+      deps.exceptionThrower?.().throwRecipe(recipe);
       throw new Error(
-        `${label}: __wpk_fork_ref_exn_broker_throw_recipe(${recipe}) is not `
-          + `bound, for the reason __wpk_fork_ref_exn_ingress_throw is not.`,
+        `${label}: __wpk_fork_ref_exn_broker_throw_recipe(${recipe}) did not `
+          + `throw, for the reason __wpk_fork_ref_exn_ingress_throw did not.`,
       );
     },
   };
