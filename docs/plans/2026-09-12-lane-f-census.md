@@ -5610,3 +5610,60 @@ queries -- but a correct count of one part is not a scope for the whole. Four
 corrections in this file came from reading the implementation rather than the
 interface; this one came from reading the implementation and still missing the
 constructor.
+
+## §121 — The correct scope: the arena moves WHOLLY into the module
+
+Section 120 withdrew the module-state step because the arena owns memory as well
+as format. Following that to its answer changes the design rather than patching
+it.
+
+The allocate/release callbacks the host supplies are these:
+
+```ts
+(size)       => continuationMmap(memory, channelOffset, size, ...)
+(addr, size) => continuationMunmap(memory, channelOffset, addr, size, ...)
+```
+
+Channel mmap and munmap -- host calls into the kernel over the syscall channel.
+The obvious reading is that this is why the arena must stay host-side.
+
+It is not, because the MODULE already does exactly this:
+
+```rust
+fn channel_mmap(channel_base: u64, size: u64) -> Result<u64, Errno>   // lib.rs:2263
+```
+
+used at four sites, including the growing frame arena and the journal image. The
+module channel-mmaps for its own storage today; there is nothing it lacks to do
+the same for the KFMS arena.
+
+So the correct scope is not "a host handle plus record queries". It is that the
+arena becomes WHOLLY the module's -- allocation, format, records, release -- and
+the host keeps the root address and the owned/borrowed distinction, which are
+genuinely its own: `fm_parent_begin_capture` would allocate the arena and RETURN
+its root, the way it already returns activation 0's module-buffer anchor, instead
+of being handed one.
+
+That is a better end state than the handle I drafted, and a bigger change than
+the one I attempted. It touches the capture path -- the one the tests restored in
+this session finally exercise -- so it wants its own stride with those tests
+green before and after, not the tail of a long one.
+
+Recording the shape rather than starting it:
+
+  * `fm_parent_begin_capture` allocates and returns the arena root; the host
+    stops constructing an arena to pass in;
+  * the release path becomes a module entry, since `releaseArena`'s whole
+    purpose is the munmap;
+  * `ForkTableSnapshot.restore(arena)` needs the arena object, so the table
+    snapshot moves in the same stride or the arena stays alive for it alone;
+  * the borrowed-child guards (`borrowed child cannot allocate module state`)
+    are policy the module can hold -- it already knows the phase and now the
+    ownership.
+
+Two sections of this census now describe attempts that did not land (120, and
+110's overlay). Both were withdrawn on the same rule -- do not commit code
+nothing calls -- and both produced a better statement of the problem than the
+analysis that preceded them. That is the argument for attempting rather than
+planning further: the constructor that invalidated section 118's estimate was
+visible the whole time and I only saw it by writing the replacement.
