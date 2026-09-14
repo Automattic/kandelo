@@ -2346,6 +2346,14 @@ mod wasm {
             }
         }
 
+        /// How many chunks this allocator has mapped and not yet released.
+        ///
+        /// Zero means it owns nothing to free -- either it never allocated, or
+        /// it is a `new_channel(0)` allocator that cannot.
+        fn release_count(&self) -> usize {
+            self.chunks.len()
+        }
+
         /// Best-effort release of every chunk this allocator mapped. Called after
         /// a successful replay finish and on abort; a `munmap` hiccup does not
         /// fail an already-complete fork, so errors are ignored here.
@@ -7582,6 +7590,108 @@ mod wasm {
     /// answer would be an undercount rather than an error, which is the worst
     /// kind. Answers `EBUSY` and `-1` off-phase, `EINVAL` and `-1` for an
     /// unknown field.
+    /// The module-state (KFMS) arena, by operation:
+    ///
+    /// - `0` ROOT    — the arena root address, or `0` when there is none.
+    /// - `1` ADOPT   — adopt the arena at `arg` (a child taking over the
+    ///                 parent's inherited records). Returns `0`.
+    /// - `2` RELEASE — `munmap` every arena chunk THIS module mapped. Returns
+    ///                 how many were released.
+    /// - `3` OWNED   — `1` when this module mapped the chunks and may free
+    ///                 them, `0` when the arena was adopted or absent.
+    ///
+    /// One field-indexed entry rather than four exports, the shape `fm_stats`
+    /// established. The surface budget drives this population toward five, so a
+    /// port that needs four operations should cost one entry.
+    ///
+    /// **This is the module half of the arena port** (census sections 132 and
+    /// 133) and it is deliberately the half that changes nothing yet. The host's
+    /// `ForkModuleStateArena` still owns the live path. What section 133 found
+    /// is that the two cannot be switched a method at a time: the module
+    /// ALLOCATES the KFMS chunks (through `__wpk_fork_module_state_record_`
+    /// `reserve`) and the host FREES them, having rediscovered the addresses by
+    /// walking the linked chunk list in guest memory from the root. If both
+    /// sides free, a fork double-munmaps; if neither does, it leaks the arena.
+    /// So RELEASE exists here, tested, and stays uncalled until the host's
+    /// `release()` goes away in the same change.
+    ///
+    /// OWNED is what makes that switch checkable rather than hopeful, and it is
+    /// also the borrowed case for free: a vfork child's arena allocator is
+    /// `new_channel(0)`, which maps nothing, so it owns nothing and releases
+    /// nothing — which is exactly what the host's `detachBorrowed` does by
+    /// hand. The distinction the host draws with an `ownership` field falls out
+    /// of which allocator the child was built with.
+    ///
+    /// Answers `-1` with `EINVAL` for an unknown operation or a refused adopt.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_module_state_arena(op: u32, arg: usize) -> i64 {
+        // No `op > 3` pre-check. It would be a guard no test can show failing:
+        // in every configuration a test can reach, an unknown op is already
+        // refused by one of the two matches below, so removing the pre-check
+        // changes nothing observable. What it WOULD do is let a catch-all arm
+        // mis-dispatch op 4 as OWNED once module state exists -- so the arms are
+        // exhaustive instead, and unknown ops are refused in exactly one way.
+        let Some(module) = state().as_mut() else {
+            // No module state means no fork has begun unwinding in this worker,
+            // so there is genuinely no arena. For the two QUERIES that is the
+            // truthful answer, not a default -- the same reasoning `fm_phase`
+            // uses for answering IDLE before any activation exists. ADOPT and
+            // RELEASE mutate, and a mutation against state that does not exist
+            // is a caller error rather than a no-op.
+            return match op {
+                0 | 3 => {
+                    set_ok();
+                    0
+                }
+                _ => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            };
+        };
+        match op {
+            0 => match i64::try_from(module.module_state.root()) {
+                Ok(root) => {
+                    set_ok();
+                    root
+                }
+                Err(_) => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            },
+            1 => match module.module_state.adopt(arg as u64) {
+                Ok(()) => {
+                    set_ok();
+                    0
+                }
+                Err(e) => {
+                    set_err(e);
+                    -1
+                }
+            },
+            2 => {
+                let released = module.module_state_chunks.release_count();
+                module.module_state_chunks.release_all();
+                set_ok();
+                released as i64
+            }
+            3 => {
+                // Adopted means another process mapped these chunks; absent
+                // means nobody did. Only a list this module built is safe to
+                // free, which is the whole point of asking.
+                let owned = !module.module_state.is_adopted()
+                    && module.module_state_chunks.release_count() > 0;
+                set_ok();
+                if owned { 1 } else { 0 }
+            }
+            _ => {
+                set_err(Errno::EINVAL);
+                -1
+            }
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_borrowed_replay_workspace(field: u32) -> i64 {
         // Field BEFORE phase, deliberately. Which fields exist is a static
