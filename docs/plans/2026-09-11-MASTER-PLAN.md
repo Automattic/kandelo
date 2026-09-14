@@ -1605,6 +1605,105 @@ accident. **Implementing `mount(2)` is outside lanes V and Y — it is a kernel
 capability that changes what the platform claims to support.**
 
 
+### THE HOST IS A DUMB BYTES PIPE — maintainer directive, 2026-09-14
+
+**The directive, verbatim:** *"the ensure-materialized and
+throwIfLazyTransportAborted and others like that sound like responsibilities of
+the new Rust-based implementation. I don't care if they aren't yet decoupled
+from something. TS/Host-land no longer should own lazy materialization status
+... the host should be a dumb, bytes resolution pipe that knows how to
+communicate failure."*
+
+This settles a question this lane had been circling: whether the host's lazy
+bookkeeping — materialization state, abort tokens, per-inode readiness — was
+worth porting or worth deleting. It is worth deleting. **The host resolves
+bytes and reports failure; the kernel owns whether a file is materialized.**
+
+**What that means concretely, and it is smaller than the incumbent.** The pipe
+is a function `(ino, offset, dest) -> number | Errno`:
+
+* it returns the byte count on success;
+* it returns `EAGAIN` for *bytes not ready*, which `rootfs::ensure_materialized`
+  already propagates untouched (`rootfs.rs:1616`) so the syscall unwinds and the
+  guest retries — there is no suspension window to preserve;
+* it returns `EIO` for a failed fetch and `ENOENT` for an inode it was never
+  given a URL for.
+
+**Progress is not materialization status and survives the cut.** *Transfer
+progress* is a property of the fetch, and the fetch is unambiguously the host's.
+The pipe therefore carries an optional `onProgress` callback — chosen by the
+maintainer over dropping the feature — which is how archive progress, dead for
+`/` since the Phase 5 cutover, comes back as part of this work rather than as a
+separate browser-lane item.
+
+### THE FIVE STEPS, and why they are in this order — 2026-09-14
+
+Agreed with the maintainer. The ordering is not arbitrary: each step's deletion
+is only safe because the previous step removed the last caller.
+
+1. **Swap the deferred path onto the pipe.** `createDeferredUrlReader` replaces
+   the memfs-backed `deferredFileReader` at both worker entries, and
+   `lazyArchiveFetcher` gains the progress emission it never had. *Verification
+   chosen by the maintainer: the browser suite, against the 167/14 baseline* —
+   a Node-side unit test cannot show that the fetch path a browser takes still
+   works. **LANDED `7a7ed1fe2` + `b30e72f7a`; verification BLOCKED, see below.**
+2. **Delete what step 1 orphaned.** `createDeferredFileReader` now has no
+   production caller; memfs's ~503-line fetch engine has no reader; and
+   `RootfsOverlayBaseImage extends DeferredByteSource` only to reach a byte
+   source the module now supplies. Bank the reduction.
+3. **Repoint the four construction sites onto `createModuleBaseImage`.** This is
+   what kills the remaining lazy bookkeeping — `rewriteLazyFileUrls`,
+   `rewriteLazyArchiveUrls`, `importLazyEntries`,
+   `importVerifiedLazyArchiveEntries` — because nothing then asks the host to
+   hold lazy state at all.
+4. **The test corpus, helper-first.** Rust-first for the ~38 that are tests OF a
+   filesystem; repoint the ~32 fixture users through one helper; read the ~6
+   genuine fd-surface tests individually. The sizing is above.
+5. **Delete `memory-fs.ts` and `sharedfs-vendor.ts`**, which pays the
+   twenty-second entry point's debt (`25537ca84`).
+
+**Deferred by the maintainer: runtime `mount()` for additional tmpfs
+instances.** *"mount()ing a tempfs at runtime isn't 100% necessary for lane Y to
+close. That could be deferred work."* So the four browser tests that mount an
+in-memory filesystem at a path of their choosing stay on the host-side backend
+for now, and the mount(2) gap recorded above stays open as a gap.
+
+### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
+
+**2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
+source-only program projection is never published and the suite aborts at
+startup with 0 passed, 0 failed, 2 tier errors.
+
+The failure is **not** a package build — all 94 nodes report `succeeded`. It is
+finalization:
+
+```
+LOCAL BUILD FAILED — source-only program authority was not published
+source-only program authority: finalization failed: wordpress@7.0:
+  resolved source-only cache path   …wordpress-7.0-rev19-wasm32-bc418867…
+  does not equal expected canonical …wordpress-7.0-rev19-wasm32-23b3456b…
+```
+
+`capture_source_only_package_authority` recomputes the package's cache key after
+the graph drains and compares it to the path the node actually resolved under
+(`tools/xtask/src/build_deps.rs:8948`). A mismatch means **the key moved during
+the run** — the signature of a dependency publishing mid-run, and eleven nodes
+published this run, `kernel` and `rootfs` among them, whose keys a
+`crates/runtime-core` edit from this lane invalidates.
+
+**If that reading is right the failure is transient** and a second run, in which
+nothing publishes, converges. That is the cheapest possible test of the theory
+and is what this lane ran next. If it is wrong, the failure belongs to the
+package/build lane, not to V or Y: nothing in the failing path — `wordpress`,
+`lamp`, opcache — is image-builder or filesystem code.
+
+A second symptom appeared in the same log and is separately worth recording:
+`lamp/wasm32` prewarm fails with `dl_step: /usr/lib/php/extensions/opcache.so:
+undefined symbol: __sigsetjmp_save`, then `[prewarm] FATAL: opcache extension
+not loaded` — and the node still reports SUCCEEDED. **A prewarm that fails
+fatally and succeeds anyway is the platform-values contract's "convenient
+illusion"**, whoever owns it.
+
 ## LANE Y/V MERGE POINT — `brandonpayton/lane-y-image-writer` @ `5fe08d499`, 2026-09-14
 
 **Ready to merge. Do NOT wait for V to finish: what is complete is the
