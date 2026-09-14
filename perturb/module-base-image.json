@@ -1,0 +1,27 @@
+{
+ "file": "host/src/vfs/module-base-image.ts",
+ "verify": "cd host && npx vitest run test/module-base-image.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the window subtracts the header, as a body-holding backend would",
+   "scope": "    imageRead: (at, dest) =>",
+   "scope_end": "\n  };\n",
+   "find": "    imageRead: (at, dest) => module.imageRead(BigInt(at), dest),",
+   "replace": "    imageRead: (at, dest) => module.imageRead(BigInt(at - 16), dest),"
+  },
+  {
+   "name": "the lazy entries come back empty instead of from the container",
+   "scope": "    exportLazyEntries: () =>",
+   "scope_end": ",\n",
+   "find": "    exportLazyEntries: () => (Array.isArray(lazy) ? lazy : []) as LazyFileEntry[],",
+   "replace": "    exportLazyEntries: () => [] as LazyFileEntry[],"
+  },
+  {
+   "name": "the lazy half is read from the archive section",
+   "scope": "  const lazy = decodeSection(",
+   "scope_end": "\n  );\n",
+   "find": "    lazySectionBytes(parsed, sections),",
+   "replace": "    archiveSectionBytes(parsed, sections),"
+  }
+ ]
+}
