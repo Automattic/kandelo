@@ -7169,12 +7169,30 @@ ownership election this lane already accepted as floor in
 `fork-table-state-owners.ts` — the host compares object identity once and
 publishes the RESULT, because comparing is the part that needs JavaScript.
 
-**So the design question answers itself.** The matching stays in the host,
-because the matching is the identity comparison. What moves is only where the
-result is written: through the module's record-reserve/commit imports instead of
-a host-owned arena object, so there is one arena and the module owns it. No new
-module entry, no encoder — the host already has the bytes, it just stops needing
-its own arena to put them in.
+**CORRECTED — the observation is right and the conclusion was wrong.** "The
+matching stays in the host because the matching is the identity comparison"
+conflates two different things. The identity COMPARISON is host-only. The
+matching around it — finding each descriptor's snapshot, checking type codes,
+reading recipe ids, sorting, encoding — is not, and only looked host-only
+because it is currently written in TypeScript.
+
+`captureBinding` needs four inputs: the descriptor (the module decodes KFIG
+itself), the snapshot (the module owns the arena), the live JS value, and the
+identity map. Only the last two are the host's, and really only one FACT is: for
+each imported global, is the value a `WebAssembly.Global`, and if so which
+activation exports that same object.
+
+So the split is the one `fork-table-state-owners.ts` already uses in this lane.
+There, the host compares `WebAssembly.Table` identity — which wasm cannot — and
+publishes only the ELECTION RESULT through a seed entry, leaving the module to
+serve it. Here the host resolves global provenance and publishes the same shape:
+per `(activation, owner)`, either "carried by a Global that activation N exports
+as owner M", or "not a Global carrier". Everything downstream of that is the
+module's.
+
+Section 149, which sized a `fm_module_state_record_field` entry so the host could
+keep reading arena records, is superseded with it: that entry would have existed
+only to feed TypeScript that should not survive the lane.
 
 **And the general lesson, which is why the question was worth asking.** I was one
 step from "porting" this by deleting it, on a hypothesis about what the data
@@ -7272,3 +7290,44 @@ hard parts did not survive reading the code that produces the data — the arena
 Each time the shortcut was plausible and each time the code said otherwise. The
 pattern is specific enough to name: I reason about what data MUST mean from its
 shape, and the answer is in what reads it.
+
+## §150 — Unported TypeScript is not a statement of what the system requires
+
+Sections 147 and 149 are superseded, and the reason generalises past this file.
+
+Both investigated `ForkImportedGlobalCapture.appendTo` by asking **what does this
+code need**. That question has an answer, and the answer is the OLD ARCHITECTURE.
+It produced: the host must keep the matching loop, therefore the host must read
+arena records, therefore the module needs a new entry
+(`fm_module_state_record_field`) to let the host read them. A module entry whose
+entire purpose is to feed TypeScript that the lane exists to delete.
+
+The maintainer named it: *"you keep getting into places where you magically
+discover code that hasn't been ported and treat it like the ground truth of what
+the system requires when the actual truth is that there is more that needs
+ported."*
+
+The right question is **what could the module do if this TypeScript did not
+exist, and what is the irreducible fact only the host can supply?** For this
+file the irreducible fact is small: for each imported global, whether the value
+is a `WebAssembly.Global` and, if so, which activation exports that same object.
+Wasm cannot answer that — there is no `global.eq` and the module does not import
+the activations' globals. Everything else `appendTo` does is derivable from data
+the module already holds.
+
+**The shape already exists in this lane.** `fork-table-state-owners.ts` compares
+`WebAssembly.Table` identity, which wasm cannot, and publishes only the ELECTION
+RESULT through `fm_set_activation_table_state_owner`. The host does the one
+thing it alone can, in a handful of lines, and the module serves every query
+from the seeded result. Imported globals are the same problem with a different
+object type.
+
+**A tell worth keeping.** If a port requires a NEW module entry so the host can
+keep doing something, the split is wrong. Entries should let the host do less.
+Section 149's entry failed that test and the failure was visible in its own
+justification — "so the host can enumerate the arena's records" — which is a
+sentence about preserving host capability.
+
+This is the fourth shortcut of the day to not survive contact, and the first
+where the error was not a missing fact but the wrong question. The previous three
+were fixed by reading more code. This one was caused by reading more code.
