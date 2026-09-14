@@ -796,10 +796,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // in-kernel tmpfs, which already serves every other scratch prefix, so a
   // host backend for it would be a second authority the kernel never consults.
   const mounts: MountConfig[] = [...specMounts];
-  memfs.subscribeLazyDownloads((event) => {
-    post({ type: "lazy_download", event });
-  });
-  // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
+    // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority, so the host `/` mount is always dropped from the
   // guest-facing VirtualPlatformIO. Guest syscalls route non-tmpfs `/` paths
   // through the overlay (`rootfs::claims_path`), and host-initiated exec-byte

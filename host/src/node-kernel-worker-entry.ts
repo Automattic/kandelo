@@ -810,10 +810,7 @@ async function buildVirtualPlatformIO(
       rootfsMemfs.rewriteLazyFileUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
       rootfsMemfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
     }
-    rootfsMemfs.subscribeLazyDownloads((event) => {
-      post({ type: "lazy_download", event });
-    });
-    const lazyFetcher = rootfsLazyAssets !== undefined
+        const lazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
