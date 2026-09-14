@@ -132,9 +132,16 @@ export class VirtualPlatformIO implements PlatformIO {
       })
       .sort((a, b) => b.prefix.length - a.prefix.length);
     this.time = time;
-    if (this.mounts.length === 0) {
-      throw new Error("VirtualPlatformIO requires at least one mount");
-    }
+    // ZERO MOUNTS IS LEGITIMATE, and is now the destination rather than a
+    // mistake. The kernel owns `/`, every scratch prefix, and — since POSIX
+    // shared memory moved in-kernel — the whole of `/dev`. A host router with
+    // nothing left to route is what that looks like from this side, and on
+    // Node `/dev/shm` was the last mount keeping this list non-empty.
+    //
+    // Nothing is lost by dropping the guard. It caught "you forgot to pass
+    // mounts" at construction; `resolve` still throws `ENOENT: no mount for
+    // path: …` on any actual call, which catches the same mistake at the
+    // moment it matters and can name the path it could not route.
   }
 
   /** Whether the mount owning an absolute guest path ignores set-ID bits. */
