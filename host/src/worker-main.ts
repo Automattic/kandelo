@@ -96,10 +96,12 @@ import {
   FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
   type ForkGuestHostFloor,
   forkUnwindTagFrom,
+  FORK_GUEST_RESUME_TABLE_IMPORT,
   isForkUnwindException,
   requireForkUnwindTag,
 } from "./fork-guest-imports";
 import { type ForkPhase, forkPhase } from "./fork-phase";
+import { ForkResumeTable } from "./fork-resume-table";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
   type ForkModuleExports,
@@ -3558,6 +3560,17 @@ export async function centralizedWorkerMain(
       // the module-backed path is active.
       let forkModuleFrameExports: Record<string, unknown> | null = null;
       /**
+       * The funcref table the guest imports as `__wpk_fork_resume_table`, and
+       * the module indexes through `fm_resume_peek`.
+       *
+       * Host floor: it is a live `WebAssembly.Table` holding the guest's own
+       * exported thunks, which the module cannot hold for it. The coordinator
+       * used to own one and hand it out through `continuationImports`; this is
+       * the same table with the coordinator removed from between.
+       */
+      const resumeTable = new ForkResumeTable(`pid=${pid}: fork resume table`);
+
+      /**
        * The module backend, narrowed. Every fork path that reaches a lifecycle
        * call has one by construction; this is where that stops being an
        * assumption and starts being a named failure.
@@ -4654,7 +4667,8 @@ export async function centralizedWorkerMain(
             // `continuationImports` contributes only the host-owned
             // `__wpk_fork_resume_table` funcref table the module's
             // `resume_peek` indexes.
-            ...processContinuation.continuationImports(0),
+            [FORK_GUEST_RESUME_TABLE_IMPORT]:
+              resumeTable.table as unknown as WebAssembly.ImportValue,
             [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]: new WebAssembly.Global(
               { value: "i32", mutable: false },
               0,
@@ -4784,8 +4798,8 @@ export async function centralizedWorkerMain(
         exceptionProvider: mainExceptionProvider,
         typedReferenceProvider: mainTypedReferenceProvider,
       });
-      processContinuation.registerActivation(
-        mainRegistration,
+      resumeTable.registerActivation(
+        0,
         forkResumeTargetsFromInstance(module, instance),
       );
       importedStatePlanner?.registerInstance(0, instance);
@@ -4815,7 +4829,7 @@ export async function centralizedWorkerMain(
           activationRegistry.bootstrapActivation(0);
         } catch (error) {
           processTableReplication.abortActiveMutations();
-          processContinuation.unregisterActivation(0);
+          resumeTable.unregisterActivation(0);
           mainExceptionProvider = null;
           throw error;
         }
@@ -5482,7 +5496,8 @@ export async function centralizedWorkerMain(
         }
       }
 
-      processContinuation.clear();
+      forkModule().abort();
+      resumeTable.clear();
       releaseProcessForkArchiveReader();
       importedStateCapture?.clear();
       externrefTokens.clear();
