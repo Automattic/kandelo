@@ -134,6 +134,7 @@ import {
   buildRootfsLazyWiring,
   createDeferredFileReader,
 } from "./vfs/rootfs-lazy-archives";
+import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
@@ -4403,7 +4404,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * both reach the overlay through here.
    */
   function configureRootfsOverlayFromImage(options: {
-    baseImage: MemoryFileSystem;
+    baseImage: RootfsOverlayBaseImage;
     imageBytes: Uint8Array;
     foreignPrefixes: string[];
     nosuid: boolean;

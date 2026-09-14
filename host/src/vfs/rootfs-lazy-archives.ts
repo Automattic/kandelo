@@ -147,6 +147,23 @@ export interface DeferredByteSource {
   close(handle: number): void;
 }
 
+/**
+ * What the in-kernel rootfs overlay needs from the host's `/` image.
+ *
+ * `configureRootfsOverlayFromImage` was typed against `MemoryFileSystem`, the
+ * 8,000-line class lane V is retiring, but read at the call site it asks for
+ * only these six methods: the deferred byte trio above, the two lazy-entry
+ * exports, and the image body. Naming the set is what lets the overlay be
+ * handed something else — an `SffsImageFs`-backed adapter — without the
+ * overlay knowing which filesystem it got. Same move as
+ * `DeferredByteSource`, one level up.
+ */
+export interface RootfsOverlayBaseImage extends DeferredByteSource {
+  exportLazyEntries(): LazyFileEntry[];
+  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[];
+  imageBodyBytes(): Uint8Array;
+}
+
 export function createDeferredFileReader(
   backend: DeferredByteSource,
   lazyEntries: readonly LazyFileEntry[],
