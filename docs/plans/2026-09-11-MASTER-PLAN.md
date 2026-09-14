@@ -365,16 +365,28 @@ graph moving rather than the code**. Three committed trials that can no
 longer fail are false evidence in the corpus, which is the exact thing the
 corpus exists to prevent.
 
-**The fix is a design call, not a repair**, which is why it is filed rather
-than applied:
+**CORRECTION, same day.** This entry first said the trial worth having —
+one that mutates `process-lifecycle.ts`'s import back to the `./vfs` barrel —
+did not exist. **It exists and it works.**
+`perturb/browser-worker-node-imports.json` holds exactly that trial, *"the
+one VFS symbol is taken from the barrel again, dragging node:fs into the
+browser bundle"*, and it was re-run here healthy: 1 trial, 0 survived. Note
+both specs verify against the same file,
+`test/browser-worker-node-globals.test.ts`; there is no separate
+`browser-worker-node-imports.test.ts`.
 
-- Re-point the trials at a module still in the graph. Cheap, but it tests
-  the guard rather than the defect.
-- Better: add a trial that mutates `process-lifecycle.ts`'s import back to
-  the `./vfs` barrel. That anchors the real regression — someone restoring
-  the barrel pulls `native-metadata` back into the graph and the original
-  browser-killing defect returns. This is the trial the lane actually wants,
-  and it did not exist.
+Confirmed independently of the harness: restoring the barrel import by hand
+makes that test FAIL. So the regression that actually matters — someone
+restores the barrel and pulls the Node-only subgraph back into the browser
+bundle — is anchored today.
+
+**What is left is therefore a repair, not a design call.** The three
+`native-metadata` trials are simply stale: the defect they mutate is only
+reachable through the barrel, and the barrel edge is already guarded by the
+trial above. They should be retired, or re-pointed at a module still in the
+graph. Retiring them loses nothing that the barrel trial does not already
+cover; keeping them as-is leaves three trials in the corpus that cannot
+fail.
 
 Note for the merge record: this does not weaken lane Y's browser fixes, both
 of which are real and landed. Its sibling guard
@@ -1961,11 +1973,33 @@ serialiser to imitate and no escaping rule to get subtly wrong, because the
 canonical form is the format.* Doing it in TS to unblock step 3 would recreate
 the drift from the other end.
 
-**So step 3's archive half is gated on the Rust seal, and the Rust seal is
-already designed in this plan and already argued to be unblocked** (see *"the
-seal work is NOT blocked, and I treated a question as a veto"*). That is not a
-new dependency discovered late; it is the same dependency, reached from the
-consumer side, which is the direction this campaign says to work in.
+**CORRECTION, made before this entry was an hour old.** The sentence that
+stood here said step 3's archive half was gated on building the Rust seal. The
+Rust seal is already BUILT: `crates/sffs-module/src/seal.rs`, 756 lines, with
+`encode`/`decode`, `cohort_identity`, `sha256`, `seal_cohorts` and
+`verify_cohorts`; it is called from `sm_load_image` (`lib.rs:246`) and it seals
+at the export door (`lib.rs:832`), exactly as this plan designed. Five perturb
+trials in `sffs-module-seal.json` break each of its five checks. **I wrote a
+dependency on work this lane had already finished, from a search that stopped
+at the TypeScript side.**
+
+So the real shape of the obstacle is narrower and worth stating exactly:
+
+**The URL rewrite is a post-seal mutation of sealed data, and only the side
+that owns the seal can perform it.** The descriptor names the archive's URL,
+the descriptor is what gets digested, and the seal carries that digest — so
+rewriting a URL after sealing invalidates `sha256(descriptor) ==
+descriptor_digest` unless the rewriter re-derives the seal. `MemoryFileSystem`
+can do it because it holds the private pre-seal snapshot. A host reading
+decoded JSON cannot, and should not be given the ability to.
+
+**The question step 3 actually has to answer is therefore where `lazyUrlBase`
+belongs**, not how to reimplement a rewrite. Candidates: the module accepts a
+base at load and rewrites inside its own seal authority; or the base is applied
+BEFORE sealing, at image build time, making the deployment URL part of what is
+sealed rather than a thing mutated afterwards. **The second is the better shape
+and it is lane Y's door**, which is the first time in this campaign that V's
+remaining work has pointed back at Y rather than the other way round.
 
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
