@@ -2155,6 +2155,230 @@ bounded read is the one to argue for first**, and only measured evidence of a
 real cost should buy the raw view.
 
 
+#### Item 4 censused — the fd-and-metadata half is four methods, not fourteen
+
+The plan said "count what the builders actually call before adding any of
+them". This is that count, taken across every non-test consumer: the four
+browser-demo pages, `kernel-owned-boot.ts`, the three `mkrootfs` CLI verbs,
+`load-image.ts`, `rootfs-overlay.ts` and `rootfs-overlay-export.ts`.
+
+**They call 26 methods between them.** Of the fourteen fd-and-metadata methods
+this plan listed as V9's "honest remainder", they call **three**: `fstat`,
+`lchown`, `rmdir` — plus `utimensat`, which the earlier list named as
+`utimens`. The other ten — `lseek`, `ftruncate`, `readAt`, `writeAt`,
+`append`, `fchmod`, `fchown`, `statfs`, `rename`, `link` — have **no non-test
+caller at all**. They are surface `MemoryFileSystem` carries because it
+implements `FileSystemBackend`, not surface anything asks for.
+
+**And three of the four gaps are in one file.** `fstat` has a single caller
+(`pages/benchmark/main.ts`); `lchown`, `rmdir` and `utimensat` have a single
+caller each, all three in `rootfs-overlay-export.ts`.
+
+**The `*WithOwner` helpers do not need porting; they need deleting.** They are
+host-side compositions — `mkdirWithOwner` is `mkdir` + `chown` + `chmod`,
+`createFileWithOwner` is `open`/`write`/`close` + `chown` + `chmod`,
+`symlinkWithOwner` is `symlink` + `lchown`. The module already takes ownership
+inline: `sm_mkdir(path, mode, uid, gid)` and `sm_symlink(target, link, uid,
+gid)` do in ONE call what the host does in three. That is the "make the host do
+less" trade the budget record praises, available here for free.
+(`sm_write_file` does not take uid/gid, so `createFileWithOwner` stays two
+calls against existing entry points — still no addition.)
+
+**Each of the four was then checked against the Rust, rather than guessed at.
+Two are avoidable and two are real:**
+
+* `fstat` — **avoidable.** Its one caller does `open` / `fstat` / `read` on a
+  path it already holds; `sm_lstat` answers from the path.
+* `lchown` — **avoidable, and the call is redundant today.** There is exactly
+  one `applyMetadata(..., isSymlink: true)` call site
+  (`rootfs-overlay-export.ts:270`), and the line immediately before it is
+  `clone.symlinkWithOwner(record.target, record.path, record.uid, record.gid)`
+  — which is `symlink` + `lchown` with the *same* uid and gid from the *same*
+  record. The `lchown` inside `applyMetadata` repeats what the creation just
+  did. It is idempotent, so this is not a bug, but the method has no caller
+  that needs it. (`rootfs::chown` resolves through `walk_to_inode`, so
+  `sm_chown` is the follow variant and would not have been a substitute — the
+  point is that nothing needs the no-follow variant either.)
+* `rmdir` — **a real gap, and the cheapest kind.** `rootfs::unlink` explicitly
+  returns `EISDIR` for a directory, so `sm_unlink` cannot serve it.
+  `rootfs::rmdir` **already exists** in the kernel; there is simply no
+  `sm_rmdir` exposing it. Note the shape the budget has already rejected once:
+  do NOT fold this into `sm_unlink` behind a flag, for the same reason
+  `sm_mkdir`/`sm_mkdir_parents` were not folded — one removes a file, the other
+  removes a directory, and a boolean deciding which is a defect waiting to
+  happen.
+* `utimensat` — **a real gap.** The module's timestamp handling
+  (`sm_set_image_options`'s `normalize_timestamps_ms`, `set_export_timestamp`)
+  is **global**. `applyMetadata` restores a *per-path* mtime from each export
+  record. A global setting cannot express that.
+
+**So item 4 costs two entry points, not fourteen methods** — `sm_rmdir` and a
+per-path timestamp setter — and `sm_rmdir` exposes a capability
+(`rootfs::rmdir`) the kernel already implements. `fstat` and `lchown` need
+nothing.
+
+**A caveat on this census's method.** It found callers by matching variables
+bound to a `MemoryFileSystem` and the methods invoked on them. That will miss a
+call reached through an alias this heuristic did not follow, and it deliberately
+ignores tests. Before anything is deleted on its strength, the same question
+should be asked of `host/test` and `apps/browser-demos/test`, because a method
+with no production caller can still have a test that must be rewritten rather
+than dropped.
+
+**So item 4 is not the lane's bulk.** The bulk was always the assumption that a
+`FileSystemBackend` implementation has to be reproduced. It does not: what has
+to be reproduced is what callers use, and that is 26 methods of which the
+module already covers the great majority.
+
+#### The fork this census exposes — and it is a decision, not a detail
+
+The "two entry points" answer above is **conditional**, and the condition is
+not yet decided.
+
+The plan is explicit that **V9 does not delete `memory-fs.ts`** — it swaps the
+backend underneath it. But `memory-fs.ts` is a `FileSystemBackend`, and its own
+public API delegates to all 33 `SharedFS` methods. If that API survives intact,
+then every one of those 33 must exist on whatever replaces `SharedFS`,
+*including the ten with no production caller*, and item 4 costs far more than
+two entry points.
+
+**Who actually uses the ten.** Not production — the census above found no
+non-test caller. On the test side the first number taken was wrong and is
+corrected here: 90 is the count of test files that *hold* a
+`MemoryFileSystem`, which is not the same question. Measured properly, **15 of
+those 90 touch one of the ten methods**, with 150 calls between them, and they
+are concentrated — six files carry 117 of the 150:
+
+| calls | file |
+|---|---|
+| 32 | `host/test/vfs.test.ts` |
+| 24 | `host/test/sharedfs-safety.test.ts` |
+| 21 | `host/test/node-host-vfs-only-metadata.test.ts` |
+| 14 | `host/test/vfs/sharedfs-uid-gid.test.ts` |
+| 13 | `host/test/vfs-image.test.ts` |
+| 13 | `host/test/vfs/sharedfs-positioned-io.test.ts` |
+
+**And they split in a way that matters.** Three of the six are named for the
+implementation being deleted — `sharedfs-safety`, `sharedfs-uid-gid`,
+`sharedfs-positioned-io`, 51 calls between them. The tempting conclusion is that tests of
+`SharedFS` go when `SharedFS` goes. **That was checked, and it does not hold
+as stated.**
+
+`sharedfs-positioned-io.test.ts` does not assert TypeScript-implementation
+details. It asserts POSIX semantics: *"readAt and writeAt do not mutate the
+shared fd offset"*, *"clears set-ID after a genuinely short positive positioned
+write"*, *"applies the append limit under the inode lock and reports exact
+EOF"*, *"serializes two interleaved append actors through the exact limit"*.
+Those are contracts the Rust implementation owes whether or not `SharedFS`
+exists.
+
+`runtime-core` carries 160 tests across `sffs.rs` (25), `sffs_write.rs` (28)
+and `rootfs.rs` (107), and `clear_setid_on_modify` is implemented there — but
+searching for the matching assertions finds one positioned-read test
+(`read_at_is_offset_addressable_and_chunk_independent`) and no test named for
+set-ID clearing on a positioned write, for offset independence, or for append
+serialization under the inode lock. A missing test *name* is not proof of a
+missing assertion, so this is a lead rather than a verdict. **It is enough to
+say the coverage claim is not established, and that it must be established
+assertion by assertion before any of those files is deleted.** The others — `vfs.test.ts`,
+`vfs-image.test.ts`, `node-host-vfs-only-metadata.test.ts` — test layers that
+survive, and those are the ones that need re-pointing.
+
+So the two options, costed:
+
+**(a) Keep `memory-fs`'s full backend API.** The 90 test files keep passing
+unchanged. The module grows by roughly ten entry points serving methods no
+production code calls — which is precisely the trade
+`docs/surface-budget.json` exists to refuse, and it would be the largest
+unargued growth in the lane.
+
+**(b) Shrink `memory-fs`'s API to what production uses.** Two entry points.
+But 15 test files need review — and per the check above, that review is not
+"delete the SharedFS ones": it is reproducing specific semantic assertions in
+Rust first. That is the real work — not because
+the tests are wrong, but because **they are where SFFS semantics are
+specified**. A test asserting `rename` semantics is not testing a TypeScript
+class; it is testing the filesystem contract, and the Rust implementation owes
+the same behaviour. Those tests want **re-pointing** at the Rust
+implementation, not deleting.
+
+**(b) is the one that matches the campaign's direction**, and it is also the
+one that can quietly destroy coverage if done carelessly — deleting a test
+along with the method it covered looks identical, in a green run, to never
+having had the bug. **Any repoint should be able to say which Rust test or
+perturb trial now carries each assertion it moves.**
+
+**This is flagged for the maintainer rather than decided here.** It is not a
+design detail inside the lane: it changes the surface budget's numbers, it
+touches 15 test files outside the lane's own code, and (a) and (b) differ by
+about ten entry points on an ABI the record calls "the image builders' ABI".
+At 15 files rather than 90 the balance looks clear, but the entry-point count
+is the maintainer's to spend.
+
+#### The repoint worklist, and the good news in it
+
+Enumerated: `sharedfs-positioned-io.test.ts` has 9 cases and
+`sharedfs-uid-gid.test.ts` has 20. Nearly all state filesystem contracts rather
+than implementation details — set-ID clearing on qualifying mutation, lchown
+not following a final symlink, lowest-descriptor allocation, O_TRUNC that
+leaves a file untouched when it cannot reserve a descriptor, append
+serialization under the inode lock.
+
+**Where they should land, and the encouraging part:** `tmpfs.rs` already
+carries this exact kind of test —
+`chown_clears_setid_for_unprivileged_caller` and
+`write_and_truncate_clear_setid_only_on_real_modification`. So the pattern for
+expressing these assertions in Rust is established in this tree; it does not
+have to be invented. **`tmpfs.rs` is the model, `rootfs.rs` and
+`sffs_write.rs` are the destination.**
+
+**Where the gap actually is. This took three passes and the first two were
+wrong; the third is the complete search.**
+
+*Wrong once:* "rootfs has no set-ID test." It has one —
+`write_clears_setuid_bit` at `rootfs.rs:4959`. The first search missed it
+because the output was cut with `head -10`, which is a way of manufacturing a
+finding rather than making one.
+
+*Wrong twice:* "the chown path is untested." It is covered by mutation —
+`perturb/bridge.json`'s *"clearSetid is never passed through"* and
+`perturb/sffs-module-abi.json`'s *"chown ignores the clear_setid flag"*.
+
+*What a complete search actually shows.* `clear_setid_on_modify` is called from
+**four** sites in `rootfs.rs` — 2227, 2553, 2583 and 2601 — and the tests reach
+one of them:
+
+| behaviour | rootfs | tmpfs |
+|---|---|---|
+| a real write clears set-user-ID | **tested** (4959) | tested |
+| chown clears set-ID | covered by 2 perturb trials | tested |
+| **truncate clears set-ID** (2583, 2601) | **no test** | tested |
+| **set-GROUP-ID clearing**, the group-executable branch | **no test** | tested (`0o6755`) |
+| **a zero-length write PRESERVES set-ID** | **no test** | tested |
+
+No rootfs test uses `0o6755` or asserts `S_ISGID` at all; those constants
+appear only in the implementation. So the set-group-ID condition —
+`if mode & S_IXGRP != 0` — is a live conditional branch with no test behind it,
+which is exactly the shape mutation testing exists to catch, and
+`tmpfs.rs`'s `write_and_truncate_clear_setid_only_on_real_modification` shows
+all three missing cases can be expressed in a single test.
+
+That asymmetry — the same security-relevant behaviour, tested in tmpfs and not
+in the filesystem that owns `/` — is the concrete thing to close, and **it is
+worth closing whether or not V9 proceeds**. It is also the right shape for this
+lane: one `rootfs.rs` test plus perturb trials, entirely inside `runtime-core`,
+verifiable with `cargo test` and no browser.
+
+**One correction to the census above.** It concluded `lchown` "needs nothing".
+That is right about *production* — its only call is redundant — but
+`sharedfs-uid-gid.test.ts` asserts the no-follow semantic directly
+(*"lchown changes a final symlink without changing its target"*). The semantic
+survives without the method, because `sm_symlink(target, link, uid, gid)` sets
+the link's own ownership at creation, which is no-follow by construction. But
+the assertion needs re-expressing against that call rather than dropping with
+the method, and saying "no caller" is not the same as saying "no contract".
+
+
 **5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
 closes.
 
@@ -5120,6 +5344,37 @@ server. Before the fix the tests died at worker init in seconds and never
 loaded the server; now they do real work, so the local default parallelism is
 being exercised for the first time. A serial run matching CI is the only
 trustworthy measurement and is what should be reported.
+
+**THE SUITE CANNOT BE GREEN IN THIS WORKTREE, AND THAT IS PROVISIONING RATHER
+THAN CODE.** Found on the third run, in the dev server's own log:
+
+    [vite] Internal server error: Package artifact closure is incomplete:
+    no single provenance tier contains every accepted artifact,
+    and tiers will not be mixed.
+
+`binary-resolver.ts:3967` raises it. The consequence is that
+`pages/test-runner/exec-binaries.ts` fails to transform, so every spec that
+drives the shared test runner dies at `Failed to fetch dynamically imported
+module` — which is what the `net::ERR_ABORTED` and 120-second navigation
+timeouts were downstream of.
+
+`local-binaries/` in this worktree holds **15 entries**, and they are the
+module wasms and their build keys — no program binaries at all. So the tier
+resolver is correct to refuse: there is no complete tier to serve. This is the
+fresh-worktree condition `docs/agent-guidance` describes, and it is consistent
+with lane H's own record that there is **zero browser evidence on this
+branch** — the suite has very likely never run green here, and the 103/75
+baseline was itself measured against an unprovisioned tree.
+
+**What that means for reading any of these numbers.** The two defects fixed
+tonight are established on their own terms — the error each produces is gone,
+88 artifacts to 0 for the first, and the second is proven by a perturb trial
+rather than by the suite. **Neither depends on the suite being green.** But no
+overall pass/fail count from this worktree means anything until
+`./run.sh programs` (or the equivalent fetch) has put a complete provenance
+tier in `local-binaries/`. **That provisioning is a decision to take
+deliberately — it is hours of build time and it belongs to whoever owns the
+browser lane, not to a VFS lane passing through.**
 
 **Do not read the interim numbers as a regression.** 63 passed / ~112 failed
 (first run) and 15/36 partway (second) are not comparable with the 75/103
