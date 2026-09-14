@@ -5818,3 +5818,60 @@ the attic file I was about to make redundant carried the argument against doing
 so, and section 109, where I had written an impossibility claim myself and later
 read it back as evidence. Three times now the answer has been a comment
 explaining a decision, and twice I stopped one file short of it.
+
+## §125 — The arena port, specified
+
+With section 124 settled, the remaining question is small enough to answer
+exactly: which records does the HOST write into the arena the child inherits, and
+can the module write them instead?
+
+The host writes three kinds, all through `ForkModuleStateArena`:
+
+```
+appendModule                  x2   -- one per activation, carrying its template id
+appendJournalImage            x1   -- the KFRE image the child replays
+appendActivationContinuations x1   -- each activation's continuation root
+```
+
+The module READS all three (`WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE` at
+lib.rs:3451, `..._KIND_MODULE` at 3920) and writes none. So the arena is the
+fork's inheritance vehicle: written by the host, read by the module. That is the
+whole reason it still exists host-side.
+
+It can move, because the module already holds what each record needs:
+
+  * JOURNAL IMAGE -- the module PRODUCES it. `fm_parent_seal_capture` returns its
+    pointer and `fm_journal_image_len` its length. It is telling the host a fact
+    so the host can write it back into an arena the module then reads.
+  * ACTIVATION CONTINUATIONS -- the module knows every activation's root; it
+    publishes them (`fm_activation_module_buffer` reads them back).
+  * MODULE records -- these carry the TEMPLATE ID, a SHA-256 of the guest's
+    bytes that only the host has (census 99 records why the hash stays host-side:
+    `dlopen` is synchronous and WebCrypto is not). So this one needs seeding.
+
+So the shape is:
+
+  1. one entry to seed a per-activation template id, alongside the existing
+     `fm_set_activation_*` family;
+  2. at seal, the module writes all three kinds into its OWN arena through the
+     `ModuleStateWriter` it already has;
+  3. seal returns that arena's root;
+  4. the host stops constructing an arena, and passes the returned root where it
+     passes `arenaRoot` today.
+
+Net: `ForkModuleStateArena` loses its last writer, `fork-module-state` becomes
+unreferenced from `worker-main`, and the 27 test files it blocks stop being
+blocked by it.
+
+What this does NOT resolve, and must be checked first by whoever starts it: the
+guest writes its own records through `record_reserve` into the module's writer,
+and section 124 established a replay child never writes. Whether any
+guest-written record must SURVIVE the fork -- and therefore whether the two
+record populations must end up in one arena rather than merely one format -- is
+not answered by anything read so far. `reserve_static_record` in
+`fork-instrument` is where that question gets settled.
+
+Specified rather than started: this is a multi-hour change to the capture path
+with no e2e coverage watching until it lands, and a half-applied version of it is
+worse than none. The preceding sections are what a fresh attempt needs; this one
+is the plan.
