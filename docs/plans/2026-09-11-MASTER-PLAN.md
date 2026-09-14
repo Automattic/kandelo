@@ -272,9 +272,31 @@ a rebase. Five matched; two were lowered rather than accepted:
 
 **Validation.** `host/test/surface-budget.test.ts` 96 passing.
 `cargo test -p runtime-core` **2176 passed, 0 failed**, which independently
-confirms lane Y's four filesystem coverage fixes. **NOT established here:**
-lane Y's browser figure of 167 passed / 14 failed and its 291 perturb trials.
-Both were blocked by the build defect below and remain the lane's numbers.
+confirms lane Y's four filesystem coverage fixes.
+
+**Lane Y's mutation trials, re-run here rather than taken on report.** The
+five specs backing its specific claims — the four filesystem coverage defects
+and `sm_image_read`, the entry point the ceiling raise was granted for:
+
+| spec | trials | result |
+|---|---|---|
+| `runtime-core-setid` | 3 | 0 survived, 0 invalid, 0 timed out |
+| `runtime-core-rename` | 3 | 0 survived, 0 invalid, 0 timed out |
+| `runtime-core-mount-roots` | 2 | 0 survived, 0 invalid, 0 timed out |
+| `runtime-core-sffs-errnos` | 2 | 0 survived, 0 invalid, 0 timed out |
+| `sffs-module-image-read` | 3 | 0 survived, 0 invalid, 0 timed out |
+
+Thirteen trials, every mutation killed by its verifier, every spec exiting 0,
+and the working tree reverted clean afterwards. A surviving mutant here would
+have meant the guard does not guard; none survived.
+
+The full corpus is 286 declared trials across 26 spec files. Running all of
+them is hours and was not done — these five were chosen because they are the
+ones this merge rests on.
+
+**NOT established here:** lane Y's browser figure of 167 passed / 14 failed,
+and the remaining 273 trials of the full corpus. The browser number is blocked
+by B40 below and remains the lane's.
 
 ## Starting a lane — briefs in `docs/plans/lane-briefs/`
 
