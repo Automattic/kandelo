@@ -45,6 +45,13 @@ pub use guest::{run_guest, run_trivial_guest, GuestOptions, NativeMount, RunOutc
 /// different ABI will fail the smoke test loudly rather than run wrong.
 pub const EXPECTED_ABI_VERSION: i32 = 44;
 
+/// The fewest guest fixtures `every_committed_fixture_declares_the_abi_this_
+/// host_expects` will accept before it calls the corpus empty. Deliberately
+/// below today's 43: this is a floor against a walk that finds nothing, not a
+/// second inventory to keep in sync with the directory.
+#[cfg(test)]
+const FIXTURE_COUNT_FLOOR: usize = 40;
+
 /// The kernel imports `env.memory` as a shared memory with this minimum page
 /// count (18 pages) ...
 pub const KERNEL_MEMORY_MIN_PAGES: u32 = 18;
@@ -830,6 +837,70 @@ mod tests {
                  printed above."
             );
         }
+    }
+
+    /// Every committed guest fixture declares the ABI this host expects.
+    ///
+    /// This is the half of L-D4 that can be closed without changing what the
+    /// host will launch. The native host does NOT read a guest's
+    /// `__abi_version` at load -- only the kernel's -- so an ABI bump made
+    /// without rebuilding `fixtures/` leaves 43 binaries silently claiming the
+    /// previous epoch, and the first thing to notice would be a test failing
+    /// for some unrelated-looking reason. Here it fails by name.
+    ///
+    /// It reads through `wasm_artifact::read_abi_version`, the same reader the
+    /// kernel-provenance report uses, rather than a second parser written for
+    /// the occasion.
+    ///
+    /// The count assertion is not decoration. A corpus check that walks a
+    /// directory passes vacuously when the glob matches nothing -- a wrong
+    /// path, a renamed directory -- so the floor makes an empty walk a failure
+    /// instead of a pass.
+    #[test]
+    fn every_committed_fixture_declares_the_abi_this_host_expects() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let mut checked = 0usize;
+        let mut wrong: Vec<String> = Vec::new();
+        let mut unmarked: Vec<String> = Vec::new();
+
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wasm"))
+            .collect();
+        entries.sort();
+
+        for path in entries {
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<unnamed>")
+                .to_string();
+            match wasm_artifact::read_abi_version(&bytes) {
+                Some(v) if v == EXPECTED_ABI_VERSION => {}
+                Some(v) => wrong.push(format!("{name} declares ABI {v}")),
+                None => unmarked.push(name),
+            }
+            checked += 1;
+        }
+
+        assert!(
+            checked >= FIXTURE_COUNT_FLOOR,
+            "only {checked} fixture(s) found under {} -- expected at least \
+             {FIXTURE_COUNT_FLOOR}. A corpus check that walks nothing passes \
+             for the wrong reason.",
+            dir.display(),
+        );
+        assert!(
+            wrong.is_empty() && unmarked.is_empty(),
+            "fixtures disagree with EXPECTED_ABI_VERSION {EXPECTED_ABI_VERSION}. \
+             Rebuild them with fixtures/build-fixtures.sh against a sysroot for \
+             this branch's libc.\n  wrong epoch: {wrong:?}\n  no __abi_version \
+             marker at all: {unmarked:?}",
+        );
     }
 
     /// Part 1: Wasmtime loads the real ABI-44 kernel.wasm and `__abi_version`

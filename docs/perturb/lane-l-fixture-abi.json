@@ -1,0 +1,21 @@
+{
+  "file": "crates/host-native/src/lib.rs",
+  "build": "cargo build -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --tests",
+  "verify": "cargo test -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --lib every_committed_fixture_declares_the_abi_this_host_expects",
+  "trials": [
+    {
+      "name": "fixture ABI: a walk that matches nothing must fail, not pass",
+      "scope": "fn every_committed_fixture_declares_the_abi_this_host_expects",
+      "scope_end": "\n    }\n",
+      "find": ".filter(|p| p.extension().is_some_and(|x| x == \"wasm\"))",
+      "replace": ".filter(|p| p.extension().is_some_and(|x| x == \"no-such-ext\"))"
+    },
+    {
+      "name": "fixture ABI: the epoch comparison must be the one that decides",
+      "scope": "fn every_committed_fixture_declares_the_abi_this_host_expects",
+      "scope_end": "\n    }\n",
+      "find": "Some(v) if v == EXPECTED_ABI_VERSION => {}",
+      "replace": "Some(v) if v == EXPECTED_ABI_VERSION + 1 => {}"
+    }
+  ]
+}
