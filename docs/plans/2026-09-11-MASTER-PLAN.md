@@ -1576,6 +1576,44 @@ index: `bash crates/sffs-module/build-wasm.sh` then `./run.sh setup`.
 index surfaces later as *"Package artifact closure is incomplete"* in unrelated
 browser specs — it reads like a provisioning defect and is not one (H-23).
 
+### THE 16 PEER REWRITES — what they actually assert, read 2026-09-14
+
+The hard cluster, read before anyone starts it. The pattern is the same in all
+of them, e.g. *"does not apply a delayed fetch to a replacement inode"*:
+
+1. register a lazy file;
+2. start `ensureMaterialized` against a fetch that hangs on a controlled
+   promise;
+3. **while the fetch is in flight**, mount a second `MemoryFileSystem` over the
+   same `SharedArrayBuffer` and have it `unlink` the path and create a
+   replacement;
+4. release the fetch and assert the bytes do NOT land on the replacement.
+
+**The peer exists to mutate the filesystem behind the instance's back.** Using
+`fs` itself would go through the same instance's lazy bookkeeping; a second
+view over the shared buffer is how the test says *another process changed this
+while you were away*. That is precisely the scenario the identity
+compare-and-swap defends against.
+
+**These do not port, because the scenario cannot occur in the kernel model.**
+`rootfs::ensure_materialized` is synchronous: the byte source either returns
+bytes or `EAGAIN`, the syscall unwinds, and the guest retries from the top. No
+`await`, no window, nothing held across a suspension — and an open handle pins
+its inode slot, so the index cannot come to mean a different file. There is no
+"delayed fetch" to misapply.
+
+**What replaces them is a different assertion about the same danger.** The
+retry is where the risk moves: after an `EAGAIN`, a concurrent `unlink` and
+recreate, and then a retry that succeeds, does the retry write stale bytes into
+the replacement? That is directly testable in `runtime-core` — a byte source
+that returns `EAGAIN` on first call, a tree mutation between calls, then real
+bytes — and it needs no shared buffer, no second instance, and no `async`.
+
+**So the 16 are not 16 ports. They are one Rust test of the retry path, plus a
+decision to retire the rest as tests of a protocol the kernel does not have.**
+That decision needs stating in the commit that removes them: a deleted test and
+a retired one look identical in a green run, and only one of them is honest.
+
 **What is left in V, and why it belongs on a fresh branch.** The adapter (both
 halves read the container's host-side JSON), four construction sites, **71
 mechanical test repoints and 16 test rewrites** whose single shared concern is
