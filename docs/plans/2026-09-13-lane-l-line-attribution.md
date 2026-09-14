@@ -2120,6 +2120,34 @@ provenance its target had: read, not attributed.** Whether they survive
 attribution is unknown, and it is the only question standing between this lane
 and its closure condition.
 
+## What this branch is, by the numbers
+
+Measured rather than recalled, because a handoff that describes itself in
+adjectives makes a reader guess at the shape.
+
+| area | change |
+|---|---|
+| `crates/host-native` | +650 / −92 |
+| `crates/shared` | +190 / −27 |
+| `host/test` | +361 / −31 |
+| `docs/` | +2289 / −8 |
+
+47 commits, 20 files.
+
+**The documentation outweighs the code four to one.** That is defensible for a
+lane whose brief was an attribution — the deliverable was meant to be findings
+— but it is the sort of ratio a reader should be shown rather than left to
+infer. Judge the prose accordingly: if it is not carrying four times the
+weight of the code, it is too long.
+
+**The `host-native` figure is larger than "fix sixteen call sites" sounds.**
+It is `KernelLent` and `write_lent`, the stat/statfs chain converted from
+`unsafe fn` to safe functions once the type absorbed the unsafety, five
+guards, and four constants that stopped being transcriptions. The `shared`
+figure is the two corpora growing and their pairing checks; the `host/test`
+figure is the corpus-driven refusals, the declared-skip checks, and the spec
+validator.
+
 ## What this did not establish
 
 - **Whether the 1,711-line capacity system is right-sized.** It was attributed,
