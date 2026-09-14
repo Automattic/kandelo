@@ -158,12 +158,27 @@ if (fixed.length > 0) {
   );
   for (const f of fixed) console.error(`  ${f}`);
 }
+/**
+ * The files vitest skipped ENTIRELY, by name.
+ *
+ * A count alone sent the reader digging through a 2,000-line log every run to
+ * answer the question the warning itself raises. These are the ones that matter
+ * for the ratchet: a wholly-skipped file emits no `FAIL` line, so it reads
+ * exactly like a passing one. A file that merely skips SOME of its tests still
+ * reports, and its skips are usually a deliberate redirection -- the
+ * fork-instrument coverage suite names the Rust test that covers each one.
+ */
+const skippedFileNames = [
+  ...output.matchAll(/^\s*\u2193\s+(\S+\.test\.[tj]s)\s+\((\d+) tests?/gm),
+].map(([, file, count]) => `${file} (${count})`);
+
 if (skipped !== undefined && Number(skipped) > 0) {
   console.log(
     `${skipped} test(s) across ${skippedFiles ?? "?"} file(s) SKIPPED. A skipped ` +
       `file emits no FAIL line, so this ratchet cannot tell it from a passing ` +
       `one -- check what gates them before reading any file as restored.`,
   );
+  for (const file of skippedFileNames) console.log(`  skipped whole: ${file}`);
 }
 if (ranked.length > 0) {
   console.log("what the failures are made of (unresolved imports, top causes):");
