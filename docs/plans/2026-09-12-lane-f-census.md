@@ -7925,16 +7925,18 @@ and the two halves of this port move together or not at all. A host with no
 imported globals is unaffected -- `crates/host-native` supplies its own root and
 publishes no provenance, so it returns early as before.
 
-**Why the arena cannot simply move yet.** Passing root 0 makes the module own
-the arena, but `registry.beginCapture(arena)` writes `Module` records into the
-host's and runs each activation's `moduleState.save()` -- work the module also
-does when it owns the arena, through its own Module-record write and the
-`DRIVE_OP_MODULE_STATE_SAVE` step. Two save walks into two arenas. Narrowing the
-registry's capture to just the session is an edit to set-aside code, and the
-session exists for the exception broker, which is section 159's open question.
+**Why I thought the arena could not move yet, and why it could.** Passing root 0
+makes the module own the arena, but `registry.beginCapture(arena)` writes
+`Module` records into the host's and runs each activation's `moduleState.save()`
+-- work the module also does when it owns the arena. Two save walks into two
+arenas. I read that as blocking, because the third thing `beginCapture` does is
+build the capture SESSION, and the session is section 159's subject.
 
-So section 159 is not merely "the next piece": it is what makes the imported
-globals port DO anything. Worth the maintainer knowing that when they rule.
+Section 165 is the resolution: the session has no live consumer on the parent
+path either. Its consumers were the guest-import builders,
+`buildForkActivationStateImports` and `buildForkExceptionImports`, and neither is
+referenced from `host/src` any more -- the guest's imports come from the module.
+So `registry.beginCapture(arena)` could go, and with it the host's parent arena.
 
 ---
 
@@ -8084,4 +8086,43 @@ measurement and documented to only fall. That surface's stated category is
 lifecycle, cross-worker transport or memory placement rather than fork
 capture/replay logic", which is this file exactly. Still the maintainer's call,
 under D1.
+
+---
+
+## §165 — The parent arena is the module's, and the records are real
+
+Section 161 found that both binding writers were skipped on every real capture,
+because the host supplied the arena and the writers are guarded on owning it. It
+also said section 159 was what stood in the way. That was wrong in the same way
+section 163 was wrong: I assumed the registry's capture session was load-bearing
+without checking who consumes it.
+
+**Nobody does, on the parent path.** The session reaches the guest through two
+import builders in the attic -- `buildForkActivationStateImports` and
+`buildForkExceptionImports` -- and `host/src` references neither. Guest imports
+are built by `fork-guest-imports.ts` from the module's exports plus a three-name
+floor. The registry's own `currentReferences()` callers are the GC and exception
+helpers inside those same dead builders.
+
+So `registry.beginCapture(arena)` is three things, all of which the module now
+does or nobody needs:
+
+| what it did | why it can go |
+|---|---|
+| built the capture session | its consumers are the two dead import builders |
+| `arena.appendModule` per activation | the module writes `Module` records from the seeded template ids |
+| `activation.moduleState.save()` per activation | `DRIVE_OP_MODULE_STATE_SAVE` in the module's own plan |
+
+**Both fork paths now pass root 0**, so the module allocates and owns the arena,
+and the records it was silently skipping -- the imported-global bindings, the
+imported-table bindings, and the journal image at seal -- are written for the
+first time. The host's parent arena is gone with them; `ForkModuleStateArena`
+survives in `worker-main.ts` only for the CHILD's attach and for the peer-table
+replication owner.
+
+**One behaviour change worth naming.** The registry's phase never leaves `idle`
+now, where `beginCapture` used to move it to `capture`. Methods that call
+`requireIdle` therefore stop throwing mid-fork. Nothing in `worker-main.ts`
+relied on that throw -- the dirty journal those methods guard is the module's --
+but it is a real difference and it is better written down than discovered.
 

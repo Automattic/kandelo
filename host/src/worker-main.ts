@@ -4280,15 +4280,28 @@ export async function centralizedWorkerMain(
         // frame commits. If this fails, fork returns errno with no partially
         // published activation graph.
         acquireCurrentProcessForkArchiveReader();
-        const arena = newModuleStateArena();
         try {
-          arena.begin();
-          activationRegistry.beginCapture(arena);
+          // ROOT 0: the module allocates and OWNS the arena. That is not a
+          // detail -- every record the module writes is guarded on owning it,
+          // because a reserve with no writer root starts a second arena nothing
+          // reads. With a host arena the imported-global and imported-table
+          // bindings and the journal image were all skipped (census 161).
+          //
+          // What went with the host arena: `registry.beginCapture(arena)`. It
+          // did three things and the module does all three. It built a capture
+          // SESSION, whose only consumers were the guest-import builders this
+          // host stopped using -- `buildForkActivationStateImports` and
+          // `buildForkExceptionImports` are both unreferenced from host/src now,
+          // because the guest's imports come from the module. It appended a
+          // `Module` record per activation, which the module writes from the
+          // seeded template ids. And it ran each activation's `moduleState.save()`,
+          // which is the `DRIVE_OP_MODULE_STATE_SAVE` step in the module's own
+          // plan. Keeping it would have meant two save walks into two arenas.
           publishProcessLaunchRoot(0);
           publishProcessLaunchRoot(
             forkModule().parentBeginCapture(
               channelOffset,
-              arena.rootAddress(),
+              0,
               forkActivations.sides(),
             ),
           );
@@ -4304,13 +4317,13 @@ export async function centralizedWorkerMain(
           // tell the module to abort if it is not. No mirror left to disagree.
           if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
             try {
+              // Abort releases the module's own arena chunks with the rest of
+              // the transaction; there is no host arena left to release.
               forkModule().abort();
             } catch {
               // Preserve the capture failure; abort has already made the
               // transaction unreachable before attempting cleanup.
             }
-          } else if (arena.hasActiveArena()) {
-            arena.release();
           }
           releaseProcessForkArchiveReader();
           forkBufAddr = 0;
@@ -6892,20 +6905,24 @@ export async function centralizedThreadWorkerMain(
           throw error;
         }
 
-        const arena = newThreadModuleStateArena();
         try {
-          arena.begin();
-          threadActivationRegistry.beginCapture(arena);
           publishThreadLaunchRoot(0);
           publishThreadLaunchRoot(
             threadForkModule().parentBeginCapture(
               channelOffset,
-              arena.rootAddress(),
+              0,
               threadForkActivations?.sides() ?? [],
             ),
           );
         } catch (error) {
-          if (arena.hasActiveArena()) arena.release();
+          // The module owns this thread's arena too, and its abort releases it.
+          if (forkPhase(threadForkModuleInstance?.exports ?? null, pid) !== "idle") {
+            try {
+              threadForkModule().abort();
+            } catch {
+              // Preserve the capture failure.
+            }
+          }
           releasePthreadForkLock();
           if (error instanceof ContinuationAllocationError) return -error.errno;
           throw error;
