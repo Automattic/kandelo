@@ -8126,3 +8126,70 @@ now, where `beginCapture` used to move it to `capture`. Methods that call
 relied on that throw -- the dirty journal those methods guard is the module's --
 but it is a real difference and it is better written down than discovered.
 
+---
+
+## §166 — A multi-activation defect: the dirty journal is not activation-keyed
+
+Found while working out how `registry.markTableMutation` would move onto the
+host record. Reporting rather than fixing: the fix is a module change outside
+this lane's shape, and the maintainer should route it.
+
+**The asymmetry.** Table STATE OWNERSHIP is keyed by activation:
+
+```rust
+fn table_state_owned_impl(activation_id: u32, owner_id: u32) -> u32 {
+    ... if entry[0] == activation_id && entry[1] == owner_id { return entry[2]; }
+}
+```
+
+and a multi-activation guest reaches it through
+`__wpk_fork_activation_trampolines`, which folds its activation id in -- the
+frozen one-argument import name is the single-activation path. The DIRTY
+JOURNAL beside it is keyed by owner alone:
+
+```rust
+struct DirtyState { owners: [u32; 32], bits: [[u64; 64]; 32], saturated: bool }
+fn mark(&mut self, owner: u32, first_page: u64, page_count: u64)
+```
+
+with a doc comment that states the assumption plainly: "one guest drives these
+exports per worker".
+
+**Why that assumption does not hold.** `fork_instrument` numbers table owners
+per MODULE, from 1 (`table_catalog`: `table_ids.iter().enumerate().map(|(ordinal,
+id)| (id, ordinal + 1))`). Every instrumented module with an indirect call has a
+table, so in a dlopen fork the main program and each side module all have an
+owner 1 -- three different physical tables, one journal slot.
+
+**Why it is a trap and not merely a bigger capture.** The module's saturation
+doc says over-approximating is the safe direction, and for a single guest it is.
+Across activations it is not, because the guest's own save walk asserts the
+range:
+
+```
+page_loop.local_get(locals.page_start).local_get(locals.len);
+emit_index_binop(page_loop, table, BinaryOp::I32GeU, BinaryOp::I64GeU);
+emit_trap_if(page_loop);
+```
+
+So if the main program's table (large, and grown further by every `dlopen`) is
+mutated at a high index, that page is marked under owner 1; a side module whose
+own owner-1 table is short then walks `dirty_count(1)`, reaches a page beyond
+its own `table.size`, and TRAPS during capture. Both activations are legitimately
+state owners -- of different tables -- so neither is gated out.
+
+**The fix shape, and why I did not take it.** The mechanism already exists: give
+the mark an activation-aware entry (`fm_module_state_table_dirty_mark(activation,
+owner, first, count)`) and route the multi-activation guest to it through the
+same trampoline table that already carries `table_state_owned`. The guest's
+import signature does not change, so this is not an ABI break at the guest
+contract -- but it adds a trampoline slot, which changes what `fork_instrument`
+emits and therefore what a rebuilt artifact contains, and that is a decision
+about instrumented-artifact compatibility rather than a fork control-flow port.
+
+**What it means for this lane meanwhile.** Nothing blocks: the host-side
+`markTableMutation` port would pass the same owner the guest does, so it neither
+causes nor cures this. But it does mean a dlopen fork with table mutations is
+not currently sound, which is worth knowing before anyone reads a green
+single-activation fork as coverage.
+
