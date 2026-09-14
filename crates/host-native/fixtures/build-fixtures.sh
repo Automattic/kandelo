@@ -84,4 +84,64 @@ for name in "${WASM64_FIXTURES[@]}"; do
     build_fixture wasm64-unknown-unknown "$SYSROOT64" "$src" \
         "$FIXTURES_DIR/$name.wasm64.wasm"
 done
+
+# The hand-written WAT arm. These exist because a live funcref/externref value
+# held across fork() is not reachable from portable C on this SDK's toolchain
+# -- see native_fork_refs.wat's own doc comment -- so they are assembled by
+# WABT rather than compiled by clang.
+#
+# `native_fork_externref_gate.wat` is deliberately absent: it has no artifact
+# any test loads. Listing only what is consumed keeps this file from producing
+# binaries nobody reads.
+WAT_FIXTURES=(
+    native_fork_externref_gate_indirect
+    native_fork_externref_reconstruct
+    native_fork_gc_array_cycle
+    native_fork_gc_static_root
+    native_fork_gc_struct_cycle
+    native_fork_gc_two_object_cycle
+    native_fork_refs
+)
+for name in "${WAT_FIXTURES[@]}"; do
+    src="$FIXTURES_DIR/$name.wat"
+    if [ ! -f "$src" ]; then
+        echo "error: WAT_FIXTURES names $name, but $src does not exist" >&2
+        exit 1
+    fi
+    echo "assembling $name.wasm"
+    # `wasm-tools parse`, not WABT's `wat2wasm`: the four GC fixtures use
+    # types WABT 1.0.37 cannot assemble even with --enable-all, and
+    # `wasm-tools` is what the commit that introduced them actually used
+    # (the same `wat` crate the #[ignore]d regenerators reach for).
+    wasm-tools parse "$src" -o "$FIXTURES_DIR/$name.wasm"
+done
+
+# The fork-instrumented arm. Every one of these goes through the REAL
+# production instrumenter, the same script scripts/build-programs.sh uses, so
+# a fixture cannot be instrumented by a private code path that drifts from
+# what user programs get. The entry is uniform across all of them.
+INSTRUMENTED_FIXTURES=(
+    native_fork
+    native_fork_externref_gate_indirect
+    native_fork_externref_reconstruct
+    native_fork_from_thread
+    native_fork_gc_array_cycle
+    native_fork_gc_static_root
+    native_fork_gc_struct_cycle
+    native_fork_gc_two_object_cycle
+    native_fork_refs
+    native_vfork
+    native_vfork_exec
+)
+for name in "${INSTRUMENTED_FIXTURES[@]}"; do
+    raw="$FIXTURES_DIR/$name.wasm"
+    if [ ! -f "$raw" ]; then
+        echo "error: INSTRUMENTED_FIXTURES names $name, but $raw was not built" >&2
+        exit 1
+    fi
+    echo "instrumenting $name.instrumented.wasm"
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+        "$raw" -o "$FIXTURES_DIR/$name.instrumented.wasm" \
+        --entry kernel.kernel_fork
+done
 echo "done"

@@ -1,0 +1,13 @@
+{
+  "file": "crates/shared/tests/process-memory-layouts.json",
+  "verify": "npx vitest run host/test/process-memory-layout.test.ts",
+  "trials": [
+    {
+      "name": "L3: an expected refusal message is changed",
+      "scope": "\"name\": \"one page short of fitting control memory is refused\"",
+      "scope_end": "    }\n",
+      "find": "\"message\": \"initial pages 20 exceed process maximum 19\"",
+      "replace": "\"message\": \"initial pages 21 exceed process maximum 19\""
+    }
+  ]
+}

@@ -107,6 +107,7 @@ rustix = { version = "1", features = ["fs"] }
 libc = "0.2"
 
 [dev-dependencies]
+wasmparser = "0.247"
 # `wat` compiles the tiny WAT wait/notify probe module in-test, keeping the
 # fixture readable alongside the assertions that consume it.
 wat = "1"

@@ -14,8 +14,8 @@
 use wasm_artifact_module::wire::{Reader, Writer, WIRE_VERSION};
 use wasm_artifact_module::{
     wa_custom_section, wa_detect_pointer_width, wa_fork_contract, wa_input_reserve,
-    wa_is_wasm_module, wa_output_len, wa_output_ptr, wa_policy, wa_read_facts, wa_wire_version,
-    WA_ERROR, WA_OK,
+    wa_is_wasm_module, wa_output_len, wa_output_ptr, wa_policy, wa_process_memory_layout,
+    wa_read_facts, wa_wire_version, WA_ERROR, WA_OK,
 };
 
 /// Copy `parts` into the module's input buffer, as the driver does.
@@ -274,4 +274,219 @@ fn an_unreadable_artifact_still_names_the_epoch_in_its_contract_failure() {
         "the message names the epoch it was measured against: {}",
         failures[0]
     );
+}
+
+/// Encode a process-memory-layout request, matching
+/// `readWasmProcessMemoryLayout` in `host/src/wasm-artifact-driver.ts`.
+fn layout_request(
+    maximum_pages: u32,
+    requested_minimum_pages: u32,
+    default_thread_slots: u32,
+    thread_slots: Option<u32>,
+    heap_base: Option<u64>,
+) -> Vec<u8> {
+    let mut writer = Writer::versioned();
+    writer.u32(maximum_pages);
+    writer.u32(requested_minimum_pages);
+    writer.u32(default_thread_slots);
+    writer.bool(thread_slots.is_some());
+    writer.u32(thread_slots.unwrap_or(0));
+    writer.bool(heap_base.is_some());
+    writer.u64(heap_base.unwrap_or(0));
+    writer.into_bytes()
+}
+
+/// The eleven fields the driver decodes, in order.
+struct DecodedLayout {
+    initial_pages: u32,
+    maximum_pages: u32,
+    control_base: u64,
+    control_end: u64,
+    channel_offset: u64,
+    channel_page: u32,
+    brk_base: u64,
+    mmap_base: u64,
+    brk_limit: u64,
+    max_addr: u64,
+    thread_slot_count: u32,
+}
+
+fn decode_layout(bytes: &[u8]) -> DecodedLayout {
+    let mut reader = Reader::versioned(bytes).expect("answer carries the wire version");
+    DecodedLayout {
+        initial_pages: reader.u32().unwrap(),
+        maximum_pages: reader.u32().unwrap(),
+        control_base: reader.u64().unwrap(),
+        control_end: reader.u64().unwrap(),
+        channel_offset: reader.u64().unwrap(),
+        channel_page: reader.u32().unwrap(),
+        brk_base: reader.u64().unwrap(),
+        mmap_base: reader.u64().unwrap(),
+        brk_limit: reader.u64().unwrap(),
+        max_addr: reader.u64().unwrap(),
+        thread_slot_count: reader.u32().unwrap(),
+    }
+}
+
+/// A program that exports `__heap_base` and imports `pages` of memory.
+fn program_with(heap_base: u32, pages: u32) -> Vec<u8> {
+    wat::parse_str(&format!(
+        r#"(module
+             (import "env" "memory" (memory {pages}))
+             (global (export "__heap_base") i32 (i32.const {heap_base})))"#
+    ))
+    .expect("valid wat")
+}
+
+/// The layout entry point reads the program's own facts, not the caller's.
+///
+/// The expected numbers are the ones
+/// `crates/shared/tests/process-memory-layouts.json` derives by hand from the
+/// documented rule — repeated here rather than imported, because this test is
+/// about the WIRE: a request the module decodes differently from how the
+/// driver encoded it would still produce a self-consistent answer, and only a
+/// value pinned outside both codecs can see that.
+#[test]
+fn a_layout_request_round_trips_with_the_programs_own_heap_base() {
+    // 2 MiB heap base is page 32, so the channel lands on page 33 and control
+    // memory ends at page 35.
+    let program = program_with(2 * 1024 * 1024, 1);
+    let request = layout_request(16384, 0, 1024, None, None);
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_OK,
+        "{}",
+        output_text(),
+    );
+    let layout = decode_layout(&read_output());
+    assert_eq!(layout.initial_pages, 35);
+    assert_eq!(layout.maximum_pages, 16384);
+    assert_eq!(layout.control_base, 2_097_152);
+    assert_eq!(layout.control_end, 2_293_760);
+    assert_eq!(layout.channel_offset, 2_162_688);
+    assert_eq!(layout.channel_page, 33);
+    assert_eq!(layout.brk_base, 2_293_760);
+    assert_eq!(layout.mmap_base, 2_293_760);
+    assert_eq!(layout.brk_limit, 1_073_741_824);
+    assert_eq!(layout.max_addr, 1_073_741_824);
+    assert_eq!(layout.thread_slot_count, 1024);
+}
+
+/// An imported memory minimum above the heap base raises the floor, which is
+/// the fact the TypeScript host used to read with its own LEB128 walk.
+#[test]
+fn a_layout_request_honours_the_imported_memory_minimum() {
+    let program = program_with(1024, 600);
+    let request = layout_request(16384, 0, 1024, None, None);
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_OK,
+        "{}",
+        output_text(),
+    );
+    let layout = decode_layout(&read_output());
+    assert_eq!(layout.initial_pages, 603);
+    assert_eq!(layout.channel_page, 601);
+    assert_eq!(layout.control_base, 39_321_600);
+}
+
+/// An explicit slot count bypasses the program's own declaration, and a
+/// refusal comes back as text rather than as a plausible layout.
+#[test]
+fn a_layout_request_reports_an_impossible_ceiling_as_a_message() {
+    let program = program_with(2 * 1024 * 1024, 1);
+
+    let request = layout_request(16384, 0, 1024, Some(7), None);
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_OK,
+    );
+    assert_eq!(decode_layout(&read_output()).thread_slot_count, 7);
+
+    let request = layout_request(2, 0, 1024, None, None);
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_ERROR,
+    );
+    assert_eq!(output_text(), "invalid process maximum pages: 2");
+}
+
+/// A truncated request is refused rather than decoded from whatever follows
+/// it in the input buffer — which, since the program's bytes precede it, is
+/// the program itself.
+#[test]
+fn a_truncated_layout_request_is_refused() {
+    let program = program_with(2 * 1024 * 1024, 1);
+    let mut request = layout_request(16384, 0, 1024, None, None);
+    request.truncate(request.len() - 3);
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_ERROR,
+    );
+    assert_eq!(output_text(), "layout request is truncated");
+}
+
+/// A caller may supply the heap base instead of letting the module read one.
+///
+/// `host/src/process-memory.ts` has always taken it from its caller — the
+/// process lifecycle extracts it from the same bytes it passes, and a layout
+/// placed with no program at all has nowhere else to get it. A request that
+/// omits it falls back to the program's own `__heap_base`, which is what
+/// `crates/host-native` relies on.
+#[test]
+fn a_caller_supplied_heap_base_overrides_the_programs_own() {
+    let program = program_with(2 * 1024 * 1024, 1);
+
+    // 0x00120000 is page 18, so the channel lands on page 19.
+    let request = layout_request(16384, 0, 1024, None, Some(0x0012_0000));
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_OK,
+        "{}",
+        output_text(),
+    );
+    let layout = decode_layout(&read_output());
+    assert_eq!(layout.control_base, 0x0012_0000);
+    assert_eq!(layout.channel_page, 19);
+
+    // Omitted, the program's own 2 MiB heap base decides instead.
+    let request = layout_request(16384, 0, 1024, None, None);
+    write_input(&[&program, &request]);
+    assert_eq!(
+        wa_process_memory_layout(program.len() as u32, request.len() as u32),
+        WA_OK,
+    );
+    assert_eq!(decode_layout(&read_output()).channel_page, 33);
+}
+
+/// A layout with no program at all is what a caller placing one from scratch
+/// asks for, and the module must not refuse the bytes it cannot walk.
+#[test]
+fn a_layout_can_be_placed_with_no_program_at_all() {
+    let request = layout_request(16384, 0, 1024, None, None);
+    write_input(&[&request]);
+    assert_eq!(wa_process_memory_layout(0, request.len() as u32), WA_OK, "{}", output_text());
+    let layout = decode_layout(&read_output());
+    // No heap base, no memory import, no declaration: the fixed fallback.
+    assert_eq!(layout.control_base, 16_777_216);
+    assert_eq!(layout.channel_page, 257);
+    assert_eq!(layout.thread_slot_count, 1024);
+
+    // And with a heap base but still no program — the shape six tests in
+    // `host/test/process-memory.test.ts` use, and the one a reader that
+    // insisted on `__heap_base` would have answered with the fallback while
+    // still looking like an answer.
+    let request = layout_request(16384, 18, 1024, Some(4), Some(0x0012_0000));
+    write_input(&[&request]);
+    assert_eq!(wa_process_memory_layout(0, request.len() as u32), WA_OK, "{}", output_text());
+    let layout = decode_layout(&read_output());
+    assert_eq!(layout.control_base, 0x0012_0000);
+    assert_eq!(layout.channel_page, 19);
+    assert_eq!(layout.thread_slot_count, 4);
 }

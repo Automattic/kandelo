@@ -88,7 +88,6 @@ export {
   computeProcessMemoryLayout,
   createProcessMemory,
   growMemoryToCover,
-  importedMemoryMinimumPages,
   PROCESS_MMAP_BASE,
 } from "./process-memory";
 export type { ProcessMemoryLayout } from "./process-memory";

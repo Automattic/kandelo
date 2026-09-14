@@ -1031,6 +1031,45 @@ pub fn detect_pointer_width(bytes: &[u8]) -> u8 {
     defined.unwrap_or(4)
 }
 
+/// The minimum page count of the first imported memory, or `None` when the
+/// program imports none.
+///
+/// A host must give a program at least this many pages or instantiation
+/// fails, so it is a floor on the address space and an input to
+/// `wasm_posix_shared::process_memory::compute_layout`. Defined memories carry
+/// a minimum too, but a program that defines its own memory is not asking a
+/// host for one.
+///
+/// Narrow and early-returning, like [`detect_pointer_width`] beside it, rather
+/// than a field on [`ArtifactFacts`]. **This is asked once per process
+/// launch**, and a full container walk to answer one number would put the cost
+/// of reading a 30 MB program's every section on the launch path. The
+/// TypeScript this replaces walked the import section and returned at the
+/// first memory; so does this.
+pub fn imported_memory_minimum_pages(bytes: &[u8]) -> Option<u64> {
+    if !is_wasm_module(bytes) {
+        return None;
+    }
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload {
+            Ok(Payload::ImportSection(reader)) => {
+                for (_, import) in reader.into_iter().flatten().flatten().flatten() {
+                    if let TypeRef::Memory(memory) = import.ty {
+                        return Some(memory.initial);
+                    }
+                }
+                // The import section is the only place an imported memory can
+                // be declared, so a section that named none is the answer.
+                return None;
+            }
+            // A module may declare no imports at all.
+            Ok(Payload::FunctionSection(_)) | Ok(Payload::MemorySection(_)) => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Read a constant-returning `i32` function export, as the SDK emits for
 /// `__abi_version` and the pthread slot declaration.
 ///

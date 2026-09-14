@@ -96,9 +96,7 @@ pub use module_state_records::{
 };
 pub use reference_feed::ReferenceReplayFeed;
 pub use reference_graph_builder::{AggregateKind, GcProvenance, ReferenceGraphBuilder};
-pub use reference_recipes::{
-    decode_reference_recipes, ReferenceRecipeEntry, ReferenceRecipeNode, ReferenceRecipes,
-};
+pub use reference_recipes::{ReferenceRecipeEntry, ReferenceRecipeNode};
 pub use reference_replay::{FuncrefTarget, ReconstructionState, ReferenceReplayDriver};
 pub use reference_segments::ReferenceTransactionRecord;
 pub use reference_segments_writer::{ReferenceRecordSink, ReferenceSegmentsWriter};

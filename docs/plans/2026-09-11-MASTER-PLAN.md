@@ -3829,11 +3829,285 @@ maintainer has held it pending a running web app.
 
 # LANE L — host↔kernel plumbing
 
-**Status: L1 census COMPLETE — `docs/plans/2026-09-11-lane-l1-census.md`.
-Target derived, not provisional. The census changed what this lane is.**
+**Status: L3, L4 and L5 all landed 2026-09-13 in
+`/Users/brandon/kandelo-lane-l` (`brandonpayton/lane-l-host-kernel-plumbing`).
+L2 is DECLINED rather than blocked. `hostKernelPlumbingTypeScript` 5,853 →
+**5,689**.**
+
+**The projection deadlock was DECIDED by the maintainer (2026-09-13): fix the
+xtask ordering — and that unblocked L3's TypeScript half**, which had been held
+on `brandonpayton/lane-l-typescript-layout-held` because landing it wedged
+`./run.sh local-build`. `local_build.rs` now stages the co-resident side
+modules into the tier before the scheduler runs, so a package build that
+resolves through the tier can see a module this build just rebuilt. See "the
+projection deadlock" under Known hazards for why that needs no atomicity
+trade.
+
+**VERIFIED END TO END 2026-09-13**, once the disk hold lifted. `./run.sh
+local-build` ran and the named test passed: `coreutils-docs/wasm32` SUCCEEDED,
+`rootfs/wasm32` SUCCEEDED, `product/platform-rootfs` CACHED. "The deadlock is
+fixed" is now an observation.
+
+**The run as a whole still failed, on unrelated causes**: `php` (configure:
+icu), `vim` (link: `-lncursesw`/`-ltinfow`) and `wget` (compile:
+`openssl/ssl.h`) each miss a C dependency, leaving thirteen nodes unbuilt and
+products at 1/7. A lane reading "Local build failed" in a fresh worktree should
+check that list before its own changeset. Detail in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**THE CLOSURE TARGET, RE-DERIVED (2026-09-13, on the maintainer's decision).**
+It is derivable now because the thing to measure against exists:
+`crates/host-native` writes the whole of lane L, and it can be counted.
+**166 lines** — `ProcessLayout::compute` (37), `checked_shared_range` (9),
+`KernelScratch` + impl (75), `KernelLent` + impl (35), `write_lent` (10). That
+is what a second host actually pays for this entire lane, and two of those
+items exist only because this lane put them there.
+
+Against that, **3,284 of the TypeScript's 5,689 lines are things a new host
+never writes**: the allocator/leases/retirement in `process-memory.ts`
+(1,038 — `host-native` has none of it, because a browser must bound and
+reclaim `WebAssembly.Memory`/SAB reservations and a wasmtime host just drops
+a `SharedMemory`), `kernel-entry-gate.ts` (1,596 — the borrow checker),
+`worker-protocol.ts` (429 — no workers), and intrinsic capture in
+`kernel-scratch.ts` (221).
+
+**So a single line-count target cannot express this lane, and picking one is
+what went wrong twice.** L1 said "allocation and lease mechanics stay" and
+then projected `process-memory.ts` from 1,337 to ~400, which is only possible
+if they go; 2,900 inherits the same shape in the new unit. Neither was
+reachable without deleting something the census itself said stays. Lane L
+should close against the PAIR — 166 for a new host, measured and
+corpus-checked in both hosts; and the JS host's own surface, which shrinks
+only by auditing the three structural items and is a JS-host improvement
+rather than progress toward a host-independent floor. Detail in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**One row of the unit-conversion table above is now stale, and it is not this
+lane's to edit.** It lists `hostKernelPlumbingTypeScript` at 4,734 code lines,
+which was true before this lane's reduction. It is **4,575**, and lane S's own
+gate is what says so: run unmodified over this branch's files it reports
+*"hostKernelPlumbingTypeScript is 4575 … Lower the ceiling to 4575"*, and fails
+until that happens. The reduction is worth 159 code lines against 164 by
+`wc -l`. An independent transcription of `countCodeLines` had computed the same
+4,575 beforehand, and reproduces 4,734 exactly on the files as they stood at
+`19bb692c4`. The row is left alone because that table belongs
+to the conversion, not to lane L; whoever reconciles the branches should
+rebaseline it to 4,575.
+
+**And it survives the code-lines conversion, in a different function.**
+`19bb692c4` replaced `lineCount` with a per-file reader that WOULD fail loudly
+on a missing file — but `expandGlobs` runs `ls -1d ... 2>/dev/null || true`
+and drops the path before that read happens, so the surface still reads
+smaller. Lane L's branch does not contain that commit, so the fix made here
+patches the pre-conversion `cat` pipeline; the post-rebase form guards each
+glob at expansion time.
+
+**The post-rebase form is verified, without committing it.** Lane S's two
+files were checked out over this worktree's and the prepared patch applied
+cleanly. It moves no number (3 failed / 86 passed, identical before and after,
+and those three failures are lane L's unbanked rebaseline plus two of lane G's,
+not this patch's — that commit's budget has `unguardedLayoutModules` at ceiling
+1 and open, this branch's at 0, because lane G finished after lane S branched). It fails loudly on a renamed counted file AND on a glob that
+matches nothing — the variant a literal-path check misses — and
+`host/src/fork-*.ts` still expands to 36 files and counts normally. The
+worktree was restored and this branch's own gate re-run at 81 passed. **The
+patched function is written out in full in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`** rather than left in a
+session temp directory, which is where it was and where it would have died;
+the copy there was checked line-for-line against the version that was run.
+
+**CAMPAIGN-WIDE, and a second one: `xtask perturb` could leave a mutation in
+the tree.** Every lane that perturbs a guard uses it, and its revert is the
+THIRD step — apply, verify, revert — so anything that stops the process in
+between leaves the target file mutated, uncommitted, with no error anywhere.
+It was demonstrated repeatedly here, and the honest account is that **every
+interruption was this lane's own** — a `pkill` to make the laptop safe, a run
+stopped after noticing it had been interfered with, and a file restored by
+hand on a wrong diagnosis while a run was still finishing. The long run that
+was left alone completed: 14 trials, 0 survived, 0 invalid. An earlier draft
+of this paragraph blamed concurrent `xtask build-deps` in lanes Y and F for
+"the runs that kept dying"; the logs do not support that and it is withdrawn.
+The hazard is still real — a killed run leaves a mutation with no signal —
+but it is a hazard for whoever kills a run, which on this machine was this
+lane.
+
+`tools/xtask/src/perturb.rs` writes `.perturb-in-progress` before the first
+mutation now and removes it after each revert; the next run refuses to start
+and names the file, the trial and the recovery command. A sentinel rather than
+a signal handler, because a handler misses SIGKILL and a sleeping laptop.
+**Offered, not imposed** — it is shared tooling and one `git revert` away.
+Detail in `docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**CAMPAIGN-WIDE, found from lane L: four measures in
+`host/test/surface-budget.test.ts` reported a BETTER number when their input
+disappeared. One — `lineCount` — was fixed here on the maintainer's decision;
+the other three are not lane L's to fix.** Each runs a shell pipeline with stderr suppressed, so a counted
+file that is renamed or moved contributes zero rather than failing. Measured
+against lane L's own surface: with `host/src/process-memory.ts` moved, the gate
+reads 4,516 against a ceiling of 5,689 — a 1,173-line "improvement" — and
+passes. The starkest case is elsewhere: `grep -ro 'parseShebang' host/src
+2>/dev/null | wc -l` reads zero, a perfect score, if `host/src` is renamed. The
+twelve `readFileSync` measures in the same file throw loudly instead; the split
+is shell-pipeline versus in-process read, not a decision about measurement.
+
+Eight surfaces share the line counter alone. **The campaign's method is lanes
+reducing counted surfaces against a ratchet, and this is the one way to satisfy
+that method without doing the work** — reachable by accident as easily as by
+intent, since a lane that legitimately relocates a file gets the same
+undeserved green. **FIXED on the maintainer's decision, in lane L's window.** It was reported
+rather than fixed first, because a ratchet every lane is graded by should not be
+edited by one of the lanes it grades. `lineCount` now requires every counted
+path to exist before counting; a glob matching nothing fails the same check as
+its own literal pattern. Every lane's measure is unchanged — lane L still reads
+5,689 — so no ceiling moves. **Only `lineCount` was fixed.** The other three
+suppressed measures share the failure direction, need different remedies, and
+belong to other lanes' surfaces.
+
+**The transcription argument now has a number: ten of thirteen.** Lane L has
+always said `host-native` was written by reading `host/src/*.ts` and that two
+transcribed copies drift. Its citations are line-anchored, so that is testable.
+Thirteen name a `host/src` file with a line number; **ten no longer resolve** —
+three name a file `ace9756b1` deleted, two name identifiers that exist nowhere
+under `host/src/`, and five sit 100-200 lines from what they cite because the
+cited file grew. The rot is silent: every one of those comments still reads as
+authoritative. Separately, the comment that hid the `__heap_base` divergence
+turned out never to have been true of the code it sat on — it described the
+TypeScript host's fallback behaviour on a Rust constant that implemented only
+half of it, which is why checking this host against its own comment found them
+agreeing. **This is the V1 case (share code across hosts) in evidence rather
+than principle**, and it is stronger than the line-count case V4 makes. See
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**L-D3, found by following that thread into the native host, and FIXED.**
+`copy_launch_entry` cites the TS `copyEntry` it was transcribed from and
+reproduced its every errno — EINVAL, the zero-capacity query, ERANGE, EFAULT
+for a null pointer — while dropping the one step that is not an errno: the TS
+version proves the range and returns `-EFAULT`. A legal wasm32 `buf_ptr` past
+the end of the memory went to `copy_nonoverlapping`. Reverting the fix does not
+give a wrong errno; it kills the process with **SIGBUS**. The JavaScript host
+answers `-EFAULT`. Fixed at the site, with a test that fails without it.
+**The whole class is FIXED, on the maintainer's decision.**
+`checked_shared_range` had 6 call sites covering 3 functions, against 73 raw
+`write_bytes` sites, of which **sixteen** wrote through a pointer the kernel
+handed in (thirteen until a mutation probe found `host_readdir` writing four
+times through a local that a name-based count could not see) —
+`host_clock_gettime`, `host_read` (twice), `host_pread`, `host_readlinkat`,
+`host_fpathconf`, `host_readdir` (four), `host_fetch_deferred`,
+`host_getrandom`, `host_waitpid`, and the two `write_wasm_stat*` helpers those
+imports call.
+
+All sixteen prove the lent range now. **`KernelLent` is the mirror that was
+missing**: the inbound counterpart of `KernelScratch`, and the Rust equivalent
+of the TypeScript host's `RustLentKernelDestination`. The guard is no longer a
+count — `write_bytes` does not appear in `define_kernel_host_imports` at all.
+
+**The errno went against the maintainer's first instinct and the reason is in
+the tree.** Trapping was the instinct — the kernel is the arbiter of reality.
+But this host already answers this condition in the only two places it proved
+a kernel range, `proc_copy_in`/`proc_copy_out`, and it answers `-EFAULT`; so
+would the JavaScript host for the identical bug. Trapping would have made one
+host answer one condition two ways. Where trapping IS right is where there is
+no errno to return, and after this change no such place is left: the two
+helpers that returned nothing now return `Result<(), i32>`.
+
+**Two caveats carried, not buried.** Five of the eleven converted imports —
+`readlinkat`, `fpathconf`, `readdir`, `getrandom`, `fstatfs` — are never
+executed by any test in this repository, so their conversions are
+compile-checked only. **Covered on the maintainer's decision**: a guest
+fixture calls all five against a mounted native directory, a counter confirms
+it reaches them, and four perturbation trials give each a zero capacity and
+are killed. Sixteen of sixteen sites are now executed and proven to fail when
+broken. And the cost is
+measured by frequency rather than a micro-benchmark: 203 proofs across the
+whole `host-native` suite, with `waitpid` the hot import at 801 calls, which
+refutes "hot path" for what the suite covers and nothing more.
+
+**Two callers swallow the new answer, and neither is lane L's.** Giving
+sixteen imports the ability to return `-EFAULT` means asking who reads it.
+Nine kernel callers propagate it (`i32_to_result(result)?`). Two do not, both
+for `host_clock_gettime` and both predating this change: an absolute-timer
+path uses `.unwrap_or((0, 0))`, turning a refusal into "now is the epoch"; and
+`crates/runtime-core/src/lib.rs` discards the `i32` and returns a zero `sec`.
+Neither is newly broken, and neither can fire in practice — both pointers are
+kernel stack locals, inside kernel memory by construction — but this change
+made them reachable, which is the honest way to say it. **The cost was measured by frequency, not by a
+micro-benchmark**: a counter in `checked_shared_range` over the whole
+`host-native` suite — 70 tests that boot machines, spawn, exec, fork and run
+programs — reports 203 proofs in total, 34 of them from lane L's own unit
+tests. At that rate the per-call cost cannot matter. It says nothing about a
+WordPress boot or sustained syscall traffic, and is not offered as if it did.
+**Split per import, five of the eleven are never called by the suite at all**
+— `readlinkat`, `fpathconf`, `readdir`, `getrandom`, `fstatfs` — so those
+conversions were compile-checked and not execution-checked; a fixture and
+four killed trials have since closed that, so the caveat no longer stands. `waitpid` is the hot one at 801 calls, not the clock.
+
+**"One rule" was then checked against the tree, not just the corpora.** The
+corpora pin the rule's answers; they cannot say whether some other site works
+it out for itself. L3: every `controlBase`/`channelOffset`/`brkBase`/`mmapBase`
+in `host/src` is read off a layout, and the single producer is
+`wasm-artifact-driver.ts` decoding the shared Rust function's reply. L4: the
+rule has 23 call sites in `host/src`, against 63 places that build a view
+straight onto a guest buffer — and none of those can read out of bounds
+silently, because the ENGINE throws `RangeError` (verified, not assumed). So
+in the TypeScript host the shared rule supplies the null-pointer/out-of-range
+distinction and the `allowAddressZero` policy, not memory safety. **In
+`crates/host-native` there is no engine underneath and the same rule IS the
+safety.** Two hosts get different guarantees from one sentence, which is a
+stronger argument for stating it once than the line count is.
+
+**The shared corpora were audited while the machine was too full to build,
+and both could be satisfied by wrong rules.** Re-deriving every case from the
+documented rule rather than from the code found four plausible rules that
+passed every case in the two files, and found that the TypeScript half was
+checking three of seven layout cases and skipping the rest silently. Four
+cases were added, the skip is now declared rather than inferred, and eight of
+nine cases are checked in both hosts. **It was written without running
+anything and has since been run**, and running it caught a defect reading had
+not: the test oracle's LEB128 walk lost one byte per name, so it had silently
+reported "no imported memory" and fallen back to 16 MiB. Of four further items,
+**three are now applied and verified** — a dead branch, three scratch call
+sites that restated a length the region already knows, and the source guard
+that holds them. **Building the guard found a fourth site the reading had
+classified as harmless**: `handle_spawn` passed the blob's length where
+`kernel_spawn_blob_decode` declares `buf_capacity`, so the kernel's own
+`blob_len > buf_capacity` refusal was fed the same number twice and could
+never fire — H-2 on the far side of the ABI, manufactured by a restated length
+on this one. **Both edited lines were then broken on purpose to check the
+suite reaches them**: five tests fail either way, four of them `smoke_spawn_*`.
+And the conformance suites cannot cover it — `scripts/run-posix-tests.sh`
+launches each case through `node`, so it drives the TypeScript host, and
+nothing in `tests/` drives `crates/host-native`. **The native host's spawn path
+has no conformance coverage at all**, which is a gap for whoever owns that
+question, not a defect of this fix. **The fourth is now done too**: all five corpus refusals are
+driven from the shared file, and the two the TypeScript test used to write out
+by hand are gone, so the REJECT half of "one rule, both hosts" is checked
+rather than intended. The recorded blocker was half right — a heap base of
+2^63 must reach the entry point as a `bigint`, or the host's own argument
+check refuses it first and a careless loop calls that agreement; but the claim
+that JavaScript could not hold the value was wrong, and perturbing it is what
+showed that. See
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
+**The 3,600 target is not derived, and no number here replaces it.** The L1
+census raised the lane's target from a guessed 1,500 to a "derived" 3,600 and
+said in bold that it was derived. It was not: its per-unit "After" column is
+smaller than the lines its own Findings table says must stay. Every line of the
+four files has now been attributed to the declaration that owns it —
+`docs/plans/2026-09-13-lane-l-line-attribution.md` — which is the measurement
+the census recorded as not made.
+
+That attribution sums to 5,376, and **5,376 is deliberately NOT proposed as the
+target**, because three of the census's "stays" are themselves unchecked:
+`process-memory.ts`'s 1,038-line allocator is bookkeeping over numbers and is
+not on a hot path; `worker-protocol.ts` is 429 lines of interface declarations,
+which lane E generated from Rust for its own peer pair; and
+`kernel-entry-gate.ts`'s 1,596 lines were never audited against a smaller
+design. Promoting an attribution to a derivation is the mistake the census
+made. **The campaign's own rule, applied to the campaign: an accepted cost is a
+claim, and claims get measured — including the ones in this section.**
 
 `kernel-scratch.ts` (2,491), `kernel-entry-gate.ts` (1,596), `process-memory.ts`
-(1,337), `worker-protocol.ts` (429) — **5,853 lines**.
+(1,337 → 1,173), `worker-protocol.ts` (429) — **5,853 → 5,689**.
 
 ## What this lane is — as corrected by the census
 
@@ -3884,7 +4158,7 @@ Genuine floor, confirmed against `host-native`:
 
 ## Increments — rewritten by the census
 
-- **L2 — BLOCKED. Its premise is false, found 2026-09-12 while starting it.**
+- **L2 — DECLINED, not blocked. Checked 2026-09-13.**
 
   The increment said "generate the scratch pointer table from the kernel's own
   export signatures". **The signatures do not carry that information.** Kernel
@@ -3898,51 +4172,331 @@ Genuine floor, confirmed against `host-native`:
   The 12 are not evidence the TypeScript is wrong; they are evidence the
   *signatures* are not an authority. `*_ptr` naming is a convention, not a type.
 
-  **Three ways forward, and the choice is the maintainer's:**
+  **`host/test/kernel-scratch-contract.test.ts` already extracts all 55.** Line
+  1727 iterates every name in `KERNEL_SCRATCH_EXPORT_NAMES`, derives each
+  export's pointer positions from `crates/kernel/src/wasm_api.rs`, and fails if
+  they disagree with the TypeScript. Its rule is not type-based — a parameter is
+  a pointer iff its name ends `_ptr` — and it **enforces that convention in both
+  directions**: a raw `*const`/`*mut` parameter without the suffix throws, a
+  `_ptr` parameter that is not `*const`/`*mut`/`usize` throws, and a pointer not
+  followed by a `u32`/`usize` `len`/`capacity` throws. The "40 of 52"
+  measurement used a weaker rule than the repository actually runs.
 
-  1. **An explicit Rust declaration** — a const table in `crates/shared` naming
-     pointer positions per export, generated into TypeScript and assertable from
-     Rust. Campaign-consistent, but it is a second thing to keep in step with the
-     signatures.
-  2. **Make the type the authority** — change every kernel export to take
-     pointers as `*mut u8`/`*const u8`. Then extraction is exact and the
-     compiler enforces it. Invasive: it touches the whole kernel export surface.
-  3. **Name-based heuristic** (`*_ptr`, `*_buf`). **Not recommended** — a gate
-     that is wrong is worse than no gate, and this would encode a convention as
-     if it were a fact.
+  **It does not follow that the table should be generated.** Only the 76-line
+  required-pointer switch follows from `wasm_api.rs`. Three facts in that block
+  are host facts, not kernel facts: which 55 exports belong in the table (not
+  "every export with a pointer" — `kernel_select`,
+  `kernel_transfer_channel_execute` and `kernel_transfer_io_execute` are members
+  with none), the required/nullable split (the contract checks their union, so
+  it cannot see it), and the alignments (`kernel_pipe2`'s buffer holds two
+  `i32`s, which `buf_ptr: *mut u8` does not say).
 
-  Until then `KERNEL_SCRATCH_EXPORT_NAMES` stays hand-maintained and L-D2 stays
-  open.
-- **L3 — one process-memory layout** in `crates/shared`, consumed by both hosts.
-- **L4 — one bounds-check rule.** `checked_shared_range` already documents
-  itself as a copy of the TypeScript.
-- **L5 — fix L-D1** by giving the native host the capacity invariant, rather
-  than deleting the JavaScript host's version of it.
+  And the table is already guarded, so generating it buys line count and no
+  safety. **L2 is declined rather than blocked: nothing waits on a maintainer
+  decision, and `KERNEL_SCRATCH_EXPORT_NAMES` stays.** L-D2 is closed as
+  refuted, not open.
+- **L3 — one process-memory layout. BOTH HALVES LANDED.**
+  `wasm_posix_shared::process_memory::compute_layout` is now the only
+  description of a process address space, and `crates/host-native` calls it.
+
+  **It closed a live divergence, not just a duplication.** `host-native` read no
+  `__heap_base` at all and always placed control memory at the 16 MiB fallback,
+  while the TypeScript hosts placed it at the program's own heap base. Below
+  16 MiB that wasted address space; **above it, the native host put the syscall
+  channel inside the program's own static data.** 36 of 137 staged wasm32
+  programs carry a `__heap_base` export, so the case is reachable.
+
+  Evidence: `crates/shared/tests/process-memory-layouts.json` — expectations
+  derived by hand from the documented rule, never generated from the code under
+  test. It caught two real defects in the new code during development: an early
+  ceiling refusal reporting the heap base's page rather than control memory's
+  last page, and a page count near `u32::MAX` truncating to 2.
+
+  The TypeScript half reaches the same function through a new
+  `wa_process_memory_layout` export and deletes 207 lines including a
+  hand-rolled LEB128 walk — a third WebAssembly decoder in a host that already
+  had a Rust one. It landed once the projection-ordering fix cleared its way.
+
+  `heapBase` stays the CALLER's to supply. The replaced arithmetic read it from
+  its options and used the program only for the memory minimum and the pthread
+  declaration, so letting the module read `__heap_base` instead would have
+  quietly moved the authority — and six tests in
+  `host/test/process-memory.test.ts` place a layout from a heap base with no
+  program at all, which under that reading would have silently used the
+  fallback and still produced a plausible answer.
+- **L4 — one bounds-check rule. LANDED, with a stated limit.**
+  `wasm_posix_shared::host_memory::checked_range` states the rule once and
+  `checked_shared_range` calls it, losing the transcribed copy whose doc comment
+  named the TypeScript it came from, down to `allowAddressZero: false`.
+
+  **The TypeScript copy is NOT deleted, and the reason is the performance
+  contract.** A bounds check runs on the syscall hot path; reaching the shared
+  function through the artifact module would add a wasm call, an input copy and
+  an output decode to every syscall argument. So the two hosts share a
+  *statement* rather than an implementation:
+  `crates/shared/tests/host-memory-ranges.json`, failed against by both
+  `crates/shared/tests/host_memory_range.rs` and
+  `host/test/kernel-scratch-range.test.ts`. The one case TypeScript cannot
+  present — a u64 address that overflows, unreachable through a wasm32 pointer —
+  is marked `rustOnly` with its reason rather than quietly skipped.
+- **L5 — L-D1 CLOSED, and enforced.** `KernelScratch` carries the capacity the
+  allocator gave beside the pointer it gave, and **all eleven** allocation sites
+  go through it — the first pass converted eight and left three exec/shebang
+  read buffers still handing the kernel a restated constant beside a bare
+  pointer, which is the state the commit itself condemned.
+
+  A contract test asserts the file holds exactly two `kernel_alloc_scratch`
+  calls AND that both are inside `allocate`/`allocate_or_none`; without the
+  second clause the count is satisfied by two fresh bare call sites while the
+  type goes unused. Each clause was shown failing separately. The test was
+  itself wrong first time — `include_str!` fed it its own source, so its string
+  literals counted as call sites and it reported "found 4" for two real callers
+  plus two mentions of itself.
 - **The re-entrancy gate and worker protocol are not lane L work.** Saying so is
-  part of the deliverable.
+  part of the deliverable, and it is said here.
 
 ## Acceptance evidence
 
-`hostKernelPlumbingTypeScript` reaches **3,600** — derived per unit by the L1
-census, not provisional. **The census raised this from a guessed 1,500**; a
-ratchet behind the guess would have judged a correct landing at 3,600 a failure.
+`hostKernelPlumbingTypeScript` stands at **5,689**, banked. The **target stays
+at 3,600 as an acknowledged placeholder**, because nothing has derived one:
+attributing every line (`docs/plans/2026-09-13-lane-l-line-attribution.md`)
+gives 5,376 as the sum of what the census said stays, and three of those
+"stays" are unaudited claims — the process-memory allocator, the worker
+protocol's generatability, and the entry gate's size. Deriving a target means
+doing those three audits.
 
-Per increment: the layout and bounds rules must be shown to produce identical
-results in both hosts before either copy is deleted, and the generated pointer
-table must reproduce the current hand-written one exactly before it replaces it.
+**3,600 did not follow from the census's own findings.** Two specific mistakes:
+it planned `process-memory.ts` at ~400 lines while the allocator and lease
+mechanics it said stay are 1,038 lines on their own; and it estimated
+`kernel-scratch.ts`'s capacity system at ~600 by counting
+`OwnedKernelScratchRegion` (326) alone, when `ActiveKernelScratchLease` (877)
+and `ActiveKernelScratchDataView` (389) carry the same invariant — 1,711
+measured.
+
+Per increment, met: the layout rule produces identical results in both hosts,
+checked against one hand-derived corpus rather than two sets of assertions; the
+bounds rule is stated once and both hosts are failed against that statement; and
+the capacity invariant's test was shown failing before it was shown passing.
 
 ## Known hazards
 
-- **L-D1 — the native host does not enforce the capacity invariant.** It writes
-  scratch through a bare `copy_nonoverlapping` after a `ptr > 0` check. The
-  call site is sound by construction; nothing enforces that. Census outcome 3:
-  not floor, and not permission to keep the gap.
-- **L-D2 — the scratch pointer table is 35 exports wider than the generated ABI
-  list.** `KERNEL_SCRATCH_EXPORT_NAMES` names 55 exports by hand; the generated
-  lists cover 78 + 8 and **overlap it on only 20**. `kernel_ioctl`,
-  `kernel_select`, `kernel_poll`, `kernel_recv`, `kernel_send` and
-  `kernel_rootfs_write_file` are among the 35 in neither. Lane G's failure mode
-  in a different file.
+- **L-D1 — CLOSED 2026-09-13** by L5 above. `KernelScratch` carries capacity
+  beside pointer, all eleven allocation sites go through it, and a contract test
+  keeps it that way.
+- **Committed test binaries — GONE 2026-09-14.** All 43 guest fixtures under
+  `crates/host-native/fixtures/` were force-added past `.gitignore`'s blanket
+  `*.wasm`. They are now built from tracked sources by `build-fixtures.sh`,
+  which the tests run themselves when an artifact is missing or stale. The
+  cycle that justified the exception was `include_bytes!` itself, and runtime
+  loading dissolves it. Proven by deleting every artifact: the suite rebuilt
+  all 43 and passed 73 tests. One committed test binary remains in the
+  campaign, `crates/fork-codec/testdata/gc-codec-wasm32.bin`, which belongs to
+  another crate.
+- **The other 16 committed binaries are a DIFFERENT category, and should
+  stay.** `crates/fork-codec/testdata` (14) and
+  `crates/runtime-core/src/testdata` (3) were checked against the same rule
+  and do not fall under it. host-native's fixtures were *programs the host
+  runs*: built by our toolchain from our sources, and regenerating one changes
+  nothing it proves. These are *bytes a specific encoder wrote*, kept so a
+  decoder can be shown to still read them — their value is precisely that they
+  are fixed. `dylink-archive-wasm32.bin` says so outright: the TypeScript
+  writer that produced it has been deleted, and "regenerating these bytes from
+  the surviving writer would turn the reference into a self-portrait". The
+  `gen-*.mts` files beside them are the OTHER language's half of a
+  cross-language drift guard, not build steps. Deleting or regenerating this
+  set would weaken the guards it exists for, so the rule that removed 43
+  artifacts correctly leaves these 16. (It was 17 until the KFRR cleanup
+  below removed one.)
+
+  **Checked, because a guard that has quietly become single-language still
+  looks like a guard.** Twelve of the thirteen have both a generator in the
+  tree and a live `host/src` producer, so they remain genuine cross-language
+  checks. **One** has no generator at all: `dylink-archive-wasm32.bin` lost
+  its writer AND its generator on 2026-09-10 with the TypeScript `ld.so`, and
+  cannot be regenerated by anything, which is the strongest reason it stays.
+  There were two; `reference-recipes-wasm32.bin` was the other, and the KFRR
+  cleanup below deleted it along with the decoder that was its only reader.
+
+  **DELEGATED TO LANE F (fork inversion), 2026-09-14, by the maintainer.**
+  Nothing re-runs the twelve generators -- they are manual (`cd host && npx
+  tsx ...`) -- so if a TypeScript encoder changes and nobody regenerates, a
+  fixture silently stops representing what TypeScript writes. It still proves
+  both decoders read the same bytes; it stops proving they read what the
+  writer emits. The obvious fix is a check that re-runs each generator and
+  compares, **but that is guarding the TypeScript fork codec, which lane F is
+  replacing with Rust.** Building a drift guard around code scheduled for
+  deletion is the failure this campaign already named. So the question lane F
+  should answer is not "how do we keep these fresh" but "which of these twelve
+  fixtures survives the Rust-first cutover at all, and what produces the
+  survivors". Lane L is not equipped to answer that and should not guess.
+
+  For whoever picks it up: the files are NOT wasm. Each is a raw record image
+  with a four-byte ASCII magic -- `KFGC`, `KFMC`, `KFRE` and so on -- between
+  88 and 5,016 bytes, ~10 KB in total. The `-wasm32` in each name is the
+  POINTER WIDTH of the process the image describes, not the file's format.
+  None was written by hand; each is the captured output of a real encoder.
+
+  **And the test was never a self-portrait, though the generator contained
+  one.** The fixture was captured from the real TypeScript writer on
+  2026-08-31 and never modified since; the Rust encoder test was proven
+  against it on 2026-09-10 in a commit that is an ancestor of the writer's
+  deletion. What did round-trip within one language was the deleted
+  generator, which said so: it drove the TS writer, snapshotted the memory,
+  and then "as an in-generator sanity check we also re-decode the committed
+  bytes with the real TS reader ... so the bytes are self-consistent before
+  Rust ever reads them". That was a pre-flight check on the bytes, never the
+  guard. So the risk the fixture's comment names is one the migration
+  CREATED -- before it, regenerating was safe because an independent writer
+  existed.
+
+  **Restore or port those two generators? Neither, and for opposite
+  reasons.** `gen-dylink-archive-fixture.mts` died in `b8f5d9047` as
+  collateral of a deliberate migration: `host/src/dylink.ts` (4,188) and
+  `dylink-fork-archive.ts` (2,152) went because "a decision in TypeScript is
+  one the native executor cannot share". Restoring the generator means
+  restoring that writer, which the Rust-First contract forbids regrowing;
+  porting it to Rust means driving the only surviving writer, which is the
+  self-portrait the fixture exists to avoid. It stays frozen -- but its
+  meaning has an expiry worth naming: it anchors KFLA as of 2026-08-31, and
+  if the format legitimately changes the test must either be updated
+  (destroying the reference) or become an anchor to a version nobody writes.
+
+  `gen-reference-recipes-fixture.mts` died in `b653ac7e7` because the FORMAT
+  is dead, not the generator. **DONE 2026-09-14: the Rust half is deleted**
+  -- `decode_reference_recipes`, the `ReferenceRecipes` result type, the wire
+  constants, ~500 lines of tests and the frozen fixture, taking
+  `reference_recipes.rs` from 1,019 lines to 99. The node shapes stay:
+  `ReferenceRecipeNode` had 259 uses and `ReferenceRecipeEntry` 46 when
+  measured, across
+  seven `fork-codec` modules -- and in `fork-module` too, so the type
+  crosses a crate boundary. fork-codec's 432 tests pass, and host-native,
+  fork-module,
+  runtime-core and the kernel all still build. The reasoning that led there: KFRR's codec was "reached only from their own
+  unit test and one fixture generator" -- that generator. Nothing in Rust or
+  TypeScript encodes KFRR today, and `reference_recipes.rs:26` says of its
+  own decoder, "Only `decode_reference_recipes` is callerless". So the
+  fixture samples a format nothing produces, for a function nothing calls.
+  Restoring its generator would resurrect half of what that commit
+  deliberately killed. **The coherent move is the opposite one**: `b653ac7e7`
+  did the TypeScript half of the cleanup, and the Rust half -- decoder,
+  fixture, and its tests -- is still in the tree. That is fork-codec's call,
+  and it is the mirror of a decision already taken rather than a new
+  proposal. The recipe TYPES stay either way; eight files in two crates
+  use them.
+- **How to verify this lane before merging it.** Inside
+  `scripts/dev-shell.sh`, with `KANDELO_SOURCE_CACHE_ROOT`,
+  `WASM_POSIX_CACHE_DIR` and `KANDELO_CASE_IMAGE_DIR` set:
+
+  ```sh
+  HOST=$(rustc -vV | awk '/^host:/{print $2}')
+  cargo test --target "$HOST" -p host-native -p fork-codec
+  npx vitest run host/test/surface-budget.test.ts \
+      host/test/perturb-specs.test.ts --reporter=verbose
+  bash scripts/check-dev-shell-tools.sh
+  for spec in docs/perturb/lane-l-*.json; do cargo xtask perturb "$spec" || break; done
+  ```
+
+  **`--reporter=verbose` is not optional.** The budget's verdicts ARE its
+  test names -- that file prints nothing to the console -- and vitest's
+  default reporter shows no passing test names, so the standing rule to READ
+  the verdict lines cannot be satisfied by a run without it. This document
+  records that trap once already, in a gate that reported a pass count and no
+  verdicts; the first merge instructions written for this lane walked into it
+  again.
+
+- **SHARED INFRASTRUCTURE TOUCHED, 2026-09-14: `cargo xtask <verb>` now
+  runs.** It was written in **178 places** when this was found -- docs,
+  `tools/xtask`'s own source,
+  and three messages `host-native` prints to an operator debugging a stale
+  artifact -- and resolved nowhere. A cargo alias cannot fix it: `[build]
+  target = "wasm32-unknown-unknown"` makes `[alias] xtask = "run -p xtask
+  --"` build a host tool for wasm, `getrandom` refuses outright, and cargo
+  has no portable override from inside an alias (an array will not merge
+  into a string; an empty string is rejected). So `scripts/bin/cargo-xtask`
+  is a shell shim, and `flake.nix` puts `scripts/bin` on PATH exactly as it
+  already does `sdk/bin`. `check-dev-shell-tools.sh` fails if that stops
+  being true, both branches perturbed.
+
+  **A merger should know this is a three-file change outside lane L's own
+  files** -- `flake.nix`, `scripts/bin/cargo-xtask`, and
+  `check-dev-shell-tools.sh` -- made because the maintainer asked for it
+  after the alias turned out to be impossible. It is additive: every
+  previously-working invocation still works, and the long form the repo's
+  scripts use is untouched.
+- **L-D4 — the epoch half CLOSED, the import half PINNED (2026-09-14). The
+  native host read no guest `__abi_version`, and `fixtures/README.md` claimed
+  it did.** The marker was compared for the KERNEL only; nothing read a
+  guest's. Shown by running: renaming the export out of a fixture left its
+  smoke test passing, while flipping one byte of the same fixture's code made
+  it fail. The peer host refuses the mismatch with `ENOEXEC`
+  (`host/src/process-lifecycle.ts:1761`), so this was a host parity gap with
+  no platform boundary behind it.
+
+  **Epoch half, closed.** `guest_module_for_this_epoch` refuses a guest
+  declaring a different epoch at all three compile sites and lets a
+  pre-marker one through, matching the peer host. Both exec paths'
+  diagnostics were corrected in the same change, since "a `Module::new`
+  compile failure (non-wasm exec target bytes)" would now be a lie for half
+  the refusals they report. Measured safe first — all 43 fixtures declare ABI
+  44 — and the result agreed: the suite passed unchanged. Four
+  demonstrations, including a synthetic-bytes unit test, because every
+  fixture declares 44 and a mutation weakening the check would otherwise have
+  SURVIVED: a guard no test could fail.
+
+  **Import half, pinned rather than closed.** `spawn_guest_thread` trap-stubs
+  any `kernel.*` import it cannot find by NAME — wasmtime's `_get_by_import`
+  matches on name alone — so a renamed or dropped import instantiates fine
+  and traps only if its path runs. Only a RETYPED import is refused. Making
+  unknown imports an error is not available: six of the sixteen are stubbed
+  on purpose, and refusing them would refuse every fixture. So both sets are
+  pinned instead, and a seventeenth import or a seventh stub now fails and
+  names itself. Closing it properly means defining those six as named traps
+  first, which is a design decision, not a patch.
+
+  **Still uncaught by either host: channel-LAYOUT drift**, which is the only
+  kind these fixtures actually exhibit.
+
+- **THE PROJECTION DEADLOCK — the open decision. A load-time staleness check can
+  deadlock the build that would clear it, and moving the check does not escape
+  it.** Adding `wa_process_memory_layout` to the surface
+  `installWasmArtifactModule` requires made every stale artifact-reader module
+  fail loudly — and wedged `./run.sh local-build`, because `kandelo-sdk`'s
+  VFS-image build inspects its artifacts through that module, resolved from the
+  projected tier, and local-build projects a rebuilt side module only *after*
+  every package is built. Checking the entry where it is CALLED instead narrowed
+  the blast radius and did not escape the cycle: `coreutils-docs` BOOTS A KERNEL
+  during its build, and every process launch calls `computeProcessMemoryLayout`.
+
+  **Why this is not fixable inside lane L.** `stage_coresident_side_module_members`
+  runs inside `with_source_only_program_projection_lock`, and its own comment
+  says the members are staged "before the manifest goes live, so the published
+  authority never references bytes that are not yet on disk". Staging earlier
+  would put new bytes under the PREVIOUS manifest's recorded member digests.
+  Trading that atomicity away is a decision about `tools/xtask`.
+
+  **DECIDED 2026-09-13: stage side modules before the package nodes.** The fix
+  turned out to need no new argument, because the code already establishes it.
+  `run_writes_to_tier` — the predicate that gates the retraction immediately
+  above the scheduler — already includes
+  `|| !coresident_side_module_projection_is_current(...)`. So whenever the side
+  modules are stale, **the published authority has just been withdrawn**, and
+  there is no live manifest for the newly staged bytes to contradict. That is
+  exactly the invariant the finalizer's staging comment protects. When the
+  predicate is false the tier already carries those bytes, so nothing is staged.
+  The finalizer's staging is unchanged and idempotent with the early one.
+
+  **The failure did not look like an ordering problem — it looked like a stale
+  artifact, which is what the reader's message says.** That is the part worth
+  carrying: the next `wa_*` export would have hit it too, and the message would
+  have sent its author to rebuild a module that was already fresh.
+- **A lane-worktree setup step that cannot work as written.**
+  `KANDELO_SOURCE_CACHE_ROOT=<worktree>/.cache/source-only` is inside the
+  checkout, and `packages/registry/rootfs/build-rootfs-package.sh` refuses it:
+  xtask derives `WASM_POSIX_DEP_OUT_DIR`/`WASM_POSIX_DEP_WORK_DIR` from the
+  cache base and that script checks both against the repo root. `rootfs` fails
+  and every product behind it becomes unreachable, four hours into provisioning,
+  in a package with no visible connection to the setting. Lane F independently
+  uses `~/.cache/kandelo-lane-f/source-only`; that convention works.
 - **Deleting an invariant while deleting its verbosity.** Still the way this
   lane does damage: the rules are about what must *not* happen, so a rewrite
   that loses one passes every existing test.

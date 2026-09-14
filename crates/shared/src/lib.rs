@@ -2101,6 +2101,71 @@ mod native_wire_layout_tests {
     }
 }
 
+/// The rule for judging a pointer and length against a linear memory.
+///
+/// # Why this is declared once
+///
+/// Every host that reaches into a WebAssembly linear memory asks the same
+/// question, and the two that exist asked it in two places: `checked_shared_
+/// range` in `crates/host-native/src/guest.rs`, whose own doc comment named
+/// the TypeScript function it was transcribed from, and `checkedRange` /
+/// `checkedMemoryRange` / `checkedWasmImportMemoryRange` in
+/// `host/src/kernel-scratch.ts`.
+///
+/// `crates/host-native` now calls [`checked_range`] directly. The TypeScript
+/// hosts do NOT: a bounds check runs on the syscall hot path, and routing each
+/// one through a wasm module call would buy shared code with a cost the
+/// performance contract does not permit. They are instead checked against the
+/// same corpus this crate's tests read — `crates/shared/tests/
+/// host-memory-ranges.json` — so the rule is stated once and BOTH hosts are
+/// failed against that statement, rather than each host asserting its own
+/// numbers and agreeing only until someone edits one.
+pub mod host_memory {
+    /// Why a pointer and length are not a range this host may touch.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RangeError {
+        /// A null address with a positive length.
+        ///
+        /// Address zero is addressable in a WebAssembly linear memory, so this
+        /// is not a hardware fact — it is the convention that a kernel
+        /// allocator returning zero means "allocation failed". A caller that
+        /// genuinely means offset zero says so with `allow_address_zero`.
+        NullPointer,
+        /// The end of the range overflows the address space.
+        EndOverflows,
+        /// The range extends past the memory's current extent.
+        OutOfBounds { end: u64, limit: u64 },
+    }
+
+    /// Judge `[addr, addr + len)` against a memory of `limit` bytes.
+    ///
+    /// `limit` must be the memory's CURRENT length, read at the moment of the
+    /// check: a guest may `memory.grow` between two calls, and a cached extent
+    /// answers about a memory that no longer exists.
+    ///
+    /// This proves the host can address those bytes. It does NOT prove an
+    /// allocator gave them to this caller — that is a separate fact, and it
+    /// has to be carried beside the pointer rather than re-derived from it.
+    pub const fn checked_range(
+        addr: u64,
+        len: u64,
+        limit: u64,
+        allow_address_zero: bool,
+    ) -> Result<u64, RangeError> {
+        if !allow_address_zero && addr == 0 && len != 0 {
+            return Err(RangeError::NullPointer);
+        }
+        let end = match addr.checked_add(len) {
+            Some(end) => end,
+            None => return Err(RangeError::EndOverflows),
+        };
+        if end > limit {
+            return Err(RangeError::OutOfBounds { end, limit });
+        }
+        Ok(addr)
+    }
+}
+
 /// Process memory layout ABI metadata.
 ///
 /// Rust owns this declaration so the structural ABI snapshot, generated host
@@ -2175,6 +2240,215 @@ pub mod process_memory {
 
     /// Pages reserved for one pthread control slot.
     pub const PAGES_PER_THREAD_SLOT: u32 = 4;
+
+    /// Pages the main-thread syscall channel occupies, derived from the
+    /// channel's own size rather than restated as a literal.
+    pub const CHANNEL_PAGES: u32 =
+        (crate::channel::MIN_CHANNEL_SIZE as u32).div_ceil(WASM_PAGE_SIZE);
+
+    /// Resolve a program's concurrent-pthread quota from what it declared.
+    ///
+    /// A missing declaration and [`THREAD_SLOTS_USE_HOST_DEFAULT`] both mean
+    /// "the host decides" — a binary that predates the declaration is not
+    /// asking for zero threads. [`THREAD_SLOTS_NONE`] IS honoured as zero: such
+    /// a program gets EAGAIN from the kernel for `pthread_create`, which is the
+    /// truthful answer rather than an accident of how much room a host had.
+    /// Anything below `-1` is a malformed declaration and is refused.
+    pub const fn resolve_thread_slot_count(
+        declared: Option<i32>,
+        host_default: u32,
+    ) -> Result<u32, i32> {
+        match declared {
+            None => Ok(host_default),
+            Some(THREAD_SLOTS_USE_HOST_DEFAULT) => Ok(host_default),
+            Some(value) if value >= 0 => Ok(value as u32),
+            Some(value) => Err(value),
+        }
+    }
+
+    /// What a host knows about a program before it decides where that
+    /// program's control memory goes.
+    ///
+    /// Every field is a fact about the program or a host policy choice. None
+    /// of them is a placement decision — those are [`Layout`]'s job, and
+    /// keeping the two apart is what lets one host read a program's bytes
+    /// while another reads a snapshot and both still get the same address
+    /// space.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LayoutRequest {
+        /// Host policy ceiling on this address space, in pages.
+        pub maximum_pages: u32,
+        /// The minimum of the program's imported `env.memory`, or 0 when it
+        /// imports no memory.
+        pub imported_minimum_pages: u32,
+        /// An additional floor the caller wants honoured, or 0.
+        pub requested_minimum_pages: u32,
+        /// The program's `__heap_base` export, or `None` when it exports
+        /// none.
+        pub heap_base: Option<u64>,
+        /// The concurrent-pthread quota already resolved for this process.
+        pub thread_slot_count: u32,
+    }
+
+    /// Where one process's control memory lands, and the bounds that follow
+    /// from it.
+    ///
+    /// **One address space described once.** A second host that computes these
+    /// numbers itself will agree with this one right up until either side is
+    /// edited, and the two hosts that exist today were three fields apart when
+    /// this type was introduced — see `compute_layout`'s note on `heap_base`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Layout {
+        /// Pages the address space must already hold before guest code runs.
+        pub initial_pages: u32,
+        /// Pages this address space may grow to.
+        pub maximum_pages: u32,
+        /// First byte of host-owned control memory, above linker-owned data.
+        pub control_base: u64,
+        /// First guest-managed byte above the host-owned control slab.
+        pub control_end: u64,
+        /// Byte offset of the main thread's syscall channel.
+        pub channel_offset: u64,
+        /// Page holding the main thread's syscall channel header.
+        pub channel_page: u32,
+        /// Initial program break, directly above the control slab.
+        pub brk_base: u64,
+        /// Lower bound for automatic mmap placement.
+        pub mmap_base: u64,
+        /// Highest permitted brk address; a legacy compatibility field.
+        pub brk_limit: u64,
+        /// Highest address the maximum page count permits.
+        pub max_addr: u64,
+        /// This process's concurrent-pthread quota.
+        pub thread_slot_count: u32,
+    }
+
+    /// Why a layout could not be placed.
+    ///
+    /// A refusal, not a panic: a host turns this into the message its own
+    /// callers expect, and both refusals are conditions a malformed or
+    /// oversized program can produce, so neither is an internal error.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum LayoutError {
+        /// The page ceiling cannot hold even the syscall channel.
+        MaximumPagesTooSmall { maximum_pages: u32 },
+        /// Control memory alone exceeds the page ceiling.
+        InitialPagesExceedMaximum { initial_pages: u32, maximum_pages: u32 },
+    }
+
+    /// Place one process's control memory.
+    ///
+    /// **`heap_base` is the field the two hosts disagreed about.** The
+    /// TypeScript host has always placed control memory at the program's own
+    /// `__heap_base`, falling back to [`FALLBACK_BRK_BASE`] only when the
+    /// program exports none; `crates/host-native` read no `__heap_base` at all
+    /// and used the fallback unconditionally. For a program whose heap base is
+    /// below 16 MiB that merely wasted address space, but a program linked
+    /// with a heap base ABOVE it had its own static data underneath the
+    /// syscall channel on the native host.
+    ///
+    /// **Both hosts ask this function.** `crates/host-native` calls it
+    /// directly; the TypeScript host reaches it through the
+    /// `wa_process_memory_layout` export of `crates/wasm-artifact-module`, so
+    /// `host/src/process-memory.ts` no longer does the arithmetic itself. The
+    /// TypeScript half was held on
+    /// `brandonpayton/lane-l-typescript-layout-held` for as long as landing it
+    /// wedged `./run.sh local-build` — see "the projection deadlock" in lane L
+    /// of `docs/plans/2026-09-11-MASTER-PLAN.md` — and was cherry-picked once
+    /// the maintainer took the xtask ordering fix.
+    pub const fn compute_layout(request: LayoutRequest) -> Result<Layout, LayoutError> {
+        let page = WASM_PAGE_SIZE as u64;
+        if request.maximum_pages <= CHANNEL_PAGES {
+            return Err(LayoutError::MaximumPagesTooSmall {
+                maximum_pages: request.maximum_pages,
+            });
+        }
+
+        let mut min_pages = DEFAULT_INITIAL_PAGES;
+        if request.requested_minimum_pages > min_pages {
+            min_pages = request.requested_minimum_pages;
+        }
+        if request.imported_minimum_pages > min_pages {
+            min_pages = request.imported_minimum_pages;
+        }
+
+        let heap_base = match request.heap_base {
+            Some(value) => value,
+            None => FALLBACK_BRK_BASE as u64,
+        };
+        let min_pages_bytes = min_pages as u64 * page;
+        let first_free_byte = if heap_base > min_pages_bytes {
+            heap_base
+        } else {
+            min_pages_bytes
+        };
+
+        // `max_addr` bounds every later multiplication. A program may export
+        // any `__heap_base` it likes, including one that would overflow the
+        // page arithmetic below, so the ceiling is applied to the raw byte
+        // address BEFORE it is turned into a page number rather than after.
+        let max_addr = request.maximum_pages as u64 * page;
+        if first_free_byte > max_addr {
+            // The SAME number the full path below would report — control
+            // memory's last page, not the heap base's — so an early refusal
+            // and a late one describe the same address space. Saturating
+            // rather than truncating: a wrapped page count reads as a smaller
+            // request than the caller actually made.
+            let control_end_page = first_free_byte.div_ceil(page)
+                + MAIN_CHANNEL_PRIMARY_PAGE as u64
+                + CHANNEL_PAGES as u64;
+            return Err(LayoutError::InitialPagesExceedMaximum {
+                initial_pages: if control_end_page > u32::MAX as u64 {
+                    u32::MAX
+                } else {
+                    control_end_page as u32
+                },
+                maximum_pages: request.maximum_pages,
+            });
+        }
+
+        let control_base_page = first_free_byte.div_ceil(page);
+        let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE as u64;
+        let control_end_page = channel_page + CHANNEL_PAGES as u64;
+
+        // Always `control_end_page`: `first_free_byte` is already at least
+        // `min_pages * page`, so `control_end_page` — that address rounded up
+        // to a page, plus the channel's primary page and its span — is at
+        // least `min_pages + 3`. This was written as a comparison, whose else
+        // branch no input can reach; a plain assignment says the same thing
+        // without implying `min_pages` can raise the count on its own.
+        let initial_pages = control_end_page;
+        if initial_pages > request.maximum_pages as u64 {
+            return Err(LayoutError::InitialPagesExceedMaximum {
+                // Saturating for the same reason as the early refusal above:
+                // a page ceiling near `u32::MAX` can push control memory's
+                // last page past it, and a truncated report ("initial pages
+                // 2") would read as a request far smaller than the one being
+                // refused.
+                initial_pages: if initial_pages > u32::MAX as u64 {
+                    u32::MAX
+                } else {
+                    initial_pages as u32
+                },
+                maximum_pages: request.maximum_pages,
+            });
+        }
+
+        let brk_base = control_end_page * page;
+        Ok(Layout {
+            initial_pages: initial_pages as u32,
+            maximum_pages: request.maximum_pages,
+            control_base: control_base_page * page,
+            control_end: brk_base,
+            channel_offset: channel_page * page,
+            channel_page: channel_page as u32,
+            brk_base,
+            mmap_base: brk_base,
+            brk_limit: max_addr,
+            max_addr,
+            thread_slot_count: request.thread_slot_count,
+        })
+    }
 }
 
 /// ABI-surface constants captured by the structural ABI snapshot.

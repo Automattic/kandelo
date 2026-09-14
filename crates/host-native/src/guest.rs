@@ -95,27 +95,23 @@ use wasm_posix_shared::{ChannelStatus, Syscall};
 // the guest glue writes/reads. These are not exported by the shared Rust crate
 // because only the host and the guest glue (never the kernel) touch the status
 // word, so they are pinned here against that generated header.
-/// Documents the full status-word alphabet the guest cycles through; the pump
-/// only ever reads PENDING and writes COMPLETE.
+/// Three of the five values the header declares (`ERROR` and `TEARDOWN` are
+/// the others); the pump only ever reads PENDING and writes COMPLETE.
 #[allow(dead_code)]
 const STATUS_IDLE: u32 = 0;
 const STATUS_PENDING: u32 = 1;
 const STATUS_COMPLETE: u32 = 2;
 
 // --- Process memory layout constants ----------------------------------------
-// Mirror of the ABI-generated `PROCESS_MEMORY_*` constants in
-// `host/src/generated/abi.ts` (the source of truth `computeProcessMemoryLayout`
-// consumes). They are TypeScript-generated today, so they are pinned here; if
-// they ever move into the shared Rust crate this block should import them.
-const WASM_PAGE_SIZE: usize = 65536;
-const DEFAULT_MAX_PAGES: usize = 16384;
-const DEFAULT_INITIAL_PAGES: usize = 17;
-/// When a guest exports no `__heap_base`, the control/channel region is placed
-/// at this fixed byte offset, matching `PROCESS_MEMORY_FALLBACK_BRK_BASE`.
-const FALLBACK_BRK_BASE: usize = 16_777_216;
-const MAIN_CHANNEL_PRIMARY_PAGE: usize = 1;
+// Imported from `wasm-posix-shared`, which owns them. They were previously
+// re-declared here as local literals with a comment saying they would be
+// imported "if they ever move into the shared Rust crate" — they were already
+// there, so this host carried a second copy of numbers that decide where a
+// process's syscall channel lives.
+const WASM_PAGE_SIZE: usize = wasm_posix_shared::process_memory::WASM_PAGE_SIZE as usize;
+const DEFAULT_MAX_PAGES: usize = wasm_posix_shared::process_memory::DEFAULT_MAX_PAGES as usize;
 /// `ceil(MIN_CHANNEL_SIZE / WASM_PAGE_SIZE)` — the channel spans this many pages.
-const CHANNEL_PAGES: usize = (MIN_CHANNEL_SIZE + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
+const CHANNEL_PAGES: usize = wasm_posix_shared::process_memory::CHANNEL_PAGES as usize;
 
 // Per-thread slot layout. These are ABI, owned by `wasm-posix-shared` and
 // consumed by every host through it -- they were previously re-declared here
@@ -172,54 +168,61 @@ pub(crate) struct ProcessLayout {
 
 impl ProcessLayout {
     /// `imported_min_pages` is the guest's imported `env.memory` minimum;
-    /// `guest_bytes` is the program itself, read for its pthread declaration.
+    /// `guest_bytes` is the program itself, read for `__heap_base` and its
+    /// pthread declaration.
+    ///
+    /// **The placement arithmetic is not here.** It is
+    /// `wasm_posix_shared::process_memory::compute_layout`, so this host no
+    /// longer carries its own description of a process address space.
+    ///
+    /// The TypeScript hosts still carry theirs. Moving them to the same
+    /// function is written and held on
+    /// `brandonpayton/lane-l-typescript-layout-held`; it wedges
+    /// `./run.sh local-build`, for the reason lane L's plan records.
+    ///
+    /// This host previously ignored `__heap_base` entirely and always placed
+    /// control memory at `FALLBACK_BRK_BASE`, while the TypeScript hosts
+    /// placed it at the program's own heap base. For a program whose heap base
+    /// sits below 16 MiB that was merely a different address; for one linked
+    /// above it, this host put the syscall channel inside the program's own
+    /// static data. Asking the shared function closes both.
     fn compute(imported_min_pages: usize, guest_bytes: &[u8]) -> anyhow::Result<Self> {
-        let min_pages = DEFAULT_INITIAL_PAGES.max(imported_min_pages);
-        // No `__heap_base` export → fall back to the fixed control base, exactly
-        // like `heapBase ?? PROCESS_FALLBACK_BRK_BASE` in the TS host.
-        let first_free_byte = FALLBACK_BRK_BASE.max(min_pages * WASM_PAGE_SIZE);
-        let control_base_page = first_free_byte.div_ceil(WASM_PAGE_SIZE);
-        let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE;
-        let channel_offset = channel_page * WASM_PAGE_SIZE;
-        // Nothing follows the main control area. A pthread's control slot is
-        // placed by the kernel out of the process address space (`sys_clone` ->
-        // `kernel_thread_slot_addr`), so this host no longer carves an arena
-        // for them and brk starts directly above the main channel -- the same
-        // layout `computeProcessMemoryLayout` produces in the TypeScript hosts.
-        let control_end_page = channel_page + CHANNEL_PAGES;
-        let initial_pages = min_pages.max(control_end_page);
-        let brk_base = control_end_page * WASM_PAGE_SIZE;
-        let max_addr = DEFAULT_MAX_PAGES * WASM_PAGE_SIZE;
+        use wasm_posix_shared::process_memory as pm;
+
+        let declared = wasm_artifact::read_thread_slot_declaration(guest_bytes);
+        let thread_slot_count = pm::resolve_thread_slot_count(declared, pm::DEFAULT_THREAD_SLOTS)
+            .map_err(|value| {
+                anyhow::anyhow!("invalid process thread slot declaration: {value}")
+            })?;
+
+        let layout = pm::compute_layout(pm::LayoutRequest {
+            maximum_pages: pm::DEFAULT_MAX_PAGES,
+            imported_minimum_pages: u32::try_from(imported_min_pages).unwrap_or(u32::MAX),
+            requested_minimum_pages: 0,
+            heap_base: wasm_artifact::read_heap_base(guest_bytes),
+            thread_slot_count,
+        })
+        .map_err(|error| match error {
+            pm::LayoutError::MaximumPagesTooSmall { maximum_pages } => {
+                anyhow::anyhow!("invalid process maximum pages: {maximum_pages}")
+            }
+            pm::LayoutError::InitialPagesExceedMaximum {
+                initial_pages,
+                maximum_pages,
+            } => anyhow::anyhow!(
+                "initial pages {initial_pages} exceed process maximum {maximum_pages}"
+            ),
+        })?;
+
         Ok(Self {
-            initial_pages,
-            channel_offset,
-            brk_base,
-            max_addr,
-            thread_slot_count: resolve_thread_slot_count(guest_bytes)?,
+            initial_pages: layout.initial_pages as usize,
+            channel_offset: layout.channel_offset as usize,
+            brk_base: layout.brk_base as usize,
+            max_addr: layout.max_addr as usize,
+            thread_slot_count,
             pointer_width: wasm_artifact::detect_pointer_width(guest_bytes),
         })
     }
-}
-
-/// A program's declared concurrent-pthread ceiling.
-///
-/// `THREAD_SLOTS_USE_HOST_DEFAULT` (-1) and a missing declaration -- a binary
-/// predating the declaration -- both take the host default, matching
-/// `resolveProcessThreadSlotCount` in the TypeScript hosts. A declaration of 0
-/// (`THREAD_SLOTS_NONE`) is honoured as zero: such a program gets EAGAIN from
-/// the kernel for any `pthread_create`, which is the truthful answer, not an
-/// accident of how much room a host had.
-fn resolve_thread_slot_count(guest_bytes: &[u8]) -> anyhow::Result<u32> {
-    use wasm_posix_shared::process_memory::{
-        DEFAULT_THREAD_SLOTS, THREAD_SLOTS_USE_HOST_DEFAULT,
-    };
-    let declared = wasm_artifact::read_thread_slot_declaration(guest_bytes);
-    Ok(match declared {
-        None => DEFAULT_THREAD_SLOTS,
-        Some(THREAD_SLOTS_USE_HOST_DEFAULT) => DEFAULT_THREAD_SLOTS,
-        Some(value) if value >= 0 => value as u32,
-        Some(value) => anyhow::bail!("invalid process thread slot declaration: {value}"),
-    })
 }
 
 /// Captured host I/O for the process's stdout/stderr host pipes.
@@ -297,15 +300,29 @@ struct MountPoint {
     root_handle: Option<i64>,
 }
 
-/// `WasmDirent::d_type` values (crates/shared), a subset of Linux's `DT_*`.
-const DT_UNKNOWN: u32 = 0;
-const DT_DIR: u32 = 4;
-const DT_REG: u32 = 8;
-const DT_LNK: u32 = 10;
-/// Size of the `repr(C)` `WasmStat` the kernel reads back (crates/shared).
-const WASM_STAT_SIZE: usize = 88;
-/// Size of the `repr(C)` `WasmStatfs` the kernel reads back (crates/shared).
-const WASM_STATFS_SIZE: usize = 72;
+/// `WasmDirent::d_type` values, asked of `crates/shared` rather than copied.
+///
+/// These were written out as `0`, `4`, `8`, `10` under a comment naming
+/// `crates/shared` as the source -- the same numbers stated twice with the
+/// citation attached, which is the shape this lane removes. `shared` declares
+/// all eight; this host maps four and answers `DT_UNKNOWN` for the rest,
+/// which POSIX allows and which is why only four are named here.
+const DT_UNKNOWN: u32 = wasm_posix_shared::dirent::DT_UNKNOWN;
+const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;
+const DT_REG: u32 = wasm_posix_shared::dirent::DT_REG;
+const DT_LNK: u32 = wasm_posix_shared::dirent::DT_LNK;
+/// Size of the `repr(C)` `WasmStat` the kernel reads back.
+///
+/// Asked of the shared type rather than written down. These were `88` and
+/// `72` with a comment naming `crates/shared` as the source -- the same size
+/// stated twice, which is the thing this lane exists to stop. A field added
+/// to `WasmStat` moved one of them and not the other, and the statfs path is
+/// one of the five imports no test in this repository executes.
+const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStat>();
+/// Size of the `repr(C)` `WasmStatfs` the kernel reads back.
+const WASM_STATFS_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStatfs>();
+/// Size of the `repr(C)` `WasmDirent` the kernel reads back.
+const WASM_DIRENT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmDirent>();
 /// First host handle the FS hands out; kept clear of the 0/1/2 stdio range.
 ///
 /// K9 collapsed the two disjoint handle namespaces (files from `host_open`,
@@ -876,7 +893,11 @@ unsafe fn errno_location() -> *mut libc::c_int {
 /// Serialize a `statvfs` answer into the `WasmStatfs` the kernel reads back,
 /// at the field offsets its `repr(C)` struct expects (mirrors
 /// `#writeStatfsToMemory` in `host/src/kernel.ts`).
-unsafe fn write_wasm_statfs(mem: &SharedMemory, ptr: usize, vfs: &rustix::fs::StatVfs) {
+fn write_wasm_statfs(
+    mem: &SharedMemory,
+    dest: KernelLent,
+    vfs: &rustix::fs::StatVfs,
+) -> Result<(), i32> {
     // `statvfs` reports mount flags in its own `ST_*` bitset, whose numbering
     // is not portable; only the two flags POSIX defines for every platform are
     // forwarded, re-spelled with LINUX's `ST_RDONLY`/`ST_NOSUID` values because
@@ -903,7 +924,7 @@ unsafe fn write_wasm_statfs(mem: &SharedMemory, ptr: usize, vfs: &rustix::fs::St
     b[56..60].copy_from_slice(&(vfs.f_namemax as u32).to_le_bytes()); // f_namelen
     b[60..64].copy_from_slice(&(vfs.f_frsize as u32).to_le_bytes()); // f_frsize
     b[64..68].copy_from_slice(&flags.to_le_bytes()); // f_flags
-    unsafe { write_bytes(mem, ptr, &b) };
+    dest.write(mem, &b)
 }
 
 /// Combine two 32-bit words into a signed 64-bit value (high word first),
@@ -917,11 +938,14 @@ fn combine_i64(lo: i32, hi: i32) -> i64 {
 /// already carries the `S_IFMT` file-type bits (`S_IFDIR`/`S_IFREG`/`S_IFLNK`
 /// etc.), which are numerically identical between Linux and the BSD/macOS
 /// heritage `st_mode` encoding, so no translation is needed.
-unsafe fn write_wasm_stat_from_metadata(mem: &SharedMemory, stat_ptr: usize, meta: &fs::Metadata) {
-    unsafe {
-        write_wasm_stat_fields(
-            mem,
-            stat_ptr,
+fn write_wasm_stat_from_metadata(
+    mem: &SharedMemory,
+    dest: KernelLent,
+    meta: &fs::Metadata,
+) -> Result<(), i32> {
+    write_wasm_stat_fields(
+        mem,
+        dest,
             StatFields {
                 ino: meta.ino(),
                 mode: meta.mode(),
@@ -932,22 +956,20 @@ unsafe fn write_wasm_stat_from_metadata(mem: &SharedMemory, stat_ptr: usize, met
                 atime: (meta.atime(), meta.atime_nsec()),
                 mtime: (meta.mtime(), meta.mtime_nsec()),
                 ctime: (meta.ctime(), meta.ctime_nsec()),
-            },
-        )
-    };
+        },
+    )
 }
 
 /// Serialize a [`CapMetadata`] — what every `*at` metadata query on a directory
 /// capability returns — into a `WasmStat`.
-unsafe fn write_wasm_stat_from_cap_metadata(
+fn write_wasm_stat_from_cap_metadata(
     mem: &SharedMemory,
-    stat_ptr: usize,
+    dest: KernelLent,
     meta: &CapMetadata,
-) {
-    unsafe {
-        write_wasm_stat_fields(
-            mem,
-            stat_ptr,
+) -> Result<(), i32> {
+    write_wasm_stat_fields(
+        mem,
+        dest,
             StatFields {
                 ino: meta.ino(),
                 mode: meta.mode(),
@@ -958,9 +980,8 @@ unsafe fn write_wasm_stat_from_cap_metadata(
                 atime: (meta.atime(), meta.atime_nsec()),
                 mtime: (meta.mtime(), meta.mtime_nsec()),
                 ctime: (meta.ctime(), meta.ctime_nsec()),
-            },
-        )
-    };
+        },
+    )
 }
 
 /// The `WasmStat` fields this host can answer truthfully from a real host
@@ -979,7 +1000,11 @@ struct StatFields {
     ctime: (i64, i64),
 }
 
-unsafe fn write_wasm_stat_fields(mem: &SharedMemory, stat_ptr: usize, f: StatFields) {
+fn write_wasm_stat_fields(
+    mem: &SharedMemory,
+    dest: KernelLent,
+    f: StatFields,
+) -> Result<(), i32> {
     let mut b = [0u8; WASM_STAT_SIZE];
     b[8..16].copy_from_slice(&f.ino.to_le_bytes()); // st_ino
     b[16..20].copy_from_slice(&f.mode.to_le_bytes()); // st_mode
@@ -997,7 +1022,7 @@ unsafe fn write_wasm_stat_fields(mem: &SharedMemory, stat_ptr: usize, f: StatFie
     b[64..68].copy_from_slice(&nsec(f.mtime.1).to_le_bytes()); // st_mtime_nsec
     b[72..80].copy_from_slice(&sec(f.ctime.0).to_le_bytes()); // st_ctime_sec
     b[80..84].copy_from_slice(&nsec(f.ctime.1).to_le_bytes()); // st_ctime_nsec
-    unsafe { write_bytes(mem, stat_ptr, &b) };
+    dest.write(mem, &b)
 }
 
 /// The result of running a trivial guest to completion.
@@ -1111,23 +1136,192 @@ unsafe fn write_bytes(mem: &SharedMemory, off: usize, bytes: &[u8]) {
 /// fitting inside a live linear memory is the only thing an address can be
 /// checked for from outside the instance that owns it.
 ///
-/// Rejects, in order: a length the host cannot address; a null address with a
-/// positive length (mirroring `checkedWasmImportMemoryRange`'s
-/// `allowAddressZero: false` in the JS host, `host/src/kernel-scratch.ts`);
-/// and any end that overflows or exceeds `mem.data().len()`.
+/// **The rule is not written here.** It is
+/// `wasm_posix_shared::host_memory::checked_range`, which is also what
+/// `host/src/kernel-scratch.ts`'s corpus is checked against — this function
+/// used to restate the rule and name the TypeScript it was transcribed from,
+/// which is two descriptions of one contract.
+///
 /// `mem.data().len()` is read fresh on every call rather than cached, because
 /// a guest may `memory.grow` between calls.
 fn checked_shared_range(mem: &SharedMemory, addr: u64, len: u32) -> Option<usize> {
-    let len = len as usize;
-    let addr = usize::try_from(addr).ok()?;
-    if addr == 0 && len != 0 {
-        return None;
+    wasm_posix_shared::host_memory::checked_range(
+        addr,
+        len as u64,
+        mem.data().len() as u64,
+        false,
+    )
+    .ok()
+    .and_then(|addr| usize::try_from(addr).ok())
+}
+
+/// A kernel-scratch allocation, carrying the capacity it was actually given.
+///
+/// # The invariant, and why a pointer alone cannot carry it
+///
+/// A region the KERNEL lends this host, proven once at the boundary.
+///
+/// The mirror of [`KernelScratch`], for the other direction. `KernelScratch`
+/// covers memory this host ASKS the kernel for; this covers memory the kernel
+/// HANDS this host — a `(ptr, capacity)` pair arriving as import arguments,
+/// which the host then writes into.
+///
+/// Outbound had a type and a source guard. Inbound was a `usize`, and sixteen
+/// sites wrote at one without proving anything (L-D3). The JavaScript host has
+/// carried the inbound type all along — `#rustLentKernelDestination` in
+/// `host/src/kernel.ts`, whose comment is the whole argument:
+///
+/// > fitting in the current WebAssembly Memory proves only addressability,
+/// > not ownership. The Rust import arguments name the allocation and its
+/// > capacity; keeping both in an authenticated token prevents a later caller
+/// > from substituting total Memory length for the allocation bound.
+///
+/// The proof is `wasm_posix_shared::host_memory::checked_range`, the same rule
+/// the corpus checks in both hosts. Holding an offset that only this
+/// constructor can produce is what stops a caller reaching for the raw
+/// pointer again further down.
+#[derive(Debug, Clone, Copy)]
+struct KernelLent {
+    offset: usize,
+    capacity: u32,
+}
+
+impl KernelLent {
+    /// Prove a `(ptr, capacity)` pair the kernel passed in, or refuse it.
+    ///
+    /// `None` is the caller's cue to answer `-EFAULT`, which is what this
+    /// host already does wherever it proves a kernel range today
+    /// (`proc_copy_in`/`proc_copy_out`) and what the JavaScript host answers
+    /// for the same condition.
+    fn prove(mem: &SharedMemory, ptr: u64, capacity: u32) -> Option<Self> {
+        checked_shared_range(mem, ptr, capacity).map(|offset| Self { offset, capacity })
     }
-    let end = addr.checked_add(len)?;
-    if end > mem.data().len() {
-        return None;
+
+    /// Copy `bytes` in, refusing a write longer than the lender promised.
+    ///
+    /// The capacity check is the half a bounds check cannot supply: being
+    /// inside the memory does not mean being inside what was lent.
+    fn write(self, mem: &SharedMemory, bytes: &[u8]) -> Result<(), i32> {
+        if bytes.len() > self.capacity as usize {
+            return Err(-libc_errno::EFAULT);
+        }
+        unsafe { write_bytes(mem, self.offset, bytes) };
+        Ok(())
     }
-    Some(addr)
+
+}
+
+/// Prove a lent `(ptr, capacity)` and copy `bytes` into it, or refuse.
+///
+/// The shape every kernel host import needs: the kernel names a buffer and
+/// how big it is, the host writes no more than that, and an address it cannot
+/// map is `-EFAULT` rather than a `copy_nonoverlapping` into whatever is
+/// there.
+fn write_lent(
+    mem: &SharedMemory,
+    ptr: u64,
+    capacity: u32,
+    bytes: &[u8],
+) -> Result<(), i32> {
+    let Some(dest) = KernelLent::prove(mem, ptr, capacity) else {
+        return Err(-libc_errno::EFAULT);
+    };
+    dest.write(mem, bytes)
+}
+
+/// `kernel_alloc_scratch(n)` answers with an address inside kernel memory.
+/// That address being in bounds proves the host CAN address those bytes; it
+/// does not prove the allocator gave *this caller* `n` of them. Nothing about
+/// the returned `i32` distinguishes "you were given 64 KiB here" from "you
+/// were given 8 bytes here", so a later write of the wrong length lands
+/// somewhere the allocator has already promised to someone else, and every
+/// bounds check in the world still passes.
+///
+/// The JavaScript host has an ownership type for exactly this fact
+/// (`OwnedKernelScratchRegion` in `host/src/kernel-scratch.ts`). This host had
+/// none: it allocated, checked `ptr > 0`, and wrote through a bare
+/// `copy_nonoverlapping`. Every call site was sound by construction — each
+/// asked for `len` and wrote `len` — but "sound by construction" is a property
+/// of the code as written, not an invariant anything enforces, and it is one
+/// careless edit from being false with no test able to see it.
+#[derive(Debug, Clone, Copy)]
+struct KernelScratch {
+    ptr: i32,
+    capacity: u32,
+}
+
+impl KernelScratch {
+    /// Ask the kernel for `capacity` bytes of scratch.
+    ///
+    /// `purpose` appears in the failure so a boot that cannot get scratch says
+    /// which allocation it was, rather than only how many bytes it wanted.
+    fn allocate(
+        alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+        kernel_store: &mut Store<()>,
+        capacity: u32,
+        purpose: &str,
+    ) -> anyhow::Result<Self> {
+        let ptr = alloc_scratch.call(&mut *kernel_store, capacity)?;
+        if ptr <= 0 {
+            anyhow::bail!("kernel_alloc_scratch({capacity}) for {purpose} returned {ptr}");
+        }
+        Ok(Self { ptr, capacity })
+    }
+
+    /// Ask for `capacity` bytes, reporting exhaustion as an ANSWER rather than
+    /// an error.
+    ///
+    /// A syscall that cannot get scratch owes its caller ENOMEM, not a host
+    /// abort — so the exec and spawn paths need "no scratch" as a value they
+    /// can turn into an errno, while boot needs it as a failure. The trap a
+    /// kernel call can itself raise stays an error in both.
+    fn allocate_or_none(
+        alloc_scratch: &wasmtime::TypedFunc<u32, i32>,
+        kernel_store: &mut Store<()>,
+        capacity: u32,
+    ) -> anyhow::Result<Option<Self>> {
+        let ptr = alloc_scratch.call(&mut *kernel_store, capacity)?;
+        Ok((ptr > 0).then_some(Self { ptr, capacity }))
+    }
+
+    /// The address to hand a kernel export, paired with its length.
+    fn ptr(self) -> i32 {
+        self.ptr
+    }
+
+    /// The capacity the allocator gave, which is the ONLY length a kernel
+    /// export may be told this region holds.
+    fn capacity(self) -> u32 {
+        self.capacity
+    }
+
+    /// Fill this region with `bytes`.
+    ///
+    /// Refuses two different things, and they are genuinely different: bytes
+    /// longer than the capacity the allocator gave (the invariant above), and
+    /// a region that does not fit inside kernel memory at all (the ordinary
+    /// bounds rule, asked of the whole capacity rather than of the write, so a
+    /// region that could never have been valid is refused even when a short
+    /// write into it would have fitted).
+    fn write(self, kernel_mem: &SharedMemory, bytes: &[u8]) -> anyhow::Result<()> {
+        if bytes.len() > self.capacity as usize {
+            anyhow::bail!(
+                "kernel scratch write of {} bytes exceeds the {} bytes the allocator gave it",
+                bytes.len(),
+                self.capacity,
+            );
+        }
+        let offset = checked_shared_range(kernel_mem, self.ptr as u32 as u64, self.capacity)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "kernel scratch at {} with capacity {} is not inside kernel memory",
+                    self.ptr,
+                    self.capacity,
+                )
+            })?;
+        unsafe { write_bytes(kernel_mem, offset, bytes) };
+        Ok(())
+    }
 }
 
 /// Copy `len` bytes from guest process memory at `addr` into kernel memory at
@@ -1667,6 +1861,38 @@ pub fn run_guest(
     })
 }
 
+/// Compile a guest program, refusing one that declares a DIFFERENT ABI epoch.
+///
+/// L-D4. This host used to read no guest `__abi_version` at all -- only the
+/// kernel's -- so a program built for another epoch instantiated normally and
+/// failed later, or not at all, while
+/// `crates/host-native/fixtures/README.md` asserted the opposite.
+///
+/// The rule is the peer host's, so the two cannot answer one question two
+/// ways: `host/src/process-lifecycle.ts` refuses a declared epoch that
+/// disagrees with the kernel's and lets a binary declaring NONE through,
+/// because predating the marker is a different fact from being stale. The
+/// reader is `wasm_artifact::read_abi_version`, the same one the kernel's own
+/// provenance report uses.
+///
+/// This does NOT close L-D4. An import the host cannot find by NAME is still
+/// stubbed by `define_unknown_imports_as_traps` rather than refused -- six of
+/// the sixteen kernel imports these fixtures declare are stubbed today -- and
+/// nothing here sees channel-LAYOUT drift. What it catches is an epoch bump
+/// that left a program behind.
+fn guest_module_for_this_epoch(engine: &Engine, program_bytes: &[u8]) -> anyhow::Result<Module> {
+    if let Some(declared) = wasm_artifact::read_abi_version(program_bytes) {
+        if declared != crate::EXPECTED_ABI_VERSION {
+            anyhow::bail!(
+                "guest program declares ABI {declared}, but this host runs ABI {}; \
+                 rebuild it against this branch's libc",
+                crate::EXPECTED_ABI_VERSION,
+            );
+        }
+    }
+    Ok(Module::new(engine, program_bytes)?)
+}
+
 fn run_guest_inner(
     kernel_wasm: &Path,
     guest_wasm: &[u8],
@@ -1676,7 +1902,7 @@ fn run_guest_inner(
 
     // --- Guest module, layout, and memory (created first so kernel host imports
     // that touch process memory — e.g. host_futex_wake — can reference it) -----
-    let guest_module = Module::new(&engine, guest_wasm)?;
+    let guest_module = guest_module_for_this_epoch(&engine, guest_wasm)?;
     let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 
     // --- Kernel instance (this thread owns it and the pump) -----------------
@@ -1959,14 +2185,15 @@ fn run_guest_inner(
     // pattern the foreign-prefixes block below uses.
     if let Some(base_image) = &options.base_image {
         let manifest_len = base_image.manifest.len() as u32;
-        let manifest_ptr = alloc_scratch.call(&mut kernel_store, manifest_len)?;
-        if manifest_ptr <= 0 {
-            anyhow::bail!(
-                "kernel_alloc_scratch({manifest_len}) for the base image manifest returned {manifest_ptr}"
-            );
-        }
-        unsafe { write_bytes(&kernel_mem, manifest_ptr as u32 as usize, &base_image.manifest) };
-        let loaded = rootfs_load_manifest.call(&mut kernel_store, (manifest_ptr, manifest_len))?;
+        let manifest = KernelScratch::allocate(
+            &alloc_scratch,
+            &mut kernel_store,
+            manifest_len,
+            "the base image manifest",
+        )?;
+        manifest.write(&kernel_mem, &base_image.manifest)?;
+        let loaded =
+            rootfs_load_manifest.call(&mut kernel_store, (manifest.ptr(), manifest.capacity()))?;
         if loaded < 0 {
             // Malformed manifest: leave `/` empty (the N1-I1a default) rather
             // than proceed with a partial tree — a truthful failure, mirroring
@@ -2004,15 +2231,15 @@ fn run_guest_inner(
             prefixes.extend_from_slice(normalize_mount_point(&mount.mount_point).as_bytes());
             prefixes.push(0);
         }
-        let prefixes_ptr = alloc_scratch.call(&mut kernel_store, prefixes.len() as u32)?;
-        if prefixes_ptr <= 0 {
-            anyhow::bail!(
-                "kernel_alloc_scratch({}) for foreign prefixes returned {prefixes_ptr}",
-                prefixes.len()
-            );
-        }
-        unsafe { write_bytes(&kernel_mem, prefixes_ptr as u32 as usize, &prefixes) };
-        let n = set_foreign_prefixes.call(&mut kernel_store, (prefixes_ptr, prefixes.len() as u32))?;
+        let prefix_scratch = KernelScratch::allocate(
+            &alloc_scratch,
+            &mut kernel_store,
+            prefixes.len() as u32,
+            "foreign prefixes",
+        )?;
+        prefix_scratch.write(&kernel_mem, &prefixes)?;
+        let n = set_foreign_prefixes
+            .call(&mut kernel_store, (prefix_scratch.ptr(), prefix_scratch.capacity()))?;
         if n < 0 {
             anyhow::bail!("kernel_rootfs_set_foreign_prefixes failed: {n}");
         }
@@ -2034,16 +2261,15 @@ fn run_guest_inner(
         // than a mount that silently resolves somewhere else.
         let roots = fs.foreign_mount_root_records();
         if !roots.is_empty() {
-            let roots_ptr = alloc_scratch.call(&mut kernel_store, roots.len() as u32)?;
-            if roots_ptr <= 0 {
-                anyhow::bail!(
-                    "kernel_alloc_scratch({}) for foreign mount roots returned {roots_ptr}",
-                    roots.len()
-                );
-            }
-            unsafe { write_bytes(&kernel_mem, roots_ptr as u32 as usize, &roots) };
-            let attached =
-                set_foreign_mount_roots.call(&mut kernel_store, (roots_ptr, roots.len() as u32))?;
+            let root_scratch = KernelScratch::allocate(
+                &alloc_scratch,
+                &mut kernel_store,
+                roots.len() as u32,
+                "foreign mount roots",
+            )?;
+            root_scratch.write(&kernel_mem, &roots)?;
+            let attached = set_foreign_mount_roots
+                .call(&mut kernel_store, (root_scratch.ptr(), root_scratch.capacity()))?;
             let expected = fs.mounts.iter().filter(|m| m.root_handle.is_some()).count() as i32;
             if attached != expected {
                 // A record that matched no registered prefix means the two
@@ -2392,6 +2618,589 @@ mod proc_bytes_tests {
         assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 4), 0);
         assert_eq!(proc_copy_out(&kernel, 4096, &guest, last4, 5), -14);
     }
+
+    /// L-D1, stated as the case a bounds check cannot see.
+    ///
+    /// The pointer here is genuinely inside kernel memory and the write is
+    /// genuinely inside kernel memory — every range check passes. What is
+    /// false is that the allocator gave this caller that many bytes, and that
+    /// fact lives beside the pointer or nowhere. Before `KernelScratch` this
+    /// host wrote through a bare `copy_nonoverlapping` after a `ptr > 0`
+    /// check, so this write landed silently on whatever the allocator had
+    /// already promised to the next caller.
+    #[test]
+    fn a_write_longer_than_the_capacity_the_allocator_gave_is_refused() {
+        let (_engine, _guest, kernel) = mems();
+        let scratch = KernelScratch {
+            ptr: 4096,
+            capacity: 8,
+        };
+
+        // In bounds and within capacity: written.
+        scratch
+            .write(&kernel, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .expect("a write that fits the capacity is allowed");
+        assert_eq!(
+            unsafe { read_bytes(&kernel, 4096, 8) },
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+        );
+
+        // One byte more. Still far inside a 64 KiB memory, so no bounds check
+        // can object — only the capacity can.
+        let error = scratch
+            .write(&kernel, &[9; 9])
+            .expect_err("a write past the allocated capacity must be refused");
+        assert!(
+            error.to_string().contains("exceeds the 8 bytes"),
+            "refusal should name the capacity, said: {error}",
+        );
+        assert_eq!(
+            unsafe { read_bytes(&kernel, 4096, 9) },
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 0],
+            "the refused write must not have touched memory",
+        );
+    }
+
+    /// This host places control memory above the program's OWN heap base.
+    ///
+    /// Not a restatement of `compute_layout`'s corpus, which checks the
+    /// rule. This checks that THIS HOST reaches it with the program's
+    /// `__heap_base` rather than with the fixed fallback — which is what it
+    /// used to do, and what no other test here can see: **not one of the 42
+    /// fixtures in `crates/host-native/fixtures/` exports `__heap_base`**, so
+    /// every integration test takes the `None` branch and lands on the same
+    /// 16 MiB fallback the old code produced. They prove nothing broke; they
+    /// cannot prove anything changed.
+    ///
+    /// The 32 MiB case is the one that mattered: with the fallback, control
+    /// memory landed at page 256 — INSIDE the static data of a program whose
+    /// own heap starts at page 512.
+    #[test]
+    fn a_guests_own_heap_base_decides_where_control_memory_goes() {
+        let guest = |heap_base: u32, pages: u32| {
+            wat::parse_str(&format!(
+                "(module (import \"env\" \"memory\" (memory {pages})) \
+                 (global (export \"__heap_base\") i32 (i32.const {heap_base})))"
+            ))
+            .expect("valid wat")
+        };
+
+        // 32 MiB is page 512, so the channel lands on page 513.
+        let high = guest(32 * 1024 * 1024, 1);
+        let layout = ProcessLayout::compute(1, &high).expect("places a layout");
+        assert_eq!(layout.channel_offset, 513 * 65536);
+        assert_eq!(layout.brk_base, 515 * 65536);
+        assert!(
+            layout.channel_offset > 32 * 1024 * 1024,
+            "the channel must sit ABOVE the guest's own static data, not at \
+             the 16 MiB fallback this host used to assume",
+        );
+
+        // Below the fallback, the heap base still decides.
+        let low = guest(2 * 1024 * 1024, 1);
+        let layout = ProcessLayout::compute(1, &low).expect("places a layout");
+        assert_eq!(layout.channel_offset, 33 * 65536);
+
+        // And with no `__heap_base` at all, the fallback — the shape every
+        // fixture in this crate has.
+        let none = wat::parse_str(r#"(module (import "env" "memory" (memory 1)))"#)
+            .expect("valid wat");
+        let layout = ProcessLayout::compute(1, &none).expect("places a layout");
+        assert_eq!(layout.channel_offset, 257 * 65536);
+    }
+    /// Nothing in this host may reach the scratch allocator except through
+    /// [`KernelScratch`].
+    ///
+    /// The type only carries capacity beside pointer for callers that USE
+    /// it. A site calling `kernel_alloc_scratch` directly gets a bare `i32`
+    /// back and then restates the length when it hands the region to a
+    /// kernel export — which is where the two can disagree, and which is how
+    /// this host looked before L5. Three sites were still doing exactly that
+    /// after the first pass: the two exec-target read chunks and the shebang
+    /// record buffer, each passing a hand-written constant beside a pointer.
+    ///
+    /// A source check rather than a type-level one because the allocator is
+    /// a plain `TypedFunc` the host receives from the kernel instance, so
+    /// there is nowhere to hang a private constructor.
+    /// `crates/kernel/src/wasm_api.rs` is guarded the same way, by
+    /// `host/test/kernel-scratch-contract.test.ts`.
+    #[test]
+    fn the_scratch_allocator_is_reached_only_through_the_capacity_type() {
+        let source = include_str!("guest.rs");
+        // Assembled rather than written, because this file is its own
+        // input: a literal needle would count ITSELF. The first run said
+        // "found 4" for two real call sites plus the two literals in this
+        // test, which is a guard reporting a violation it invented.
+        let needle = concat!("alloc_scratch", ".call(");
+        // CODE lines only. Assembling the needle stops it matching itself,
+        // but it does not stop a COMMENT from matching -- and this check
+        // failed exactly that way while the escape rule below was being
+        // added, because the explanation quoted the call it was about. A
+        // guard that a comment can break teaches people not to explain
+        // things near it.
+        let calls = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .count();
+        assert_eq!(
+            calls, 2,
+            "every kernel_alloc_scratch call must go through KernelScratch, \
+             whose two constructors are its only permitted callers; found {calls}",
+        );
+
+        // The count above is of a SPELLING, and `cargo xtask perturb` walked
+        // past it: `let sneaky = &alloc_scratch; sneaky.call(..)` allocates
+        // bare and never writes the counted text. So the handle must also
+        // never escape to another name -- that is the invariant, and the
+        // call count is only its most visible consequence.
+        let binding = concat!("alloc_", "scratch");
+        let mut escapes = Vec::new();
+        for (number, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || !trimmed.contains(binding) {
+                continue;
+            }
+            // Binding the HANDLE, not the result of calling it. The first
+            // version flagged `let ptr = alloc_scratch.call(..)` inside the
+            // two constructors -- which is the allocation, the thing this
+            // type exists to do -- so the rule is the right-hand side being
+            // the bare identifier rather than any mention of it.
+            let Some(rest) = trimmed.strip_prefix("let ") else { continue };
+            let Some((_, value)) = rest.split_once('=') else { continue };
+            let value = value.trim().trim_end_matches(';').trim();
+            let value = value.trim_start_matches('&').trim_start_matches('*');
+            if value == binding {
+                escapes.push(format!("guest.rs:{}: {}", number + 1, trimmed));
+            }
+        }
+        assert!(
+            escapes.is_empty(),
+            "the scratch allocator was bound to another name, which reaches \
+             it without writing the text this check counts: {escapes:?}. \
+             Allocate through KernelScratch instead.",
+        );
+
+        // ...and both of them ARE those constructors, so the count cannot be
+        // satisfied by two fresh bare call sites while the type goes unused.
+        for constructor in ["fn allocate(", "fn allocate_or_none("] {
+            let start = source.find(constructor).unwrap_or_else(|| {
+                panic!("{constructor} is gone; this check no longer means anything")
+            });
+            let body = &source[start..];
+            let end = body.find("\n    }\n").expect("constructor body ends");
+            assert!(
+                body[..end].contains(needle),
+                "{constructor} no longer allocates; the count is measuring something else",
+            );
+        }
+    }
+    /// The kernel's host imports may not write through a raw pointer at all.
+    ///
+    /// L-D3 was sixteen sites writing at an address the kernel handed in, with
+    /// no range proof. One of them crashed the process with SIGBUS when its
+    /// proof was removed. They are all proven now, through [`KernelLent`] --
+    /// the inbound mirror of [`KernelScratch`], and the Rust counterpart of
+    /// `#rustLentKernelDestination` in `host/src/kernel.ts`.
+    ///
+    /// So the invariant is no longer a count. It is that `write_bytes` does
+    /// not appear in this function: every write goes through a region that
+    /// was proven at the boundary, and a raw one is the thing being
+    /// prevented. That took three tries to state, and the first two are worth
+    /// keeping because they are the same mistake twice:
+    ///
+    ///   * counting addresses whose NAME looked like a pointer -- which
+    ///     `host_readdir` already evaded with `let dp = dirent_ptr as ...`;
+    ///   * counting writes minus proofs -- which went quietly wrong the
+    ///     moment a proof was spelled `KernelLent::prove` instead of
+    ///     `checked_shared_range`, and which assumed every proof in this
+    ///     function belonged to a write in it.
+    ///
+    /// Zero is not a proxy for the invariant. It is the invariant.
+    #[test]
+    fn the_kernel_host_imports_never_write_through_a_raw_pointer() {
+        let source = include_str!("guest.rs");
+        // Assembled, and CODE lines only: a comment mentioning the call must
+        // not be able to fail this, which is a mistake this file has already
+        // made once.
+        let marker = concat!("fn define_kernel_", "host_imports(");
+        let needle = concat!("write_", "bytes(");
+
+        let start = source.find(marker).unwrap_or_else(|| {
+            panic!("{marker} is gone; this check no longer measures anything")
+        });
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("the import function ends");
+        let body = &body[..end];
+
+        let raw: Vec<&str> = body
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .filter(|line| line.contains(needle))
+            .collect();
+
+        assert!(
+            raw.is_empty(),
+            "a kernel host import writes through a raw pointer: {raw:?}. The \
+             kernel names a buffer and its capacity; prove the pair with \
+             KernelLent (or write_lent) and answer -EFAULT when it does not \
+             map. That is what the JavaScript host does for the same import.",
+        );
+
+        // ...and the body is really this function's, not an empty slice: a
+        // marker that matched a comment would make the check above vacuous.
+        assert!(
+            body.len() > 10_000,
+            "the scanned import body is {} bytes, which is too small to be \
+             this function -- the scan is broken, not the host clean",
+            body.len(),
+        );
+    }
+
+    /// The channel status words really are pinned against the header.
+    ///
+    /// Their comment says they are "pinned here against that generated
+    /// header" -- `WASM_POSIX_CHANNEL_STATUS_*` in
+    /// `libc/glue/abi_constants.h`, which the guest glue writes and reads.
+    /// Nothing pinned them. The comment described an intention in the
+    /// present tense, which is the same thing as a citation that has rotted:
+    /// a reader checking this host against its own comment would find them
+    /// agreeing and learn nothing.
+    ///
+    /// These cannot be asked of `wasm_posix_shared` -- it does not declare
+    /// them, because only the host and the guest glue touch the status word.
+    /// The header is the single source, so the test reads it.
+    #[test]
+    fn the_channel_status_words_match_the_generated_header() {
+        let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../libc/glue/abi_constants.h");
+        let text = std::fs::read_to_string(&header).unwrap_or_else(|error| {
+            panic!(
+                "{}: {error}. These constants mirror that header and have no \
+                 other source; if it moved, this host's status words are \
+                 unanchored.",
+                header.display(),
+            )
+        });
+
+        for (name, expected) in [
+            ("WASM_POSIX_CHANNEL_STATUS_IDLE", STATUS_IDLE),
+            ("WASM_POSIX_CHANNEL_STATUS_PENDING", STATUS_PENDING),
+            ("WASM_POSIX_CHANNEL_STATUS_COMPLETE", STATUS_COMPLETE),
+        ] {
+            let needle = format!("#define {name} ");
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(&needle))
+                .unwrap_or_else(|| panic!("{name} is gone from the header"));
+            let value: u32 = line[needle.len()..]
+                .trim()
+                .trim_end_matches('u')
+                .parse()
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                value, expected,
+                "{name} is {value} in the header and {expected} here",
+            );
+        }
+    }
+
+    /// The three record sizes still equal what they were written as.
+    ///
+    /// They are asked of `crates/shared` now instead of written down, which
+    /// removes a transcription -- but it also changes WHERE they come from,
+    /// and a change that silently altered one would be a worse bug than the
+    /// duplication it removed. The old values are pinned here so the switch
+    /// is provably behaviour-preserving.
+    ///
+    /// If a field is added to one of those structs this test fails, which is
+    /// the right moment to look: the number moving is correct, and everything
+    /// reading that record on the other side of the ABI has to move with it.
+    #[test]
+    fn the_shared_record_sizes_are_what_this_host_used_to_hardcode() {
+        assert_eq!(WASM_STAT_SIZE, 88, "WasmStat");
+        assert_eq!(WASM_STATFS_SIZE, 72, "WasmStatfs");
+        assert_eq!(WASM_DIRENT_SIZE, 16, "WasmDirent");
+
+        // The dirent type values moved the same way, for the same reason.
+        assert_eq!((DT_UNKNOWN, DT_DIR, DT_REG, DT_LNK), (0, 4, 8, 10));
+
+        // ...and the host's own serializers still fill exactly one record,
+        // which is what makes the capacity above the right one to prove.
+        assert_eq!(
+            core::mem::size_of::<wasm_posix_shared::WasmDirent>(),
+            8 + 4 + 4,
+            "d_ino + d_type + d_namlen, with no padding a repr(C) struct \
+             would have to explain",
+        );
+    }
+
+    /// The inbound half of the capacity invariant, which a bounds check
+    /// cannot supply.
+    ///
+    /// [`KernelLent`] exists so a write is bounded by what the kernel LENT,
+    /// not by what the memory happens to hold. The distinction is the whole
+    /// of L-D1 and L-D3: an address being inside the memory proves the host
+    /// can reach those bytes, never that this caller was given them.
+    ///
+    /// The sibling for the outbound direction is
+    /// `a_region_that_does_not_fit_kernel_memory_is_refused_even_for_a_short_write`.
+    #[test]
+    fn a_lent_region_bounds_a_write_by_the_capacity_not_by_the_memory() {
+        let (_engine, _guest, kernel) = mems();
+
+        // A pair that does not fit the memory is refused outright, so no
+        // caller ever holds a region it cannot write.
+        assert!(
+            KernelLent::prove(&kernel, (PAGE - 4) as u64, 64).is_none(),
+            "a region running past the end of kernel memory must not prove",
+        );
+        assert!(
+            KernelLent::prove(&kernel, 0, 8).is_none(),
+            "a null pointer is a failed allocation, not an address",
+        );
+
+        // A pair that fits proves, and an honest write lands.
+        let lent = KernelLent::prove(&kernel, 4096, 8).expect("8 bytes at 4096 fit");
+        assert!(lent.write(&kernel, &[1, 2, 3, 4]).is_ok());
+        assert_eq!(unsafe { read_bytes(&kernel, 4096, 4) }, vec![1, 2, 3, 4]);
+
+        // ...and the capacity still binds, even though the memory has room
+        // for the longer write. This is the case a bounds check passes and
+        // the invariant refuses.
+        assert_eq!(
+            lent.write(&kernel, &[0u8; 9]),
+            Err(-libc_errno::EFAULT),
+            "nine bytes into an eight-byte lend must be refused, though the \
+             memory would have taken them",
+        );
+    }
+
+    /// A launch entry is refused at a pointer past the end of the memory,
+    /// with the errno the TypeScript host gives.
+    ///
+    /// `copy_launch_entry`'s own doc comment says it mirrors `copyEntry` in
+    /// `host/src/worker-main.ts`, and it reproduced that contract's every
+    /// errno -- EINVAL for a bad index, the zero-capacity length query,
+    /// ERANGE for a capacity below the entry, EFAULT for a null destination.
+    /// What it did not reproduce was the step that is not an errno: the TS
+    /// version proves the range before copying and converts a refusal into
+    /// EFAULT. Without that, a `buf_ptr` inside wasm32 but past the end of
+    /// this memory reached `copy_nonoverlapping`.
+    ///
+    /// This is the transcription argument at its sharpest: the comment names
+    /// the source, the visible contract came across intact, and the
+    /// guarantee that was implicit in the source host went missing.
+    /// A guest that declares a DIFFERENT ABI epoch is refused; one that
+    /// declares NONE is not.
+    ///
+    /// Built from synthetic bytes rather than a fixture on purpose. Every
+    /// committed fixture declares 44, so a mutation that weakens
+    /// `guest_module_for_this_epoch` would SURVIVE a run over the corpus --
+    /// the guard would be one no test could fail. These bytes are the two
+    /// cases the corpus cannot supply.
+    fn wasm_declaring(name: &[u8; 13], epoch: u8) -> Vec<u8> {
+        let mut m: Vec<u8> = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+        m.extend_from_slice(&[0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f]); // () -> i32
+        m.extend_from_slice(&[0x03, 0x02, 0x01, 0x00]); // one func, type 0
+        m.extend_from_slice(&[0x07, 0x11, 0x01, 0x0d]); // export section, one name of 13
+        m.extend_from_slice(name);
+        m.extend_from_slice(&[0x00, 0x00]); // kind func, index 0
+        m.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, epoch, 0x0b]); // i32.const
+        m
+    }
+
+    #[test]
+    fn a_guest_from_another_abi_epoch_is_refused_and_a_pre_marker_one_is_not() {
+        let engine = Engine::default();
+        let expected = crate::EXPECTED_ABI_VERSION as u8;
+
+        let current = wasm_declaring(b"__abi_version", expected);
+        assert_eq!(
+            wasm_artifact::read_abi_version(&current),
+            Some(crate::EXPECTED_ABI_VERSION),
+            "the synthetic module must actually declare the epoch, or this test \
+             proves nothing about either case below",
+        );
+        assert!(
+            guest_module_for_this_epoch(&engine, &current).is_ok(),
+            "a guest declaring THIS host's epoch must run",
+        );
+
+        let stale = wasm_declaring(b"__abi_version", expected - 1);
+        let err = guest_module_for_this_epoch(&engine, &stale)
+            .expect_err("a guest declaring a different epoch must be refused");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("declares ABI") && rendered.contains("rebuild it"),
+            "the refusal must name the epoch and say what to do, got: {rendered}",
+        );
+
+        // The peer host lets a binary predating the marker through, because
+        // that is a different fact from being stale. Same name length, so the
+        // module's section sizes are unchanged and only the NAME differs.
+        let unmarked = wasm_declaring(b"__abi_versioX", expected - 1);
+        assert_eq!(
+            wasm_artifact::read_abi_version(&unmarked),
+            None,
+            "the unmarked module must genuinely carry no marker",
+        );
+        assert!(
+            guest_module_for_this_epoch(&engine, &unmarked).is_ok(),
+            "a guest declaring NO epoch must still run, as host/src/\
+             process-lifecycle.ts allows",
+        );
+    }
+
+    #[test]
+    fn a_launch_entry_past_the_end_of_memory_is_efault_not_a_raw_copy() {
+        let (_engine, guest, _kernel) = mems();
+        let entries = vec![b"PATH=/usr/bin".to_vec()];
+        let len = entries[0].len() as u32;
+
+        // In bounds: the copy happens and the length comes back.
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 256, len), len as i32);
+        assert_eq!(unsafe { read_bytes(&guest, 256, len as usize) }, entries[0]);
+
+        // One page memory, so this address is a legal wasm32 pointer that
+        // this memory does not own. The engine would refuse it in the
+        // JavaScript host; here only the rule does.
+        assert_eq!(
+            copy_launch_entry(&guest, &entries, 0, PAGE as u64, len),
+            -libc_errno::EFAULT,
+        );
+
+        // Straddling the end is refused too, which a "pointer < length"
+        // check would have allowed.
+        assert_eq!(
+            copy_launch_entry(&guest, &entries, 0, (PAGE - 4) as u64, len),
+            -libc_errno::EFAULT,
+        );
+
+        // The errnos that were already right stay right.
+        assert_eq!(copy_launch_entry(&guest, &entries, 7, 256, len), -libc_errno::EINVAL);
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 256, 0), len as i32);
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 256, len - 1), -libc_errno::ERANGE);
+        assert_eq!(copy_launch_entry(&guest, &entries, 0, 0, len), -libc_errno::EFAULT);
+    }
+
+    /// A scratch pointer may not travel to a kernel export without the
+    /// capacity of the SAME region beside it.
+    ///
+    /// The sibling check above guarantees every allocation goes through
+    /// [`KernelScratch`], and the type guarantees a write cannot exceed what
+    /// the allocator gave. Neither covers the length a call site hands to a
+    /// kernel export beside the pointer, which is the third place the two can
+    /// disagree — and where this host was still restating lengths after L5's
+    /// first pass.
+    ///
+    /// Writing this check is what found the last one. A site that binds the
+    /// pointer to a local first (`let s = region.<pointer>() as u32 as usize`)
+    /// reads like a base address for manual indexing, and was classified as
+    /// one; it then passed the BLOB's length where
+    /// `kernel_spawn_blob_decode` declares `buf_capacity`, so the kernel's own
+    /// `blob_len > buf_capacity` refusal was fed the same number twice and
+    /// could never fire. Hazard H-2 on the far side of the ABI, created by a
+    /// restated length on this one.
+    ///
+    /// Two exemptions, both genuine base addresses: the syscall channel's
+    /// base, stored on `GuestProcess` and indexed against
+    /// `MIN_CHANNEL_SIZE` for the life of the process. An exemption list
+    /// that grows silently is how a guard stops meaning anything, so the
+    /// count is pinned.
+    #[test]
+    fn a_scratch_pointer_never_travels_without_its_own_capacity() {
+        let source = include_str!("guest.rs");
+        // Assembled, like the sibling check: a literal needle would match
+        // inside this test and report violations it invented.
+        let pointer = concat!(".p", "tr()");
+        let capacity = concat!(".cap", "acity()");
+
+        let mut paired = 0usize;
+        let mut exempt = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+
+        let mut at = 0usize;
+        while let Some(found) = source[at..].find(pointer) {
+            let idx = at + found;
+            at = idx + pointer.len();
+
+            // The receiver is the identifier immediately before the call.
+            // An empty one means prose or a doc comment, not code.
+            let head = &source[..idx];
+            let region: String = head
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if region.is_empty() {
+                continue;
+            }
+
+            // The statement this use sits in, and the one after it: a site
+            // may bind the pointer to a local and pass it on the next line.
+            let rest = &source[at..];
+            let stmt_end = rest.find(';').map(|i| i + 1).unwrap_or(rest.len());
+            let stmt = &rest[..stmt_end];
+            let tail = &rest[stmt_end..];
+            let next_end = tail.find(';').map(|i| i + 1).unwrap_or(tail.len());
+            let window = format!("{stmt}{}", &tail[..next_end]);
+            let needle = format!("{region}{capacity}");
+
+            if window.contains(&needle) {
+                paired += 1;
+            } else if stmt.trim_start().starts_with("as u32 as usize;") {
+                // A base address kept for manual indexing. Named, counted,
+                // and capped below — never a silent fallthrough.
+                exempt += 1;
+            } else {
+                let line = source[..idx].lines().count();
+                offenders.push(format!("{region} at guest.rs:{line}"));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "a scratch pointer reached a call without its own region's \
+             capacity beside it: {offenders:?}. Ask the region, do not \
+             restate the length — they are the two that can disagree.",
+        );
+        assert_eq!(
+            exempt, 2,
+            "exactly two scratch pointers are base addresses (the syscall \
+             channel, per process); found {exempt}. A new one is not \
+             automatically wrong, but it must be read and this count moved \
+             deliberately, never to make the check pass.",
+        );
+        assert!(
+            paired >= 9,
+            "only {paired} pointer/capacity pairs found; this check reads \
+             its own file, so a collapse to zero means the scan broke, not \
+             that the host got cleaner. Raise this floor when sites are \
+             added, never lower it to make a run pass.",
+        );
+    }
+    /// The other half: a capacity that does not fit the memory at all is
+    /// refused even when the bytes being written would have.
+    #[test]
+    fn a_region_that_does_not_fit_kernel_memory_is_refused_even_for_a_short_write() {
+        let (_engine, _guest, kernel) = mems();
+        let scratch = KernelScratch {
+            ptr: (PAGE - 4) as i32,
+            capacity: 64,
+        };
+        let error = scratch
+            .write(&kernel, &[1, 2])
+            .expect_err("a region past the end of memory must be refused");
+        assert!(
+            error.to_string().contains("not inside kernel memory"),
+            "refusal should name the memory, said: {error}",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2706,9 +3515,20 @@ fn define_kernel_host_imports(
             "host_clock_gettime",
             move |_c: Caller<'_, ()>, _clock_id: i32, sec_ptr: i32, nsec_ptr: i32| -> i32 {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-                unsafe {
-                    write_bytes(&mem, sec_ptr as u32 as usize, &(now.as_secs() as i64).to_le_bytes());
-                    write_bytes(&mem, nsec_ptr as u32 as usize, &(now.subsec_nanos() as i64).to_le_bytes());
+                // Two separate lends: the kernel names two independent
+                // 8-byte slots, and proving one says nothing about the other.
+                if let Err(errno) =
+                    write_lent(&mem, sec_ptr as u32 as u64, 8, &(now.as_secs() as i64).to_le_bytes())
+                {
+                    return errno;
+                }
+                if let Err(errno) = write_lent(
+                    &mem,
+                    nsec_ptr as u32 as u64,
+                    8,
+                    &(now.subsec_nanos() as i64).to_le_bytes(),
+                ) {
+                    return errno;
                 }
                 0
             },
@@ -2758,10 +3578,15 @@ fn define_kernel_host_imports(
                         1 => -libc_errno::EAGAIN, // not ready yet: block
                         2 => {
                             let n = HOST_STDIN_LINE.len().min(len as usize);
-                            unsafe {
-                                write_bytes(&mem, buf_ptr as u32 as usize, &HOST_STDIN_LINE[..n])
-                            };
-                            n as i32
+                            match write_lent(
+                                &mem,
+                                buf_ptr as u32 as u64,
+                                len as u32,
+                                &HOST_STDIN_LINE[..n],
+                            ) {
+                                Ok(()) => n as i32,
+                                Err(errno) => errno,
+                            }
                         }
                         _ => 0, // EOF
                     };
@@ -2775,8 +3600,10 @@ fn define_kernel_host_imports(
                 });
                 match read {
                     Ok(n) => {
-                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &tmp[..n]) };
-                        n as i32
+                        match write_lent(&mem, buf_ptr as u32 as u64, len as u32, &tmp[..n]) {
+                            Ok(()) => n as i32,
+                            Err(errno) => errno,
+                        }
                     }
                     Err(errno) => -errno,
                 }
@@ -2904,14 +3731,17 @@ fn define_kernel_host_imports(
                     });
                     match meta {
                         Ok(m) => {
-                            unsafe {
-                                write_wasm_stat_from_cap_metadata(
-                                    &mem,
-                                    stat_ptr as u32 as usize,
-                                    &m,
-                                )
+                            let Some(dest) = KernelLent::prove(
+                                &mem,
+                                stat_ptr as u32 as u64,
+                                WASM_STAT_SIZE as u32,
+                            ) else {
+                                return -libc_errno::EFAULT;
                             };
-                            0
+                            match write_wasm_stat_from_cap_metadata(&mem, dest, &m) {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -2945,8 +3775,10 @@ fn define_kernel_host_imports(
                         file.read_at(&mut tmp, offset).map_err(|e| errno_from_io(&e))
                     }) {
                         Ok(n) => {
-                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &tmp[..n]) };
-                            n as i32
+                            match write_lent(&mem, buf_ptr as u32 as u64, len as u32, &tmp[..n]) {
+                                Ok(()) => n as i32,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3027,20 +3859,26 @@ fn define_kernel_host_imports(
                 "host_fstat",
                 move |_c: Caller<'_, ()>, handle: i64, stat_ptr: i32| -> i32 {
                     let objects = fs.objects.lock().unwrap();
-                    let stat_ptr = stat_ptr as u32 as usize;
+                    // L-D3: the kernel's `stat_ptr` is proven once, here, and
+                    // travels as a region rather than as an address.
+                    let Some(dest) =
+                        KernelLent::prove(&mem, stat_ptr as u32 as u64, WASM_STAT_SIZE as u32)
+                    else {
+                        return -libc_errno::EFAULT;
+                    };
                     match objects.get(&handle) {
                         Some(HostObject::File(file)) => match file.metadata() {
-                            Ok(m) => {
-                                unsafe { write_wasm_stat_from_metadata(&mem, stat_ptr, &m) };
-                                0
-                            }
+                            Ok(m) => match write_wasm_stat_from_metadata(&mem, dest, &m) {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            },
                             Err(e) => -errno_from_io(&e),
                         },
                         Some(HostObject::Dir(dh)) => match dh.dir.dir_metadata() {
-                            Ok(m) => {
-                                unsafe { write_wasm_stat_from_cap_metadata(&mem, stat_ptr, &m) };
-                                0
-                            }
+                            Ok(m) => match write_wasm_stat_from_cap_metadata(&mem, dest, &m) {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            },
                             Err(e) => -errno_from_io(&e),
                         },
                         None => -libc_errno::EBADF,
@@ -3330,8 +4168,15 @@ fn define_kernel_host_imports(
                         Ok(target) => {
                             let bytes = target.into_os_string().into_encoded_bytes();
                             let n = bytes.len().min(buf_len as usize);
-                            unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &bytes[..n]) };
-                            n as i32
+                            match write_lent(
+                                &mem,
+                                buf_ptr as u32 as u64,
+                                buf_len as u32,
+                                &bytes[..n],
+                            ) {
+                                Ok(()) => n as i32,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3479,8 +4324,17 @@ fn define_kernel_host_imports(
                         .with_fd(handle, |fd| rustix::fs::fstatvfs(fd).map_err(errno_from_rustix))
                     {
                         Ok(vfs) => {
-                            unsafe { write_wasm_statfs(&mem, statfs_ptr as u32 as usize, &vfs) };
-                            0
+                            let Some(dest) = KernelLent::prove(
+                                &mem,
+                                statfs_ptr as u32 as u64,
+                                WASM_STATFS_SIZE as u32,
+                            ) else {
+                                return -libc_errno::EFAULT;
+                            };
+                            match write_wasm_statfs(&mem, dest, &vfs) {
+                                Ok(()) => 0,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3512,9 +4366,14 @@ fn define_kernel_host_imports(
                     });
                     match result {
                         Ok(value) => {
-                            unsafe {
-                                write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes())
-                            };
+                            if let Err(errno) = write_lent(
+                                &mem,
+                                value_ptr as u32 as u64,
+                                8,
+                                &value.to_le_bytes(),
+                            ) {
+                                return errno;
+                            }
                             0
                         }
                         Err(errno) => -errno,
@@ -3598,18 +4457,36 @@ fn define_kernel_host_imports(
                     match entry {
                         Ok(None) => 0, // end of directory
                         Ok(Some(entry)) => {
-                            unsafe {
-                                let dp = dirent_ptr as u32 as usize;
-                                write_bytes(&mem, dp, &entry.ino.to_le_bytes());
-                                write_bytes(&mem, dp + 8, &entry.d_type.to_le_bytes());
-                                write_bytes(
+                            // Two lends, because the kernel names two buffers:
+                            // a 16-byte dirent record and a separate name
+                            // buffer whose capacity it already told us
+                            // (`name_len`, checked above for the CONTENT but
+                            // never for the ADDRESS until now).
+                            let mut record = [0u8; WASM_DIRENT_SIZE];
+                            record[..8].copy_from_slice(&entry.ino.to_le_bytes());
+                            record[8..12].copy_from_slice(&entry.d_type.to_le_bytes());
+                            record[12..].copy_from_slice(
+                                &(entry.name.len() as u32).to_le_bytes(),
+                            );
+                            if let Err(errno) =
+                                write_lent(
                                     &mem,
-                                    dp + 12,
-                                    &(entry.name.len() as u32).to_le_bytes(),
-                                );
-                                write_bytes(&mem, name_ptr as u32 as usize, &entry.name);
+                                    dirent_ptr as u32 as u64,
+                                    WASM_DIRENT_SIZE as u32,
+                                    &record,
+                                )
+                            {
+                                return errno;
                             }
-                            1
+                            match write_lent(
+                                &mem,
+                                name_ptr as u32 as u64,
+                                name_len as u32,
+                                &entry.name,
+                            ) {
+                                Ok(()) => 1,
+                                Err(errno) => errno,
+                            }
                         }
                         Err(errno) => -errno,
                     }
@@ -3667,8 +4544,10 @@ fn define_kernel_host_imports(
                 }
                 let remaining = &bytes[offset..];
                 let n = remaining.len().min(buf_len as usize);
-                unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &remaining[..n]) };
-                n as i32
+                match write_lent(&mem, buf_ptr as u32 as u64, buf_len as u32, &remaining[..n]) {
+                    Ok(()) => n as i32,
+                    Err(errno) => errno,
+                }
             },
         )?;
     }
@@ -3685,8 +4564,10 @@ fn define_kernel_host_imports(
                 let mut buf = vec![0u8; len as usize];
                 match File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)) {
                     Ok(()) => {
-                        unsafe { write_bytes(&mem, buf_ptr as u32 as usize, &buf) };
-                        len
+                        match write_lent(&mem, buf_ptr as u32 as u64, len as u32, &buf) {
+                            Ok(()) => len,
+                            Err(errno) => errno,
+                        }
                     }
                     Err(_) => -(libc_errno::EIO),
                 }
@@ -3781,9 +4662,17 @@ fn define_kernel_host_imports(
                 parent_of.remove(&child_pid);
                 drop(guard);
                 if status_ptr != 0 {
-                    unsafe {
-                        write_bytes(&kernel_mem, status_ptr as u32 as usize, &status_word.to_le_bytes())
-                    };
+                    // The reaping already happened above, so a bad status
+                    // pointer cannot un-reap the child: report EFAULT and let
+                    // the caller see the loss, rather than write through it.
+                    if let Err(errno) = write_lent(
+                        &kernel_mem,
+                        status_ptr as u32 as u64,
+                        4,
+                        &status_word.to_le_bytes(),
+                    ) {
+                        return errno;
+                    }
                 }
                 child_pid as i32
             },
@@ -6224,11 +7113,13 @@ fn launch_process(
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
     replacing_exec_image: bool,
 ) -> anyhow::Result<GuestProcess> {
-    let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
-    if scratch_ptr <= 0 {
-        anyhow::bail!("kernel_alloc_scratch({MIN_CHANNEL_SIZE}) returned {scratch_ptr}");
-    }
-    let scratch_base = scratch_ptr as u32 as usize;
+    let scratch = KernelScratch::allocate(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        MIN_CHANNEL_SIZE as u32,
+        "the process syscall channel",
+    )?;
+    let scratch_base = scratch.ptr() as u32 as usize;
 
     // N1-I4 Task 2 concern 3: when this process will co-reside a fork-module
     // (`use_fork_module`), the kernel's OWN `max_addr` ceiling for `pid` must
@@ -6379,11 +7270,13 @@ fn launch_vfork_borrowed_child(
     fork_format: Option<Arc<GuestForkFormat>>,
     fork_proof_of_use: Arc<Mutex<ForkProofOfUse>>,
 ) -> anyhow::Result<GuestProcess> {
-    let scratch_ptr = alloc_scratch.call(&mut *kernel_store, MIN_CHANNEL_SIZE as u32)?;
-    if scratch_ptr <= 0 {
-        anyhow::bail!("kernel_alloc_scratch({MIN_CHANNEL_SIZE}) returned {scratch_ptr}");
-    }
-    let scratch_base = scratch_ptr as u32 as usize;
+    let scratch = KernelScratch::allocate(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        MIN_CHANNEL_SIZE as u32,
+        "the forked process syscall channel",
+    )?;
+    let scratch_base = scratch.ptr() as u32 as usize;
 
     for (name, val) in [
         // POSIX: the program's own concurrent-thread ceiling. This host used
@@ -11692,15 +12585,20 @@ fn handle_spawn(
     // kernel-owned range, never a raw guest address: the two engines run in
     // separate Wasmtime instances with separate memories (this file's module
     // doc comment).
-    let scratch = alloc_scratch.call(&mut *kernel_store, blob_len as u32)?;
-    if scratch <= 0 {
+    let Some(blob_scratch) =
+        KernelScratch::allocate_or_none(&*alloc_scratch, &mut *kernel_store, blob_len as u32)?
+    else {
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
-    }
-    let scratch = scratch as u32 as usize;
-
-    unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
-    let decoded_len =
-        spawn_blob_decode.call(&mut *kernel_store, (scratch as i32, blob_len as i32, blob_len as i32))?;
+    };
+    blob_scratch.write(kernel_mem, &blob_bytes)?;
+    let scratch = blob_scratch.ptr() as u32 as usize;
+    // Second argument is the REGION's capacity, not the blob's length: the
+    // kernel refuses `blob_len > buf_capacity`, and feeding it `blob_len`
+    // twice is what made that refusal unable to fire.
+    let decoded_len = spawn_blob_decode.call(
+        &mut *kernel_store,
+        (scratch as i32, blob_scratch.capacity() as i32, blob_len as i32),
+    )?;
     if decoded_len < 0 {
         return fail_spawn(&guest_mem, kernel_mem, ch, args, -decoded_len);
     }
@@ -11708,7 +12606,9 @@ fn handle_spawn(
 
     // `kernel_spawn_blob_decode` overwrote `scratch` in place; re-stage the
     // untouched RAW blob bytes before `kernel_spawn_process`'s own parse.
-    unsafe { write_bytes(kernel_mem, scratch, &blob_bytes) };
+    // Through the region, like the first staging above: a bare
+    // `write_bytes` here would be the same unchecked copy L-D1 filed.
+    blob_scratch.write(kernel_mem, &blob_bytes)?;
     let child_pid =
         spawn_process.call(&mut *kernel_store, (parent_pid, caller_tid, scratch as i32, blob_len as i32))?;
     if child_pid <= 0 {
@@ -11725,17 +12625,25 @@ fn handle_spawn(
     // kernel rejects it with ENOENT (`kernel_spawn_exec_target_prepare`,
     // wasm_api.rs:3073-3074), which is the correct posix_spawn failure.
     let resolve_bytes = path_str.as_bytes();
-    let path_scratch = alloc_scratch.call(&mut *kernel_store, resolve_bytes.len() as u32)?;
-    if path_scratch <= 0 {
+    let Some(path_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        resolve_bytes.len() as u32,
+    )?
+    else {
         rollback_spawned_child(kernel_store, remove_process, child_pid, "a scratch-allocation failure resolving the exec target");
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
-    }
-    let path_scratch = path_scratch as u32 as usize;
-    unsafe { write_bytes(kernel_mem, path_scratch, resolve_bytes) };
+    };
+    path_scratch.write(kernel_mem, resolve_bytes)?;
 
     let token = spawn_exec_target_prepare.call(
         &mut *kernel_store,
-        (parent_pid, child_pid, path_scratch as u32, resolve_bytes.len() as u32),
+        (
+            parent_pid,
+            child_pid,
+            path_scratch.ptr() as u32,
+            path_scratch.capacity(),
+        ),
     )?;
     if token < 0 {
         // Resolution failure (e.g. ENOENT/EACCES/ENOTDIR from the kernel's
@@ -11804,21 +12712,25 @@ fn handle_spawn(
     // `rollback_exec_target` (cancel THEN remove — N1-I3b Task 2's
     // target-retained branches), never the bare `rollback_spawned_child` the
     // earlier `prepare`-failure branch uses.
-    let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
-    if read_scratch <= 0 {
+    let Some(read_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        EXEC_TARGET_READ_CHUNK,
+    )?
+    else {
         rollback_exec_target(
             kernel_store, exec_target_cancel, remove_process, child_pid, token,
             "a scratch-allocation failure reading the exec target",
         );
         return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOMEM);
-    }
+    };
     let program_bytes = match read_exec_target_bytes(
         kernel_store,
         kernel_mem,
         exec_target_size,
         exec_target_read,
-        read_scratch as u32,
-        EXEC_TARGET_READ_CHUNK,
+        read_scratch.ptr() as u32,
+        read_scratch.capacity(),
         child_pid,
         token,
     )? {
@@ -11850,12 +12762,12 @@ fn handle_spawn(
     // `host/src/exec-target.ts:453`), not a host/kernel malfunction. The
     // target is still retained at this point (never committed), so cancel
     // it before reclaiming the child.
-    let child_module = match Module::new(engine, &program_bytes) {
+    let child_module = match guest_module_for_this_epoch(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
             rollback_exec_target(
                 kernel_store, exec_target_cancel, remove_process, child_pid, token,
-                "a Module::new compile failure (non-wasm exec target bytes)",
+                "a rejected exec target (a different ABI epoch, or non-wasm bytes)",
             );
             return fail_spawn(&guest_mem, kernel_mem, ch, args, libc_errno::ENOEXEC);
         }
@@ -12424,16 +13336,26 @@ fn handle_exec_common(
     // `handle_spawn`'s `resolve_bytes` staging — the two engines run in
     // separate Wasmtime instances with separate memories (this file's
     // module doc comment).
-    let path_scratch = alloc_scratch.call(&mut *kernel_store, path_bytes.len() as u32)?;
-    if path_scratch <= 0 {
+    let Some(path_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        path_bytes.len() as u32,
+    )?
+    else {
         return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOMEM).map(|()| None);
-    }
-    let path_scratch = path_scratch as u32 as usize;
-    unsafe { write_bytes(kernel_mem, path_scratch, &path_bytes) };
+    };
+    path_scratch.write(kernel_mem, &path_bytes)?;
 
     let token = exec_target_prepare.call(
         &mut *kernel_store,
-        (pid, caller_tid, dirfd, path_scratch as u32, path_bytes.len() as u32, flags),
+        (
+            pid,
+            caller_tid,
+            dirfd,
+            path_scratch.ptr() as u32,
+            path_scratch.capacity(),
+            flags,
+        ),
     )?;
     if token < 0 {
         // Case 1: no target was ever retained on a `prepare` failure, so
@@ -12480,18 +13402,22 @@ fn handle_exec_common(
         }
     };
 
-    let read_scratch = alloc_scratch.call(&mut *kernel_store, EXEC_TARGET_READ_CHUNK)?;
-    if read_scratch <= 0 {
+    let Some(read_scratch) = KernelScratch::allocate_or_none(
+        &*alloc_scratch,
+        &mut *kernel_store,
+        EXEC_TARGET_READ_CHUNK,
+    )?
+    else {
         cancel_exec_target(kernel_store, exec_target_cancel, pid, token, "a scratch-allocation failure");
         return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOMEM).map(|()| None);
-    }
+    };
     let program_bytes = match read_exec_target_bytes(
         kernel_store,
         kernel_mem,
         exec_target_size,
         exec_target_read,
-        read_scratch as u32,
-        EXEC_TARGET_READ_CHUNK,
+        read_scratch.ptr() as u32,
+        read_scratch.capacity(),
         pid,
         token,
     )? {
@@ -12520,12 +13446,12 @@ fn handle_exec_common(
     // `handle_spawn`'s `child_module` handling exactly. The target is still
     // retained at this point (never committed), so cancel it before
     // resuming the caller.
-    let new_module = match Module::new(engine, &program_bytes) {
+    let new_module = match guest_module_for_this_epoch(engine, &program_bytes) {
         Ok(module) => module,
         Err(_) => {
             cancel_exec_target(
                 kernel_store, exec_target_cancel, pid, token,
-                "a Module::new compile failure (non-wasm exec target bytes)",
+                "a rejected exec target (a different ABI epoch, or non-wasm bytes)",
             );
             return fail_exec(&guest_mem, kernel_mem, ch, syscall_nr, args, libc_errno::ENOEXEC)
                 .map(|()| None);
@@ -13012,14 +13938,17 @@ fn apply_shebang(
     // record that does not fit is the kernel export's own `-EOVERFLOW`,
     // handled uniformly below via `ShebangError::Resolved`.
     const SHEBANG_RECORD_SCRATCH: u32 = 8192;
-    let out_scratch = alloc_scratch.call(&mut *kernel_store, SHEBANG_RECORD_SCRATCH)?;
-    if out_scratch <= 0 {
+    let Some(out_scratch) =
+        KernelScratch::allocate_or_none(&*alloc_scratch, &mut *kernel_store, SHEBANG_RECORD_SCRATCH)?
+    else {
         return Ok(Err(ShebangError::ScratchAlloc(libc_errno::ENOMEM)));
-    }
-    let out_ptr = out_scratch as u32;
+    };
+    let out_ptr = out_scratch.ptr() as u32;
 
-    let result =
-        resolve_fn.call(&mut *kernel_store, (owner_pid, token, out_ptr, SHEBANG_RECORD_SCRATCH))?;
+    let result = resolve_fn.call(
+        &mut *kernel_store,
+        (owner_pid, token, out_ptr, out_scratch.capacity()),
+    )?;
     if result < 0 {
         return Ok(Err(ShebangError::Resolved((-result) as i32)));
     }
@@ -13297,7 +14226,16 @@ fn copy_launch_entry(
     if buf_ptr == 0 {
         return -libc_errno::EFAULT;
     }
-    unsafe { write_bytes(guest_mem, buf_ptr as usize, entry) };
+    // The TS `copyEntry` this mirrors proves the range before it copies and
+    // turns a refusal into `-EFAULT`. The transcription kept every errno and
+    // dropped the proof, so a `buf_ptr` inside wasm32 but past the end of
+    // this memory reached `copy_nonoverlapping` -- undefined behaviour here,
+    // where the JavaScript host gets a `RangeError` from the engine and
+    // answers `-EFAULT`. Same rule, same errno, now on both sides.
+    let Some(offset) = checked_shared_range(guest_mem, buf_ptr, len as u32) else {
+        return -libc_errno::EFAULT;
+    };
+    unsafe { write_bytes(guest_mem, offset, entry) };
     len as i32
 }
 
@@ -13370,7 +14308,7 @@ mod fork_module_tests {
         };
 
         let engine = crate::kernel_engine()?;
-        let guest_wasm = include_bytes!("../fixtures/native_hello.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_hello.wasm");
         let guest_module = Module::new(&engine, guest_wasm)?;
         let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 

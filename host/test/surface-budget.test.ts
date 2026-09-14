@@ -76,7 +76,16 @@ function budget(): Record<string, Surface> {
 
 /** Count lines across a shell glob, resolved from the repo root. */
 function lineCount(globs: string[]): number {
-  const script = `cat ${globs.join(" ")} 2>/dev/null | wc -l`;
+  // A counted path that no longer exists must FAIL, not contribute zero.
+  // `cat missing 2>/dev/null | wc -l` silently drops the file and reports a
+  // smaller surface — so moving or renaming a counted file reads as a
+  // reduction and passes the ratchet. A glob that matches nothing reaches
+  // this loop as its own literal pattern and fails the same test.
+  const guard = globs
+    .map((g) => `for f in ${g}; do [ -e "$f" ] || { `
+      + `echo "surface-budget: counted path does not exist: $f" >&2; exit 1; }; done`)
+    .join("; ");
+  const script = `${guard}; cat ${globs.join(" ")} | wc -l`;
   const out = execFileSync("/bin/sh", ["-c", script], {
     cwd: repoRoot,
     encoding: "utf8",

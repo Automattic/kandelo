@@ -100,6 +100,15 @@ interface ArtifactModuleExports {
   readonly wa_read_facts: (len: number) => number;
   readonly wa_fork_contract: (len: number) => number;
   readonly wa_policy: (artifactLen: number, requestLen: number) => number;
+  /**
+   * Optional at install, because a module staged before this entry point
+   * existed must still install for the build that replaces it — see
+   * {@link installWasmArtifactModule}. Checked at the call.
+   */
+  readonly wa_process_memory_layout?: (
+    artifactLen: number,
+    requestLen: number,
+  ) => number;
 }
 
 /**
@@ -156,6 +165,15 @@ export function installWasmArtifactModule(
   // instantiation is what makes a regression there fail loudly here.
   const instance = new WebAssembly.Instance(module, {});
   const candidate = instance.exports as unknown as ArtifactModuleExports;
+  // Only the surface EVERY caller needs is asserted here. An entry point some
+  // callers never reach is checked where it is reached instead — see
+  // `readWasmProcessMemoryLayout`. The difference is not cosmetic: package
+  // builds resolve this module through the projected binary tier, which
+  // local-build refreshes only after every package has been built, so a
+  // widened install-time surface makes the first build after a new `wa_*`
+  // export unable to complete — the tier cannot be refreshed until the
+  // packages build, and the packages cannot build until the tier is
+  // refreshed. Staleness still fails loudly, at the call.
   if (
     typeof candidate.wa_read_facts !== "function"
     || typeof candidate.wa_wire_version !== "function"
@@ -397,6 +415,13 @@ class WireWriter {
       (value >>> 16) & 0xff,
       (value >>> 24) & 0xff,
     );
+  }
+
+  /** The peer of the reader's `u64`, little-endian like every other field. */
+  u64(value: bigint): void {
+    for (let shift = 0n; shift < 64n; shift += 8n) {
+      this.#bytes.push(Number((value >> shift) & 0xffn));
+    }
   }
 
   raw(value: Uint8Array): void {
@@ -679,6 +704,182 @@ export function detectPtrWidth(
   const bytes = asBytes(programBytes);
   writeInput(api, bytes);
   return api.wa_detect_pointer_width(bytes.byteLength) === 8 ? 8 : 4;
+}
+
+/** Host policy inputs to a process-memory layout. */
+export interface WasmProcessMemoryLayoutOptions {
+  /** Page ceiling for this address space. */
+  readonly maximumPages: number;
+  /** An additional page floor the host wants honoured. */
+  readonly requestedMinimumPages?: number;
+  /** Slot count used when the program defers to the host. */
+  readonly defaultThreadSlots: number;
+  /** Exact slot count, bypassing the program's own declaration. */
+  readonly threadSlots?: number;
+  /**
+   * The heap base to place control memory above, when the caller already has
+   * it or is placing a layout with no program at all. Omitted, the module
+   * reads the program's own `__heap_base`.
+   */
+  readonly heapBase?: bigint | number | null;
+}
+
+/** Where one process's control memory goes. */
+export interface WasmProcessMemoryLayout {
+  readonly initialPages: number;
+  readonly maximumPages: number;
+  readonly controlBase: number;
+  readonly controlEnd: number;
+  readonly channelOffset: number;
+  readonly channelPage: number;
+  readonly brkBase: number;
+  readonly mmapBase: number;
+  readonly brkLimit: number;
+  readonly maxAddr: number;
+  readonly threadSlotCount: number;
+}
+
+/**
+ * A count the wire can carry without changing it.
+ *
+ * The encoder writes four bytes of whatever it is handed, so `16384.5` would
+ * arrive as `16384` and a negative count as an enormous one — a layout placed
+ * from a number the caller never asked for. The arithmetic moved to Rust; this
+ * refusal did not move with it, because it is about what JavaScript will hand
+ * across the boundary, and it is the check the replaced
+ * `computeProcessMemoryLayout` opened with.
+ */
+function layoutCount(value: number, field: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) {
+    throw new WasmArtifactModuleError(
+      "wa_process_memory_layout",
+      `invalid ${field}: ${value}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * A heap base the wire can carry without changing it.
+ *
+ * Refused rather than coerced for the same reason as {@link layoutCount}: the
+ * encoder writes eight bytes of whatever it is handed, and a fractional or
+ * negative heap base would arrive as some other address entirely — which is
+ * where the syscall channel would then be placed.
+ */
+function layoutAddressIn(value: bigint | number, field: string): bigint {
+  if (typeof value === "bigint") {
+    if (value < 0n || value > 0xffff_ffff_ffff_ffffn) {
+      throw new WasmArtifactModuleError(
+        "wa_process_memory_layout",
+        `invalid ${field}: ${value}`,
+      );
+    }
+    return value;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new WasmArtifactModuleError(
+      "wa_process_memory_layout",
+      `invalid ${field}: ${value}`,
+    );
+  }
+  return BigInt(value);
+}
+
+/**
+ * A byte address this host can do arithmetic on.
+ *
+ * Every address in a layout is a multiple of the 64 KiB page size and bounded
+ * by the page ceiling, so all of them are far inside the safe-integer range.
+ * The conversion is still checked, because the alternative to refusing an
+ * out-of-range address is silently rounding one — and a rounded base address
+ * places the syscall channel somewhere other than where the kernel was told.
+ */
+function layoutAddress(value: bigint, field: string): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new WasmArtifactModuleError(
+      "wa_process_memory_layout",
+      `${field} exceeds this host's safe integer range: ${value}`,
+    );
+  }
+  return Number(value);
+}
+
+/**
+ * Place one process's control memory, channel and initial break.
+ *
+ * **The arithmetic is `wasm_posix_shared::process_memory::compute_layout`**,
+ * and `crates/host-native` calls the same function, so the two hosts describe
+ * one address space rather than one each. Everything placement depends on —
+ * the imported memory's minimum, `__heap_base`, the program's pthread
+ * declaration — is read inside that one call, so a caller does not assemble
+ * the facts itself and cannot assemble them differently from the other host.
+ *
+ * Each of those facts is read by its own early-returning scan, not by a full
+ * container walk: this runs once per process launch, and the arithmetic it
+ * replaced read the import section and stopped at the first memory.
+ */
+export function readWasmProcessMemoryLayout(
+  programBytes: ArrayBuffer | Uint8Array,
+  options: WasmProcessMemoryLayoutOptions,
+): WasmProcessMemoryLayout {
+  const api = required();
+  if (typeof api.wa_process_memory_layout !== "function") {
+    throw new WasmArtifactModuleError(
+      "wa_process_memory_layout",
+      "the installed wasm-artifact module predates this entry point; rebuild "
+        + "wasm_artifact_module32.wasm with `scripts/dev-shell.sh bash "
+        + "crates/wasm-artifact-module/build-wasm.sh`, then re-project the "
+        + "binary tier with `./run.sh local-build`",
+    );
+  }
+  const bytes = asBytes(programBytes);
+
+  const request = new WireWriter();
+  request.u32(layoutCount(options.maximumPages, "process maximum pages"));
+  request.u32(
+    layoutCount(options.requestedMinimumPages ?? 0, "process minimum pages"),
+  );
+  request.u32(
+    layoutCount(options.defaultThreadSlots, "host default thread slot count"),
+  );
+  const hasThreadSlots = options.threadSlots !== undefined;
+  request.bool(hasThreadSlots);
+  request.u32(
+    hasThreadSlots
+      ? layoutCount(options.threadSlots as number, "process thread slot count")
+      : 0,
+  );
+  const heapBase = options.heapBase;
+  const hasHeapBase = heapBase !== undefined && heapBase !== null;
+  request.bool(hasHeapBase);
+  request.u64(hasHeapBase ? layoutAddressIn(heapBase, "heap base") : 0n);
+
+  const requestBytes = request.bytes();
+  writeInput(api, bytes, requestBytes);
+  if (
+    api.wa_process_memory_layout(bytes.byteLength, requestBytes.byteLength)
+      !== WA_OK
+  ) {
+    throw new WasmArtifactModuleError(
+      "wa_process_memory_layout",
+      readOutputText(api),
+    );
+  }
+  const reader = new WireReader(readOutput(api), "wa_process_memory_layout");
+  return {
+    initialPages: reader.u32(),
+    maximumPages: reader.u32(),
+    controlBase: layoutAddress(reader.u64(), "control base"),
+    controlEnd: layoutAddress(reader.u64(), "control end"),
+    channelOffset: layoutAddress(reader.u64(), "channel offset"),
+    channelPage: reader.u32(),
+    brkBase: layoutAddress(reader.u64(), "brk base"),
+    mmapBase: layoutAddress(reader.u64(), "mmap base"),
+    brkLimit: layoutAddress(reader.u64(), "brk limit"),
+    maxAddr: layoutAddress(reader.u64(), "max addr"),
+    threadSlotCount: reader.u32(),
+  };
 }
 
 /**

@@ -1,0 +1,21 @@
+{
+  "file": "crates/host-native/src/lib.rs",
+  "build": "cargo build -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --tests",
+  "verify": "cargo test -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --lib the_guest_import_surface_and_its_trap_stubs_are_both_pinned",
+  "trials": [
+    {
+      "name": "L-D4: the pinned import surface loses a name it should carry",
+      "scope": "fn the_guest_import_surface_and_its_trap_stubs_are_both_pinned",
+      "scope_end": "\n    }\n",
+      "find": "            \"kernel_clone\",\n",
+      "replace": ""
+    },
+    {
+      "name": "L-D4: a wired import is claimed to be trap-stubbed",
+      "scope": "const TRAP_STUBBED",
+      "scope_end": "\n        ];",
+      "find": "            \"kernel_push_argv\",",
+      "replace": "            \"kernel_push_argv\",\n            \"kernel_exit\","
+    }
+  ]
+}

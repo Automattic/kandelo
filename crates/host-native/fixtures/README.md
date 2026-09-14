@@ -1,5 +1,44 @@
 # host-native test fixtures
 
+**These are built, not committed.** Every `.wasm` here is produced from a
+tracked source by `build-fixtures.sh`, and `cargo test -p host-native` runs
+that script itself when an artifact is missing or older than what it is built
+from (`../src/fixtures.rs`). Nothing under this directory is in git except
+sources, this file, and the script.
+
+That is the repository's rule, stated in `.gitignore` beside the blanket
+`*.wasm`: "Wasm binaries are build artifacts... Nothing tracked under git",
+and "test fixtures under `host/test/fixtures/` are produced by the vitest
+global-setup from `.wat` sources". This directory is now the Rust side of the
+same arrangement.
+
+Until 2026-09-14 the 43 artifacts here were force-added past that rule. Two
+reasons were given and only one held. The weaker was convenience: they were
+checked in "so the test needs only a built `kernel.wasm`, not a full
+guest-program build". The stronger was a real cycle -- the generators that
+rebuild the hand-written WAT fixtures live in the crate that `include_bytes!`
+would not compile without them. **Loading at runtime dissolves that cycle**,
+because the crate compiles whether or not an artifact exists.
+
+What the exception cost was silent staleness. Nothing rebuilt these when libc
+changed, and for months nothing checked them at load either (L-D4); 23 of them
+were measurably stale, carrying dead glue from deletions since they were
+linked. Building them from source is what makes that impossible rather than
+merely unlikely.
+
+To rebuild them by hand -- the tests do this for you:
+
+```sh
+SYSROOT="$PWD/sysroot" SYSROOT64="$PWD/sysroot64" scripts/dev-shell.sh \
+  bash crates/host-native/fixtures/build-fixtures.sh
+```
+
+One script covers all three arms: the C fixtures through the SDK, the
+hand-written WAT through `wasm-tools parse`, and the fork-instrumented
+variants through the real production instrumenter. The per-fixture recipes
+below record what each arm does and why; they are no longer steps anyone has
+to run in order.
+
 ## `native_hello.wasm`
 
 The trivial guest the native Wasmtime host runs end-to-end in
@@ -41,9 +80,50 @@ OUT=crates/host-native/fixtures
   -o "$OUT/native_hello.wasm"
 ```
 
-The program's `__abi_version` export must match the kernel's ABI (the host
-asserts this at load), so a stale fixture built for an older ABI fails loudly
-rather than running wrong.
+The program's `__abi_version` export must match the kernel's ABI, and as of
+2026-09-14 this host enforces that -- `guest_module_for_this_epoch` in
+`../src/guest.rs`, applied at all three places a guest program is compiled
+(boot, spawn, exec). A program declaring a different epoch is refused; one
+declaring none is allowed through, because predating the marker is a
+different fact from being stale. That is the peer host's rule, so the two
+cannot answer one question two ways.
+
+**It did not, for months, and this file asserted that it did.** The sentence
+here said the host "asserts this at load", so a stale fixture "fails loudly
+rather than running wrong". `EXPECTED_ABI_VERSION` was compared against the
+KERNEL's marker only; nothing read a GUEST's. That was shown by running, not
+by reading: renaming the export out of a fixture left every test passing,
+while flipping one byte of its code made the same test fail -- so the bytes
+were reaching the host and the marker was simply never looked up.
+
+**Import linkage does not cover the gap either, and the first version of this
+correction said it did.** A guest names between 1 and 16 `kernel.*` functions
+(14 for `native_hello`) plus `env.__channel_base` and `env.memory`.
+`spawn_guest_thread` ends its wiring with
+`linker.define_unknown_imports_as_traps(&module)`, and wasmtime's
+`_get_by_import` matches on NAME alone, so:
+
+* a name the host does not define gets a trap stub carrying the GUEST's own
+  declared signature -- instantiation succeeds, and the failure arrives only
+  if that path runs;
+* a name that IS defined but with a different signature gets no stub, and
+  `instantiate` refuses it.
+
+Only the second half is loud, and the first half is the one that matters
+here: of the 16 distinct kernel imports across these fixtures, **six are
+trap-stubbed today** -- `kernel_push_argv` and the fork-exec family, names
+`guest.rs` does not contain anywhere.
+
+So nothing structurally separates a guest built for an older epoch from a
+current one. Drift in the syscall channel's LAYOUT -- where most of the ABI
+lives, and the one kind of staleness these fixtures actually exhibit -- is
+invisible to every check the native host performs.
+
+**What is still open.** The epoch check above catches a bump that left a
+program behind. It does not catch a renamed or dropped import, and nothing on
+either host catches channel-LAYOUT drift -- which is the only kind these
+fixtures actually exhibit. The remainder stays filed as **L-D4** in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`.
 
 ## `native_fork.instrumented.wasm`
 
@@ -74,7 +154,7 @@ scripts/dev-shell.sh bash -lc '
 ```
 
 Like `native_hello.wasm`, the program's `__abi_version` must match the
-kernel's ABI, and re-running step 2 after any `crates/fork-instrument` change
+kernel's ABI -- unenforced here, see above -- and re-running step 2 after any `crates/fork-instrument` change
 picks up the current instrumentation tool automatically (see
 `scripts/run-wasm-fork-instrument.sh`'s own input-hash rebuild check).
 
@@ -105,7 +185,8 @@ scripts/dev-shell.sh bash -lc '
 '
 ```
 
-Like every other fixture, `__abi_version` must match the kernel's ABI.
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above).
 
 ## `native_fork_from_thread.instrumented.wasm` / `native_fork_from_thread.wasm`
 
@@ -137,7 +218,8 @@ scripts/dev-shell.sh bash -lc '
 '
 ```
 
-Like every other fixture, `__abi_version` must match the kernel's ABI.
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above).
 
 ## `native_fork_refs.instrumented.wasm`
 
@@ -159,11 +241,12 @@ documented, pre-existing "no module-state capture mechanism yet" gap — see
 Regenerate from within the dev shell:
 
 ```sh
-# 1. Assemble the hand-written WAT (WABT's wat2wasm, not the SDK's clang):
+# 1. Assemble the hand-written WAT. NOT WABT's wat2wasm, which this file
+#    used to name here: wabt 1.0.37 cannot assemble the four GC fixtures even
+#    with --enable-all, and `wasm-tools parse` is what actually produced them.
 scripts/dev-shell.sh bash -lc '
   cd crates/host-native/fixtures
-  wat2wasm --enable-exceptions --enable-threads \
-    native_fork_refs.wat -o native_fork_refs.wasm
+  wasm-tools parse native_fork_refs.wat -o native_fork_refs.wasm
 '
 
 # 2. Instrument it, exactly like native_fork.wasm:
@@ -175,7 +258,8 @@ scripts/dev-shell.sh bash -lc '
 '
 ```
 
-Like every other fixture, `__abi_version` must match the kernel's ABI.
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above).
 
 ## `native_process_layout.wasm` and `native_process_layout.wasm64.wasm`
 
@@ -218,5 +302,6 @@ Without that sysroot the script **fails loudly** instead of skipping the wasm64
 arm, because a silently un-rebuilt wasm64 fixture against a current kernel is
 exactly the stale-artifact failure this family exists to catch.
 
-Like every other fixture, `__abi_version` must match the kernel's ABI at both
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above) at both
 widths.

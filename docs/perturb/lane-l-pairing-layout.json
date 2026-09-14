@@ -1,0 +1,13 @@
+{
+  "file": "host/test/process-memory-layout.test.ts",
+  "verify": "cargo test -p wasm-posix-shared --target $(rustc -vV | awk '/^host:/{print $2}')",
+  "trials": [
+    {
+      "name": "pairing: the TypeScript half stops READING the layout corpus",
+      "scope": "const CORPUS_TEXT = readFileSync(",
+      "scope_end": "\n);",
+      "find": "\"../../crates/shared/tests/process-memory-layouts.json\",",
+      "replace": "\"../../crates/shared/tests/process-memory-layouts-GONE.json\","
+    }
+  ]
+}
