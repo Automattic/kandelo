@@ -203,8 +203,17 @@ is larger than any single increment in this lane so far and it lands in
 `syscalls.rs`. It wants its own increment with its own trials, and the mount
 point/inside-the-mount distinction is where a mutation should be aimed first.
 
-**Not a blocker, but worth knowing before starting:** `/dev/shm` is mode
-`0o1777` and sticky, and the scratch mounts that exist carry their own mode and
-`st_dev`. Nothing in the table suggests sticky-bit handling is missing, but I
-have not verified that tmpfs honours the sticky bit on unlink, which is what
-stops one process deleting another's shm segment.
+**The sticky bit: checked, and it is a non-issue.** `/dev/shm` is mode `0o1777`,
+and the sticky bit is what stops one process deleting another's shm segment.
+`tmpfs.rs` mentions `S_ISVTX` nowhere and its `unlink` performs no ownership
+check at all — which looks alarming and is not.
+
+**Enforcement lives in `syscalls.rs`, above filesystem dispatch.**
+`check_sticky_child` reads the parent's mode and refuses with `EPERM` unless the
+caller owns the parent or the child, and it is called from eight sites covering
+unlink, rmdir and both halves of rename. It applies to whichever filesystem
+serves the path, which is why tmpfs not implementing it internally is correct
+rather than missing — it is not tmpfs's job.
+
+`/tmp` is already `0o1777` and already served by the in-kernel tmpfs, so this
+arrangement is in production today. **Moving `/dev/shm` there loses nothing.**
