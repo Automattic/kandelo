@@ -6823,3 +6823,46 @@ The failure mode is the part I would not want to meet later: a silent `None`,
 surfaced as a bad-argument errno, from a read that was in bounds. In the child
 install that reads as "no such record" — the same answer section 128 traced to a
 missing root, arrived at by a second, independent route.
+
+## §141 — The defect had already reached three call sites, one of them mine
+
+Having proved section 140's miscompilation, the obvious next question was how
+many places in this module do the shape that breaks: `.get` or `.get_mut`
+directly on a `mem_ref()`/`mem_mut()` whole-memory slice. Three:
+
+1. **`begin_capture_impl`'s Module-record write** — committed an hour earlier, by
+   me, in the change that made the module write the arena's activation set. It
+   would have failed `EINVAL` on the first real capture, and the errno would have
+   read as a bad argument rather than as a miscompiled write.
+2. **`journal_image_from_arena`** — finds the `JournalImage` record and decodes
+   it. This is how a COW child seeds its journal.
+3. **`decode_reference_transaction_from_arena`** — builds the reference
+   transaction records for replay. This is the child's whole reference graph.
+
+The second and third are not latent. They are the paths `fm_child_seed` and
+`fm_begin_reference_replay` run, which is to say: a fork child's journal seed and
+its reference graph, both reading through a slice that was measured returning
+`None` for an in-bounds range.
+
+All three now bounds-check against `mem_len_bytes()` and build the slice from
+`black_box(start)` — non-null for any real offset — which is the shape the
+working reads in this file already used. No `.get` on a whole-memory slice
+remains; the only matches left are the comments explaining why not.
+
+**What this does NOT fix, and it is the larger half.** Every one of these
+functions still PASSES the ill-formed whole-memory slice into `fork-codec` —
+`decode_module_state(mem, root, &fmt)` is the first thing two of them do. If that
+indexing is folded the same way, the fix above is upstream of a failure that
+happens anyway. Section 140 explains why closing that is a different size of
+change: it alters the `fork-codec` signatures that take a whole-memory `&[u8]`
+and index it with absolute offsets, and the same idiom lives in
+`crates/kernel/src/wasm_api.rs`.
+
+So this is a real repair to three reachable sites and not a resolution. The
+resolution is the one section 140 puts to the maintainer.
+
+**One thing worth taking from how this went.** I proved the defect, wrote it up
+carefully, published a warning about other people's code — and the freshest
+instance of it was in a commit of mine from the same session, which I found only
+because I went looking for the pattern rather than for the bug. Writing the note
+was not the same as checking my own work against it.

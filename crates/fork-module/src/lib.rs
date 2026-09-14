@@ -2959,7 +2959,25 @@ mod wasm {
                 let end = start
                     .checked_add(payload_size as usize)
                     .ok_or(Errno::EINVAL)?;
-                let out = mem.get_mut(start..end).ok_or(Errno::EINVAL)?;
+                if end > mem_len_bytes() {
+                    return Err(Errno::EINVAL);
+                }
+                // NOT `mem.get_mut(start..end)`. That is the shape census
+                // section 140 measured returning `None` for an in-bounds range
+                // -- including `0..32` on a 16 MiB memory -- because the
+                // whole-memory slice is built from a null base and the bounds
+                // check gets folded. This write would have failed `EINVAL` on
+                // the first real capture, and the errno would have looked like a
+                // bad argument rather than a miscompiled read.
+                //
+                // SAFETY: `[start, end)` is inside guest linear memory (checked
+                // above), and the base is non-null for any real payload offset.
+                let out: &mut [u8] = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        core::hint::black_box(start) as *mut u8,
+                        payload_size as usize,
+                    )
+                };
                 encode_module_record(
                     out,
                     &fork_codec::ModuleDescriptor { template_id, flags: 0 },
@@ -3681,7 +3699,17 @@ mod wasm {
             let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
             let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
             let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
-            let payload = mem.get(start..end).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // NOT `mem.get(start..end)` -- see census section 140. The
+            // whole-memory slice is built from a null base, and `.get` on it was
+            // measured returning `None` for ranges that are plainly in bounds.
+            // SAFETY: `[start, end)` is inside guest linear memory (checked
+            // above); the base is non-null for any real payload offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
             found = Some(decode_journal_image(payload)?);
         }
         found.ok_or(Errno::EINVAL)
@@ -3853,7 +3881,17 @@ mod wasm {
             let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
             let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
             let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
-            let payload = mem.get(start..end).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // NOT `mem.get(start..end)` -- see census section 140. The
+            // whole-memory slice is built from a null base, and `.get` on it was
+            // measured returning `None` for ranges that are plainly in bounds.
+            // SAFETY: `[start, end)` is inside guest linear memory (checked
+            // above); the base is non-null for any real payload offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
             records.push(ReferenceTransactionRecord {
                 kind: record.kind,
                 activation_id: record.activation_id,
