@@ -1914,6 +1914,36 @@ behind that interface — `msg.rootfsMountSpec` is caller-supplied, and Node's
 session-seed trees add mounts. So "no production caller" is true of the default
 configuration and not of the codebase. Any deletion has to say which it means.
 
+**RE-TAKEN 2026-09-14, both figures, and one was materially wrong.**
+
+*The interface side.* Exactly **one** non-test file dispatches through a
+`FileSystemBackend` binding — `host/src/vfs/vfs.ts` — and it uses **30
+methods**. That is `VirtualPlatformIO`'s contract, owed by all three
+implementations. Since the shipped `DEFAULT_MOUNT_SPEC` puts no
+`MemoryFileSystem` behind any mount, those 30 calls reach `OpfsFileSystem` and
+`HostFileSystem` in production. Deleting `MemoryFileSystem` removes one of
+three implementations and `vfs.ts` keeps working — this is the cleanest fact in
+the whole census.
+
+*The test side, and the correction.* The "15 test files" figure answered
+**"which tests call the ten production-unused methods"**. That is not the cost
+of deleting the class, and it was presented as if it were. The cost of deletion
+is the number of tests that **construct** one:
+
+| | count |
+|---|---|
+| test files mentioning `MemoryFileSystem` | 98 |
+| **test files constructing one — must change** | **87** |
+| mentioning only (types, imports) | 11 |
+
+**So the deletion touches 87 test files, not 15.** That is a materially larger
+number than this plan handed the maintainer, and it is recorded here rather
+than softened. What makes it tractable rather than prohibitive is that nearly
+all of them construct a `MemoryFileSystem` as a convenient in-memory fixture,
+so if the replacement offers an equivalent constructor most are a mechanical
+repoint. **That "most" is an expectation, not a measurement, and should be
+sampled before anyone plans around it.**
+
 **The lesson for the rest of this lane's censuses:** a caller census on a class
 whose methods are also an interface must count interface dispatch, or it is
 measuring naming rather than usage. The same flaw applies to the 26-method
