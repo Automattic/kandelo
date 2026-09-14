@@ -7710,3 +7710,50 @@ weaker than usual and worth saying out loud rather than discovering at the end.
 | `forkExceptionProviderFromInstance` | DELETE -- `setActivationExceptionCodec` likewise |
 | `ForkActivationRegistry` | the knot; `crates/host-native` has no counterpart at all |
 
+---
+
+## §157 — What the registry is actually for, and the record that replaces it
+
+Both fork paths are now down to the same five coordinator calls: `beginCapture`,
+`prepareActivation`, `registerActivation`, `unregisterActivation` and
+`enableModuleBacking`. Everything else is the module's. So the knot is one
+question: what does the host still need to REMEMBER about an activation?
+
+Reading the call sites rather than the 2,098-line registry, the answer is four
+fields:
+
+| field | why the host holds it |
+|---|---|
+| `instance` | binding drive slots is a reference-typed `Table.set`, which wasm cannot do for itself, and the module is instantiated BEFORE the guests so it cannot import their exports |
+| `module` | custom sections -- KFIG, KFIT, KFGC, the frame format -- reachable only through `WebAssembly.Module.customSections` |
+| `fixedPrefixSize` | read from the frame-format section; the capture needs one per side activation |
+| `activationId` | the key everything else is seeded under |
+
+That is the whole of it. `worker-main.ts` calls thirteen registry methods, and
+the rest are reference and GC-transit plumbing on the child side, which the
+module's `fm_decode_reference_graph` and `fm_attach_child` already do.
+
+**An entry I nearly added and should not have.** The plan was
+`fm_set_activation_frame_prefix`, so `fm_parent_begin_capture` could derive its
+own side-activation list instead of being handed one. It is forced by a real
+capability limit -- the prefix comes from a custom section only the host can
+read -- so it passes the first half of the D4b test. It fails the second: what
+it deletes is a `map()` over a record the host must keep ANYWAY for the drive
+binds. An entry that removes one line from a list the host still maintains is
+not a reduction, it is a second copy of the list. The sides array stays a host
+argument.
+
+**So the replacement is a host record, not a module entry**: a small
+`Map<activationId, ForkActivation>` that also does the drive bind on
+registration and answers `sides()` for capture. Registration then reads as what
+it is -- a handful of module seeds plus one map insert -- and
+`unregisterActivation` becomes a delete, because everything else it unwound
+lives in the module now.
+
+**Why this is the last hard piece.** The arena waits on it (`beginCapture(arena)`
+is a coordinator call and the module allocates its own arena when handed root
+0). The two codec providers wait on it, because their only destination is
+`forkActivationRegistrationFromInstance`. The child install waits on the arena,
+because `recordViews()` is how it reads the inherited records today. Four of the
+remaining eight imports come off with this one.
+
