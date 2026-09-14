@@ -140,6 +140,39 @@ pub struct ModuleDescriptor {
     pub flags: u32,
 }
 
+/// Encode a `Module` (kind 1) record payload into `out`.
+///
+/// The counterpart to [`decode_module_record`], and the first ENCODER on this
+/// side of the arena. Until now every record in a KFMS arena was written either
+/// by the guest (through the module's reserve/commit imports) or by the host's
+/// JavaScript arena writer; the module itself only ever read them. It needs this
+/// one because the `Module` record is the arena's activation set -- the module's
+/// own child-install path filters on kind 1 to decide which activations to
+/// drive -- so an arena the module builds without them installs nothing.
+///
+/// Refuses an out-of-range `out`, and refuses unknown flag bits rather than
+/// writing them: the decoder rejects them on the way back in, so accepting one
+/// here would produce a record this crate cannot read.
+pub fn encode_module_record(
+    out: &mut [u8],
+    descriptor: &ModuleDescriptor,
+) -> Result<(), Errno> {
+    if out.len() != MODULE_RECORD_PAYLOAD_SIZE {
+        return Err(Errno::EINVAL);
+    }
+    if descriptor.flags & !MODULE_RECORD_KNOWN_FLAGS != 0 {
+        return Err(Errno::EINVAL);
+    }
+    out[0..MODULE_TEMPLATE_ID_SIZE].copy_from_slice(&descriptor.template_id);
+    out[MODULE_TEMPLATE_ID_SIZE..MODULE_TEMPLATE_ID_SIZE + 4]
+        .copy_from_slice(&descriptor.flags.to_le_bytes());
+    // The reserved word is written, not left alone: a fresh channel mapping is
+    // not guaranteed zero, and the decoder rejects a nonzero reserved field.
+    out[MODULE_TEMPLATE_ID_SIZE + 4..MODULE_TEMPLATE_ID_SIZE + 8]
+        .copy_from_slice(&0u32.to_le_bytes());
+    Ok(())
+}
+
 /// Decode a `Module` (kind 1) record payload. Mirrors `decodeModulePayload`.
 pub fn decode_module_record(payload: &[u8]) -> Result<ModuleDescriptor, Errno> {
     if payload.len() != MODULE_RECORD_PAYLOAD_SIZE {
@@ -531,6 +564,66 @@ mod tests {
     use super::*;
 
     use crate::module_state::{decode_module_state, ModuleStateFormat};
+
+    // -- Module record encoder (census section 139) --------------------------
+
+    #[test]
+    fn a_module_record_round_trips_through_its_own_decoder() {
+        // The encoder is only correct if the DECODER accepts what it writes --
+        // and the decoder here is the one the module's own child-install path
+        // reads the activation set with, so a mismatch means an arena that
+        // installs nothing rather than one that fails.
+        let descriptor = ModuleDescriptor {
+            template_id: [0xA5; MODULE_TEMPLATE_ID_SIZE],
+            flags: 0,
+        };
+        let mut payload = [0u8; MODULE_RECORD_PAYLOAD_SIZE];
+        encode_module_record(&mut payload, &descriptor).unwrap();
+        assert_eq!(decode_module_record(&payload).unwrap(), descriptor);
+    }
+
+    #[test]
+    fn encoding_clears_the_reserved_word_it_is_handed() {
+        // Records are written into freshly channel-mmap'd guest memory, which is
+        // not guaranteed zero, and the decoder rejects a nonzero reserved field.
+        // Leaving it alone would produce a record that fails to decode only when
+        // the mapping happened to be dirty.
+        let mut payload = [0xFFu8; MODULE_RECORD_PAYLOAD_SIZE];
+        encode_module_record(
+            &mut payload,
+            &ModuleDescriptor { template_id: [7; MODULE_TEMPLATE_ID_SIZE], flags: 0 },
+        )
+        .unwrap();
+        assert!(decode_module_record(&payload).is_ok());
+    }
+
+    #[test]
+    fn encoding_refuses_a_flag_the_decoder_would_reject() {
+        // Writing an unknown flag produces a record this crate cannot read
+        // back. Refusing at the encoder keeps that from being discovered in a
+        // child, mid-install.
+        let mut payload = [0u8; MODULE_RECORD_PAYLOAD_SIZE];
+        let bad = ModuleDescriptor {
+            template_id: [0; MODULE_TEMPLATE_ID_SIZE],
+            flags: !MODULE_RECORD_KNOWN_FLAGS,
+        };
+        assert_eq!(encode_module_record(&mut payload, &bad), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn encoding_refuses_a_buffer_that_is_not_the_payload_size() {
+        // The caller reserves by MODULE_RECORD_PAYLOAD_SIZE, so a different
+        // length means the reserve and the write disagree -- which would write
+        // past a record boundary into the next one.
+        let descriptor = ModuleDescriptor {
+            template_id: [1; MODULE_TEMPLATE_ID_SIZE],
+            flags: 0,
+        };
+        let mut short = [0u8; MODULE_RECORD_PAYLOAD_SIZE - 1];
+        assert_eq!(encode_module_record(&mut short, &descriptor), Err(Errno::EINVAL));
+        let mut long = [0u8; MODULE_RECORD_PAYLOAD_SIZE + 1];
+        assert_eq!(encode_module_record(&mut long, &descriptor), Err(Errno::EINVAL));
+    }
 
     const PW: u8 = 4;
     const CHUNK_HEADER: u32 = 40;
