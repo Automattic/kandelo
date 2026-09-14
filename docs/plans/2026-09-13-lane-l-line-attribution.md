@@ -1235,12 +1235,46 @@ a verifier scoped to the covering test so the set costs two minutes rather
 than twenty. Sixteen of sixteen L-D3 sites are now both executed and proven to
 fail when broken.
 
-One thing the fixture work turned up and did NOT fix: rebuilding it rebuilt
-all 24 existing fixtures, each about **2,251 bytes smaller** than what is
-committed — a consistent delta suggesting this worktree's sysroot differs from
-whatever produced them. They were restored rather than committed, because 24
-unexplained binary changes do not belong in this lane, and which side is stale
-was not determined.
+One thing the fixture work turned up: rebuilding it rebuilt all 24 existing
+fixtures smaller than what is committed. That was filed as undetermined —
+whether the committed binaries or this worktree's sysroot was the stale side.
+**It is determined now: the committed fixtures are the stale side, and the
+staleness is dead code rather than a drifted ABI.**
+
+The control is the fixture built yesterday. `native_host_metadata.wasm`
+rebuilds **byte-identical**, so the build is reproducible and the other
+deltas are real drift rather than nondeterminism.
+
+The delta is not the constant this document first reported. Corrected, it
+tracks how long ago each fixture was last built:
+
+| Last built | Fixtures | Bytes smaller on rebuild |
+|---|---|---|
+| 2026-09-05 / 09-06 | 20 | 2,249 – 2,273 |
+| 2026-09-10 | 2 | 298 |
+| 2026-09-11 | 1 | 421 |
+| 2026-09-13 | 1 | 0 |
+
+The cause is in the build recipe rather than in the sysroot: every fixture
+compiles `libc/glue/channel_syscall.c` directly, and that file has lost a net
+**232 lines** across six commits since the oldest fixtures were built —
+sendmsg/recvmsg moving to the kernel, the semctl `IPC_STAT` probe dropped,
+ppoll's unreachable deadline arithmetic deleted. Each fixture carries
+whatever glue existed the day it was linked.
+
+**No fixture's `IMPORT` or `EXPORT` section changed.** All 23 differences are
+confined to `CODE`, `DATA` (the deleted glue's strings), `TYPE` (one fewer
+function type), and `GLOBAL` for the two thread fixtures. That is why they
+still load against today's kernel and why every test passes: nothing
+ABI-facing moved. They are carrying dead code, not a stale contract.
+
+That comparison was perturbed before being believed. Flipping one byte inside
+a rebuilt `IMPORT` section makes it report `IMPORT` and flips the verdict;
+restoring the byte flips it back.
+
+They are still not committed. Rebuilding is 23 binary files and belongs to
+whoever owns the fixtures, not to this lane. **What changed is that the
+question is answered, so the decision is now an ordinary one.**
 
 Two measurement mistakes are recorded with it, both the same shape. The first
 count of proofs was read BEFORE the smoke suite ran, because the reporting
