@@ -1945,7 +1945,10 @@ mod wasm {
             });
         }
         if provenance.is_empty() {
-            return Ok(());
+            return Ok(()); // nothing imports a table: no record to write
+        }
+        if !module_owns_arena_now() {
+            return Err(Errno::EINVAL); // see the global twin
         }
 
         let groups = identity_groups(IMPORT_SPACE_TABLE);
@@ -1982,8 +1985,20 @@ mod wasm {
 
     fn write_imported_global_bindings() -> Result<(), Errno> {
         let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
-        if count == 0 || !module_owns_arena_now() {
-            return Ok(());
+        if count == 0 {
+            return Ok(()); // nothing imports a global: no record to write
+        }
+        if !module_owns_arena_now() {
+            // The host published provenance AND supplied its own arena, so the
+            // facts have nowhere to go: a reserve here would start a second
+            // arena nothing reads, and skipping the write quietly would hand
+            // the child a binding record it never got.
+            //
+            // Loud rather than silent, because the silent version is a child
+            // whose imported globals are simply absent -- reconstructed against
+            // whatever its base imports happen to hold. The two halves of this
+            // port move together or not at all.
+            return Err(Errno::EINVAL);
         }
         // Declarations, from each activation's seeded KFIG section. Built first
         // because the provenance below is keyed by IMPORT ORDINAL and has to be

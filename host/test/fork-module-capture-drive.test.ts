@@ -754,6 +754,27 @@ describe("the binding records the module assembles at capture", () => {
     expect(t.getUint8(44), "kind").toBe(KIND_ACTIVATION_TABLE);
   });
 
+  it("refuses to drop the bindings when the caller brought its own arena", () => {
+    // The two halves of this port move together. A host that supplies its own
+    // arena root leaves the module with no writer root, so a reserve here would
+    // start a second arena nothing reads -- and skipping the write quietly
+    // hands the child a binding record it never got, reconstructing its
+    // imported globals against whatever its base imports happen to hold.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      MMAP_FLOOR - PAGE, // the caller's own arena root
+      0,
+      0,
+    );
+    expect(f.errno(), "capture must refuse rather than drop the record").toBe(22);
+  });
+
   it("falls back to a base import when no activation provides the object", () => {
     // Same fork with the owner's catalog entry removed: every member of the
     // group imports the global, so nobody can hand it to a child and it comes

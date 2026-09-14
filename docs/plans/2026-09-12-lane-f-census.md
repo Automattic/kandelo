@@ -7899,3 +7899,40 @@ module's own `__wpk_fork_module_state_record_reserve` -- the same export a real
 guest's save calls. The drive slot needs a real funcref, so the JavaScript
 cannot be bound directly; the thunk is the smallest bridge.
 
+---
+
+## §161 — The port I landed writes nothing yet, and now it says so
+
+Tracing the arena after section 160, a fact I should have found before landing
+the imported-globals port: **it currently produces no records at all.**
+
+`fm_parent_begin_capture` takes an arena root. Zero means "allocate your own";
+anything else is the caller's arena, and then the module's writer root stays 0.
+Both binding writers are guarded by `module_owns_arena_now()`, because a reserve
+with no root does not fail -- it starts a SECOND arena on the same channel that
+nothing reads (census 142). `worker-main.ts` still allocates the arena itself,
+because `ForkActivationRegistry.beginCapture(arena)` needs one, so the guard is
+false on every real capture and the writers returned `Ok(())` having written
+nothing.
+
+Silently. A child would then reconstruct its imported globals against whatever
+its own base imports happened to hold, with no record saying otherwise and no
+errno anywhere.
+
+**Both writers now refuse instead.** Provenance published plus an arena the
+module does not own is a host that has told the module facts it cannot record,
+and the two halves of this port move together or not at all. A host with no
+imported globals is unaffected -- `crates/host-native` supplies its own root and
+publishes no provenance, so it returns early as before.
+
+**Why the arena cannot simply move yet.** Passing root 0 makes the module own
+the arena, but `registry.beginCapture(arena)` writes `Module` records into the
+host's and runs each activation's `moduleState.save()` -- work the module also
+does when it owns the arena, through its own Module-record write and the
+`DRIVE_OP_MODULE_STATE_SAVE` step. Two save walks into two arenas. Narrowing the
+registry's capture to just the session is an edit to set-aside code, and the
+session exists for the exception broker, which is section 159's open question.
+
+So section 159 is not merely "the next piece": it is what makes the imported
+globals port DO anything. Worth the maintainer knowing that when they rule.
+
