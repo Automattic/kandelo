@@ -926,6 +926,24 @@ describe("the binding records the module assembles at capture", () => {
     ).toBe(22);
   });
 
+  it("lets the PARENT decode its own sealed graph, for the replay lookups", () => {
+    // Whether a parent can ask its own sealed arena which activation owns an
+    // exnref recipe. It is the question census 159 turns on: if it can, the
+    // exception broker's `throwRecipe` needs no new entry -- the module already
+    // exposes a decoded node's module activation, and the host already wraps it.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "seal").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    const nodes = (f.x.fm_decode_reference_graph as (root: number) => number)(root);
+    expect(f.errno(), "the parent decodes its own arena").toBe(0);
+    expect(nodes, "and gets a node count back").toBeGreaterThanOrEqual(0);
+  });
+
   it("falls back to a base import when no activation provides the object", () => {
     // Same fork with the owner's catalog entry removed: every member of the
     // group imports the global, so nobody can hand it to a child and it comes

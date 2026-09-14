@@ -8475,3 +8475,47 @@ sealed no reference transaction at all, so no child could ever have attached
 (§170). Expect more of these when the suite first runs — the lane's own
 breakage has been masking them.
 
+---
+
+## §173 — Two claims of mine, checked because the maintainer doubted them
+
+Asked my open questions directly. Two of the four answers were challenges rather
+than choices, and both were right.
+
+**"Only JavaScript can construct a `WebAssembly.Global`" (§171) was overthrown,
+by the attic's own planner.** `resolveGlobal` constructs nothing:
+
+| binding kind | what the host supplies |
+|---|---|
+| `RAW_NUMBER` / `RAW_BIGINT` | a plain number or bigint |
+| `RAW_REFERENCE` | a materialized reference -- the ONE engine floor the 2026-09-03 probe identified, handle to externref |
+| `ACTIVATION_GLOBAL` | the provider activation's EXISTING exported `WebAssembly.Global` |
+| `BASE_IMPORT` | nothing: the base import object answers |
+
+So the honest limit is narrower: **assembling an import object is a JavaScript
+operation** (it is a JavaScript object, and the overlay answers the Nth read of a
+repeated name), and **materializing an externref from a recipe** is the floor
+already on the books. Constructing Globals is not in it. The entry is still
+needed -- the host has to know what each ordinal resolves to, and only the module
+has the records -- but I argued it from a limit that does not hold, and the
+argument is the thing that is supposed to be load-bearing.
+
+**"Why not port it?" (§159) has a better answer than the one I proposed.** I
+offered a deliberately-failing shape; the right question was whether the path
+needs to work. It does: a C++ throw crossing a `dlopen` boundary reaches
+`__wpk_fork_ref_exn_broker_throw_recipe`, and the fork-in-catch cases C-04
+through C-11 are in the coverage suite. So it should be ported, not stubbed.
+
+**And the port is smaller than I thought, because the lookup already exists.**
+`throwRecipe` needs one fact -- which activation owns an exnref recipe -- and the
+module already answers it: `fm_decoded_node_field`'s module-activation field,
+wrapped as `backend.decodedNodeModuleActivation`. What was missing was whether a
+PARENT can make its own sealed graph resident to ask. It can, and there is now a
+test for exactly that: after a seal, `fm_decode_reference_graph(root)` on the
+parent's own arena succeeds. **No new entry.**
+
+`throwIngress` is the half that genuinely cannot work yet: its tokens are minted
+only by `encodeFromSlot`, whose guest import the module deliberately refuses with
+`EOPNOTSUPP` because routing a foreign exception needs the capture-side drive
+that is F3's. Porting it means honouring that boundary, not inventing one.
+
