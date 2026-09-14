@@ -2730,6 +2730,22 @@ as a tier error that reads like a provisioning defect. **After any perturb run
 whose verify builds, re-run `./run.sh setup`** — rebuilding the artifact alone
 is not enough, and that is exactly the mistake made here.
 
+**BROADENED 2026-09-14, after it recurred from a change touching no module code
+at all.** The trigger is not "a perturb run that builds". It is **any change to
+`crates/runtime-core`**, because `sffs-module`'s build key is derived from its
+CLOSURE and `runtime-core` is in it. A test-only addition to `rootfs.rs` — no
+behaviour, no module source — was enough to make the browser suite report
+`Package artifact closure is incomplete` in specs having nothing to do with
+either file. **So: rebuild the module and re-run `./run.sh setup` before ANY
+browser run.** The symptom appears far from the cause and reads as a
+provisioning defect.
+
+**A correction to how this was first reported.** Those tier failures were
+called "not mine" — true of the code, false of the cause. They were not a
+defect in what was written, but they were produced by this lane's edits through
+a dependency it had not traced. *"Not caused by my change"* and *"not caused by
+me"* are different claims, and only the first was supportable.
+
 **So item 2 IS unblocked, and this time the claim is the third attempt at it.**
 The first said the entry point unblocked it (wrong: the contract shape did
 not fit). The second said a zero-copy view would (wrong: it views the
