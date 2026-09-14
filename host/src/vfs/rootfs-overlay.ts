@@ -5,11 +5,63 @@ import {
 } from "./vfs-errors";
 import { OPEN_FLAGS } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
+import type { HostFileOffset, StatResult } from "../types";
+import type { DirEntry } from "./types";
+
+/**
+ * What this module needs from a filesystem, split by the three roles it
+ * actually uses rather than by the class that happens to provide all of them.
+ *
+ * Typed against `MemoryFileSystem` before — the 8,000-line class lane V is
+ * deleting. Measured at the call sites, the reads and the writes are disjoint
+ * enough to name separately, which is worth doing: `readFile` cannot write and
+ * the type now says so.
+ */
+export interface RootfsOverlayReader {
+  lstat(path: string): StatResult;
+  readlink(path: string): string;
+  open(path: string, flags: number, mode: number): number;
+  read(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number;
+  close(handle: number): number;
+  opendir(path: string): number;
+  readdir(handle: number): DirEntry | null;
+  closedir(handle: number): void;
+  verifyImportedLazyAtomicGroupSeals(): Promise<void>;
+}
+
+/** The write half: creating entries and setting their metadata. */
+export interface RootfsOverlayWriter {
+  lstat(path: string): StatResult;
+  open(path: string, flags: number, mode: number): number;
+  write(
+    handle: number,
+    buffer: Uint8Array,
+    offset: HostFileOffset | null,
+    length: number,
+  ): number;
+  close(handle: number): number;
+  chmod(path: string, mode: number): void;
+  chown(path: string, uid: number, gid: number): void;
+  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void;
+  symlinkWithOwner(
+    target: string,
+    path: string,
+    uid: number,
+    gid: number,
+  ): void;
+}
 import { FILE_MODES } from "../generated/abi";
 
 const { S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } = FILE_MODES;
 
-function lstatIfPresent(fs: MemoryFileSystem, path: string) {
+// Needs `lstat` and nothing else, and is called with both a reader and a
+// writer — so it is typed to the one method rather than to either role.
+function lstatIfPresent(fs: Pick<RootfsOverlayReader, "lstat">, path: string) {
   try {
     return fs.lstat(path);
   } catch (error) {
@@ -19,7 +71,7 @@ function lstatIfPresent(fs: MemoryFileSystem, path: string) {
 }
 
 function readFile(
-  fs: MemoryFileSystem,
+  fs: RootfsOverlayReader,
   path: string,
   size: number,
 ): Uint8Array {
@@ -51,7 +103,7 @@ function readFile(
 }
 
 function writeFile(
-  fs: MemoryFileSystem,
+  fs: RootfsOverlayWriter,
   path: string,
   bytes: Uint8Array,
   mode: number,
@@ -90,8 +142,8 @@ function writeFile(
  * canonical descendants can still be added below caller-owned directory trees.
  */
 function copyMissingRootfsPath(
-  source: MemoryFileSystem,
-  target: MemoryFileSystem,
+  source: RootfsOverlayReader,
+  target: RootfsOverlayWriter,
   path: string,
 ): void {
   const sourceStat = source.lstat(path);
@@ -159,7 +211,7 @@ function copyMissingRootfsPath(
  * source ownership and modes.
  */
 export async function overlayEtcFromRootfs(
-  target: MemoryFileSystem,
+  target: RootfsOverlayWriter,
   rootfsImage: Uint8Array,
 ): Promise<void> {
   const source = MemoryFileSystem.fromImage(rootfsImage);
