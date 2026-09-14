@@ -75,6 +75,17 @@ deferred mid-flight; what survives on that branch is the code-line budget
 change below, which is campaign-wide rather than lane work.
 | **F** fork inversion | `/Users/brandon/kandelo-lane-f` | `brandonpayton/lane-f-fork-inversion` | 2026-09-12, from `052e7e9e6` |
 
+**Lane F's standing decisions live at the TOP of
+`docs/plans/2026-09-12-lane-f-census.md`, under "STANDING DECISIONS".** Read
+that block before the numbered sections beneath it, which are a chronological
+working log where a decision can be superseded twenty sections later. The one
+that binds anyone touching fork TypeScript: **set-aside TypeScript never comes
+back** — not to unblock a port, not as scaffolding, not temporarily. Delete
+forward, rebuild in Rust, bank the failing tests with a reason each. Multiple
+agents before this lane failed to delete and migrate that TypeScript, and a
+"temporary" restore is the shape those failures took.
+
+
 **Provisioning a lane worktree is not the same as rebuilding one.** A fresh
 worktree inherits no sysroots, no `local-binaries/` and no `node_modules` —
 hours before the first line of lane work, as `CLAUDE.md` says outright. The

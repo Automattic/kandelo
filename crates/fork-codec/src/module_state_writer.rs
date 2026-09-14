@@ -163,6 +163,35 @@ impl ModuleStateWriter {
         self.adopted
     }
 
+    /// Create the arena's root chunk NOW instead of on the first record.
+    ///
+    /// `reserve` already makes a root lazily, so nothing about the wire format
+    /// needs this. What needs it is the ORDER of a capture: the arena root has
+    /// to be published into each activation's module-buffer prefix before any
+    /// guest starts unwinding, and that happens before any record exists. The
+    /// host used to allocate that first chunk itself and hand the address in,
+    /// which is the half of the arena ownership split census section 133 found
+    /// -- host maps chunk one, module maps the rest, host frees them all by
+    /// walking the list back out of guest memory. Moving the allocation here is
+    /// what lets the module own the whole list and free exactly what it mapped.
+    ///
+    /// Refuses an arena that already exists, adopted or built: a second root
+    /// abandons the first with no handle left to free it.
+    pub fn begin<A: ChunkAllocator>(
+        &mut self,
+        alloc: &mut A,
+        mem: &mut [u8],
+    ) -> Result<u64, Errno> {
+        if self.root != 0 {
+            return Err(Errno::EINVAL);
+        }
+        let pw = self.format.pointer_width as u64;
+        let header = self.format.chunk_header_size as u64;
+        // `total = 0` asks for a chunk with no record in it; the capacity still
+        // rounds up to a whole page, matching what the host allocator did.
+        self.chunk_with_room(alloc, mem, 0, header, pw)
+    }
+
     /// The root chunk address, or 0 before the first record is reserved. This
     /// is the value a child decodes from.
     pub fn root(&self) -> u64 {
@@ -341,6 +370,52 @@ mod tests {
     }
 
     // -- adopt: the child half of the arena (census sections 128 and 133) ----
+
+    #[test]
+    fn begin_creates_a_root_the_decoder_accepts_while_empty() {
+        // The capture publishes the arena root before any record exists, so an
+        // empty arena has to be a valid one -- not merely a chunk that becomes
+        // valid once something is written into it.
+        let (mut mem, mut alloc, mut w) = fixture();
+        let root = w.begin(&mut alloc, &mut mem).unwrap();
+        assert_ne!(root, 0);
+        assert_eq!(w.root(), root);
+        assert!(!w.is_adopted());
+        let state = decode_module_state(&mem, root, &format()).unwrap();
+        assert_eq!(state.records.len(), 0);
+    }
+
+    #[test]
+    fn a_record_written_after_begin_lands_in_the_root_chunk() {
+        // begin must not leave the writer in a state where the first reserve
+        // starts a SECOND chunk -- that would be two chunks for what the host
+        // allocated as one, and the seal-time identity check the host arena
+        // does would reject the difference.
+        let (mut mem, mut alloc, mut w) = fixture();
+        let root = w.begin(&mut alloc, &mut mem).unwrap();
+        let payload = w.reserve(&mut alloc, &mut mem, KIND_GLOBAL, 2, 5, 4).unwrap();
+        w.commit(&mut mem, payload).unwrap();
+        assert_eq!(w.root(), root, "the record did not move the root");
+        let state = decode_module_state(&mem, root, &format()).unwrap();
+        assert_eq!(state.records.len(), 1);
+        assert_eq!(state.records[0].owner_id, 5);
+    }
+
+    #[test]
+    fn begin_refuses_an_arena_that_already_exists() {
+        // Either way it exists -- built here or adopted -- a second root
+        // abandons the first, and the only handle on the first chunk's mapping
+        // is the root that just got overwritten.
+        let (mut mem, mut alloc, mut w) = fixture();
+        let root = w.begin(&mut alloc, &mut mem).unwrap();
+        assert_eq!(w.begin(&mut alloc, &mut mem), Err(Errno::EINVAL));
+        assert_eq!(w.root(), root);
+
+        let mut adopted = ModuleStateWriter::new(format());
+        adopted.adopt(0x4000).unwrap();
+        assert_eq!(adopted.begin(&mut alloc, &mut mem), Err(Errno::EINVAL));
+        assert_eq!(adopted.root(), 0x4000);
+    }
 
     #[test]
     fn an_adopted_root_is_what_lookups_answer_from() {

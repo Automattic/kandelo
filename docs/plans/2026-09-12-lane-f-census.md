@@ -11,6 +11,91 @@ the first place.
 
 ---
 
+## STANDING DECISIONS — read this before anything below
+
+This block is the lane's contract. The numbered sections after it are a
+chronological working log: things get discovered, corrected and superseded
+there, and a decision stated in section 130 can be wrong by section 136. Nothing
+below overrides this block. If the log and this block disagree, this block wins
+and the log entry is stale.
+
+Added at the top rather than appended because the first time these were only in
+the log, they were lost across a context compaction and one of them was
+re-litigated back to the maintainer as an open question after it had already
+been answered.
+
+### D1 — Set-aside TypeScript never comes back (2026-09-14)
+
+Not to unblock a port, not as scaffolding, not temporarily, not "just until the
+suite is green". The chain is deleted forward and rebuilt in Rust; tests it
+breaks are banked with a reason each until the Rust path passes them.
+
+**Why:** multiple agents before this lane failed to delete and migrate this
+TypeScript, and limiting its presence is a deliberate response to that. A
+temporary restore is the exact shape those failures took. Concretely, the
+restore closure measured 19 modules and 14,035 code lines, and would have
+un-banked `fork-module-backend.ts` — already cut this lane from 1,239 lines and
+41 methods to 503 and 20.
+
+**Consequence, accepted rather than negotiated:** nothing is verifiable end to
+end until enough of the chain is rebuilt. That is a reason to work in small
+pieces with their own perturbed tests, to read `crates/host-native`'s
+implementation of each call before writing its JS twin, and to state plainly
+what a piece does not cover — not a reason to trade the direction for a green
+suite. Sections 134 and 135 present this as an open choice; it is not, and
+section 136 supersedes them.
+
+### D2 — The module owns state; the host asks, never mirrors
+
+Where the module already owns a fact — the coordinator phase, the arena root,
+the workspace sizing, whether a chunk list is owned — the host reads it rather
+than keeping a copy. A host-side copy is the drift this campaign exists to
+remove, and it is always the copy that cannot enforce anything.
+
+Prefer ACTING to ASKING: a read followed by the call it guards is two steps the
+module cannot make atomic, so the answer is stale in principle by the time the
+host branches on it, while the module's `EBUSY` refusal is not. Read a phase
+only where there is nothing to attempt and catch — choosing which entry point to
+run, or asserting an invariant.
+
+### D3 — Ceilings: provisional raises allowed, every one reported
+
+`docs/surface-budget.json` ceilings may be raised provisionally to keep work
+moving, with the reason written beside the number in the same commit. Never
+raise one to make a check pass. Every raise is reported to the maintainer for a
+keep-or-revert ruling; the standing ledger is D6 below.
+
+### D4 — Deferrals and merges are the maintainer's
+
+Never self-defer: land the safe part, then stop and argue (what, why, cost,
+follow-up) and ask. The maintainer is the sole merger. No `ABI_VERSION` bumps.
+Own branch only, pushed after every commit.
+
+### D5 — When a selection chip and the maintainer's prose disagree, the prose wins
+
+An `AskUserQuestion` option label is text I wrote; the free-text answer is what
+the maintainer said. The answer payload says so explicitly ("follow what they
+actually say"). D1 was nearly lost to exactly this: a chip reading "restore the
+chain first" carried forward over prose in the same batch that said delete and
+fix forward.
+
+### D6 — Ledger: provisional ceiling raises awaiting a ruling
+
+All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
+
+| Surface | Before | After | Bought |
+|---|---|---|---|
+| `forkModuleHostEntries` | 49 | 52 | `fm_phase`, `fm_borrowed_replay_workspace`, `fm_module_state_arena` |
+| `forkTypeScript` | 672 | 703 | the backend's workspace accessor and its null guard |
+| `forkPlatformTypeScript` | 450 | 463 | `host/src/fork-phase.ts` (28 lines; this surface's target is 500) |
+| `workerMainTypeScript` | 5858 | 5860 | two import lines; every call site was one-for-one |
+
+The one to question is `forkModuleHostEntries`: its target is **5**, and three
+raises in one night moved it the other way. Each bought a deleted host mirror,
+but the direction is the maintainer's call.
+
+---
+
 ## 1. The reconciliation: 71, 95, and what is actually there
 
 Neither 71 nor 95 is the surface. They measured three different things, and the
@@ -6307,6 +6392,12 @@ at all, only the right constructor, which is worth checking before writing any.
 
 ## §134 — There is no live path to switch; there is a down path to rebuild
 
+> **SUPERSEDED in part by D1 (top of this file).** The route choice this
+> section puts to the maintainer was never open: set-aside TypeScript does not
+> come back. The finding that the fork path is DOWN rather than live still
+> stands, and so does what that costs for validation.
+
+
 Designing the host half of the arena, I kept asking "what does production do
 today" and the answer is: nothing. On this branch the fork path does not run at
 all.
@@ -6363,6 +6454,12 @@ restore route buys something I currently do not have at all, and the choice
 between them is not mine.
 
 ## §135 — What "restore the chain" actually costs, measured
+
+> **SUPERSEDED in part by D1 (top of this file).** The measurement stands --
+> 19 modules, 14,035 code lines, and it would un-bank the backend reduction --
+> and it is the best evidence for D1. The choice it was attached to does not
+> exist.
+
 
 Section 134 put the route choice to the maintainer with an estimate. Here is the
 measurement, because the estimate was low and one part of the cost is not a

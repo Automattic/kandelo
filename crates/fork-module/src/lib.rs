@@ -2774,6 +2774,32 @@ mod wasm {
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
+        // `arena_root == 0` asks the module to allocate the KFMS arena root
+        // itself, instead of the host allocating it and handing the address in.
+        //
+        // That handoff is the ownership split census section 133 found: the host
+        // mapped chunk one, the module mapped every later chunk as the guest
+        // reserved records, and the host freed them ALL by walking the linked
+        // list back out of guest memory to rediscover addresses it never held.
+        // Allocating here is what lets the module free exactly what it mapped,
+        // from a list the guest cannot reach -- which retires the cycle check,
+        // the chain-length bound, the per-chunk validation and the
+        // publish-only-after-validation ordering the host needed to keep a
+        // malformed arena from steering a munmap.
+        //
+        // A nonzero `arena_root` keeps the old contract, so `crates/host-native`
+        // is unaffected and the two hosts can differ while the JS side moves.
+        // The host reads the allocated root back with `fm_module_state_arena(0)`
+        // rather than it being returned here, because this entry's return value
+        // is already activation 0's module-buffer anchor.
+        let arena_root = if arena_root == 0 {
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            module_state.begin(module_state_chunks, mem)?
+        } else {
+            arena_root
+        };
         write_module_state_root(root0, arena_root)?;
 
         // Side activations (a dlopen fork): read each (id, fixed_prefix) pair from
