@@ -7134,3 +7134,51 @@ code with no test that would notice a mistake.
 description of my own ignorance that I wrote into four sections as though it were
 a property of the system. Three variations and one rebuild found the cause. I
 should have run them the first time I wanted to use the word.
+
+## §147 — What the imported-global bindings are for, checked before porting
+
+Asked to find out what `ForkImportedGlobalCapture.appendTo` is actually FOR
+before choosing how to port it. The answer changes the choice, and it refutes
+the shortcut I was about to argue for.
+
+My hypothesis was that the binding records are redundant. The guest's own save
+walk already writes a `GlobalSnapshot` for every mutable global including
+imported ones (`fork_instrument`'s plan excludes only `env.__channel_base`), and
+the descriptors are in the guest's own KFIG custom section, which
+`fork_codec::imported_globals` decodes. Descriptors plus snapshots looked like
+enough for a child to correlate on its own, which would have deleted `appendTo`
+rather than ported it.
+
+It is not enough. `captureBinding` resolves each imported global through a
+`WeakMap<WebAssembly.Global, GlobalCoordinate[]>` and records which activation
+EXPORTS the same `WebAssembly.Global` object this one imports:
+
+    kind: ActivationGlobal, sourceActivation: provider.activationId,
+    sourceOwner: provider.ownerId
+
+That is JavaScript object IDENTITY. A descriptor says "activation 3 imports
+`env.foo`, an i32". A snapshot says "its value was 42". Neither says "the Global
+object activation 3 imports is the same object activation 0 exports as `bar`" —
+and in the child those two must be wired to ONE reconstructed Global, or two
+activations that shared a mutable global stop sharing it and drift apart
+silently.
+
+Wasm cannot observe that: there is no `global.eq`, and the module does not
+import the activations' globals at all. It is the same shape as the table
+ownership election this lane already accepted as floor in
+`fork-table-state-owners.ts` — the host compares object identity once and
+publishes the RESULT, because comparing is the part that needs JavaScript.
+
+**So the design question answers itself.** The matching stays in the host,
+because the matching is the identity comparison. What moves is only where the
+result is written: through the module's record-reserve/commit imports instead of
+a host-owned arena object, so there is one arena and the module owns it. No new
+module entry, no encoder — the host already has the bytes, it just stops needing
+its own arena to put them in.
+
+**And the general lesson, which is why the question was worth asking.** I was one
+step from "porting" this by deleting it, on a hypothesis about what the data
+meant that I had not checked against the code that produces it. Both prior
+attempts to shortcut this lane's hard parts — the "ownership protocol" and the
+"cluster cut" — were the same move: a conclusion about the system standing in
+for a fact about it.
