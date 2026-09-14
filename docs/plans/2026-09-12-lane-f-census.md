@@ -6759,8 +6759,24 @@ possibly-null raw part (`from_raw_parts` requires a non-null base even for len
 0)". So the non-null requirement was known and handled at one call site and
 relied upon not to matter at another.
 
-This is a hypothesis with good evidence, not a proof: I did not isolate the
-emitted code. It should be confirmed before anything is changed.
+**Confirmed by measurement, and the numbers are worse than the symptom.** A
+throwaway export built against the real artifact reported, from inside the
+module, for a 16 MiB memory:
+
+    mem_len_bytes = 16777216
+    mem_ref().len() = 16777216
+    mem_ref().get(1024..1056) = None
+    mem_ref().get(0..32)      = None
+
+The slice agrees about its own length and then refuses a 32-byte range at offset
+ZERO. Safe Rust cannot do that: `get` is `start <= end && end <= len`, and
+`0 <= 32 <= 16777216` holds. The only way out is that the slice is ill-formed,
+which is exactly what constructing it from a null base makes it. The bounds check
+has been folded to always-fail.
+
+So this is not "a read that behaved oddly". Every `mem_ref()`/`mem_mut()` slice
+in this module is ill-formed, and `.get` on one answers `None` unconditionally in
+at least some inlining contexts. The probe was reverted after measuring.
 
 **Why this is not mine to fix unilaterally, and what I would want checked.**
 `mem_ref`/`mem_mut` are how this module reaches guest memory at all, the same
@@ -6769,13 +6785,25 @@ every existing caller depends on the current behaviour. Changing the base is a
 change to shared infrastructure whose failure mode is silent, on a path I cannot
 execute end to end. So: recorded, not rewritten.
 
-What makes it worth a decision rather than a footnote is that the surviving
-callers are not obviously safe — they are differently shaped. Mine called `.get`
-on the slice directly, inside the same function. The ones that pass, like
-`__wpk_fork_module_state_record_find`, hand the slice across a crate boundary to
-`fork-codec`, which indexes it there. That difference is exactly the kind that
-decides whether an optimiser folds a bounds check, which would mean the existing
-callers are not correct so much as not yet miscompiled.
+What makes it a decision rather than a footnote is that the surviving callers are
+not correct, only differently shaped. Mine called `.get` on the slice inside the
+same function and got the folded check. The ones that pass, like
+`__wpk_fork_module_state_record_find`, hand the slice across a crate boundary for
+`fork-codec` to index — the same ill-formed slice, indexed somewhere the
+optimiser has not folded it yet. They are not safe; they are not yet
+miscompiled, and nothing stops a future inlining decision from changing that.
+
+**The shape of a fix, for whoever takes it.** The problem is not the address —
+wasm offset 0 really is valid and addressable. The problem is that "a slice
+covering all of linear memory, based at 0" cannot be expressed in Rust without
+violating `from_raw_parts`'s non-null precondition, and `black_box` only hides
+that from the lint. The working reads in this same file already show the shape
+that is sound: build the slice per access from `black_box(start)`, which is
+non-null for any real offset. Generalising that means `mem_ref()`/`mem_mut()`
+stop returning whole-memory slices and callers ask for the range they want —
+which changes the `fork-codec` signatures that currently take a whole-memory
+`&[u8]` and index it with absolute offsets. That is the part that makes this too
+large to do mid-stride and on a path I cannot execute.
 
 The failure mode is the part I would not want to meet later: a silent `None`,
 surfaced as a bad-argument errno, from a read that was in bounds.
