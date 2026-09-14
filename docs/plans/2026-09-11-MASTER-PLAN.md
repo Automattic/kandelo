@@ -2815,8 +2815,31 @@ description stays where the fetcher is.
 **So the archive half needs no module change either.** The state moves from
 being a field of an 8,215-line filesystem to being a small record beside the
 bridge, populated the same two ways it is today: by registration, and by
-parsing `archiveJson` on load. **No ABI growth, and the last unknown between
-here and deleting `memory-fs.ts` is closed.**
+parsing `archiveJson` on load. **No ABI growth.**
+
+**AND THE FILE HALF IS THE SAME, which a parity test proved by failing.** The
+mapping described above — take the module's deferred-file view and decode the
+URL from its descriptor — was written, tested against `MemoryFileSystem` for
+the same image, and **disproved**: the module returns an **empty descriptor**
+for every lazy file loaded from an image, so the URLs came back `""`.
+
+That is not a defect, it is the courier contract. **KLZY carries no fetch
+description.** The URL lives in the container's host-side `lazyJson`, written
+by `saveImage` from `serializeLazyEntries()` and parsed only by the host. The
+module never learns it and never should. A descriptor is populated only for
+entries registered through the bridge in the same session, which is exactly why
+the mapping looked right until it met a loaded image.
+
+**So both halves of the adapter read the container's host-side JSON sections**
+— `lazyJson` for files, `archiveJson` for archives — as `MemoryFileSystem` does
+on import today. `sm_lazy_entries` answers a different question (what the
+builder registered) and is not the adapter's source.
+
+The function was reverted rather than kept, because the claim the test
+disproved was its central one. **It was caught because the test was written as
+a PARITY test against the incumbent** — a test of the new code's internals
+would have passed, since the mapping faithfully decodes whatever descriptor it
+is handed.
 
 **5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
 closes.
