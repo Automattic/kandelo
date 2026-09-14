@@ -7976,3 +7976,112 @@ to pick:
 I lean to inlining, and to doing it at the END of the stride where a browser
 build can actually check it.
 
+---
+
+## §163 — Section 159 asked the wrong question, and the answer would have been dead code
+
+The maintainer approved the entry section 159 proposed. Before writing its caller
+I traced who would call it, and the premise does not hold. Recording this before
+building anything.
+
+**What 159 claimed.** That `ForkExceptionBroker` keeps the registry's capture
+session alive through `captureHostException`, six module calls the host
+sequences, and that folding them into `fm_capture_host_exception` would remove
+the last consumer.
+
+**What is actually there.** `captureHostException` is reached only from
+`ForkExceptionBroker.encodeFromSlot`, which is reached only from
+`buildForkExceptionImports` -- and `host/src` does not use that builder at all
+any more. Guest imports are built by `fork-guest-imports.ts`, whose floor is
+three names:
+
+```
+__wpk_fork_ref_exn_broker_throw_recipe
+__wpk_fork_ref_exn_ingress_throw
+__wpk_fork_ref_provenance_externref
+```
+
+`__wpk_fork_ref_exn_broker_encode` is not among them, so it comes from the
+module -- which refuses it with `EOPNOTSUPP` and a poisoned recipe, deliberately
+and with a doc comment saying so: routing a foreign exception to the activation
+that owns its tag needs a capture-side drive, and "there is no capture-side
+drive today, and that is F3's work".
+
+So the six-call sequence has no caller and cannot get one until F3. I wrote the
+entry, compiled it, and reverted it: it is exactly the dead-floor-ahead-of-its-
+consumer mistake this lane has made three times (`fork-resume-table`,
+`ForkTableStateOwners`, `fm_attach_child`).
+
+**What the real dependency is.** `throwRecipe(recipeId)`, on the REPLAY side:
+ask which activation owns an exnref recipe, then either throw the host's
+original value or call that activation's thrower. That is what reaches
+`registry.currentReferences()`.
+
+**And it cannot work today either.** `exceptionOwner` answers only for recipes in
+the session's `hostExceptionRecipes`, which only `captureHostException`
+populates -- so for a wasm-owned recipe it throws "fork recipe N is not an
+exception". The ingress map behind `throwIngress` is likewise filled only by the
+dead `encodeFromSlot`, so every token is unknown. **Both floor exception imports
+are non-functional in the current wiring**, which is the visible shape of the
+deferral census 109 records rather than a new defect -- but it is worth stating,
+because it means the registry's last parent-side consumer is a path that cannot
+run.
+
+**Which makes the question different.** Porting the broker to a host file that
+fails loud on both paths -- the same message the floor already gives for an
+unbound thrower -- would remove `currentReferences()` from the parent path
+without pretending to implement F3, and would not regress anything, because the
+current behaviour is a confusing throw from inside a capture session. But it
+means porting a subsystem the maintainer explicitly deferred into a
+deliberately-failing shape, which is a call I should not make alone.
+
+---
+
+## §164 — The fence around `browser-fork-module-artifact.ts`, found
+
+Asked whether I knew what that two-line file is for, with Chesterton's fence
+named. I did not, and section 162 said so in the worst way: it quoted the file's
+own stated purpose -- "one nameable dependency edge" -- and dismissed it as a
+style choice. Here is what it actually is.
+
+**It is one of four, and the other three were never swept.** `host/src` holds
+`browser-wasi-module-artifact.ts`, `browser-dylink-module-artifact.ts` and
+`browser-wasm-artifact-module-artifact.ts`, each two lines of the identical
+shape, each with a comment pointing at the fork one as the pattern they follow.
+The sweep took this one because its filename begins with `fork-`. Nothing about
+what it does differs from three files that stayed.
+
+**The reason it exists is a build-graph property, not a style.** The commit that
+introduced it says it: "Kept behind its own dynamic import so a default boot
+never requires the fork-module artifact." A static `import ... from
+"@fork-module32-wasm?url"` in a module the boot path imports eagerly makes the
+staged `fork_module32.wasm` a hard requirement of every browser build. Isolating
+the alias in its own module, reached only through `await import()`, keeps the
+artifact an optional build INPUT. The dylink sibling states the same thing from
+the other side: "A demo build that never loads a shared object does not have to
+have built the module."
+
+**What has changed since, and what has not.** The runtime optionality is gone --
+the fork module is now unconditional, and `browser-kernel-host.ts` says so. The
+BUILD-graph isolation has not: the file is still the single place the
+`@fork-module32-wasm` alias appears on the host side, which is what lets a
+reader answer "what requires this artifact" by grepping one name. The CI asset
+check does not depend on it (it works from
+`apps/browser-demos/browser-module-contract.mjs`), so deleting the file would
+not break that gate -- it would only make the alias harder to find.
+
+**So my recommendation flips.** Section 162 leaned to inlining the edge at its
+caller. Inlining probably preserves the deferral -- the caller's import is
+already dynamic -- but "probably" is doing real work in that sentence, and I
+cannot check it: verifying a bundler behaviour change needs a browser build, and
+the browser build needs a host that loads. Restoring the file preserves a
+property I now understand instead of one I would be preserving by accident, and
+it puts the file back beside the three siblings it was always part of.
+
+The cost is two lines on `forkRestoredHostFloor`, a surface banked at its
+measurement and documented to only fall. That surface's stated category is
+"host floor the `fork-*.ts` sweep took by FILENAME that turned out to be process
+lifecycle, cross-worker transport or memory placement rather than fork
+capture/replay logic", which is this file exactly. Still the maintainer's call,
+under D1.
+
