@@ -39,8 +39,8 @@ import {
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
-import { resolveLazyUrl } from "./vfs/lazy-url";
-import { imageReadFromBody } from "./vfs/rootfs-lazy-archives";
+import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
@@ -670,10 +670,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;
-  if (msg.lazyUrlBase) {
-    memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-    memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-  }
+  // No rewriteLazy*Urls here any more. The deployment base is applied when the
+  // overlay reads its metadata out of the container, so nothing mutates a
+  // stored record to say where bytes live.
   // Captured for the rootfs overlay's archive provider below (Phase 5
   // 3b-wiring.3): the SAME fetcher object installed on memfs, so the
   // in-kernel LazyMember path fetches raw archives over the identical
@@ -765,9 +764,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // provider before init applies them. The `/` MemoryFileSystem is reachable
   // only here in the entry.
   if (memfs) {
+    // The overlay's metadata and bytes both come from the container the kernel
+    // is itself handed, not from the host's filesystem. `memfs` is no longer
+    // asked anything here.
+    const { baseImage, imageRead } = createBaseImageFromContainer(
+      msg.vfsImage,
+      imageReadFromContainer(msg.vfsImage),
+      msg.lazyUrlBase,
+    );
     configureRootfsOverlayFromImage({
-      baseImage: memfs,
-      imageRead: imageReadFromBody(memfs),
+      baseImage,
+      imageRead,
       // Progress now comes from the PIPE rather than from the
       // filesystem's own fetch, and it covers archives as well as
       // files — archives reported nothing before.

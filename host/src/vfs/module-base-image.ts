@@ -29,12 +29,8 @@ import type {
   LazyFileEntry,
   SerializedLazyArchiveEntry,
 } from "./memory-fs";
+import { resolveLazyUrl } from "./lazy-url";
 import type { RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
-
-/** The bytes half: whatever can serve POSIX-shaped reads and an image window. */
-export interface ModuleImageSource {
-  imageRead(offset: bigint, dest: Uint8Array): number;
-}
 
 function decodeSection(bytes: Uint8Array | null, label: string): unknown {
   if (bytes === null) return null;
@@ -47,14 +43,30 @@ function decodeSection(bytes: Uint8Array | null, label: string): unknown {
 }
 
 /**
- * Build the overlay's base image from a module and the container it loaded.
+ * Build the overlay's base image from the container and a reader for its bytes.
  *
- * `container` must be the same bytes the module was given. It is read for its
- * host-side JSON sections only; the filesystem itself is the module's.
+ * There is no filesystem here, and no module interface either. Metadata is
+ * decoded from `container`'s own host-side JSON sections, and `imageRead`
+ * answers container-offset reads however its owner likes: from the container
+ * array itself via `imageReadFromContainer`, or through the wasm bridge's
+ * `sm_image_read`, which is a one-line adapter because the coordinates already
+ * agree.
  */
-export function createModuleBaseImage(
-  module: ModuleImageSource,
+export function createBaseImageFromContainer(
   container: Uint8Array,
+  imageRead: (at: number, dest: Uint8Array) => number,
+  /**
+   * The deployment's base path for relative lazy URLs, applied on the way OUT.
+   *
+   * Applying it here rather than mutating a stored record is what lets the
+   * image stay one artifact: `lazyUrlBase` defaults to the site's `BASE_URL`,
+   * so the same bytes are served from `/` in dev and from `/kandelo/` in an
+   * assembled-site preview. Rewriting on read-out costs nothing and
+   * invalidates nothing — V3 deliberately excludes transport locations from
+   * descriptor identity, in its own words *"because image composition rewrites
+   * mirrors after sealing"*, so no digest covers the string being changed.
+   */
+  lazyUrlBase?: string,
 ): { baseImage: RootfsOverlayBaseImage; imageRead: (at: number, dest: Uint8Array) => number } {
   const parsed = parseImageHeader(container);
   const sections = sectionOffsetAfterArchives(
@@ -76,16 +88,36 @@ export function createModuleBaseImage(
   // object; it now fetches them itself, so what remains is the metadata the
   // image declared — which is the only part the module was ever authoritative
   // about anyway.
-  const baseImage: RootfsOverlayBaseImage = {
-    exportLazyEntries: () => (Array.isArray(lazy) ? lazy : []) as LazyFileEntry[],
-    exportLazyArchiveEntries: () =>
-      (Array.isArray(archives) ? archives : []) as SerializedLazyArchiveEntry[],
+  const rebaseUrl = (url: string): string =>
+    lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);
+
+  // An archive names its transports in declared order and its `url` is the
+  // first of them; an entry with no `content` carries only the `url`. That is
+  // the whole of what the incumbent's three-branch rewrite does to observable
+  // state — the branches choose which in-memory record to touch, and a decoded
+  // entry is one record.
+  const rebaseArchive = (
+    entry: SerializedLazyArchiveEntry,
+  ): SerializedLazyArchiveEntry => {
+    if (lazyUrlBase === undefined) return entry;
+    if (entry.content === undefined) return { ...entry, url: rebaseUrl(entry.url) };
+    const transports = entry.content.transports.map(rebaseUrl);
+    return {
+      ...entry,
+      content: { ...entry.content, transports },
+      url: transports[0] ?? entry.url,
+    };
   };
 
-  return {
-    baseImage,
-    // CONTAINER coordinates straight through: the module holds the container,
-    // so unlike a body-holding backend it subtracts nothing.
-    imageRead: (at, dest) => module.imageRead(BigInt(at), dest),
+  const baseImage: RootfsOverlayBaseImage = {
+    exportLazyEntries: () =>
+      (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>
+        lazyUrlBase === undefined ? entry : { ...entry, url: rebaseUrl(entry.url) },
+      ),
+    exportLazyArchiveEntries: () =>
+      (Array.isArray(archives) ? (archives as SerializedLazyArchiveEntry[]) : [])
+        .map(rebaseArchive),
   };
+
+  return { baseImage, imageRead };
 }

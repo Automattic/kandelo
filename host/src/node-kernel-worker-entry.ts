@@ -51,7 +51,8 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
-import { imageReadFromBody } from "./vfs/rootfs-lazy-archives";
+import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
@@ -806,11 +807,11 @@ async function buildVirtualPlatformIO(
     ? rootMount.backend
     : null;
   if (rootfsMemfs) {
-    if (rootfsLazyUrlBase !== undefined) {
-      rootfsMemfs.rewriteLazyFileUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
-      rootfsMemfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(rootfsLazyUrlBase, url));
-    }
-        const lazyFetcher = rootfsLazyAssets !== undefined
+    // No rewriteLazy*Urls here any more, so `rootfsLazyUrlBase` is not read on
+    // this path: the deployment base is applied when the overlay reads its
+    // metadata out of the container, and nothing mutates a stored record to
+    // say where bytes live.
+    const lazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
       ? createClosedLazyAssetSourceFetcher(rootfsLazyAssetSources)
@@ -935,14 +936,21 @@ async function handleInit(msg: InitMessage) {
   // provider before init applies them. The `/` MemoryFileSystem is reachable
   // only here in the entry.
   if (rootfsMemfs) {
+    const rootfsContainer = new Uint8Array(msg.rootfsImage!);
+    // Metadata and bytes both from the container the kernel is itself handed.
+    const { baseImage, imageRead } = createBaseImageFromContainer(
+      rootfsContainer,
+      imageReadFromContainer(rootfsContainer),
+      msg.rootfsLazyUrlBase,
+    );
     configureRootfsOverlayFromImage({
-      baseImage: rootfsMemfs,
-      imageRead: imageReadFromBody(rootfsMemfs),
+      baseImage,
+      imageRead,
       // Progress now comes from the PIPE rather than from the
       // filesystem's own fetch, and it covers archives as well as
       // files — archives reported nothing before.
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
-      imageBytes: new Uint8Array(msg.rootfsImage!),
+      imageBytes: rootfsContainer,
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootfsNosuid,
       lazyFetcher: rootfsLazyFetcher,

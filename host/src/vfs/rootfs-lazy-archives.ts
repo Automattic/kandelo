@@ -134,6 +134,27 @@ export function imageReadFromBody(
   };
 }
 
+/**
+ * Serve container-offset reads straight from the container bytes.
+ *
+ * The peer of {@link imageReadFromBody}, and the simpler one: a caller holding
+ * the whole container answers in container coordinates without subtracting
+ * anything. Both worker entries already hold those bytes — they are what the
+ * kernel is handed as `imageBytes` — so nothing has to be a filesystem for the
+ * overlay to read its own image.
+ */
+export function imageReadFromContainer(
+  container: Uint8Array,
+): (at: number, dest: Uint8Array) => number {
+  return (at, dest) => {
+    if (!Number.isSafeInteger(at) || at < 0) return EIO;
+    if (at >= container.byteLength) return 0; // end of image
+    const n = Math.min(dest.byteLength, container.byteLength - at);
+    dest.set(container.subarray(at, at + n));
+    return n;
+  };
+}
+
 /** Fetch bytes for a URL. The whole of what a dumb pipe needs to be able to do. */
 export type DeferredUrlFetch = (url: string) => Promise<Uint8Array>;
 
