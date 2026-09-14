@@ -2928,9 +2928,13 @@ the capacity invariant's test was shown failing before it was shown passing.
   flipping one byte of the same fixture's code makes it fail. The peer host
   refuses the mismatch with `ENOEXEC`
   (`host/src/process-lifecycle.ts:1761`), so this is a host parity gap with no
-  platform boundary behind it. Import linkage catches ABI drift in the 13
-  kernel functions a guest names; it does not catch channel-LAYOUT drift, which
-  is the only kind the fixtures actually exhibit. All 43 fixtures declare ABI
+  platform boundary behind it. Import linkage does NOT cover it either:
+  `spawn_guest_thread` trap-stubs imports it cannot find by NAME, so a renamed
+  or dropped kernel import instantiates fine and traps only if called. Six of
+  the sixteen distinct kernel imports across the fixtures are stubbed today
+  (`kernel_push_argv` and the fork-exec family, names `guest.rs` never
+  mentions). Only a retyped import is refused. Channel-LAYOUT drift, the only
+  kind the fixtures actually exhibit, is caught by nothing. All 43 fixtures declare ABI
   44, so the check would be safe today — decoded per artifact, with the decoder
   perturbed. **The README is corrected; the guard is not added, because that is
   a behaviour change in the launch path and the deferral is the maintainer's

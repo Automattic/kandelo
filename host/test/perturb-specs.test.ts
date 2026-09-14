@@ -78,6 +78,51 @@ describe("lane L's perturbation specs still cite what they claim", () => {
     expect(trials).toBeGreaterThanOrEqual(20);
   });
 
+  it("the lane document's published inventory matches this directory", () => {
+    // The document has stated this inventory twice and been wrong twice: a
+    // bullet list naming two specs when there were six, and a summary line
+    // reading "Six specs, 20 trials" against nine and twenty-six. A count
+    // maintained by hand beside a directory that grows is L-D2's shape --
+    // knowledge kept in two places, with nothing comparing them. This is the
+    // comparison.
+    const doc = readFileSync(
+      REPO_ROOT + "docs/plans/2026-09-13-lane-l-line-attribution.md",
+      "utf8",
+    );
+    const said = doc.match(/\*\*(\d+) specs, (\d+) trials/);
+    expect(
+      said,
+      'the lane document must carry an inventory line of the form "**N specs, M trials"',
+    ).not.toBeNull();
+    const trials = SPECS.reduce((n, [, spec]) => n + spec.trials.length, 0);
+    expect(Number(said![1]), "specs claimed by the document").toBe(SPECS.length);
+    expect(Number(said![2]), "trials claimed by the document").toBe(trials);
+  });
+
+  it("no trial is carried by two specs", () => {
+    // Four trials lived in both lane-l-host-native.json and
+    // lane-l-import-coverage.json. The second spec exists to give exactly
+    // those four a verifier scoped to the test that covers them -- so leaving
+    // them in the first meant the slow run happened anyway, and the "two
+    // minutes rather than twenty" this bought was notional.
+    const seen = new Map<string, string>();
+    const dupes: string[] = [];
+    for (const [file, spec] of SPECS) {
+      for (const trial of spec.trials) {
+        const key = JSON.stringify([
+          spec.file,
+          trial.scope,
+          trial.find,
+          trial.replace,
+        ]);
+        const first = seen.get(key);
+        if (first === undefined) seen.set(key, file);
+        else dupes.push(`${trial.name}: ${first} and ${file}`);
+      }
+    }
+    expect(dupes, "a trial in two specs runs twice and is counted twice").toEqual([]);
+  });
+
   for (const [name, spec] of SPECS) {
     describe(name, () => {
       it("names a file that exists", () => {

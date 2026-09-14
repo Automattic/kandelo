@@ -1303,12 +1303,40 @@ Host Runtime Contract is explicit that peers may differ only at a justified
 platform boundary. There is no boundary here; wasmtime can read an export as
 easily as V8 can.
 
-**What partly covers the gap, and what does not.** A guest imports 13 kernel
-functions plus `env.__channel_base` and `env.memory`, so ABI drift that
-renames or retypes one of those fails loudly at instantiation. Drift in the
-syscall channel's LAYOUT does not — and that is precisely where the staleness
-measured above actually was. The one category of drift the fixtures really
-exhibited is the one category nothing would have caught.
+**What covers the gap: less than this document first said.** The paragraph
+here claimed a guest's 13 kernel imports meant "ABI drift that renames or
+retypes one of those fails loudly at instantiation". The count was wrong and
+the mechanism was half wrong, and the wrong half is the one that matters.
+
+The count is **14** for `native_hello`, ranging 1 to 16 across the fixtures.
+
+The mechanism: `spawn_guest_thread` finishes its wiring with
+`linker.define_unknown_imports_as_traps(&module)`, and wasmtime's
+`_get_by_import` looks the import up by NAME alone. A name the host does not
+define therefore gets a trap stub built from the guest's own declared
+signature, and instantiation SUCCEEDS — the failure arrives only if that path
+runs, which for a fixture exercising one narrow path may be never. Only a
+name that is defined with a DIFFERENT signature is refused, by `instantiate`.
+So "renames or retypes" was two cases with opposite answers, reported as one.
+
+**Six of the sixteen are trap-stubbed right now** — `kernel_push_argv` and the
+fork-exec family — and `guest.rs` does not contain those names anywhere. Eight
+of `native_hello`'s fourteen are defined; six are stubs. The permissive branch
+is not a latent risk, it is the current state, and `guest.rs:9166` says so in
+its own comment: "imported but never reached on this (non-forking) path; a
+trap is the truthful boundary."
+
+The peer host names this hazard and refuses it.
+`assertSupportedKernelFunctionImports` (`host/src/worker-main.ts:2488`) runs
+inside `buildImportObject` at all three instantiation sites, and its comment
+states the intent exactly: a placeholder "makes an obsolete or corrupt
+direct-kernel syscall import look like success", so it fails "before
+instantiation so stale artifacts are rebuilt through the supported channel
+path". That is the sentence the native host does not honour.
+
+Drift in the syscall channel's LAYOUT is caught by neither host's import
+check — and that is precisely where the staleness measured above actually
+was.
 
 **The fix is measured as safe but is not made here.** All 43 committed
 fixtures declare ABI 44, which is `EXPECTED_ABI_VERSION`, so the check would
@@ -1802,15 +1830,25 @@ the compiler rejected from one a test killed.
 
 **Lane L's guards now have specs, and they are checked in.** No convention
 existed for where these live — nothing in the tree carries one — so they are
-`docs/perturb/lane-l-host-native.json` and `docs/perturb/lane-l-range-corpus.json`,
-to be moved if the campaign settles somewhere else.
+`docs/perturb/lane-l-*.json`, to be moved if the campaign settles somewhere
+else.
 
-  * `lane-l-host-native.json`: restate a length instead of asking the region;
-    pass a DIFFERENT region's capacity; remove L-D3's launch-entry range
-    proof; restate the blob length as its capacity. **4 trials, 0 survived, 0
-    invalid.**
-  * `lane-l-range-corpus.json`: mark a case `rustOnly` with no true reason;
-    change an expected verdict. **2 trials, 0 survived, 0 invalid.**
+This list is deliberately not an inventory. It named two specs and four
+trials, and stayed that way while the directory grew to nine and twenty-six —
+the second time this document's counts went stale by being maintained beside
+the thing they describe rather than derived from it. The counts now live in
+one sentence below, and `host/test/perturb-specs.test.ts` fails if that
+sentence disagrees with the directory.
+
+  * `lane-l-host-native.json` carries the guards on `guest.rs` itself: capacity
+    restated instead of asked for, a DIFFERENT region's capacity, L-D3's
+    launch-entry range proof removed, the blob length restated as its capacity,
+    a raw write hidden behind a non-pointer-named local, a record size asked of
+    the wrong shared type.
+  * `lane-l-import-coverage.json` carries the four metadata-import trials,
+    with a verifier scoped to the one test that covers them.
+  * The remaining seven pin a corpus, a status word, a layout pairing, or the
+    ratchet's counted path — one or two trials each.
 
 One overlap is worth noting because it was not designed: removing the
 launch-entry range proof is caught by the pointer/capacity guard as well as by
@@ -1847,12 +1885,41 @@ perturbation claim elsewhere in this document is a transcript of a run
 somebody has to take on trust; the specs are a command:
 
 ```sh
+HOST=$(rustc -vV | awk '/^host:/{print $2}')
 for spec in docs/perturb/lane-l-*.json; do
-  cargo xtask perturb "$spec" || break
+  cargo run -p xtask --target "$HOST" --quiet -- perturb "$spec" || break
 done
 ```
 
-**Six specs, 20 trials, 0 survived, 0 invalid.** The host-native spec's
+**That command used to say `cargo xtask perturb "$spec"`, and that does not
+run.** There is no `[alias]` section in `.cargo/config.toml` and no
+`cargo-xtask` on `PATH`, so cargo answers ``no such command: `xtask` ``. The
+repo's own scripts spell it the long way -- `scripts/build-programs.sh:43` is
+`cargo run -p xtask --target "$HOST_TARGET" --quiet -- ...` -- and the
+`--target` is not optional, because `[build] target = "wasm32-unknown-unknown"`
+would otherwise try to build a host tool for wasm.
+
+It is worth stating plainly where it happened: the paragraph immediately above
+contrasts these specs, "a command", with claims that are "a transcript
+somebody has to take on trust" -- and the command did not work. A reproduction
+instruction that cannot be run is worth less than the transcript it was
+supposed to improve on, not more.
+
+**This is not only this document's mistake.** `cargo xtask` appears **178
+times** across the repository as of the commit before this paragraph -- 88 in
+`docs/`, 22 inside `tools/xtask/src` itself, and five in
+`crates/host-native/src`, where the kernel-provenance
+report prints `Get the verdict:  cargo xtask verify-fresh` to an operator who
+is already confused about a stale artifact. Adding the alias is a one-line
+change to a root config every lane shares, so it is reported here rather than
+made: **the convention the repository documents and the invocation it supports
+are not the same, in 178 places.**
+
+**9 specs, 26 trials, 0 survived, 0 invalid.** The run that establishes this
+executed THIRTY, because four trials were carried by two specs at once; all
+thirty died, and the four duplicates were then removed, which is what makes
+the scoped verifier below an actual saving rather than a notional one. The
+host-native spec's
 fourteen completed in a single uninterrupted invocation — which this document
 denied for a while, because the run was misdiagnosed as dead while it was
 still finishing.
@@ -1867,7 +1934,7 @@ own process dying.
 
 The loop is not decoration. `xtask perturb` takes ONE spec — it reads
 `args.first()` and ignores the rest — so the obvious
-`cargo xtask perturb docs/perturb/lane-l-*.json` runs the first file the glob
+`... -- perturb docs/perturb/lane-l-*.json` runs the first file the glob
 expands to, reports its 14 trials, and exits 0. A reader would take that for
 the whole set. This document carried exactly that command for one commit: a
 reproduction instruction that silently measures a fifth of what it claims,

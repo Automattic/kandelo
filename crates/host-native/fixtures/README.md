@@ -52,11 +52,28 @@ module); nothing reads a GUEST's. Renaming the export out of a fixture --
 flipping one byte of its code makes the same test fail, so the fixture bytes
 are reaching the host and the marker is simply never looked up.
 
-What DOES fail loudly is import linkage: a guest names 13 kernel functions
-plus `env.__channel_base` and `env.memory`, so a drift that renames or retypes
-one of those is caught at instantiation. What is NOT caught is drift in the
-syscall channel's LAYOUT, which is where most of the ABI lives and where the
-one real case of fixture staleness measured so far actually was.
+**Import linkage does not cover the gap either, and the first version of this
+correction said it did.** A guest names between 1 and 16 `kernel.*` functions
+(14 for `native_hello`) plus `env.__channel_base` and `env.memory`.
+`spawn_guest_thread` ends its wiring with
+`linker.define_unknown_imports_as_traps(&module)`, and wasmtime's
+`_get_by_import` matches on NAME alone, so:
+
+* a name the host does not define gets a trap stub carrying the GUEST's own
+  declared signature -- instantiation succeeds, and the failure arrives only
+  if that path runs;
+* a name that IS defined but with a different signature gets no stub, and
+  `instantiate` refuses it.
+
+Only the second half is loud, and the first half is the one that matters
+here: of the 16 distinct kernel imports across these fixtures, **six are
+trap-stubbed today** -- `kernel_push_argv` and the fork-exec family, names
+`guest.rs` does not contain anywhere.
+
+So nothing structurally separates a guest built for an older epoch from a
+current one. Drift in the syscall channel's LAYOUT -- where most of the ABI
+lives, and the one kind of staleness these fixtures actually exhibit -- is
+invisible to every check the native host performs.
 
 The peer host does enforce this: `host/src/process-lifecycle.ts` refuses a
 launch with `ENOEXEC` when a program declares an ABI that disagrees with the
