@@ -178,6 +178,40 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .trim(),
     );
     let target = root.join(&spec.file);
+    let sentinel = root.join(".perturb-in-progress");
+
+    // A revert that is the THIRD step is not atomic. The loop below applies a
+    // mutation, runs a verifier, then reverts -- and anything that stops the
+    // process in between leaves the target file mutated, uncommitted, with no
+    // error anywhere. That happened three times in one session: a laptop
+    // sleep, a killed background shell, and someone restoring the file by
+    // hand while a run was in flight.
+    //
+    // The reverts above cover a panic. This covers the rest, without a signal
+    // handler that would catch only some of them: a file written before the
+    // first mutation and removed after the last revert. A SIGKILL, a sleep or
+    // a killed parent all leave it behind, and the next run trips over it
+    // instead of starting on a tree it believes is clean.
+    if sentinel.exists() {
+        let note = std::fs::read_to_string(&sentinel).unwrap_or_default();
+        let mut message = String::from("a previous perturb run did not finish.\n");
+        for line in note.lines() {
+            message.push_str("  ");
+            message.push_str(line);
+            message.push('\n');
+        }
+        message.push_str(
+            "That run left its mutation applied. Read `git diff` on the file \
+             named above: if the only change is the trial's own line, restore \
+             it and remove the marker.\n",
+        );
+        message.push_str(&format!(
+            "  git checkout -- <file> && rm {}",
+            sentinel.display(),
+        ));
+        return Err(message);
+    }
+
     require_tracked_and_clean(&root, &spec.file)?;
     println!("precondition: {} is tracked and clean", spec.file);
 
@@ -185,8 +219,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let mut invalid = Vec::new();
     for trial in &spec.trials {
         println!("\n=== {} ===", trial.name);
+        std::fs::write(
+            &sentinel,
+            format!("file: {}\ntrial: {}\n", spec.file, trial.name),
+        )
+        .map_err(|e| format!("{}: {e}", sentinel.display()))?;
         if let Err(e) = apply(&target, trial) {
             revert(&root, &spec.file)?;
+            let _ = std::fs::remove_file(&sentinel);
             return Err(e);
         }
         println!("  mutation applied");
@@ -198,6 +238,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .map_err(|e| format!("build: {e}"))?;
             if !built.success() {
                 revert(&root, &spec.file)?;
+                let _ = std::fs::remove_file(&sentinel);
                 println!(
                     "  INVALID — the mutation does not compile, so a non-zero verifier \
                      would prove nothing. Fix the trial."
@@ -214,6 +255,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         // Revert BEFORE reporting, so a panic in reporting cannot leave the
         // tree mutated.
         revert(&root, &spec.file)?;
+        let _ = std::fs::remove_file(&sentinel);
         if status.success() {
             println!("  SURVIVED — the verifier stayed green. This behaviour is not covered.");
             survived.push(trial.name.clone());

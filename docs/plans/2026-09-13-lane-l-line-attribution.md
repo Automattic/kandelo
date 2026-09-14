@@ -1160,16 +1160,17 @@ the code's own comment says so. Checking one source and concluding about every
 source is the narrower-question error, committed while cataloguing it.
 
 **Their comment also claimed a pin that did not exist.** It read "pinned here
-against that generated header" — present tense, describing an intention. The
-pin is real now and perturbed: drift `STATUS_PENDING` to 7 and the test says
-*"WASM_POSIX_CHANNEL_STATUS_PENDING is 1 in the header and 7 here"*, naming
-the constant and both values.
+against that generated header" — present tense, describing an intention.
 Nothing read that header. A reader checking this host against its own comment
 would have found them agreeing and learned nothing, which is exactly the
 `__heap_base` failure recorded above, in a different file. They cannot be
 asked of `wasm_posix_shared`, because it does not declare them — only the host
 and the guest glue touch the status word — so the header is the single source
 and a test reads it now.
+
+The pin is real and perturbed: drift `STATUS_PENDING` to 7 and it says
+*"WASM_POSIX_CHANNEL_STATUS_PENDING is 1 in the header and 7 here"*, naming
+the constant and both values.
 
 **Every other comment in that file claiming a check was then surveyed**, since
 one of them had just turned out to be describing an intention. Eleven assert a
@@ -1603,7 +1604,7 @@ rather than a matter of care:
 | `if [ "${x:-0}" != 1 ]; then block; fi` | string compare, no error | closed |
 | `[ -x path ] \|\| refuse` | false for a dangling symlink | closed |
 | `suite \| grep 'Tests'` then read the line | pipeline status is GREP's; a suite that died before printing shows nothing to read | **OPEN** |
-| a mutation harness backgrounded across a laptop sleep | the trial applies, the process dies, the revert never runs — the tree is left MUTATED | **OPEN** |
+| a mutation harness backgrounded across a laptop sleep | the trial applies, the process dies, the revert never runs — the tree is left MUTATED | **FIXED** |
 | `set -- $pair` in zsh, then `[ "$2" -eq 0 ]` | no word split: `$2` is empty, the test errors | **OPEN** |
 
 **The dangerous shape is a NUMERIC comparison inside an `if` whose else branch
@@ -1767,6 +1768,53 @@ What remains transcript-only is one direction of the corpus pairing, and that
 is a property of the harness rather than a gap: a mutation cannot delete a
 file, and the Rust half reads its corpus twice, so no single anchor expresses
 "stops reading". It is recorded above with the reason.
+
+### The harness's revert is a third step, and now it leaves a mark
+
+That row is fixed rather than only filed, because it bit three times in one
+session: a laptop sleep, a killed background shell, and — the instructive one
+— **this lane restoring the file by hand while a run was in flight**, which
+reverted a mutation mid-verify and made that trial's verdict meaningless.
+
+`tools/xtask/src/perturb.rs` applies a mutation, runs a verifier, then
+reverts. It already handles the case it can see: the revert happens BEFORE
+reporting, with a comment saying a panic in reporting must not leave the tree
+mutated. What it could not handle is its own process dying, and nothing
+recorded that it had.
+
+It writes `.perturb-in-progress` at the repo root before the first mutation
+now, naming the file and the trial, and removes it after each revert. A
+SIGKILL, a sleep, or a killed parent all leave it behind, and the next run
+refuses to start — printing the file to check and the command to restore it.
+
+**A sentinel rather than a signal handler**, deliberately: a handler catches
+SIGTERM and SIGINT and misses SIGKILL, a panic in a thread, and a laptop that
+simply stops. A file written before and removed after cannot fail open — the
+next run trips over it. It is also visible in `git status` as an untracked
+file, which is itself the alarm.
+
+Perturbed three ways. A stale marker makes the next run exit non-zero with the
+file, the trial and the recovery command; removing it lets the run proceed
+normally; and a completed run leaves nothing behind. **The first attempt at
+that perturbation proved nothing**, and in the most fitting way available: it
+read `cargo ... | head -6` and then `$?`, which is `head`'s status, so a guard
+written to catch fail-opens was tested by a check that fails open. It is the
+third time that exact shape has appeared in this lane's own tooling, and the
+second time in a check written the same hour as the row describing it.
+
+**It is deliberately NOT in `.gitignore`, and that was checked rather than
+assumed.** One thing in the repository fails on any untracked file:
+`.github/actions/package-archive-build/action.yml` refuses when
+`git status --porcelain=v1 --untracked-files=all` is non-empty, because
+"archive provenance is later trusted across workflows". That never fires in CI
+— nothing runs `perturb` there — and locally it can only fire when a perturb
+run has already crashed, which is precisely when a loud failure is wanted.
+Hiding the marker would trade the alarm for a quieter tree.
+
+**This is shared tooling, not lane L's**, and the same rule applies to it as
+to the ratchet: a lane should not quietly change an instrument other lanes
+use. It is offered, it is small, and it is one `git revert` away if the
+maintainer would rather have the report than the fix.
 
 ## A second candidate standing hazard, learned the hard way
 
@@ -2053,3 +2101,31 @@ and its closure condition.
   unchecked claims is not the same as showing they are wrong. Each needs
   reading the code against a smaller design, which is what the census meant by
   "nobody has audited it".
+- **That L-D3's fix works at five of its sixteen sites.** `readlinkat`,
+  `fpathconf`, `readdir`, `getrandom` and `fstatfs` are never executed by any
+  test in this repository — measured, not assumed, with a per-import counter.
+  Their conversions type-check and their capacities were derived by reading
+  the buffer size the kernel declares, and one of them (`fstatfs`) is now
+  immune to drift because that size is asked of the shared type. None of that
+  is the same as running them.
+- **That the range proofs are free in a real workload.** What was measured is
+  FREQUENCY, in one suite: 203 proofs across every machine boot and process
+  lifecycle `host-native` performs, with `waitpid` the hot import at 801
+  calls. That refutes "hot path" for what the suite covers. It says nothing
+  about a WordPress boot or a PHP request storm, and the benchmark suites are
+  where such a claim would have to come from.
+- **That 166 lines is the SMALLEST a second host could write.** It is what
+  `crates/host-native` does write, counted rather than estimated — which is a
+  floor derived from practice, not from proof. Whether the same invariants
+  could be held in fewer lines is the same question left open above about the
+  capacity system, asked of the other host.
+- **Whether the ~2,400 remaining TypeScript lines can be smaller.** They carry
+  invariants both hosts need, so they are not JS-only tax — but nobody has
+  read them against a smaller design. Any number offered for them today would
+  be the third invented target this lane has been given.
+- **Anything the conformance suites would have said.** They cannot reach
+  `crates/host-native` at all: `scripts/run-posix-tests.sh` drives each case
+  through `node`, so the native host's spawn, exec and stat paths have no
+  conformance coverage whatsoever. That is a gap in the repository, not a gap
+  this lane created, and it bounds every claim made here about the native
+  host.
