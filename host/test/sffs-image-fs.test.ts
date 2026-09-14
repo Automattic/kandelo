@@ -269,6 +269,20 @@ describe("SffsImageFs", () => {
     const again = new Uint8Array(64);
     expect(fs.imageRead(0n, again)).toBe(64);
     expect(Array.from(again)).toEqual(Array.from(head));
+
+    // A negative offset is EINVAL, and the ERRNO is the assertion rather than
+    // the throw. Without the explicit refusal the cast lands on a huge u64 and
+    // the read fails as EIO instead — still an error, so `toThrow()` alone
+    // would pass against a module that had lost the check. A perturb trial
+    // that deleted it survived this test until this case existed.
+    let caught: unknown;
+    try {
+      fs.imageRead(-1n, again);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SffsImageError);
+    expect((caught as Error).message).toContain("EINVAL");
   });
 
   it("answers whether a path's bytes are in the image", () => {
