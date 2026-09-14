@@ -1771,6 +1771,62 @@ close. That could be deferred work."* So the four browser tests that mount an
 in-memory filesystem at a path of their choosing stay on the host-side backend
 for now, and the mount(2) gap recorded above stays open as a gap.
 
+### STEP 1 IS BROWSER-VERIFIED ON ITS OWN TERMS — 2026-09-14, and the
+### aggregate comparison is NOT available
+
+The suite ran: **330 passed / 73 failed / 149 skipped / 30 did not run** of 582
+across chromium, firefox and webkit, in 16.6 minutes. Chromium alone:
+**163 passed / 15 failed / 16 skipped**.
+
+**The direct evidence for the pipe is that every lazy, deferred and archive
+test in chromium passes — all twelve:**
+
+```
+closed-lazy-asset-sources-browser      verifies and closes native lazy transports
+lazy-download-summary                  summaries survive raw-ring rollover
+package-deferred-tree-browser  ×3      transient retry, corrupt-SHA refusal, seal verify
+service-worker-scope-state     ×7      scoped lazy caches, truncation, 206, restart
+```
+
+These are the tests that exercise the deferred path the pipe replaced, through
+a real browser fetch. They are what step 1 had to not break, and they are green.
+
+**What CANNOT be claimed, and the count is why.** The recorded baseline was
+*167 passed / 14 failed / 6 skipped / 7 did not run*; this run's chromium column
+is *163 / 15 / 16 / 0*. Both total 194, so the denominators agree — but ten
+tests moved into `skipped` and seven out of `did not run`, and a pass count that
+falls by four while skips rise by ten is not evidence of a regression **or** of
+its absence. **The baseline was recorded as counts and not as failure names, so
+there is nothing to diff against.** That is the lesson the campaign already
+wrote down as *a green baseline count says nothing about how much RAN*, and it
+was recorded in the wrong form here.
+
+**So this run's fifteen chromium failures are recorded BY NAME**, to be the
+baseline the next run diffs against:
+
+```
+default-maker-profile           writable canonical maker home
+fork-continuation               aliased Wasm GC state in a fresh child worker
+gc-reference-cycle-fork-module  multi-node typed-GC reconstruction
+kandelo-merge-gate              shell demo runs bash, vim, NetHack
+kandelo-url                     gallery launch updates the URL
+kernel-allocator-churn          allocations bounded under churn
+node-host-counterparts          shell command runner executes dash
+nonzero-exit-diagnostic         ordinary nonzero exit is not a diagnostic
+opfs-advisory-lock              exact OPFS identity, wake events, capacity
+opfs-pathconf                   path configuration from live paths
+select-signal-browser           ppoll/pselect matrix and wait4 rejection
+thread-wasm-patch               spoofed debug names
+virtual-network-udp-delivery    UDP datagram routing
+vite-binary-cache-boundary      approved bottle member without cache exposure
+wasm-module-reflection          ABI 43 import reflection across engines
+```
+
+**Not one of them is a lazy, deferred, archive, image or filesystem test.** They
+are fork/GC reconstruction, OPFS, networking, the allocator, the Vite cache
+boundary and ABI reflection — other lanes' surfaces. That is a weaker claim than
+a name-level diff and it is the strongest one the evidence supports.
+
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
