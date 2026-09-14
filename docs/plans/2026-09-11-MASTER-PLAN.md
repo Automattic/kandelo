@@ -3017,29 +3017,57 @@ the capacity invariant's test was shown failing before it was shown passing.
   fixture, and its tests -- is still in the tree. That is fork-codec's call,
   and it is the mirror of a decision already taken rather than a new
   proposal. The recipe TYPES stay either way; seven modules use them.
-- **L-D4 — the epoch half CLOSED, the import half OPEN. The native host read
-  no guest `__abi_version`, and `fixtures/README.md` claimed it did.** The marker is
-  compared for the KERNEL only; nothing reads a guest's. Shown by running:
-  renaming the export out of a fixture leaves its smoke test passing, while
-  flipping one byte of the same fixture's code makes it fail. The peer host
-  refuses the mismatch with `ENOEXEC`
-  (`host/src/process-lifecycle.ts:1761`), so this is a host parity gap with no
-  **The epoch half is CLOSED (2026-09-14)**: `guest_module_for_this_epoch`
-  refuses a guest declaring a different epoch at all three compile sites and
-  allows a pre-marker one through, matching the peer host; all 72 host-native
-  tests pass unchanged, and two harness trials plus a synthetic-bytes unit
-  test keep it honest. What remains open is the import half.
-  Import linkage does NOT cover it either:
-  `spawn_guest_thread` trap-stubs imports it cannot find by NAME, so a renamed
-  or dropped kernel import instantiates fine and traps only if called. Six of
-  the sixteen distinct kernel imports across the fixtures are stubbed today
-  (`kernel_push_argv` and the fork-exec family, names `guest.rs` never
-  mentions). Only a retyped import is refused. Channel-LAYOUT drift, the only
-  kind the fixtures actually exhibit, is caught by nothing. All 43 fixtures declare ABI
-  44, so the check would be safe today — decoded per artifact, with the decoder
-  perturbed. **The README is corrected; the guard is not added, because that is
-  a behaviour change in the launch path and the deferral is the maintainer's
-  call.**
+- **SHARED INFRASTRUCTURE TOUCHED, 2026-09-14: `cargo xtask <verb>` now
+  runs.** It is written in 178 places -- docs, `tools/xtask`'s own source,
+  and three messages `host-native` prints to an operator debugging a stale
+  artifact -- and resolved nowhere. A cargo alias cannot fix it: `[build]
+  target = "wasm32-unknown-unknown"` makes `[alias] xtask = "run -p xtask
+  --"` build a host tool for wasm, `getrandom` refuses outright, and cargo
+  has no portable override from inside an alias (an array will not merge
+  into a string; an empty string is rejected). So `scripts/bin/cargo-xtask`
+  is a shell shim, and `flake.nix` puts `scripts/bin` on PATH exactly as it
+  already does `sdk/bin`. `check-dev-shell-tools.sh` fails if that stops
+  being true, both branches perturbed.
+
+  **A merger should know this is a three-file change outside lane L's own
+  files** -- `flake.nix`, `scripts/bin/cargo-xtask`, and
+  `check-dev-shell-tools.sh` -- made because the maintainer asked for it
+  after the alias turned out to be impossible. It is additive: every
+  previously-working invocation still works, and the long form the repo's
+  scripts use is untouched.
+- **L-D4 — the epoch half CLOSED, the import half PINNED (2026-09-14). The
+  native host read no guest `__abi_version`, and `fixtures/README.md` claimed
+  it did.** The marker was compared for the KERNEL only; nothing read a
+  guest's. Shown by running: renaming the export out of a fixture left its
+  smoke test passing, while flipping one byte of the same fixture's code made
+  it fail. The peer host refuses the mismatch with `ENOEXEC`
+  (`host/src/process-lifecycle.ts:1761`), so this was a host parity gap with
+  no platform boundary behind it.
+
+  **Epoch half, closed.** `guest_module_for_this_epoch` refuses a guest
+  declaring a different epoch at all three compile sites and lets a
+  pre-marker one through, matching the peer host. Both exec paths'
+  diagnostics were corrected in the same change, since "a `Module::new`
+  compile failure (non-wasm exec target bytes)" would now be a lie for half
+  the refusals they report. Measured safe first — all 43 fixtures declare ABI
+  44 — and the result agreed: the suite passed unchanged. Four
+  demonstrations, including a synthetic-bytes unit test, because every
+  fixture declares 44 and a mutation weakening the check would otherwise have
+  SURVIVED: a guard no test could fail.
+
+  **Import half, pinned rather than closed.** `spawn_guest_thread` trap-stubs
+  any `kernel.*` import it cannot find by NAME — wasmtime's `_get_by_import`
+  matches on name alone — so a renamed or dropped import instantiates fine
+  and traps only if its path runs. Only a RETYPED import is refused. Making
+  unknown imports an error is not available: six of the sixteen are stubbed
+  on purpose, and refusing them would refuse every fixture. So both sets are
+  pinned instead, and a seventeenth import or a seventh stub now fails and
+  names itself. Closing it properly means defining those six as named traps
+  first, which is a design decision, not a patch.
+
+  **Still uncaught by either host: channel-LAYOUT drift**, which is the only
+  kind these fixtures actually exhibit.
+
 - **THE PROJECTION DEADLOCK — the open decision. A load-time staleness check can
   deadlock the build that would clear it, and moving the check does not escape
   it.** Adding `wa_process_memory_layout` to the surface
