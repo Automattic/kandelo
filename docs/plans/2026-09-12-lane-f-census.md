@@ -5926,3 +5926,55 @@ whose globals or tables are silently stale, which is the failure mode this whole
 campaign was started to remove. `register_unwind_activation` and the per-activation
 `ForkChunkList` are where the next session should start; the evidence above is
 what it needs to not re-derive.
+
+## §127 — §126 answered, and it raises a fork-correctness question
+
+Chasing section 126 to the bottom. VERIFIED FACTS, each from source:
+
+  1. The guest RESERVES records during save: `reserve_static_record` is emitted
+     from `emit_save_helper` (MUTABLE_GLOBAL), `emit_save_table` (TABLE), and a
+     segment-bitmap site.
+  2. The guest FINDS records during restore: all three `find_record` sites are in
+     `emit_restore_helper`, `emit_restore_segments`, `emit_restore_table`.
+  3. The guest's restore exports ARE driven in a child.
+     `attach_from_arena_impl`'s own doc: it "drives every activation's guest
+     `wpk_fork_module_state_restore` and `wpk_fork_module_state_finish_restore`
+     through the host-bound drive table".
+  4. `__wpk_fork_module_state_record_find` answers from
+     `module.module_state.root()` and returns 0 when that root is 0.
+  5. A replay child's writer is constructed inert:
+     `ModuleStateWriter::new(...)` with `ForkChunkList::new_channel(0)`, and the
+     comment says a stray reserve must "fail truthfully".
+  6. `ModuleStateWriter`'s entire public surface is `new`, `root`, `reserve`,
+     `commit`. **There is no way to set its root.** It becomes non-zero only when
+     its own `reserve` allocates -- which a child cannot do, per (5).
+
+INFERENCE, not yet confirmed by running anything: in a replay child,
+`record_find` returns 0 for every lookup, so the guest's own restore of mutable
+globals, tables and segments finds nothing.
+
+That matters because a fork child is a FRESH instance: its wasm globals are not
+linear memory and do not survive the COW copy -- they reset to their
+initializers. Explicit restore is what (1) and (2) exist for.
+
+Three ways this is NOT a bug, none of which I have verified:
+
+  * the host restores these separately -- `savedMutableGlobalImport` in the
+    imported-globals path does supply saved values at instantiation, but that
+    covers IMPORTED globals, not a module's own;
+  * the guest's restore helpers treat a 0 payload as "nothing was saved" and some
+    other mechanism has already put the value back;
+  * these records are only reached on a path a fork child does not take.
+
+The experiment that would settle it is small: a fork test whose guest has a
+MODULE-OWNED mutable global, set to a distinctive value before `fork()`, read
+back in the child. If the child sees the initializer rather than the parent's
+value, (1)-(6) are a live defect rather than a dormant asymmetry.
+
+Recorded, not acted on, and deliberately not turned into a code change at this
+hour. It is derived entirely from reading, the maintainer is away, and the
+campaign's own rule is that a fork-correctness claim needs evidence for the exact
+claim being made. What it does do is answer section 126: the two record
+populations really are separate, and the guest's records do NOT reach a child
+through the host's arena. That was option (3) of the three that section offered,
+and it means section 125's plan was describing the wrong vehicle.
