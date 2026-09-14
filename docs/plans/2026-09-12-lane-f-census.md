@@ -7644,3 +7644,60 @@ The remaining twenty are decided at the call site, which is where the question
 them in this table as they land, rather than predicting them now, is the point of
 letting the consumer's end state drive.
 
+---
+
+## §156 — Why the nine are one knot, read from the call sites
+
+One module is now off the parent side, and reading the other eight's call sites
+in `worker-main.ts` says something the line counts did not: they are not nine
+independent ports. They pass each other's objects.
+
+**The arena is the hub.** `ForkModuleStateArena` is constructed in two places and
+then handed to things that are themselves attic: `processContinuation.beginCapture(arena)`,
+`createProcessTableReplicationOwner({ newArena })`, and the child path's
+`childArena.recordViews()`. So the arena cannot be replaced by
+`fm_module_state_arena` one method at a time -- its callers' signatures go with
+it. That entry's own doc comment predicted exactly this and said RELEASE would
+stay uncalled until the host's `release()` goes in the same change.
+
+**`recordViews()` is the one host capability with no replacement yet.** Two
+consumers: `decodeSegmentedForkReferenceTransaction` (which feeds the child's
+early reference provider) and the child install. Both are child-side, and both
+have a module counterpart already built -- `fm_decode_reference_graph` plus the
+`fm_decoded_node_*` accessors, and `fm_attach_child`, which the backend gained a
+caller for this week. The KFMS reader should not come back; its consumers should
+go.
+
+**The providers are blocked on the registry, not on themselves.**
+`forkGcCodecProviderFromInstance` and `forkExceptionProviderFromInstance` build
+JavaScript objects whose only destination is
+`forkActivationRegistrationFromInstance(...)`. Their module replacements are
+already live and already called from `worker-main.ts` -- `setActivationGcCodec`
+and `setActivationExceptionCodec`, seeded from the raw sections. And
+`crates/host-native`, which is the end-state template, has no registry at all: it
+seeds codecs and mirrors tables, and the module learns the activation set from
+that. So the disposition for both providers is DELETE, and the thing standing in
+front of them is `registerActivation`.
+
+**What this means for order.** There is no bottom-up order that keeps the
+typecheck clean, because the typecheck is already red on ten unresolved modules
+and stays red until the last one lands. The gate mid-stride is therefore not
+"clean" but "no NEW kind of error", plus the tests that still run. That is
+weaker than usual and worth saying out loud rather than discovering at the end.
+
+**Disposition table so far** (section 155's, filled in as call sites are read):
+
+| symbol | disposition |
+|---|---|
+| `ForkImportedGlobalCapture` | DONE -- module assembles the records; host publishes identity |
+| `bindTableDirtyTrackers` | DONE -- per-activation election into `fm_set_activation_table_state_owner` |
+| `ForkModuleStateArena` | module, via `fm_module_state_arena`; blocked on its callers' signatures |
+| `readForkModuleStateRoot` | fold into ADOPT: pass the launch root, let the module read the arena root out of it |
+| `readForkModuleStateDescriptor` | host floor -- a custom section, seeded |
+| `computeForkModuleTemplateId` | host floor -- a hash of module bytes, already seeded |
+| `recordViews` | DELETE with its two child-side consumers |
+| `decodeSegmentedForkReferenceTransaction` | DELETE -- `fm_decode_reference_graph` is the module's version |
+| `forkGcCodecProviderFromInstance` | DELETE -- `setActivationGcCodec` already carries the section |
+| `forkExceptionProviderFromInstance` | DELETE -- `setActivationExceptionCodec` likewise |
+| `ForkActivationRegistry` | the knot; `crates/host-native` has no counterpart at all |
+
