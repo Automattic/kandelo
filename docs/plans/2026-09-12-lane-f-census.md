@@ -7030,7 +7030,27 @@ the linked chunk list out of guest memory to discover the addresses, then
 munmaps them. Freeing a foreign arena requires discovering a foreign allocation,
 and guest memory is the only place that discovery currently lives.
 
-**So this is not a port blocked on effort; it is a missing ownership protocol.**
+**CORRECTION (same day), and it retracts the framing below.** Asked "can't the
+fork module walk the chunks? is this just missing fork module implementation?",
+I checked, and the answer is yes — it is just missing implementation.
+`fork_codec::module_state::decode_module_state` ALREADY walks the chunk chain in
+Rust with cycle detection, a chain-length bound against memory size,
+page-alignment and magic/version checks, and an address-ordering check that
+catches overlapping chunks. That is at least as strong as the host's walk.
+
+So option 2 below — "gives the module the walk ... somewhere with less validation
+than the host version has" — is false, and I asserted it without reading the
+decoder I was comparing against. There is no capability barrier and no ownership
+protocol missing. A peer can free a foreign arena by walking it in the module,
+with the validation already written.
+
+What remains true is narrower and worth keeping: freeing a foreign allocation
+means discovering it, and discovery reads a guest-controlled structure. Option 3
+(publishing the chunk list with the root) would turn that into a lookup and is
+still the stronger design. But it is an improvement to reach for later, not a
+blocker now — the walk is validated, and the port can proceed on it.
+
+**The original framing, retained because the reasoning is the record:**
 Three shapes, and the third is the one I would argue for:
 
 1. **Keep the walk in the host**, classified as floor. Honest, and it keeps a

@@ -46,6 +46,7 @@ pub mod dylink_archive;
 pub mod dylink_table_plan;
 pub mod exception_codec;
 pub mod gc_codec;
+pub mod guest_memory;
 pub mod imported_globals;
 pub mod imported_tables;
 pub mod linked_frames;
@@ -98,6 +99,7 @@ pub use module_state_records::{
     GlobalSnapshot, ModuleDescriptor, ModuleStateRecordPayload, SegmentBitmap, SparseTablePage,
     SparseTableRun, TableDescriptor,
 };
+pub use guest_memory::GuestMemory;
 pub use reference_feed::ReferenceReplayFeed;
 pub use reference_graph_builder::{AggregateKind, GcProvenance, ReferenceGraphBuilder};
 pub use reference_recipes::{
