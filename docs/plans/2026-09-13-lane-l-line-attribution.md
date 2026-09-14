@@ -1276,6 +1276,54 @@ They are still not committed. Rebuilding is 23 binary files and belongs to
 whoever owns the fixtures, not to this lane. **What changed is that the
 question is answered, so the decision is now an ordinary one.**
 
+### L-D4 — the native host never reads a guest's `__abi_version`
+
+Answering the staleness question turned up a fourth defect, found by checking
+a claim rather than by reading code. `fixtures/README.md` said the program's
+ABI marker "must match the kernel's ABI (the host asserts this at load), so a
+stale fixture built for an older ABI fails loudly rather than running wrong."
+
+**No such assertion exists.** `EXPECTED_ABI_VERSION` is compared against the
+KERNEL's `__abi_version` at the boot module (`guest.rs:1937`); nothing anywhere
+in `crates/host-native` reads a GUEST's.
+
+That was established by running, not by grep. Renaming the export out of
+`native_hello.wasm` — `__abi_version` to `__abi_versioZ`, a length-preserving
+byte edit so no LEB128 shifts — leaves `smoke_runs_trivial_guest_through_
+channel` passing. The control is the same fixture with one byte of its code
+flipped: cargo recompiles (`include_bytes!`) and the test FAILS. So the
+fixture bytes reach the host, and the marker is simply never looked up. The
+fixture was restored and its SHA checked against the backup.
+
+**The peer host does enforce it.** `host/src/process-lifecycle.ts:1761` reads
+the program's declared ABI and returns `ENOEXEC` when it disagrees with the
+kernel's, while letting a `null` (pre-marker) binary through. This is a host
+parity gap of exactly the shape L5 closed for the capacity invariant, and the
+Host Runtime Contract is explicit that peers may differ only at a justified
+platform boundary. There is no boundary here; wasmtime can read an export as
+easily as V8 can.
+
+**What partly covers the gap, and what does not.** A guest imports 13 kernel
+functions plus `env.__channel_base` and `env.memory`, so ABI drift that
+renames or retypes one of those fails loudly at instantiation. Drift in the
+syscall channel's LAYOUT does not — and that is precisely where the staleness
+measured above actually was. The one category of drift the fixtures really
+exhibited is the one category nothing would have caught.
+
+**The fix is measured as safe but is not made here.** All 43 committed
+fixtures declare ABI 44, which is `EXPECTED_ABI_VERSION`, so the check would
+pass for every one of them today. That was decoded from each artifact rather
+than assumed, and the decoder was perturbed: a copy of `native_hello.wasm`
+edited to declare 43 is reported as 43. A first attempt read the symbol table
+and called 18 fixtures "no export" — instrumentation strips symbols while the
+export survives, the same hazard as every other check in this document that
+answered a narrower question than it was asked.
+
+It is left unmade because it is a behaviour change in the native host's launch
+path, discovered after this lane's increments were set, and **a deferral is
+the maintainer's call, not mine.** The safe half — a README that no longer
+promises a guard that does not exist — is landed.
+
 Two measurement mistakes are recorded with it, both the same shape. The first
 count of proofs was read BEFORE the smoke suite ran, because the reporting
 test sat in a module that sorts earlier — a number that looked like a total

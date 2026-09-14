@@ -2921,6 +2921,20 @@ the capacity invariant's test was shown failing before it was shown passing.
 - **L-D1 — CLOSED 2026-09-13** by L5 above. `KernelScratch` carries capacity
   beside pointer, all eleven allocation sites go through it, and a contract test
   keeps it that way.
+- **L-D4 — OPEN, needs a decision. The native host never reads a guest's
+  `__abi_version`, and `fixtures/README.md` claimed it did.** The marker is
+  compared for the KERNEL only; nothing reads a guest's. Shown by running:
+  renaming the export out of a fixture leaves its smoke test passing, while
+  flipping one byte of the same fixture's code makes it fail. The peer host
+  refuses the mismatch with `ENOEXEC`
+  (`host/src/process-lifecycle.ts:1761`), so this is a host parity gap with no
+  platform boundary behind it. Import linkage catches ABI drift in the 13
+  kernel functions a guest names; it does not catch channel-LAYOUT drift, which
+  is the only kind the fixtures actually exhibit. All 43 fixtures declare ABI
+  44, so the check would be safe today — decoded per artifact, with the decoder
+  perturbed. **The README is corrected; the guard is not added, because that is
+  a behaviour change in the launch path and the deferral is the maintainer's
+  call.**
 - **THE PROJECTION DEADLOCK — the open decision. A load-time staleness check can
   deadlock the build that would clear it, and moving the check does not escape
   it.** Adding `wa_process_memory_layout` to the surface

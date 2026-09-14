@@ -41,9 +41,29 @@ OUT=crates/host-native/fixtures
   -o "$OUT/native_hello.wasm"
 ```
 
-The program's `__abi_version` export must match the kernel's ABI (the host
-asserts this at load), so a stale fixture built for an older ABI fails loudly
-rather than running wrong.
+The program's `__abi_version` export must match the kernel's ABI.
+
+**This host does not check that, and this file used to claim it did.** The
+sentence here said the host "asserts this at load", so a stale fixture "fails
+loudly rather than running wrong". It does not. `EXPECTED_ABI_VERSION` is
+compared against the KERNEL's `__abi_version` (`guest.rs`, at the boot
+module); nothing reads a GUEST's. Renaming the export out of a fixture --
+`__abi_version` to `__abi_versioZ` -- leaves every test passing, while
+flipping one byte of its code makes the same test fail, so the fixture bytes
+are reaching the host and the marker is simply never looked up.
+
+What DOES fail loudly is import linkage: a guest names 13 kernel functions
+plus `env.__channel_base` and `env.memory`, so a drift that renames or retypes
+one of those is caught at instantiation. What is NOT caught is drift in the
+syscall channel's LAYOUT, which is where most of the ABI lives and where the
+one real case of fixture staleness measured so far actually was.
+
+The peer host does enforce this: `host/src/process-lifecycle.ts` refuses a
+launch with `ENOEXEC` when a program declares an ABI that disagrees with the
+kernel's, and allows a `null` (pre-marker) binary through. Closing that parity
+gap here is filed as **L-D4** in
+`docs/plans/2026-09-13-lane-l-line-attribution.md`; all 43 committed fixtures
+declare ABI 44 and would pass such a check today.
 
 ## `native_fork.instrumented.wasm`
 
@@ -74,7 +94,7 @@ scripts/dev-shell.sh bash -lc '
 ```
 
 Like `native_hello.wasm`, the program's `__abi_version` must match the
-kernel's ABI, and re-running step 2 after any `crates/fork-instrument` change
+kernel's ABI -- unenforced here, see above -- and re-running step 2 after any `crates/fork-instrument` change
 picks up the current instrumentation tool automatically (see
 `scripts/run-wasm-fork-instrument.sh`'s own input-hash rebuild check).
 
@@ -105,7 +125,8 @@ scripts/dev-shell.sh bash -lc '
 '
 ```
 
-Like every other fixture, `__abi_version` must match the kernel's ABI.
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above).
 
 ## `native_fork_from_thread.instrumented.wasm` / `native_fork_from_thread.wasm`
 
@@ -137,7 +158,8 @@ scripts/dev-shell.sh bash -lc '
 '
 ```
 
-Like every other fixture, `__abi_version` must match the kernel's ABI.
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above).
 
 ## `native_fork_refs.instrumented.wasm`
 
@@ -175,7 +197,8 @@ scripts/dev-shell.sh bash -lc '
 '
 ```
 
-Like every other fixture, `__abi_version` must match the kernel's ABI.
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above).
 
 ## `native_process_layout.wasm` and `native_process_layout.wasm64.wasm`
 
@@ -218,5 +241,6 @@ Without that sysroot the script **fails loudly** instead of skipping the wasm64
 arm, because a silently un-rebuilt wasm64 fixture against a current kernel is
 exactly the stale-artifact failure this family exists to catch.
 
-Like every other fixture, `__abi_version` must match the kernel's ABI at both
+Like every other fixture, `__abi_version` must match the kernel's ABI
+(unenforced by this host -- see `native_hello.wasm` above) at both
 widths.
