@@ -6732,18 +6732,50 @@ already does — `set_activation_gc_codec_impl` is the model:
 
 With that, the same range passes and the tests go green.
 
-**What is established and what is not.** Established: the range is in bounds —
-the explicit check against `mem_len_bytes()` passes for exactly the range
-`mem_ref().get(..)` refused, so `mem_len_bytes()` is not the problem. Not
-established: why the slice built at a `black_box(0)` base answers `None` for an
-in-bounds range. It smells like the whole-memory slice being mis-optimised, but I
-did not chase it, and this note deliberately does not claim a cause.
+**What is established.** The range is in bounds: the explicit check against
+`mem_len_bytes()` passes for exactly the range `mem_ref().get(..)` refused, so
+the length is not the problem. A `get` returning `None` for an in-bounds range on
+a correctly-sized slice is not something safe Rust can do, which points at the
+slice itself being ill-formed rather than at the index.
 
-**Worth someone's attention, because it is not local to my change.** `mem_ref()`
-has other callers, and one of them is
-`__wpk_fork_module_state_record_find`, which does exactly the shape that failed
-here — takes the whole-memory slice and indexes into it. Those paths pass their
-tests today, so whatever the mechanism is, it is not unconditional. But "reads
-guest memory through `mem_ref()` and is only exercised in some configurations"
-describes several entries here, and the failure mode is a silent `None` treated
-as a bad argument rather than anything that looks like a memory bug.
+**The likely cause, and it is written down in the function's own doc.**
+`mem_ref` and `mem_mut` build the slice from wasm address 0:
+
+    let base = core::hint::black_box(0usize) as *const u8;
+    unsafe { core::slice::from_raw_parts(base, mem_len_bytes()) }
+
+`from_raw_parts` requires a non-null base. The doc knows, and argues it is fine:
+"the crate is built `--release`, so the debug non-null slice precondition is
+compiled out." That argument does not hold. Release compiles out the ASSERTION,
+not the undefined behaviour — and having assumed a non-null base, the optimiser
+is free to fold the bounds check either way. `black_box` hides the zero from the
+lint; it does not make the pointer valid.
+
+Supporting evidence from the same file: every host-supplied-pointer read here
+that WORKS uses a non-null base, `black_box(start)`, and
+`set_activation_gc_codec_impl` carries a comment showing the author hit the
+adjacent case — "an empty section uses a valid empty slice rather than a
+possibly-null raw part (`from_raw_parts` requires a non-null base even for len
+0)". So the non-null requirement was known and handled at one call site and
+relied upon not to matter at another.
+
+This is a hypothesis with good evidence, not a proof: I did not isolate the
+emitted code. It should be confirmed before anything is changed.
+
+**Why this is not mine to fix unilaterally, and what I would want checked.**
+`mem_ref`/`mem_mut` are how this module reaches guest memory at all, the same
+guest-offset-as-pointer idiom is used in `crates/kernel/src/wasm_api.rs`, and
+every existing caller depends on the current behaviour. Changing the base is a
+change to shared infrastructure whose failure mode is silent, on a path I cannot
+execute end to end. So: recorded, not rewritten.
+
+What makes it worth a decision rather than a footnote is that the surviving
+callers are not obviously safe — they are differently shaped. Mine called `.get`
+on the slice directly, inside the same function. The ones that pass, like
+`__wpk_fork_module_state_record_find`, hand the slice across a crate boundary to
+`fork-codec`, which indexes it there. That difference is exactly the kind that
+decides whether an optimiser folds a bounds check, which would mean the existing
+callers are not correct so much as not yet miscompiled.
+
+The failure mode is the part I would not want to meet later: a silent `None`,
+surfaced as a bad-argument errno, from a read that was in bounds.
