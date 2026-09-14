@@ -1862,8 +1862,29 @@ behaviour-free, and independently landable:
 
 Union: about 20 distinct methods, which is the same builder-shaped surface the
 item-4 census found — a tree walker plus a metadata writer, not a
-`FileSystemBackend`. **`load-image.ts` is the next one to do**: one method, and
-it proves the pattern costs nothing.
+`FileSystemBackend`.
+
+**CORRECTION — the table above counts method calls without asking what KIND of
+dependency each file has, which is the same flaw as the interface-dispatch
+miss.** Split properly:
+
+| file | constructs | params | narrowable today? |
+|---|---|---|---|
+| `package-deferred-tree.ts` | 0 | 4 | **yes, pure consumer — DONE (`65d62bd7f`)** |
+| `rootfs-overlay.ts` | 1 | 6 | parameters yes; its one construction waits |
+| `rootfs-overlay-export.ts` | 1 | 4 | parameters yes; its one construction waits |
+| `process-lifecycle.ts` | 0 | 1 | done (`1c557f9be`) |
+| `load-image.ts` | 2 | 0 | **no — it is a FACTORY** |
+
+`load-image.ts` was named as the cheapest first step because it "needs one
+method". It needs none: it calls `MemoryFileSystem.fromImage` and returns the
+class, so the construction *is* the dependency and narrowing a return type
+removes nothing. **A construction site cannot be narrowed, only repointed**,
+and it repoints when the replacement exists.
+
+So the order is: the pure consumer first (done), then the parameter positions
+in the two overlay files, and the four construction sites last — because those
+are the cutover, and everything before them is type-only and reversible.
 
 **CENSUS METHOD CORRECTION — interface dispatch was invisible to it.**
 
