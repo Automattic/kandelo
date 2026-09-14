@@ -117,11 +117,50 @@ pub struct ModuleStateWriter {
     /// Payload address and total size of a reserved-but-uncommitted record.
     /// At most one is open: the guest reserves, fills, then commits.
     pending: Option<(u64, u64)>,
+    /// True when `root` came from [`adopt`] rather than from a reserve here.
+    ///
+    /// An adopted arena belongs to another process: a fork child inherits the
+    /// parent's records and reads them, and the chunks behind them were mapped
+    /// by the parent. Writing into one would append to a list this writer did
+    /// not build and cannot free, so [`reserve`] refuses while this is set.
+    ///
+    /// [`adopt`]: ModuleStateWriter::adopt
+    /// [`reserve`]: ModuleStateWriter::reserve
+    adopted: bool,
 }
 
 impl ModuleStateWriter {
     pub fn new(format: ModuleStateFormat) -> Self {
-        ModuleStateWriter { format, root: 0, tail: 0, pending: None }
+        ModuleStateWriter { format, root: 0, tail: 0, pending: None, adopted: false }
+    }
+
+    /// Adopt an arena rooted at `root` that some other process built.
+    ///
+    /// Without this a fork child's writer keeps `root == 0`, because `root` is
+    /// only ever assigned by `reserve` and a child never reserves -- so every
+    /// lookup against the inherited arena misses and reads as "no such record".
+    /// The parent's root IS known during replay, but only as an argument
+    /// threaded through the entry points; nothing carried it to the writer.
+    /// Census section 128 recorded that as a dormant asymmetry. This is the
+    /// setter it said was missing.
+    ///
+    /// Refuses an arena this writer is already building or has already adopted:
+    /// overwriting `root` would strand the chunks it has mapped and leave a
+    /// decoder two roots for one list. Refuses `0` for the same reason the
+    /// field starts there -- 0 means "no arena", not "the arena at zero".
+    pub fn adopt(&mut self, root: u64) -> Result<(), Errno> {
+        if root == 0 || self.root != 0 || self.pending.is_some() {
+            return Err(Errno::EINVAL);
+        }
+        self.root = root;
+        self.tail = root;
+        self.adopted = true;
+        Ok(())
+    }
+
+    /// Whether `root` was adopted from another process rather than built here.
+    pub fn is_adopted(&self) -> bool {
+        self.adopted
     }
 
     /// The root chunk address, or 0 before the first record is reserved. This
@@ -146,6 +185,12 @@ impl ModuleStateWriter {
         if self.pending.is_some() {
             // One record at a time: a second reserve would hand out a range
             // overlapping a live one, which a decoder cannot detect.
+            return Err(Errno::EINVAL);
+        }
+        if self.adopted {
+            // The arena belongs to the process that built it. Appending here
+            // would write into chunks this writer did not map, cannot free, and
+            // may not even still own -- the parent is parked, not gone.
             return Err(Errno::EINVAL);
         }
         let pw = self.format.pointer_width as u64;
@@ -293,6 +338,84 @@ mod tests {
 
     fn format() -> ModuleStateFormat {
         ModuleStateFormat { pointer_width: 4, chunk_header_size: 40 }
+    }
+
+    // -- adopt: the child half of the arena (census sections 128 and 133) ----
+
+    #[test]
+    fn an_adopted_root_is_what_lookups_answer_from() {
+        // The gap this closes: a child never reserves, so without `adopt` its
+        // writer keeps root == 0 and every lookup against the arena it
+        // INHERITED misses -- reading as "no such record" rather than as an
+        // error, which is the failure mode that stayed dormant for so long.
+        let (mut mem, mut alloc, mut parent) = fixture();
+        let payload = parent
+            .reserve(&mut alloc, &mut mem, KIND_GLOBAL, 3, 4, 8)
+            .unwrap();
+        mem[payload as usize..payload as usize + 8].copy_from_slice(b"inherits");
+        parent.commit(&mut mem, payload).unwrap();
+
+        let mut child = ModuleStateWriter::new(format());
+        assert_eq!(child.root(), 0, "a fresh writer has no arena");
+        child.adopt(parent.root()).unwrap();
+        assert_eq!(child.root(), parent.root());
+        assert!(child.is_adopted());
+
+        // And the records really are readable through the child's root.
+        let state = decode_module_state(&mem, child.root(), &format()).unwrap();
+        assert_eq!(state.records.len(), 1);
+        assert_eq!(&mem[state.records[0].payload_offset as usize..][..8], b"inherits");
+    }
+
+    #[test]
+    fn an_adopted_arena_refuses_to_be_written() {
+        // The arena belongs to the process that built it, and for a vfork child
+        // that process is PARKED, not gone -- its chunks are live in shared
+        // memory. Appending here would write into chunks this writer did not
+        // map and cannot free.
+        let (mut mem, mut alloc, mut parent) = fixture();
+        let payload = parent
+            .reserve(&mut alloc, &mut mem, KIND_GLOBAL, 1, 1, 4)
+            .unwrap();
+        parent.commit(&mut mem, payload).unwrap();
+
+        let mut child = ModuleStateWriter::new(format());
+        child.adopt(parent.root()).unwrap();
+        assert_eq!(
+            child.reserve(&mut alloc, &mut mem, KIND_GLOBAL, 1, 2, 4),
+            Err(Errno::EINVAL),
+        );
+        // The refusal must leave the adoption intact: a writer that dropped its
+        // root here would send the child back to the silent-miss behaviour the
+        // first test exists to prevent.
+        assert_eq!(child.root(), parent.root());
+    }
+
+    #[test]
+    fn adopt_refuses_to_strand_an_arena_this_writer_is_building() {
+        // Overwriting a live root abandons every chunk already mapped under it
+        // -- unfreeable, because the only handle on them is the list the root
+        // starts. Nothing downstream can detect that; it just leaks.
+        let (mut mem, mut alloc, mut w) = fixture();
+        let payload = w.reserve(&mut alloc, &mut mem, KIND_GLOBAL, 1, 1, 4).unwrap();
+        w.commit(&mut mem, payload).unwrap();
+        let own = w.root();
+        assert_eq!(w.adopt(0x9000), Err(Errno::EINVAL));
+        assert_eq!(w.root(), own, "the refusal kept the writer's own arena");
+        assert!(!w.is_adopted());
+    }
+
+    #[test]
+    fn adopt_refuses_zero_and_a_second_adoption() {
+        let mut w = ModuleStateWriter::new(format());
+        // 0 is the "no arena" sentinel `root()` starts at, not an address.
+        assert_eq!(w.adopt(0), Err(Errno::EINVAL));
+        assert_eq!(w.root(), 0);
+        w.adopt(0x4000).unwrap();
+        // A second adoption is the same stranding problem from the other side:
+        // two roots for one writer, and the first one silently forgotten.
+        assert_eq!(w.adopt(0x8000), Err(Errno::EINVAL));
+        assert_eq!(w.root(), 0x4000);
     }
 
     #[test]
