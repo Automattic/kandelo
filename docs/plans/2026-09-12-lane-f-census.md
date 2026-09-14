@@ -5667,3 +5667,56 @@ nothing calls -- and both produced a better statement of the problem than the
 analysis that preceded them. That is the argument for attempting rather than
 planning further: the constructor that invalidated section 118's estimate was
 visible the whole time and I only saw it by writing the replacement.
+
+## §122 — "Stopped failing" is not "started passing", again
+
+Section 116 reported ten expected-failure files back and said three of them --
+`fork-dlopen-replay-e2e`, `fork-from-dlopen-side-module-e2e`, `dlopen-e2e` --
+gave the env stride its first real coverage, and passed. Running them directly:
+
+```
+Test Files  3 skipped (3)
+     Tests  18 skipped (18)
+```
+
+They were SKIPPED. Restoring `fork-externref-process-owner` let the files LOAD,
+so they stopped producing a `FAIL` line, so the baseline -- which tracks failing
+FILES -- reported them as newly passing. Nothing in them ran.
+
+This is section 114's lesson in a second costume. There the count hid that most
+of the suite never ran; here the both-directions ratchet cannot tell "passes"
+from "declines to run", because both look like the absence of a failure. I
+unbanked on that signal and told the maintainer the stride had coverage it did
+not have.
+
+What skips them is an artifact gate: a musl sysroot (present) and
+`local-binaries/kernel.wasm` (absent). That is provisioning, not a boundary, so
+the kernel was installed through the documented path --
+`WASM_POSIX_LOCAL_INSTALL_SOURCE=... xtask build-deps ... install-local-artifact
+kernel` -- which creates a provenance-tracked generation symlink rather than a
+copy.
+
+With the kernel present all three RUN, and all three fail:
+
+```
+Cannot find module '.../host/src/fork-table-snapshot'
+  imported from .../host/src/worker-main.ts
+```
+
+The next attic module in the chain, and exactly what the baseline's cause
+ranking had already named. So the dlopen fork path is not broken by this lane's
+changes; it is still blocked by the layer below. They are re-banked (192 -> 195),
+because failing for a nameable reason is their honest state.
+
+Two things worth keeping.
+
+The progress is real even though the number went the wrong way: these files moved
+from SILENTLY SKIPPED to failing with a cause. A skipped test tells you nothing
+and costs nothing to leave broken; a failing one names its blocker.
+
+And the baseline now depends on the ENVIRONMENT. With `local-binaries/kernel.wasm`
+present these three fail; without it they skip. A ratchet whose expected set
+changes with which artifacts a worktree happens to have built is recording two
+different things under one name. Worth solving -- probably by treating a skipped
+file as distinct from a passing one -- but recorded here rather than fixed in the
+same breath.
