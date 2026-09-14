@@ -67,7 +67,12 @@ describe("lane L's perturbation specs still cite what they claim", () => {
   it("has specs to check at all", () => {
     // A directory that lost its specs would leave every assertion below
     // running over an empty list and still reporting a pass.
-    expect(SPECS.length).toBeGreaterThanOrEqual(7);
+    // Floors track the COMMITTED set. The first version of this line said
+    // seven, counting a spec that existed only in the working tree -- a test
+    // that passes for its author and fails on checkout, which is the same
+    // green-for-the-wrong-reason this file exists to prevent. Raise them when
+    // specs land, never lower them to make a run pass.
+    expect(SPECS.length).toBeGreaterThanOrEqual(6);
     const trials = SPECS.reduce((n, [, spec]) => n + spec.trials.length, 0);
     expect(trials).toBeGreaterThanOrEqual(20);
   });

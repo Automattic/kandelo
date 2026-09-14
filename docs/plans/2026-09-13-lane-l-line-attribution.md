@@ -1606,6 +1606,7 @@ rather than a matter of care:
 | `suite \| grep 'Tests'` then read the line | pipeline status is GREP's; a suite that died before printing shows nothing to read | **OPEN** |
 | a mutation harness backgrounded across a laptop sleep | the trial applies, the process dies, the revert never runs — the tree is left MUTATED | **FIXED** |
 | `pgrep -fc "xtask perturb"` to ask "is the harness alive?" | returns 0 while it IS alive — during a trial the live process is the verifier it spawned, not the harness | **OPEN** |
+| a floor counted from the WORKING TREE | passes for its author and fails on checkout, because the thing it counted was never committed | **OPEN** |
 | `set -- $pair` in zsh, then `[ "$2" -eq 0 ]` | no word split: `$2` is empty, the test errors | **OPEN** |
 
 **The last row is the one that did damage.** The other entries in this table
