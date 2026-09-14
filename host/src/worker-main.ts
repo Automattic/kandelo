@@ -6831,6 +6831,14 @@ export async function centralizedThreadWorkerMain(
       },
     };
     let forkResult = 0;
+    // What a fork-from-thread abort will report. The coordinator used to hold
+    // this next to its phase mirror; the module holds a phase and nothing else,
+    // so the errno rides here, exactly as the process path carries it.
+    let threadForkAbortErrno = 0;
+    // Resolved per call rather than captured: the backend is built later, in the
+    // block that instantiates this thread's fork-module.
+    const threadForkModule = () =>
+      requireForkModuleBackend(threadForkModuleBackend, pid);
     let forkMode: ProcessForkMode = PROCESS_FORK_MODE_FORK;
 
     let kernelThreadExitStatus: number | null = null;
@@ -6860,7 +6868,7 @@ export async function centralizedThreadWorkerMain(
             );
           }
           try {
-            threadProcessContinuation.finishReplay();
+            threadForkModule().parentFinish(false);
           } finally {
             releasePthreadForkLock();
           }
@@ -6873,9 +6881,9 @@ export async function centralizedThreadWorkerMain(
                 `match captured mode ${forkMode}`,
             );
           }
-          const errno = threadProcessContinuation.abortErrno();
+          const errno = threadForkAbortErrno;
           try {
-            threadProcessContinuation.finishAbortReplay();
+            threadForkModule().parentFinish(true);
           } finally {
             releasePthreadForkLock();
           }
@@ -7268,7 +7276,7 @@ export async function centralizedThreadWorkerMain(
           }
         }
 
-        const phase = threadProcessContinuation.phaseName();
+        const phase = forkPhase(threadForkModuleInstance?.exports ?? null, pid);
         if (transportedForkUnwind && phase !== "capture") {
           throw new Error(
             `pid=${pid} tid=${tid}: private fork-unwind exception escaped ` +
@@ -7277,7 +7285,11 @@ export async function centralizedThreadWorkerMain(
         }
         if (phase === "capture") {
           try {
-            threadProcessContinuation.sealCapture();
+            // The module seals its own capture, as the process path does: it
+            // writes the JournalImage record from its own (ptr, len) and a
+            // module-built arena needs no separate seal, because every chunk is
+            // born SEALED and the first born ROOT.
+            threadForkModule().sealCaptureAndSerialize();
           } catch (sealError) {
             // SEAL-TIME TRUTHFUL FAILURE (fork-from-thread mirror of the main
             // run loop): the unwind completed but the module could not
@@ -7288,7 +7300,8 @@ export async function centralizedThreadWorkerMain(
               const errno =
                 sealError.errno > 0 ? sealError.errno : STARTUP_ENOMEM;
               forkResult = -errno;
-              threadProcessContinuation.beginAbortReplay(errno);
+              threadForkAbortErrno = errno;
+              threadForkModule().parentReplay(true);
               continue;
             }
             throw sealError;
@@ -7313,11 +7326,12 @@ export async function centralizedThreadWorkerMain(
                 `See docs/fork-reference-support.md.`,
             );
             forkResult = -FORK_REFERENCE_EOPNOTSUPP;
-            threadProcessContinuation.beginAbortReplay(FORK_REFERENCE_EOPNOTSUPP);
+            threadForkAbortErrno = FORK_REFERENCE_EOPNOTSUPP;
+            threadForkModule().parentReplay(true);
             continue;
           }
           const borrowedReplay = Number(forkMode) === PROCESS_FORK_MODE_VFORK
-            ? requireForkModuleBackend(threadForkModuleBackend, pid).borrowedReplayWorkspace()
+            ? threadForkModule().borrowedReplayWorkspace()
             : undefined;
           const childPid = sendForkSyscall(
             memory,
@@ -7327,9 +7341,10 @@ export async function centralizedThreadWorkerMain(
           );
           forkResult = childPid;
           if (childPid < 0) {
-            threadProcessContinuation.beginAbortReplay(-childPid);
+            threadForkAbortErrno = -childPid;
+            threadForkModule().parentReplay(true);
           } else {
-            threadProcessContinuation.beginParentReplay();
+            threadForkModule().parentReplay(false);
           }
           continue;
         }

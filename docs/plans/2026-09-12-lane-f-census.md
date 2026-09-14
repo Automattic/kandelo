@@ -131,7 +131,7 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
 | `forkTypeScript` | 672 | 801 | the backend's reduced-surface methods, the import seeds, the table-owner wire |
 | `forkPlatformTypeScript` | 450 | **677** | `fork-phase.ts` (28), then `fork-import-identity.ts` (214) |
-| `workerMainTypeScript` | 5858 | 5786 | nothing — this one FELL twice, and the ceiling was banked down each time |
+| `workerMainTypeScript` | 5858 | 5792 | net −66; banked down twice, then +6 (below) |
 
 The seven entries behind the first row, each with the reason recorded beside its
 number in `docs/surface-budget.json`:
@@ -145,6 +145,15 @@ number in `docs/surface-budget.json`:
 | `fm_set_activation_imported_globals` | the KFIG declarations half of `appendTo` |
 | `fm_set_imported_global_provenance` | the rest of `appendTo`: matching, typing, sorting, encoding |
 | `fm_set_global_identity_group` | the provider election — see section 152 |
+
+**The +6 on `workerMainTypeScript`**, against a −38 banked an hour earlier in
+the same session, is the fork-from-thread lifecycle conversion: the coordinator
+took an abort errno as an argument to `beginAbortReplay` and held it; the module
+holds a phase and nothing else. So the host carries the errno in a local at three
+assignment sites, plus a two-line accessor for a backend that is built later than
+the block using it — exactly the two things the process path already carries
+(`forkAbortErrno` and `forkModule()`). It is parity cost, not new machinery, and
+the session's net on this surface is −66.
 
 **`forkPlatformTypeScript` at 671 is past its TARGET of 500**, which that
 surface's own text calls a stop-and-talk line rather than an allowance. Raising
