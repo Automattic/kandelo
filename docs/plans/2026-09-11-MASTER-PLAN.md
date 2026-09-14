@@ -332,6 +332,55 @@ is why that churn turned into a permanent, misattributed link failure rather
 than a retry. Three `ncurses-6.5-rev8` trees with different hashes coexist on
 this machine.
 
+## B41 — three perturb trials stopped anchoring when the graph moved under them
+
+OPEN, found 2026-09-14 while re-running lane Y's trials rather than taking
+them on report.
+
+`perturb/browser-worker-node-globals.json` carries three trials that mutate
+`host/src/platform/native-metadata.ts` — reintroducing the unguarded
+`process.platform` that shipped and killed the browser kernel worker — and
+expect `host/test/browser-worker-node-globals.test.ts` to fail. **All three
+now SURVIVE**: `3 trial(s), 3 survived, 0 invalid, 0 timed out`.
+
+**The guard is not broken.** Verified by probe: an unguarded
+`process.platform` placed at module scope in
+`host/src/browser-kernel-worker-entry.ts` makes the test fail, so detection
+works. The guard walks the browser worker entry's VALUE-import graph, and
+its resolver handles `export ... from` re-exports and directory `index.ts`
+imports correctly.
+
+What changed is the graph. Lane Y's own sibling fix `bb17db676` repointed
+`process-lifecycle.ts` from the `./vfs` barrel to `./vfs/vfs`, precisely so
+the barrel would stop dragging `node:fs` into a browser bundle. That removed
+the path `process-lifecycle -> vfs/index -> vfs/host-fs -> platform/native-
+metadata`. Recomputing the graph with the guard's own algorithm: 141 modules,
+and `vfs/index.ts`, `vfs/host-fs.ts` and `platform/native-metadata.ts` are
+all absent from it.
+
+So `native-metadata.ts` is no longer browser-reachable, an unguarded
+`process.platform` there is no longer a browser hazard, and the guard is
+right to ignore it. The trials are what went stale — **hazard H-12, with the
+graph moving rather than the code**. Three committed trials that can no
+longer fail are false evidence in the corpus, which is the exact thing the
+corpus exists to prevent.
+
+**The fix is a design call, not a repair**, which is why it is filed rather
+than applied:
+
+- Re-point the trials at a module still in the graph. Cheap, but it tests
+  the guard rather than the defect.
+- Better: add a trial that mutates `process-lifecycle.ts`'s import back to
+  the `./vfs` barrel. That anchors the real regression — someone restoring
+  the barrel pulls `native-metadata` back into the graph and the original
+  browser-killing defect returns. This is the trial the lane actually wants,
+  and it did not exist.
+
+Note for the merge record: this does not weaken lane Y's browser fixes, both
+of which are real and landed. Its sibling guard
+`perturb/browser-worker-node-imports.json` was re-run here and is healthy —
+1 trial, 0 survived.
+
 ## B40 — bash's source pin resolves to a 404, blocking `build-rootfs.sh`
 
 OPEN, **maintainer decision**. `packages/registry/bash/package.toml` pins
