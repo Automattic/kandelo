@@ -4613,6 +4613,44 @@ strictly stronger.
 `host/src/kernel-worker.ts` mention `shmfs`. That file is off-limits to this
 lane and they are comments, not behaviour.
 
+### BROWSER VALIDATION IS BLOCKED — the kernel worker dies before it boots, and not from this lane
+
+**Found 2026-09-13 while trying to close the browser gap the entry below names.**
+The browser demo suite is broadly broken on this branch:
+
+* `npx playwright test --grep-invert @slow --project=chromium` — **103 failed,
+  75 passed, 6 skipped**;
+* the WordPress `@slow` suite — **13 of 15 failed**, timing out waiting for the
+  machine to come up.
+
+**88 of the failures are one error:** `Kernel worker error during init: Uncaught
+ReferenceError: process is not defined`. A Node global reached the browser
+worker's import graph, so the kernel never finishes initialising and every test
+that boots a machine times out. The failures cluster in vfork, audio-worklet,
+networking and thread-patching specs — areas this lane has never touched.
+
+**Proved it is not lane Y or V, rather than argued it.** Reverting this lane's
+two host-side commits in the working tree — the `/dev/shm` host half and the
+zero-mount change — and re-running a single failing vfork spec reproduces the
+SAME error. The lane's diffs also add no `process` reference anywhere, and the
+extracted `vfs-image-transport.ts` uses none.
+
+**What it blocks.** The browser contract says a browser-facing change is not
+complete from code reasoning and a Node suite alone, and `/dev/shm` moving
+in-kernel changed both browser host files. **That validation cannot be completed
+on this branch until the worker boots.** Everything else about the move is
+verified — see the entry below — so this is the one outstanding piece, and it is
+waiting on someone else's fix rather than on more work here.
+
+**Repro, for whoever owns it:** `cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=5419
+npx playwright test --grep-invert @slow --project=chromium`. The stack surfaces
+only at `browser-kernel-host.ts`'s worker error handler; the origin is inside
+the worker, so the next step is a top-level `process` access in the worker's
+import graph. `host/src/binary-resolver.ts`, `binary-tiers.ts` and
+`native-positioned-write.ts` all read `process.env` or `process.platform` at
+module scope and are Node-only — an import path that now reaches one of them
+would explain it exactly.
+
 ### The `/dev/shm` move is VERIFIED against the product build — and what is not
 
 **2026-09-13.** A green unit suite would not have been evidence here: the change
