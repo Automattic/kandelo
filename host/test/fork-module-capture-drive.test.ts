@@ -3,6 +3,7 @@ import { Worker } from "node:worker_threads";
 import { afterAll, describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
+import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
 import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
 
 /**
@@ -128,6 +129,8 @@ const NOP_MODULE_BYTES = new Uint8Array([
 
 interface Fixture {
   x: Record<string, unknown>;
+  instance: ReturnType<typeof instantiateForkModule>;
+  memory: WebAssembly.Memory;
   errno: () => number;
   arena: (op: number, arg?: number) => number;
   worker: Worker;
@@ -203,6 +206,8 @@ function fixture(): Fixture {
   const call = x.fm_module_state_arena as (o: number, a: number) => bigint;
   return {
     x,
+    instance: fm,
+    memory,
     errno: () => (x.fm_last_errno as () => number)(),
     arena: (op, arg = 0) => Number(call(op, arg)),
     worker,
@@ -307,5 +312,80 @@ describe("the parent fork lifecycle, end to end through the module", () => {
     const scratch = Number(workspace(WORKSPACE_SCRATCH));
     expect(f.errno()).toBe(0);
     expect(scratch).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("the backend's lifecycle methods, against a live module", () => {
+  /**
+   * The same sequence, driven through `ForkModuleContinuationBackend` instead of
+   * raw exports.
+   *
+   * These four methods did not exist: the backend was cut to 20 methods when the
+   * JS coordinator was set aside, and the lifecycle ones went with it. They come
+   * back because `worker-main.ts` is being moved to its end state and needs
+   * them — which is the order that keeps the module API demand-driven rather
+   * than guessed. Every one is checked here before anything calls it.
+   *
+   * `call` throws on a nonzero `fm_last_errno`, so each assertion below is also
+   * an assertion that the module reported success.
+   */
+  function backendFixture(): { f: Fixture; backend: ForkModuleContinuationBackend } {
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    const backend = new ForkModuleContinuationBackend({
+      instance: f.instance,
+      memory: f.memory,
+      ptrWidth: 4,
+      format: { ptrWidth: 4 } as never,
+      catalogOrdinals: [],
+      // The seal serializes the journal image into a freshly channel-mmap'd
+      // chunk, so the backend needs the same channel the responder services.
+      channelBase: CHANNEL_BASE,
+      label: "lifecycle",
+    });
+    return { f, backend };
+  }
+
+  it("opens, seals, replays and finishes a capture", () => {
+    const { f, backend } = backendFixture();
+    const phase = () => Number((f.x.fm_phase as () => number)());
+
+    const anchor = backend.parentBeginCapture(CHANNEL_BASE, 0, 0, 0);
+    expect(anchor, "activation 0's module-buffer anchor").toBeGreaterThan(0);
+    expect(phase()).toBe(PHASE_CAPTURE);
+    // Passing 0 has to reach the module as 0. It is the difference between the
+    // module building the arena and the module assuming the caller did, and
+    // nothing downstream reports it: a nonzero root here would leave the module
+    // owning nothing while the capture looked entirely successful.
+    expect(f.arena(ARENA_ROOT), "the module allocated its own arena").toBeGreaterThan(0);
+    expect(f.arena(ARENA_OWNED), "and owns the chunks behind it").toBe(1);
+
+    backend.sealCaptureAndSerialize();
+    expect(phase()).toBe(PHASE_SEALED_PARENT);
+
+    backend.parentReplay(false);
+    expect(phase()).toBe(PHASE_PARENT_REPLAY);
+
+    backend.parentFinish(false);
+    expect(phase()).toBe(PHASE_IDLE);
+  });
+
+  it("returns the module to idle on abort", () => {
+    // The teardown path for a capture that failed part way. It must not leave
+    // the module mid-phase, because every later entry refuses from the wrong one
+    // and the worker would be wedged rather than broken.
+    const { f, backend } = backendFixture();
+    backend.parentBeginCapture(CHANNEL_BASE, 0, 0, 0);
+    expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_CAPTURE);
+    backend.abort();
+    expect(Number((f.x.fm_phase as () => number)())).toBe(PHASE_IDLE);
+  });
+
+  it("refuses a lifecycle call from the wrong phase rather than proceeding", () => {
+    // `call` turns the module's EBUSY into a throw, so an out-of-order host is
+    // stopped at the boundary instead of being told a plausible lie.
+    const { backend } = backendFixture();
+    expect(() => backend.parentReplay(false)).toThrow(/errno 16/);
+    expect(() => backend.parentFinish(false)).toThrow(/errno 16/);
   });
 });

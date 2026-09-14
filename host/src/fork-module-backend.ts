@@ -376,6 +376,62 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Open this fork's capture: register the activations, publish each one's arena
+   * root, and drive every guest `wpk_fork_unwind_begin` — one module call.
+   *
+   * `0` for the arena root asks the module to allocate its own and declare the
+   * activation set into it. A caller that brings its own root keeps the older
+   * contract, which is what `crates/host-native` still does.
+   *
+   * Returns activation 0's module-buffer anchor, which the host publishes as the
+   * process launch root. A side activation's anchor is read back separately;
+   * this entry returns only the first because its result is a single value.
+   */
+  parentBeginCapture(
+    channelBase: number,
+    arenaRoot: number,
+    sidesPtr: number,
+    sidesCount: number,
+  ): number {
+    return this.call(
+      "fm_parent_begin_capture",
+      channelBase,
+      arenaRoot,
+      sidesPtr,
+      sidesCount,
+    );
+  }
+
+  /**
+   * Begin the parent's replay, or its abort replay when `abort` is set.
+   *
+   * Drives each activation's `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`
+   * from the module rather than a host loop.
+   */
+  parentReplay(abort: boolean): void {
+    this.call("fm_parent_replay", abort ? 1 : 0);
+  }
+
+  /**
+   * End the parent's replay: drive each activation's `wpk_fork_rewind_end` (or
+   * `wpk_fork_abort_end`), finish the journal, and release this fork's
+   * channel-mapped chunks.
+   */
+  parentFinish(abort: boolean): void {
+    this.call("fm_parent_finish", abort ? 1 : 0);
+  }
+
+  /**
+   * Abandon whatever this fork had open and return the module to idle.
+   *
+   * Best effort by design — it is the teardown path for a capture that failed
+   * part-way, so it must not itself fail and strand the module mid-phase.
+   */
+  abort(): void {
+    this.call("fm_abort");
+  }
+
+  /**
    * Seal this fork's capture and serialize the child-inheritable journal image.
    *
    * A failure here is a TYPED `ContinuationAllocationError`, not a generic
