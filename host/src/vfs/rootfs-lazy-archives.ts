@@ -194,6 +194,73 @@ export function imageReadFromBody(
   };
 }
 
+/** Fetch bytes for a URL. The whole of what a dumb pipe needs to be able to do. */
+export type DeferredUrlFetch = (url: string) => Promise<Uint8Array>;
+
+/**
+ * A deferred-file reader that fetches URLs directly, with no filesystem behind
+ * it.
+ *
+ * # Why this exists
+ *
+ * {@link createDeferredFileReader} reads through a `DeferredByteSource` —
+ * today a `MemoryFileSystem` — whose `open` kicks an async materialization and
+ * throws `EAGAIN` until it lands. That puts materialization STATUS in the
+ * host: a preparation state machine, retry and integrity handling, progress
+ * events, abort plumbing. Roughly 500 lines of it.
+ *
+ * The kernel already owns that status. An inode is a `LazyMember` until it is
+ * written through, at which point it becomes `Regular`; `ensure_materialized`
+ * is synchronous and the guest retries on `EAGAIN`. **So the host does not need
+ * to track whether a file is materialized. It needs to answer "bytes for this
+ * inode?" with bytes, "not yet", or "it failed".**
+ *
+ * That is all this does. Fetch in flight is `EAGAIN` — the same answer the
+ * kernel's own byte source gives, and the guest retry loop is already built for
+ * it. A failed fetch is `EIO` once and stays failed, because a pipe that
+ * silently retries forever is a hang rather than a failure.
+ */
+export function createDeferredUrlReader(
+  lazyEntries: readonly LazyFileEntry[],
+  fetchBytes: DeferredUrlFetch,
+): (ino: number, offset: bigint, dest: Uint8Array) => number {
+  const urls = new Map<number, string>();
+  for (const entry of lazyEntries) urls.set(entry.ino, entry.url);
+
+  type Slot =
+    | { state: "pending" }
+    | { state: "ready"; bytes: Uint8Array }
+    | { state: "failed" };
+  const slots = new Map<number, Slot>();
+
+  return (ino, offset, dest) => {
+    const url = urls.get(ino);
+    // The kernel only asks for inodes the image declared URL-backed lazy, so an
+    // unknown one is a contract violation between image and table, not a
+    // missing file.
+    if (url === undefined) return ENOENT;
+
+    const slot = slots.get(ino);
+    if (slot === undefined) {
+      slots.set(ino, { state: "pending" });
+      void fetchBytes(url).then(
+        (bytes) => slots.set(ino, { state: "ready", bytes }),
+        () => slots.set(ino, { state: "failed" }),
+      );
+      return EAGAIN;
+    }
+    if (slot.state === "pending") return EAGAIN;
+    if (slot.state === "failed") return EIO;
+
+    const at = Number(offset);
+    if (!Number.isSafeInteger(at) || at < 0) return EIO;
+    if (at >= slot.bytes.byteLength) return 0; // end of file
+    const n = Math.min(dest.byteLength, slot.bytes.byteLength - at);
+    dest.set(slot.bytes.subarray(at, at + n));
+    return n;
+  };
+}
+
 export function createDeferredFileReader(
   backend: DeferredByteSource,
   lazyEntries: readonly LazyFileEntry[],

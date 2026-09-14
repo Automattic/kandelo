@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildRootfsLazyWiring,
   createDeferredFileReader,
+  createDeferredUrlReader,
   HOST_DEFERRED_KIND_ARCHIVE,
   HOST_DEFERRED_KIND_FILE,
 } from "../src/vfs/rootfs-lazy-archives";
@@ -414,5 +415,52 @@ describe("the deferred provider routes by kind, not by id range", () => {
     const { deferredProvider } = wiringWithBothKinds();
 
     expect(deferredProvider(99, 1n, 0n, new Uint8Array(4))).toBe(-38);
+  });
+});
+
+describe("the deferred reader as a dumb bytes pipe", () => {
+  const entry = (ino: number, url: string) =>
+    ({ ino, path: `/lazy/${ino}`, url, size: 4 }) as LazyFileEntry;
+
+  it("answers EAGAIN while a fetch is in flight and bytes once it lands", async () => {
+    let release!: (b: Uint8Array) => void;
+    const pending = new Promise<Uint8Array>((r) => { release = r; });
+    const read = createDeferredUrlReader([entry(7, "https://x/a")], () => pending);
+    const dest = new Uint8Array(8);
+
+    // First ask starts the fetch and reports "not yet" — the same answer the
+    // kernel's own byte source gives, which its retry loop is built for.
+    expect(read(7, 0n, dest)).toBe(-11); // EAGAIN
+    expect(read(7, 0n, dest)).toBe(-11);
+
+    release(new Uint8Array([1, 2, 3, 4]));
+    await pending;
+    await Promise.resolve();
+
+    expect(read(7, 0n, dest)).toBe(4);
+    expect(Array.from(dest.subarray(0, 4))).toEqual([1, 2, 3, 4]);
+    // Offsets and end-of-file, so the kernel can walk a file in pieces.
+    expect(read(7, 2n, dest)).toBe(2);
+    expect(read(7, 4n, dest)).toBe(0);
+  });
+
+  it("reports a failed fetch once and stays failed", async () => {
+    const read = createDeferredUrlReader(
+      [entry(9, "https://x/gone")],
+      () => Promise.reject(new Error("404")),
+    );
+    const dest = new Uint8Array(4);
+    expect(read(9, 0n, dest)).toBe(-11); // EAGAIN: the attempt started
+    await Promise.resolve();
+    await Promise.resolve();
+    // EIO, and it does not return to EAGAIN. A pipe that retries forever is a
+    // hang, not a failure, and the guest would spin on it.
+    expect(read(9, 0n, dest)).toBe(-5);
+    expect(read(9, 0n, dest)).toBe(-5);
+  });
+
+  it("refuses an inode the image never declared", () => {
+    const read = createDeferredUrlReader([entry(7, "https://x/a")], async () => new Uint8Array());
+    expect(read(999, 0n, new Uint8Array(4))).toBe(-2); // ENOENT
   });
 });
