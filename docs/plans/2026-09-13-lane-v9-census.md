@@ -217,3 +217,50 @@ rather than missing — it is not tmpfs's job.
 
 `/tmp` is already `0o1777` and already served by the in-kernel tmpfs, so this
 arrangement is in production today. **Moving `/dev/shm` there loses nothing.**
+
+---
+
+## AFTER THE MOVE, 2026-09-13 — what is actually left of V9
+
+Measured once `/dev/shm` was kernel-owned, so this is the remainder rather than
+an estimate. Every `MemoryFileSystem` reference left in `host/src`:
+
+**1. `process-lifecycle.ts` — TYPE-ONLY, three references.**
+`rootfsBaseImage(): MemoryFileSystem | null | undefined`, a `baseImage` field,
+and `Parameters<MemoryFileSystem["setLazyFetcher"]>[0]` for a fetcher type.
+Nothing here calls a filesystem method. **This is the file that may collide with
+lane F** — it sits near the fork glue, and whoever lands second rebases.
+
+**2. `browser-kernel-worker-entry.ts` — the `/` backend, and it is NOT block
+operations.** What the worker actually asks of it:
+
+| call | what it is |
+|---|---|
+| `rewriteLazyFileUrls`, `rewriteLazyArchiveUrls` | rewriting fetch descriptions |
+| `setLazyFetcher`, `subscribeLazyDownloads` | installing the host transport |
+| `importLazyEntries`, `importVerifiedLazyArchiveEntries` | taking descriptions from the host |
+| `readFileFromFs` | `open`/`fstat`/`read`/`close`, **one caller**, reading a log path |
+| the `blob_read` byte store | serving deferred bytes the kernel asks for |
+
+Six of the seven are **host-owned duties under the courier contract** — the host
+decides whether a URL may be fetched and supplies the bytes — and stay in
+TypeScript whatever happens to the block layer. The seventh is four calls.
+
+**So V9's remainder is: one four-call read helper, a byte store, and a type.**
+The census's original framing — 8,501 lines, the lane's only genuine unknown —
+does not survive the measurement, and the reason is the one the first section
+gave: the line count was counting duties that were never the filesystem's.
+
+**The open question for V10** is whether the `/` backend can hold image bytes
+and serve `blob_read` WITHOUT `SharedFS` underneath it. That is the last thing
+between `sffsTypeScript` and its target of 0, and it is a smaller question than
+"replace a filesystem": the kernel parses the image itself and resolves no
+names, so what the host needs is a byte window plus the lazy JSON, not a
+filesystem.
+
+**One consequence already paid**, recorded because it will recur: `/dev/shm` was
+the LAST host mount on Node, so removing it left `VirtualPlatformIO` with none
+and its constructor guard turned "the kernel owns everything" into a boot
+failure. Zero mounts is the destination, and the guard is gone; `resolve` still
+refuses an unroutable path by name. **Expect more guards that encode "there is
+always at least one host X".**
