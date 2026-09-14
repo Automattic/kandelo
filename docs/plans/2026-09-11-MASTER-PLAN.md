@@ -1496,6 +1496,62 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+## V AFTER THE MERGE — the debt, and three findings that make it harder
+
+**The twenty-second entry point is a DEBT and `25537ca84` records it as one.**
+`sm_image_read` was granted on the promise that it retires
+`imageBodyBytes` and unlocks roughly 11,900 lines. The deletion did not land in
+the merge that granted it. **Everything below is this lane reporting that the
+promise is harder than it was when argued** — which is the reason banking it
+rather than trusting it was right.
+
+**1. The test side is NOT mechanical, and four successive estimates were
+wrong.** "15 files", then "87, most mechanical", then "71 mechanical + 16
+rewrites", then "69 mechanical + 19 decisions" — the last measured and
+disproved. Of 88 constructing test files: 69 builder-shaped, 15 Node-side
+backend users, 4 browser-side backend users. But the 69 call **59 distinct
+methods, 35 of which `SffsImageFs` does not have**. They are tests OF a
+filesystem, so they exercise its whole surface. **The test side is unscoped**,
+and the next person to size it should start from that 59-method surface rather
+than from a file count.
+
+**2. Much of that 35 is not missing, only elsewhere** — checked after the
+claim above was made, because the claim was itself too pessimistic.
+`ftruncate` is `truncate_handle` in both Rust filesystems. `lseek` and
+`O_APPEND` are not filesystem operations at all: offsets live in the fd/OFD
+layer and `syscalls.rs`, which already has
+`lseek_errors_preserve_kernel_owned_offsets`. `statfs`, `rename`, `link` and
+`fchown` exist in both `rootfs.rs` and `tmpfs.rs`. The lazy/transport family
+stays host-side by the courier contract. So the 35 is a **mapping exercise**,
+not a build list — but it is unmeasured, and this lane has now been wrong in
+both directions on it.
+
+**3. `mount(2)` IS NOT IMPLEMENTED, AND IS NOT RECORDED AS A GAP.** There is no
+`SYS_MOUNT` in the syscall set, no handler in `syscalls.rs`, and no entry in
+`docs/posix-status.md` — which discusses resolution across mounts, `nosuid` on
+mounts, and mount flags through `statfs(2)` at length. The mount table is the
+compile-time `SCRATCH_MOUNTS` constant plus what the host supplies at boot.
+
+**That is why deleting `MemoryFileSystem` looks blocked, and the appearance is
+misleading.** Four browser tests need an in-memory filesystem at a path of
+their choosing — `nosuid-exec.spec.ts` mounts `/normal` to test mount-level
+nosuid. The kernel HAS an in-memory filesystem: `tmpfs.rs`, 1,782 lines, 23
+tests. It cannot be asked to appear at `/normal`. **So the host-side
+`MemoryFileSystem` is not meeting a need the kernel cannot meet; it is
+compensating for an unimplemented syscall** — the shape the platform-values
+contract names: a workaround must document the boundary it belongs to and must
+not hide a platform defect.
+
+**The decision this actually needs** is not "what replaces the in-memory
+backend". It is: **should `mount(2)` place a tmpfs at a caller-chosen prefix,
+or is fixed-at-boot a deliberate boundary?** If the first, the host-side
+in-memory filesystem has no remaining reason to exist and V's last blocker
+dissolves. If the second, `docs/posix-status.md` should say so, and keeping a
+small in-memory backend becomes a documented consequence rather than an
+accident. **Implementing `mount(2)` is outside lanes V and Y — it is a kernel
+capability that changes what the platform claims to support.**
+
+
 ## LANE Y/V MERGE POINT — `brandonpayton/lane-y-image-writer` @ `5fe08d499`, 2026-09-14
 
 **Ready to merge. Do NOT wait for V to finish: what is complete is the
