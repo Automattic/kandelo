@@ -7182,3 +7182,47 @@ meant that I had not checked against the code that produces it. Both prior
 attempts to shortcut this lane's hard parts — the "ownership protocol" and the
 "cluster cut" — were the same move: a conclusion about the system standing in
 for a fact about it.
+
+## §148 — Four coordinator uses left, and all four are one knot
+
+The coordinator is down from 22 call sites to 4: `beginCapture`,
+`prepareActivation`, `enableModuleBacking`, `enableModuleReferenceReplay`.
+Tracing what each still feeds, they are not four things. They are one.
+
+- `prepareActivation` stores a binding in the coordinator's `prepared` map. Its
+  consumers were `registerActivation` (cut — the resume table took it),
+  `continuationImports` (cut), and `attachChild` (cut). The only consumer left
+  is `beginCapture`, through `this.activations`.
+- `enableModuleBacking` sets the coordinator's backend handle, which now nothing
+  reads except `beginModuleCapture`.
+- `enableModuleReferenceReplay` sets a flag whose readers were `attachModuleChild`
+  (cut) and the capture path.
+
+So all three exist to make `beginCapture` work, and `beginCapture` is the last
+coordinator method with a live call site. Cut it and the other three have no
+reason to be called; delete the import and `fork-process-continuation` is gone.
+
+**Worth being explicit that the coordinator is already half-dismantled and
+cannot run.** `registerActivation` is cut, so its `activations` map is never
+populated, so `beginCapture` would iterate nothing. That is the expected state
+mid-migration — the whole file cannot load anyway — but it means the remaining
+four are a formality rather than working code, and nothing is lost by cutting
+them in one step once the blocker clears.
+
+**The blocker is a single port.** `beginCapture`'s call site is:
+
+    arena.begin();
+    processContinuation.beginCapture(arena);
+    importedStateCapture?.appendTo(arena);
+
+The first two are already available as `parentBeginCapture` (tested against a
+live module). The third is the whole remainder: section 147 established the
+binding records are irreducible host floor carrying JavaScript object identity,
+so `appendTo` is rewritten thin in `host/src` and writes its records through the
+module's `__wpk_fork_module_state_record_reserve` / `_commit` imports instead of
+a host-owned arena.
+
+That single port collapses the rest: `beginCapture` converts, the other three
+coordinator calls become unreferenced, `fork-process-continuation` and
+`fork-imported-globals` both leave the import list, and the host stops owning an
+arena at all — which is what `fork-module-state` was gating.
