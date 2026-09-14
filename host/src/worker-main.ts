@@ -4280,7 +4280,7 @@ export async function centralizedWorkerMain(
           processContinuation.beginCapture(arena);
           importedStateCapture?.appendTo(arena);
         } catch (error) {
-          if (processContinuation.phaseName() !== "idle") {
+          if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
             try {
               processContinuation.abort();
             } catch {
@@ -5394,7 +5394,7 @@ export async function centralizedWorkerMain(
         if (isWasmUnreachableTrap(e) && kernelExitStatus !== null) {
           exitCode = kernelExitStatus;
         } else {
-          if (processContinuation.phaseName() !== "idle") {
+          if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
             try {
               processContinuation.abort();
             } catch {
@@ -6849,7 +6849,7 @@ export async function centralizedThreadWorkerMain(
         const mode = processForkMode(rawMode);
         if (mode === null) return -STARTUP_EINVAL;
 
-        const phase = threadProcessContinuation.phaseName();
+        const phase = forkPhase(threadForkModuleInstance?.exports ?? null, pid);
         if (phase === "parent-replay") {
           if (mode !== forkMode) {
             throw new Error(
@@ -7260,7 +7260,7 @@ export async function centralizedThreadWorkerMain(
         let transportedForkUnwind = false;
         try {
           const raw =
-            threadProcessContinuation.phaseName() === "idle"
+            forkPhase(threadForkModuleInstance?.exports ?? null, pid) === "idle"
               ? threadFn(...threadArgs)
               : resumeThread!(fnPtr, threadArg);
           result = Number(raw);

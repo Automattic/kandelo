@@ -54,6 +54,38 @@ const output = await new Promise((resolve) => {
   child.on("close", () => resolve(seen));
 });
 
+/**
+ * Refuse to compare a run that never started.
+ *
+ * The failure mode this exists for is the worst one this script can have. When
+ * vitest dies in GLOBAL SETUP -- the program-package-index build, which fails
+ * outright if the package registry changes underneath it, as it does when
+ * anything else in the worktree is building -- no test file runs, so no file
+ * emits a `FAIL` line, so EVERY baseline entry looks fixed. The run that
+ * prompted this printed "UNBANKED: 195 baseline file(s) now pass" and told the
+ * reader to delete them from `expected-failures.json`. Doing that would have
+ * emptied the ratchet on the strength of a suite that executed nothing.
+ *
+ * Note what does NOT catch it. The skip counter above cannot: there were no
+ * skips, because there were no tests. The exit code cannot: a non-zero exit is
+ * this script's normal case. The existing "unresolved imports" census cannot: a
+ * setup crash names no module. The only reliable witness is that vitest never
+ * printed a `Test Files` summary line at all -- it gets that far even when
+ * every file fails to load, and never when setup dies first.
+ */
+if (!/^\s*Test Files\s+/m.test(output)) {
+  console.error(
+    "NO RUN: vitest produced no `Test Files` summary, so no test file " +
+      "executed -- almost always a global-setup failure (the program package " +
+      "index build races anything else building in this worktree; its own " +
+      "error says `retry`).\n" +
+      "  The baseline comparison is MEANINGLESS for this run and has been " +
+      "skipped. Every baseline entry would have looked fixed.\n" +
+      "  Re-run it with nothing else building.",
+  );
+  process.exit(1);
+}
+
 const failing = new Set(
   [...output.matchAll(/^ FAIL {2}(\S+)/gm)].map((m) => m[1]),
 );
