@@ -2528,6 +2528,33 @@ mod wasm {
         PHASE.store(next, Ordering::Relaxed);
     }
 
+    /// Read the coordinator phase: one of the `PHASE_*` values above.
+    ///
+    /// This is a READ of state the module already owns, not a second copy of
+    /// it. The host used to keep its own `phase` field and answer from that,
+    /// which is precisely the drift this machine exists to end: two authorities
+    /// for one fact, and the module unable to refuse a host that had gotten it
+    /// wrong. The module stays the single authority; the host asks.
+    ///
+    /// Deliberately infallible and not errno-reporting. Every other entry here
+    /// answers `EBUSY` when the phase is wrong, but "what phase are we in" has
+    /// no wrong phase to be in, and a host branching on the answer must not
+    /// have to distinguish "idle" from "the call failed". `PHASE_IDLE` before
+    /// any activation exists is the truthful answer, not a default.
+    ///
+    /// PREFER ACTING TO ASKING. A read followed by the call it guards is two
+    /// steps the module cannot make atomic, so the answer is stale in principle
+    /// by the time the host branches on it; the refusal is not. This exists for
+    /// the host decisions that are not a prelude to a call -- choosing WHICH
+    /// entry point to run, and asserting an invariant -- where there is nothing
+    /// to attempt and catch. `host/test/fork-module-phase.test.ts` deliberately
+    /// does not use it: a behavioural refusal test is the stronger claim,
+    /// because an accessor can agree with a broken machine.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_phase() -> u32 {
+        PHASE.load(Ordering::Relaxed)
+    }
+
     // -- Coordinator (JS→wasm, once per phase, not hot) ---------------------
 
     /// Register a fresh unwind activation into `module` over its own MODULE-OWNED

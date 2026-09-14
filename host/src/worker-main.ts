@@ -99,6 +99,7 @@ import {
   isForkUnwindException,
   requireForkUnwindTag,
 } from "./fork-guest-imports";
+import { type ForkPhase, forkPhase } from "./fork-phase";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
   type ForkModuleExports,
@@ -4198,7 +4199,7 @@ export async function centralizedWorkerMain(
         const mode = processForkMode(rawMode);
         if (mode === null) return -STARTUP_EINVAL;
 
-        const phase = processContinuation.phaseName();
+        const phase = forkPhase(forkModuleFrameExports, pid);
         if (phase === "parent-replay" || phase === "child-replay") {
           if (mode !== forkMode) {
             throw new Error(
@@ -5224,7 +5225,7 @@ export async function centralizedWorkerMain(
         for (;;) {
           let transportedForkUnwind = false;
           try {
-            const phaseBeforeEntry = processContinuation.phaseName();
+            const phaseBeforeEntry = forkPhase(forkModuleFrameExports, pid);
             const entry =
               phaseBeforeEntry === "idle" ? lexicalEntry : replayEntry;
             entry();
