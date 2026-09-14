@@ -8832,6 +8832,50 @@ binary and confirm it reads as undeclared.
 Real, characterized enough to act on, too small to be lanes — recorded here so
 they are not lost the way five dead Rust floors were.
 
+- **B37 — `lamp/wasm32`'s opcache prewarm fails FATALLY and the node reports
+  SUCCEEDED.** Found 2026-09-14 in a `./run.sh setup` log while diagnosing an
+  unrelated failure. The build emits
+  `dl_step: /usr/lib/php/extensions/opcache.so: undefined symbol:
+  __sigsetjmp_save`, then `[prewarm] FATAL: opcache extension not loaded` —
+  and the very next lines are `SUCCEEDED lamp/wasm32` / `READY
+  product/browser-lamp`. **A step that announces its own fatal failure and is
+  then recorded as success is the platform-values contract's "convenient
+  illusion"**, and it hides a real one: the missing `__sigsetjmp_save` means
+  the dynamic loader cannot resolve a symbol the extension needs, which is a
+  libc/SDK question, not a PHP one. Two separable bugs — the unresolved
+  symbol, and the prewarm's exit status being ignored. The second is the one
+  that let the first go unnoticed. **Unowned; belongs to the package/build
+  lane, not to V or Y.**
+
+- **B38 — any `crates/runtime-core` edit makes the NEXT `./run.sh setup` fail
+  once.** Measured 2026-09-14, twice, with the second run converging. A
+  `runtime-core` change invalidates the closure key of `kernel` (and through
+  it `rootfs`), so those nodes PUBLISH during the run. Publishing mutates the
+  state that `compute_sha_for_policy` reads, so when
+  `capture_source_only_package_authority` recomputes a downstream package's
+  key after the graph drains, the key has moved out from under the path the
+  node resolved under, and the comparison at
+  `tools/xtask/src/build_deps.rs:8948` rejects it:
+
+  ```
+  LOCAL BUILD FAILED — source-only program authority was not published
+  source-only program authority: finalization failed: wordpress@7.0:
+    resolved source-only cache path   …wordpress-7.0-rev19-wasm32-bc418867…
+    does not equal expected canonical …wordpress-7.0-rev19-wasm32-23b3456b…
+  ```
+
+  Every one of the 94 nodes reports `succeeded`; only finalization fails, and
+  the projection is therefore never published, so **the browser suite aborts at
+  startup with 0 passed / 0 failed** and gives no hint that a build is why.
+  A second run publishes nothing and exits 0.
+
+  **The cost is a full browser-verification cycle per kernel-touching change**,
+  paid by whoever does not yet know the failure is transient — which is the
+  expensive part, because the message reads like a corrupt cache rather than a
+  race. Two candidate fixes: finalize against the key captured at RESOLVE time,
+  or re-resolve after publishes drain. **Unowned; package/build lane.** Lanes V
+  and Y hit it only because they edit `runtime-core`.
+
 - **B36 — a signal-safe wake can complete before a signal the writer has not
   yet sent.** A parked `ppoll`/`pselect` is woken by a host-scheduled task, not
   by anything ordered against the writing process's next channel message. The
