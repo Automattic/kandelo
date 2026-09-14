@@ -5372,3 +5372,181 @@ Four ceilings rose, each argued in `docs/surface-budget.json`:
 minus the ported method), `forkModuleHostEntries` 47 -> 49 (the two capture
 accessors), `forkTypeScript` 484 -> 513 and `workerMainTypeScript` 5845 -> 5858
 (both with production callers in the same commit).
+
+## §117 — The remaining attic, as a dependency graph rather than a list
+
+Restoring `fork-externref-process-owner` and `fork-reference-capture-module` was
+easy for one reason each: the first had ONE attic-coupled method that could be
+ported away, and the second had no attic couplings at all. Asking that question
+of everything left gives the shape of the rest.
+
+Leaves -- no attic dependencies, restorable today:
+
+```
+  738  fork-replay-events
+  906  fork-gc-codec
+  263  fork-reference-scratch
+  236  fork-static-root-catalog
+  120  fork-function-catalog
+   93  fork-reference-recipes
+   42  fork-externref-provenance
+```
+
+Everything else waits on those, and most of it waits on one hub:
+
+```
+ 3826  fork-module-state            <- fork-replay-events
+ 1099  fork-reference-segments      <- fork-module-state, fork-reference-recipes
+ 1230  fork-imported-globals        <- fork-module-state
+  997  fork-capture-session         <- 8 modules incl. fork-module-state
+  508  fork-exception-provider      <- fork-activation-registry, ...
+  381  fork-table-snapshot          <- 7 modules
+ 1620  fork-early-reference-provider<- 8 modules
+ 2099  fork-activation-registry     <- 11 modules
+ 1472  fork-process-continuation    <- 5 modules
+```
+
+About 16,000 lines, and the leaves are the interesting part. They are not restore
+candidates: `fork-function-catalog`, `fork-static-root-catalog`,
+`fork-reference-recipes`, `fork-replay-events` and most of `fork-gc-codec` are
+things the MODULE already implements in Rust -- the catalogs it seeds, the
+journal it owns, the codec it decodes. They are delete candidates whose only
+remaining callers are the hub.
+
+So the graph does not offer an incremental order. The leaves cannot die until
+the hub stops calling them, and the hub -- `fork-activation-registry` plus
+`fork-process-continuation` plus `fork-capture-session` -- is one connected
+orchestration job. Slicing it by dependency order restores the duplicate
+decoders this campaign removed, which is the opposite direction.
+
+And the Rust counterparts are not hypothetical. Checking the built module and
+`crates/fork-codec` for each one:
+
+```
+fork-function-catalog     fm_funcref_ordinal, fm_set_activation_catalog_base
+fork-static-root-catalog  fm_static_root_slot, fm_set_activation_static_root_base
+fork-replay-events        fm_resume_peek, fm_journal_image_len, fm_set_activation_resume_catalog
+fork-gc-codec             fm_build_gc_plan, fm_set_activation_gc_codec
+fork-reference-recipes    fm_capture_intern, fm_capture_define_gc, fm_decoded_node_count
+```
+
+`crates/fork-codec` additionally carries `module_state.rs`,
+`module_state_records.rs`, `module_state_writer.rs`, `imported_globals.rs`,
+`catalogs.rs`, `gc_codec.rs` and `reference_graph_builder.rs` -- Rust for
+`fork-module-state` (3826 TS lines), `fork-imported-globals` (1230) and the
+capture graph.
+
+So the 16,000 lines are not 16,000 lines of WORK. They are 16,000 lines of
+DUPLICATE whose Rust already exists and is already the production path for
+everything this lane has rewired so far. What remains is not reimplementation;
+it is rewiring roughly fifty call sites in `worker-main.ts` from the TypeScript
+hub to the module, after which the hub and its leaves are deleted rather than
+ported.
+
+That is the same shape as the env stride, at a larger scale: the replacement was
+cheap once the module already served the contract, and the measurable work was
+deleting what had fed the old path.
+
+The maintainer's framing resolves the ordering: "the migration to Rust needs to
+be complete ENOUGH to enable the tests". Not restore the TypeScript to enable the
+tests -- advance the Rust until the TypeScript is not needed. The two restores so
+far fit that test (one ported its coupling away, one was already pure marshalling
+over `fm_capture_*`); the hub does not, and there is no smaller version of it.
+
+## §118 — Two wrappers over one module instance, and what actually duplicates
+
+`fork-reference-capture-module` comes back as a clean reclassification: its only
+import, `ForkModuleExports`, already lives in `host/src`, and it describes itself
+accurately as "a thin, stateful wrapper over the `fm_capture_*` exports of ONE
+resident fork-module instance". That is the same sentence `fork-module-backend`
+answers to, so the obvious reading is that one of them should absorb the other.
+
+Comparing them says something more useful. The method sets are DISJOINT:
+
+```
+capture module  begin internFuncref internExternref internI31 internStaticRoot
+                claimGc gatedPlaceholder defineGc beginVector appendVector
+                finishVector validate serializeRecords vectorGet interned
+backend         setup stat setActivation{CatalogBase,StaticRootBase,ResumeCatalog,
+                GcCodec,ExceptionCodec} setHostExceptionOwner sealCaptureAndSerialize
+                bindActivationDrive capturedExternrefHandles stageExternrefHandover
+                decodeReferenceGraph decodedNode{Count,Kind,ModuleActivation,Ordinal}
+```
+
+So they are not duplicates, and folding them is consolidation rather than
+de-duplication -- worth doing, not urgent.
+
+Both hand-roll the module's failure convention, which looked like one contract
+written twice. Reading the two says otherwise, and the difference is the point:
+
+```ts
+// backend
+const errno = this.lastErrno();
+if (errno !== 0) throw ...              // fails on a nonzero errno
+
+// capture module
+if (result < 0) throw ...               // fails on a negative RETURN,
+                                        // errno only supplies the message
+```
+
+Those are different PREDICATES, and each is right for its family. The coarse
+entries signal through `fm_last_errno` and return a value that may legitimately
+be zero; the capture entries signal through a negative return, because a recipe
+id of 0 is the canonical null the builder seeds. Merging them into one `call()`
+would have been wrong, and the way I would have found out is by breaking capture
+error handling.
+
+So the duplication is narrower than section 118 first claimed: the shared part is
+FORMATTING a module failure with its errno, not deciding that one occurred. The
+unification is a small helper for the message; each family keeps its predicate.
+
+One defect fell out of the comparison. The Rust names `fm_capture_last_errno` in
+three comments and **that export does not exist** -- the capture family sets
+`fm_last_errno` like everything else, which is what the host correctly reads. So
+the code is right and the comments name a function that was renamed or never
+shipped. Same class as the `fm_ref_*` flip in section 111: a name with no export
+behind it, invisible because nothing checks that a named export exists. There it
+was live code binding `undefined`; here the cost is only a reader trusting a
+wrong name.
+
+Surface placement follows from the same observation. The file is module-facing,
+so a `fork-*.ts` filename glob filing it under `forkRestoredHostFloor` -- a
+surface defined as "process lifecycle, cross-worker transport or memory placement
+rather than fork capture/replay logic" -- would be wrong by that surface's own
+definition. It is named into the module-facing measure instead, the way
+`forkPlatformTypeScript` already names its members rather than globbing.
+
+## §119 — A regression I shipped, and the runner that could not tell me where
+
+The confirming baseline I let run past commit `785fab3ff` came back with two
+regressions. One was expected -- the capture module changed surfaces and the
+budget edit was still queued. The other was real: `fork-replay-host-parity`
+failed because I renamed `forkGenerationFromContinuation` to
+`forkGenerationFromCapturedHandles` and that test searches
+`process-lifecycle.ts` BY SOURCE TEXT for the call.
+
+Checking before touching it: the ordering the test exists to pin -- grant, then
+the child's init data, then the worker start, with a release on rollback -- still
+holds at both sites (95648 < 96708 < 99719 < 101812 < 102060). Only the name
+moved, so only the name moved in the test, with a comment saying why.
+
+That regression is the cost of the thing I said out loud in that commit: "A
+confirming full-baseline run was still in flight at commit time; if it reports
+anything, the fix follows in the next commit rather than this one being held
+uncommitted." It reported something. The trade was deliberate and I would make it
+again with the maintainer away, but it should be recorded as having been paid.
+
+The worse problem was diagnosis. During that run a worker sat at 0% CPU for
+fourteen minutes and I could not tell which FILE it was on, because
+`suite-baseline.mjs` collected everything through `execFileSync` -- nothing is
+visible until vitest exits. Hung and slow look identical from outside, and only
+one is worth waiting for. The runner now streams each line as it arrives, so the
+last file printed is the one a stall belongs to. Measured: 19 KB of output in the
+first ninety seconds where previously there was none, which also revealed that
+the opening minute-and-a-half is global setup regenerating the program package
+index.
+
+The maintainer's instruction alongside that: run the full baseline LESS OFTEN,
+not before every commit. This batch is validated by the surface budget plus the
+six test files it touches -- 117 assertions, with the only two failing FILES
+already banked for missing attic modules.

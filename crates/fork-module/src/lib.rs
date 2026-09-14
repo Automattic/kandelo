@@ -1804,6 +1804,11 @@ mod wasm {
         // inheriting the parent's election would answer for coordinates that
         // belong to a table it no longer shares.
         ACT_TABLE_STATE_OWNER_COUNT.store(0, Ordering::Relaxed);
+        // Also per-capture state a COW child inherits. `begin_capture_impl`
+        // already clears it, and today every read follows a capture -- but that
+        // is a reasoning dependency, and this block exists so a COW child starts
+        // clean without anyone having to trace call orders.
+        reset_captured_externrefs();
         HOST_EXCEPTION_OWNER.store(u32::MAX, Ordering::Relaxed);
         RESUME_CATALOG_LEN.store(0, Ordering::Relaxed);
         // The dylink archive coordinates reset for the same COW reason as the
@@ -5245,7 +5250,7 @@ mod wasm {
     // live-value identity layering stays host-side (Bucket C), exactly as native
     // keeps it in `guest.rs` while calling `graph.intern_*`. Recipe ids are
     // `>= 1` (id 0 is the canonical null the builder seeds); every ID-returning
-    // export returns `-1` on failure with the reason in `fm_capture_last_errno`.
+    // export returns `-1` on failure with the reason in `fm_last_errno`.
 
     /// GC aggregate kind discriminants `fm_capture_define_gc` accepts. Mirror the
     /// host's `defineGc` kind argument (struct=1, array=2) plus exnref=3.
@@ -5331,7 +5336,7 @@ mod wasm {
     }
 
     /// Fold a builder `Result<()>` into the VOID-return convention: `0` on
-    /// success, `-1` on failure (reason in `fm_capture_last_errno`).
+    /// success, `-1` on failure (reason in `fm_last_errno`).
     fn capture_ok_void(result: Result<(), Errno>) -> i32 {
         match result {
             Ok(()) => {
@@ -7182,7 +7187,7 @@ mod wasm {
     }
 
     /// Serialize the built graph into a module-owned KFRV/KFRS record stream and
-    /// return its guest address (0 on failure; reason in `fm_capture_last_errno`).
+    /// return its guest address (0 on failure; reason in `fm_last_errno`).
     /// The stream is a sequence of records, each `CAPTURE_RECORD_HEADER` bytes
     /// (`u16 kind, u16 reserved, u32 activation_id, u32 owner_id, u32 payload_len`)
     /// followed by `payload_len` payload bytes, in the exact emit order of the

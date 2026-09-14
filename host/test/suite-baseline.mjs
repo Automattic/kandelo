@@ -12,7 +12,7 @@
  *   - a file in the baseline that now passes is an unbanked improvement, and
  *     leaving it listed would let the next regression hide behind it.
  */
-import { execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -22,18 +22,37 @@ const baseline = JSON.parse(
 );
 const expected = new Set(baseline.expectedFailures);
 
-let output = "";
-try {
-  output = execFileSync(join(here, "..", "node_modules", ".bin", "vitest"), ["run"], {
+/**
+ * Stream the suite's output instead of buffering it.
+ *
+ * This used `execFileSync`, which returns nothing until vitest exits. That was
+ * tolerable while most of the suite failed instantly on a missing import and a
+ * run took four minutes. It stopped being tolerable when the restored tests
+ * started booting real kernels: a run now takes 15-20 minutes, and during one of
+ * them a worker sat at 0% CPU for fourteen minutes with no way to tell which
+ * FILE it was on, or whether it was hung or merely slow. Those two look
+ * identical from outside, and only one of them is worth waiting for.
+ *
+ * Echoing each line as it arrives makes a stall attributable: the last `FAIL` or
+ * test-file line printed is the one it is stuck on.
+ */
+const output = await new Promise((resolve) => {
+  const child = spawn(join(here, "..", "node_modules", ".bin", "vitest"), ["run"], {
     cwd: join(here, ".."),
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   });
-} catch (error) {
-  // A non-zero exit is the normal case while the baseline is non-empty.
-  output = `${error.stdout ?? ""}${error.stderr ?? ""}`;
-}
+  let seen = "";
+  const absorb = (chunk) => {
+    const text = chunk.toString();
+    seen += text;
+    process.stderr.write(text);
+  };
+  child.stdout.on("data", absorb);
+  child.stderr.on("data", absorb);
+  // A non-zero exit is the normal case while the baseline is non-empty, so the
+  // exit CODE is not the signal here -- the parsed FAIL lines are.
+  child.on("close", () => resolve(seen));
+});
 
 const failing = new Set(
   [...output.matchAll(/^ FAIL {2}(\S+)/gm)].map((m) => m[1]),
