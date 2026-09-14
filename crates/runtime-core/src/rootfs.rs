@@ -5014,6 +5014,71 @@ mod tests {
         release_handle(h);
     }
 
+    /// A retry after `EAGAIN` must not write its bytes into a file that
+    /// replaced the one it was fetching for.
+    ///
+    /// This is the kernel-model form of a danger the TypeScript filesystem
+    /// guards with an inode compare-and-swap. There, materialization `await`s a
+    /// fetch, so a peer can unlink and recreate the path inside that window.
+    /// Here there is no window: the byte source answers or returns `EAGAIN`,
+    /// the call unwinds, and the guest retries. The risk moves to the retry —
+    /// between the two attempts the tree really can change.
+    ///
+    /// What keeps it correct is POSIX rather than a protocol: the open handle
+    /// pins its inode, so `unlink` detaches the NAME while the handle keeps the
+    /// FILE, and a replacement created at that name is a different inode. The
+    /// retry therefore serves the file the handle still refers to.
+    #[test]
+    fn a_retry_after_eagain_serves_the_handle_not_the_replacement() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/f", 21, 8, 0o644, 0, 0, 2).unwrap();
+
+        // EAGAIN on the first call, the real bytes on every call after it.
+        let calls = alloc::rc::Rc::new(core::cell::Cell::new(0usize));
+        let seen = calls.clone();
+        let mut source = move |req: ByteReq, dst: &mut [u8]| -> Result<usize, Errno> {
+            seen.set(seen.get() + 1);
+            if seen.get() == 1 {
+                return Err(Errno::EAGAIN);
+            }
+            let ByteReq::Base { offset, .. } = req else {
+                return Err(Errno::EIO);
+            };
+            let data = b"ORIGINAL";
+            let start = offset as usize;
+            if start >= data.len() {
+                return Ok(0);
+            }
+            let n = core::cmp::min(dst.len(), data.len() - start);
+            dst[..n].copy_from_slice(&data[start..start + n]);
+            Ok(n)
+        };
+
+        let h = open(b"/f", 2, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 16];
+        // First attempt: the bytes are not ready.
+        assert_eq!(read(h, 0, &mut buf, &mut source).unwrap_err(), Errno::EAGAIN);
+
+        // Between the attempts the tree changes underneath, exactly as another
+        // process would change it.
+        unlink(b"/f").unwrap();
+        let replacement = open(b"/f", O_CREAT | 2, 0o644, 0, 0).unwrap();
+        write(replacement, 0, b"REPLACED", &mut source).unwrap();
+
+        // The retry serves the handle's file, not the new name-holder.
+        let n = read(h, 0, &mut buf, &mut source).unwrap();
+        assert_eq!(&buf[..n], b"ORIGINAL");
+
+        // And the replacement is untouched by the fetch that was in flight.
+        let mut other = [0u8; 16];
+        let m = read(replacement, 0, &mut other, &mut source).unwrap();
+        assert_eq!(&other[..m], b"REPLACED");
+
+        assert!(release_handle(h));
+        assert!(release_handle(replacement));
+    }
+
     #[test]
     fn otrunc_discards_base_without_reading_blob() {
         let _g = TestGuard::acquire();
