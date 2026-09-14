@@ -940,6 +940,7 @@ dependencies = [
  "rustix",
  "wasm-artifact",
  "wasm-posix-shared",
+ "wasmparser 0.247.0",
  "wasmtime",
  "wat",
 ]

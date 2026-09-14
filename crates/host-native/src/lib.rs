@@ -857,6 +857,122 @@ mod tests {
         }
     }
 
+    /// Which `kernel.*` imports a guest declares, and which of them this host
+    /// leaves to `define_unknown_imports_as_traps`.
+    ///
+    /// This is L-D4's import half, pinned rather than closed. The native host
+    /// does not refuse an import it cannot find by NAME: wasmtime's
+    /// `_get_by_import` looks up by name alone, so an unknown one becomes a
+    /// trap stub carrying the guest's own signature and instantiation
+    /// SUCCEEDS. The failure then arrives only if that path runs, which for a
+    /// fixture exercising one narrow path may be never.
+    ///
+    /// Making unknown imports an error is not available: SIX are stubbed on
+    /// purpose today, and `guest.rs` says why at its
+    /// `define_unknown_imports_as_traps` call -- "the fork-exec import set is
+    /// imported but never reached on this (non-forking) path; a trap is the
+    /// truthful boundary". Refusing them would refuse every fixture here.
+    ///
+    /// So this pins both sets instead. A seventeenth import, or a seventh
+    /// stub, fails and names itself, which is what the permissive branch
+    /// otherwise costs: nothing says a new import silently became a trap.
+    #[test]
+    fn the_guest_import_surface_and_its_trap_stubs_are_both_pinned() {
+        const DECLARED: &[&str] = &[
+            "kernel_apply_fork_fd_actions",
+            "kernel_argv_read",
+            "kernel_clear_fork_exec",
+            "kernel_clone",
+            "kernel_environ_count",
+            "kernel_environ_get",
+            "kernel_execve",
+            "kernel_exit",
+            "kernel_fork",
+            "kernel_get_argc",
+            "kernel_get_fork_exec_argc",
+            "kernel_get_fork_exec_argv",
+            "kernel_get_fork_exec_path",
+            "kernel_get_secure_exec",
+            "kernel_is_fork_child",
+            "kernel_push_argv",
+        ];
+        // The fork-exec family plus `kernel_push_argv`: imported by guests,
+        // wired by nothing, reached only on a path these fixtures do not take.
+        const TRAP_STUBBED: &[&str] = &[
+            "kernel_apply_fork_fd_actions",
+            "kernel_clear_fork_exec",
+            "kernel_get_fork_exec_argc",
+            "kernel_get_fork_exec_argv",
+            "kernel_get_fork_exec_path",
+            "kernel_push_argv",
+        ];
+
+        crate::fixtures::provision();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let mut declared: std::collections::BTreeSet<String> = Default::default();
+        let mut fixtures = 0usize;
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wasm"))
+            .collect();
+        entries.sort();
+        for path in entries {
+            let bytes = std::fs::read(&path).expect("fixture readable");
+            for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+                if let Ok(wasmparser::Payload::ImportSection(imports)) = payload {
+                    for import in imports.into_imports().flatten() {
+                        if import.module == "kernel" {
+                            declared.insert(import.name.to_string());
+                        }
+                    }
+                }
+            }
+            fixtures += 1;
+        }
+        assert!(
+            fixtures >= FIXTURE_COUNT_FLOOR,
+            "only {fixtures} fixture(s) walked; an empty walk would pin nothing",
+        );
+
+        let want: std::collections::BTreeSet<String> =
+            DECLARED.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            declared, want,
+            "the guest kernel-import surface changed. A NEW name here is wired \
+             or silently trap-stubbed, and this host cannot tell you which -- \
+             decide deliberately, then update this list.",
+        );
+
+        // "Defined" is read from the wiring source, counting code only: a
+        // name that appears solely in a comment is not a definition, which is
+        // the trap an earlier guard in this lane fell into.
+        let wiring = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/guest.rs"),
+        )
+        .expect("guest.rs readable");
+        let code: String = wiring
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stubbed: std::collections::BTreeSet<String> = declared
+            .iter()
+            .filter(|n| !code.contains(&format!("\"{n}\"")))
+            .cloned()
+            .collect();
+        let want_stubbed: std::collections::BTreeSet<String> =
+            TRAP_STUBBED.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            stubbed, want_stubbed,
+            "which guest imports fall through to define_unknown_imports_as_traps \
+             changed. A name that LEFT this set is now wired (fine, update the \
+             list). A name that JOINED it instantiates fine and traps only if \
+             its path runs -- which is L-D4, and is not fine by default.",
+        );
+    }
+
     /// Every built guest fixture declares the ABI this host expects.
     ///
     /// An ABI bump that the fixture sources do not follow would leave 43

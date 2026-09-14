@@ -1966,7 +1966,7 @@ change to a root config every lane shares, so it is reported here rather than
 made: **the convention the repository documents and the invocation it supports
 are not the same, in 178 places.**
 
-**10 specs, 28 trials, 0 survived, 0 invalid.** The run that establishes this
+**11 specs, 30 trials, 0 survived, 0 invalid.** The run that establishes this
 executed THIRTY, because four trials were carried by two specs at once; all
 thirty died, and the four duplicates were then removed, which is what makes
 the scoped verifier below an actual saving rather than a notional one. The
