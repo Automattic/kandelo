@@ -7107,7 +7107,11 @@ mod tests {
         mkdir(b"/bin", 0o755, 0, 0).expect("mkdir /bin");
         mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
         mkdir(b"/usr/bin", 0o755, 0, 0).expect("mkdir /usr/bin");
-        write_file_at(b"/usr/bin/bash", 0, b"old", 0o755, true, no_bytes())
+        // A DIFFERENT initial mode, so the chmod a truncating replace performs
+        // is observable. With both at 0o755 the write could set the mode of the
+        // LINK and nothing would notice -- which is exactly what a surviving
+        // mutant showed.
+        write_file_at(b"/usr/bin/bash", 0, b"old", 0o600, true, no_bytes())
             .expect("the real file");
         symlink(b"/usr/bin/bash", b"/bin/bash", 0, 0).expect("the alias");
 
@@ -7123,6 +7127,16 @@ mod tests {
             lstat(b"/bin/bash").expect("lstat").st_mode & S_IFMT,
             S_IFLNK,
             "the alias is still a symlink",
+        );
+
+        // The MODE landed on the target too. A truncating replace sets the mode
+        // explicitly, and it must set it on the file the name refers to --
+        // `chmod` here walks directories without following a final symlink, so
+        // handing it the raw path would silently re-mode the link instead.
+        assert_eq!(
+            lstat(b"/usr/bin/bash").expect("lstat").st_mode & 0o7777,
+            0o755,
+            "the replaced file carries the mode the write asked for",
         );
     }
 
