@@ -2930,6 +2930,20 @@ the capacity invariant's test was shown failing before it was shown passing.
   all 43 and passed 73 tests. One committed test binary remains in the
   campaign, `crates/fork-codec/testdata/gc-codec-wasm32.bin`, which belongs to
   another crate.
+- **The other 17 committed binaries are a DIFFERENT category, and should
+  stay.** `crates/fork-codec/testdata` (14) and
+  `crates/runtime-core/src/testdata` (3) were checked against the same rule
+  and do not fall under it. host-native's fixtures were *programs the host
+  runs*: built by our toolchain from our sources, and regenerating one changes
+  nothing it proves. These are *bytes a specific encoder wrote*, kept so a
+  decoder can be shown to still read them — their value is precisely that they
+  are fixed. `dylink-archive-wasm32.bin` says so outright: the TypeScript
+  writer that produced it has been deleted, and "regenerating these bytes from
+  the surviving writer would turn the reference into a self-portrait". The
+  `gen-*.mts` files beside them are the OTHER language's half of a
+  cross-language drift guard, not build steps. Deleting or regenerating this
+  set would weaken the guards it exists for, so the rule that removed 43
+  artifacts correctly leaves these 17.
 - **L-D4 — the epoch half CLOSED, the import half OPEN. The native host read
   no guest `__abi_version`, and `fixtures/README.md` claimed it did.** The marker is
   compared for the KERNEL only; nothing reads a guest's. Shown by running:
