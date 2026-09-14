@@ -7,6 +7,16 @@ things that CHECK this lane, rather than the things they check.
 
 **If you read one section, read one of these:**
 
+- **L-D3, with a SIGBUS under it** — a transcribed launch-path copy kept every
+  errno of the TypeScript it cites and dropped the range proof, so a legal
+  wasm32 pointer past the end of memory reached `copy_nonoverlapping`.
+  Reverting the fix does not give a wrong errno; it kills the process. Sixteen
+  sites, all now proven. **The strongest evidence this lane has, and it is not
+  a line count.**
+- **The closure target, re-derived** — `crates/host-native` writes the whole of
+  lane L in **166 lines**, and 3,284 of the TypeScript's 5,689 are things a new
+  host never writes. A single line count cannot express that, which is why
+  neither 3,600 nor 2,900 was ever reachable.
 - **A hole in the ratchet itself** — four measures in the surface budget
   reported a better number when their input disappears. `lineCount` was fixed
   here on the maintainer's decision; the other three are campaign-wide and sit
