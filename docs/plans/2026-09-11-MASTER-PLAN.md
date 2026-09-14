@@ -4613,6 +4613,36 @@ strictly stronger.
 `host/src/kernel-worker.ts` mention `shmfs`. That file is off-limits to this
 lane and they are comments, not behaviour.
 
+### The `/dev/shm` move is VERIFIED against the product build — and what is not
+
+**2026-09-13.** A green unit suite would not have been evidence here: the change
+moves who serves a mount, and the thing that exercises that is a running kernel.
+So the claim is built from four pieces, in increasing strength.
+
+1. **The kernel rebuilt with the change.** In the run immediately after the
+   commit, `kernel/wasm32` went `RUNNING` → `SUCCEEDED` with disposition
+   `published`, so everything downstream was built against it rather than
+   against a cached predecessor. (This repository has been bitten before by a
+   cache key that omitted `runtime-core` and silently served a stale kernel, so
+   the disposition was checked rather than assumed.)
+2. **A kernel BOOTED with `/dev/shm` in-kernel and zero host mounts**, and ran
+   99 coreutils binaries inside it — `coreutils-docs` generates man pages by
+   executing each tool's `--help` in a live machine. The one skip, `test`,
+   returns an empty `--help` and skipped before this change too.
+3. **All 98 packages and all seven browser products build**, including
+   `browser-wordpress`, `browser-nginx-php` and `browser-lamp`.
+4. **The shared-memory suite passes, 56 tests**, and it is the pointed one:
+   several map `/dev/shm/php-cache` — PHP's opcache, the platform's real POSIX
+   shm consumer — through `MAP_SHARED`.
+
+**What is NOT verified, stated plainly.** No browser demo has been run.
+`browser-kernel-host.ts` and `browser-kernel-worker-entry.ts` both changed, and
+the browser contract says a browser-facing change is not complete from code
+reasoning and a Node suite alone. **`./run.sh browser` with a WordPress or
+nginx-php demo is the missing step**, and it is the one that would exercise
+PHP's opcache against a kernel-served `/dev/shm` in the environment that
+actually ships.
+
 ### THE BASE IMAGES ARE REBUILT THROUGH THE RUST PRODUCER — and what that cost
 
 **2026-09-13.** `shell/wasm32` builds, and with it every browser product:
