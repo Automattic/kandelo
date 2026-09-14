@@ -40,7 +40,11 @@
  */
 
 import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
-import type { LazyFileEntry, SerializedLazyArchiveEntry } from "./memory-fs";
+import type {
+  LazyDownloadEvent,
+  LazyFileEntry,
+  SerializedLazyArchiveEntry,
+} from "./memory-fs";
 import { VFS_IMAGE_HEADER_SIZE } from "./vfs-image-transport";
 
 /**
@@ -198,6 +202,29 @@ export function imageReadFromBody(
 export type DeferredUrlFetch = (url: string) => Promise<Uint8Array>;
 
 /**
+ * Report transfer progress.
+ *
+ * Progress belongs to the pipe and not to the kernel, and the distinction is
+ * worth stating because it is easy to collapse: how many bytes have ARRIVED is
+ * a property of the fetch, which is the host's job. Whether a file is
+ * MATERIALIZED is a property of the filesystem, which is the kernel's. Moving
+ * status to the kernel does not mean going silent about the transfer.
+ */
+export type DeferredProgress = (event: LazyDownloadEvent) => void;
+
+function report(
+  onProgress: DeferredProgress | undefined,
+  event: Omit<LazyDownloadEvent, "t">,
+): void {
+  if (onProgress === undefined) return;
+  try {
+    onProgress({ ...event, t: Date.now() });
+  } catch {
+    // A listener must never break byte resolution.
+  }
+}
+
+/**
  * A deferred-file reader that fetches URLs directly, with no filesystem behind
  * it.
  *
@@ -223,9 +250,18 @@ export type DeferredUrlFetch = (url: string) => Promise<Uint8Array>;
 export function createDeferredUrlReader(
   lazyEntries: readonly LazyFileEntry[],
   fetchBytes: DeferredUrlFetch,
+  onProgress?: DeferredProgress,
 ): (ino: number, offset: bigint, dest: Uint8Array) => number {
   const urls = new Map<number, string>();
-  for (const entry of lazyEntries) urls.set(entry.ino, entry.url);
+  const details = new Map<number, { url: string; path: string; size: number }>();
+  for (const entry of lazyEntries) {
+    urls.set(entry.ino, entry.url);
+    details.set(entry.ino, {
+      url: entry.url,
+      path: entry.path,
+      size: entry.size,
+    });
+  }
 
   type Slot =
     | { state: "pending" }
@@ -242,10 +278,34 @@ export function createDeferredUrlReader(
 
     const slot = slots.get(ino);
     if (slot === undefined) {
+      const detail = details.get(ino);
+      const base = {
+        id: `file:${ino}`,
+        kind: "file" as const,
+        url,
+        path: detail?.path,
+        totalBytes: detail?.size,
+      };
       slots.set(ino, { state: "pending" });
+      report(onProgress, { ...base, status: "started", loadedBytes: 0 });
       void fetchBytes(url).then(
-        (bytes) => slots.set(ino, { state: "ready", bytes }),
-        () => slots.set(ino, { state: "failed" }),
+        (bytes) => {
+          slots.set(ino, { state: "ready", bytes });
+          report(onProgress, {
+            ...base,
+            status: "complete",
+            loadedBytes: bytes.byteLength,
+          });
+        },
+        (error: unknown) => {
+          slots.set(ino, { state: "failed" });
+          report(onProgress, {
+            ...base,
+            status: "error",
+            loadedBytes: 0,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
       );
       return EAGAIN;
     }

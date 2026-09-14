@@ -941,6 +941,10 @@ async function handleInit(msg: InitMessage) {
     configureRootfsOverlayFromImage({
       baseImage: rootfsMemfs,
       imageRead: imageReadFromBody(rootfsMemfs),
+      // Progress now comes from the PIPE rather than from the
+      // filesystem's own fetch, and it covers archives as well as
+      // files — archives reported nothing before.
+      onLazyProgress: (event) => post({ type: "lazy_download", event }),
       imageBytes: new Uint8Array(msg.rootfsImage!),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootfsNosuid,

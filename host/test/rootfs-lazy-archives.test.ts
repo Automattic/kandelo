@@ -459,6 +459,43 @@ describe("the deferred reader as a dumb bytes pipe", () => {
     expect(read(9, 0n, dest)).toBe(-5);
   });
 
+  it("reports the transfer while staying silent about materialization", async () => {
+    // Progress is a property of the FETCH, which is the host's job. Whether the
+    // file is materialized is the kernel's, and the pipe says nothing about it.
+    const events: { status: string; loadedBytes: number; totalBytes?: number }[] = [];
+    let release!: (b: Uint8Array) => void;
+    const pending = new Promise<Uint8Array>((r) => { release = r; });
+    const read = createDeferredUrlReader(
+      [entry(3, "https://x/big")],
+      () => pending,
+      (e) => events.push({ status: e.status, loadedBytes: e.loadedBytes, totalBytes: e.totalBytes }),
+    );
+
+    expect(read(3, 0n, new Uint8Array(4))).toBe(-11);
+    expect(events.map((e) => e.status)).toEqual(["started"]);
+    expect(events[0].totalBytes).toBe(4); // the declared size, before any byte lands
+
+    release(new Uint8Array([9, 9, 9, 9]));
+    await pending;
+    await Promise.resolve();
+    expect(events.map((e) => e.status)).toEqual(["started", "complete"]);
+    expect(events[1].loadedBytes).toBe(4);
+  });
+
+  it("reports a failed transfer with its reason", async () => {
+    const events: { status: string; error?: string }[] = [];
+    const read = createDeferredUrlReader(
+      [entry(5, "https://x/gone")],
+      () => Promise.reject(new Error("404 Not Found")),
+      (e) => events.push({ status: e.status, error: e.error }),
+    );
+    read(5, 0n, new Uint8Array(4));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events.map((e) => e.status)).toEqual(["started", "error"]);
+    expect(events[1].error).toContain("404");
+  });
+
   it("refuses an inode the image never declared", () => {
     const read = createDeferredUrlReader([entry(7, "https://x/a")], async () => new Uint8Array());
     expect(read(999, 0n, new Uint8Array(4))).toBe(-2); // ENOENT

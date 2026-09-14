@@ -132,7 +132,8 @@ import type {
 } from "./exec-target";
 import {
   buildRootfsLazyWiring,
-  createDeferredFileReader,
+  createDeferredUrlReader,
+  type DeferredProgress,
 } from "./vfs/rootfs-lazy-archives";
 import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
@@ -4413,25 +4414,69 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
      */
     imageRead: (at: number, dest: Uint8Array) => number;
     imageBytes: Uint8Array;
+    /** Report lazy transfer progress. The fetch is the host's, so its progress is too. */
+    onLazyProgress?: DeferredProgress;
     foreignPrefixes: string[];
     nosuid: boolean;
     lazyFetcher?: Parameters<MemoryFileSystem["setLazyFetcher"]>[0];
   }): void {
     const installedLazyFetcher = options.lazyFetcher;
-    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
+    const onProgress = options.onLazyProgress;
+    const fetchUrlBytes: (url: string) => Promise<Uint8Array> =
       installedLazyFetcher
         ? async (url) =>
           new Uint8Array(await (await installedLazyFetcher(url)).arrayBuffer())
         : async () => {
           throw new Error("no lazy transport configured");
         };
+    // ARCHIVES report their transfer too. They did not before: this fetcher
+    // was the only archive path after the host `/` mount was dropped, and it
+    // emitted nothing — so the largest downloads a user waits on, the
+    // interpreter bundles, were silent while individual lazy files still
+    // reported. Same pipe, same events, one vocabulary.
+    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
+      async (url) => {
+        const base = { id: `archive:${url}`, kind: "archive" as const, url };
+        if (onProgress !== undefined) {
+          onProgress({ ...base, status: "started", loadedBytes: 0, t: Date.now() });
+        }
+        try {
+          const bytes = await fetchUrlBytes(url);
+          if (onProgress !== undefined) {
+            onProgress({
+              ...base,
+              status: "complete",
+              loadedBytes: bytes.byteLength,
+              totalBytes: bytes.byteLength,
+              t: Date.now(),
+            });
+          }
+          return bytes;
+        } catch (error) {
+          if (onProgress !== undefined) {
+            onProgress({
+              ...base,
+              status: "error",
+              loadedBytes: 0,
+              error: error instanceof Error ? error.message : String(error),
+              t: Date.now(),
+            });
+          }
+          throw error;
+        }
+      };
     const { deferredProvider } = buildRootfsLazyWiring(
       options.baseImage.exportLazyArchiveEntries(),
       lazyArchiveFetcher,
-      createDeferredFileReader(
-        options.baseImage,
+      // THE PIPE. Was `createDeferredFileReader(options.baseImage, ...)`, which
+      // read through a MemoryFileSystem whose `open` kicked an async
+      // materialization and threw EAGAIN until it landed — putting
+      // materialization STATUS in the host. The kernel owns that status; the
+      // host answers "bytes for this inode?" and reports the transfer.
+      createDeferredUrlReader(
         options.baseImage.exportLazyEntries(),
-        (p) => p,
+        fetchUrlBytes,
+        onProgress,
       ),
     );
     host.kernel().configureRootfsOverlay(

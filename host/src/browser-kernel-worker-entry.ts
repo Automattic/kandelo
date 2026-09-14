@@ -873,6 +873,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     configureRootfsOverlayFromImage({
       baseImage: memfs,
       imageRead: imageReadFromBody(memfs),
+      // Progress now comes from the PIPE rather than from the
+      // filesystem's own fetch, and it covers archives as well as
+      // files — archives reported nothing before.
+      onLazyProgress: (event) => post({ type: "lazy_download", event }),
       imageBytes: msg.vfsImage,
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootMount?.nosuid === true,
