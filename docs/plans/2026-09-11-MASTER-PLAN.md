@@ -67,8 +67,8 @@ exact hazard `run.sh`'s `KANDELO_SOURCE_CACHE_ROOT` documentation describes.
 
 | Lane | Worktree | Branch | Started |
 |---|---|---|---|
-| **Y** image builders | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
-| **S** setuid integrity *(deferred)* | `/Users/brandon/kandelo-lane-s` | `brandonpayton/lane-s-setuid-integrity` | 2026-09-12, from `002149196` |
+| **Y** image builders *(CLOSED, merged `221c5050c`)* | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
+| **S** setuid integrity *(deferred; budget change merged `6e795232e`)* | `/Users/brandon/kandelo-lane-s` | `brandonpayton/lane-s-setuid-integrity` | 2026-09-12, from `002149196` |
 
 **The lane S worktree holds one commit and it is not lane S's.** The lane was
 deferred mid-flight; what survives on that branch is the code-line budget
@@ -222,6 +222,109 @@ and exec)** 45, lane **I (host import surface)** 16, **V9** 9.
 **A happier reading of the same data:** the cheap lanes are cheap partly
 *because* they sit outside the god class. They are leaf and generator work, so
 real lanes close without ever entering the hard file.
+
+## What landed — 2026-09-14 (merge session)
+
+Three merges into `brandonpayton/rust-first-abi44-reconcile`, each with the
+surface budget run and read before the commit.
+
+**Lane Y (image builders) is CLOSED.** `221c5050c` merged
+`brandonpayton/lane-y-image-writer` @ `5fe08d499`.
+`imageBuilderFilesystemImporters` reached **0** from 36 — the lane's declared
+closure condition — so nothing under `images/` reaches the image format
+through host TypeScript any more. This is what unblocks lane V. Banked in the
+same merge: `memoryFsTypeScript` 8501 -> 8141 and `kernelWorkerTypeScript`
+32718 -> 32717 (whole lines, pre-unit-change).
+
+The single conflict was `tools/xtask/src/perturb.rs`, resolved by keeping both
+sides with the sentinel removal placed BEFORE the `Ran::TimedOut` match: a
+trial that hangs takes the `continue` and would otherwise leak its sentinel
+into the next trial.
+
+**`sffsModuleEntryPoints` 19 -> 22 was accepted, and the debt is banked.**
+`25537ca84` adds a `contingency` to that surface: a twenty-third `sm_*` entry
+requires `memoryFsTypeScript` to have reached 0, the target `sm_image_read`'s
+own argument promised. The grant bought a deletion that is NOT in the merge
+that granted it, so the next grant is conditional on this one being delivered
+rather than trusted. Lane V is the lane expected to pay it.
+
+The guard asserts the whole implication rather than returning early when the
+ceiling is unraised — an early return would make it unfailable in exactly the
+normal case. Perturbed three ways, each observed: ceiling 23 with
+`requiredAtMost` 0 fails; ceiling 23 with `requiredAtMost` 999999 **passes**,
+which is what proves it reads the measured value rather than merely noticing
+the raise; shipped passes with the assertion still evaluated.
+
+**Lane S merged.** `6e795232e`. The budget now counts **code lines**
+(non-blank, non-comment), which the maintainer asked for: *"All we care about
+is code lines not comment lines."* Lane S is also now recorded `deferred` in
+the budget, matching this plan, and its closure says a digest is **verified**
+rather than emitted.
+
+All seven line-count ceilings were re-derived against the merge result rather
+than carried over. **That is the rule that matters** — these ceilings measure
+a tree, and carrying them across a merge is exactly how a stale 4734 survived
+a rebase. Five matched; two were lowered rather than accepted:
+`memoryFsTypeScript` 7473 -> **7141** and `kernelWorkerTypeScript` 26495 ->
+**26490**, banking 337 code lines lane Y had removed after lane S branched.
+
+`target` is advisory — nothing asserts it. Only `ceiling` and `slack` gate.
+
+**Validation.** `host/test/surface-budget.test.ts` 96 passing.
+`cargo test -p runtime-core` **2176 passed, 0 failed**, which independently
+confirms lane Y's four filesystem coverage fixes. **NOT established here:**
+lane Y's browser figure of 167 passed / 14 failed and its 291 perturb trials.
+Both were blocked by the build defect below and remain the lane's numbers.
+
+## Starting a lane — briefs in `docs/plans/lane-briefs/`
+
+One self-contained prompt per lane, each with a dedicated worktree path and
+branch, gates read from `docs/surface-budget.json` rather than from prose:
+`lane-v-vfs-one-sffs.md`, `lane-n-committed-binaries.md`,
+`lane-w-weblibs-contracts.md`, `lane-x-process-exec.md`,
+`lane-i-host-imports.md` (held until lane V lands).
+
+Writing them caught one error worth repeating: **lane I's target is 2100 code
+lines, not the 1200 that still appears in older prose here.** 1200 is a
+whole-line figure predating the unit change. Read gates from the budget.
+
+## B39 — vim configured against an ncurses tree that no longer existed
+
+FIXED `74548fe10`. `build-vim.sh` only configured when `src/auto/config.mk`
+was absent, and `configure` bakes `$NCURSES_PREFIX` into CFLAGS and LDFLAGS as
+an absolute, content-addressed path. Once written, the dead path was kept
+forever: the resolver handed over a live prefix, the script's own
+`libncursesw.a` guard passed against it, and the link ran against a different
+one, failing `wasm-ld: error: unable to find library -lncursesw`. It blocked
+eight packages and **all six browser products**, so no browser validation
+could run at all.
+
+Clearing `config.mk` alone is not enough — autoconf then refuses with
+"`CFLAGS' has changed since the previous run". Both it and `config.cache` go.
+The fix records the prefix in `.kandelo-vim-config` and clears both when it
+moves, following the marker pattern `build-bash.sh` already uses.
+
+**This interacts with B38.** B38 is the churn source — a `runtime-core` edit
+republishing kernel and rootfs mid-run moves downstream cache keys — and B39
+is why that churn turned into a permanent, misattributed link failure rather
+than a retry. Three `ncurses-6.5-rev8` trees with different hashes coexist on
+this machine.
+
+## B40 — bash's source pin resolves to a 404, blocking `build-rootfs.sh`
+
+OPEN, **maintainer decision**. `packages/registry/bash/package.toml` pins
+`https://ftpmirror.gnu.org/bash/bash-5.2.37.tar.gz`. That redirector currently
+load-balances onto `mirror.techrich.hk`, which returns **404** — sticky across
+retries. The canonical `https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz`
+returns 200 and the sha256 pin is unchanged either way.
+
+The env override cannot fix this: `tools/xtask/src/build_deps.rs` sets
+`WASM_POSIX_DEP_SOURCE_URL` from `package.toml`, so the URL is repo data, not
+environment. Changing the pin trades GNU's official redirector for one host,
+which is why it is the maintainer's call rather than a fix applied in passing.
+
+This is the last thing between the campaign and browser validation.
+
 
 ## Release readiness for #1350 — a known, unclosed gap
 
