@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# `cargo xtask <verb>` — the spelling 178 places in this repository use.
+# `cargo xtask <verb>` — the spelling this repository uses throughout
+# (178 places when the shim was written; the count moves, since prose that
+# states it is itself a match).
 #
 # Cargo finds this because it is named `cargo-xtask` and sits on PATH; the
 # dev shell puts `scripts/bin` there (flake.nix), the same way it already

@@ -39,7 +39,8 @@ for tool in cmake make; do
     "$tool" --version >/dev/null
 done
 
-# `cargo xtask <verb>` is written in 178 places in this tree -- docs,
+# `cargo xtask <verb>` is written throughout this tree -- 178 places when
+# this check was added -- docs,
 # tools/xtask's own source, and messages host-native prints to an operator
 # debugging a stale artifact. It resolves only because the dev shell puts
 # `scripts/bin` on PATH (flake.nix), the same way it does `sdk/bin`. There is

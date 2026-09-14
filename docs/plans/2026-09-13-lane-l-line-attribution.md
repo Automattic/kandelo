@@ -1898,8 +1898,15 @@ sentence disagrees with the directory.
     the wrong shared type.
   * `lane-l-import-coverage.json` carries the four metadata-import trials,
     with a verifier scoped to the one test that covers them.
-  * The remaining seven pin a corpus, a status word, a layout pairing, or the
-    ratchet's counted path — one or two trials each.
+  * `lane-l-fixture-abi.json`, `lane-l-guest-abi-epoch.json` and
+    `lane-l-guest-import-surface.json` carry L-D4: the fixture corpus's
+    declared epoch, the launch-path epoch check, and the pinned import
+    surface with its trap stubs.
+  * The rest pin a corpus, a status word, a layout pairing, or the ratchet's
+    counted path — one or two trials each. **No count here on purpose.** This
+    bullet said "the remaining seven" while the directory held nine, three
+    lines below a sentence promising the list was not an inventory. The
+    number lives in one guarded place and this is not it.
 
 One overlap is worth noting because it was not designed: removing the
 launch-entry range proof is caught by the pointer/capacity guard as well as by

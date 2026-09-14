@@ -3004,7 +3004,8 @@ the capacity invariant's test was shown failing before it was shown passing.
   -- `decode_reference_recipes`, the `ReferenceRecipes` result type, the wire
   constants, ~500 lines of tests and the frozen fixture, taking
   `reference_recipes.rs` from 1,019 lines to 99. The node shapes stay:
-  `ReferenceRecipeNode` has 259 uses and `ReferenceRecipeEntry` 46, across
+  `ReferenceRecipeNode` had 259 uses and `ReferenceRecipeEntry` 46 when
+  measured, across
   seven modules. fork-codec's 432 tests pass, and host-native, fork-module,
   runtime-core and the kernel all still build. The reasoning that led there: KFRR's codec was "reached only from their own
   unit test and one fixture generator" -- that generator. Nothing in Rust or
@@ -3017,8 +3018,30 @@ the capacity invariant's test was shown failing before it was shown passing.
   fixture, and its tests -- is still in the tree. That is fork-codec's call,
   and it is the mirror of a decision already taken rather than a new
   proposal. The recipe TYPES stay either way; seven modules use them.
+- **How to verify this lane before merging it.** Inside
+  `scripts/dev-shell.sh`, with `KANDELO_SOURCE_CACHE_ROOT`,
+  `WASM_POSIX_CACHE_DIR` and `KANDELO_CASE_IMAGE_DIR` set:
+
+  ```sh
+  HOST=$(rustc -vV | awk '/^host:/{print $2}')
+  cargo test --target "$HOST" -p host-native -p fork-codec
+  npx vitest run host/test/surface-budget.test.ts \
+      host/test/perturb-specs.test.ts --reporter=verbose
+  bash scripts/check-dev-shell-tools.sh
+  for spec in docs/perturb/lane-l-*.json; do cargo xtask perturb "$spec" || break; done
+  ```
+
+  **`--reporter=verbose` is not optional.** The budget's verdicts ARE its
+  test names -- that file prints nothing to the console -- and vitest's
+  default reporter shows no passing test names, so the standing rule to READ
+  the verdict lines cannot be satisfied by a run without it. This document
+  records that trap once already, in a gate that reported a pass count and no
+  verdicts; the first merge instructions written for this lane walked into it
+  again.
+
 - **SHARED INFRASTRUCTURE TOUCHED, 2026-09-14: `cargo xtask <verb>` now
-  runs.** It is written in 178 places -- docs, `tools/xtask`'s own source,
+  runs.** It was written in **178 places** when this was found -- docs,
+  `tools/xtask`'s own source,
   and three messages `host-native` prints to an operator debugging a stale
   artifact -- and resolved nowhere. A cargo alias cannot fix it: `[build]
   target = "wasm32-unknown-unknown"` makes `[alias] xtask = "run -p xtask

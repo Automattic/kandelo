@@ -94,6 +94,21 @@ pub(crate) fn provision() {
         if fresh {
             return;
         }
+        build_all();
+    });
+}
+
+/// Run the producer.
+///
+/// Separate from `provision` because a Once-guarded build cannot answer one
+/// case: a directory holding SOME artifacts, all newer than the sources,
+/// reads as fresh, so the build is skipped and the missing one is never made.
+/// `oldest_artifact` compares the oldest file PRESENT, and cannot see a file
+/// that is absent. That is an interrupted `build-fixtures.sh` or a
+/// hand-deleted artifact, and the symptom was a panic blaming a build step
+/// that had not run.
+fn build_all() {
+    {
         let root = repo_root();
         let status = std::process::Command::new("bash")
             .arg(fixtures_dir().join("build-fixtures.sh"))
@@ -114,7 +129,7 @@ pub(crate) fn provision() {
             ),
             Err(e) => panic!("could not run the fixture build script: {e}"),
         }
-    });
+    }
 }
 
 /// One guest fixture's bytes, built on demand.
@@ -129,6 +144,12 @@ pub(crate) fn fixture(name: &str) -> &'static [u8] {
     }
     provision();
     let path = fixtures_dir().join(name);
+    if !path.exists() {
+        // The corpus looked fresh but this artifact is not in it. Build once
+        // more, rather than report "missing after the build step" about a
+        // step that never ran.
+        build_all();
+    }
     let bytes = std::fs::read(&path)
         .unwrap_or_else(|e| panic!("fixture {} is missing after the build step: {e}", path.display()));
     let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
