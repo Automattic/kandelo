@@ -598,6 +598,74 @@ mod wasm {
         ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
     static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+    // -- Global identity groups (host-resolved) -----------------------------
+    //
+    // Which `__wpk_fork_global_N` catalog exports are the SAME JavaScript
+    // object. The host assigns a group id per distinct `WebAssembly.Global` it
+    // finds across the activations' catalogs; entries sharing an id are one
+    // object seen from several activations.
+    //
+    // This is the whole of what wasm cannot do. Everything the old JS did AFTER
+    // grouping -- excluding activations that merely IMPORT a global from being
+    // its provider, and picking the lowest remaining coordinate -- is policy
+    // over data the module already has, and it needs the KFIG section to know
+    // which owners are imported. That section is exactly what the host would
+    // otherwise have had to decode, so the election moves here and the host is
+    // left with identity alone.
+    const GLOBAL_IDENTITY_MAX: usize = 512;
+
+    #[repr(C, align(4))]
+    struct GlobalIdentityGroups(UnsafeCell<[[u32; 3]; GLOBAL_IDENTITY_MAX]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for GlobalIdentityGroups {}
+    /// Each live entry is `[activation_id, owner_id, group_id]`.
+    static GLOBAL_IDENTITY: GlobalIdentityGroups =
+        GlobalIdentityGroups(UnsafeCell::new([[0u32; 3]; GLOBAL_IDENTITY_MAX]));
+    static GLOBAL_IDENTITY_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn set_global_identity_group_impl(
+        activation_id: u32,
+        owner_id: u32,
+        group_id: u32,
+    ) -> Result<(), Errno> {
+        if owner_id == 0 {
+            return Err(Errno::EINVAL); // catalog owners are 1-based
+        }
+        let count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &mut *GLOBAL_IDENTITY.0.get() };
+        for entry in table.iter_mut().take(count) {
+            if entry[0] == activation_id && entry[1] == owner_id {
+                entry[2] = group_id; // re-publish updates, as provenance does
+                return Ok(());
+            }
+        }
+        if count >= GLOBAL_IDENTITY_MAX {
+            return Err(Errno::E2BIG);
+        }
+        table[count] = [activation_id, owner_id, group_id];
+        GLOBAL_IDENTITY_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Publish that `(activation, owner)`'s catalog global is object `group_id`.
+    ///
+    /// Entries sharing a group id are the same `WebAssembly.Global`. Assigning
+    /// the ids is the host's job because wasm cannot compare object identity;
+    /// deciding which member PROVIDES the object is this module's, because that
+    /// needs the KFIG section it is seeded with.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_global_identity_group(
+        activation_id: u32,
+        owner_id: u32,
+        group_id: u32,
+    ) {
+        match set_global_identity_group_impl(activation_id, owner_id, group_id) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     // -- Imported-global provenance (host-resolved) -------------------------
     //
     // The one thing about an imported global the module cannot determine. Two
@@ -628,8 +696,7 @@ mod wasm {
         consumer_activation: u32,
         import_ordinal: u32,
         kind: u32,
-        source_activation: u32,
-        source_owner: u32,
+        group_id: u32,
         raw_bits: u64,
     }
 
@@ -645,8 +712,7 @@ mod wasm {
                 consumer_activation: 0,
                 import_ordinal: 0,
                 kind: 0,
-                source_activation: 0,
-                source_owner: 0,
+                group_id: 0,
                 raw_bits: 0,
             }; IMPORTED_GLOBAL_PROVENANCE_MAX],
         ));
@@ -656,8 +722,7 @@ mod wasm {
         consumer_activation: u32,
         import_ordinal: u32,
         kind: u32,
-        source_activation: u32,
-        source_owner: u32,
+        group_id: u32,
         raw_bits: u64,
     ) -> Result<(), Errno> {
         let k = u8::try_from(kind).map_err(|_| Errno::EINVAL)?;
@@ -667,9 +732,19 @@ mod wasm {
                 | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
                 | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
                 | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
-                | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT
         ) {
-            return Err(Errno::EINVAL); // a kind the record format does not define
+            // `BASE_IMPORT` is excluded on purpose, and it is the interesting
+            // case: it is a DEFINED kind the host may not publish. Saying it
+            // would be saying no activation provides the object, which needs
+            // the KFIG sections only this module reads. The host says "this is
+            // a Global, in identity group G"; the election in
+            // `build_imported_global_bindings` reaches `BASE_IMPORT` on its own
+            // when the group has no non-importing member.
+            //
+            // Refused HERE, where the host's answer enters, rather than at the
+            // capture: the same reason the malformed-section refusal sits at
+            // the seed.
+            return Err(Errno::EINVAL);
         }
         let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
         // SAFETY: single-threaded per worker.
@@ -678,8 +753,7 @@ mod wasm {
             consumer_activation,
             import_ordinal,
             kind,
-            source_activation,
-            source_owner,
+            group_id,
             raw_bits,
         };
         for existing in table.iter_mut().take(count) {
@@ -715,16 +789,14 @@ mod wasm {
         consumer_activation: u32,
         import_ordinal: u32,
         kind: u32,
-        source_activation: u32,
-        source_owner: u32,
+        group_id: u32,
         raw_bits: u64,
     ) {
         match set_imported_global_provenance_impl(
             consumer_activation,
             import_ordinal,
             kind,
-            source_activation,
-            source_owner,
+            group_id,
             raw_bits,
         ) {
             Ok(()) => set_ok(),
@@ -1815,11 +1887,26 @@ mod wasm {
                 consumer_activation: e.consumer_activation,
                 consumer_owner: owner,
                 kind: e.kind as u8,
-                source_activation: e.source_activation,
-                source_owner: e.source_owner,
+                group_id: e.group_id,
                 raw_bits: e.raw_bits,
             });
         }
+
+        // The identity groups the host published, verbatim; the election over
+        // them happens in `build_imported_global_bindings`, where it can be
+        // tested without a worker.
+        let identity_count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let identity = unsafe { &*GLOBAL_IDENTITY.0.get() };
+        let groups: Vec<fork_codec::GlobalIdentityGroup> = identity
+            .iter()
+            .take(identity_count)
+            .map(|g| fork_codec::GlobalIdentityGroup {
+                activation: g[0],
+                owner: g[1],
+                group_id: g[2],
+            })
+            .collect();
 
         // Snapshots, from the arena this module owns.
         let root = {
@@ -1853,7 +1940,8 @@ mod wasm {
             });
         }
 
-        let bindings = build_imported_global_bindings(&provenance, &declarations, &snapshots)?;
+        let bindings =
+            build_imported_global_bindings(&provenance, &declarations, &snapshots, &groups)?;
         let size = fork_codec::imported_global_bindings_size(bindings.len())? as u64;
         let st = state().as_mut().ok_or(Errno::EINVAL)?;
         let mem_mut_ref = unsafe { mem_mut() };

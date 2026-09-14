@@ -55,9 +55,13 @@ function fixture() {
       consumerActivation: number,
       importOrdinal: number,
       kind: number,
-      sourceActivation: number,
-      sourceOwner: number,
+      groupId: number,
       rawBits: bigint,
+    ) => void,
+    identity: x.fm_set_global_identity_group as (
+      activation: number,
+      owner: number,
+      groupId: number,
     ) => void,
   };
 }
@@ -118,24 +122,24 @@ const KIND_ACTIVATION_GLOBAL = 4;
 const KIND_BASE_IMPORT = 5;
 
 describe("imported-global provenance, the part only the host can resolve", () => {
-  it("accepts a carrier coordinate and a raw value, keyed by import ordinal", () => {
+  it("accepts an identity group and a raw value, keyed by import ordinal", () => {
     const f = fixture();
-    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 0, 7, 0n);
+    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 7, 0n);
     expect(f.errno()).toBe(0);
-    f.provenance(0, 2, KIND_RAW_NUMBER, 0, 0, 0x4059_0000_0000_0000n);
+    f.provenance(0, 2, KIND_RAW_NUMBER, 0, 0x4059_0000_0000_0000n);
     expect(f.errno()).toBe(0);
   });
 
-  it("updates a coordinate rather than refusing it", () => {
+  it("updates a group rather than refusing it", () => {
     // Deliberately unlike the once-only catalogs. A dlopen can add an
     // activation that exports a global an earlier one imports, so the host must
     // be able to correct provenance it published before that activation
     // existed. Refusing would freeze the first answer and leave a child wiring
     // two activations to separate globals they are supposed to share.
     const f = fixture();
-    f.provenance(3, 1, KIND_BASE_IMPORT, 0, 0, 0n);
+    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 0, 0n);
     expect(f.errno()).toBe(0);
-    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 1, 5, 0n);
+    f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 5, 0n);
     expect(f.errno()).toBe(0);
   });
 
@@ -144,9 +148,51 @@ describe("imported-global provenance, the part only the host can resolve", () =>
     // not something it can fall back from, and this is the boundary where the
     // host's answer enters the module.
     const f = fixture();
-    f.provenance(0, 0, 0, 0, 0, 0n);
+    f.provenance(0, 0, 0, 0, 0n);
     expect(f.errno()).toBe(EINVAL);
-    f.provenance(0, 0, 99, 0, 0, 0n);
+    f.provenance(0, 0, 99, 0, 0n);
+    expect(f.errno()).toBe(EINVAL);
+  });
+
+  it("refuses BASE_IMPORT, a defined kind that is not the host's to publish", () => {
+    // The one kind the host may not say. Claiming it asserts that no activation
+    // provides the object, and only the KFIG sections seeded into this module
+    // distinguish an activation that OWNS a catalog global from one that merely
+    // imports it. The module reaches BASE_IMPORT by election instead.
+    const f = fixture();
+    f.provenance(3, 1, KIND_BASE_IMPORT, 0, 0n);
+    expect(f.errno()).toBe(EINVAL);
+  });
+});
+
+describe("global identity groups, the fact wasm cannot compute", () => {
+  it("accepts several catalog globals into one group", () => {
+    // Two activations naming the same WebAssembly.Global. There is no
+    // `global.eq` in wasm, so this equality can only arrive from JavaScript.
+    const f = fixture();
+    f.identity(1, 5, 7);
+    expect(f.errno()).toBe(0);
+    f.identity(3, 1, 7);
+    expect(f.errno()).toBe(0);
+  });
+
+  it("updates a membership rather than refusing it", () => {
+    // Same reason provenance is re-publishable: a dlopen can introduce an
+    // activation that changes who shares what.
+    const f = fixture();
+    f.identity(1, 5, 7);
+    expect(f.errno()).toBe(0);
+    f.identity(1, 5, 8);
+    expect(f.errno()).toBe(0);
+  });
+
+  it("refuses owner 0, which names no catalog global", () => {
+    // Catalog owner ids are 1-based (`fork_instrument` numbers them from 1), so
+    // owner 0 is an unresolved lookup arriving as data. Accepting it would put
+    // a member in the group that no activation can provide, and the election
+    // would hand a child a coordinate that resolves to nothing.
+    const f = fixture();
+    f.identity(1, 0, 7);
     expect(f.errno()).toBe(EINVAL);
   });
 });

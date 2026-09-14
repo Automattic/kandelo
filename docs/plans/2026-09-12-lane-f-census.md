@@ -128,14 +128,33 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 
 | Surface | Before | After | Bought |
 |---|---|---|---|
-| `forkModuleHostEntries` | 49 | 52 | `fm_phase`, `fm_borrowed_replay_workspace`, `fm_module_state_arena` |
-| `forkTypeScript` | 672 | 703 | the backend's workspace accessor and its null guard |
+| `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
+| `forkTypeScript` | 672 | 757 | the backend's reduced-surface methods (workspace accessor, `abort`, the drive bindings) |
 | `forkPlatformTypeScript` | 450 | 463 | `host/src/fork-phase.ts` (28 lines; this surface's target is 500) |
-| `workerMainTypeScript` | 5858 | 5860 | two import lines; every call site was one-for-one |
+| `workerMainTypeScript` | 5858 | 5824 | nothing — this one FELL, and the ceiling was banked down to the measurement |
 
-The one to question is `forkModuleHostEntries`: its target is **5**, and three
-raises in one night moved it the other way. Each bought a deleted host mirror,
-but the direction is the maintainer's call.
+The seven entries behind the first row, each with the reason recorded beside its
+number in `docs/surface-budget.json`:
+
+| Entry | Bought |
+|---|---|
+| `fm_phase` | the host's mirror of the phase machine |
+| `fm_borrowed_replay_workspace` | the coordinator's `borrowedReplayWorkspaceRequirements()` |
+| `fm_module_state_arena` | the module half of the KFMS arena port (no production caller yet, by design) |
+| `fm_set_activation_template_id` | the JS registry's `arena.appendModule` loop |
+| `fm_set_activation_imported_globals` | the KFIG declarations half of `appendTo` |
+| `fm_set_imported_global_provenance` | the rest of `appendTo`: matching, typing, sorting, encoding |
+| `fm_set_global_identity_group` | the provider election — see section 152 |
+
+The one to question is `forkModuleHostEntries`: its target is **5**, and seven
+raises moved it the other way. Each bought a deleted host mirror or a deleted
+attic loop, but the direction is the maintainer's call. The honest counter-reading
+is that the target of 5 was written for the DRIVE surface — the coarse entries a
+host calls to run a fork — and most of these seven are one-shot SEEDS carrying
+facts only the host holds, which is a different population that a single ratchet
+cannot distinguish. That is an argument for splitting the surface, not for
+spending it; I have not split it, because the last split of this surface is what
+the maintainer merged back into one.
 
 ---
 
@@ -7388,3 +7407,55 @@ The strict test is not that an entry must be forced; it is that an entry NOT
 forced by a capability limit has to name what it deletes. `fm_phase` deletes a
 mirror. Section 149's proposed entry deleted nothing — it existed so the host
 could keep reading records — which is exactly the distinction the test is for.
+
+---
+
+## §152 — The host groups; the module elects
+
+Three designs for `fm_set_imported_global_provenance` in a day is two too many.
+Recording why the third is the last one, and what the second got wrong, because
+the error is one this lane keeps making in different clothes.
+
+**The shape now.** The host publishes two things and neither is a decision:
+
+* `fm_set_global_identity_group(activation, owner, group_id)` — these catalog
+  globals are the same JavaScript object.
+* `fm_set_imported_global_provenance(consumer, ordinal, kind, group_id, bits)` —
+  this import is a Global in group G, or a raw scalar with these bits.
+
+`build_imported_global_bindings` then ELECTS the provider: of a group's members,
+drop the ones KFIG declares as imports, take the lowest remaining coordinate, and
+if nothing remains emit `BASE_IMPORT`.
+
+**Why the host cannot do the electing.** `fork_instrument` builds its global
+catalog from `module.globals` — every global an activation has, imported ones
+included — so an activation that IMPORTS a global still exports a
+`__wpk_fork_global_N` for it. A group of three catalog entries is normally one
+owner and two importers, and an importer has nothing to hand a child: at replay
+the child instantiates activations in order, and the value has to come from the
+one that declares it. The attic's `globalCoordinates()` filtered on `imported`
+for exactly this reason, which is the fact worth taking from it.
+
+**What the second design got wrong.** It had the host publish the resolved
+coordinate. The host *could* compute it — it builds every activation's import
+object, so it knows which values it supplied to whom, and could exclude those
+without reading KFIG at all. So this is not a capability limit. It is the same
+error as section 149 wearing a different coat: an interface shaped so the host
+keeps making a judgement, because the judgement was written in JavaScript once.
+The election is policy over data the module already holds. Moving it costs one
+entry and buys four unit tests in `fork-codec` — the importer exclusion, the
+lowest-coordinate tie-break, both routes to `BASE_IMPORT`, and the refusal — none
+of which could have existed in the host, where the same rules would have been
+reachable only through a real multi-activation fork.
+
+**One thing the module now refuses that it used to accept.** `BASE_IMPORT` as an
+INPUT kind. It is a conclusion — "no activation provides this object" — and a
+host asserting it is asserting the KFIG-dependent judgement above. The refusal
+sits at the seed rather than at the capture, for the same reason the malformed
+KFIG section is refused there: discovering the host's bug mid-fork means
+discovering it where a truthful errno has already become a trap.
+
+**Ceiling.** `forkModuleHostEntries` 55 → 56, provisional, in the D6 ledger. The
+entry it adds is smaller than it looks: `fm_set_imported_global_provenance` lost
+two arguments in the same commit, so the pair carries less host judgement than
+the single entry did before.

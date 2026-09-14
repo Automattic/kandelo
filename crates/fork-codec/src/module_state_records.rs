@@ -226,10 +226,19 @@ pub struct ImportedGlobalBinding {
 /// What only the HOST can determine about one imported global.
 ///
 /// The module cannot see an activation's import object at all, so two facts
-/// have to travel from the host: whether the value is a `WebAssembly.Global`
-/// and which activation exports that same object (identity, which wasm cannot
-/// compare — there is no `global.eq`), and for a plain scalar import the value
-/// itself, which lives only in the import object.
+/// have to travel from the host: whether the imported value is a
+/// `WebAssembly.Global` and WHICH ONE — object identity, which wasm cannot
+/// compare, there being no `global.eq` — and, for a plain scalar import, the
+/// value itself, which lives only in the import object.
+///
+/// Identity travels as a GROUP ID, not as a coordinate. Naming the activation
+/// that provides a Global would mean deciding which member of an identity group
+/// provides it, and that decision needs to know which catalog entries an
+/// activation merely IMPORTS: `fork_instrument` exports `__wpk_fork_global_N`
+/// for every global an activation has, imported ones included, so a group's
+/// members are usually one owner and several importers. Only the KFIG section
+/// distinguishes them, and the host does not read KFIG. So the host groups, and
+/// [`build_imported_global_bindings`] elects.
 ///
 /// Everything else about a binding is derivable here: the type code and
 /// mutability from the activation's KFIG descriptors, the recipe id from the
@@ -238,13 +247,61 @@ pub struct ImportedGlobalBinding {
 pub struct ImportedGlobalProvenance {
     pub consumer_activation: u32,
     pub consumer_owner: u32,
-    /// One of the `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` kinds.
+    /// One of the `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` kinds, except
+    /// `BASE_IMPORT`: that one is a conclusion of the election below, never an
+    /// input. A host publishing it would be claiming no activation provides the
+    /// object, which is exactly the KFIG-dependent judgement it cannot make.
     pub kind: u8,
-    /// Meaningful for `ACTIVATION_GLOBAL`; the activation exporting the carrier.
-    pub source_activation: u32,
-    pub source_owner: u32,
+    /// For `ACTIVATION_GLOBAL`: the identity group of the imported Global, or 0
+    /// when the object appears in no activation's catalog at all.
+    pub group_id: u32,
     /// Meaningful for `RAW_NUMBER` / `RAW_BIGINT`: the value's bits.
     pub raw_bits: u64,
+}
+
+/// One membership of a catalog global in an identity group.
+///
+/// `(activation, owner)` names a `__wpk_fork_global_N` export; entries sharing a
+/// `group_id` are the same `WebAssembly.Global` object seen from several
+/// activations. The host assigns the ids because comparing object identity is
+/// the one thing here that wasm cannot do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalIdentityGroup {
+    pub activation: u32,
+    pub owner: u32,
+    pub group_id: u32,
+}
+
+/// Elect the activation that PROVIDES an identity group's `WebAssembly.Global`.
+///
+/// A group's members are every catalog entry naming the same object. All but
+/// one of them import it, and an importer cannot provide it to anyone: at
+/// replay the child instantiates activations in ascending order, so the value
+/// has to come from the one that declares the global itself. Members declared
+/// in KFIG are therefore excluded, and the lowest remaining coordinate wins so
+/// the choice is stable across runs.
+///
+/// `None` means nobody provides it — an empty group, or one where every member
+/// is an importer — and the binding is a `BASE_IMPORT`: the object came from
+/// outside the activation set, so the child takes it from its own base imports.
+fn elect_group_provider(
+    group_id: u32,
+    groups: &[GlobalIdentityGroup],
+    declarations: &[ImportedGlobalDeclaration],
+) -> Option<(u32, u32)> {
+    if group_id == 0 {
+        return None; // in no catalog: nothing to elect from
+    }
+    groups
+        .iter()
+        .filter(|g| g.group_id == group_id)
+        .filter(|g| {
+            !declarations
+                .iter()
+                .any(|d| d.activation == g.activation && d.owner == g.owner)
+        })
+        .map(|g| (g.activation, g.owner))
+        .min()
 }
 
 /// One activation's imported-global declaration, as KFIG records it.
@@ -287,6 +344,7 @@ pub fn build_imported_global_bindings(
     provenance: &[ImportedGlobalProvenance],
     declarations: &[ImportedGlobalDeclaration],
     snapshots: &[ImportedGlobalSnapshotFact],
+    groups: &[GlobalIdentityGroup],
 ) -> Result<Vec<ImportedGlobalBinding>, Errno> {
     let mut out: Vec<ImportedGlobalBinding> = Vec::with_capacity(provenance.len());
     for p in provenance {
@@ -314,10 +372,23 @@ pub fn build_imported_global_bindings(
         };
         match p.kind {
             abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL => {
-                binding.source_activation = p.source_activation;
-                binding.source_owner = p.source_owner;
+                // The election, not the host, decides whether this Global has a
+                // provider at all.
+                match elect_group_provider(p.group_id, groups, declarations) {
+                    Some((activation, owner)) => {
+                        binding.source_activation = activation;
+                        binding.source_owner = owner;
+                    }
+                    None => {
+                        binding.kind = abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT;
+                    }
+                }
             }
-            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT => {}
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT => {
+                // Only the election above may reach this kind; see the note on
+                // `ImportedGlobalProvenance::kind`.
+                return Err(Errno::EINVAL);
+            }
             abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE => {
                 if !is_reference_type(declaration.type_code) {
                     return Err(Errno::EINVAL);
@@ -841,13 +912,15 @@ mod tests {
             consumer_activation: consumer.0,
             consumer_owner: consumer.1,
             kind,
-            source_activation: 0,
-            source_owner: 0,
+            group_id: 0,
             raw_bits: 0,
         }
     }
     fn decl(consumer: (u32, u32), type_code: u8) -> ImportedGlobalDeclaration {
         ImportedGlobalDeclaration { activation: consumer.0, owner: consumer.1, type_code }
+    }
+    fn group(member: (u32, u32), group_id: u32) -> GlobalIdentityGroup {
+        GlobalIdentityGroup { activation: member.0, owner: member.1, group_id }
     }
     fn snap(consumer: (u32, u32), type_code: u8, recipe: Option<u32>) -> ImportedGlobalSnapshotFact {
         ImportedGlobalSnapshotFact {
@@ -859,22 +932,91 @@ mod tests {
     }
 
     #[test]
-    fn a_carrier_binding_keeps_the_source_the_host_resolved() {
-        // The whole reason the host is involved: which activation exports the
-        // same Global object. The module must carry that through untouched.
+    fn the_owner_of_a_shared_global_is_elected_over_its_importers() {
+        // Activation 9 declares the global; 3 imports it and 5 imports it too.
+        // All three export it in their catalogs, so identity alone cannot say
+        // who provides it -- only KFIG can, and only this side reads KFIG.
+        //
+        // The owner deliberately has the HIGHEST coordinate here: with the
+        // importers left in, "lowest member" would pick activation 3, which
+        // imports the value and has nothing to hand the child.
         let mut p = prov((3, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL);
-        p.source_activation = 1;
-        p.source_owner = 5;
+        p.group_id = 7;
         let built = build_imported_global_bindings(
             &[p],
-            &[decl((3, 1), I32)],
+            &[decl((3, 1), I32), decl((5, 2), I32)],
             &[snap((3, 1), I32, None)],
+            &[group((9, 5), 7), group((3, 1), 7), group((5, 2), 7)],
         )
         .unwrap();
         assert_eq!(built.len(), 1);
-        assert_eq!(built[0].source_activation, 1);
-        assert_eq!(built[0].source_owner, 5);
+        assert_eq!(built[0].kind, abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL);
+        assert_eq!((built[0].source_activation, built[0].source_owner), (9, 5));
         assert_eq!(built[0].type_code, I32, "type comes from the declaration");
+    }
+
+    #[test]
+    fn the_lowest_coordinate_wins_among_several_owners() {
+        // Two activations can legitimately declare the same object when neither
+        // imports it from the other -- the host handed both the same Global. The
+        // choice has to be stable across runs, so it is the lowest coordinate.
+        let mut p = prov((9, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL);
+        p.group_id = 2;
+        let built = build_imported_global_bindings(
+            &[p],
+            &[decl((9, 1), I32)],
+            &[snap((9, 1), I32, None)],
+            &[group((4, 9), 2), group((4, 3), 2), group((2, 8), 2)],
+        )
+        .unwrap();
+        assert_eq!((built[0].source_activation, built[0].source_owner), (2, 8));
+    }
+
+    #[test]
+    fn a_global_no_activation_provides_becomes_a_base_import() {
+        // Two ways to reach the same conclusion, and the host may state neither:
+        // an object in no catalog at all (group 0), and a group whose every
+        // member imports it. Both mean the child takes the value from its own
+        // base imports.
+        // Group 0 is "ungrouped", not a group: other ungrouped members are
+        // listed alongside to show they are not silently collected into one.
+        let ungrouped = prov((3, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL);
+        let built = build_imported_global_bindings(
+            &[ungrouped],
+            &[decl((3, 1), I32)],
+            &[snap((3, 1), I32, None)],
+            &[group((1, 4), 0), group((2, 6), 0)],
+        )
+        .unwrap();
+        assert_eq!(built[0].kind, abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT);
+        assert_eq!((built[0].source_activation, built[0].source_owner), (0, 0));
+
+        let mut all_importers = ungrouped;
+        all_importers.group_id = 4;
+        let built = build_imported_global_bindings(
+            &[all_importers],
+            &[decl((3, 1), I32), decl((6, 2), I32)],
+            &[snap((3, 1), I32, None)],
+            &[group((3, 1), 4), group((6, 2), 4)],
+        )
+        .unwrap();
+        assert_eq!(built[0].kind, abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT);
+    }
+
+    #[test]
+    fn a_host_published_base_import_is_refused() {
+        // `BASE_IMPORT` is a conclusion of the election, never an input. A host
+        // publishing it would be asserting that no activation provides the
+        // object -- the one judgement it cannot make without reading KFIG.
+        assert_eq!(
+            build_imported_global_bindings(
+                &[prov((3, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT)],
+                &[decl((3, 1), I32)],
+                &[snap((3, 1), I32, None)],
+                &[],
+            ),
+            Err(Errno::EINVAL),
+        );
     }
 
     #[test]
@@ -885,6 +1027,7 @@ mod tests {
             &[prov((0, 2), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
             &[decl((0, 2), REF)],
             &[snap((0, 2), REF, Some(77))],
+            &[],
         )
         .unwrap();
         assert_eq!(built[0].recipe_id, 77);
@@ -897,9 +1040,10 @@ mod tests {
         // child's import to a value of another type.
         assert_eq!(
             build_imported_global_bindings(
-                &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT)],
+                &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER)],
                 &[decl((0, 1), I32)],
                 &[snap((0, 1), REF, None)],
+                &[],
             ),
             Err(Errno::EINVAL),
         );
@@ -912,6 +1056,7 @@ mod tests {
                 &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
                 &[decl((0, 1), REF)],
                 &[snap((0, 1), REF, None)],
+                &[],
             ),
             Err(Errno::EINVAL),
         );
@@ -927,6 +1072,7 @@ mod tests {
                 &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
                 &[decl((0, 1), EXN)],
                 &[snap((0, 1), EXN, Some(4))],
+                &[],
             ),
             Err(Errno::EINVAL),
         );
@@ -935,6 +1081,7 @@ mod tests {
             &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
             &[decl((0, 1), EXN)],
             &[snap((0, 1), EXN, Some(0))],
+            &[],
         )
         .is_ok());
     }
@@ -944,11 +1091,12 @@ mod tests {
         // The encoder demands sorted, unique consumers. Sorting here means the
         // host is not required to publish provenance in any order, which keeps
         // one more rule out of the half that has to stay in JavaScript.
-        let k = abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT;
+        let k = abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER;
         let built = build_imported_global_bindings(
             &[prov((2, 0), k), prov((0, 9), k), prov((0, 1), k)],
             &[decl((2, 0), I32), decl((0, 9), I32), decl((0, 1), I32)],
             &[snap((2, 0), I32, None), snap((0, 9), I32, None), snap((0, 1), I32, None)],
+            &[],
         )
         .unwrap();
         let keys: Vec<(u32, u32)> =

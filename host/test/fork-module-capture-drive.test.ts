@@ -481,8 +481,8 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     expect(f.errno(), "empty section seeded").toBe(0);
     // Provenance for owner 1, which the empty section does not declare.
     (f.x.fm_set_imported_global_provenance as (
-      a: number, o: number, k: number, sa: number, so: number, bits: bigint,
-    ) => void)(0, 1, 5 /* BASE_IMPORT */, 0, 0, 0n);
+      a: number, o: number, k: number, group: number, bits: bigint,
+    ) => void)(0, 1, 4 /* ACTIVATION_GLOBAL */, 0 /* in no catalog */, 0n);
     expect(f.errno(), "provenance published").toBe(0);
 
     (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
