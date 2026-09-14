@@ -620,38 +620,23 @@ pub fn kernel_artifact_provenance(path: &Path) -> String {
     );
     if build_key.is_some() {
         lines.push(
-            format!(
-                "  Get the verdict:  {XTASK} verify-fresh\n  \
-                 (it compares the build key above against the key this source \
-                 tree now resolves to)"
-            ),
+            "  Get the verdict:  cargo xtask verify-fresh\n  \
+             (it compares the build key above against the key this source tree \
+             now resolves to)"
+                .to_string(),
         );
     } else {
         lines.push(
             "  This artifact carries NO build key, so its age cannot be checked at \
              all: only the local-build engine stamps one, and a kernel staged by \
-             `scripts/install-local-binary.sh` is not stamped. `verify-fresh` \
-             refuses it for that reason rather than judging it."
+             `scripts/install-local-binary.sh` is not stamped. `cargo xtask \
+             verify-fresh` refuses it for that reason rather than judging it."
                 .to_string(),
         );
     }
-    lines.push(format!("  Rebuild the tier the engine owns:  {XTASK} bootstrap kernel"));
+    lines.push("  Rebuild the tier the engine owns:  cargo xtask bootstrap kernel".to_string());
     lines.join("\n")
 }
-
-/// How to actually invoke `xtask`, spelled once.
-///
-/// The repository says `cargo xtask <verb>` in 178 places, and that does not
-/// run here: there is no `[alias]` in `.cargo/config.toml` and no
-/// `cargo-xtask` on `PATH`, so cargo answers ``no such command: `xtask` ``.
-/// The alias cannot simply be added either -- `[build] target =
-/// "wasm32-unknown-unknown"` would build a host tool for wasm, and cargo has
-/// no portable way to override that from inside an alias (an array will not
-/// merge with a string, an empty string is rejected). So the scripts' own
-/// long form is what these messages print: an operator staring at a stale
-/// artifact should not be handed a command that fails on a different subject.
-const XTASK: &str = "cargo run -p xtask --target \"$(rustc -vV | \
-                     awk '/^host:/{print $2}')\" --";
 
 /// One stamp line: present with enough of the digest to compare two artifacts
 /// by eye, or absent.

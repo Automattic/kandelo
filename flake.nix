@@ -282,6 +282,16 @@
               export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/sdk/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
               export PATH="$__repo_root/sdk/bin:$PATH"
             fi
+            # Same treatment for scripts/bin, which carries `cargo-xtask`.
+            # `cargo xtask <verb>` is written in 178 places in this tree and
+            # resolves nowhere without it: there is no cargo alias that can
+            # work, because `[build] target` would build a host tool for
+            # wasm and cargo cannot override that from inside an alias. See
+            # the shim's own comment.
+            if [ -d "$__repo_root/scripts/bin" ]; then
+              export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/scripts/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
+              export PATH="$__repo_root/scripts/bin:$PATH"
+            fi
             if [ -f "$__repo_root/scripts/check-dev-shell-tools.sh" ]; then
               bash "$__repo_root/scripts/check-dev-shell-tools.sh"
             fi

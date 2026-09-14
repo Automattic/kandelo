@@ -1942,13 +1942,20 @@ for spec in docs/perturb/lane-l-*.json; do
 done
 ```
 
-**That command used to say `cargo xtask perturb "$spec"`, and that does not
-run.** There is no `[alias]` section in `.cargo/config.toml` and no
-`cargo-xtask` on `PATH`, so cargo answers ``no such command: `xtask` ``. The
-repo's own scripts spell it the long way -- `scripts/build-programs.sh:43` is
-`cargo run -p xtask --target "$HOST_TARGET" --quiet -- ...` -- and the
-`--target` is not optional, because `[build] target = "wasm32-unknown-unknown"`
-would otherwise try to build a host tool for wasm.
+**That command used to say `cargo xtask perturb "$spec"`, which did not run
+when this was written and does now.** There was no `[alias]` in
+`.cargo/config.toml` and no `cargo-xtask` on `PATH`, so cargo answered ``no
+such command: `xtask` ``, and the long form above is what the repo's own
+scripts use (`scripts/build-programs.sh:43`). The `--target` is not optional:
+`[build] target = "wasm32-unknown-unknown"` would otherwise build a host tool
+for wasm, and `getrandom` refuses outright.
+
+**FIXED 2026-09-14 by `scripts/bin/cargo-xtask`**, a shim the dev shell puts
+on `PATH` exactly as it already does for `sdk/bin`. An alias cannot do this --
+cargo will not merge an array into `build.target`, rejects an empty string as
+"target was empty", and a hardcoded triple would break CI -- so deriving the
+host triple needs a shell. Both spellings now work; the long one is kept here
+because it also runs outside the dev shell.
 
 It is worth stating plainly where it happened: the paragraph immediately above
 contrasts these specs, "a command", with claims that are "a transcript
@@ -1961,10 +1968,11 @@ times** across the repository as of the commit before this paragraph -- 88 in
 `docs/`, 22 inside `tools/xtask/src` itself, and five in
 `crates/host-native/src`, where the kernel-provenance
 report prints `Get the verdict:  cargo xtask verify-fresh` to an operator who
-is already confused about a stale artifact. Adding the alias is a one-line
-change to a root config every lane shares, so it is reported here rather than
-made: **the convention the repository documents and the invocation it supports
-are not the same, in 178 places.**
+is already confused about a stale artifact. **All 178 now run**, because the
+shim makes the documented spelling the working one rather than rewriting the
+citations to match a longer truth. Those three messages were briefly changed
+to the long form while the alias looked impossible, and are changed back:
+one spelling, everywhere, and it works.
 
 **11 specs, 30 trials, 0 survived, 0 invalid.** The run that establishes this
 executed THIRTY, because four trials were carried by two specs at once; all

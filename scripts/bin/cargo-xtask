@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# `cargo xtask <verb>` — the spelling 178 places in this repository use.
+#
+# Cargo finds this because it is named `cargo-xtask` and sits on PATH; the
+# dev shell puts `scripts/bin` there (flake.nix), the same way it already
+# does for `sdk/bin`.
+#
+# WHY THIS IS NOT A CARGO ALIAS. `[alias] xtask = "run -p xtask --"` looks
+# like the obvious answer and does not work: `.cargo/config.toml` sets
+# `[build] target = "wasm32-unknown-unknown"`, so the alias builds a HOST
+# tool for wasm and `getrandom` refuses to compile at all. Cargo offers no
+# portable way to override that from inside an alias -- `--config
+# build.target=[]` will not merge an array into a string, and
+# `build.target=""` is rejected as "target was empty". A hardcoded triple
+# would work on one machine and break CI. Deriving the host triple needs a
+# shell, so the shim is a shell script.
+set -euo pipefail
+
+# Cargo invokes external subcommands as `cargo-xtask xtask <args...>`; drop
+# the repeated verb so `cargo xtask perturb x.json` and a direct
+# `scripts/bin/cargo-xtask perturb x.json` behave the same.
+if [ "${1-}" = "xtask" ]; then
+    shift
+fi
+
+host=$(rustc -vV | awk '/^host:/{print $2}')
+if [ -z "$host" ]; then
+    echo "cargo-xtask: could not determine the host triple from 'rustc -vV'" >&2
+    exit 1
+fi
+
+exec cargo run --quiet -p xtask --target "$host" -- "$@"
