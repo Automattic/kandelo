@@ -5222,3 +5222,34 @@ throwers, via a new optional `exceptionThrower` on the floor. That is the
 implementation route section 109 established and it preserves today's behaviour
 exactly -- it does not resolve the maintainer's deferral about where those two
 should ultimately live.
+
+## §113 — The deletions the binder unlocked, one step behind it
+
+Removing the import builders left plumbing whose only consumer was those
+builders. Finding it needed no judgement, only a reference count:
+
+  * `referenceReplay` -- a closure passed to both builders and to nothing else.
+    Deleting it took its `activationRegistry.currentReferences()` call with it,
+    which is one of the registry's three most-used entry points gone without the
+    registry being touched.
+  * `ProcessReferenceReplayImports` -- an interface referenced only by its own
+    declaration once `referenceReplay` went. It existed to COMBINE two attic
+    types, so deleting it removed both imports; worker-main's attic symbol count
+    fell 30 -> 28 without any module leaving.
+  * the `exceptionBroker` option -- still being supplied at two call sites and
+    read at none.
+
+`workerMainTypeScript` 5858 -> 5845, banked.
+
+The pattern is worth naming because it will repeat. A replacement does not just
+remove its own call sites; it strands whatever existed to FEED them, and that
+stranded code is invisible until you go looking with `grep -c`. The three above
+were found by counting references to each thing the deleted builders had taken as
+an argument. That is a mechanical sweep, not an insight, and it should follow
+every replacement in this lane rather than waiting for a later audit to notice.
+
+What it is NOT: progress on the registry. `activationRegistry` still has its
+orchestration callers -- static-root decode, early GC transit, table mutation
+marks, funcref table patches, activation enumeration for the dirty-tracker
+binding -- and all eleven attic modules are still imported. The import feed is
+gone; the orchestration is untouched.

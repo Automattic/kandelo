@@ -126,7 +126,6 @@ import {
   ForkActivationRegistry,
   forkActivationRegistrationFromInstance,
   type ForkActivationTableReplication,
-  type ForkActivationReferenceReplayImports,
   type ForkActivationRegistration,
 } from "./fork-activation-registry";
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
@@ -134,7 +133,6 @@ import { createForkGuestHostFloor } from "./fork-guest-host-floor";
 import {
   ForkExceptionBroker,
   forkExceptionProviderFromInstance,
-  type ForkExceptionReferenceReplayImports,
   type ForkExceptionProvider,
 } from "./fork-exception-provider";
 import { ForkEarlyChildReferenceProvider } from "./fork-early-reference-provider";
@@ -786,7 +784,6 @@ interface ProcessDylinkActivationOwnerOptions {
   readonly forkUnwindTag: WebAssembly.Tag | undefined;
   readonly coordinator: ForkProcessContinuationCoordinator;
   readonly registry: ForkActivationRegistry;
-  readonly exceptionBroker: ForkExceptionBroker;
   readonly importedStateCapture?: ForkImportedGlobalCapture;
   readonly tableReplication?: ForkActivationTableReplication;
   /**
@@ -796,7 +793,6 @@ interface ProcessDylinkActivationOwnerOptions {
    * cycle without permitting a side activation to instantiate unplanned.
    */
   readonly importedStatePlanner?: () => ForkImportedGlobalPlanner | null;
-  readonly referenceReplay?: () => ProcessReferenceReplayImports;
   readonly registerChildReferenceActivation?: (
     activationId: number,
     module: WebAssembly.Module,
@@ -837,11 +833,6 @@ interface ProcessDylinkActivationOwnerOptions {
   };
   readonly label: string;
 }
-
-interface ProcessReferenceReplayImports
-  extends
-    ForkActivationReferenceReplayImports,
-    ForkExceptionReferenceReplayImports {}
 
 /**
  * Bind every instrumented side-module instance to the one process
@@ -3952,8 +3943,6 @@ export async function centralizedWorkerMain(
       // scope) so the attach block can seed the co-resident fork-module's exnref
       // tag-validity admission gate. Null until a fork child computes them.
       let childExceptionCodecBytes: Map<number, Uint8Array> | null = null;
-      const referenceReplay = (): ProcessReferenceReplayImports =>
-        earlyChildReferences ?? activationRegistry.currentReferences();
       const processContinuation = new ForkProcessContinuationCoordinator(
         memory,
         activationRegistry,
@@ -4314,13 +4303,11 @@ export async function centralizedWorkerMain(
             forkUnwindTag: processForkUnwindTag(),
             coordinator: processContinuation,
             registry: activationRegistry,
-            exceptionBroker,
             importedStateCapture,
             tableReplication: tableReplicationImports,
             importedStatePlanner: initData.isForkChild
               ? () => importedStatePlanner
               : undefined,
-            referenceReplay,
             registerChildReferenceActivation: initData.isForkChild
               ? registerChildReferenceActivation
               : undefined,
@@ -6938,7 +6925,6 @@ export async function centralizedThreadWorkerMain(
             forkUnwindTag: threadForkUnwindTag,
             coordinator: threadProcessContinuation,
             registry: threadActivationRegistry,
-            exceptionBroker: threadExceptionBroker,
             // A pthread replica gets its own floor over ITS token cache and
             // broker: externref identity is per-worker (the generation id
             // differs), so sharing the process floor here would key provenance
