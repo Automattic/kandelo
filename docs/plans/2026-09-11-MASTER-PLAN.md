@@ -4565,6 +4565,54 @@ warnings for THAT FILE by name, not by grepping for what you expected to see.
 The compiler's dead-code pass is the cheapest possible "is this called?" check
 and it runs whether or not anyone asks it.
 
+### `/dev/shm` MOVES IN-KERNEL — V9's hard core, and `/dev` is wholly the kernel's
+
+**2026-09-13, authorised by the maintainer after the census's objection was
+checked and withdrawn.** The kernel's own `devfs` called `/dev/shm` *"the sole
+exception to kernel ownership of the `/dev` namespace"*. It is no longer an
+exception.
+
+**Three worries, all checked before anything was touched, all clear.**
+
+* **`MAP_SHARED`.** The kernel already implements it for its own files
+  (`memory.rs`'s `fd_writeback`), and the coherence limit — boundary-synchronous
+  rather than immediate — comes from one linear memory per process and applies
+  to **every** shared mapping whoever backs the file. A `SharedArrayBuffer` is
+  shared between WORKERS, not with a guest's linear memory, so the host path
+  went through the same publish/refresh protocol. Nothing was traded away.
+* **The sticky bit.** `/dev/shm` is `0o1777` and the bit is what stops one
+  process deleting another's segment. `tmpfs.rs` mentions `S_ISVTX` nowhere —
+  alarming until you find enforcement in `syscalls.rs`: `check_sticky_child`,
+  called from eight sites covering unlink, rmdir and both halves of rename,
+  **above** filesystem dispatch. `/tmp` is already `0o1777` and already
+  tmpfs-served, so the arrangement is in production.
+* **Routing.** The ten gates read `is_devfs_namespace_path(p) && !…(p)`, meaning
+  "devfs owns this name, so an unknown one is `ENOENT` rather than a peek at the
+  rootfs". Renaming the second predicate to `is_delegated_devfs_path` keeps
+  every gate's shape while changing who the delegate is.
+
+**What landed.** `/dev/shm` is a tmpfs scratch mount (`0o1777`, its own
+`st_dev`). `devfs` stops matching it — answering would shadow the mount with an
+empty directory that never lists anything — and `DevfsEntry::ShmDir` retires.
+The host half deletes the mount, the `MemoryFileSystem` behind it, the backing
+SABs (16 MiB on Node, 1 MiB in the browser) and the `shmSab` boot-message field,
+which had no sender and no receiver left.
+
+**A new `runtime-core-tmpfs` spec**, 3/3 killed: tmpfs not claiming the path,
+serving it without the sticky bit, and matching a prefix without a path
+boundary.
+
+**Two tests changed MEANING rather than breaking**, and both say so. One used
+`/dev/shm` as an example of a path the rootfs OVERLAY owns until the host
+registers it as foreign — tmpfs owns it now, so it was the wrong example. The
+other checked that the router claims `/dev/shm` and nothing else under `/dev`;
+it now checks that **no** host mount claims any part of the namespace, which is
+strictly stronger.
+
+**Left behind deliberately:** two stale comments in
+`host/src/kernel-worker.ts` mention `shmfs`. That file is off-limits to this
+lane and they are comments, not behaviour.
+
 ### THE BASE IMAGES ARE REBUILT THROUGH THE RUST PRODUCER — and what that cost
 
 **2026-09-13.** `shell/wasm32` builds, and with it every browser product:
