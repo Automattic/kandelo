@@ -6202,3 +6202,51 @@ two hosts as one will report a lane complete while the lane's own host drives
 nothing, which is the H-1 shape at the level of the measurement rather than the
 code. Worth splitting the surface; not doing that unilaterally tonight, because
 it would change a number the maintainer is already being asked to rule on.
+
+## §132 — The arena is the gate, and it is seven methods wide
+
+Working out where to make the first cut, every path led to the same place. The
+smallest attic module worker-main imports is `fork-table-snapshot` (380 lines,
+one symbol, and the module whose missing import every fork end-to-end test dies
+on first). Cutting it needs `ForkTableSnapshot.capture(arena)` and
+`.restore(arena)` replaced -- and both take a `ForkModuleStateArena`, which is
+`fork-module-state.ts`, 3,825 lines, the largest thing in the attic.
+
+That is not a detour, it is the actual gate. `newArena()` is threaded through
+the table-replication owner, the capture path, the child install and the abort.
+Nothing else can be cut until it is.
+
+**But the surface is small.** Every use of an arena in `host/src` is in
+`worker-main.ts`, and between them they call seven methods, seventeen times:
+
+    release (5)   hasActiveArena (3)   begin (3)   attach (3)
+    rootAddress (1)   recordViews (1)   attachBorrowed (1)
+
+Two more -- `ownershipMode()` and `isSealed()` -- are called only by the attic
+coordinator, which section 130 established cannot run anyway. So the replacement
+target is seven methods, not 3,825 lines, and the state behind them is state the
+module already owns: `ModuleStateWriter` plus `ForkChunkList` plus the
+reserve/commit/find entries.
+
+The rough mapping, to be checked rather than trusted:
+
+| host method | module state it would read or drive |
+|---|---|
+| `begin()` | open the writer for a fresh capture |
+| `attach(root)` / `attachBorrowed(root)` | adopt an inherited arena at `root` -- and see section 128, which found `record_find` answering from the writer's root with no way to set it in a child. This is where that gap gets closed rather than documented. |
+| `rootAddress()` | `ModuleStateWriter::root()`, which has no entry yet |
+| `recordViews()` | the decoded records; `fm_decoded_*` reads a reference graph, not this |
+| `release()` | the chunk free -- the one method with real teardown behind it. An earlier attempt at this step was withdrawn for exactly that reason: `release()` frees through the `continuationMmap`/`continuationMunmap` callbacks, so it is not a bookkeeping reset. |
+| `hasActiveArena()` | a state read the phase machine may already answer |
+
+Three of the seven need module entries that do not exist. That pushes
+`forkModuleHostEntries` up again, and this time it is not one entry for one
+mirror -- it is the price of deleting the single largest file in the attic. The
+maintainer is already being asked to rule on four provisional raises; this is
+the shape of the fifth, and it is worth deciding deliberately rather than
+discovering.
+
+**`release()` is the one to design first, not last.** It is the only one of the
+seven that frees memory, it is the reason the previous attempt at this step was
+reverted, and getting it wrong is a leak or a double-free in the child rather
+than a wrong number.
