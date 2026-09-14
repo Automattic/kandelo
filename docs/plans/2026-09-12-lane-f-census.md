@@ -6401,3 +6401,50 @@ A third shape exists and may be the real answer: restore ONLY what a fork needs
 to execute, rather than the transitive closure, and treat anything it drags in
 as the next thing to port rather than the next thing to keep. I have not costed
 that, because which modules those are depends on the route chosen first.
+
+## §136 — The route was never open: no attic TypeScript comes back
+
+Sections 134 and 135 presented "restore the chain first" and "port forward" as a
+live choice for the maintainer. They are wrong to, and this section supersedes
+both on that point. The measurements in 135 stand; the question they were
+attached to does not exist.
+
+**The decision, stated once so it stops being re-derived:** set-aside TypeScript
+does not come back. Not to unblock a port, not as scaffolding, not temporarily.
+The chain gets deleted forward and rebuilt in Rust, and the tests it breaks get
+banked with a reason each until the Rust path passes them.
+
+**Why I got it wrong is the useful part.** The record of the port-order question
+shows the "Restore the chain first, then port with tests green" option selected.
+I carried that label forward as the instruction. Three things beside it said
+otherwise:
+
+- the free text on that same answer -- "rip the bandaid off and see how it goes
+  later" -- describes the aggressive route, not the restore;
+- the answer to the very next question, about ten restorable leaf modules, was
+  not a chip at all but "Why not delete these? Isn't the goal? Then we fix bugs
+  until the tests pass?";
+- the answer payload ends with an explicit instruction: "Read the answers
+  carefully -- they may request clarification, changes, or that you not proceed
+  -- and follow what they actually say."
+
+A selection chip is a label on an option I wrote. The prose is what the
+maintainer said. When they disagree the prose governs, and here it disagreed
+twice in the same batch.
+
+**And the standing reason behind it, which I did not have written down
+anywhere.** Multiple agents before this lane failed to delete and migrate this
+TypeScript. Keeping its presence severely limited is deliberate, and a
+"temporary" restore is precisely the shape those failures took. Section 135's
+own numbers make that concrete without needing the principle: the restore
+closure was 19 modules and 14,035 code lines, and it would have un-banked
+`fork-module-backend.ts`, which this lane had already cut from 1,239 lines and
+41 methods to 503 and 20.
+
+**What this costs, accepted rather than negotiated.** Nothing is verifiable end
+to end until enough of the chain is rebuilt in Rust. Section 134 is right that
+this is the condition under which two changes were wrong in one night. That is a
+reason to work in smaller pieces with their own perturbed tests, to read the
+`crates/host-native` implementation of each call before writing its JS twin, and
+to say plainly what a piece does not cover -- not a reason to trade the
+campaign's direction for a green suite.
