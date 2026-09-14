@@ -9,6 +9,9 @@ import {
   maybeDecompressImage,
   parseImageHeader,
   sectionOffsetAfterArchives,
+  assertSectionFlagsConsistent,
+  archiveSectionBytes,
+  lazySectionBytes,
   VFS_IMAGE_FLAG_HAS_LAZY,
   VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES,
   VFS_IMAGE_FLAG_HAS_METADATA,
@@ -7180,17 +7183,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const flags = parsed.flags;
     const sabLen = parsed.sabLen;
     const sections = sectionOffsetAfterArchives(image, view, flags, sabLen);
-    if (!(flags & VFS_IMAGE_FLAG_HAS_LAZY) && sections.lazyLen !== 0) {
-      throw new Error("VFS image has lazy metadata without its format flag");
-    }
-    if (
-      (flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES) &&
-      !(flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)
-    ) {
-      throw new Error(
-        "VFS image has typed lazy-archive metadata without its archive flag",
-      );
-    }
+    assertSectionFlagsConsistent(flags, sections);
 
     // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
     // versions still expose only the 1-arg constructor even on runtimes that
@@ -7223,32 +7216,21 @@ export class MemoryFileSystem implements FileSystemBackend {
     // below cannot be perturbed by anything an importer does to the values it
     // is handed. See `assertKernelLazySectionMatchesJson` for why it is
     // compared at all.
-    const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-    const lazyLen = sections.lazyLen;
+    const lazyBytes = lazySectionBytes(parsed, sections);
     let lazyEntries: LazyFileEntry[] = [];
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY && lazyLen > 0) {
+    if (lazyBytes !== null) {
       lazyEntries = requireLazyTreeArray(
-        decodeJsonSection(
-          image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLen),
-          "VFS image lazy metadata",
-        ),
+        decodeJsonSection(lazyBytes, "VFS image lazy metadata"),
         "VFS image lazy entries",
         0,
         MAX_LAZY_TREE_ENTRIES,
       ) as LazyFileEntry[];
     }
 
-    let archiveValue: unknown = null;
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-      const archiveOffset = sections.archiveOffset;
-      const archiveLen = view.getUint32(archiveOffset, true);
-      if (archiveLen > 0) {
-        archiveValue = decodeJsonSection(
-          image.subarray(archiveOffset + 4, archiveOffset + 4 + archiveLen),
-          "VFS image lazy archive metadata",
-        );
-      }
-    }
+    const archiveBytes = archiveSectionBytes(parsed, sections);
+    const archiveValue: unknown = archiveBytes === null
+      ? null
+      : decodeJsonSection(archiveBytes, "VFS image lazy archive metadata");
     const archiveEntries = Array.isArray(archiveValue)
       ? (archiveValue as SerializedLazyArchiveEntry[])
       : [];
