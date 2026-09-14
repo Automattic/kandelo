@@ -223,6 +223,127 @@ pub struct ImportedGlobalBinding {
     pub type_code: u8,
 }
 
+/// What only the HOST can determine about one imported global.
+///
+/// The module cannot see an activation's import object at all, so two facts
+/// have to travel from the host: whether the value is a `WebAssembly.Global`
+/// and which activation exports that same object (identity, which wasm cannot
+/// compare — there is no `global.eq`), and for a plain scalar import the value
+/// itself, which lives only in the import object.
+///
+/// Everything else about a binding is derivable here: the type code and
+/// mutability from the activation's KFIG descriptors, the recipe id from the
+/// snapshot the guest wrote into the arena, the ordering, and the encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedGlobalProvenance {
+    pub consumer_activation: u32,
+    pub consumer_owner: u32,
+    /// One of the `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` kinds.
+    pub kind: u8,
+    /// Meaningful for `ACTIVATION_GLOBAL`; the activation exporting the carrier.
+    pub source_activation: u32,
+    pub source_owner: u32,
+    /// Meaningful for `RAW_NUMBER` / `RAW_BIGINT`: the value's bits.
+    pub raw_bits: u64,
+}
+
+/// One activation's imported-global declaration, as KFIG records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedGlobalDeclaration {
+    pub activation: u32,
+    pub owner: u32,
+    pub type_code: u8,
+}
+
+/// One `MutableGlobal` snapshot, reduced to what a binding needs from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedGlobalSnapshotFact {
+    pub activation: u32,
+    pub owner: u32,
+    pub type_code: u8,
+    pub recipe_id: Option<u32>,
+}
+
+/// Build the binding set from host provenance plus module-owned facts.
+///
+/// This is the matching loop that used to live in TypeScript's `appendTo`. It
+/// stayed there only because it sat next to the identity comparison, not because
+/// any of it needs JavaScript: the descriptors come from the guest's own KFIG
+/// section and the snapshots from the arena the module owns.
+///
+/// Three things it refuses, each because the alternative is a child that is
+/// quietly wrong rather than a fork that fails:
+///
+/// * a snapshot whose type disagrees with the KFIG declaration — two
+///   module-owned artifacts describing one global differently means one of them
+///   is being read against the wrong record;
+/// * a reference import with no recipe id, since the recipe IS the binding for
+///   a reference the host could not carry;
+/// * a non-null exnref without a `WebAssembly.Global` carrier. JavaScript cannot
+///   hold a non-null exnref, so a legitimate one is necessarily carried by a
+///   Global; emitting a raw reference here would manufacture a child transport
+///   the embedding API cannot represent.
+pub fn build_imported_global_bindings(
+    provenance: &[ImportedGlobalProvenance],
+    declarations: &[ImportedGlobalDeclaration],
+    snapshots: &[ImportedGlobalSnapshotFact],
+) -> Result<Vec<ImportedGlobalBinding>, Errno> {
+    let mut out: Vec<ImportedGlobalBinding> = Vec::with_capacity(provenance.len());
+    for p in provenance {
+        let declaration = declarations
+            .iter()
+            .find(|d| d.activation == p.consumer_activation && d.owner == p.consumer_owner)
+            .ok_or(Errno::EINVAL)?;
+        let snapshot = snapshots
+            .iter()
+            .find(|s| s.activation == p.consumer_activation && s.owner == p.consumer_owner)
+            .ok_or(Errno::EINVAL)?;
+        if snapshot.type_code != declaration.type_code {
+            return Err(Errno::EINVAL); // snapshot does not match the KFIG type
+        }
+        let mut binding = ImportedGlobalBinding {
+            consumer_activation: p.consumer_activation,
+            consumer_owner: p.consumer_owner,
+            source_activation: 0,
+            source_owner: 0,
+            recipe_id: 0,
+            raw_bits: 0,
+            kind: p.kind,
+            flags: 0,
+            type_code: declaration.type_code,
+        };
+        match p.kind {
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL => {
+                binding.source_activation = p.source_activation;
+                binding.source_owner = p.source_owner;
+            }
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT => {}
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE => {
+                if !is_reference_type(declaration.type_code) {
+                    return Err(Errno::EINVAL);
+                }
+                let recipe = snapshot.recipe_id.ok_or(Errno::EINVAL)?;
+                if declaration.type_code == abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF
+                    && recipe != 0
+                {
+                    return Err(Errno::EINVAL); // non-null exnref with no carrier
+                }
+                binding.recipe_id = recipe;
+            }
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
+            | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT => {
+                binding.raw_bits = p.raw_bits;
+            }
+            _ => return Err(Errno::EINVAL),
+        }
+        out.push(binding);
+    }
+    // The encoder demands sorted, unique consumers; sort here so the host is not
+    // required to publish provenance in any particular order.
+    out.sort_by_key(|b| (b.consumer_activation, b.consumer_owner));
+    Ok(out)
+}
+
 /// Payload bytes an imported-global bindings record of `count` entries needs.
 pub fn imported_global_bindings_size(count: usize) -> Result<usize, Errno> {
     let entries = count
@@ -708,6 +829,136 @@ mod tests {
     use crate::module_state::{decode_module_state, ModuleStateFormat};
 
     // -- Module record encoder (census section 139) --------------------------
+
+    // -- Imported-global binding builder (census section 150) ----------------
+
+    const REF: u8 = abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXTERNREF;
+    const EXN: u8 = abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_EXNREF;
+    const I32: u8 = abi::WPK_FORK_MODULE_STATE_GLOBAL_TYPE_I32;
+
+    fn prov(consumer: (u32, u32), kind: u8) -> ImportedGlobalProvenance {
+        ImportedGlobalProvenance {
+            consumer_activation: consumer.0,
+            consumer_owner: consumer.1,
+            kind,
+            source_activation: 0,
+            source_owner: 0,
+            raw_bits: 0,
+        }
+    }
+    fn decl(consumer: (u32, u32), type_code: u8) -> ImportedGlobalDeclaration {
+        ImportedGlobalDeclaration { activation: consumer.0, owner: consumer.1, type_code }
+    }
+    fn snap(consumer: (u32, u32), type_code: u8, recipe: Option<u32>) -> ImportedGlobalSnapshotFact {
+        ImportedGlobalSnapshotFact {
+            activation: consumer.0,
+            owner: consumer.1,
+            type_code,
+            recipe_id: recipe,
+        }
+    }
+
+    #[test]
+    fn a_carrier_binding_keeps_the_source_the_host_resolved() {
+        // The whole reason the host is involved: which activation exports the
+        // same Global object. The module must carry that through untouched.
+        let mut p = prov((3, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL);
+        p.source_activation = 1;
+        p.source_owner = 5;
+        let built = build_imported_global_bindings(
+            &[p],
+            &[decl((3, 1), I32)],
+            &[snap((3, 1), I32, None)],
+        )
+        .unwrap();
+        assert_eq!(built.len(), 1);
+        assert_eq!(built[0].source_activation, 1);
+        assert_eq!(built[0].source_owner, 5);
+        assert_eq!(built[0].type_code, I32, "type comes from the declaration");
+    }
+
+    #[test]
+    fn a_reference_binding_takes_its_recipe_from_the_snapshot() {
+        // For a reference the host could not carry, the recipe IS the binding —
+        // the child has nothing else to reconstruct the referent from.
+        let built = build_imported_global_bindings(
+            &[prov((0, 2), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
+            &[decl((0, 2), REF)],
+            &[snap((0, 2), REF, Some(77))],
+        )
+        .unwrap();
+        assert_eq!(built[0].recipe_id, 77);
+    }
+
+    #[test]
+    fn a_snapshot_that_disagrees_with_the_declaration_is_refused() {
+        // Two module-owned artifacts describing one global differently means one
+        // is being read against the wrong record. Refusing beats binding a
+        // child's import to a value of another type.
+        assert_eq!(
+            build_imported_global_bindings(
+                &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT)],
+                &[decl((0, 1), I32)],
+                &[snap((0, 1), REF, None)],
+            ),
+            Err(Errno::EINVAL),
+        );
+    }
+
+    #[test]
+    fn a_reference_without_a_recipe_is_refused() {
+        assert_eq!(
+            build_imported_global_bindings(
+                &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
+                &[decl((0, 1), REF)],
+                &[snap((0, 1), REF, None)],
+            ),
+            Err(Errno::EINVAL),
+        );
+    }
+
+    #[test]
+    fn a_non_null_exnref_without_a_carrier_is_refused() {
+        // JavaScript cannot hold a non-null exnref, so a legitimate one is
+        // necessarily carried by a WebAssembly.Global. Emitting a raw reference
+        // would manufacture a child transport the embedding API cannot express.
+        assert_eq!(
+            build_imported_global_bindings(
+                &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
+                &[decl((0, 1), EXN)],
+                &[snap((0, 1), EXN, Some(4))],
+            ),
+            Err(Errno::EINVAL),
+        );
+        // A NULL exnref is fine: recipe 0 is the null referent.
+        assert!(build_imported_global_bindings(
+            &[prov((0, 1), abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE)],
+            &[decl((0, 1), EXN)],
+            &[snap((0, 1), EXN, Some(0))],
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn built_bindings_come_back_sorted_for_the_encoder() {
+        // The encoder demands sorted, unique consumers. Sorting here means the
+        // host is not required to publish provenance in any order, which keeps
+        // one more rule out of the half that has to stay in JavaScript.
+        let k = abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_BASE_IMPORT;
+        let built = build_imported_global_bindings(
+            &[prov((2, 0), k), prov((0, 9), k), prov((0, 1), k)],
+            &[decl((2, 0), I32), decl((0, 9), I32), decl((0, 1), I32)],
+            &[snap((2, 0), I32, None), snap((0, 9), I32, None), snap((0, 1), I32, None)],
+        )
+        .unwrap();
+        let keys: Vec<(u32, u32)> =
+            built.iter().map(|b| (b.consumer_activation, b.consumer_owner)).collect();
+        assert_eq!(keys, alloc::vec![(0, 1), (0, 9), (2, 0)]);
+        // And the encoder accepts what the builder produced, which is the pairing
+        // that matters.
+        let mut out = alloc::vec![0u8; imported_global_bindings_size(built.len()).unwrap()];
+        assert!(encode_imported_global_bindings(&mut out, &built).is_ok());
+    }
 
     // -- Imported-global bindings encoder (census section 150) ---------------
 
