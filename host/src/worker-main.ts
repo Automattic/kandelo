@@ -4280,7 +4280,19 @@ export async function centralizedWorkerMain(
           processContinuation.beginCapture(arena);
           importedStateCapture?.appendTo(arena);
         } catch (error) {
-          if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
+          // STILL THE COORDINATOR'S MIRROR, and reverted to it deliberately.
+          // Converting this read looked one-line-safe and is not: the
+          // coordinator sets `this.phase = "capture"` BEFORE the module call
+          // that opens the capture, so inside that window the two disagree. The
+          // argument that they re-converge was that `cancelCapture` runs in the
+          // window's own catch and calls `moduleBackend.abort()` -- but the
+          // restored `ForkModuleContinuationBackend` has no `abort` method at
+          // all (it is a deliberate subset of the 1239-line wrapper it
+          // replaced), so that call throws into `cancelCapture`'s own swallow
+          // and the MODULE's phase is never reset. Host says idle, module says
+          // capture, and this branch would flip. It converts when the
+          // coordinator does, not before.
+          if (processContinuation.phaseName() !== "idle") {
             try {
               processContinuation.abort();
             } catch {
@@ -5394,7 +5406,8 @@ export async function centralizedWorkerMain(
         if (isWasmUnreachableTrap(e) && kernelExitStatus !== null) {
           exitCode = kernelExitStatus;
         } else {
-          if (forkPhase(forkModuleFrameExports, pid) !== "idle") {
+          // Same disagreement as the capture-path read above; same reason.
+          if (processContinuation.phaseName() !== "idle") {
             try {
               processContinuation.abort();
             } catch {

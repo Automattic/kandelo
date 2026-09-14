@@ -6102,3 +6102,51 @@ campaign is driving toward five, and it does so for a caller that is a test."
 That reasoning does not settle the present case -- these callers are production,
 not a test -- but I reached the identical wall from the other side two days
 later, which suggests the wall is real rather than a bad estimate.
+
+## §130 — The remaining wiring is seven entries, not thirteen thousand lines
+
+Section 70 sized what is left as nine set-aside modules totalling 13,132 lines,
+and I have been planning against that number. It is the wrong number, and the
+budget already held the right one.
+
+`forkModuleEntriesWithoutProductionCaller` counts module entries that no file in
+`crates/host-native/src` or `host/src` names -- reached only by tests, which is
+the H-1 signal. Running that classification by hand gives **seven**:
+
+    fm_abort                          fm_restore_from_arena
+    fm_attach_child                   fm_activation_module_buffer
+    fm_build_trivial_plan             fm_set_activation_table_state_owner
+    fm_trivial_plan_count
+
+Every other module entry already has a production caller. The capture open, the
+seal, the parent replay, the finish, the whole reference drive and data feed --
+all of it is already wired. What is NOT wired is the child install and the
+abort, which is exactly the pair section 128 found undriven from the other end
+when it went looking for who calls `wpk_fork_module_state_restore`.
+
+**And the coordinator cannot be restored, only replaced.** I had been assuming
+`fork-process-continuation.ts` could come back from the attic and then be
+whittled down. It cannot run at all: its module-driving methods call
+`backend.parentBeginCapture`, `backend.attachChild`, `backend.childSeed`,
+`backend.driveRestoredPlan` and `backend.abort`, and the restored
+`ForkModuleContinuationBackend` has NONE of them. That is not an oversight --
+the budget entry for it says so directly: 170 code lines against the 1239-line
+wrapper it supersedes, "methods come back when a caller needs one." So the
+1,471-line coordinator is not 1,471 lines of work to port. It is a driver loop
+over a backend that no longer exists, and the seven entries above are what its
+surviving half would have to call.
+
+This also corrects something I wrote one commit ago. Converting the two
+`phaseName() !== "idle"` error-path guards, I argued the host and module phases
+re-converge because `cancelCapture` calls `moduleBackend.abort()` and `fm_abort`
+enters `PHASE_IDLE`. `moduleBackend.abort()` does not exist. The call throws
+into `cancelCapture`'s own swallow, `this.phase = "idle"` still runs, and the
+module's phase is never reset -- so after a failed capture open the host says
+idle and the module says capture, which is the one direction that would flip
+those branches. Both reverted, with the reason written at the call sites. The
+four entry-point conversions are unaffected: they read the phase to choose which
+entry point to run, and the module is the authority on that in every window.
+
+Worth naming how the error was caught, because it was not caught by reading the
+code again. It fell out of running the budget's own classifier by hand for a
+different purpose. The claim had already been committed and pushed.
