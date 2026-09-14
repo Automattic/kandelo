@@ -1757,9 +1757,10 @@ is correct only for images it produced itself.
   the module bridge cannot serve for a structural reason: POSIX shared memory
   needs a buffer both sides map, and `SffsImageFs` holds its image in the
   module's own linear memory. The census recommends `/dev/shm` move in-kernel as
-  tmpfs did, and says why that is a maintainer decision. **Blocked on that
-  decision**, not on lane Y. After lane Y, per the
-  maintainer. The lane's only genuine unknown.
+  tmpfs did, and says why that is a maintainer decision. **That decision was
+  taken and the move landed 2026-09-13** (`/dev/shm` is in-kernel, both halves),
+  so V9's recorded blocker is closed. See *V9 RE-SIZED* below for what is
+  actually left, which is not what this bullet predicted.
 * **V10 — delete `sharedfs-vendor.ts`**, at which point `sffsTypeScript`
   reaches 0.
 
@@ -1798,6 +1799,72 @@ and V4 as the part that can move now.
 `generated/abi` at line 20 **and** `O_CREAT` from `sharedfs-vendor` at line 31,
 then aliases `OPEN_FLAGS.O_CREAT` at line 501. Two sources for one constant in
 one file.
+
+### V9 RE-SIZED 2026-09-13 — the "shared" in `SharedFS` is vestigial
+
+The V9 census (2026-09-13, earlier the same day) named `/dev/shm` as the hard
+core and said the module bridge could not serve it, because POSIX shared memory
+needs a buffer both sides map while `SffsImageFs` holds its image in the
+module's own linear memory. **That core is now landed**: `/dev/shm` moved
+in-kernel as tmpfs did, both halves (`crates/runtime-core/src/tmpfs.rs` gained
+the scratch mount; `host/src/browser-kernel-worker-entry.ts` lost its mount and
+its SAB). `/dev` is wholly the kernel's. So V9's recorded blocker is gone, and
+the question becomes what is actually left.
+
+Measured at the call sites, not at the line count:
+
+| Fact | Count |
+|---|---|
+| Files importing `sharedfs-vendor.ts` | **1** (`memory-fs.ts`) |
+| `this.fs.*` calls in `memory-fs.ts` | 85, over 33 distinct methods |
+| …of those, identity / CAS / snapshot calls | **18** |
+| Non-test `MemoryFileSystem` construction sites | 16 (14 outside `memory-fs.ts`) |
+| Non-test reads of `.sharedBuffer` | **2**, both `trackTransientImageBuffer` |
+| `memory-fs.ts` / `sharedfs-vendor.ts` | 8,215 / 3,716 lines |
+
+**The finding: no live code mounts one `MemoryFileSystem`'s SAB from a second
+thread.** Every `SharedFS.mount` call in the tree is inside `memory-fs.ts`, on
+a buffer `memory-fs.ts` itself created; `fromExisting` has exactly one non-test
+caller, `memory-fs.ts`'s own post-write verifier. The two external reads of
+`.sharedBuffer` hand it to the WebKit reclamation tracker — accounting, not
+sharing. `kernel-owned-boot.ts` says so in its own words: the build filesystem
+is serialized to bytes and *"the kernel worker rebuilds and owns the live
+VFS from these bytes."*
+
+That makes the 18 identity/CAS/snapshot calls defensive machinery against a
+peer that no longer exists. The code states the threat it is defending against
+at `memory-fs.ts:5827` — *"A peer may have renamed the inode while the fetch was
+in flight"* — and then retries three times against a compare-and-swap. With the
+kernel owning the live VFS and the builder single-threaded, an ordinary write
+is the whole of it.
+
+**So V9 is not "reimplement a shared filesystem on the module bridge". It is
+"retire a filesystem that is no longer shared."** The three remaining roles of
+`MemoryFileSystem` are all builder-shaped and single-threaded:
+
+1. build-time image assembly (`createEmptyBuildFs` → `saveImage` → worker owns
+   the bytes),
+2. `restoreVerifiedImageMounts` reading an image mount,
+3. the three `mkrootfs` CLI verbs (`add`, `extract`, `inspect`).
+
+`SffsImageFs` — the Rust producer bridge lane Y built — already covers that
+shape: `stat/lstat/open/read/write/mkdir/symlink/readlink/unlink/chmod/chown/
+readdir/opendir/closedir/writeFile/readFile/saveImage/loadImage`, plus the lazy
+registration calls. What it does not have is `fstat/lseek/ftruncate/readAt/
+writeAt/append/utimens/fchmod/fchown/lchown/statfs/rmdir/rename/link` — the fd-
+and-metadata half of a `FileSystemBackend`. That, and not the identity
+machinery, is the honest remainder.
+
+**Scope note for the maintainer.** Closing V10 by this route means
+`MemoryFileSystem`'s backend changes under 14 non-test call sites in `host/src`,
+`tools/mkrootfs/src` and `apps/browser-demos`, and under the browser-demo test
+corpus. That is a bigger blast radius than "delete `sharedfs-vendor.ts`"
+suggests, and the browser half of it cannot currently be proven: the browser
+suite fails 103/184 at kernel-worker init with `ReferenceError: process is not
+defined`, a failure reproduced with this lane's commits reverted and therefore
+not this lane's. **Lane V should not cut the backend over while its verification
+path is dark.** The reachable work in the meantime is the fd-and-metadata half
+above, which is Node-verifiable on its own.
 
 ## Acceptance evidence
 
