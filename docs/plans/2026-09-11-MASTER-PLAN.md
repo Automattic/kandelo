@@ -2368,7 +2368,46 @@ the `sm_mkdir` precedent: because the export seals cohorts at offset 0, a flag
 choosing between them would decide **whether a read mutates the tree it is
 reading**.
 
-**So item 2 is unblocked and the four construction sites can be repointed.**
+**BUT THE SEAM STILL NEEDS A `kernel-worker.ts` CHANGE, WHICH THIS LANE MAY
+NOT MAKE.** Found on 2026-09-14 while building the adapter, and it is the real
+gate rather than the entry point:
+
+`configureRootfsOverlay` takes `imageBody: () => Uint8Array` and the kernel's
+provider does `start = at - VFS_IMAGE_HEADER_SIZE` before slicing it. So the
+callback must return **the SFFS BODY** — `MemoryFileSystem.imageBodyBytes()` is
+`new Uint8Array(this.fs.buffer)`, the SAB, which *is* the body. Two consequences:
+
+* **A module-backed adapter cannot satisfy that contract cheaply.** The module
+  holds the whole **container**. Returning it is off by the header and carries
+  the trailing sections; returning a correct body slice means the host parsing
+  the header for the body's length, which is the format knowledge this lane
+  exists to remove. Materializing a copy per call would copy a 249 MiB image on
+  every base-file read.
+* **`sm_image_read` is already in the right coordinates** — it reads the
+  container at an offset, which is exactly the `at` the kernel's provider is
+  handed, with no header arithmetic. It fits the contract the seam *should*
+  have and not the one it has.
+
+**An alternative was built and tested before this was noticed, and then
+reverted.** The bridge retains the pointer `sm_load_image` adopts (`sm_free`
+runs only on the failure path), so it can hand out a zero-copy view of the
+loaded image taken fresh per call — 43 tests passed, including after a memory
+growth that detaches stale views. It is still not a drop-in, for the reason
+above: it views the container, not the body. Reverted rather than left in the
+bridge as a method that looks usable and is not.
+
+**So the honest position on the ceiling raise.** `sm_image_read` is the right
+shape for this seam, and this lane cannot wire it up, because the wiring is a
+signature change in `host/src/kernel-worker.ts` — `() => Uint8Array` becoming
+`(offset, dest) => number` — and that file is off-limits to lanes V and Y.
+Until that change is authorised, the twenty-second entry point has a bridge
+method and no production caller, which is the dead-surface pattern this
+campaign exists to remove. **Either the kernel-worker change is authorised and
+the slot is earned, or the entry point should be reverted with the ceiling.
+That is the maintainer's call and it is the gate on the whole cutover.**
+
+**So item 2 is NOT unblocked after all; the four construction sites wait on
+that decision.**
 
 **The offset-and-length question is now answered, and the answer is that V9
 needs one entry point here.** Checked rather than assumed:
