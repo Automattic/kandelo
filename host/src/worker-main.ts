@@ -151,10 +151,6 @@ import {
   type ForkGcCodecProvider,
 } from "./fork-gc-codec";
 import {
-  type ForkActivationContinuation,
-  ForkProcessContinuationCoordinator,
-} from "./fork-process-continuation";
-import {
   forkResumeTargetsFromInstance,
   readForkResumeCatalog,
 } from "./fork-resume-catalog";
@@ -789,7 +785,7 @@ interface ProcessDylinkActivationOwnerOptions {
   readonly ptrWidth: 4 | 8;
   readonly channelOffset: number;
   readonly forkUnwindTag: WebAssembly.Tag | undefined;
-  readonly coordinator: ForkProcessContinuationCoordinator;
+  readonly resumeTable: ForkResumeTable;
   readonly registry: ForkActivationRegistry;
   readonly importedStateCapture?: ForkImportIdentity;
   /** The host's record of live activations; see `fork-activations.ts`. */
@@ -915,16 +911,14 @@ function createProcessDylinkActivationOwner(
       let childImportedStatePlanner: ForkImportedGlobalPlanner | null = null;
       let importedStateRegistered = false;
       let importsWrapped = false;
-      // The co-resident Rust module owns all linked frames/journal/resume
-      // storage (Phase 4 point of no return). The host only carries this
-      // activation's linked-frame FORMAT descriptor into the coordinator.
-      const continuation: ForkActivationContinuation = {
-        format: readLinkedFrameFormat(request.module),
-      };
-      if (continuation.format.ptrWidth !== options.ptrWidth) {
+      // The co-resident Rust module owns all linked frames, journal and resume
+      // storage. What the host reads out of this activation's module is its
+      // linked-frame FORMAT, and only two fields of it.
+      const format = readLinkedFrameFormat(request.module);
+      if (format.ptrWidth !== options.ptrWidth) {
         throw new Error(
           `${request.name}: linked continuation pointer width ` +
-            `${continuation.format.ptrWidth} does not match the process ` +
+            `${format.ptrWidth} does not match the process ` +
             `pointer width ${options.ptrWidth}`,
         );
       }
@@ -936,17 +930,6 @@ function createProcessDylinkActivationOwner(
         );
       }
       const templateId = computeForkModuleTemplateIdSync(request.moduleBytes);
-
-      try {
-        options.coordinator.prepareActivation({
-          activationId,
-          continuation,
-        });
-        prepared = true;
-      } catch (error) {
-        claimed.delete(activationId);
-        throw error;
-      }
 
       // Phase 6 D7a.1a: seed THIS side activation's resume catalog into the
       // module once, at instantiation (before any fork drives it), so the
@@ -983,7 +966,8 @@ function createProcessDylinkActivationOwner(
             fork: (): number => options.invokeProcessFork(),
             // The resume table is host floor: the module's `resume_peek` returns
             // an index INTO it and Rust cannot hold a funcref.
-            ...options.coordinator.continuationImports(activationId),
+            [FORK_GUEST_RESUME_TABLE_IMPORT]:
+              options.resumeTable.table as unknown as WebAssembly.ImportValue,
             [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]: new WebAssembly.Global(
               { value: "i32", mutable: false },
               activationId,
@@ -1101,8 +1085,9 @@ function createProcessDylinkActivationOwner(
             exceptionProvider,
             typedReferenceProvider,
           });
-          options.coordinator.registerActivation(
-            registration,
+          options.registry.registerActivation(registration);
+          options.resumeTable.registerActivation(
+            activationId,
             forkResumeTargetsFromInstance(request.module, instance),
           );
           // Remembering it here also BINDS its drive slots, so the module can
@@ -1113,7 +1098,7 @@ function createProcessDylinkActivationOwner(
             activationId,
             module: request.module,
             instance,
-            fixedPrefixSize: continuation.format.fixedPrefixSize,
+            fixedPrefixSize: format.fixedPrefixSize,
           });
           registered = true;
           prepared = false;
@@ -1153,14 +1138,14 @@ function createProcessDylinkActivationOwner(
           try {
             if (registered) {
               try {
-                options.coordinator.unregisterActivation(activationId);
+                options.resumeTable.unregisterActivation(activationId);
+                options.registry.unregisterActivation(activationId);
                 options.activations?.forget(activationId);
               } catch (error) {
                 failure = error;
               }
-            } else if (prepared) {
+            } else {
               try {
-                options.coordinator.discardPreparedActivation(activationId);
                 exceptionProvider?.abort();
               } catch (error) {
                 failure = error;
@@ -3869,11 +3854,6 @@ export async function centralizedWorkerMain(
       // admitted; a flag-off / non-admitted fork keeps the byte-identical JS
       // reference path (this returns `{}`, leaving the JS provider imports intact).
       const mainTemplateId = await computeForkModuleTemplateId(programBytes);
-      // The co-resident Rust module owns all frame/journal/resume storage
-      // (Phase 4 point of no return); the coordinator only needs the format.
-      const forkContinuation: ForkActivationContinuation = {
-        format: linkedFrameFormat,
-      };
       let processInstance: WebAssembly.Instance | null = null;
 
       const newModuleStateArena = (): ForkModuleStateArena =>
@@ -3996,22 +3976,6 @@ export async function centralizedWorkerMain(
       // scope) so the attach block can seed the co-resident fork-module's exnref
       // tag-validity admission gate. Null until a fork child computes them.
       let childExceptionCodecBytes: Map<number, Uint8Array> | null = null;
-      const processContinuation = new ForkProcessContinuationCoordinator(
-        memory,
-        activationRegistry,
-        `pid=${pid}: process continuation`,
-      );
-      if (forkModuleBackend) {
-        // Route this worker's next fork through the co-resident module. The
-        // coordinator's module-backed branches then own the journal/frames/
-        // resume slots; every non-qualifying fork stays on the JS path. A dlopen
-        // fork also evicts a side activation's trampoline when it unregisters.
-        // No eviction hook: a per-activation trampoline used to be a cached JS
-        // object that had to be dropped when its activation unregistered. The
-        // module's entries are static table slots with no per-activation state,
-        // so there is nothing to evict.
-        processContinuation.enableModuleBacking(forkModuleBackend, undefined);
-      }
       // Path B P3: route this worker's next fork's reference CAPTURE through the
       // co-resident module's shared builder (the module is the SOLE capture
       // graph). The parent reads its own vectors back from the resident builder
@@ -4204,28 +4168,20 @@ export async function centralizedWorkerMain(
         if (borrowedForkChild) childArena.attachBorrowed(arenaRoot);
         else childArena.attach(arenaRoot);
       }
-      processContinuation.prepareActivation({
-        activationId: 0,
-        continuation: forkContinuation,
-        ...(borrowedForkChild
-          ? {}
-          : {
-              publishProcessLaunchRoot: (address: number) => {
-                // WHY: this copied control-page word is the fresh child's
-                // route to the main activation. No JavaScript closure
-                // survives fork. A borrowed vfork child receives no writer
-                // because this word still belongs to its suspended parent.
-                writeForkContinuationAnchor(
-                  memory,
-                  dlopenArchiveControlAddr,
-                  ptrWidth,
-                  address,
-                );
-                forkBufAddr = address;
-              },
-            }),
-        readProcessLaunchRoot,
-      });
+      // The fresh child's route to the main activation, written into the copied
+      // control-page word because no JavaScript closure survives a fork. A
+      // BORROWED vfork child never writes it: that word still belongs to its
+      // suspended parent.
+      const publishProcessLaunchRoot = (address: number): void => {
+        if (borrowedForkChild) return;
+        writeForkContinuationAnchor(
+          memory,
+          dlopenArchiveControlAddr,
+          ptrWidth,
+          address,
+        );
+        forkBufAddr = address;
+      };
 
       const releaseProcessForkArchiveReader = (): void => {
         if (!processForkArchiveReaderHeld) return;
@@ -4327,7 +4283,15 @@ export async function centralizedWorkerMain(
         const arena = newModuleStateArena();
         try {
           arena.begin();
-          processContinuation.beginCapture(arena);
+          activationRegistry.beginCapture(arena);
+          publishProcessLaunchRoot(0);
+          publishProcessLaunchRoot(
+            forkModule().parentBeginCapture(
+              channelOffset,
+              arena.rootAddress(),
+              forkActivations.sides(),
+            ),
+          );
         } catch (error) {
           // Both halves ask the MODULE now, which is what makes this safe. It
           // was left on the coordinator's mirror earlier because the two could
@@ -4362,7 +4326,7 @@ export async function centralizedWorkerMain(
             ptrWidth,
             channelOffset,
             forkUnwindTag: processForkUnwindTag(),
-            coordinator: processContinuation,
+            resumeTable,
             registry: activationRegistry,
             activations: forkActivations,
             importedStateCapture,
@@ -5132,7 +5096,6 @@ export async function centralizedWorkerMain(
               }
             }
           }
-          processContinuation.enableModuleReferenceReplay();
         }
         // ONE install call for both child shapes. A COW child and a vfork
         // BORROWED child share an identical plan in the module; the only
@@ -6441,8 +6404,9 @@ export async function centralizedThreadWorkerMain(
   synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
 
   let threadInstance: WebAssembly.Instance | undefined;
-  let threadProcessContinuation: ForkProcessContinuationCoordinator | null =
-    null;
+  // Visible to the worker-tail teardown, which runs outside the block the
+  // registry is built in.
+  let threadForkRegistry: ForkActivationRegistry | null = null;
   let threadTableReplication: ProcessTableReplicationOwner | null = null;
   let threadHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   let threadExternrefTokens: ForkExternrefTokenCache | null = null;
@@ -6559,12 +6523,6 @@ export async function centralizedThreadWorkerMain(
     );
     let forkBufAddr = 0;
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
-    // The co-resident Rust module owns all frame/journal/resume storage
-    // (Phase 4 point of no return); the coordinator only needs the format.
-    const threadForkContinuation: ForkActivationContinuation | null =
-      hasForkInstrumentation
-        ? { format: readLinkedFrameFormat(module) }
-        : null;
     const threadTemplateId = hasForkInstrumentation
       ? await computeForkModuleTemplateId(initData.programBytes)
       : null;
@@ -6617,18 +6575,15 @@ export async function centralizedThreadWorkerMain(
             ),
         )
       : null;
+    threadForkRegistry = threadActivationRegistry;
     let threadImportedStateCapture: ForkImportIdentity | null = null;
     let threadForkActivations: ForkActivations | null = null;
+    const threadResumeTable = new ForkResumeTable(
+      `pid=${pid} tid=${tid}: fork resume table`,
+    );
     // The frame format is read where the fork-module is built, which is a
     // narrower block than the registration below.
     let threadFixedPrefixSize = 0;
-    threadProcessContinuation = threadActivationRegistry
-      ? new ForkProcessContinuationCoordinator(
-          memory,
-          threadActivationRegistry,
-          `pid=${pid} tid=${tid}: process continuation`,
-        )
-      : null;
     const threadExceptionBroker = threadActivationRegistry
       ? new ForkExceptionBroker(
           threadActivationRegistry,
@@ -6641,27 +6596,13 @@ export async function centralizedThreadWorkerMain(
         )
       : null;
     let threadExceptionProvider: ForkExceptionProvider | null = null;
-    if (threadProcessContinuation && threadForkContinuation) {
-      threadProcessContinuation.prepareActivation({
-        activationId: 0,
-        continuation: threadForkContinuation,
-        publishProcessLaunchRoot: (address) => {
-          writeForkContinuationAnchor(
-            memory,
-            forkAnchorAddr,
-            ptrWidth,
-            address,
-          );
-          forkBufAddr = address;
-        },
-        readProcessLaunchRoot: () => {
-          const view = new DataView(memory.buffer);
-          return ptrWidth === 8
-            ? Number(view.getBigUint64(forkAnchorAddr, true))
-            : view.getUint32(forkAnchorAddr, true);
-        },
-      });
-    }
+    // The fork-from-thread launch anchor, as two plain functions. They were
+    // options on `prepareActivation`, whose other argument -- the continuation
+    // whose entry points the module drives -- has no reader left.
+    const publishThreadLaunchRoot = (address: number): void => {
+      writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, address);
+      forkBufAddr = address;
+    };
     // Phase 6 D7b: wire the co-resident fork-module into the PTHREAD PARENT
     // worker so a fork issued FROM a thread unwinds/serializes/parent-replays
     // through the module — the parent SIDE of a fork-from-thread. Without this
@@ -6686,11 +6627,7 @@ export async function centralizedThreadWorkerMain(
     // silent drop to the (Phase 4: to-be-deleted) JS continuation twin.
     let threadForkModuleInstance: ForkModuleInstance | null = null;
     let threadForkModuleBackend: ForkModuleContinuationBackend | null = null;
-    if (
-      hasForkInstrumentation &&
-      threadProcessContinuation &&
-      threadForkContinuation
-    ) {
+    if (hasForkInstrumentation && threadActivationRegistry) {
       const forkModuleModule = initData.forkModuleModule;
       if (!forkModuleModule) {
         throw new Error(
@@ -6742,7 +6679,7 @@ export async function centralizedThreadWorkerMain(
         });
         // STORE #2: on this path the thread registry is created BEFORE the
         // fork-module (unlike the process path), and its `enableModuleBacking`
-        // gate below requires `threadProcessContinuation` — itself built from
+        // gate below requires `threadActivationRegistry` — itself built from
         // the registry — to already exist, so the registry cannot simply be
         // constructed after the module. Instead, ADOPT the module's own
         // exported transit table into the already-built registry so the
@@ -6770,7 +6707,6 @@ export async function centralizedThreadWorkerMain(
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
-        threadProcessContinuation.enableModuleBacking(threadForkModuleBackend);
         // Built here rather than beside the registry above, because it publishes
         // straight into this thread's module and there is no module before this
         // point. Nothing reads it earlier.
@@ -6893,7 +6829,7 @@ export async function centralizedThreadWorkerMain(
     );
     if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (rawMode: number): number => {
-        if (!threadInstance || !threadProcessContinuation) return -38; // ENOSYS
+        if (!threadInstance || !threadActivationRegistry) return -38; // ENOSYS
         const mode = processForkMode(rawMode);
         if (mode === null) return -STARTUP_EINVAL;
 
@@ -6959,7 +6895,15 @@ export async function centralizedThreadWorkerMain(
         const arena = newThreadModuleStateArena();
         try {
           arena.begin();
-          threadProcessContinuation.beginCapture(arena);
+          threadActivationRegistry.beginCapture(arena);
+          publishThreadLaunchRoot(0);
+          publishThreadLaunchRoot(
+            threadForkModule().parentBeginCapture(
+              channelOffset,
+              arena.rootAddress(),
+              threadForkActivations?.sides() ?? [],
+            ),
+          );
         } catch (error) {
           if (arena.hasActiveArena()) arena.release();
           releasePthreadForkLock();
@@ -6982,7 +6926,7 @@ export async function centralizedThreadWorkerMain(
     const threadForkUnwindTag = createForkUnwindTag();
     const replicaActivationOwner =
       hasDylinkForkRole &&
-      threadProcessContinuation &&
+      threadActivationRegistry &&
       threadActivationRegistry &&
       threadExceptionBroker
         ? createProcessDylinkActivationOwner({
@@ -6990,7 +6934,7 @@ export async function centralizedThreadWorkerMain(
             ptrWidth,
             channelOffset,
             forkUnwindTag: threadForkUnwindTag,
-            coordinator: threadProcessContinuation,
+            resumeTable: threadResumeTable,
             registry: threadActivationRegistry,
             // A pthread replica gets its own floor over ITS token cache and
             // broker: externref identity is per-worker (the generation id
@@ -7066,9 +7010,8 @@ export async function centralizedThreadWorkerMain(
         label: `pid=${pid} tid=${tid}`,
       });
     }
-    const threadCoordinator = threadProcessContinuation;
     const threadForkEnvImports =
-      threadCoordinator && threadActivationRegistry && threadExceptionBroker
+      threadActivationRegistry && threadExceptionBroker
         ? {
             // Everything the module serves plus this worker's floor, with the
             // three object imports a JS host supplies. Fails by NAME here if
@@ -7088,7 +7031,8 @@ export async function centralizedThreadWorkerMain(
                     `pid=${pid} tid=${tid}: fork host floor`,
                   ).floor,
                   extras: {
-                    ...threadCoordinator.continuationImports(0),
+                    [FORK_GUEST_RESUME_TABLE_IMPORT]:
+                      threadResumeTable.table as unknown as WebAssembly.ImportValue,
                     [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]:
                       new WebAssembly.Global(
                         { value: "i32", mutable: false },
@@ -7100,7 +7044,10 @@ export async function centralizedThreadWorkerMain(
                   guestModule: module,
                   label: `pid=${pid} tid=${tid}: fork imports`,
                 }) as Record<string, WebAssembly.ImportValue>)
-              : { ...threadCoordinator.continuationImports(0) }),
+              : {
+                  [FORK_GUEST_RESUME_TABLE_IMPORT]:
+                    threadResumeTable.table as unknown as WebAssembly.ImportValue,
+                }),
             // Phase 6 D7b IMPORT FLIP (mirrors the main worker path): when the
             // fork-module is wired into this pthread parent, the thread's guest
             // calls the module's frame/resume exports directly (wasm->wasm over
@@ -7126,9 +7073,10 @@ export async function centralizedThreadWorkerMain(
                       const moduleErrno = threadForkModuleBackend
                         ? threadForkModuleBackend.lastErrno()
                         : STARTUP_ENOMEM;
-                      threadCoordinator.beginModuleCaptureAbort(
-                        moduleErrno > 0 ? moduleErrno : STARTUP_ENOMEM,
-                      );
+                      threadForkAbortErrno =
+                        moduleErrno > 0 ? moduleErrno : STARTUP_ENOMEM;
+                      threadForkModule().parentAbortSeal();
+                      threadForkModule().parentReplay(true);
                     }
                     return payload;
                   },
@@ -7177,7 +7125,7 @@ export async function centralizedThreadWorkerMain(
     threadMainImportedState?.complete(instance);
     if (
       hasForkInstrumentation &&
-      threadProcessContinuation &&
+      threadActivationRegistry &&
       threadActivationRegistry &&
       threadTemplateId
     ) {
@@ -7189,7 +7137,7 @@ export async function centralizedThreadWorkerMain(
         );
       }
       threadExceptionProvider = forkExceptionProviderFromInstance(0, instance);
-      threadProcessContinuation.registerActivation(
+      threadActivationRegistry.registerActivation(
         forkActivationRegistrationFromInstance({
           activationId: 0,
           module,
@@ -7197,6 +7145,9 @@ export async function centralizedThreadWorkerMain(
           templateId: threadTemplateId,
           exceptionProvider: threadExceptionProvider,
         }),
+      );
+      threadResumeTable.registerActivation(
+        0,
         forkResumeTargetsFromInstance(module, instance),
       );
       threadForkActivations?.register({
@@ -7212,7 +7163,8 @@ export async function centralizedThreadWorkerMain(
         threadBootstrap();
       } catch (error) {
         threadTableReplication?.abortActiveMutations();
-        threadProcessContinuation.unregisterActivation(0);
+        threadResumeTable.unregisterActivation(0);
+        threadActivationRegistry.unregisterActivation(0);
         threadForkActivations?.forget(0);
         threadExceptionProvider = null;
         throw error;
@@ -7299,7 +7251,7 @@ export async function centralizedThreadWorkerMain(
       );
     }
     let result = 0;
-    if (hasForkInstrumentation && threadProcessContinuation) {
+    if (hasForkInstrumentation && threadActivationRegistry) {
       for (;;) {
         let transportedForkUnwind = false;
         try {
@@ -7431,7 +7383,7 @@ export async function centralizedThreadWorkerMain(
     // import above. Keep normal-return cleanup defensive so an unexpected
     // execution exit cannot strand the process-wide writer lock.
     releasePthreadForkLock();
-    threadProcessContinuation?.clear();
+    threadActivationRegistry?.clear();
     threadExternrefTokens?.clear();
     threadHostImportRuntime?.clear();
 
@@ -7474,7 +7426,7 @@ export async function centralizedThreadWorkerMain(
     threadTableReplication?.abortActiveMutations();
     releasePthreadForkLock();
     try {
-      threadProcessContinuation?.clear();
+      threadForkRegistry?.clear();
     } catch {
       // Preserve the original worker failure after making transaction roots
       // unreachable as far as the coordinator can.

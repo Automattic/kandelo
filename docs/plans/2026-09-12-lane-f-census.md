@@ -131,7 +131,7 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
 | `forkTypeScript` | 672 | 811 | the backend's reduced-surface methods, the seeds, the sides staging |
 | `forkPlatformTypeScript` | 450 | **730** | `fork-phase.ts` (28), `fork-import-identity.ts` (214), `fork-activations.ts` (53) |
-| `workerMainTypeScript` | 5858 | 5821 | net −37; banked down twice, then +6 and +29 (below) |
+| `workerMainTypeScript` | 5858 | 5781 | net −77; banked down three times, with +6 and +29 in between |
 
 The seven entries behind the first row, each with the reason recorded beside its
 number in `docs/surface-budget.json`:
@@ -7769,4 +7769,55 @@ is a coordinator call and the module allocates its own arena when handed root
 `forkActivationRegistrationFromInstance`. The child install waits on the arena,
 because `recordViews()` is how it reads the inherited records today. Four of the
 remaining eight imports come off with this one.
+
+---
+
+## §158 — The first of the nine: the coordinator went without being ported
+
+`fork-process-continuation` is off `worker-main.ts`. **Nine attic imports, eight
+left.** What is worth recording is that nothing about its 1,471 lines was
+rewritten anywhere: it went because its callers went, one at a time, over
+several commits.
+
+| what it did | where it went |
+|---|---|
+| `sealCapture` | `fm_parent_seal_capture`, via the backend |
+| `beginParentReplay` / `beginAbortReplay` | `fm_parent_replay` |
+| `finishReplay` / `finishAbortReplay` | `fm_parent_finish` |
+| `phaseName` | `fm_phase` |
+| `beginModuleCaptureAbort` | `fm_parent_abort_seal` |
+| `abortErrno` | a local, as the process path already carried |
+| `continuationImports` | `ForkResumeTable.table`, which is host floor and already ported |
+| `enableModuleBacking` / `enableModuleReferenceReplay` | flags only it read |
+| `prepareActivation` | the launch-root write, as two plain functions |
+| `registerActivation` / `unregisterActivation` | the registry and the resume table, called directly |
+| `beginCapture` | `fm_parent_begin_capture`, plus the registry's capture session |
+
+**The lesson for the remaining eight.** I spent a long time looking for how to
+PORT this file. There was nothing to port. Every method was either a module call
+with host bookkeeping around it, or bookkeeping for a method nobody called any
+more. The bookkeeping only became visibly dead once the calls around it were
+gone, which is an argument for cutting call sites before reading implementations
+-- the opposite of what census 150 caught me doing.
+
+**A defect this found in my own earlier work.** Commit `aa1ff2f712` ("Give the
+resume table its caller") replaced `processContinuation.registerActivation(
+mainRegistration, targets)` with `resumeTable.registerActivation(0, targets)`.
+The coordinator's version did TWO things: the resume table AND
+`registry.registerActivation(registration)`. Dropping it meant activation 0 was
+never registered with the registry at all, so `bootstrapActivation(0)` would have
+thrown on the first real boot and the capture session's function catalog would
+have been empty. Invisible because nothing in this lane runs. Both paths now
+call the registry directly, beside the resume table.
+
+That is the second defect from splitting one call into its parts without
+checking what else the original did (census 141 was the first). The rule that
+would have caught both: when replacing a call, read the callee's body and account
+for EVERY side effect, not just the one being moved.
+
+**What the thread path gained on the way.** It had no `ForkResumeTable` of its
+own -- the coordinator owned one and handed it out through `continuationImports`
+-- so it now builds one, exactly as the process path has for weeks. And its
+mid-unwind reserve failure now seals and aborts through the module instead of
+`beginModuleCaptureAbort`, which is the same fix the process path got days ago.
 
