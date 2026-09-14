@@ -5140,6 +5140,39 @@ mod tests {
         assert_eq!(rename(b"/opt", b"/opt/sub").unwrap_err(), Errno::EINVAL);
     }
 
+    /// `rename`'s doc comment promises four POSIX guarantees about the
+    /// destination; `rename_moves_and_replaces` asserted one of them (an
+    /// existing regular file is replaced) plus the own-subtree EINVAL. These
+    /// are the other three, each a distinct branch in the implementation, plus
+    /// the case that makes ENOTEMPTY meaningful: a directory MAY replace an
+    /// empty directory.
+    #[test]
+    fn rename_enforces_destination_type_and_emptiness() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        mkdir(b"/opt", 0o755, 0, 0).unwrap();
+
+        // A directory cannot replace a non-directory.
+        assert_eq!(
+            rename(b"/opt", b"/usr/bin/hello").unwrap_err(),
+            Errno::ENOTDIR
+        );
+        // A non-directory cannot replace a directory.
+        assert_eq!(rename(b"/usr/bin/hello", b"/opt").unwrap_err(), Errno::EISDIR);
+
+        // A directory cannot replace a NON-EMPTY directory: `/usr/bin` still
+        // holds `hello`, because both renames above failed.
+        mkdir(b"/src", 0o755, 0, 0).unwrap();
+        assert_eq!(rename(b"/src", b"/usr/bin").unwrap_err(), Errno::ENOTEMPTY);
+
+        // ...but it may replace an empty one, which is what makes the check
+        // above a check on emptiness rather than on being a directory.
+        mkdir(b"/empty", 0o755, 0, 0).unwrap();
+        rename(b"/src", b"/empty").unwrap();
+        assert!(is_dir(b"/empty"));
+        assert_eq!(lstat(b"/src").unwrap_err(), Errno::ENOENT);
+    }
+
     #[test]
     fn hard_link_shares_inode() {
         let _g = TestGuard::acquire();
