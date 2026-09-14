@@ -6839,18 +6839,27 @@ many places in this module do the shape that breaks: `.get` or `.get_mut`
 directly on a `mem_ref()`/`mem_mut()` whole-memory slice. Three:
 
 1. **`begin_capture_impl`'s Module-record write** — committed an hour earlier, by
-   me, in the change that made the module write the arena's activation set. It
-   would have failed `EINVAL` on the first real capture, and the errno would have
-   read as a bad argument rather than as a miscompiled write.
+   me, in the change that made the module write the arena's activation set.
+
+   I wrote here that it "would have failed `EINVAL` on the first real capture".
+   **That was wrong, and section 143's test disproved it**: reintroducing the
+   `mem.get_mut` version and running a real capture through a serviced channel,
+   the write SUCCEEDS. The fold measured in section 140 does not happen in this
+   function's context. The repair is still right — the slice is ill-formed either
+   way and its behaviour is a compiler's choice, not a contract — but the impact
+   claim was mine to check and I did not check it before publishing it.
 2. **`journal_image_from_arena`** — finds the `JournalImage` record and decodes
    it. This is how a COW child seeds its journal.
 3. **`decode_reference_transaction_from_arena`** — builds the reference
    transaction records for replay. This is the child's whole reference graph.
 
-The second and third are not latent. They are the paths `fm_child_seed` and
-`fm_begin_reference_replay` run, which is to say: a fork child's journal seed and
-its reference graph, both reading through a slice that was measured returning
-`None` for an in-bounds range.
+The second and third are on the paths `fm_child_seed` and
+`fm_begin_reference_replay` run — a fork child's journal seed and its reference
+graph. Whether the fold reaches them is, per the correction above, **not
+established**: it was measured in one context and disproved in another, and
+nothing exercises theirs. That is the honest state. What is certain is that all
+three slices are ill-formed, so which way the bounds check goes is a compiler's
+choice rather than something the code decides.
 
 All three now bounds-check against `mem_len_bytes()` and build the slice from
 `black_box(start)` — non-null for any real offset — which is the shape the
@@ -6901,3 +6910,48 @@ it are tested because they are reachable on their own; this branch is not. It is
 recorded here instead, which is the weaker thing, and it is worth noticing that
 the bug existed for one commit in a function whose every path is unreachable from
 the test suite.
+
+## §143 — `begin_capture_impl` is reachable now, and it immediately corrected me
+
+Two defects landed in `begin_capture_impl` in one day, both found by re-reading.
+The reason is structural: opening a capture allocates its arena with `SYS_MMAP`
+over the guest syscall channel, nothing in the suite serviced that, and the
+module BLOCKS rather than failing —
+`crates/fork-module/tests/harness-capture.mjs` says so twice about its own
+unreachable success paths. Every line of the function was unverifiable.
+
+What was missing was small: a **channel responder**. The module publishes a
+request, stores `PENDING` and parks in `memory.atomic.wait32`, so the answer has
+to come from another thread. `host/test/fork-module-capture-drive.test.ts` runs
+one in a worker: bump-allocate for `SYS_MMAP`, accept `SYS_MUNMAP`, refuse
+anything else with `EINVAL` rather than inventing an answer. The drive-table
+slots the capture plan drives (`MODULE_STATE_SAVE`, `UNWIND_BEGIN`) take callable
+stubs from the existing hand-encoded guest double — both are `(i32) -> ()` on
+wasm32, so its recorded-call exports stand in.
+
+That is the whole unlock. A capture now runs end to end in a test.
+
+**It earned its keep before it was committed.** Both of the day's bugs were
+reintroduced to see whether it catches them:
+
+- The **arena-ownership** bug (section 142) — records reserved into an arena the
+  module did not own — **is caught**, by the test that asserts the module builds
+  no arena when the caller supplies a root.
+- The **ill-formed-slice write** (section 141) is **NOT** caught, and that is the
+  more useful result: with `mem.get_mut` restored, the capture SUCCEEDS. The
+  `.get` fold measured in section 140 does not happen in this function's context.
+
+So section 141's claim that the write "would have failed `EINVAL` on the first
+real capture" was wrong, and I only found out because the function became
+testable. The repair stands — an ill-formed slice's behaviour is a compiler's
+choice — but the impact I asserted was not measured before I published it, in a
+note whose whole point was that unverified claims about this defect are cheap to
+make.
+
+**What this does not cover.** The stubs are stand-ins: they record that they were
+called, not that a guest's save walk wrote anything. So the test proves the
+module opens an arena, declares its activation set into one it owns, and drives
+the plan — not that the records are correct. Reading them back needs either a
+record accessor on `fm_module_state_arena` or a real guest, and both are separate
+work. The point of this increment is that the function is no longer a place where
+bugs are found only by rereading.
