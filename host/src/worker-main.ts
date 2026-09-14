@@ -4822,7 +4822,7 @@ export async function centralizedWorkerMain(
           // Registration harvests static roots before bootstrap consumes the
           // converted active segments, and installs the dirty-table owner
           // before the original start can mutate a table.
-          activationRegistry.bootstrapActivation(0);
+          forkActivations.bootstrap(0);
         } catch (error) {
           processTableReplication.abortActiveMutations();
           resumeTable.unregisterActivation(0);

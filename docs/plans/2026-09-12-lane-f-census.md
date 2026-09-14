@@ -130,7 +130,7 @@ All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
 |---|---|---|---|
 | `forkModuleHostEntries` | 49 | 56 | seven entries, listed below |
 | `forkTypeScript` | 672 | 811 | the backend's reduced-surface methods, the seeds, the sides staging |
-| `forkPlatformTypeScript` | 450 | **730** | `fork-phase.ts` (28), `fork-import-identity.ts` (214), `fork-activations.ts` (53) |
+| `forkPlatformTypeScript` | 450 | **752** | `fork-phase.ts` (28), `fork-import-identity.ts` (214), `fork-activations.ts` (75) |
 | `workerMainTypeScript` | 5858 | 5781 | net −77; banked down three times, with +6 and +29 in between |
 
 The seven entries behind the first row, each with the reason recorded beside its

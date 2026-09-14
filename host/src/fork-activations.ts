@@ -22,6 +22,8 @@
  * journal are the module's for the same reason -- see census section 157.
  */
 
+import { WPK_FORK_EXPORT_MODULE_BOOTSTRAP } from "./generated/abi";
+
 /** One live activation. */
 export interface ForkActivation {
   readonly activationId: number;
@@ -43,6 +45,7 @@ export interface ForkActivationDriveSink {
 
 export class ForkActivations {
   private readonly live = new Map<number, ForkActivation>();
+  private readonly bootstrapped = new Set<number>();
 
   constructor(
     private readonly drive: ForkActivationDriveSink,
@@ -85,6 +88,40 @@ export class ForkActivations {
 
   get(activationId: number): ForkActivation | undefined {
     return this.live.get(activationId);
+  }
+
+  /**
+   * Run one activation's module-state bootstrap, once.
+   *
+   * A plain call into the guest, not a drive-table dispatch: bootstrap happens
+   * at instantiation, before any fork exists, so there is no control flow for
+   * the module to own. It converts the activation's active element segments,
+   * which is destructive -- running it twice would consume segments the first
+   * run already took, leaving tables the child cannot rebuild.
+   *
+   * Marked bootstrapped only AFTER the call returns, so a bootstrap that threw
+   * can be retried. That is the registry's order and the reason holds: a guest
+   * that trapped part way has not consumed what it did not reach.
+   */
+  bootstrap(activationId: number): void {
+    const activation = this.live.get(activationId);
+    if (!activation) {
+      throw new Error(`${this.label}: activation ${activationId} is not registered`);
+    }
+    if (this.bootstrapped.has(activationId)) {
+      throw new Error(
+        `${this.label}: activation ${activationId} was bootstrapped twice`,
+      );
+    }
+    const bootstrap = activation.instance.exports[WPK_FORK_EXPORT_MODULE_BOOTSTRAP];
+    if (typeof bootstrap !== "function") {
+      throw new Error(
+        `${this.label}: activation ${activationId} exports no ` +
+          `${WPK_FORK_EXPORT_MODULE_BOOTSTRAP}()`,
+      );
+    }
+    (bootstrap as () => void)();
+    this.bootstrapped.add(activationId);
   }
 
   /**

@@ -22,12 +22,30 @@ function recordingDrive(): { bound: number[]; sink: ForkActivationDriveSink } {
 }
 
 /** An activation with just enough shape to be registered. */
-function activation(activationId: number, fixedPrefixSize = 32): ForkActivation {
+function activation(
+  activationId: number,
+  fixedPrefixSize = 32,
+  exports: Record<string, unknown> = {},
+): ForkActivation {
   return {
     activationId,
     module: {} as WebAssembly.Module,
-    instance: { exports: {} } as unknown as WebAssembly.Instance,
+    instance: { exports } as unknown as WebAssembly.Instance,
     fixedPrefixSize,
+  };
+}
+
+/** An activation whose bootstrap export records that it ran. */
+function bootstrapping(activationId: number): {
+  activation: ForkActivation;
+  runs: () => number;
+} {
+  let runs = 0;
+  return {
+    activation: activation(activationId, 32, {
+      wpk_fork_module_bootstrap: () => void (runs += 1),
+    }),
+    runs: () => runs,
   };
 }
 
@@ -86,5 +104,52 @@ describe("the host's record of live activations", () => {
       { id: 1, fixedPrefix: 24 },
       { id: 4, fixedPrefix: 48 },
     ]);
+  });
+});
+
+describe("running an activation's module-state bootstrap", () => {
+  it("calls the guest export once", () => {
+    const activations = new ForkActivations(recordingDrive().sink, "test");
+    const { activation: a, runs } = bootstrapping(0);
+    activations.register(a);
+    activations.bootstrap(0);
+    expect(runs()).toBe(1);
+  });
+
+  it("refuses a second bootstrap of one activation", () => {
+    // Bootstrap converts the activation's active element segments, which is
+    // destructive: a second run consumes segments the first already took and
+    // leaves tables a child cannot rebuild.
+    const activations = new ForkActivations(recordingDrive().sink, "test");
+    const { activation: a, runs } = bootstrapping(1);
+    activations.register(a);
+    activations.bootstrap(1);
+    expect(() => activations.bootstrap(1)).toThrow(/bootstrapped twice/);
+    expect(runs(), "and the guest was not called again").toBe(1);
+  });
+
+  it("lets a bootstrap that threw be retried", () => {
+    // The registry's order, and the reason holds: a guest that trapped part way
+    // has not consumed what it did not reach, so the run is not spent.
+    const activations = new ForkActivations(recordingDrive().sink, "test");
+    let calls = 0;
+    activations.register(
+      activation(2, 32, {
+        wpk_fork_module_bootstrap: () => {
+          calls += 1;
+          if (calls === 1) throw new Error("guest trapped");
+        },
+      }),
+    );
+    expect(() => activations.bootstrap(2)).toThrow(/guest trapped/);
+    expect(() => activations.bootstrap(2)).not.toThrow();
+    expect(calls).toBe(2);
+  });
+
+  it("refuses an activation it does not have, and one with no such export", () => {
+    const activations = new ForkActivations(recordingDrive().sink, "test");
+    expect(() => activations.bootstrap(9)).toThrow(/not registered/);
+    activations.register(activation(3));
+    expect(() => activations.bootstrap(3)).toThrow(/exports no/);
   });
 });
