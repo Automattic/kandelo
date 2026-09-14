@@ -1706,8 +1706,22 @@ records and the harness has no way to express.
 
 **The evidence is otherwise reproducible rather than asserted.** Every
 perturbation claim elsewhere in this document is a transcript of a run
-somebody has to take on trust; these four specs are a command:
-`cargo xtask perturb docs/perturb/lane-l-*.json`, 10 trials, 0 survived.
+somebody has to take on trust; the specs are a command:
+`cargo xtask perturb docs/perturb/lane-l-*.json`, **20 trials, 0 survived**.
+
+**That count was audited rather than assumed.** Claiming "every guard on this
+branch has been seen to fail" is the kind of sentence this document exists to
+distrust, so every test the branch adds was listed and cross-referenced
+against the trials. All were perturbed — but two rested on a transcript where
+a command was available, and both are now specs: the LAYOUT corpus's pairing
+direction (the range corpus already had one) and the ratchet's counted-path
+guard, where renaming `host/src/process-memory.ts` must fail rather than
+improve the score.
+
+What remains transcript-only is one direction of the corpus pairing, and that
+is a property of the harness rather than a gap: a mutation cannot delete a
+file, and the Rust half reads its corpus twice, so no single anchor expresses
+"stops reading". It is recorded above with the reason.
 
 ## A second candidate standing hazard, learned the hard way
 
