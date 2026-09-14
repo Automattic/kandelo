@@ -2252,7 +2252,31 @@ mod wasm {
         // visible null literal — the same guest-offset-as-pointer reality the
         // kernel relies on, expressed without tripping the null-argument lint.
         let base = core::hint::black_box(0usize) as *mut u8;
-        unsafe { core::slice::from_raw_parts_mut(base, mem_len_bytes()) }
+        // THE SLICE GOES THROUGH `black_box` TOO, and that is load-bearing.
+        //
+        // Hiding only the BASE is not enough. `from_raw_parts` promises a
+        // non-null pointer, wasm offset 0 is genuinely null to the abstract
+        // machine, and wherever the optimiser can trace a slice back to that
+        // construction it takes the promise at face value and folds the bounds
+        // check. Measured from inside the module on a 16 MiB memory, before
+        // this line existed (census section 146):
+        //
+        //   mem_ref().len()                     = 16777216
+        //   mem_ref().get(0..32)                = None
+        //   black_box(mem_ref()).get(0..32)     = Some
+        //
+        // Same slice, same range, same build. The only difference is whether
+        // the provenance is visible at the point of use. That is also why this
+        // looked non-deterministic for a while: reads separated from the
+        // construction by an opaque call or a crate boundary already had the
+        // chain broken for them and worked, and the ones that failed were the
+        // ones the optimiser could see all the way through.
+        //
+        // This is a MITIGATION, not a fix. The construction is still unsound and
+        // a future compiler may see through it. `fork_codec::GuestMemory` is the
+        // sound shape -- per-access slices based at a real offset -- and callers
+        // move to it as they are touched.
+        core::hint::black_box(unsafe { core::slice::from_raw_parts_mut(base, mem_len_bytes()) })
     }
 
     /// An immutable view of the whole guest linear memory. See [`mem_mut`].
@@ -2262,7 +2286,9 @@ mod wasm {
     unsafe fn mem_ref() -> &'static [u8] {
         // See [`mem_mut`] for the opaque-zero base rationale.
         let base = core::hint::black_box(0usize) as *const u8;
-        unsafe { core::slice::from_raw_parts(base, mem_len_bytes()) }
+        // The SLICE goes through `black_box` too, not just the base. See
+        // `mem_mut` for the measurement that made this necessary.
+        core::hint::black_box(unsafe { core::slice::from_raw_parts(base, mem_len_bytes()) })
     }
 
     // -- In-realm channel SYS_MMAP (Option B) --------------------------------

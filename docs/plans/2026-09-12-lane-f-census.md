@@ -7069,3 +7069,53 @@ state and therefore not mine to redefine unilaterally. It is also the one that
 lets the arena move into the module without relocating the hazard, so the answer
 determines whether the cluster cut can proceed cleanly or has to leave the walk
 behind in the host.
+
+## §146 — It was never non-deterministic; I had not found the determinant
+
+Sections 140 through 143 kept saying the miscompilation "folds in one context and
+not another", and section 143 treated that as a fact about the defect. Asked
+whether that was really a fact or just a gap in my understanding, it was the gap.
+
+Seven variations, one build, measured from inside the module on a 16 MiB memory
+at offset 1024 (`1` = the read worked, `0` = folded to `None`):
+
+    1  const range, &[u8]                    0
+    2  dynamic range, &[u8]                  0
+    3  dynamic range, &mut [u8]              0
+    4  length read through black_box first   0
+    5  SLICE passed through black_box        1
+    7  reported length              16777216
+
+The determinant is provenance, not context. Wherever the optimiser can trace the
+slice back to `from_raw_parts(null, len)` it takes the non-null promise at face
+value and folds the bounds check. Break that chain — `black_box` on the slice
+itself, an opaque call, a crate boundary — and the check survives.
+
+That explains every observation I had filed as inconsistent. My probe
+constructed and used the slice adjacently, so it folded.
+`begin_capture_impl` had a channel syscall between the two, so it did not — and
+I concluded from that single pair that "context" mattered, without asking what
+about the context. The cross-crate callers survive for the same accidental
+reason.
+
+**And it makes a two-line mitigation fix every caller at once.** Putting the
+constructed slice through `black_box` inside `mem_ref`/`mem_mut` hides the
+provenance from everything downstream. Re-measured after that change, variations
+1 through 4 all return `1`.
+
+This matters for scope more than for correctness. The question on the table was
+whether to convert 67 signatures across 9 files to a sound per-access shape, and
+the answer was going to be some compromise about which paths matter most. With
+the mitigation there is no urgency: the observable defect is gone everywhere,
+and `GuestMemory` becomes an improvement applied as files are touched rather
+than a sweep.
+
+**It is a mitigation and the comment says so.** `black_box` is an optimisation
+barrier; the construction is still unsound and a future compiler may see through
+it. What changed is that the sound fix no longer has to be done all at once, in
+code with no test that would notice a mistake.
+
+**The lesson is the one the question carried.** "Non-deterministic" was a
+description of my own ignorance that I wrote into four sections as though it were
+a property of the system. Three variations and one rebuild found the cause. I
+should have run them the first time I wanted to use the word.
