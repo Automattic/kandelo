@@ -2755,8 +2755,29 @@ descriptor}`.
   that. They are `SharedFS` identity fields, and the V9 design section explains
   why the protocol they serve does not survive into the kernel-owned path.
 
-**So the remaining work on this seam is a mapping function and four repointed
-construction sites, with no ABI growth beyond the entry point already landed.**
+**CORRECTION, before this is built on.** The paragraph above is right about the
+FILE half and **not established for the ARCHIVE half**, and the difference
+matters because the two were checked to different depths.
+
+`exportLazyArchiveEntries` returns `SerializedLazyArchiveEntry`, which wants
+`kind`, `content`, `inventory`, `activation`, `mountPrefix`, `integrity`,
+`materialized`, and per-entry `isSymlink` / `type` / `target` / `inodeGroup` /
+`deleted`. The module's archive descriptor is
+`JSON.stringify({ url, sha256? })` — **url and digest, nothing else** — and
+`LazyEntryView` carries `path`, `ino`, `size`, `archive_id`, `source_path`,
+`payload`. Several of those fields have no obvious source on the module side.
+
+Some may be recoverable — `mountPrefix` might be derivable from the paths, and
+an archive's symlink members may exist as real symlink inodes rather than
+deferred members, in which case the export reconstructs them from the tree
+rather than from the archive entry. **That is a guess. It has not been
+checked.**
+
+**So the honest statement is: the file half is a mapping; the archive half is
+an open question, and whoever takes it should start by asking where each
+`SerializedLazyArchiveEntry` field comes from once `MemoryFileSystem` is not
+there to remember it.** This lane has repeatedly generalised from the half it
+looked at, and the correction is recorded here rather than discovered later.
 
 **5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
 closes.
