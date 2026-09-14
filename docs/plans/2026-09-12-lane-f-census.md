@@ -6785,13 +6785,27 @@ every existing caller depends on the current behaviour. Changing the base is a
 change to shared infrastructure whose failure mode is silent, on a path I cannot
 execute end to end. So: recorded, not rewritten.
 
-What makes it a decision rather than a footnote is that the surviving callers are
-not correct, only differently shaped. Mine called `.get` on the slice inside the
-same function and got the folded check. The ones that pass, like
-`__wpk_fork_module_state_record_find`, hand the slice across a crate boundary for
-`fork-codec` to index — the same ill-formed slice, indexed somewhere the
-optimiser has not folded it yet. They are not safe; they are not yet
-miscompiled, and nothing stops a future inlining decision from changing that.
+What makes it a decision rather than a footnote is the state of the other
+callers, and I had this wrong twice before checking. First I wrote that they
+"pass their tests today". Then, that they are "not yet miscompiled". Neither is
+supported. **They are untested.** The three host tests that would exercise the
+cross-crate shape —
+`fork-module-decode-scan-restore`, `fork-module-reconstruction` and
+`fork-table-snapshot-roundtrip` — are all in `expected-failures.json`, and
+running the first one shows why: `Cannot find module '../src/fork-module-state'`.
+It never loads. So nothing in this repository currently demonstrates that reading
+guest memory through `mem_ref()` works at all.
+
+That leaves two populations, and neither is "fine":
+
+- **In-module `.get` on the slice: proven broken**, by measurement above.
+- **Slice passed across the crate boundary for `fork-codec` to index: unknown.**
+  Not working, not broken — unexercised, because this lane's own attic imports
+  stop the tests that would say.
+
+The honest summary is that the module's guest-memory access is ill-formed
+everywhere, demonstrated broken where it is reachable, and unverified where it is
+not. That it looks like it works is an artifact of nothing running.
 
 **The shape of a fix, for whoever takes it.** The problem is not the address —
 wasm offset 0 really is valid and addressable. The problem is that "a slice
@@ -6806,4 +6820,6 @@ which changes the `fork-codec` signatures that currently take a whole-memory
 large to do mid-stride and on a path I cannot execute.
 
 The failure mode is the part I would not want to meet later: a silent `None`,
-surfaced as a bad-argument errno, from a read that was in bounds.
+surfaced as a bad-argument errno, from a read that was in bounds. In the child
+install that reads as "no such record" — the same answer section 128 traced to a
+missing root, arrived at by a second, independent route.
