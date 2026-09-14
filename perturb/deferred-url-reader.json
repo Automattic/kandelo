@@ -22,6 +22,13 @@
    "scope_end": "\n}\n",
    "find": "    if (at >= slot.bytes.byteLength) return 0; // end of file",
    "replace": "    if (at >= slot.bytes.byteLength) return EIO;"
+  },
+  {
+   "name": "a lazy FILE read is served by the ARCHIVE half, because the ids collide",
+   "scope": "  const deferredProvider = (",
+   "scope_end": "\n  };\n",
+   "find": "    if (kind === HOST_DEFERRED_KIND_ARCHIVE) {",
+   "replace": "    if (kind === HOST_DEFERRED_KIND_ARCHIVE || kind === HOST_DEFERRED_KIND_FILE) {"
   }
  ]
 }
