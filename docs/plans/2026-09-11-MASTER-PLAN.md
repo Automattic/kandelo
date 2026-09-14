@@ -1427,6 +1427,19 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 ## Known hazards
 
+- **H-22 — a perturb spec whose verify uses a PREBUILT artifact can never
+  fail, and a perturb run leaves the artifact built from its last mutation.**
+  Both halves were hit on 2026-09-14 writing `sffs-module-image-read.json`.
+  The bridge loads `local-binaries/sffs_module32.wasm`, so a spec that mutated
+  `crates/sffs-module/src/lib.rs` and ran only the TypeScript test would have
+  reported three kills that never happened — the mutation could not reach the
+  code under test. **A spec's verify must build whatever it tests.** And once
+  it does, the run reverts the SOURCE but leaves the wasm built from the final
+  mutation, so the next unrelated test run fails against a stale artifact and
+  looks like a real regression. Rebuild after any perturb run whose verify
+  builds.
+
+
 - **The `ABORT_UNWINDING` discipline.** `fm_parent_seal_capture` must not drive
   the guest's `wpk_fork_unwind_end` when a reserve failed mid-unwind — it
   corrupts the state machine. **Two naive attempts trapped or hung.** Inherit
@@ -2339,6 +2352,23 @@ Two consequences for an `SffsImageFs`-backed replacement:
 carries no such question. Building the module-backed adapter is where the
 offset-and-length question has to be answered, and it should be a separate
 increment so the narrowing is not held hostage to it.
+
+**LANDED 2026-09-14 (`c11f0963c`) — `sm_image_read`, ceiling 21 -> 22.** The
+argument below stood, and the implementation turned out cheaper than the
+argument assumed: `image_source` in the module *already* reads the adopted
+container at an arbitrary offset and returns 0 past the end, which is exactly
+the kernel's provider contract. The entry point is a delegation to it, not new
+machinery. `SffsImageFs.imageRead` is the bridge.
+
+The gate was allowed to fail and be read rather than pre-empted
+(*"sffsModuleEntryPoints is 22, above its ceiling of 21"*), the search for an
+export that could go was made and failed again (all 21 have bridge callers),
+and the fold with `sm_export_image_read` was rejected for a sharper reason than
+the `sm_mkdir` precedent: because the export seals cohorts at offset 0, a flag
+choosing between them would decide **whether a read mutates the tree it is
+reading**.
+
+**So item 2 is unblocked and the four construction sites can be repointed.**
 
 **The offset-and-length question is now answered, and the answer is that V9
 needs one entry point here.** Checked rather than assumed:
