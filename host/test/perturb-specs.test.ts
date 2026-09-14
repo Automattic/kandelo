@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -91,6 +92,23 @@ describe("lane L's perturbation specs still cite what they claim", () => {
           // than its reason does.
           const inFlight = perturbRunInFlight();
           if (inFlight !== null && inFlight.includes(spec.file)) {
+            // ...and a marker only earns the skip while it is TRUE. A run
+            // that died leaves the marker behind, and skipping on a stale one
+            // would silence these trials until somebody noticed — a guard
+            // switched off by the very failure it was added for. If the named
+            // file is clean, the run is over and the marker is debris.
+            const dirty = execFileSync(
+              "git",
+              ["status", "--porcelain", "--", spec.file],
+              { cwd: REPO_ROOT, encoding: "utf8" },
+            ).trim();
+            expect(
+              dirty,
+              `.perturb-in-progress names ${spec.file}, but that file is `
+                + "clean — so no run is applying a mutation to it and the "
+                + "marker is stale. Delete it; a stale marker also stops "
+                + "`xtask perturb` from starting at all.",
+            ).not.toBe("");
             context.skip();
             return;
           }
