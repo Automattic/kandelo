@@ -380,13 +380,16 @@ makes that test FAIL. So the regression that actually matters — someone
 restores the barrel and pulls the Node-only subgraph back into the browser
 bundle — is anchored today.
 
-**What is left is therefore a repair, not a design call.** The three
-`native-metadata` trials are simply stale: the defect they mutate is only
-reachable through the barrel, and the barrel edge is already guarded by the
-trial above. They should be retired, or re-pointed at a module still in the
-graph. Retiring them loses nothing that the barrel trial does not already
-cover; keeping them as-is leaves three trials in the corpus that cannot
-fail.
+**RESOLVED 2026-09-14 — maintainer chose to retire them**, and
+`perturb/browser-worker-node-globals.json` is deleted. The defect those three
+mutate is reachable only through the `./vfs` barrel, and the barrel edge is
+already covered by `perturb/browser-worker-node-imports.json` (1 trial, 0
+survived, re-run the same day). Retiring loses nothing that trial does not
+cover; keeping them would have left three trials in the corpus that cannot
+fail, which is what the corpus exists to refuse.
+
+The guard itself, `host/test/browser-worker-node-globals.test.ts`, is
+untouched and still enforced — both surviving specs verify against it.
 
 Note for the merge record: this does not weaken lane Y's browser fixes, both
 of which are real and landed. Its sibling guard
@@ -7048,9 +7051,16 @@ it walks the worker entry's value-import graph and fails on any Node-only global
 evaluated at module load, skipping function bodies and instance-field
 initializers because those do not run at import. It asserts its own graph is
 non-empty and contains a known member, so a resolver that resolved nothing
-cannot pass vacuously. `perturb/browser-worker-node-globals.json`, **3 trials,
-3 killed, 0 survived** — the shipped unguarded read, the `||` spelling, and a
-`typeof` naming a different global than the one used.
+cannot pass vacuously. `perturb/browser-worker-node-globals.json` carried
+**3 trials** — the shipped unguarded read, the `||` spelling, and a `typeof`
+naming a different global than the one used — and they were killed when
+written. **They were RETIRED on 2026-09-14 and the spec is deleted**: the
+lane's own sibling fix `bb17db676` repointed `process-lifecycle.ts` past the
+`./vfs` barrel, which took `platform/native-metadata.ts` out of the browser
+worker's import graph, so all three stopped anchoring and silently survived.
+See B41. The regression that remains reachable — restoring the barrel — is
+covered by `perturb/browser-worker-node-imports.json`, re-run 2026-09-14:
+1 trial, 0 survived.
 
 **Writing those trials found a defect in the guard itself**, which is recorded
 because the trial earned it: the first version treated `&&` and `||` as equally
