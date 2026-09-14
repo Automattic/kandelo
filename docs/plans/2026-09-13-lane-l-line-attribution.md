@@ -2134,11 +2134,19 @@ adjectives makes a reader guess at the shape.
 
 47 commits, 20 files.
 
-**The documentation outweighs the code four to one.** That is defensible for a
-lane whose brief was an attribution — the deliverable was meant to be findings
-— but it is the sort of ratio a reader should be shown rather than left to
-infer. Judge the prose accordingly: if it is not carrying four times the
-weight of the code, it is too long.
+**The documentation outweighs the code and tests roughly two to one** — 2,289
+against 1,201, or 2.7 to 1 against source alone. That is defensible for a lane
+whose brief was an attribution, since findings were the deliverable, but it is
+the sort of ratio a reader should be shown rather than left to infer. Judge
+the prose accordingly: if it is not carrying twice the weight of everything
+else, it is too long.
+
+**The first version of this paragraph said FOUR to one**, which came from
+comparing 2,289 against `crates/host-native`'s 650 alone rather than against
+the total. A ratio computed against one component of its denominator, in the
+section written to stop this document describing itself in adjectives, in the
+commit whose message was "measured rather than recalled". It is the eleventh
+entry in the figures list and the only one caught within the hour.
 
 **The `host-native` figure is larger than "fix sixteen call sites" sounds.**
 It is `KernelLent` and `write_lent`, the stat/statfs chain converted from
