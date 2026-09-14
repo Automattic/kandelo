@@ -2088,6 +2088,73 @@ methods: `fstat`, `lseek`, `ftruncate`, `readAt`, `writeAt`, `append`,
 surface budget's standing question is whether an export can go before one
 comes, and a builder that only ever writes whole files does not need `lseek`.
 
+#### Item 2, read closely — the one place V9 may owe an entry point
+
+**What `imageBodyBytes()` actually promises — read before building the adapter.**
+
+It is not "hand over the bytes". `kernel-worker.ts` documents it as
+KERNEL_IMAGE_WINDOW: a **live view** of the `/` image's SFFS body, *"byte-for-
+byte the image's body section"*, which the kernel reads base-file content out
+of **for the life of the session**, addressing bytes by their offset in the
+container and subtracting `VFS_IMAGE_HEADER_SIZE`. The container itself is
+dropped after load (`#rootfsImage = null`); only this window survives.
+
+Two consequences for an `SffsImageFs`-backed replacement:
+
+1. **The callback shape already fits.** The contract is `() => Uint8Array`,
+   invoked per read, not a buffer captured once. A module-backed adapter can
+   therefore return a **fresh** view over the module's linear memory each call
+   — which is exactly what it must do, because that memory moves when it grows.
+   The bridge already has this discipline: `perturb/bridge.json`'s first trial
+   exists precisely to kill a cached memory view.
+2. **The open question is offset and length.** `MemoryFileSystem` can answer
+   because its body *is* its whole SAB. `SffsImageFs` holds an image inside the
+   module's linear memory, so the adapter needs the body's offset and length
+   there. If the module cannot already answer that, this is the one place in
+   item 2 where an entry point might genuinely have to arrive — and it should
+   be argued on its merits, not smuggled in with the narrowing.
+
+**So sequence item 2 as two steps, not one.** The type narrowing is free and
+carries no such question. Building the module-backed adapter is where the
+offset-and-length question has to be answered, and it should be a separate
+increment so the narrowing is not held hostage to it.
+
+**The offset-and-length question is now answered, and the answer is that V9
+needs one entry point here.** Checked rather than assumed:
+`sm_export_image_read` is **not** a random-access window. Its own doc says
+*"Calling at offset 0 BUILDS the image from the current tree; later offsets
+stream from that build,"* and that a caller *"must not interleave mutations."*
+It is a sequential export stream, and deliberately so — that streaming shape is
+what lets a 249 MiB `lamp.vfs` be emitted without holding 249 MiB.
+
+The kernel's window is the opposite of that: random access, by container
+offset, for the life of the session, against a filesystem that is live. The
+export stream cannot serve it and should not be bent into serving it.
+
+**Why `MemoryFileSystem` can serve it today and the module cannot.** For the
+SAB filesystem the live tree and the image body are *the same bytes*, so
+`imageBodyBytes()` is just a view of the buffer. The module holds its image in
+linear memory with the same property — but has no exit for those bytes except
+the export stream.
+
+**The argument for the entry point, in the form the budget demands.** A
+random-access body read — `sm_body_read(offset, out, len)`, or exposing the
+body's offset and length once so the host can take a fresh view per read —
+buys the deletion of the reason `MemoryFileSystem` is still constructed at
+runtime at all. Today the host keeps an entire second filesystem
+implementation, 8,215 lines wrapping 3,716 more, **so that one callback can
+answer "what byte is at this offset"**. One entry point replaces a whole
+filesystem. That is the opposite of the trade the budget usually refuses, and
+it is the strongest argument for an addition anywhere in this lane.
+
+**The honest counterweight,** which the maintainer should weigh rather than
+have hidden: exposing body offset and length hands the host a raw view into
+module memory, which is a wider capability than a bounded read. `sm_body_read`
+copies and stays bounded, at a cost per read the window makes hot. **The
+bounded read is the one to argue for first**, and only measured evidence of a
+real cost should buy the raw view.
+
+
 **5. Delete `sharedfs-vendor.ts`.** `sffsTypeScript` reaches 0 and the lane
 closes.
 
@@ -5019,6 +5086,46 @@ cannot pass vacuously. `perturb/browser-worker-node-globals.json`, **3 trials,
 because the trial earned it: the first version treated `&&` and `||` as equally
 protective. They are not — `typeof p !== "undefined" || p.x` evaluates `p.x`
 precisely when `p` is undefined. The check is now polarity-aware.
+
+**A SECOND LEAK OF THE SAME FAMILY, found and fixed the same night
+(`bb17db676`).** With the worker booting, the next-largest signature in the
+artifacts was `Module "node:fs" has been externalized for browser
+compatibility` — 44 of them. The browser worker's value-import graph reached
+`vfs/host-fs.ts`, `vfs/default-mounts-node.ts` and `native-positioned-write.ts`,
+each importing `node:fs` and `node:path`.
+
+The cause was one import specifier: `process-lifecycle.ts` took a single
+function, `readPreparedPlatformFile`, from the **`./vfs` barrel**, and the
+barrel re-exports the Node-only filesystem. The function's own module,
+`vfs/vfs.ts`, has a three-module subtree with no Node builtin in it. Taking it
+from there drops all three modules and all six `node:` imports out of the
+browser bundle; the Node entry is unaffected because it imports
+`default-mounts-node` directly.
+
+This one had **not** thrown, which is exactly why it deserves a guard: Vite
+externalizes a Node builtin rather than failing the build, so the module
+evaluates fine and the failure is deferred to whoever first touches an export.
+The guard grew a third assertion — the graph value-imports no Node builtin —
+and `perturb/browser-worker-node-imports.json` kills the restored barrel
+import.
+
+**THE SUITE IS STILL NOT GREEN, AND THE REASON IS NOT YET THIS LANE'S TO
+CLAIM.** Two post-fix runs, both showing `page.goto: net::ERR_ABORTED` and
+120-second navigation timeouts as the dominant signature rather than anything
+resembling the fixed defects. The likely cause is configuration, not code:
+`playwright.config.ts` sets `workers: process.env.CI ? 1 : undefined`, so **CI
+validates this suite serially while a local run fans out to half the machine's
+cores**, each worker booting a whole Kandelo machine against one Vite dev
+server. Before the fix the tests died at worker init in seconds and never
+loaded the server; now they do real work, so the local default parallelism is
+being exercised for the first time. A serial run matching CI is the only
+trustworthy measurement and is what should be reported.
+
+**Do not read the interim numbers as a regression.** 63 passed / ~112 failed
+(first run) and 15/36 partway (second) are not comparable with the 75/103
+baseline, because in the baseline almost every test failed instantly. The one
+comparison that is sound: `ReferenceError: process is not defined` went from
+**88 artifacts to 0**.
 
 **The ownership lesson, which is the part worth keeping.** This defect blocked
 every browser claim on the branch for two lanes that each correctly proved it
