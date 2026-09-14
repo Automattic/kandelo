@@ -6616,3 +6616,51 @@ separate code), `release` (RELEASE), `hasActiveArena` and `rootAddress` (ROOT).
 `decodeSegmentedForkReferenceTransaction`, which the module's own
 `fm_decode_reference_graph` replaces, and the remaining readers of
 `decodedChildReferences` are themselves attic.
+
+## §138 — `crates/host-native` is a template for the lifecycle, not for the arena
+
+Section 131 said the JS host "is not missing an implementation, it is missing the
+CALLS, and there is a reference implementation of every one of them to read."
+That is true of the fork lifecycle and false of the arena, which is the hard
+part. Correcting it here because 131 is the map the rest of this lane is being
+planned against.
+
+Reading the native driver, the lifecycle really is a template, and a short one:
+
+    match coord.phase() {
+      Idle      => { reset; set_mode; fm_parent_begin_capture(ch, root, 0, 0);
+                     check fm_last_errno; set_root }
+      Replaying => { fm_parent_finish(abort); check errno; set_phase(Idle) }
+    }
+
+Coarse calls, an errno check after each, a two-state coordinator. That shape is
+worth copying exactly.
+
+**The arena is not there to copy.** The root native passes is
+`fm.empty_module_state_root`, and it is not an arena the module built — it is a
+fixed, page-aligned scratch address the native host allocates once per worker
+and REUSES for every fork, writing this fork's graph into it host-side via
+`write_module_state_arena` and `fork_codec::ReferenceSegmentsWriter`. Its own
+doc says why that is sufficient: "native never has two forks' capture passes
+live at once on one guest OS thread."
+
+So native has no arena lifecycle at all. No allocation through the module, no
+chunk list, no growth, no adopt, no release — one page, rewritten per fork. It
+can do that because its guests produce a tiny graph and it controls the
+concurrency. The JS host has none of those freedoms: dlopen forks are
+multi-activation, imported globals and tables write real records, and the guest
+writes KFMS records through the module's own reserve import rather than through
+anything the host can pre-place.
+
+**Two things follow.**
+
+The budget's grounding note for `forkTypeScript` — host-native "does the same
+work in 142 code lines" — is comparing different work. The lifecycle half is a
+fair comparison. The arena half is not work native does at all.
+
+And the arena port has NO reference implementation. Every other call in section
+131's list of twenty can be written by reading how native issues it; the seven
+arena methods cannot. They have to be designed against the module's own
+`ModuleStateWriter` and `ForkChunkList` semantics, which is what sections 132,
+133 and 137 have been doing, and why that work has been slower per line than the
+rest of the lane. That is the expected cost, not a sign of going wrong.
