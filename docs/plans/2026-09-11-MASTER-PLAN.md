@@ -1810,6 +1810,50 @@ is correct only for images it produced itself.
 * **V10 — delete `sharedfs-vendor.ts`**, at which point `sffsTypeScript`
   reaches 0.
 
+### THE "KEEP memory-fs.ts" PREMISE IS WRONG — re-derived 2026-09-14 on the maintainer's challenge
+
+This plan has carried, since the 2026-09-12 scoping read, that **V9 does not
+delete `memory-fs.ts`** — that only ~39 of its lines touch `SharedFS` and "the
+rest is lazy-file bookkeeping, image metadata, overlay handling and
+serialization — logic of its own." The observation is true. **The inference is
+the exact mistake `not-deleted-does-not-mean-host` names: "logic of its own" is
+not "logic that must be host code."** The maintainer asked why any of it is
+being kept, and the answer is that nobody re-derived it; it was inherited.
+
+**Measured.** `MemoryFileSystem` has **74 methods**. Classified by whether the
+*host* must own them:
+
+| group | count | verdict |
+|---|---|---|
+| network transport, URL rewriting, abort, download progress | **4–5** | genuinely host — the network lives there |
+| lazy bookkeeping, seals, archive registration | 24 | filesystem state the kernel owns |
+| filesystem + image operations | 46 | the format, implemented twice already |
+
+The irreducible floor is roughly: **hold a fetcher, rewrite URLs the kernel
+never parses, honour an abort signal, publish download progress, and validate a
+digest at the fetch boundary.** That is a *transport* — a small object — not an
+8,215-line filesystem. `rewriteLazyFileUrls` and `rewriteLazyArchiveUrls` are
+host-side precisely because of the courier contract: the URL lives in host JSON
+the kernel never reads.
+
+**So the target is both files, not one.** `memory-fs.ts` (8,215) and
+`sharedfs-vendor.ts` (3,716) — **~11,900 lines**, against the ~3,700 this plan
+has been quoting.
+
+**And it supersedes the decision this lane put to the maintainer.** The question
+was whether `memory-fs`'s full `FileSystemBackend` API survives (about ten entry
+points serving methods no production code calls) or shrinks (two). If the class
+goes, neither: the question becomes what the **builders** need from the module,
+which the item-4 census already answered — 26 methods, most already covered,
+about two genuinely new. **The ten-entry-point branch existed only to keep a
+class that should not be kept.**
+
+**What still has to be checked before deleting, rather than assumed.** Each of
+the 24 lazy-bookkeeping methods needs the same question asked individually —
+`verifyImportedLazyAtomicGroupSeals` in particular, because the courier contract
+puts digest validation at the fetch boundary, which is host-side. The claim here
+is that the floor is *small*, not that it is empty.
+
 V6, V7, V8 and V-D1 are done or closed.
 
 ## Increments
