@@ -1941,8 +1941,27 @@ number than this plan handed the maintainer, and it is recorded here rather
 than softened. What makes it tractable rather than prohibitive is that nearly
 all of them construct a `MemoryFileSystem` as a convenient in-memory fixture,
 so if the replacement offers an equivalent constructor most are a mechanical
-repoint. **That "most" is an expectation, not a measurement, and should be
-sampled before anyone plans around it.**
+repoint. **That "most" was an expectation when first written; it has since
+been measured:**
+
+| of the 87 constructing files | count |
+|---|---|
+| plain construction only — mechanical repoint | **71** |
+| touching the SAB, identity state, or `SharedFS` directly — real rewrites | **16** |
+
+The 16 are the ones a reader would predict: `sharedfs-safety`,
+`sharedfs-positioned-io`, `sharedfs-uid-gid`, `vfs-image`, `vfs`, the four
+`lazy-*` suites, `rootfs-image-body-window`, `rootfs-image-tree-parity`,
+`default-mounts`.
+
+**The constructors the replacement must offer**, by use: `create` 80,
+`fromImage` 17, `fromExisting` 12, `fromImagePreservingCapacity` 5.
+**`fromExisting` is the one with no analogue after the deletion** — it mounts a
+second view of the *same* SharedArrayBuffer, which is how these tests build a
+"peer". With no shared buffer there is nothing to mount twice, so those 12 uses
+need a different way to express a concurrent peer. That is the same work the
+V9 design section reached from the other direction, and it is the honest core
+of the 16.
 
 **The lesson for the rest of this lane's censuses:** a caller census on a class
 whose methods are also an interface must count interface dispatch, or it is
