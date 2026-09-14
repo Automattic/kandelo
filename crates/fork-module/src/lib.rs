@@ -149,8 +149,8 @@ mod wasm {
     use fork_codec::{
         decode_journal_image, decode_module_state, decode_replay_events_image,
         decode_segmented_reference_transaction,
-        drive_plan, encode_replay_events, AggregateKind, ChunkAllocator, GcProvenance,
-        LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
+        drive_plan, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
+        GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
         ModuleStateWriter, ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent,
         ReplayEventJournal, ResumeSlotTable, RewindDriver, SegmentedReferenceTransaction,
@@ -596,6 +596,94 @@ mod wasm {
     static ACT_FUNC_CATALOG_BASE: ActFuncCatalogBase =
         ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
     static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    // -- Per-activation module template ids ---------------------------------
+    //
+    // The 32-byte template id identifying the Wasm module behind an activation.
+    // It is a hash of the module BYTES, which only the host holds, so it is
+    // seeded rather than computed here -- the same shape as the catalog bases
+    // above and for the same reason.
+    //
+    // The module needs it because the `Module` record it writes into the KFMS
+    // arena carries it, and that record IS the arena's activation set: the
+    // child-install path filters the arena on kind 1 to decide which
+    // activations to drive. An arena built without them installs nothing.
+    const TEMPLATE_ID_MAX_ACTS: usize = 64;
+    const TEMPLATE_ID_BYTES: usize =
+        abi::WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE as usize;
+
+    #[repr(C, align(4))]
+    struct ActTemplateIds(UnsafeCell<[(u32, [u8; TEMPLATE_ID_BYTES]); TEMPLATE_ID_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActTemplateIds {}
+    /// Each live entry is `(activation_id, template_id)`; only the first
+    /// `ACT_TEMPLATE_ID_COUNT` entries are live.
+    static ACT_TEMPLATE_IDS: ActTemplateIds =
+        ActTemplateIds(UnsafeCell::new([(0u32, [0u8; TEMPLATE_ID_BYTES]); TEMPLATE_ID_MAX_ACTS]));
+    static ACT_TEMPLATE_ID_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// Seed one activation's module template id, read from `ptr` in guest memory.
+    ///
+    /// Once per activation per worker. A re-seed is refused rather than
+    /// overwriting: the id identifies the module behind the activation, so a
+    /// second different value means the host has confused two activations, and
+    /// silently taking the last one would put the wrong module in the arena's
+    /// activation set.
+    fn set_activation_template_id_impl(activation_id: u32, ptr: u64) -> Result<(), Errno> {
+        // Bounded and read the way every other host-supplied-pointer seed here
+        // does it (`set_activation_gc_codec_impl`): check the range against
+        // guest memory, then build the slice from the raw address. Reading
+        // through `mem_ref()`'s whole-memory slice is NOT equivalent in this
+        // module -- the same range that passes this check comes back `None`
+        // from that slice -- so the established pattern is the one to follow.
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(TEMPLATE_ID_BYTES).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // template id runs past the end of memory
+        }
+        // SAFETY: `[start, end)` is inside guest linear memory (checked above).
+        let bytes: &[u8] =
+            unsafe { core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, TEMPLATE_ID_BYTES) };
+        let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &mut *ACT_TEMPLATE_IDS.0.get() };
+        for entry in table.iter().take(count) {
+            if entry.0 == activation_id {
+                return Err(Errno::EINVAL);
+            }
+        }
+        if count >= TEMPLATE_ID_MAX_ACTS {
+            return Err(Errno::E2BIG);
+        }
+        table[count].0 = activation_id;
+        table[count].1.copy_from_slice(bytes);
+        ACT_TEMPLATE_ID_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// This activation's seeded template id, or `None` if the host never seeded one.
+    fn activation_template_id(activation_id: u32) -> Option<[u8; TEMPLATE_ID_BYTES]> {
+        let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*ACT_TEMPLATE_IDS.0.get() };
+        table
+            .iter()
+            .take(count)
+            .find(|entry| entry.0 == activation_id)
+            .map(|entry| entry.1)
+    }
+
+    /// Seed one activation's module template id (32 bytes at `ptr`).
+    ///
+    /// `EINVAL` for an out-of-range pointer or a re-seed, `E2BIG` past
+    /// `TEMPLATE_ID_MAX_ACTS`; check `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_template_id(activation_id: u32, ptr: usize) {
+        match set_activation_template_id_impl(activation_id, ptr as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
 
     // -- Table sparse-state ownership ---------------------------------------
     //
@@ -2835,6 +2923,51 @@ mod wasm {
                 .map(|(id, act)| (*id, act.module_buffer))
                 .collect()
         };
+        // Declare the activation set into the arena before anything writes to
+        // it. One `Module` record per activation, carrying the template id the
+        // host seeded -- and the arena has no activation set without them: the
+        // child-install path filters the arena on this record kind to decide
+        // which activations to drive, so an arena missing them installs nothing
+        // rather than failing. This replaces the JS registry's
+        // `arena.appendModule({ activationId, templateId })` loop, which ran at
+        // exactly this point and for the same reason.
+        //
+        // A host that seeded no template id for an activation is a host bug, not
+        // an activation without a module, so it is `EINVAL` rather than a record
+        // with a zero id.
+        {
+            let ids: Vec<u32> = {
+                let st = state().as_ref().ok_or(Errno::EINVAL)?;
+                st.activations.keys().copied().collect()
+            };
+            let payload_size =
+                u64::from(abi::WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE);
+            for id in ids {
+                let template_id = activation_template_id(id).ok_or(Errno::EINVAL)?;
+                let st = state().as_mut().ok_or(Errno::EINVAL)?;
+                let mem = unsafe { mem_mut() };
+                let ForkModule { module_state, module_state_chunks, .. } = st;
+                let payload = module_state.reserve(
+                    module_state_chunks,
+                    mem,
+                    abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE,
+                    id,
+                    0,
+                    payload_size,
+                )?;
+                let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+                let end = start
+                    .checked_add(payload_size as usize)
+                    .ok_or(Errno::EINVAL)?;
+                let out = mem.get_mut(start..end).ok_or(Errno::EINVAL)?;
+                encode_module_record(
+                    out,
+                    &fork_codec::ModuleDescriptor { template_id, flags: 0 },
+                )?;
+                module_state.commit(mem, payload)?;
+            }
+        }
+
         let mut steps = Vec::new();
         // The CAPTURE-side guest save walk, driven before any unwind begins.
         //

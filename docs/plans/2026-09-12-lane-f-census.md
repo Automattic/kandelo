@@ -6707,3 +6707,43 @@ JavaScript import values at `WebAssembly.Instance` boundaries. Its records have
 to reach the arena through the module's reserve/commit imports rather than a
 host-side arena writer, which is a separate piece and the one that decides
 whether the host needs an arena object at all.
+
+## §140 — `mem_ref()` and an explicit bounds check are not interchangeable
+
+Building section 139's template-id seed, the first version read its 32 bytes the
+obvious way:
+
+    let mem = unsafe { mem_ref() };
+    let bytes = mem.get(start..start + TEMPLATE_ID_BYTES).ok_or(Errno::EINVAL)?;
+
+It returned `None` for `start = 1024` in a 16 MiB memory. Every call failed,
+including the first one on a fresh module, so it was not the re-seed guard.
+Making the two error paths answer different errnos identified the read as the
+culprit rather than leaving it to inference.
+
+The fix was to follow what every other host-supplied-pointer seed in this module
+already does — `set_activation_gc_codec_impl` is the model:
+
+    let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+    if end > mem_len_bytes() { return Err(Errno::EINVAL); }
+    let bytes = unsafe {
+        core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, len)
+    };
+
+With that, the same range passes and the tests go green.
+
+**What is established and what is not.** Established: the range is in bounds —
+the explicit check against `mem_len_bytes()` passes for exactly the range
+`mem_ref().get(..)` refused, so `mem_len_bytes()` is not the problem. Not
+established: why the slice built at a `black_box(0)` base answers `None` for an
+in-bounds range. It smells like the whole-memory slice being mis-optimised, but I
+did not chase it, and this note deliberately does not claim a cause.
+
+**Worth someone's attention, because it is not local to my change.** `mem_ref()`
+has other callers, and one of them is
+`__wpk_fork_module_state_record_find`, which does exactly the shape that failed
+here — takes the whole-memory slice and indexes into it. Those paths pass their
+tests today, so whatever the mechanism is, it is not unconditional. But "reads
+guest memory through `mem_ref()` and is only exercised in some configurations"
+describes several entries here, and the failure mode is a silent `None` treated
+as a bad argument rather than anything that looks like a memory bug.
