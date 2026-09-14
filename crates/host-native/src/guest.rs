@@ -14308,7 +14308,7 @@ mod fork_module_tests {
         };
 
         let engine = crate::kernel_engine()?;
-        let guest_wasm = include_bytes!("../fixtures/native_hello.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_hello.wasm");
         let guest_module = Module::new(&engine, guest_wasm)?;
         let (guest_mem, layout) = compute_guest_memory(&engine, &guest_module, guest_wasm)?;
 

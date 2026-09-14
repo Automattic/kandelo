@@ -2921,8 +2921,17 @@ the capacity invariant's test was shown failing before it was shown passing.
 - **L-D1 — CLOSED 2026-09-13** by L5 above. `KernelScratch` carries capacity
   beside pointer, all eleven allocation sites go through it, and a contract test
   keeps it that way.
-- **L-D4 — OPEN, needs a decision. The native host never reads a guest's
-  `__abi_version`, and `fixtures/README.md` claimed it did.** The marker is
+- **Committed test binaries — GONE 2026-09-14.** All 43 guest fixtures under
+  `crates/host-native/fixtures/` were force-added past `.gitignore`'s blanket
+  `*.wasm`. They are now built from tracked sources by `build-fixtures.sh`,
+  which the tests run themselves when an artifact is missing or stale. The
+  cycle that justified the exception was `include_bytes!` itself, and runtime
+  loading dissolves it. Proven by deleting every artifact: the suite rebuilt
+  all 43 and passed 73 tests. One committed test binary remains in the
+  campaign, `crates/fork-codec/testdata/gc-codec-wasm32.bin`, which belongs to
+  another crate.
+- **L-D4 — the epoch half CLOSED, the import half OPEN. The native host read
+  no guest `__abi_version`, and `fixtures/README.md` claimed it did.** The marker is
   compared for the KERNEL only; nothing reads a guest's. Shown by running:
   renaming the export out of a fixture leaves its smoke test passing, while
   flipping one byte of the same fixture's code makes it fail. The peer host

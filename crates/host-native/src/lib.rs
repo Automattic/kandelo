@@ -32,6 +32,9 @@ use wasmtime::{Config, Engine, ExternType, Linker, MemoryType, Module, SharedMem
 /// Increment 2: boot the kernel and run a trivial guest through the real
 /// channel. See [`guest::run_trivial_guest`].
 pub mod guest;
+
+#[cfg(test)]
+pub(crate) mod fixtures;
 pub use guest::{run_guest, run_trivial_guest, GuestOptions, NativeMount, RunOutcome};
 
 // H3 (host-surface minimization, 2026-09-06): `mod fork_host_capabilities`
@@ -781,7 +784,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork_from_thread.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork_from_thread.wasm");
         let options = guest::GuestOptions { enable_fork_module: false, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
         assert_eq!(
@@ -854,14 +857,17 @@ mod tests {
         }
     }
 
-    /// Every committed guest fixture declares the ABI this host expects.
+    /// Every built guest fixture declares the ABI this host expects.
     ///
-    /// This is the half of L-D4 that can be closed without changing what the
-    /// host will launch. The native host does NOT read a guest's
-    /// `__abi_version` at load -- only the kernel's -- so an ABI bump made
-    /// without rebuilding `fixtures/` leaves 43 binaries silently claiming the
-    /// previous epoch, and the first thing to notice would be a test failing
-    /// for some unrelated-looking reason. Here it fails by name.
+    /// An ABI bump that the fixture sources do not follow would leave 43
+    /// artifacts claiming the previous epoch, and the first thing to notice
+    /// would be a test failing for some unrelated-looking reason. Here it
+    /// fails by name.
+    ///
+    /// This mattered more when they were committed binaries that nothing
+    /// rebuilt. They are built from source now, so the window is smaller --
+    /// but `EXPECTED_ABI_VERSION` and the sources are still two places, and
+    /// this is what compares them.
     ///
     /// It reads through `wasm_artifact::read_abi_version`, the same reader the
     /// kernel-provenance report uses, rather than a second parser written for
@@ -872,7 +878,12 @@ mod tests {
     /// path, a renamed directory -- so the floor makes an empty walk a failure
     /// instead of a pass.
     #[test]
-    fn every_committed_fixture_declares_the_abi_this_host_expects() {
+    fn every_built_fixture_declares_the_abi_this_host_expects() {
+        // The artifacts are built, not committed, so this walk has to ask for
+        // them first. Without it the directory can be empty and the floor
+        // below reports "0 fixture(s) found" -- which is the floor working,
+        // but for a reason that is this test's own fault.
+        crate::fixtures::provision();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
         let mut checked = 0usize;
         let mut wrong: Vec<String> = Vec::new();
@@ -1094,7 +1105,7 @@ mod tests {
             ),
         )?;
 
-        let guest = include_bytes!("../fixtures/native_hello.wasm");
+        let guest = crate::fixtures::fixture("native_hello.wasm");
         let error = run_trivial_guest(&stale, guest)
             .expect_err("a kernel missing a bound export cannot run a guest");
         let rendered = format!("{error:?}");
@@ -1180,7 +1191,7 @@ mod tests {
         };
         // The committed fixture is built through the SDK exactly like
         // scripts/build-programs.sh (see fixtures/README.md).
-        let guest = include_bytes!("../fixtures/native_hello.wasm");
+        let guest = crate::fixtures::fixture("native_hello.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1227,7 +1238,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_uname.wasm");
+        let guest = crate::fixtures::fixture("native_uname.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1272,7 +1283,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_pipe.wasm");
+        let guest = crate::fixtures::fixture("native_pipe.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1318,7 +1329,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_poll.wasm");
+        let guest = crate::fixtures::fixture("native_poll.wasm");
 
         let start = Instant::now();
         let outcome = run_trivial_guest(&path, guest)?;
@@ -1356,7 +1367,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_stdin.wasm");
+        let guest = crate::fixtures::fixture("native_stdin.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1385,7 +1396,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_thread.wasm");
+        let guest = crate::fixtures::fixture("native_thread.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1444,7 +1455,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_thread_churn.wasm");
+        let guest = crate::fixtures::fixture("native_thread_churn.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1488,7 +1499,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_thread_concurrency.wasm");
+        let guest = crate::fixtures::fixture("native_thread_concurrency.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1520,7 +1531,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_vfs.wasm");
+        let guest = crate::fixtures::fixture("native_vfs.wasm");
 
         let options = guest::GuestOptions {
             argv: vec!["prog".to_string(), "hello".to_string()],
@@ -1560,7 +1571,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_base_read.wasm");
+        let guest = crate::fixtures::fixture("native_base_read.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -1599,7 +1610,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_mount.wasm");
+        let guest = crate::fixtures::fixture("native_mount.wasm");
 
         let host_dir = std::env::temp_dir().join(format!(
             "kandelo-host-native-mount-{}-{}",
@@ -1659,7 +1670,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_host_metadata.wasm");
+        let guest = crate::fixtures::fixture("native_host_metadata.wasm");
 
         let host_dir = std::env::temp_dir().join(format!(
             "kandelo-host-native-metadata-{}-{}",
@@ -1720,7 +1731,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_mount.wasm");
+        let guest = crate::fixtures::fixture("native_mount.wasm");
 
         let host_dir = std::env::temp_dir().join(format!(
             "kandelo-host-native-mount-noncanon-{}-{}",
@@ -1780,7 +1791,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let guest = include_bytes!("../fixtures/native_epoll.wasm");
+        let guest = crate::fixtures::fixture("native_epoll.wasm");
 
         let outcome = run_trivial_guest(&path, guest)?;
 
@@ -1828,8 +1839,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
-        let child = include_bytes!("../fixtures/native_spawn_child.wasm");
+        let parent = crate::fixtures::fixture("native_spawn_parent.wasm");
+        let child = crate::fixtures::fixture("native_spawn_child.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -1872,8 +1883,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
-        let child = include_bytes!("../fixtures/native_spawn_child.wasm");
+        let parent = crate::fixtures::fixture("native_spawn_parent.wasm");
+        let child = crate::fixtures::fixture("native_spawn_child.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -1919,8 +1930,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
-        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
+        let target = crate::fixtures::fixture("native_exec_target.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -1999,8 +2010,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
-        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
+        let target = crate::fixtures::fixture("native_exec_target.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2065,8 +2076,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_execveat.wasm");
-        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+        let parent = crate::fixtures::fixture("native_execveat.wasm");
+        let target = crate::fixtures::fixture("native_exec_target.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2108,7 +2119,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
+        let parent = crate::fixtures::fixture("native_spawn_parent.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2153,7 +2164,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
+        let parent = crate::fixtures::fixture("native_spawn_parent.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2209,7 +2220,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
+        let parent = crate::fixtures::fixture("native_spawn_parent.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2264,7 +2275,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2311,7 +2322,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2368,7 +2379,7 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2433,8 +2444,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
-        let interp = include_bytes!("../fixtures/native_interp.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
+        let interp = crate::fixtures::fixture("native_interp.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2505,8 +2516,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_spawn_parent.wasm");
-        let interp = include_bytes!("../fixtures/native_interp.wasm");
+        let parent = crate::fixtures::fixture("native_spawn_parent.wasm");
+        let interp = crate::fixtures::fixture("native_interp.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2587,8 +2598,8 @@ mod tests {
         let Some(path) = kernel_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_exec_parent.wasm");
-        let interp = include_bytes!("../fixtures/native_interp.wasm");
+        let parent = crate::fixtures::fixture("native_exec_parent.wasm");
+        let interp = crate::fixtures::fixture("native_interp.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -2718,7 +2729,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -2881,7 +2892,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork_from_thread.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork_from_thread.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -2973,7 +2984,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_vfork.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_vfork.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3039,8 +3050,8 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let parent = include_bytes!("../fixtures/native_vfork_exec.instrumented.wasm");
-        let target = include_bytes!("../fixtures/native_exec_target.wasm");
+        let parent = crate::fixtures::fixture("native_vfork_exec.instrumented.wasm");
+        let target = crate::fixtures::fixture("native_exec_target.wasm");
 
         let base_image = guest::build_base_image(&[
             guest::BaseEntrySpec::dir("/", 1, 0o755),
@@ -3104,7 +3115,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3225,7 +3236,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork_refs.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork_refs.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3282,7 +3293,7 @@ mod tests {
             return Ok(());
         };
         let guest_wasm =
-            include_bytes!("../fixtures/native_fork_externref_gate_indirect.instrumented.wasm");
+            crate::fixtures::fixture("native_fork_externref_gate_indirect.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let started = std::time::Instant::now();
@@ -3373,7 +3384,7 @@ mod tests {
             return Ok(());
         };
         let guest_wasm =
-            include_bytes!("../fixtures/native_fork_externref_reconstruct.instrumented.wasm");
+            crate::fixtures::fixture("native_fork_externref_reconstruct.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3432,7 +3443,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork_gc_struct_cycle.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork_gc_struct_cycle.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3491,7 +3502,7 @@ mod tests {
             return Ok(());
         };
         let guest_wasm =
-            include_bytes!("../fixtures/native_fork_gc_two_object_cycle.instrumented.wasm");
+            crate::fixtures::fixture("native_fork_gc_two_object_cycle.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3550,7 +3561,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork_gc_array_cycle.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork_gc_array_cycle.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3612,7 +3623,7 @@ mod tests {
         let Some(_fork_module_path) = fork_module_path_or_skip() else {
             return Ok(());
         };
-        let guest_wasm = include_bytes!("../fixtures/native_fork_gc_static_root.instrumented.wasm");
+        let guest_wasm = crate::fixtures::fixture("native_fork_gc_static_root.instrumented.wasm");
 
         let options = guest::GuestOptions { enable_fork_module: true, ..Default::default() };
         let outcome = guest::run_guest(&path, guest_wasm, &options)?;
@@ -3775,8 +3786,8 @@ mod tests {
     /// difference between two hand-maintained programs.
     fn run_process_layout_fixture(path: &Path, pointer_width: u8) -> anyhow::Result<RunOutcome> {
         let guest: &[u8] = match pointer_width {
-            4 => include_bytes!("../fixtures/native_process_layout.wasm"),
-            8 => include_bytes!("../fixtures/native_process_layout.wasm64.wasm"),
+            4 => crate::fixtures::fixture("native_process_layout.wasm"),
+            8 => crate::fixtures::fixture("native_process_layout.wasm64.wasm"),
             other => anyhow::bail!("no process-layout fixture for pointer width {other}"),
         };
         run_trivial_guest(path, guest)

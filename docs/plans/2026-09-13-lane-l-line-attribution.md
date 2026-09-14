@@ -1272,9 +1272,30 @@ That comparison was perturbed before being believed. Flipping one byte inside
 a rebuilt `IMPORT` section makes it report `IMPORT` and flips the verdict;
 restoring the byte flips it back.
 
-They are still not committed. Rebuilding is 23 binary files and belongs to
-whoever owns the fixtures, not to this lane. **What changed is that the
-question is answered, so the decision is now an ordinary one.**
+**RESOLVED 2026-09-14, and not by rebuilding them.** The maintainer's answer
+to "why are we committing things that grow stale" was that the repository
+tries not to, and the campaign should not land with committed test binaries.
+So all 43 stopped being committed.
+
+`build-fixtures.sh` now covers all three arms — the C fixtures through the
+SDK, the hand-written WAT through `wasm-tools parse`, the fork-instrumented
+variants through the real production instrumenter — and `crates/host-native/
+src/fixtures.rs` runs it from the tests when an artifact is missing or older
+than its sources, the sysroot, or the channel glue.
+
+**The cycle that justified committing them dissolved rather than being
+solved.** The stated reason was that the generators for the WAT fixtures live
+in the crate `include_bytes!` would not compile without them. `include_bytes!`
+is the whole cycle: loading at RUNTIME means the crate compiles whether or not
+an artifact exists. Fifty-four call sites moved; one stayed, because
+`crates/fork-codec/testdata/gc-codec-wasm32.bin` belongs to another crate.
+
+Verified by deleting every `.wasm` in the directory and running the suite: it
+rebuilt all 43 and passed 73 tests. The freshness check was perturbed in both
+directions — a second run skips the build, and touching one `.c` source makes
+it rebuild. The README's WAT recipe was wrong too, and is corrected: it named
+WABT's `wat2wasm`, which cannot assemble the four GC fixtures even with
+`--enable-all`.
 
 ### L-D4 — the native host never reads a guest's `__abi_version`
 

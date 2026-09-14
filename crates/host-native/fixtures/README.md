@@ -1,5 +1,44 @@
 # host-native test fixtures
 
+**These are built, not committed.** Every `.wasm` here is produced from a
+tracked source by `build-fixtures.sh`, and `cargo test -p host-native` runs
+that script itself when an artifact is missing or older than what it is built
+from (`../src/fixtures.rs`). Nothing under this directory is in git except
+sources, this file, and the script.
+
+That is the repository's rule, stated in `.gitignore` beside the blanket
+`*.wasm`: "Wasm binaries are build artifacts... Nothing tracked under git",
+and "test fixtures under `host/test/fixtures/` are produced by the vitest
+global-setup from `.wat` sources". This directory is now the Rust side of the
+same arrangement.
+
+Until 2026-09-14 the 43 artifacts here were force-added past that rule. Two
+reasons were given and only one held. The weaker was convenience: they were
+checked in "so the test needs only a built `kernel.wasm`, not a full
+guest-program build". The stronger was a real cycle -- the generators that
+rebuild the hand-written WAT fixtures live in the crate that `include_bytes!`
+would not compile without them. **Loading at runtime dissolves that cycle**,
+because the crate compiles whether or not an artifact exists.
+
+What the exception cost was silent staleness. Nothing rebuilt these when libc
+changed, and for months nothing checked them at load either (L-D4); 23 of them
+were measurably stale, carrying dead glue from deletions since they were
+linked. Building them from source is what makes that impossible rather than
+merely unlikely.
+
+To rebuild them by hand -- the tests do this for you:
+
+```sh
+SYSROOT="$PWD/sysroot" SYSROOT64="$PWD/sysroot64" scripts/dev-shell.sh \
+  bash crates/host-native/fixtures/build-fixtures.sh
+```
+
+One script covers all three arms: the C fixtures through the SDK, the
+hand-written WAT through `wasm-tools parse`, and the fork-instrumented
+variants through the real production instrumenter. The per-fixture recipes
+below record what each arm does and why; they are no longer steps anyone has
+to run in order.
+
 ## `native_hello.wasm`
 
 The trivial guest the native Wasmtime host runs end-to-end in
@@ -202,11 +241,12 @@ documented, pre-existing "no module-state capture mechanism yet" gap — see
 Regenerate from within the dev shell:
 
 ```sh
-# 1. Assemble the hand-written WAT (WABT's wat2wasm, not the SDK's clang):
+# 1. Assemble the hand-written WAT. NOT WABT's wat2wasm, which this file
+#    used to name here: wabt 1.0.37 cannot assemble the four GC fixtures even
+#    with --enable-all, and `wasm-tools parse` is what actually produced them.
 scripts/dev-shell.sh bash -lc '
   cd crates/host-native/fixtures
-  wat2wasm --enable-exceptions --enable-threads \
-    native_fork_refs.wat -o native_fork_refs.wasm
+  wasm-tools parse native_fork_refs.wat -o native_fork_refs.wasm
 '
 
 # 2. Instrument it, exactly like native_fork.wasm:
