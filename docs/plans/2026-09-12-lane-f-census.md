@@ -6150,3 +6150,55 @@ entry point to run, and the module is the authority on that in every window.
 Worth naming how the error was caught, because it was not caught by reading the
 code again. It fell out of running the budget's own classifier by hand for a
 different purpose. The claim had already been committed and pushed.
+
+## §131 — Twenty, not seven: the budget's classifier hides the lane's own gap
+
+Section 130's seven is right for the question the budget asks and wrong for the
+question this lane is asking. `forkModuleEntriesWithoutProductionCaller` counts
+an entry as driven if EITHER `crates/host-native/src` or `host/src` names it.
+Those are two different hosts, and this lane is the JS one. Splitting them:
+
+| Driven by | Count |
+|---|---|
+| the JS host (`host/src`) | 31 |
+| ONLY `crates/host-native` | **13** |
+| neither (nor the injector) | **7** |
+
+So the JS host does not drive **twenty** module entries, and the thirteen it
+misses are not incidental -- they are the fork lifecycle itself:
+
+    fm_parent_begin_capture   fm_parent_seal_capture is JS-driven; this is not
+    fm_parent_abort_seal      fm_parent_replay        fm_parent_finish
+    fm_child_seed             fm_child_seed_borrowed  fm_child_reconstruct
+    fm_begin_reference_replay fm_build_gc_plan        fm_gc_plan_count
+    fm_funcref_ordinal        fm_static_root_slot     fm_externref_handle
+
+plus section 130's seven, of which `fm_attach_child`, `fm_restore_from_arena`
+and `fm_abort` are the child install and the abort.
+
+**This is the best news in the census.** Everything on that list is already
+driven, correctly, by a working host -- `crates/host-native/src/guest.rs` holds
+the whole lifecycle as a typed function table with the call order documented per
+entry. The JS host is not missing an implementation. It is missing the CALLS,
+and there is a reference implementation of every one of them to read.
+
+It also explains a number that never made sense. The budget grounds
+`forkTypeScript` against host-native "which does the same work in 142 code
+lines". That comparison looked unfair against a 672-line surface. It is not
+unfair: host-native does the work by calling the module, and the JS host still
+does it by driving a JS coordinator over a backend that has been cut out from
+under it (section 130). The 142 lines are what the work costs once the calls are
+the implementation.
+
+**So the remaining lane task restates cleanly.** Not "port 13,132 attic lines"
+(section 70) and not "wire seven entries" (section 130): make the JS host issue
+the same twenty calls `crates/host-native` already issues, deleting the
+coordinator underneath as each one lands. The order is forced by what can be
+validated -- nothing end to end runs until `worker-main.ts` stops importing the
+nine attic modules, because every fork e2e test fails at import.
+
+One caution about reading the budget this way in future. A surface that counts
+two hosts as one will report a lane complete while the lane's own host drives
+nothing, which is the H-1 shape at the level of the measurement rather than the
+code. Worth splitting the surface; not doing that unilaterally tonight, because
+it would change a number the maintainer is already being asked to rule on.
