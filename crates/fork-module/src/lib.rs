@@ -626,7 +626,7 @@ mod wasm {
     #[derive(Clone, Copy)]
     struct ProvenanceEntry {
         consumer_activation: u32,
-        consumer_owner: u32,
+        import_ordinal: u32,
         kind: u32,
         source_activation: u32,
         source_owner: u32,
@@ -643,7 +643,7 @@ mod wasm {
         ImportedGlobalProvenanceTable(UnsafeCell::new(
             [ProvenanceEntry {
                 consumer_activation: 0,
-                consumer_owner: 0,
+                import_ordinal: 0,
                 kind: 0,
                 source_activation: 0,
                 source_owner: 0,
@@ -654,7 +654,7 @@ mod wasm {
 
     fn set_imported_global_provenance_impl(
         consumer_activation: u32,
-        consumer_owner: u32,
+        import_ordinal: u32,
         kind: u32,
         source_activation: u32,
         source_owner: u32,
@@ -676,7 +676,7 @@ mod wasm {
         let table = unsafe { &mut *IMPORTED_GLOBAL_PROVENANCE.0.get() };
         let entry = ProvenanceEntry {
             consumer_activation,
-            consumer_owner,
+            import_ordinal,
             kind,
             source_activation,
             source_owner,
@@ -684,7 +684,7 @@ mod wasm {
         };
         for existing in table.iter_mut().take(count) {
             if existing.consumer_activation == consumer_activation
-                && existing.consumer_owner == consumer_owner
+                && existing.import_ordinal == import_ordinal
             {
                 *existing = entry;
                 return Ok(());
@@ -700,6 +700,12 @@ mod wasm {
 
     /// Publish what only the host can resolve about one imported global.
     ///
+    /// The consumer is named by its IMPORT-SECTION ORDINAL, not by owner id, so
+    /// the host never has to decode the guest's KFIG section to publish this:
+    /// `WebAssembly.Module.imports()` enumerates imports in section order, which
+    /// is the same order `fork_instrument` assigned ordinals in. The module maps
+    /// ordinal to owner from the section it was seeded.
+    ///
     /// `kind` is a `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` value. `source_*` matter
     /// for `ACTIVATION_GLOBAL`; `raw_bits` for `RAW_NUMBER` / `RAW_BIGINT`.
     /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind,
@@ -707,7 +713,7 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_imported_global_provenance(
         consumer_activation: u32,
-        consumer_owner: u32,
+        import_ordinal: u32,
         kind: u32,
         source_activation: u32,
         source_owner: u32,
@@ -715,7 +721,7 @@ mod wasm {
     ) {
         match set_imported_global_provenance_impl(
             consumer_activation,
-            consumer_owner,
+            import_ordinal,
             kind,
             source_activation,
             source_owner,
@@ -1756,27 +1762,19 @@ mod wasm {
         if count == 0 || !module_owns_arena_now() {
             return Ok(());
         }
-        // SAFETY: single-threaded per worker.
-        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
-        let provenance: Vec<fork_codec::ImportedGlobalProvenance> = table
-            .iter()
-            .take(count)
-            .map(|e| fork_codec::ImportedGlobalProvenance {
-                consumer_activation: e.consumer_activation,
-                consumer_owner: e.consumer_owner,
-                kind: e.kind as u8,
-                source_activation: e.source_activation,
-                source_owner: e.source_owner,
-                raw_bits: e.raw_bits,
-            })
-            .collect();
-
-        // Declarations, from each activation's seeded KFIG section.
+        // Declarations, from each activation's seeded KFIG section. Built first
+        // because the provenance below is keyed by IMPORT ORDINAL and has to be
+        // translated to owner ids through them.
         let activations: Vec<u32> = {
             let st = state().as_ref().ok_or(Errno::EINVAL)?;
             st.activations.keys().copied().collect()
         };
         let mut declarations: Vec<fork_codec::ImportedGlobalDeclaration> = Vec::new();
+        // (activation, import_ordinal) -> owner_id, the translation the host is
+        // spared. `WebAssembly.Module.imports()` enumerates in section order and
+        // `fork_instrument` assigned ordinals from the same enumeration, so the
+        // host can name an import without reading this section at all.
+        let mut by_ordinal: Vec<(u32, u32, u32)> = Vec::new();
         for activation in activations {
             let Some(bytes) = activation_imported_globals(activation) else {
                 continue; // an activation with no imported globals seeds nothing
@@ -1788,7 +1786,39 @@ mod wasm {
                     owner: global.owner_id,
                     type_code: global.type_code,
                 });
+                by_ordinal.push((activation, global.import_ordinal, global.owner_id));
             }
+        }
+
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let mut provenance: Vec<fork_codec::ImportedGlobalProvenance> =
+            Vec::with_capacity(count);
+        for e in table.iter().take(count) {
+            // An ordinal the activation's section does not declare as a global
+            // is the host naming an import that is not one.
+            //
+            // This refusal is for the ERROR MESSAGE, not for safety, and the
+            // distinction is worth stating because perturbing it away changes
+            // nothing observable: owner ids are required nonzero, so a missing
+            // ordinal defaulting to 0 could never match a declaration, and
+            // `build_imported_global_bindings` refuses it one step later
+            // regardless. Failing here says "that ordinal is not a declared
+            // global"; failing there says "no declaration for owner 0", which is
+            // the same fact after a confusing translation.
+            let owner = by_ordinal
+                .iter()
+                .find(|(a, o, _)| *a == e.consumer_activation && *o == e.import_ordinal)
+                .map(|(_, _, owner)| *owner)
+                .ok_or(Errno::EINVAL)?;
+            provenance.push(fork_codec::ImportedGlobalProvenance {
+                consumer_activation: e.consumer_activation,
+                consumer_owner: owner,
+                kind: e.kind as u8,
+                source_activation: e.source_activation,
+                source_owner: e.source_owner,
+                raw_bits: e.raw_bits,
+            });
         }
 
         // Snapshots, from the arena this module owns.

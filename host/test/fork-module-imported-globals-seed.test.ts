@@ -53,7 +53,7 @@ function fixture() {
     ) => void,
     provenance: x.fm_set_imported_global_provenance as (
       consumerActivation: number,
-      consumerOwner: number,
+      importOrdinal: number,
       kind: number,
       sourceActivation: number,
       sourceOwner: number,
@@ -118,7 +118,7 @@ const KIND_ACTIVATION_GLOBAL = 4;
 const KIND_BASE_IMPORT = 5;
 
 describe("imported-global provenance, the part only the host can resolve", () => {
-  it("accepts a carrier coordinate and a raw value", () => {
+  it("accepts a carrier coordinate and a raw value, keyed by import ordinal", () => {
     const f = fixture();
     f.provenance(3, 1, KIND_ACTIVATION_GLOBAL, 0, 7, 0n);
     expect(f.errno()).toBe(0);
