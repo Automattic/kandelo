@@ -1496,6 +1496,46 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+## LANE Y/V MERGE POINT — `brandonpayton/lane-y-image-writer` @ `5fe08d499`, 2026-09-14
+
+**Ready to merge. Do NOT wait for V to finish: what is complete is the
+unblocking, not the deletion.**
+
+**What the branch carries.**
+
+* Two browser-blocking defects fixed, each with a static guard and perturb
+  trials. `dba8d1f47` — an unguarded `process.platform` at module scope killed
+  the browser kernel worker during init; 88 failure artifacts went to 0, and it
+  is what took the browser suite from unmeasurable to measurable.
+  `bb17db676` — `process-lifecycle.ts` took one function from the `./vfs`
+  barrel and dragged `node:fs` into a browser bundle through three modules.
+* Four filesystem coverage defects, all perturb-proven and none a behaviour
+  change: `rootfs` set-ID tested in one of four call sites with set-GROUP-ID
+  untested entirely; `rootfs::rename` promising four guarantees and asserting
+  one; the SFFS reader asserting *that* it failed rather than *how*; and tmpfs
+  mount roots a guest could `rmdir` or rename over. Campaign trials 272 -> 291.
+* `sm_image_read` (ceiling 21 -> 22, argued) and the maintainer-authorised
+  `configureRootfsOverlay` change, **browser-verified at 167 passed / 14 failed
+  against 163 / 18**.
+* Four type-only narrowings, and the VFSI container format moved out of
+  `memory-fs.ts` into the module that outlives it.
+* Three reductions **banked, not left as headroom**: `kernelWorkerTypeScript`
+  32718 -> 32717, `memoryFsTypeScript` 8215 -> **8141**.
+* The worktree is provisioned, which is why any browser number means anything.
+
+**What a merger should know.** The 14 remaining browser failures are
+pre-existing and were shown not to be this lane's by reverting its changes and
+reproducing them — but they are still red, and should not become "the merge
+broke the browser" in a later bisect. `libc/musl` is dirty in 92 of 200
+worktrees by design (lane B's B3); it is not this branch's doing.
+
+**What is left in V, and why it belongs on a fresh branch.** The adapter (both
+halves read the container's host-side JSON), four construction sites, **71
+mechanical test repoints and 16 test rewrites** whose single shared concern is
+expressing a concurrent peer without a SharedArrayBuffer. That last cluster is
+the hard part and should not hold nineteen verified commits hostage.
+
+
 **Status: V1–V4 landed. V4 was DECIDED AND CLOSED 2026-09-12 — an image the
 Rust export writes is now one the kernel can load back, which is what the lane
 existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
