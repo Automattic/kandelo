@@ -33,12 +33,8 @@ import {
   type MountConfig,
   type MountSetIdCapability,
 } from "./types";
+import { EROFS, SFSError } from "./vfs-errors";
 import {
-  EROFS,
-  O_CREAT,
-  O_EXCL,
-  O_TRUNC,
-  SFSError,
   SharedFS,
   type ConditionalNamespaceIdentity,
   type NamespaceEntryIdentity,
@@ -7398,13 +7394,16 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   open(path: string, flags: number, mode: number): number {
     if (
-      (flags & O_TRUNC) === 0 &&
-      !((flags & O_CREAT) !== 0 && (flags & O_EXCL) !== 0)
+      (flags & OPEN_FLAGS.O_TRUNC) === 0 &&
+      !(
+        (flags & OPEN_FLAGS.O_CREAT) !== 0 &&
+        (flags & OPEN_FLAGS.O_EXCL) !== 0
+      )
     ) {
       this.guardSynchronousLazyAccess(path);
     }
     const handle = this.fs.open(path, flags, mode);
-    if ((flags & O_TRUNC) !== 0) {
+    if ((flags & OPEN_FLAGS.O_TRUNC) !== 0) {
       // O_TRUNC
       this.invalidateLazyData(this.fs.fstat(handle));
     }
