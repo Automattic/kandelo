@@ -1730,17 +1730,14 @@ for spec in docs/perturb/lane-l-*.json; do
 done
 ```
 
-**Six specs, 20 trials, 0 survived, 0 invalid — verified per spec, not in
-one run.** That distinction is the same one this section makes about
-transcripts, so it is stated rather than glossed: the five small specs each
-completed in a single invocation, and the host-native spec's fourteen were
-verified as thirteen in one completed run plus the status-word trial on its
-own, because the long run has twice been interrupted by the machine rather
-than by a failing trial.
+**Six specs, 20 trials, 0 survived, 0 invalid.** The host-native spec's
+fourteen completed in a single uninterrupted invocation — which this document
+denied for a while, because the run was misdiagnosed as dead while it was
+still finishing.
 
-**Both interruptions left a mutation in the tree**, which is the fail-open in
-the table below arriving twice in one session: once across a laptop sleep,
-once when a backgrounded loop stopped between applying a trial and reverting
+**Runs that were stopped left a mutation in the tree**, which is the fail-open
+in the table below: once when a run was killed to make the laptop safe, once
+when a backgrounded loop was stopped between applying a trial and reverting
 it. Neither cost anything — each diff was read before it was discarded and was
 exactly the trial's own line — but "run the whole set in one command" is
 advice this lane cannot honestly give until the harness's revert survives its
@@ -1771,10 +1768,25 @@ file, and the Rust half reads its corpus twice, so no single anchor expresses
 
 ### The harness's revert is a third step, and now it leaves a mark
 
-That row is fixed rather than only filed, because it bit three times in one
-session: a laptop sleep, a killed background shell, and — the instructive one
-— **this lane restoring the file by hand while a run was in flight**, which
-reverted a mutation mid-verify and made that trial's verdict meaningless.
+That row is fixed rather than only filed, because a mutation was left in the
+tree more than once — **and the honest version of the story is that every one
+of those was this lane's own doing, not the machine's.**
+
+The first draft of this section said the harness "kept dying" and blamed
+contention with other lanes' builds. The run logs say otherwise: of the runs
+that ended early, one was killed by `pkill` to get the laptop to a safe state
+and one was stopped deliberately after this lane noticed it had interfered
+with it. The long 14-trial run that was left alone **completed**, 14 trials,
+0 survived, 0 invalid, under exactly the contention that was blamed. There
+were no spontaneous deaths at all.
+
+The instructive one is worse than a crash. This lane read `git status`, saw a
+mutation and no `cargo test` process, concluded the harness had died, and
+**restored the file by hand while the run was still finishing** — reverting a
+mutation mid-verify. The diagnosis was wrong twice over: the process was
+between a build and a test, not dead, and the sampling command that "proved"
+it (`pgrep -fc 'xtask perturb'`) does not match the harness while a trial's
+verifier is the live process.
 
 `tools/xtask/src/perturb.rs` applies a mutation, runs a verifier, then
 reverts. It already handles the case it can see: the revert happens BEFORE

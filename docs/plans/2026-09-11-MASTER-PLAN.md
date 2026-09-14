@@ -2558,11 +2558,16 @@ the copy there was checked line-for-line against the version that was run.
 the tree.** Every lane that perturbs a guard uses it, and its revert is the
 THIRD step — apply, verify, revert — so anything that stops the process in
 between leaves the target file mutated, uncommitted, with no error anywhere.
-It happened four times in one session here: a laptop sleep, two killed
-background shells, and this lane restoring a file by hand while a run was in
-flight (which also invalidated that trial's verdict, forcing a re-run). The
-machine was concurrently running `xtask build-deps` for lanes Y and F, which
-is the likeliest reason the long runs kept dying.
+It was demonstrated repeatedly here, and the honest account is that **every
+interruption was this lane's own** — a `pkill` to make the laptop safe, a run
+stopped after noticing it had been interfered with, and a file restored by
+hand on a wrong diagnosis while a run was still finishing. The long run that
+was left alone completed: 14 trials, 0 survived, 0 invalid. An earlier draft
+of this paragraph blamed concurrent `xtask build-deps` in lanes Y and F for
+"the runs that kept dying"; the logs do not support that and it is withdrawn.
+The hazard is still real — a killed run leaves a mutation with no signal —
+but it is a hazard for whoever kills a run, which on this machine was this
+lane.
 
 `tools/xtask/src/perturb.rs` writes `.perturb-in-progress` before the first
 mutation now and removes it after each revert; the next run refuses to start
