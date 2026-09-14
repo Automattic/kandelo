@@ -3006,7 +3006,9 @@ the capacity invariant's test was shown failing before it was shown passing.
   `reference_recipes.rs` from 1,019 lines to 99. The node shapes stay:
   `ReferenceRecipeNode` had 259 uses and `ReferenceRecipeEntry` 46 when
   measured, across
-  seven modules. fork-codec's 432 tests pass, and host-native, fork-module,
+  seven `fork-codec` modules -- and in `fork-module` too, so the type
+  crosses a crate boundary. fork-codec's 432 tests pass, and host-native,
+  fork-module,
   runtime-core and the kernel all still build. The reasoning that led there: KFRR's codec was "reached only from their own
   unit test and one fixture generator" -- that generator. Nothing in Rust or
   TypeScript encodes KFRR today, and `reference_recipes.rs:26` says of its
@@ -3017,7 +3019,8 @@ the capacity invariant's test was shown failing before it was shown passing.
   did the TypeScript half of the cleanup, and the Rust half -- decoder,
   fixture, and its tests -- is still in the tree. That is fork-codec's call,
   and it is the mirror of a decision already taken rather than a new
-  proposal. The recipe TYPES stay either way; seven modules use them.
+  proposal. The recipe TYPES stay either way; eight files in two crates
+  use them.
 - **How to verify this lane before merging it.** Inside
   `scripts/dev-shell.sh`, with `KANDELO_SOURCE_CACHE_ROOT`,
   `WASM_POSIX_CACHE_DIR` and `KANDELO_CASE_IMAGE_DIR` set:

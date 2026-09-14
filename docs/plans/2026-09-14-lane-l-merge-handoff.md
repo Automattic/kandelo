@@ -62,7 +62,8 @@ instructions written for this lane omitted it.
    Deletes `decode_reference_recipes` (a `pub use` from `lib.rs`, so this is a
    crate API change), its result type, the wire constants, ~500 lines of tests
    and one committed fixture; `reference_recipes.rs` goes 1,019 → 99 lines.
-   The node TYPES stay — `ReferenceRecipeNode` is used in seven modules.
+   The node TYPES stay — `ReferenceRecipeNode` is used in eight files
+   across TWO crates: seven `fork-codec` modules and `fork-module`.
 
 3. **`crates/host-native/fixtures`.** The 43 committed `.wasm` are gone; they
    are built from tracked sources and the tests run the producer themselves.

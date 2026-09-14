@@ -16,9 +16,10 @@
 //! What stays is what is actually used. `ReferenceRecipeNode` appears in 259
 //! places and `ReferenceRecipeEntry` in 46, across `reference_feed`,
 //! `reference_replay`, `reference_transaction`, `reference_segments_writer`,
-//! `reference_graph_builder`, `drive_plan` and `drive_plan_hints`. The shapes
-//! outlived the format that once serialized them, which is the ordinary way
-//! a wire format dies.
+//! `reference_graph_builder`, `drive_plan` and `drive_plan_hints` -- and in
+//! `fork-module`, so they cross a crate boundary as well. The shapes outlived
+//! the format that once serialized them, which is the ordinary way a wire
+//! format dies.
 
 use alloc::vec::Vec;
 
