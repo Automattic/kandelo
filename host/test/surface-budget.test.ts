@@ -58,6 +58,20 @@ interface Surface {
   slack: number;
   target: number;
   why: string;
+  /**
+   * An argued ceiling raise, held to the reduction it was argued for.
+   *
+   * A raise granted on a promised deletion is a debt until that deletion
+   * lands. This records the grant so the NEXT raise cannot be taken on the
+   * same unpaid argument: the ceiling may exceed `grantedCeiling` only once
+   * `paidBy` has fallen to `requiredAtMost`.
+   */
+  contingency?: {
+    grantedCeiling: number;
+    paidBy: string;
+    requiredAtMost: number;
+    why: string;
+  };
 }
 
 const repoRoot = findRepoRoot();
@@ -454,6 +468,30 @@ describe("campaign surface budget", () => {
           + `  Target for this surface is ${surface.target}.`,
       ).toBeGreaterThan(surface.ceiling - surface.slack - 1);
     });
+
+    if (surface.contingency) {
+      const c = surface.contingency;
+      it(`${name} above ${c.grantedCeiling} stays contingent on ${c.paidBy}`, () => {
+        // Deliberately NOT an early return when the ceiling is unraised. A
+        // guard that skips itself in the normal case is unfailable in the
+        // normal case, which is the hazard this whole file exists to refuse.
+        // The implication is asserted instead, so the expectation is
+        // evaluated on every run and the measured value is always read.
+        const raised = surface.ceiling > c.grantedCeiling;
+        const paid = MEASURED[c.paidBy]!();
+        expect(
+          !raised || paid <= c.requiredAtMost,
+          `${name} has a ceiling of ${surface.ceiling}, above the `
+            + `${c.grantedCeiling} that was granted — and the reduction that `
+            + `grant was argued for has not arrived: ${c.paidBy} is ${paid}, `
+            + `and this contingency requires at most ${c.requiredAtMost}.\n`
+            + `  ${c.why}\n`
+            + `  Do not edit this contingency to pass. Either deliver the `
+            + `reduction it names, or put the new argument to the maintainer `
+            + `the way the last one was put.`,
+        ).toBe(true);
+      });
+    }
   }
 });
 
