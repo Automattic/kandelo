@@ -98,6 +98,22 @@ Never self-defer: land the safe part, then stop and argue (what, why, cost,
 follow-up) and ask. The maintainer is the sole merger. No `ABI_VERSION` bumps.
 Own branch only, pushed after every commit.
 
+### D4b — The attic is a source of facts, never of architecture
+
+Read set-aside TypeScript for invariants, hazards and capability limits — that
+wasm cannot compare `WebAssembly.Global` identity, that a non-null exnref needs a
+Global carrier, that a guest-controlled chunk walk must validate before it frees.
+Never read it for where code should live. "What does this code need" is an
+architecture question and its answer is always the design being replaced.
+
+**Before proposing any module entry, state the capability limit that forces it in
+one sentence.** "Wasm cannot compare Global identity" passes. "So the host can
+enumerate the arena's records" fails on its face — it is a sentence about
+preserving host capability. An entry not forced by a limit must instead name what
+it DELETES; an entry that neither is forced nor deletes anything is the migration
+running backwards. Section 151 applies this to every entry this lane has added,
+including the one that fails it.
+
 ### D5 — When a selection chip and the maintainer's prose disagree, the prose wins
 
 An `AskUserQuestion` option label is text I wrote; the free-text answer is what
@@ -7331,3 +7347,44 @@ sentence about preserving host capability.
 This is the fourth shortcut of the day to not survive contact, and the first
 where the error was not a missing fact but the wrong question. The previous three
 were fixed by reading more code. This one was caused by reading more code.
+
+## §151 — The capability-limit test, applied to every entry this lane added
+
+Asked what would prevent section 150's mistake, and whether the attic should
+simply be off limits. Cutting it off is the wrong instrument. The attic has been
+the source of facts this lane got RIGHT: that wasm cannot observe
+`WebAssembly.Global` identity, that a non-null exnref cannot be carried by
+JavaScript so it must have a Global carrier, that `attach` publishes ownership
+only after validating because it is parsing guest-controlled memory. Those are
+invariants, and designing without them loses edge cases quietly.
+
+**The rule is narrower: the attic is a source of FACTS, never of ARCHITECTURE.**
+Read it for invariants, hazards and capability limits. Never let it suggest a
+decomposition. "What does this code need" is an architecture question, and the
+attic's answer to it is always the design being replaced.
+
+**And a forcing step, because the check I already had did not fire.** Section 149
+was written after the tell — "if a port requires a new module entry so the host
+can keep doing something, the split is wrong" — was already recorded. I then
+wrote "so the host can enumerate the arena's records" and did not apply it to my
+own sentence. So: **before proposing any module entry, state in one sentence the
+capability limit that forces it.** Applied to this lane's four new entries:
+
+| Entry | Forcing limit | Verdict |
+|---|---|---|
+| `fm_borrowed_replay_workspace` | The sizes are per-activation module state and the module's own scratch high-water; the host cannot know either without the module telling it. | **Passes** |
+| `fm_set_activation_template_id` | The id is a hash of the guest module BYTES, which only the host holds. A seed, flowing host to module. | **Passes** |
+| `fm_module_state_arena` | The module owns the arena; the host directs (adopt, release) and asks for the root it must pass back. Directing, not reading data the module could use itself. | **Passes** |
+| `fm_phase` | ...none. The host reads it to choose an entry point, and the module cannot refuse a read. | **FAILS the strict test** |
+
+`fm_phase` does not have a capability limit behind it. The honest justification
+is different and weaker: it deleted a host-side mirror that could drift, and
+replaced eight reads of a JS field with eight reads of the truth. That is a real
+gain, and the entry is still the right call — but it is the ONE entry here
+justified by "the host was doing this worse", not by "only the host can do this".
+Recording that rather than letting the table read as four clean passes.
+
+The strict test is not that an entry must be forced; it is that an entry NOT
+forced by a capability limit has to name what it deletes. `fm_phase` deletes a
+mirror. Section 149's proposed entry deleted nothing — it existed so the host
+could keep reading records — which is exactly the distinction the test is for.
