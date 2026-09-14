@@ -408,16 +408,23 @@ nothing until the last clone of that content goes. The 43 GB of duplicated
 source archives found in a stalled session's scratchpad is the first kind —
 five separate 608 MB downloads, not five references to one.
 
-## Ten figures, re-measured — and where they came from
+## Eleven figures, re-measured — and where they came from
 
 **The count in this heading was wrong until the list was counted.** It read
 "nine" while the summary at the top of the document read "six" and the body
 below narrated a tenth: each session appended an entry and left both counts
 alone. That is this section's own subject happening to this section, which is
 the third time the document has demonstrated its thesis on itself and the
-first time the demonstration was in a heading. The list has **ten** entries,
-and the summary at the top of the document no longer restates the number —
-two copies of one count is the thing that drifted, so there is now one.
+first time the demonstration was in a heading. The list has **eleven**
+entries, and the summary at the top of the document no longer restates the
+number — two copies of one count is the thing that drifted, so there is now
+one.
+
+The eleventh is at the end of this document rather than in the list below,
+because it was found hours later: the docs-to-code ratio, computed against one
+component of its denominator. It is recorded where it happened rather than
+moved here, so the section that claims to catch this kind of error is not also
+the section that hides when it failed to.
 
 Two come from the L1 census and were repeated in this lane's commit messages
 before being checked. **The other eight are this lane's own**, and the sixth
