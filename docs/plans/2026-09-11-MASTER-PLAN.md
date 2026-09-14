@@ -2554,6 +2554,23 @@ patched function is written out in full in
 session temp directory, which is where it was and where it would have died;
 the copy there was checked line-for-line against the version that was run.
 
+**CAMPAIGN-WIDE, and a second one: `xtask perturb` could leave a mutation in
+the tree.** Every lane that perturbs a guard uses it, and its revert is the
+THIRD step — apply, verify, revert — so anything that stops the process in
+between leaves the target file mutated, uncommitted, with no error anywhere.
+It happened four times in one session here: a laptop sleep, two killed
+background shells, and this lane restoring a file by hand while a run was in
+flight (which also invalidated that trial's verdict, forcing a re-run). The
+machine was concurrently running `xtask build-deps` for lanes Y and F, which
+is the likeliest reason the long runs kept dying.
+
+`tools/xtask/src/perturb.rs` writes `.perturb-in-progress` before the first
+mutation now and removes it after each revert; the next run refuses to start
+and names the file, the trial and the recovery command. A sentinel rather than
+a signal handler, because a handler misses SIGKILL and a sleeping laptop.
+**Offered, not imposed** — it is shared tooling and one `git revert` away.
+Detail in `docs/plans/2026-09-13-lane-l-line-attribution.md`.
+
 **CAMPAIGN-WIDE, found from lane L: four measures in
 `host/test/surface-budget.test.ts` reported a BETTER number when their input
 disappeared. One — `lineCount` — was fixed here on the maintainer's decision;
