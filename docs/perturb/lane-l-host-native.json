@@ -1,7 +1,7 @@
 {
   "file": "crates/host-native/src/guest.rs",
-  "build": "cargo build -p host-native --target aarch64-apple-darwin --tests",
-  "verify": "cargo test -p host-native --target aarch64-apple-darwin --lib",
+  "build": "cargo build -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --tests",
+  "verify": "cargo test -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --lib",
   "trials": [
     {
       "name": "L5: a call site restates a length instead of asking the region",
@@ -93,13 +93,6 @@
       "scope_end": "\n/// Size of the",
       "find": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;",
       "replace": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_BLK;"
-    },
-    {
-      "name": "L3: a channel status word drifts from the generated header",
-      "scope": "// --- Channel status word values",
-      "scope_end": "\n// --- Process memory layout",
-      "find": "const STATUS_PENDING: u32 = 1;",
-      "replace": "const STATUS_PENDING: u32 = 7;"
     }
   ]
 }

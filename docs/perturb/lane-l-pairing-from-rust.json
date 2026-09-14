@@ -1,6 +1,6 @@
 {
   "file": "host/test/kernel-scratch-range.test.ts",
-  "verify": "cargo test -p wasm-posix-shared --target aarch64-apple-darwin",
+  "verify": "cargo test -p wasm-posix-shared --target $(rustc -vV | awk '/^host:/{print $2}')",
   "trials": [
     {
       "name": "pairing: the TypeScript half stops READING the range corpus",
