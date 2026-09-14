@@ -8252,3 +8252,36 @@ module, which is normally mine by the "fix defects in the Rust replacement"
 rule. But it is outside the nine-import stride, and it costs three entries on
 the surface the maintainer has already questioned twice. Those two facts
 together make it a routing decision rather than a judgement call.
+
+---
+
+## §168 — What the skipped files are, so nobody digs for them again
+
+The baseline comparator ends every run with a warning it gives no way to act
+on: "19 test(s) across 4 file(s) SKIPPED ... check what gates them before
+reading any file as restored". It was right to warn -- a wholly-skipped file
+emits no `FAIL` line, so the ratchet cannot tell it from a passing one -- and
+wrong to leave the reader grepping a two-thousand-line log for the names. It now
+prints them, and here is the answer for the current four:
+
+| file | gate |
+|---|---|
+| `packages/registry/openssl/test/ssl-basic.test.ts` | `skipIf(!SSL_AVAILABLE)` |
+| `host/test/mouse-integration.test.ts` | `skipIf(!existsSync(mousetestBinary))` |
+| `host/test/popen-daemon-regression.test.ts` | `skipIf(!hasShell)` |
+| `packages/registry/erlang/test/erlang.test.ts` | `skipIf(!hasErlang)` |
+
+All four are ARTIFACT gates, none fork-related, and none in the expected-failure
+baseline -- so they are not masking a restoration, which is the thing the
+warning exists to catch. Building openssl and erlang in this worktree is
+provisioning rather than a boundary, but it is provisioning for tests this lane
+does not touch, so the honest position is: they contribute no coverage, they
+hide nothing, and they are named now rather than counted.
+
+**The partial skips are a different thing and fine.** `fork-instrument-coverage`
+skips eight cases, each labelled with where it IS covered
+(`crates/fork-instrument/tests/coverage_wat.rs`,
+`catch-ref-fresh-worker.test.ts`); `fork-dlopen-replay-e2e` skips one; the
+browser binary-dependency suite skips two. Those files still report, so the
+ratchet sees them.
+
