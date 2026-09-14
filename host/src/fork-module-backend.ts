@@ -405,6 +405,44 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
+   * Install this fork's child: seed the reference replay from the inherited
+   * arena, admit its exnref tags, and build the whole reconstruction plan.
+   *
+   * ONE call for both child shapes. A COW child and a vfork BORROWED child
+   * share an identical install plan -- the only borrowed-specific work is the
+   * host-side child-private replay-prefix reservation, which is raw memory
+   * placement carrying no reference values and never entered the module.
+   *
+   * Returns the plan's guest address; drive it with `driveRestoredPlan`. The
+   * step count comes from the module rather than the caller, so the two cannot
+   * disagree about how much of the plan to run.
+   */
+  attachChild(moduleStateRoot: number, pid: number): number {
+    return this.call("fm_attach_child", moduleStateRoot, pid);
+  }
+
+  /**
+   * Execute a reconstruction plan the module built.
+   *
+   * The injected shim `call_indirect`s each step through the drive table, so
+   * every slot the plan references must be bound first -- see
+   * `bindActivationDrive`. An unbound slot is a call on null, not a skipped
+   * step.
+   */
+  driveRestoredPlan(planPtr: number): void {
+    const count = Number((this.exports.fm_gc_plan_count as () => number)());
+    if (count < 0) {
+      throw new Error(`${this.label}: fm_gc_plan_count reported ${count}`);
+    }
+    if (count === 0) return;
+    (this.exports.fm_drive_execute as (p: number, n: number) => void)(
+      planPtr,
+      count,
+    );
+  }
+
+
+  /**
    * Seal a PARTIAL capture for abort, without the guest unwind-end drive or the
    * journal serialization a normal seal does.
    *

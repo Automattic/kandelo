@@ -5124,21 +5124,22 @@ export async function centralizedWorkerMain(
           }
           processContinuation.enableModuleReferenceReplay();
         }
-        if (borrowedWorkspace) {
-          processContinuation.attachBorrowedChild(
-            childArena,
-            borrowedWorkspace.reservePrefix,
-            adoptEarlyReferences,
-            decodedChildReferences ?? undefined,
-          );
-          borrowedWorkspace.assertAttachComplete();
-        } else {
-          processContinuation.attachChild(
-            childArena,
-            adoptEarlyReferences,
-            decodedChildReferences ?? undefined,
-          );
-        }
+        // ONE install call for both child shapes. A COW child and a vfork
+        // BORROWED child share an identical plan in the module; the only
+        // borrowed-specific work is the host-side child-private replay-prefix
+        // reservation, which is raw memory placement carrying no reference
+        // values and never entered the module.
+        //
+        // This is the first production caller `fm_attach_child` has ever had.
+        // It went unwired long enough that census section 128 went looking for
+        // why and found a child's `record_find` answering from a writer root
+        // that is always 0, so every lookup missed silently.
+        // `ModuleStateWriter::adopt` closes that; whether it was the ONLY thing
+        // missing is what running this will say.
+        adoptEarlyReferences();
+        const installPlan = forkModule().attachChild(childArena.rootAddress(), pid);
+        forkModule().driveRestoredPlan(installPlan);
+        if (borrowedWorkspace) borrowedWorkspace.assertAttachComplete();
         // Static-root binder: the attach synchronously drove the plan, so the
         // static roots are now rooted in the anyref transit (and the child
         // instance holds them as immutable roots). Null the merged catalog mirror

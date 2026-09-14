@@ -398,6 +398,26 @@ describe("the backend's lifecycle methods, against a live module", () => {
     expect(phase()).toBe(PHASE_IDLE);
   });
 
+  it("refuses a child install from an arena root that is not one", () => {
+    // fm_attach_child had never had a production caller until this commit, so
+    // the first thing worth pinning is that it REFUSES rather than proceeding
+    // on a root it cannot decode. A child install that half-succeeds leaves a
+    // process running on a reference graph nobody reconstructed, which is the
+    // silent-corruption shape this whole path has to avoid.
+    const { backend } = backendFixture();
+    expect(() => backend.attachChild(0, 1)).toThrow();
+    expect(() => backend.attachChild(MMAP_FLOOR - PAGE, 1)).toThrow();
+  });
+
+  it("drives nothing when the module built an empty plan", () => {
+    // driveRestoredPlan reads the step count from the MODULE rather than
+    // taking it from the caller, so the two cannot disagree about how much of
+    // the plan to run. With no plan built, the count is 0 and the drive is a
+    // no-op -- not a call_indirect through an unbound slot.
+    const { backend } = backendFixture();
+    expect(() => backend.driveRestoredPlan(0)).not.toThrow();
+  });
+
   it("refuses an abort seal from a phase with no capture open", () => {
     const { backend } = backendFixture();
     expect(() => backend.parentAbortSeal()).toThrow(/errno 16/);
