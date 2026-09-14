@@ -133,7 +133,6 @@ import type {
 import {
   buildRootfsLazyWiring,
   createDeferredFileReader,
-  imageReadFromBody,
 } from "./vfs/rootfs-lazy-archives";
 import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
@@ -4406,6 +4405,13 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    */
   function configureRootfsOverlayFromImage(options: {
     baseImage: RootfsOverlayBaseImage;
+    /**
+     * Read the image at a CONTAINER offset. Supplied by the caller rather than
+     * taken from `baseImage`, because whether a backend's bytes are a bare
+     * body or a whole container is a fact about that backend, and only the
+     * caller knows which it has.
+     */
+    imageRead: (at: number, dest: Uint8Array) => number;
     imageBytes: Uint8Array;
     foreignPrefixes: string[];
     nosuid: boolean;
@@ -4435,7 +4441,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       options.imageBytes,
       // Straight through: the backend answers in container coordinates, and
       // whether its bytes are a bare body or a whole container is its business.
-      imageReadFromBody(options.baseImage),
+      options.imageRead,
     );
   }
 

@@ -51,6 +51,7 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { imageReadFromBody } from "./vfs/rootfs-lazy-archives";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot, resolveBinary } from "./binary-resolver";
 // The kernel worker reads an artifact before it compiles the kernel
@@ -939,6 +940,7 @@ async function handleInit(msg: InitMessage) {
   if (rootfsMemfs) {
     configureRootfsOverlayFromImage({
       baseImage: rootfsMemfs,
+      imageRead: imageReadFromBody(rootfsMemfs),
       imageBytes: new Uint8Array(msg.rootfsImage!),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootfsNosuid,

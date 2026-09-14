@@ -162,7 +162,11 @@ export interface DeferredByteSource {
 export interface RootfsOverlayBaseImage extends DeferredByteSource {
   exportLazyEntries(): LazyFileEntry[];
   exportLazyArchiveEntries(): SerializedLazyArchiveEntry[];
-  imageBodyBytes(): Uint8Array;
+  // NOT `imageBodyBytes()`. A backend holding the whole CONTAINER cannot
+  // answer that — it would be off by the header and carry the trailing
+  // sections — so the reader is supplied alongside this by whoever knows which
+  // backend they have. `imageReadFromBody` adapts a body-holding one.
+
 }
 
 /**
