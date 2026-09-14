@@ -5221,7 +5221,7 @@ export async function centralizedWorkerMain(
             }
           }
 
-          const phase = processContinuation.phaseName();
+          const phase = forkPhase(forkModuleFrameExports, pid);
           if (transportedForkUnwind && phase !== "capture") {
             throw new Error(
               `pid=${pid}: private fork-unwind exception escaped while ` +
@@ -5230,7 +5230,17 @@ export async function centralizedWorkerMain(
           }
           if (phase === "capture") {
             try {
-              processContinuation.sealCapture();
+              // The module seals its own capture now. What the coordinator did
+              // around this call has all moved or evaporated: it bound
+              // `wpk_fork_unwind_end` per activation, which `bindActivationDrive`
+              // does for the whole stride; it wrote the JournalImage record from
+              // the returned (ptr, len), which the module writes itself; and it
+              // called `arena.seal()`, which a module-built arena does not need
+              // -- `chunk_with_room` sets SEALED on every chunk and ROOT on the
+              // first, so the arena is born in the state a child's attach
+              // demands. The returned image location is no longer the host's to
+              // carry anywhere.
+              forkModule().sealCaptureAndSerialize();
             } catch (sealError) {
               // SEAL-TIME TRUTHFUL FAILURE (Phase 2 carry / Phase 4): the unwind
               // completed but the module could not channel-mmap the
