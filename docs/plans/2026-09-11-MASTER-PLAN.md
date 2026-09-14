@@ -1800,7 +1800,7 @@ and V4 as the part that can move now.
 then aliases `OPEN_FLAGS.O_CREAT` at line 501. Two sources for one constant in
 one file.
 
-### V9 RE-SIZED 2026-09-13 — the "shared" in `SharedFS` is vestigial
+### V9 RE-SIZED 2026-09-13 — one blocker closed, and a wrong reading corrected
 
 The V9 census (2026-09-13, earlier the same day) named `/dev/shm` as the hard
 core and said the module bridge could not serve it, because POSIX shared memory
@@ -1808,8 +1808,7 @@ needs a buffer both sides map while `SffsImageFs` holds its image in the
 module's own linear memory. **That core is now landed**: `/dev/shm` moved
 in-kernel as tmpfs did, both halves (`crates/runtime-core/src/tmpfs.rs` gained
 the scratch mount; `host/src/browser-kernel-worker-entry.ts` lost its mount and
-its SAB). `/dev` is wholly the kernel's. So V9's recorded blocker is gone, and
-the question becomes what is actually left.
+its SAB). `/dev` is wholly the kernel's. So V9's recorded blocker is gone.
 
 Measured at the call sites, not at the line count:
 
@@ -1822,49 +1821,55 @@ Measured at the call sites, not at the line count:
 | Non-test reads of `.sharedBuffer` | **2**, both `trackTransientImageBuffer` |
 | `memory-fs.ts` / `sharedfs-vendor.ts` | 8,215 / 3,716 lines |
 
-**The finding: no live code mounts one `MemoryFileSystem`'s SAB from a second
-thread.** Every `SharedFS.mount` call in the tree is inside `memory-fs.ts`, on
-a buffer `memory-fs.ts` itself created; `fromExisting` has exactly one non-test
-caller, `memory-fs.ts`'s own post-write verifier. The two external reads of
-`.sharedBuffer` hand it to the WebKit reclamation tracker — accounting, not
-sharing. `kernel-owned-boot.ts` says so in its own words: the build filesystem
-is serialized to bytes and *"the kernel worker rebuilds and owns the live
-VFS from these bytes."*
+**Correction, recorded because the wrong version was committed first.** This
+section originally argued that the identity/CAS machinery defends against a
+peer that no longer exists, on the evidence that no live code mounts one
+`MemoryFileSystem`'s SAB from a second thread. That evidence is accurate —
+every `SharedFS.mount` in the tree is inside `memory-fs.ts` on a buffer it
+created itself, `fromExisting` has one non-test caller (its own verifier), and
+the two external `.sharedBuffer` reads go to the WebKit reclamation tracker —
+**and it does not support the conclusion.** `docs/plans/2026-09-12-lane-v9-scoping.md`
+had already read this correctly and should have been read first.
 
-That makes the 18 identity/CAS/snapshot calls defensive machinery against a
-peer that no longer exists. The code states the threat it is defending against
-at `memory-fs.ts:5827` — *"A peer may have renamed the inode while the fetch was
-in flight"* — and then retries three times against a compare-and-swap. With the
-kernel owning the live VFS and the builder single-threaded, an ordinary write
-is the whole of it.
+The peer the CAS defends against is **another process in the same kernel, not
+another thread holding the same buffer.** `materializePath` captures
+`{ino, generation, dataSequence}`, `await`s `fetchLazyBytes`, and only then
+calls `replaceIfIdentity`. Lazy access is EAGAIN-and-retry precisely so the
+worker keeps servicing other processes while that fetch is in flight, so a
+`rename` from any of them lands inside the window. Single-threading the buffer
+does not close it, and moving the filesystem to Rust does not either, because
+the fetch stays host-side where the network is. **The identity protocol has to
+survive the migration.** The three-attempt retry loop and the aliasing refresh
+are part of that, not belt-and-braces.
 
-**So V9 is not "reimplement a shared filesystem on the module bridge". It is
-"retire a filesystem that is no longer shared."** The three remaining roles of
-`MemoryFileSystem` are all builder-shaped and single-threaded:
+`replaceManyIfIdentities` carries a second duty on top of the race: it commits
+an activation cohort all-or-nothing. That is transactional integrity and is
+independent of who the peer is, so it survives for its own reason.
 
-1. build-time image assembly (`createEmptyBuildFs` → `saveImage` → worker owns
-   the bytes),
-2. `restoreVerifiedImageMounts` reading an image mount,
-3. the three `mkrootfs` CLI verbs (`add`, `extract`, `inspect`).
-
-`SffsImageFs` — the Rust producer bridge lane Y built — already covers that
-shape: `stat/lstat/open/read/write/mkdir/symlink/readlink/unlink/chmod/chown/
-readdir/opendir/closedir/writeFile/readFile/saveImage/loadImage`, plus the lazy
-registration calls. What it does not have is `fstat/lseek/ftruncate/readAt/
-writeAt/append/utimens/fchmod/fchown/lchown/statfs/rmdir/rename/link` — the fd-
-and-metadata half of a `FileSystemBackend`. That, and not the identity
-machinery, is the honest remainder.
+**What that leaves as the honest remainder.** `SffsImageFs` — the Rust producer
+bridge lane Y built — already covers the builder-shaped surface:
+`stat/lstat/open/read/write/mkdir/symlink/readlink/unlink/chmod/chown/readdir/
+opendir/closedir/writeFile/readFile/saveImage/loadImage` plus lazy
+registration. It does not have the fd-and-metadata half —
+`fstat/lseek/ftruncate/readAt/writeAt/append/utimens/fchmod/fchown/lchown/
+statfs/rmdir/rename/link` — and it does not have the five identity operations,
+which the 2026-09-12 scoping read costed at 3–5 of V9's 5–9 days and named as
+where the risk is. That estimate stands.
 
 **Scope note for the maintainer.** Closing V10 by this route means
 `MemoryFileSystem`'s backend changes under 14 non-test call sites in `host/src`,
 `tools/mkrootfs/src` and `apps/browser-demos`, and under the browser-demo test
-corpus. That is a bigger blast radius than "delete `sharedfs-vendor.ts`"
-suggests, and the browser half of it cannot currently be proven: the browser
-suite fails 103/184 at kernel-worker init with `ReferenceError: process is not
+corpus. The browser half of that cannot currently be proven: the browser suite
+fails 103/184 at kernel-worker init with `ReferenceError: process is not
 defined`, a failure reproduced with this lane's commits reverted and therefore
 not this lane's. **Lane V should not cut the backend over while its verification
-path is dark.** The reachable work in the meantime is the fd-and-metadata half
-above, which is Node-verifiable on its own.
+path is dark** — and a concurrency protocol is the last thing to land unproven.
+
+**Landed meanwhile:** `memory-fs.ts` now imports `EROFS`, `SFSError`, `O_CREAT`,
+`O_EXCL` and `O_TRUNC` from their real homes (`vfs/vfs-errors.ts` and the
+generated `OPEN_FLAGS`) rather than through `sharedfs-vendor.ts`'s
+`export *`. The remaining import is `SharedFS` and four of its types, so what
+V10 must delete is stated in the import list instead of hidden in it.
 
 ## Acceptance evidence
 
