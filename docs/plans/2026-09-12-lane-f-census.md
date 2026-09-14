@@ -7459,3 +7459,53 @@ discovering it where a truthful errno has already become a trap.
 entry it adds is smaller than it looks: `fm_set_imported_global_provenance` lost
 two arguments in the same commit, so the pair carries less host judgement than
 the single entry did before.
+
+---
+
+## §153 — A guard that cried wolf, and the run it nearly threw away
+
+Ran the whole host suite against the provider-election commit. The verdict:
+
+```
+Test Files  201 failed | 245 passed | 4 skipped (450)
+Tests       476 failed | 3540 passed | 2 expected fail | 19 skipped (4037)
+```
+
+201 failing files, against a baseline of exactly 201. **No regressions, and
+nothing unbanked.**
+
+But `suite-baseline.mjs` did not say that. It printed NO RUN -- its own guard
+against comparing a suite that died in global setup, written two days ago after
+a setup crash reported 195 baseline files as fixed. The guard tests for a
+`Test Files` summary line with `/^\s*Test Files\s+/m`. Vitest had coloured that
+line, so it begins with an escape sequence rather than whitespace, and the
+regex missed a summary that was sitting in the output.
+
+**A guard that cries wolf on a good run is worse than no guard**, and worse in a
+specific way: it teaches the reader that NO RUN means "the harness is being
+awkward again". The next real setup failure then arrives wearing the same
+clothes. Fixed by stripping SGR escapes once, before anything parses the output
+-- the FAIL list, the skip counters and the missing-module census all read the
+stripped text now. The evidence is the same captured run: raw text fails the
+guard, stripped text passes it and yields the summary above.
+
+**What the census inside it says, which is the more useful finding.** The
+dominant cause of the 201 is one module:
+
+| missing module | occurrences |
+|---|---|
+| `host/src/fork-table-snapshot` | 334 |
+| `host/src/fork-module-state` | 9 |
+| `host/src/fork-activation-registry` | 5 |
+| `host/src/fork-function-catalog` | 4 |
+
+`fork-table-snapshot` is not the biggest attic file and it is not the one this
+lane has been porting. It is the one `worker-main.ts` imports at line 118, and
+because worker-main is the entry point every kernel-booting test loads, one
+unresolved import there fails 334 test files. The imported-globals work I am in
+the middle of unblocks none of them.
+
+That is worth saying plainly: the port order I have been following is driven by
+what I understand best, not by what the suite says is blocking. The next slice
+should be chosen from this table.
+

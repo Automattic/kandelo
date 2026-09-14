@@ -36,7 +36,22 @@ const expected = new Set(baseline.expectedFailures);
  * Echoing each line as it arrives makes a stall attributable: the last `FAIL` or
  * test-file line printed is the one it is stuck on.
  */
-const output = await new Promise((resolve) => {
+/**
+ * Strip SGR colour escapes before anything parses this output.
+ *
+ * Vitest colours its summary when it thinks a terminal is watching, and it
+ * thought so here even through a pipe. A coloured summary line begins with an
+ * escape sequence rather than whitespace, so the NO RUN guard's
+ * `/^\s*Test Files/m` did not match it -- and the guard then declared a
+ * COMPLETE 450-file run dead and skipped the comparison. A guard that cries
+ * wolf on good runs is worse than no guard: the next real setup failure arrives
+ * looking like the false one. Everything downstream -- the FAIL list, the skip
+ * counts, the missing-module census -- reads the stripped text for the same
+ * reason.
+ */
+const plain = (text) => text.replace(/\u001b\[[0-9;]*m/g, "");
+
+const output = plain(await new Promise((resolve) => {
   const child = spawn(join(here, "..", "node_modules", ".bin", "vitest"), ["run"], {
     cwd: join(here, ".."),
     stdio: ["ignore", "pipe", "pipe"],
@@ -52,7 +67,7 @@ const output = await new Promise((resolve) => {
   // A non-zero exit is the normal case while the baseline is non-empty, so the
   // exit CODE is not the signal here -- the parsed FAIL lines are.
   child.on("close", () => resolve(seen));
-});
+}));
 
 /**
  * Refuse to compare a run that never started.
