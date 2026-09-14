@@ -2134,6 +2134,40 @@ a different name.** There is no V5-specific work left to schedule:
 
 Anyone reading the plan for "what closes V5" should be sent to the five steps,
 not to a separate V5 backlog, because there is not one.
+### THE NAME-LEVEL BASELINE PAID FOR ITSELF THE FIRST TIME IT WAS USED — 2026-09-14
+
+Chromium after the reader deletion and the dead-protocol deletion:
+**163 passed / 15 failed / 6 skipped / 10 did not run**, 6.2 minutes. The counts
+match the recorded baseline exactly. **The names do not**, and that is the
+entire value of having recorded names:
+
+* **`vite-binary-cache-boundary` — "Vite serves an approved bottle member
+  without exposing its cache" — now PASSES.** It was failing in the baseline.
+  The plausible cause is the build-input declarations landed hours later: that
+  test is about artifact tier boundaries, and the packages whose inputs were
+  undeclared are the ones serving those artifacts.
+* **`accept-signal` — "caught SIGCHLD interrupts and restarts accept
+  coherently" — is NEW.** Re-run alone it passes in **2.1 seconds**. It is
+  load-flaky under full-suite parallelism, not a regression.
+
+**A count-only comparison would have reported "15 = 15, no change" and been
+wrong twice over** — it would have missed a fix and missed a flake, and it
+would have said nothing about whether the deletions were safe. The two changes
+under test are browser-verified: nothing lazy, deferred, archive or image moved.
+
+### AND THE BUILD FIX SHOWED UP WHERE IT WAS PREDICTED TO
+
+`./run.sh setup` succeeded on the FIRST pass, having previously needed two
+(B38: eleven nodes publish mid-run, a downstream cache key moves between
+resolve and finalization, finalization rejects it). This run rebuilt fourteen
+packages — far more publishing than the run that failed — and converged anyway.
+
+**That is consistent with the undeclared inputs being the cause rather than
+publishing as such**, and it is only consistent with it: one observation is not
+a proof, and B38 stays filed until someone reproduces it deliberately. But the
+cheap reading is that a package whose declared inputs do not cover what it
+imports can resolve under one key and finalize under another, because the two
+computations disagree about what the closure contains.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
