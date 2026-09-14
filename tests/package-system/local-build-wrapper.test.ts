@@ -175,6 +175,16 @@ exit 0
     FAKE_NIX_CHATTER: nixChatter ? "1" : "0",
     KANDELO_NIX_BIN: join(bin, "nix"),
   };
+  // The fixture already pins HOME so the derived source-cache path is
+  // predictable. These two reach the same argv by another route, and the
+  // expectation below hard-codes the DEFAULTS -- so inheriting either from the
+  // ambient environment makes this file fail for a reason that has nothing to
+  // do with the wrapper. Every worktree in the Rust-first campaign sets
+  // KANDELO_SOURCE_CACHE_ROOT, by standing instruction, to keep lanes from
+  // sharing a cache; this file reported three failures under it and passed
+  // without it, which is a test reading its own inputs from the room.
+  delete (env as Record<string, string | undefined>).KANDELO_SOURCE_CACHE_ROOT;
+  delete (env as Record<string, string | undefined>).WASM_POSIX_LOCAL_BUILD_JOBS;
 
   return {
     bin,
