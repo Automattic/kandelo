@@ -34,6 +34,34 @@
 
 import { FILE_MODES } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
+import type { StatResult } from "../types";
+import type { DirEntry } from "./types";
+
+/**
+ * What the export's metadata pass needs from a filesystem.
+ *
+ * Typed against `MemoryFileSystem` before — the class lane V is deleting.
+ * Measured at the call sites it is these eight: read a directory, read an
+ * entry's metadata, and set ownership, mode and times back onto it. Note what
+ * is NOT here — nothing in this set creates or removes an entry, which is the
+ * clone's job and stays with the clone.
+ */
+export interface RootfsExportMetadataFs {
+  lstat(path: string): StatResult;
+  opendir(path: string): number;
+  readdir(handle: number): DirEntry | null;
+  closedir(handle: number): void;
+  chmod(path: string, mode: number): void;
+  chown(path: string, uid: number, gid: number): void;
+  lchown(path: string, uid: number, gid: number): void;
+  utimensat(
+    path: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void;
+}
 
 const { S_IFMT, S_IFDIR } = FILE_MODES;
 
@@ -133,7 +161,7 @@ export interface OverlayExportResult {
   readonly skippedSpecial: readonly string[];
 }
 
-function pathExists(fs: MemoryFileSystem, path: string): boolean {
+function pathExists(fs: RootfsExportMetadataFs, path: string): boolean {
   try {
     fs.lstat(path);
     return true;
@@ -143,7 +171,7 @@ function pathExists(fs: MemoryFileSystem, path: string): boolean {
 }
 
 function applyMetadata(
-  fs: MemoryFileSystem,
+  fs: RootfsExportMetadataFs,
   record: ExportRecord,
   isSymlink: boolean,
 ): void {
@@ -166,7 +194,7 @@ function applyMetadata(
 
 /** Whether the clone's current metadata already matches the overlay record. */
 function metadataMatches(
-  fs: MemoryFileSystem,
+  fs: RootfsExportMetadataFs,
   record: ExportRecord,
 ): boolean {
   const st = fs.lstat(record.path);
@@ -180,7 +208,7 @@ function metadataMatches(
 
 /** Collect every path in the clone (excluding `/`), with a directory flag. */
 function collectClonePaths(
-  fs: MemoryFileSystem,
+  fs: RootfsExportMetadataFs,
   dir: string,
   out: Array<{ path: string; isDir: boolean }>,
 ): void {
