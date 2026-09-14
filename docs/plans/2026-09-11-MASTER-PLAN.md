@@ -2406,6 +2406,64 @@ campaign exists to remove. **Either the kernel-worker change is authorised and
 the slot is earned, or the entry point should be reverted with the ceiling.
 That is the maintainer's call and it is the gate on the whole cutover.**
 
+**RESOLVED 2026-09-14 (`a0bc4a216`) — the maintainer authorised the
+`kernel-worker.ts` change and it is landed.** `configureRootfsOverlay`'s
+`imageBody: () => Uint8Array` is now `imageRead(offset, dest) => number` in
+**container coordinates**, which is what the kernel already addresses in, so
+the provider forwards its offset untouched. The guard on what the kernel may
+ask for stays in the worker; where the bytes live moved to the caller.
+
+The shipped backend is unchanged: `process-lifecycle.ts` passes a closure
+doing exactly the arithmetic the worker used to do. What changed is that the
+contract no longer *obliges* a backend to hold the body as one addressable
+buffer — which is what made `sm_image_read` unusable and the whole cutover
+blocked.
+
+**The budget caught the first attempt and was obeyed rather than adjusted.**
+`kernelWorkerTypeScript` measured 32729 against its 32718 ceiling — the
+ceiling that exists so this file shrinks. The growth was a verbose comment, not
+logic; the rationale moved here and the file came out at **32717, one line
+below where it started**, which is what removing slicing logic should measure.
+**Banked 32718 -> 32717.**
+
+**Browser validation of the seam, and a near-miss worth recording.** The three
+`browser-cors-proxy` specs failed after the change with the tier error this
+plan had recorded as resolved. The tempting story — the module wasm was rebuilt
+several times in between, so the rebuild broke the tier — was checked and is
+false on every count: the tier counts are unchanged at 106 / 70 / 173, and
+`xtask verify-fresh` is clean. **The A/B settles it: the same three fail with
+this lane's seam change reverted from the working tree**, so they are not
+this lane's.
+
+**RESOLVED, and the cause was this lane's own tooling rather than any code.**
+`local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json`
+dated from 09:35. After the passing run, `sffs_module32.wasm` was rebuilt
+repeatedly — by the perturb spec, whose verify builds the module, and then once
+by hand — each rebuild minting a new build-key. The projection still named the
+old one, so the resolver was **correct** to say no single tier contained every
+accepted artifact. Re-running `./run.sh setup` regenerated the projection and
+the three specs went 0/3 to **5/5**.
+
+**Three plausible mechanisms were proposed and each was false**, which is the
+part worth keeping: that `build-programs.sh` broke the tier (it ran at 09:54,
+*before* the passing run); that the artifacts were unstamped (the local tier's
+`dash.wasm` was already unstamped two days earlier); and that it was test
+isolation (they fail at the same positions in full-suite order). Only the
+timestamps found it.
+
+**H-23 follows from this** and is distinct from H-22: *a perturb spec whose
+verify BUILDS an artifact leaves the build-key index stale, and the damage does
+not appear in the perturb run at all.* It appears later, in an unrelated suite,
+as a tier error that reads like a provisioning defect. **After any perturb run
+whose verify builds, re-run `./run.sh setup`** — rebuilding the artifact alone
+is not enough, and that is exactly the mistake made here.
+
+**So item 2 IS unblocked, and this time the claim is the third attempt at it.**
+The first said the entry point unblocked it (wrong: the contract shape did
+not fit). The second said a zero-copy view would (wrong: it views the
+container, not the body). This one changed the contract, which is what both
+earlier attempts were working around.
+
 **So item 2 is NOT unblocked after all; the four construction sites wait on
 that decision.**
 
