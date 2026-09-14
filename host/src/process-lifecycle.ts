@@ -135,6 +135,7 @@ import {
   createDeferredFileReader,
 } from "./vfs/rootfs-lazy-archives";
 import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
+import { VFS_IMAGE_HEADER_SIZE } from "./vfs/vfs-image-transport";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
@@ -4432,7 +4433,17 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       options.foreignPrefixes,
       options.nosuid,
       options.imageBytes,
-      () => options.baseImage.imageBodyBytes(),
+      // CONTAINER coordinates in, bytes out. The header arithmetic lives here,
+      // with the backend that knows its bytes are a bare body, rather than in
+      // the kernel worker where it constrained every backend to that shape.
+      (at, dest) => {
+        const body = options.baseImage.imageBodyBytes();
+        const start = at - VFS_IMAGE_HEADER_SIZE;
+        if (start >= body.byteLength) return 0; // end of image
+        const n = Math.min(dest.byteLength, body.byteLength - start);
+        dest.set(body.subarray(start, start + n));
+        return n;
+      },
     );
   }
 

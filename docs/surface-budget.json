@@ -102,10 +102,10 @@
     },
     "kernelWorkerTypeScript": {
       "measure": "line count of host/src/kernel-worker.ts",
-      "ceiling": 32718,
+      "ceiling": 32717,
       "slack": 400,
       "target": 12000,
-      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B."
+      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B. BANKED 32718 -> 32717 on 2026-09-14: `configureRootfsOverlay`'s whole-body callback became an offset reader, which moved the header arithmetic and the body slicing out to the backend that knows its bytes are a bare body. The reduction is small and is banked rather than left as headroom, because headroom in this file is what the ceiling exists to deny."
     },
     "unguardedLayoutModules": {
       "measure": "process_layout modules whose C-side _Static_asserts are not anchored to a generated KANDELO_ macro",
