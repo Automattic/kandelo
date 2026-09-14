@@ -38,6 +38,22 @@ pub struct Headroom {
     pub minimum_free_inodes: u64,
 }
 
+/// A headroom verdict WITH the numbers behind it, whether or not it passed.
+///
+/// [`PolicyViolation`] carries numbers only on failure, which is right for a
+/// gate: a passing check has nothing to report. A caller that wants to PRINT
+/// the margin — "3.2 MiB free against 1 MiB required" — needs them either way,
+/// and recomputing them on the other side of an ABI boundary would be a second
+/// implementation of the same arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyOutcome {
+    pub met: bool,
+    pub free_bytes: u64,
+    pub required_bytes: u64,
+    pub free_inodes: u64,
+    pub required_inodes: u64,
+}
+
 /// A failed publication check, carrying the numbers rather than a message.
 ///
 /// The caller formats. A `no_std` policy module that owned its own prose would

@@ -292,10 +292,20 @@ function readServiceLogForProcess(argv: readonly string[] | undefined): string |
   const name = basename(argv?.[0] ?? "");
   const logPath = name === "nginx" ? "/var/log/nginx.log" : null;
   if (!logPath) return null;
-  const bytes = readFileFromFs(logPath);
-  if (!bytes || bytes.byteLength === 0) return `${logPath}: <empty>`;
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trimEnd();
-  return `${logPath}:\n${text || "<empty>"}`;
+  // The host CANNOT read this, and saying so beats implying the log is empty.
+  //
+  // `/var/log` is a kernel tmpfs scratch mount, and has been since Phase 5.
+  // This used to read it out of the host's `/` backend, which is the IMAGE
+  // tree — nginx writes its log at runtime, into the kernel, where the host
+  // has no reader at all: `kernel_rootfs_read_file` serves the overlay, and
+  // the overlay excludes tmpfs paths by construction.
+  //
+  // So every nginx failure report has carried `/var/log/nginx.log: <empty>`,
+  // which reads as "the log exists and is empty" and means "I looked in the
+  // wrong place". A diagnostic that cannot see its subject should say which,
+  // because the alternative sends whoever is debugging after an empty log
+  // rather than after the failure.
+  return `${logPath}: <not readable from the host; it lives in the kernel's tmpfs>`;
 }
 
 function formatProcessFailureContext(pid: number): string {
@@ -750,7 +760,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Legacy fsSab path keeps the prior 3-mount layout intact — its caller
   // controls the rootfs contents directly via kernel.fs and would lose
   // control if the spec dictated additional scratch mounts.
-  const shmfs = MemoryFileSystem.fromExisting(msg.shmSab);
   // The kernel worker OWNS the VFS: rebuild it from the demo's image bytes and
   // apply DEFAULT_MOUNT_SPEC (/ from the image + scratch mounts for /tmp,
   // /var/*, /home/maker, /root, /srv). /etc is part of the image, baked in by
@@ -782,10 +791,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     rootfsLazyFetcher = corsProxyLazyFetcher;
     memfs.setLazyFetcher(rootfsLazyFetcher);
   }
-  const mounts: MountConfig[] = [
-    { mountPoint: "/dev/shm", backend: shmfs, nosuid: true },
-    ...specMounts,
-  ];
+  // `/dev/shm` is NOT mounted here. POSIX shared memory moved into the
+  // in-kernel tmpfs, which already serves every other scratch prefix, so a
+  // host backend for it would be a second authority the kernel never consults.
+  const mounts: MountConfig[] = [...specMounts];
   memfs.subscribeLazyDownloads((event) => {
     post({ type: "lazy_download", event });
   });
@@ -1593,26 +1602,6 @@ async function handleHttpRequestMessage(msg: {
 
 // ── Filesystem helpers ──
 
-function readFileFromFs(path: string): ArrayBuffer | null {
-  try {
-    const fd = memfs.open(path, OPEN_FLAGS.O_RDONLY, 0);
-    try {
-      const stat = memfs.fstat(fd);
-      const size = stat.size;
-      if (size <= 0) { memfs.close(fd); return null; }
-      const buf = new Uint8Array(size);
-      const nread = memfs.read(fd, buf, null, size);
-      memfs.close(fd);
-      if (nread <= 0) return null;
-      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + nread);
-    } catch {
-      memfs.close(fd);
-      return null;
-    }
-  } catch {
-    return null;
-  }
-}
 
 // ── Message dispatch ──
 

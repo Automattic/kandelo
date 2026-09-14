@@ -37,6 +37,14 @@
       "scope_end": "\n}\n",
       "find": "            growth_ceiling_bytes: fs\n                .growth_ceiling_bytes()\n                .map_err(|e| format!(\"{}: growth ceiling: {e:?}\", path.display()))?,",
       "replace": "            growth_ceiling_bytes: 0,"
+    },
+    {
+      "name": "the loader accepts an image describing its deferred files nowhere",
+      "scope": "fn load_into_kernel(",
+      "scope_end": "\n}\n",
+      "find": "    .map_err(|e| format!(\"{what}: {e:?}\"))",
+      "replace": "    .or(Ok(0))"
     }
-  ]
+  ],
+  "_comment": "One trial was removed rather than fixed: 'a load failure is reported as a successful load of nothing', which mutated the non-Image arm of load_into_kernel's byte source. A load walks STRUCTURE and never content, so that arm is unreachable during a load and the mutant changes nothing observable -- the same class as sm_alloc's max(len,1). The reason is recorded at the arm itself so nobody re-adds it."
 }

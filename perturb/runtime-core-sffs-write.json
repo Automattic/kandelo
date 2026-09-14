@@ -44,6 +44,20 @@
       "scope_end": "\n    }\n",
       "find": "        let mut archives = core::mem::take(&mut self.deferred_archives);\n        archives.sort_by_key(|archive| archive.archive_id);\n        let section = crate::sffs_deferred::encode(&archives, &records)?;",
       "replace": "        self.deferred_archives.clear();\n        let section = crate::sffs_deferred::encode(&[], &records)?;"
+    },
+    {
+      "name": "an image that declares its deferred files stays silent when it has none",
+      "scope": "    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {",
+      "scope_end": "\n        let mut records",
+      "find": "        if self.deferred.is_empty() && !self.declares_deferred {",
+      "replace": "        if self.deferred.is_empty() {"
+    },
+    {
+      "name": "every writer declares the section, byte-identity with the TypeScript writer be damned",
+      "scope": "    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {",
+      "scope_end": "\n        let mut records",
+      "find": "        if self.deferred.is_empty() && !self.declares_deferred {\n            return Ok(0);\n        }",
+      "replace": "        if false {\n            return Ok(0);\n        }"
     }
   ]
 }

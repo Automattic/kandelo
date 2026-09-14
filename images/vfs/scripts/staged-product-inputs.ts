@@ -26,10 +26,10 @@ import {
 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
+import { findRepoRoot } from "../../../host/src/binary-tiers";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import { loadVfsProductCatalog } from "../../../scripts/vfs-product-catalog.mjs";
-import {
-  MemoryFileSystem,
-} from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   parseTarBytes,
   parseTarGzip,
@@ -74,12 +74,17 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const REPOSITORY = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
 const MAX_BUNDLE_ENTRIES = 100_000;
-const STAGING_FLAGS = new Map([
+// Keyed by `string`, deliberately. The keys are COMMAND-LINE arguments, so
+// every lookup starts from an arbitrary string and `get` returning undefined is
+// how an unknown flag is rejected. Typing the keys as the four literals would
+// force every caller to assert it already holds one of them, which is the
+// question the lookup exists to answer.
+const STAGING_FLAGS = new Map<string, keyof StagedProductInvocation>([
   ["--vfs-product-manifest", "manifestPath"],
   ["--vfs-product-inputs", "resolvedInputsPath"],
   ["--vfs-product-report", "builderReportPath"],
   ["--vfs-product-output", "outputPath"],
-] as const);
+]);
 
 export interface StagedProductInvocation {
   manifestPath: string;
@@ -192,7 +197,7 @@ async function buildStagedPackageVfs(
     throw new Error(`${productId} package image must be embedded`);
   }
   const bytes = exactInputBytes(input, `${productId} package image`);
-  const metadata = MemoryFileSystem.readImageMetadata(bytes);
+  const metadata = SffsImageFs.readImageMetadata(bytes);
   if (
     metadata?.kernelAbi !== build.targetAbi.version ||
     metadata.abiSnapshotSha256 !== build.targetAbi.snapshot_sha256
@@ -1108,7 +1113,7 @@ function exactInputBytes(
   return bytes;
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: VfsImageFilesystem, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);
@@ -1142,7 +1147,11 @@ function materializeSingleRootArchive(
   materializeExactArchive(bytes, destination, label, true);
 }
 
-function materializeNamedSingleRootArchive(
+/** Exported alongside {@link materializeArchiveContents}, and for the same
+ * reason: it is the only way a test reaches the `--strip-root` and
+ * `--expect-root` plumbing, which no production caller a unit test can run
+ * exercises. */
+export function materializeNamedSingleRootArchive(
   bytes: Uint8Array,
   destination: string,
   label: string,
@@ -1151,7 +1160,15 @@ function materializeNamedSingleRootArchive(
   materializeExactArchive(bytes, destination, label, true, expectedRoot);
 }
 
-function materializeArchiveContents(
+/**
+ * Exported for the test that drives the extraction seam.
+ *
+ * Every production caller is inside a `buildStaged*` function, none of which a
+ * unit test can reach — so without this the cutover from the TypeScript
+ * extractor to `xtask archive-extract-tree` would be covered by four passing
+ * tests that never execute it.
+ */
+export function materializeArchiveContents(
   bytes: Uint8Array,
   destination: string,
   label: string,
@@ -1166,225 +1183,67 @@ function materializeExactArchive(
   stripSingleRoot: boolean,
   expectedRoot?: string,
 ): void {
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BUNDLE_BYTES) {
-    throw new Error(`${label} archive size is outside the accepted bound`);
-  }
-  mkdirSync(destination, { mode: 0o700 });
-  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-    materializeTarEntries(
-      parseTarGzip(bytes, {
-        label,
-        limits: {
-          maxCompressedBytes: MAX_BUNDLE_BYTES,
-          maxUncompressedBytes: MAX_SOURCE_TREE_BYTES,
-          maxEntries: MAX_BUNDLE_ENTRIES,
-        },
-      }),
-      destination,
-      label,
-      stripSingleRoot,
-      expectedRoot,
-    );
-    return;
-  }
-  if (
-    bytes[0] === 0x28 &&
-    bytes[1] === 0xb5 &&
-    bytes[2] === 0x2f &&
-    bytes[3] === 0xfd
-  ) {
-    const decompressed = new Uint8Array(zstdDecompressSync(bytes, {
-      maxOutputLength: MAX_SOURCE_TREE_BYTES,
-    }));
-    materializeTarEntries(
-      parseTarBytes(decompressed, {
-        label,
-        limits: {
-          maxUncompressedBytes: MAX_SOURCE_TREE_BYTES,
-          maxEntries: MAX_BUNDLE_ENTRIES,
-        },
-      }),
-      destination,
-      label,
-      stripSingleRoot,
-      expectedRoot,
-    );
-    return;
-  }
-  if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
-    materializeZipSource(
-      bytes,
-      destination,
-      label,
-      stripSingleRoot,
-      expectedRoot,
-    );
-    return;
-  }
-  throw new Error(`${label} is not a supported gzip/zstd TAR or ZIP archive`);
-}
+  // The extraction itself is `xtask archive-extract-tree`.
+  //
+  // It used to be three hundred lines here: a tar reader, a zip reader, a
+  // zstd path, the path-traversal rules and the writes. That is mechanism over
+  // UNTRUSTED input, which the campaign ports to Rust rather than extends in
+  // TypeScript — and the Rust has what this could not easily get: mutation
+  // trials on every refusal, a bound tested with a stream that never ends, and
+  // a setuid narrowing tested where a zip library cannot silently mask it away.
+  //
+  // Piped rather than written to a temporary file. The caller sometimes holds
+  // its archive as bytes read out of a VFS image, and a quarter-gigabyte round
+  // trip through the filesystem — plus a temporary file to leak or leave
+  // readable — buys nothing a pipe does not.
+  const args = ["archive-extract-tree", "--archive", "-", "--out", destination];
+  if (stripSingleRoot) args.push("--strip-root");
+  if (expectedRoot !== undefined) args.push("--expect-root", expectedRoot);
 
-function materializeTarEntries(
-  entries: readonly TarEntry[],
-  destination: string,
-  label: string,
-  stripSingleRoot: boolean,
-  expectedRoot?: string,
-): void {
-  const root = stripSingleRoot
-    ? commonArchiveRoot(entries.map((entry) => entry.path), label)
-    : null;
-  if (expectedRoot !== undefined && root !== expectedRoot) {
-    throw new Error(`${label} has top-level directory ${root}, expected ${expectedRoot}`);
+  const result = spawnSync(
+    "cargo",
+    ["run", "-p", "xtask", "--target", hostRustTarget(), "--quiet", "--", ...args],
+    { cwd: findRepoRoot(), input: bytes, encoding: "buffer" },
+  );
+  // NOT INDEPENDENTLY OBSERVABLE, and measured rather than assumed: a spawn
+  // that never ran reports `status: null`, and `null !== 0` is true, so the
+  // check below throws with or without this one. What this branch changes is
+  // the SENTENCE — "spawn cargo ENOENT" instead of "exit null" — and the
+  // difference between those two is the difference between an operator
+  // installing a toolchain and an operator filing a bug about an archive.
+  //
+  // A trial for it survives every time, so there is none. Kept because a
+  // worse message is still a real cost, and because the day `status` stops
+  // being null on a failed spawn this is what still refuses.
+  if (result.error) {
+    throw new Error(`${label} could not be extracted: ${result.error.message}`);
   }
-  for (const entry of entries) {
-    if (entry.type === "symlink" || entry.type === "hardlink") {
-      throw new Error(`${label} contains unsupported ${entry.type} ${entry.path}`);
-    }
-    const relativePath = root === null
-      ? normalizedArchiveComponents(entry.path, label).join("/")
-      : stripArchiveRoot(entry.path, root, label);
-    if (relativePath === null) continue;
-    if (entry.type === "directory") {
-      materializeArchiveDirectory(destination, relativePath, entry.mode);
-    } else {
-      materializeArchiveFile(
-        destination,
-        relativePath,
-        entry.data,
-        entry.mode,
-        label,
-      );
-    }
+  if (result.status !== 0) {
+    // The extractor's own message names which refusal fired and for which
+    // member. Wrapping it in a generic failure would lose the only sentence
+    // that says what to fix.
+    // The LAST non-empty line. `cargo run` writes its own build warnings to
+    // stderr, so the whole stream is the extractor's message preceded by noise
+    // about unrelated crates — and reporting the first line means reporting
+    // somebody else's warning as the reason this archive was refused.
+    const detail = (result.stderr?.toString() ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .pop() ?? "";
+    throw new Error(`${label} could not be extracted: ${detail || `exit ${result.status}`}`);
   }
 }
 
-function materializeZipSource(
-  bytes: Uint8Array,
-  destination: string,
-  label: string,
-  stripSingleRoot: boolean,
-  expectedRoot?: string,
-): void {
-  const entries = parseZipCentralDirectory(bytes);
-  if (entries.length === 0 || entries.length > MAX_BUNDLE_ENTRIES) {
-    throw new Error(`${label} ZIP entry count is outside the accepted bound`);
-  }
-  const totalBytes = entries.reduce((sum, entry) => {
-    if (!Number.isSafeInteger(entry.uncompressedSize)) {
-      throw new Error(`${label} ZIP entry has an invalid size`);
-    }
-    return sum + entry.uncompressedSize;
-  }, 0);
-  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_SOURCE_TREE_BYTES) {
-    throw new Error(`${label} ZIP expands beyond the accepted bound`);
-  }
-  const root = stripSingleRoot
-    ? commonArchiveRoot(entries.map((entry) => entry.fileName), label)
-    : null;
-  if (expectedRoot !== undefined && root !== expectedRoot) {
-    throw new Error(`${label} has top-level directory ${root}, expected ${expectedRoot}`);
-  }
-  for (const entry of entries) {
-    if (entry.isSymlink) {
-      throw new Error(`${label} contains unsupported symlink ${entry.fileName}`);
-    }
-    const relativePath = root === null
-      ? normalizedArchiveComponents(entry.fileName, label).join("/")
-      : stripArchiveRoot(entry.fileName, root, label);
-    if (relativePath === null) continue;
-    if (entry.isDirectory) {
-      materializeArchiveDirectory(destination, relativePath, entry.mode);
-    } else {
-      materializeArchiveFile(
-        destination,
-        relativePath,
-        extractZipEntryBounded(bytes, entry, entry.uncompressedSize),
-        entry.mode,
-        label,
-      );
-    }
-  }
-}
-
-function commonArchiveRoot(paths: readonly string[], label: string): string {
-  let root: string | undefined;
-  let hasChild = false;
-  for (const path of paths) {
-    const components = normalizedArchiveComponents(path, label);
-    if (components.length > 1) hasChild = true;
-    if (root === undefined) root = components[0];
-    if (root !== components[0]) {
-      throw new Error(`${label} does not have one exact top-level directory`);
-    }
-  }
-  if (root === undefined || !hasChild) {
-    throw new Error(`${label} has no files below its top-level directory`);
-  }
-  return root;
-}
-
-function stripArchiveRoot(
-  path: string,
-  root: string,
-  label: string,
-): string | null {
-  const components = normalizedArchiveComponents(path, label);
-  if (components[0] !== root) {
-    throw new Error(`${label} entry moved outside its top-level directory`);
-  }
-  return components.length === 1 ? null : components.slice(1).join("/");
-}
-
-function normalizedArchiveComponents(path: string, label: string): string[] {
-  const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
-  const components = normalized.split("/");
-  if (
-    normalized.length === 0 ||
-    normalized.startsWith("/") ||
-    normalized.includes("\\") ||
-    normalized.includes("\0") ||
-    components.some((item) => item.length === 0 || item === "." || item === "..")
-  ) {
-    throw new Error(`${label} contains unsafe archive path ${JSON.stringify(path)}`);
-  }
-  return components;
-}
-
-function materializeArchiveDirectory(
-  root: string,
-  relativePath: string,
-  mode: number,
-): void {
-  const path = join(root, ...relativePath.split("/"));
-  mkdirSync(path, { mode: archiveMode(mode, 0o755), recursive: true });
-  chmodSync(path, archiveMode(mode, 0o755));
-}
-
-function materializeArchiveFile(
-  root: string,
-  relativePath: string,
-  bytes: Uint8Array,
-  mode: number,
-  label: string,
-): void {
-  const path = join(root, ...relativePath.split("/"));
-  mkdirSync(dirname(path), { mode: 0o755, recursive: true });
-  try {
-    writeFileSync(path, bytes, {
-      flag: "wx",
-      mode: archiveMode(mode, 0o644),
-    });
-  } catch (error) {
-    throw new Error(`${label} has a duplicate or conflicting entry ${relativePath}`, {
-      cause: error,
-    });
-  }
-}
-
-function archiveMode(mode: number, fallback: number): number {
-  const permissions = mode & 0o777;
-  return permissions === 0 ? fallback : permissions;
+/** The host triple, as the extractor must be built for. */
+function hostRustTarget(): string {
+  const probe = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
+  const target = probe.stdout
+    ?.split("\n")
+    .find((line) => line.startsWith("host:"))
+    ?.split(/\s+/)[1];
+  if (!target) throw new Error("could not determine the host rust target");
+  return target;
 }
 
 export function parseStagedProductInvocation(
@@ -1399,7 +1258,11 @@ export function parseStagedProductInvocation(
   const values: Partial<StagedProductInvocation> = {};
   for (let index = 0; index < arguments_.length; index += 2) {
     const flag = arguments_[index];
-    const field = STAGING_FLAGS.get(flag as keyof typeof STAGING_FLAGS);
+    // `keyof typeof STAGING_FLAGS` was a `Map`'s METHOD names -- "get", "size"
+    // and friends -- not its keys, so the cast asserted something both false
+    // and useless. It also asserted the flag is a KNOWN one, which is exactly
+    // what the next line checks.
+    const field = flag === undefined ? undefined : STAGING_FLAGS.get(flag);
     if (field === undefined) {
       throw new Error(`unknown staging flag ${JSON.stringify(flag)}`);
     }
@@ -1506,17 +1369,19 @@ export function readRepositoryPathBundle(
   let previous = "";
   const entries = root.entries.map((raw, index): RepositoryPathBundleEntry => {
     const entry = recordValue(raw, `repository bundle entry ${index}`);
+    // Checked before it is used, rather than by an empty key list standing in
+    // for "unsupported". The chain below narrowed `kind` for a READER and left
+    // it `unknown` for the compiler, so the value reaching the returned record
+    // was never actually known to be one of the three.
     const kind = entry.kind;
+    if (kind !== "file" && kind !== "directory" && kind !== "symlink") {
+      throw new Error(`repository bundle entry ${index} kind is unsupported`);
+    }
     const keys = kind === "file"
       ? ["bytes", "content_base64", "kind", "mode", "path", "sha256"]
       : kind === "directory"
       ? ["kind", "mode", "path"]
-      : kind === "symlink"
-      ? ["kind", "mode", "path", "target"]
-      : [];
-    if (keys.length === 0) {
-      throw new Error(`repository bundle entry ${index} kind is unsupported`);
-    }
+      : ["kind", "mode", "path", "target"];
     exactRecord(entry, keys, `repository bundle entry ${index}`);
     const entryPath = normalizedRelativePath(
       entry.path,

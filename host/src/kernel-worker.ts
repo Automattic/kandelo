@@ -2803,7 +2803,7 @@ export class CentralizedKernelWorker {
    * Null when the entry supplied no image, which is the no-`/` boot — and null
    * again once the load succeeds, because the whole CONTAINER (header, trailing
    * JSON sections, `KLZY`) is only needed for the load. The filesystem body the
-   * kernel keeps reading after that is served from {@link #rootfsImageBody}
+   * kernel keeps reading after that is served through {@link #rootfsImageRead}
    * instead, which is the copy the restored `MemoryFileSystem` already holds.
    */
   #rootfsImage: Uint8Array | null = null;
@@ -2829,7 +2829,7 @@ export class CentralizedKernelWorker {
    *    the host byte store (`host_fetch_deferred`) precisely because the image does
    *    not carry them.
    */
-  #rootfsImageBody: (() => Uint8Array) | null = null;
+  #rootfsImageRead: ((offset: number, dest: Uint8Array) => number) | null = null;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -5126,13 +5126,16 @@ export class CentralizedKernelWorker {
     foreignMountPrefixes: string[] | undefined,
     rootNosuid: boolean | undefined,
     image: Uint8Array,
-    imageBody: () => Uint8Array,
+    /** Read at a CONTAINER offset; `0` at or past the end. Was a whole-body
+     *  callback, which obliged every backend to hold the body as one
+     *  addressable buffer. See lane V's V9 notes. */
+    imageRead: (offset: number, dest: Uint8Array) => number,
   ): void {
     this.#rootfsDeferredProvider = deferredProvider;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     this.#rootfsImage = image;
-    this.#rootfsImageBody = imageBody;
+    this.#rootfsImageRead = imageRead;
   }
 
   /**
@@ -5252,7 +5255,7 @@ export class CentralizedKernelWorker {
     // out of it, through its own SFFS reader, for the life of the session. So
     // the window stays open — but onto the copy the restored
     // `MemoryFileSystem` already holds, not onto a second one. See
-    // KERNEL_IMAGE_WINDOW on `#rootfsImageBody`.
+    // KERNEL_IMAGE_WINDOW on `#rootfsImageRead`.
     //
     // Container coordinates are preserved across the swap: the kernel cached
     // the image's own SFFS span at load and keeps addressing bytes by their
@@ -5261,9 +5264,9 @@ export class CentralizedKernelWorker {
     // end-of-image rather than guessed at; nothing in the kernel asks for one,
     // and a change that made it would find out here instead of reading a tree
     // of empty files.
-    const imageBody = this.#rootfsImageBody;
+    const imageRead = this.#rootfsImageRead;
     this.#rootfsImage = null;
-    if (imageBody === null) {
+    if (imageRead === null) {
       this.#kernel.setRootfsImageProvider(() => -38); // ENOSYS
       return;
     }
@@ -5271,12 +5274,8 @@ export class CentralizedKernelWorker {
       const at = Number(offset);
       if (!Number.isSafeInteger(at) || at < 0) return -22; // EINVAL
       if (at < VFS_IMAGE_HEADER_SIZE) return -22; // EINVAL: the header is gone
-      const body = imageBody();
-      const start = at - VFS_IMAGE_HEADER_SIZE;
-      if (start >= body.byteLength) return 0; // end of image
-      const n = Math.min(dest.byteLength, body.byteLength - start);
-      dest.set(body.subarray(start, start + n));
-      return n;
+      // The backend owns where its bytes live; this stays the guard only.
+      return imageRead(at, dest);
     });
   }
 

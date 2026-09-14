@@ -41,7 +41,7 @@
 
 import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
 import type { LazyFileEntry, SerializedLazyArchiveEntry } from "./memory-fs";
-import type { FileSystemBackend } from "./types";
+import { VFS_IMAGE_HEADER_SIZE } from "./vfs-image-transport";
 
 /**
  * Which deferred resource a `host_fetch_deferred` call is about. Mirrors
@@ -121,8 +121,77 @@ function deferredFileErrno(error: unknown): number {
  * optimization (called out, not silently adopted) once the read path is
  * measured.
  */
+/**
+ * What this reader actually needs of a backend: open a path, read from the
+ * handle, close it.
+ *
+ * Declared as three methods rather than as `FileSystemBackend` because the
+ * wider type overstates the requirement, and the overstatement is load-bearing:
+ * it is the reason the host's `/` backend has to be a whole filesystem. What it
+ * is really doing here is holding fetched bytes and handing them back by path —
+ * `open` is what kicks the fetch off and throws `EAGAIN` until the bytes land.
+ * A materialization cache can do that; it does not need a superblock, inodes,
+ * or a `SharedArrayBuffer`.
+ *
+ * Narrowing it does not change behaviour — `MemoryFileSystem` satisfies this
+ * as it satisfied the wider type — but it writes down which three methods the
+ * kernel's deferred-byte path depends on, which is what V10 has to replace.
+ */
+export interface DeferredByteSource {
+  open(path: string, flags: number, mode: number): number;
+  read(
+    handle: number,
+    buf: Uint8Array,
+    position: number | null,
+    length: number,
+  ): number;
+  close(handle: number): void;
+}
+
+/**
+ * What the in-kernel rootfs overlay needs from the host's `/` image.
+ *
+ * `configureRootfsOverlayFromImage` was typed against `MemoryFileSystem`, the
+ * 8,000-line class lane V is retiring, but read at the call site it asks for
+ * only these six methods: the deferred byte trio above, the two lazy-entry
+ * exports, and the image body. Naming the set is what lets the overlay be
+ * handed something else — an `SffsImageFs`-backed adapter — without the
+ * overlay knowing which filesystem it got. Same move as
+ * `DeferredByteSource`, one level up.
+ */
+export interface RootfsOverlayBaseImage extends DeferredByteSource {
+  exportLazyEntries(): LazyFileEntry[];
+  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[];
+  imageBodyBytes(): Uint8Array;
+}
+
+/**
+ * Adapt a body-holding backend to the CONTAINER-offset reader the kernel's
+ * rootfs image provider asks for.
+ *
+ * The subtraction is a fact about the backend, not about the kernel: a
+ * `SharedFS` buffer is the bare body, so container offset `at` is body offset
+ * `at - VFS_IMAGE_HEADER_SIZE`. A backend that holds the whole container
+ * answers the same question without subtracting, which is exactly why the
+ * question is asked in container coordinates — and why this adapter lives
+ * here, in a file that survives, rather than as a method on the filesystem
+ * being deleted.
+ */
+export function imageReadFromBody(
+  backend: { imageBodyBytes(): Uint8Array },
+): (at: number, dest: Uint8Array) => number {
+  return (at, dest) => {
+    const body = backend.imageBodyBytes();
+    const start = at - VFS_IMAGE_HEADER_SIZE;
+    if (start >= body.byteLength) return 0; // end of image
+    const n = Math.min(dest.byteLength, body.byteLength - start);
+    dest.set(body.subarray(start, start + n));
+    return n;
+  };
+}
+
 export function createDeferredFileReader(
-  backend: FileSystemBackend,
+  backend: DeferredByteSource,
   lazyEntries: readonly LazyFileEntry[],
   toBackendPath: ToBackendPath,
 ): (ino: number, offset: bigint, dest: Uint8Array) => number {

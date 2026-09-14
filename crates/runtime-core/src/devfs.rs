@@ -25,8 +25,6 @@ pub enum DevfsEntry {
     Root,
     /// /dev/pts
     PtsDir,
-    /// /dev/shm
-    ShmDir,
     /// /dev/mqueue
     MqueueDir,
     /// /dev/fd
@@ -42,12 +40,16 @@ pub fn is_namespace_path(path: &[u8]) -> bool {
     path == b"/dev" || path.starts_with(b"/dev/")
 }
 
-/// Whether `path` is in the one `/dev` subtree a host filesystem backs.
+/// Whether `path` names a `/dev` subtree that some OTHER kernel authority
+/// serves.
 ///
-/// `/dev/shm` is POSIX shared memory, served by a host mount on both hosts
-/// rather than by this module. It is the sole exception to kernel ownership of
-/// the `/dev` namespace.
-pub fn is_host_backed_path(path: &[u8]) -> bool {
+/// `/dev/shm` is POSIX shared memory. It used to be the sole exception to
+/// kernel ownership of this namespace, served by a host mount on both hosts;
+/// it is now served by the in-kernel tmpfs, which owns `/tmp` and every other
+/// scratch prefix. So the exception is no longer to KERNEL ownership, only to
+/// ownership by this module — and the dispatch has to route it onward rather
+/// than answering `ENOENT` for names devfs does not know.
+pub fn is_delegated_path(path: &[u8]) -> bool {
     path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
 }
 
@@ -59,7 +61,7 @@ pub fn is_host_backed_path(path: &[u8]) -> bool {
 /// which made the overlay's view of a kernel-owned namespace depend on the
 /// host's mount list.
 pub fn owns_path(path: &[u8]) -> bool {
-    is_namespace_path(path) && !is_host_backed_path(path)
+    is_namespace_path(path) && !is_delegated_path(path)
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -67,7 +69,6 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
     match path {
         b"/dev" => Some(DevfsEntry::Root),
         b"/dev/pts" => Some(DevfsEntry::PtsDir),
-        b"/dev/shm" => Some(DevfsEntry::ShmDir),
         b"/dev/mqueue" => Some(DevfsEntry::MqueueDir),
         b"/dev/fd" => Some(DevfsEntry::FdDir),
         b"/dev/input" => Some(DevfsEntry::InputDir),
@@ -225,7 +226,7 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
                 }
             }
         }
-        DevfsEntry::ShmDir | DevfsEntry::MqueueDir => {
+        DevfsEntry::MqueueDir => {
             // Empty directories for now
         }
     }
@@ -276,7 +277,10 @@ mod tests {
     fn test_match_devfs_dir() {
         assert_eq!(match_devfs_dir(b"/dev"), Some(DevfsEntry::Root));
         assert_eq!(match_devfs_dir(b"/dev/pts"), Some(DevfsEntry::PtsDir));
-        assert_eq!(match_devfs_dir(b"/dev/shm"), Some(DevfsEntry::ShmDir));
+        // `/dev/shm` is NOT a devfs entry: the in-kernel tmpfs serves it, and
+        // devfs answering for it would shadow the mount with an empty
+        // directory that never lists anything.
+        assert_eq!(match_devfs_dir(b"/dev/shm"), None);
         assert_eq!(match_devfs_dir(b"/dev/mqueue"), Some(DevfsEntry::MqueueDir));
         assert_eq!(match_devfs_dir(b"/dev/fd"), Some(DevfsEntry::FdDir));
         assert_eq!(match_devfs_dir(b"/dev/null"), None);

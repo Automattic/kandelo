@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   type DemoActionConfig,
@@ -156,7 +156,7 @@ export function companionHtml(
 }
 
 export function writeKandeloDemoConfig(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   config: KandeloDemoConfig,
 ): void {
   ensureDirRecursive(fs, "/etc/kandelo");

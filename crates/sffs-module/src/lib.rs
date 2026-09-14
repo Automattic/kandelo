@@ -62,6 +62,8 @@ mod wasm {
 // image construction. A wide surface a host never sees costs the host floor
 // nothing.
 
+mod seal;
+
 use runtime_core::rootfs;
 use wasm_posix_shared::Errno;
 
@@ -129,6 +131,135 @@ pub unsafe extern "C" fn sm_free(ptr: usize, len: usize) {
     unsafe { alloc::alloc::dealloc(ptr as *mut u8, layout) };
 }
 
+/// The loaded image's bytes, ADOPTED from the host's allocation rather than
+/// copied out of it.
+///
+/// # Why ownership transfers, when it transfers nowhere else
+///
+/// Every other entry point borrows the host's buffer for the duration of one
+/// call and the host frees it afterwards. `sm_load_image` is the exception, and
+/// the reason is size: `lamp.vfs` is 249 MiB. Copying would mean both the
+/// host's buffer and the module's copy resident at once, in a 32-bit address
+/// space, for the sole purpose of freeing one of them a moment later. The same
+/// property that made the export stream rather than return a buffer applies to
+/// the load.
+///
+/// So the contract is: on success the module owns `ptr` and the host must not
+/// free it; the module frees it at the next `sm_load_image` or `sm_reset`. On
+/// FAILURE ownership does not transfer and the host still owns its buffer —
+/// because a caller that must inspect a return code to know whether it still
+/// owns memory will eventually get it wrong, and the safe direction to be wrong
+/// in is "the host frees what it allocated".
+///
+/// The bytes have to stay resident regardless of who owns them: a loaded image
+/// hands out `BaseSource::Image` nodes, each a promise that the kernel can come
+/// back for those bytes later. Freeing after the walk would make every base
+/// file in a derived build unreadable.
+struct AdoptedImage(core::cell::UnsafeCell<Option<(usize, usize)>>);
+
+// SAFETY: one builder drives this module on one thread, as for the allocator.
+unsafe impl Sync for AdoptedImage {}
+
+static IMAGE: AdoptedImage = AdoptedImage(core::cell::UnsafeCell::new(None));
+
+/// Free the adopted image, if there is one. Idempotent.
+fn release_image() {
+    // SAFETY: single-threaded module; no reference into the cell outlives this.
+    let slot = unsafe { &mut *IMAGE.0.get() };
+    if let Some((ptr, len)) = slot.take() {
+        unsafe { sm_free(ptr, len) };
+    }
+}
+
+/// The adopted image's bytes, or `None` when nothing is loaded.
+fn image_bytes() -> Option<&'static [u8]> {
+    // SAFETY: the buffer is freed only by `release_image`, which first clears
+    // the slot, so a `Some` here describes live memory.
+    let slot = unsafe { &*IMAGE.0.get() };
+    slot.map(|(ptr, len)| unsafe { core::slice::from_raw_parts(ptr as *const u8, len) })
+}
+
+/// Serve the kernel's byte requests from the adopted image.
+///
+/// Only [`rootfs::ByteReq::Image`] can be answered: a blob store and an archive
+/// transport are host capabilities this module does not have and will not grow.
+/// `Base`/`Archive` therefore fail rather than returning zeros, so a builder
+/// that reaches for content this module cannot supply hears about it.
+fn image_source(req: rootfs::ByteReq, dst: &mut [u8]) -> Result<usize, Errno> {
+    let rootfs::ByteReq::Image { offset } = req else {
+        return Err(Errno::EIO);
+    };
+    let bytes = image_bytes().ok_or(Errno::EIO)?;
+    let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+    if start >= bytes.len() {
+        return Ok(0);
+    }
+    let n = core::cmp::min(dst.len(), bytes.len() - start);
+    dst[..n].copy_from_slice(&bytes[start..start + n]);
+    Ok(n)
+}
+
+/// Load a VFS image as the base layer: the kernel mounts it, walks it, and
+/// adopts its deferred linkage, replacing whatever tree was there.
+///
+/// Returns the number of entries inserted, or a negative errno.
+///
+/// # Why one entry point and not three
+///
+/// A zero-import module cannot call back into the host for bytes, so the
+/// obvious design is a push protocol — begin, write, finish — and that is three
+/// exports. It is unnecessary: the host already has [`sm_alloc`], so it
+/// allocates, copies the image in, and calls this once. The loader needs the
+/// image randomly addressable — it walks directories and inodes in whatever
+/// order the filesystem stores them — so streaming it in would not reduce peak
+/// memory anyway.
+///
+/// # Safety
+/// `ptr`/`len` must be exactly what [`sm_alloc`] returned and was asked for.
+/// On success the module takes ownership; the host must not free it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
+    if ptr == 0 || len == 0 {
+        return err(Errno::EINVAL);
+    }
+    // The PREVIOUS image goes first. `rootfs::load_image` resets the store, so
+    // holding both would keep a buffer nothing can reach any more resident for
+    // the length of the load -- the exact doubling this entry point exists to
+    // avoid.
+    release_image();
+    // SAFETY: single-threaded module.
+    unsafe { *IMAGE.0.get() = Some((ptr, len)) };
+
+    match rootfs::load_image(len as u64, image_source) {
+        Ok(entries) => {
+            // AUTHENTICATE BEFORE THE IMAGE IS USABLE, not beside it.
+            //
+            // The incumbent exposes this as a separate `verify` the builder
+            // must remember to await — a contract that exists only because
+            // `SubtleCrypto` is a promise. A synchronous digest has no such
+            // excuse, and a verification a caller can forget is one some caller
+            // eventually will. Verifying here makes an UNVERIFIED loaded image
+            // unrepresentable rather than merely discouraged.
+            //
+            // A refusal unloads: an image that failed to authenticate must not
+            // be left mounted for the next call to build on.
+            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {
+                rootfs::reset();
+                release_image();
+                return err(e);
+            }
+            i32::try_from(entries).unwrap_or(i32::MAX)
+        }
+        Err(e) => {
+            // Ownership did not transfer: clear the slot WITHOUT freeing, so
+            // the host's buffer is still the host's to free.
+            // SAFETY: single-threaded module.
+            unsafe { *IMAGE.0.get() = None };
+            err(e)
+        }
+    }
+}
+
 // ACCEPTED SURVIVING MUTANTS
 //
 // Mutation testing (`xtask perturb`) treats a surviving mutant as a failure,
@@ -182,14 +313,18 @@ unsafe fn slice<'a>(ptr: usize, len: usize) -> &'a [u8] {
 /// rather than an instance handle threaded through every operation. A test
 /// pins that a build after this is indistinguishable from a first build.
 #[unsafe(no_mangle)]
-pub extern "C" fn sm_reset() {
+pub extern "C" fn sm_reset(root_mode: u32, uid: u32, gid: u32) -> i32 {
     rootfs::reset();
-}
-
-/// Create the root inode. Every other path operation needs it to exist.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm_init_root(mode: u32, uid: u32, gid: u32) -> i32 {
-    ok_or_errno(rootfs::insert_base_dir(b"/", mode, uid, gid, 1))
+    // The image the old tree was built on goes with it. Without this a reset
+    // would free every inode and keep 249 MiB of bytes nothing references.
+    release_image();
+    // Creating the root is part of the same transition, not a second one. No
+    // caller ever reset without immediately initialising a root, and none
+    // could usefully: a filesystem with no root fails every path operation, so
+    // the state between the two calls was never a state anything wanted. Two
+    // doors for one transition is the same redundancy that retired
+    // `sm_stat_size`, and retiring this one paid for `sm_image_metadata`.
+    ok_or_errno(rootfs::insert_base_dir(b"/", root_mode, uid, gid, 1))
 }
 
 /// # Safety
@@ -313,16 +448,7 @@ pub unsafe extern "C" fn sm_write_file(
     }
 }
 
-/// Size in bytes of the record [`sm_lstat`] writes: six little-endian `u64`s.
-///
-/// Queried rather than hardcoded, so a caller never bakes in a number this
-/// module could change.
-#[unsafe(no_mangle)]
-pub extern "C" fn sm_stat_size() -> usize {
-    6 * 8
-}
-
-/// Field order of the [`sm_lstat`] record. Six `u64`s, little-endian:
+/// Field order of the [`sm_lstat`] record. Eight `u64`s, little-endian:
 ///
 /// | offset | field |
 /// |---|---|
@@ -332,6 +458,29 @@ pub extern "C" fn sm_stat_size() -> usize {
 /// | 24 | uid |
 /// | 32 | gid |
 /// | 40 | size |
+/// | 48 | deferred (0 or 1) |
+/// | 56 | archive_id (0 when not backed by an archive) |
+///
+/// # Why deferred-ness is a stat field and not an entry point of its own
+///
+/// Builder recipes ask two questions the TypeScript filesystem answered and
+/// this module could not: `isPathDeferred(path)` and
+/// `getLazyEntry(path) !== null`. They are real product assertions -- "dinit
+/// must be resident before service boot", "the login program must be eager" --
+/// and they were the only reason those recipes needed the IMPLEMENTATION
+/// rather than an interface.
+///
+/// Adding `sm_lazy_info` would have answered them and made this the module's
+/// twentieth entry point, one increment after `sffsModuleEntryPoints` was
+/// banked at nineteen. Raising a ceiling you set yourself, immediately, is the
+/// shape the budget exists to catch — and the better design was available:
+/// whether a file's bytes are present is METADATA ABOUT THE FILE, which is
+/// what `lstat` reports. `size` here is already the real length of a deferred
+/// file rather than its zero-length stub, so the record was half-answering the
+/// question already.
+///
+/// The record's length is discoverable by calling with `out_len == 0`, so growing it
+/// costs the bridge nothing: it already asks rather than assuming.
 ///
 /// # Why this is NOT the generated ABI stat layout
 ///
@@ -364,22 +513,40 @@ pub unsafe extern "C" fn sm_lstat(
     out_ptr: usize,
     out_len: usize,
 ) -> i32 {
+    const RECORD: usize = 8 * 8;
+    // The size question is answered BEFORE the path is touched, so a caller
+    // discovering the record's length needs no path to discover it with. This
+    // is `sm_read_dir`'s and `sm_check_headroom`'s convention, and making
+    // `sm_lstat` share it is what let a whole entry point reporting a constant
+    // go: the ABI now carries ONE size-probe convention rather than two.
+    if out_len == 0 {
+        return RECORD as i32;
+    }
     let path = unsafe { slice(path_ptr, path_len) };
     let stat = match rootfs::lstat(path) {
         Ok(stat) => stat,
         Err(e) => return err(e),
     };
-    if out_ptr == 0 || out_len < sm_stat_size() {
+    if out_ptr == 0 || out_len < RECORD {
         return err(Errno::EINVAL);
     }
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-    let fields: [u64; 6] = [
+    // `lazy_info` walks the same path a second time. Cheap, and it keeps
+    // `lstat` reporting exactly what `rootfs::lstat` says rather than
+    // assembling a stat from two sources that could disagree.
+    let (deferred, _ino, _size, archive_id) = match rootfs::lazy_info(path) {
+        Ok(info) => info,
+        Err(e) => return err(e),
+    };
+    let fields: [u64; 8] = [
         stat.st_ino,
         stat.st_mode as u64,
         stat.st_nlink as u64,
         stat.st_uid as u64,
         stat.st_gid as u64,
         stat.st_size,
+        u64::from(deferred),
+        u64::from(archive_id),
     ];
     for (i, value) in fields.iter().enumerate() {
         out[i * 8..i * 8 + 8].copy_from_slice(&value.to_le_bytes());
@@ -433,12 +600,11 @@ pub unsafe extern "C" fn sm_read_file(
         return err(Errno::EINVAL);
     }
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-    // The byte source is EIO for the same reason as in `sm_write_file`: this
-    // module has no host blob store, so a BASE file's bytes are unreachable
-    // here. Unlike the write path, this one CAN reach it -- reading a base
-    // file is exactly the case -- so the failure is real and loud rather than
-    // unreachable. A derived build must wire a real source.
-    match rootfs::read_file_at(path, offset, out, |_req, _dst| Err(Errno::EIO)) {
+    // A file that came from a LOADED image reads out of that image, which this
+    // module still holds. Blob- and archive-backed content stays unreachable:
+    // those are host transports this module does not have, and `image_source`
+    // fails loudly rather than returning zeros for them.
+    match rootfs::read_file_at(path, offset, out, image_source) {
         Ok(n) => n as i32,
         Err(e) => err(e),
     }
@@ -520,6 +686,109 @@ pub unsafe extern "C" fn sm_read_dir(
     at as i32
 }
 
+/// Every deferred file and declared archive in the tree, as one record set.
+///
+/// Returns the byte count written, or the record set's length when `out_len` is
+/// 0 -- the module's size-probe convention, shared with `sm_read_dir`,
+/// `sm_lstat`, `sm_check_headroom` and `sm_image_metadata`.
+///
+/// # Layout
+///
+/// `u32 file_count | u32 archive_count | files… | archives…`, where a file is
+/// `path | u64 ino | u64 size | u32 archive_id | source_path | payload` and an
+/// archive is `u32 id | u64 bytes | payload`. Every byte string is `u32`
+/// length-prefixed, so nothing is positional and nothing is delimited.
+///
+/// # Why this entry point exists, given the budget it costs
+///
+/// This is the twenty-first, and `sffsModuleEntryPoints` was banked at twenty
+/// with no slack. The rule is to find an export that can GO before arguing for
+/// one that must come, and that search was made and FAILED. The only plausible
+/// fold was `sm_mkdir` with `sm_mkdir_parents` behind a flag, and it is a bad
+/// trade: the two create DIFFERENT paths -- one makes the path, the other makes
+/// the path's parents -- so a boolean would decide which path the call operates
+/// on. That exact confusion has already caused a bug in this lane, and baking
+/// it into the ABI to save a slot would be paying for the budget with a defect.
+///
+/// What it buys: two TypeScript methods delete, `exportLazyEntries` and
+/// `exportLazyArchiveEntries`, and with them the last thing keeping the shell
+/// composer and its overlay on `MemoryFileSystem` -- which is in turn what
+/// blocks rebuilding the shipped base images through the Rust producer.
+///
+/// # Why enumeration rather than a digest
+///
+/// A digest answers "did anything change" in thirty-two bytes and would be a
+/// much smaller surface. It cannot answer the question the builders actually
+/// ask, which is "did anything change OTHER than these" -- a build step
+/// legitimately supersedes some lazy files, and the composer names the ones it
+/// expects to move. A digest also reports a failure as "something moved",
+/// which sends whoever meets it to read the whole build.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe a writable range when `out_len` is not 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_lazy_entries(out_ptr: usize, out_len: usize) -> i32 {
+    fn put_u32(out: &mut alloc::vec::Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    fn put_u64(out: &mut alloc::vec::Vec<u8>, value: u64) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    fn put_bytes(out: &mut alloc::vec::Vec<u8>, bytes: &[u8]) -> Result<(), Errno> {
+        put_u32(out, u32::try_from(bytes.len()).map_err(|_| Errno::EINVAL)?);
+        out.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    let files = rootfs::lazy_entries();
+    let archives = rootfs::archive_payloads();
+    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    let Ok(file_count) = u32::try_from(files.len()) else {
+        return err(Errno::EINVAL);
+    };
+    let Ok(archive_count) = u32::try_from(archives.len()) else {
+        return err(Errno::EINVAL);
+    };
+    put_u32(&mut buf, file_count);
+    put_u32(&mut buf, archive_count);
+    for entry in &files {
+        if put_bytes(&mut buf, &entry.path).is_err() {
+            return err(Errno::EINVAL);
+        }
+        put_u64(&mut buf, entry.ino);
+        put_u64(&mut buf, entry.size);
+        put_u32(&mut buf, entry.archive_id);
+        if put_bytes(&mut buf, &entry.source_path).is_err()
+            || put_bytes(&mut buf, &entry.payload).is_err()
+        {
+            return err(Errno::EINVAL);
+        }
+    }
+    for (archive_id, payload) in &archives {
+        put_u32(&mut buf, *archive_id);
+        put_u64(&mut buf, rootfs::archive_size(*archive_id).unwrap_or(0));
+        if put_bytes(&mut buf, payload).is_err() {
+            return err(Errno::EINVAL);
+        }
+    }
+
+    let Ok(required) = i32::try_from(buf.len()) else {
+        return err(Errno::ERANGE);
+    };
+    if out_len == 0 {
+        return required;
+    }
+    if out_len < buf.len() {
+        return err(Errno::ERANGE);
+    }
+    if out_ptr == 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    out[..buf.len()].copy_from_slice(&buf);
+    required
+}
+
 /// Stream the built image's bytes at `offset` into `out`. Returns the byte
 /// count, 0 at end of image, or a negative errno.
 ///
@@ -544,11 +813,34 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
         return err(Errno::EINVAL);
     }
     let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-    // Base content is unreachable here for the same reason as elsewhere in this
-    // module: no host blob store. A fresh build has no base files, so this is
-    // not consulted; a derived build must supply a real source before it can
-    // export base-backed content.
-    let mut source = |_req: rootfs::ByteReq, _dst: &mut [u8]| Err(Errno::EIO);
+    // A DERIVED build's base content comes from the image it was loaded from,
+    // which this module still holds -- so `BaseSource::Image` nodes resolve and
+    // a derived export carries its base files' real bytes. A fresh build has no
+    // base files and never consults this. Blob- and archive-backed content
+    // remain unreachable: those are host transports this module does not have.
+    // SEAL HERE, at the export door, because this is the only way bytes leave
+    // the module. A builder cannot compute a cohort digest as it registers --
+    // that digest covers every member and the last one is not known until the
+    // archive set is complete -- so sealing has to happen after registration
+    // and before emission. A `finalise` call would fit there too, and could be
+    // forgotten; this cannot.
+    //
+    // Only at offset 0, which is where the export plan is built. A later chunk
+    // is reading a plan whose payloads are already sealed.
+    if offset == 0 {
+        let declared = rootfs::archive_payloads();
+        match seal::seal_cohorts(&declared) {
+            Ok(sealed) => {
+                for (archive_id, payload) in sealed {
+                    if let Err(e) = rootfs::set_archive_payload(archive_id, &payload) {
+                        return err(e);
+                    }
+                }
+            }
+            Err(e) => return err(e),
+        }
+    }
+    let mut source = image_source;
     // The whole VFSI CONTAINER, not the bare SFFS body. A body is not an image:
     // nothing can find the filesystem inside it or the sections beside it. The
     // builder saving these bytes should be saving something the kernel can load
@@ -560,7 +852,95 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     }
 }
 
-/// Set the image-metadata section the exported container will carry.
+/// Read back the image metadata this filesystem currently carries.
+///
+/// Returns the byte count written, or the record's length when `out_len` is 0 —
+/// the module's one size-probe convention, shared with `sm_read_dir`,
+/// `sm_check_headroom` and `sm_lstat`. A filesystem carrying no metadata
+/// answers 0, which is "there is none" and not an error.
+///
+/// # Why the kernel hands back BYTES and parses nothing
+///
+/// The metadata is an open JSON shape — `version`, `kernelAbi`, `createdBy`,
+/// and whatever a future producer adds. A Rust reader that parsed it into a
+/// struct and re-serialised would silently drop every field it did not know
+/// about, which is the opposite of what an open shape is for, and teaching the
+/// kernel crate to parse JSON for three fields it does not act on would buy a
+/// parser's attack surface for nothing. So the kernel carries these bytes
+/// exactly as it carries a deferred file's payload: opaquely.
+///
+/// # Why this needs an entry point at all
+///
+/// After a load the KERNEL holds the metadata — the image declared it and
+/// `load_image` keeps it. The bridge cannot answer from anything it kept,
+/// because it never sent it. Every builder that reads this is CHECKING it: six
+/// call sites, all comparing `kernelAbi` against what the build expects, which
+/// is a guard that must read the base's real answer rather than the builder's
+/// own memory of what it set.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe a writable range when `out_len` is nonzero.
+/// Read the LOADED image at `offset` — the random-access window the kernel
+/// reads base-file content through for the life of a session.
+///
+/// # Why this is not `sm_export_image_read`
+///
+/// That one BUILDS an image from the current tree at offset 0 and streams
+/// from that build, and its contract forbids interleaved mutation. It is a
+/// serializer. The kernel needs the opposite: arbitrary offsets, in any
+/// order, against a filesystem that is live, for as long as the session
+/// lasts. Serving that from the export stream would mean rebuilding a 249 MiB
+/// image on every base-file read.
+///
+/// # Why this is not a pointer to the body
+///
+/// Handing the host an offset and a length into module memory would be one
+/// call instead of many, and would make the host an aliaser of this module's
+/// allocator — a wider capability than reading bytes, and one that breaks the
+/// moment linear memory grows. A bounded copy costs a call and keeps the
+/// module the only thing that knows where its image lives.
+///
+/// Returns the number of bytes copied, `0` at or past the end of the image,
+/// or a negative errno. `EIO` when no image is loaded.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe writable memory of the stated length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_image_read(offset: i64, out_ptr: usize, out_len: usize) -> i32 {
+    if out_ptr == 0 || offset < 0 {
+        return err(Errno::EINVAL);
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    match image_source(rootfs::ByteReq::Image { offset: offset as u64 }, out) {
+        Ok(n) => i32::try_from(n).unwrap_or(i32::MAX),
+        Err(e) => err(e),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_image_metadata(out_ptr: usize, out_len: usize) -> i32 {
+    let metadata = rootfs::image_metadata();
+    let len = metadata.as_ref().map_or(0, |bytes| bytes.len());
+    if out_len == 0 {
+        return i32::try_from(len).unwrap_or(i32::MAX);
+    }
+    if out_ptr == 0 || out_len < len {
+        return err(Errno::EINVAL);
+    }
+    if let Some(bytes) = metadata {
+        let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+        out[..bytes.len()].copy_from_slice(&bytes);
+    }
+    i32::try_from(len).unwrap_or(i32::MAX)
+}
+
+/// Set what the exported image should be: its declared capacity, and the
+/// metadata section it carries.
+///
+/// `capacity_bytes` is a FLOOR on the growth ceiling, not a size — the export
+/// still sizes itself to hold the tree, and 0 means "no request". A product
+/// declares this and its publication gate checks the artifact against it;
+/// without it the export sizes to its own tree and meets no declared capacity.
 ///
 /// Opaque bytes: the builder's statements about its own artifact (`version`,
 /// `kernelAbi`, `createdBy`). The kernel stores and emits them without reading
@@ -569,7 +949,38 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
 /// # Safety
 /// `ptr`/`len` must describe a readable range, or `len` must be 0.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sm_set_image_metadata(ptr: usize, len: usize) -> i32 {
+pub unsafe extern "C" fn sm_set_image_options(
+    capacity_bytes: u64,
+    ptr: usize,
+    len: usize,
+    normalize_timestamps_ms: i64,
+) -> i32 {
+    // Capacity and metadata travel together because they are the same KIND of
+    // thing: statements a builder makes about the artifact it wants, as opposed
+    // to operations on the tree inside it. One export for "settings for the
+    // image you will produce" rather than one per setting — the same reasoning
+    // that folded capacity into the headroom record instead of adding a second
+    // query.
+    if let Err(e) = rootfs::set_image_capacity(capacity_bytes) {
+        return err(e);
+    }
+    // A timestamp to stamp on every exported inode, or NEGATIVE for "use each
+    // inode's own". It rides here rather than through an entry point of its own
+    // for the same reason capacity and metadata do: it is a statement about the
+    // artifact the builder wants, not an operation on the tree.
+    //
+    // Negative rather than a separate flag because there is no such instant: a
+    // timestamp is milliseconds since the epoch, so the whole negative half of
+    // the range is free to mean "unset" without stealing a representable value.
+    let normalized = if normalize_timestamps_ms < 0 {
+        None
+    } else {
+        Some(normalize_timestamps_ms as u64)
+    };
+    if let Err(e) = rootfs::set_export_timestamp(normalized) {
+        return err(e);
+    }
+
     let bytes: &[u8] = if len == 0 {
         b""
     } else {
@@ -610,6 +1021,11 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     archive_bytes: u64,
     archive_payload_ptr: usize,
     archive_payload_len: usize,
+    cohort_id_ptr: usize,
+    cohort_id_len: usize,
+    cohort_member_ptr: usize,
+    cohort_member_len: usize,
+    cohort_expected_count: u32,
 ) -> i32 {
     // The archive's length is declared HERE rather than through an entry point
     // of its own. A member is useless without it -- fetching one member means
@@ -632,8 +1048,89 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         }
         unsafe { slice(archive_payload_ptr, archive_payload_len) }
     };
-    if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes, archive_payload) {
-        return err(e);
+    // `archive_id == 0` is a file fetched STANDALONE — no archive behind it, so
+    // nothing to declare, and the payload belongs to the FILE rather than to an
+    // archive. That case was unreachable through this entry point until now,
+    // because the archive declaration below refuses id 0: the bridge could
+    // register an archive member and could not register the shape 79 files in
+    // the shipped shell image actually have, which is also the shape lane S's
+    // setuid defect is about.
+    if archive_id != 0 {
+        // The length is the STORE's rule: one archive with two lengths has no
+        // correct reading, and it can say so without reading anything.
+        if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {
+            return err(e);
+        }
+        // The description is the FORMAT's, so it is merged here. Registration
+        // is per file and a description is per archive, so a builder carries
+        // it on one member and omits it on the rest; deciding that an omitted
+        // description says nothing, and that two given ones must agree, means
+        // reading the payload, which only the module can do.
+        //
+        // Gap 18 is why the module writes the envelope at all: storing the
+        // caller's bytes made a plain JSON descriptor decode as a versioned
+        // record, and its first four bytes became a version word. Gap 19 is
+        // why the merge came here too — wrapping an OMITTED description
+        // produced a nine-byte envelope describing nothing, which the store
+        // saw as a second, different description of one archive and refused.
+        let cohort_id = unsafe { slice(cohort_id_ptr, cohort_id_len) };
+        let cohort_member = unsafe { slice(cohort_member_ptr, cohort_member_len) };
+        let existing = rootfs::archive_payload(archive_id).unwrap_or_default();
+        let mut payload = match seal::decode(&existing) {
+            Ok(payload) => payload,
+            Err(e) => return err(e),
+        };
+        if !archive_payload.is_empty() {
+            if !payload.descriptor.is_empty() && payload.descriptor != archive_payload {
+                return err(Errno::EINVAL);
+            }
+            payload.descriptor = archive_payload.to_vec();
+        }
+        // The cohort declaration rides here for the same reason the length and
+        // the description do: a cohort MEMBER is an archive, and this is where
+        // an archive is named. It could have been an `sm_declare_cohort` of its
+        // own, which would have bought a tidier signature with a permanent
+        // entry in the builders' ABI -- and the budget record already argues
+        // this case for this call, for the archive length.
+        //
+        // An empty id means "not in a cohort", which is what nearly every
+        // archive is.
+        if !cohort_id.is_empty() {
+            let declared = (cohort_id, cohort_member, cohort_expected_count);
+            match payload.seal.cohort() {
+                // Members of one cohort must agree about the cohort. This is
+                // the same rule as the description's, and it compares
+                // membership rather than the whole seal so that declaring a
+                // member again after an export -- which turned the declaration
+                // into a SEAL -- is a no-op rather than a conflict.
+                Some(existing) if existing != declared => return err(Errno::EINVAL),
+                Some(_) => {}
+                None => {
+                    payload.seal = seal::SealState::Pending {
+                        id: cohort_id.to_vec(),
+                        member: cohort_member.to_vec(),
+                        expected_count: cohort_expected_count,
+                    }
+                }
+            }
+        }
+        // An archive with nothing to say keeps an EMPTY payload rather than an
+        // envelope describing nothing. Empty already means "no description" at
+        // every other layer -- it is what a `KLZY`-described image carries and
+        // what `decode` accepts early -- and encoding that same absence as
+        // nine bytes would put a deferred section into images that have no
+        // deferred anything to describe.
+        let wrapped = if payload.descriptor.is_empty() && payload.seal == seal::SealState::None {
+            alloc::vec::Vec::new()
+        } else {
+            match seal::encode(&payload) {
+                Ok(bytes) => bytes,
+                Err(e) => return err(e),
+            }
+        };
+        if let Err(e) = rootfs::set_archive_payload(archive_id, &wrapped) {
+            return err(e);
+        }
     }
     ok_or_errno(rootfs::insert_lazy_file(
         unsafe { slice(path_ptr, path_len) },
@@ -644,7 +1141,97 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         uid,
         gid,
         ino,
+        // With an archive, the payload described the ARCHIVE and the file needs
+        // none of its own. Without one, it describes the file.
+        if archive_id == 0 { archive_payload } else { b"" },
     ))
+}
+
+/// Measure the image this tree would export, and judge its headroom.
+///
+/// Writes five little-endian `u64`s — `free_bytes`, `required_bytes`,
+/// `free_inodes`, `required_inodes`, `capacity_bytes` — and returns 0 when the
+/// headroom profile is met, or `-EDOM` when it is not, with the numbers in
+/// `out` either way.
+///
+/// **One call rather than one per assertion.** Capacity was briefly a second
+/// entry point and the surface budget refused it, correctly: the builders make
+/// several assertions about one artifact, and each is a separate ABI crossing
+/// only if the module is asked one question at a time. What crosses is the set
+/// of FACTS about the image, plus the verdict that needs kernel arithmetic.
+///
+/// Capacity is reported and not judged here, deliberately. Parsing the ceiling
+/// out of a container header and an SFFS superblock is format knowledge and
+/// belongs on this side; comparing the result to a number the profile declares
+/// is a comparison, and belongs with whoever holds the profile. Call with
+/// `out_len == 0` for the required size, the convention `sm_read_dir` uses.
+///
+/// # Why a POLICY and not a `statfs`
+///
+/// The builders' `assertVfsImageHeadroom` reads `statfs`, multiplies free
+/// blocks by block size, compares two numbers and formats a message. Exposing
+/// `statfs` would have been one line and would have left that arithmetic and
+/// that judgement in TypeScript — moving a syscall rather than a decision, and
+/// leaving the host doing MORE work while the surface count looked better.
+///
+/// `image_policy::check_headroom` already performs exactly this computation
+/// over `Sffs::statfs`, so what crosses the boundary is the verdict plus the
+/// numbers behind it. The caller still formats the message, because a `no_std`
+/// policy that owned its own prose would force one wording on every host.
+///
+/// # Why it costs an entry point, deliberately
+///
+/// This is the module's twentieth, against a `sffsModuleEntryPoints` budget
+/// banked at nineteen. The budget's own rule is that the surface does not grow
+/// WITHOUT AN ARGUMENT, and the argument is that the host ends up doing less:
+/// a primitive and a computation in TypeScript become one verdict. It is also
+/// the last method standing between `vfs-image-helpers.ts` — the funnel every
+/// builder reaches the format through — and an interface it can be typed
+/// against.
+///
+/// # Safety
+/// `out_ptr`/`out_len` must describe a writable range when `out_len` is nonzero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_check_headroom(
+    minimum_free_bytes: u64,
+    minimum_free_inodes: u64,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    const RECORD: usize = 5 * 8;
+    if out_len == 0 {
+        return RECORD as i32;
+    }
+    if out_ptr == 0 || out_len < RECORD {
+        return err(Errno::EINVAL);
+    }
+
+    let headroom = runtime_core::image_policy::Headroom {
+        minimum_free_bytes,
+        minimum_free_inodes,
+    };
+    let outcome = match rootfs::check_export_headroom(&headroom) {
+        Ok(outcome) => outcome,
+        Err(e) => return err(e),
+    };
+    let capacity = match rootfs::export_capacity_bytes() {
+        Ok(bytes) => bytes,
+        Err(e) => return err(e),
+    };
+    let fields = [
+        outcome.free_bytes,
+        outcome.required_bytes,
+        outcome.free_inodes,
+        outcome.required_inodes,
+        capacity,
+    ];
+    let rc = if outcome.met { 0 } else { err(Errno::EDOM) };
+
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    for (index, value) in fields.iter().enumerate() {
+        out[index * 8..index * 8 + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    rc
 }
 
 /// # Safety
@@ -685,8 +1272,7 @@ mod tests {
 
     #[test]
     fn the_write_path_builds_a_tree_through_the_abi() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_path(b"/usr/lib/kandelo", |p, l| unsafe { sm_mkdir_parents(p, l, 0o755, 0, 0) }),
@@ -709,8 +1295,7 @@ mod tests {
 
     #[test]
     fn metadata_operations_reach_the_filesystem() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/opt", |p, l| unsafe { sm_mkdir(p, l, 0o700, 1, 2) }), 0);
         assert_eq!(with_path(b"/opt", |p, l| unsafe { sm_chmod(p, l, 0o751) }), 0);
         assert_eq!(
@@ -739,8 +1324,7 @@ mod tests {
 
     #[test]
     fn files_are_written_with_their_contents_and_mode() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/etc", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let body = b"root:x:0:0:root:/root:/bin/sh\n";
@@ -769,8 +1353,7 @@ mod tests {
     /// returns EIO is never called, and the write succeeds.
     #[test]
     fn a_full_rewrite_of_a_base_file_needs_no_base_bytes() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         // A base file: metadata in the overlay, contents nominally in a host
         // blob this module cannot read.
         rootfs::insert_base_file(b"/base.bin", 42, 16, 0o644, 0, 0, 7).expect("insert base");
@@ -796,8 +1379,7 @@ mod tests {
     /// An empty file is a file, not a failure. The builders write them.
     #[test]
     fn an_empty_file_round_trips() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_two(b"/empty", b"", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o600, cp, cl)
         });
@@ -811,8 +1393,7 @@ mod tests {
     /// write_file_at's contract that create and replace behave alike.
     #[test]
     fn rewriting_a_file_replaces_its_bytes_and_mode() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(
             with_two(b"/f", b"a much longer original", |pp, pl, cp, cl| unsafe {
                 sm_write_file(pp, pl, 0o755, cp, cl)
@@ -833,8 +1414,7 @@ mod tests {
     /// The six-field record decodes at the documented offsets.
     #[test]
     fn lstat_writes_the_documented_record() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(
             with_two(b"/f", b"12345", |pp, pl, cp, cl| unsafe {
                 sm_write_file(pp, pl, 0o640, cp, cl)
@@ -843,8 +1423,8 @@ mod tests {
         );
         assert_eq!(with_path(b"/f", |p, l| unsafe { sm_chown(p, l, 3, 4, 0) }), 0);
 
-        let size = sm_stat_size();
-        assert_eq!(size, 48, "six u64 fields");
+        let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
+        assert_eq!(size, 64, "eight u64 fields");
         let out = sm_alloc(size);
         assert_ne!(out, 0);
         let rc = with_path(b"/f", |p, l| unsafe { sm_lstat(p, l, out, size) });
@@ -860,6 +1440,8 @@ mod tests {
         assert_eq!(at(3), 3, "uid at field 3");
         assert_eq!(at(4), 4, "gid at field 4");
         assert_eq!(at(5), 5, "size at field 5");
+        assert_eq!(at(6), 0, "not deferred, at field 6");
+        assert_eq!(at(7), 0, "no archive, at field 7");
         unsafe { sm_free(out, size) };
     }
 
@@ -868,9 +1450,8 @@ mod tests {
     /// like data.
     #[test]
     fn lstat_refuses_an_undersized_buffer() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
-        let size = sm_stat_size();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
         let out = sm_alloc(size);
         let rc = with_path(b"/", |p, l| unsafe { sm_lstat(p, l, out, size - 1) });
         assert!(rc < 0, "an undersized buffer must fail, got {rc}");
@@ -879,8 +1460,7 @@ mod tests {
 
     #[test]
     fn readlink_and_read_file_return_byte_counts() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(
             with_two(b"/data", b"hello world", |pp, pl, cp, cl| unsafe {
                 sm_write_file(pp, pl, 0o644, cp, cl)
@@ -907,7 +1487,7 @@ mod tests {
         // contract, so a builder's loop terminates the way it expects.
         let n = with_path(b"/data", |p, l| unsafe { sm_read_file(p, l, 11, buf, 32) });
         assert_eq!(n, 0);
-        unsafe { sm_free(buf, 32) };
+        unsafe { sm_free(buf, 40) };
     }
 
     /// Reading a BASE file is the case the write path could not reach: its
@@ -915,8 +1495,7 @@ mod tests {
     /// is real rather than unreachable, and must be loud.
     #[test]
     fn reading_a_base_file_fails_loudly_rather_than_returning_zeroes() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         rootfs::insert_base_file(b"/base.bin", 42, 16, 0o644, 0, 0, 7).expect("insert base");
         let buf = sm_alloc(16);
         let rc = with_path(b"/base.bin", |p, l| unsafe { sm_read_file(p, l, 0, buf, 16) });
@@ -944,8 +1523,7 @@ mod tests {
 
     #[test]
     fn read_dir_lists_entries_and_sizes_itself() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/d", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         for name in [&b"/d/one"[..], &b"/d/two"[..], &b"/d/three"[..]] {
             assert_eq!(
@@ -976,8 +1554,7 @@ mod tests {
     /// missing binary nobody notices until something runs.
     #[test]
     fn read_dir_refuses_a_buffer_that_would_truncate() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/d", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_two(b"/d/file", b"x", |pp, pl, cp, cl| unsafe { sm_write_file(pp, pl, 0o644, cp, cl) }),
@@ -994,8 +1571,7 @@ mod tests {
 
     #[test]
     fn read_dir_on_an_empty_directory_is_empty_not_an_error() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/empty", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         let required = with_path(b"/empty", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
         assert_eq!(required, 0, "an empty directory needs no bytes, and is not a failure");
@@ -1003,8 +1579,7 @@ mod tests {
 
     #[test]
     fn read_dir_on_a_missing_path_is_an_error() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_path(b"/nope", |p, l| unsafe { sm_read_dir(p, l, 0, 0) });
         assert!(rc < 0, "a missing directory must be an error, not an empty listing, got {rc}");
     }
@@ -1021,10 +1596,49 @@ mod tests {
     ///
     /// It emits a container now. The assertions are inverted rather than
     /// deleted, so the question this test was written to answer stays answered.
+    /// Drain the whole exported container.
+    ///
+    /// **Bounded on purpose.** These loops were written to stop when the export
+    /// returns 0, which is correct until a defect stops it returning 0 — and a
+    /// mutation trial did exactly that, making the export ignore its offset and
+    /// restart forever. The test span for eighteen minutes growing a buffer
+    /// instead of failing, and the mutation harness waited on it because
+    /// nothing bounded either side.
+    ///
+    /// A test that hangs is worse than one that fails: it costs the whole run
+    /// and says nothing about what broke. The cap is far above any image these
+    /// tests build, so it can only be hit by non-termination.
+    fn drain_export() -> alloc::vec::Vec<u8> {
+        const CHUNK: usize = 64 * 1024;
+        // These images are kilobytes. A megabyte means the export is not
+        // advancing.
+        const SANE_LIMIT: usize = 4 * 1024 * 1024;
+        let buf = sm_alloc(CHUNK);
+        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let n = unsafe { sm_export_image_read(offset, buf, CHUNK) };
+            assert!(n >= 0, "export failed at offset {offset}: {n}");
+            if n == 0 {
+                break;
+            }
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
+            image.extend_from_slice(got);
+            offset += n as i64;
+            assert!(
+                image.len() <= SANE_LIMIT,
+                "the export is not advancing: {} bytes drained from a tiny image, so \
+                 some chunk is being served again instead of the next one",
+                image.len(),
+            );
+        }
+        unsafe { sm_free(buf, CHUNK) };
+        image
+    }
+
     #[test]
     fn the_export_emits_a_whole_container_not_a_bare_body() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
             with_two(b"/usr/hello", b"hi", |pp, pl, cp, cl| unsafe {
@@ -1033,21 +1647,7 @@ mod tests {
             0
         );
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "export failed at offset {offset}: {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
         assert!(!image.is_empty(), "the export must produce bytes");
 
         // The decisive check: these bytes are a container, so a bare mount
@@ -1080,29 +1680,14 @@ mod tests {
 
     #[test]
     fn image_metadata_set_through_the_abi_reaches_the_exported_container() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let metadata = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
         assert_eq!(
-            with_path(metadata, |p, l| unsafe { sm_set_image_metadata(p, l) }),
+            with_path(metadata, |p, l| unsafe { sm_set_image_options(0, p, l, -1) }),
             0
         );
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "export failed at offset {offset}: {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
 
         assert_eq!(
             runtime_core::sffs::metadata_section(&image)
@@ -1113,21 +1698,8 @@ mod tests {
         );
 
         // Clearing it removes the section rather than leaving an empty one.
-        assert_eq!(unsafe { sm_set_image_metadata(0, 0) }, 0);
-        let buf = sm_alloc(chunk);
-        let mut cleared: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0);
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            cleared.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
+        let cleared = drain_export();
         assert!(runtime_core::sffs::metadata_section(&cleared).expect("walk").is_none());
     }
 
@@ -1153,25 +1725,10 @@ mod tests {
     /// because the image builds, mounts, and boots.
     #[test]
     fn exporting_a_base_file_silently_empties_it_todo_derived_builds() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         rootfs::insert_base_file(b"/base.bin", 42, 4096, 0o644, 0, 0, 9).expect("insert base");
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "the export completes; it does not consult the base bytes. got {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
 
         let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
         let fs = runtime_core::sffs::Sffs::mount(body).expect("mount the exported image");
@@ -1179,9 +1736,17 @@ mod tests {
         let st = fs.stat_ino(ino).expect("stat");
 
         assert_eq!(st.size, 0, "THE DAMAGE: a 4096-byte file exports as zero-length");
+        // The image now always carries a deferred section, because an image
+        // that carries none is one the kernel refuses to load (gap 15). So the
+        // damage is no longer "there is no section" but "the section does not
+        // mention this inode" — which is the same loss stated against a
+        // carrier that exists. A blob-backed base file has no identity the
+        // kernel could write down; that is the master plan's items 2 and 3,
+        // and it is still open.
+        let section = fs.deferred_section().expect("decodes").expect("a section");
         assert!(
-            fs.deferred_section().expect("decodes").is_none(),
-            "THE DAMAGE: and with no deferred record, so nothing records where its bytes were",
+            !section.records.iter().any(|r| r.ino == ino),
+            "THE DAMAGE: no deferred record, so nothing records where its bytes were",
         );
     }
 
@@ -1205,12 +1770,11 @@ mod tests {
     /// what would make a 249 MiB image impossible.
     #[test]
     fn a_registered_lazy_file_exports_as_deferred_with_its_real_size() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 
@@ -1219,21 +1783,7 @@ mod tests {
         assert_eq!(st.st_size, 99_999, "the manifest size is authoritative pre-fetch");
         assert_eq!(st.st_mode & 0o7777, 0o755);
 
-        let chunk = 64 * 1024;
-        let buf = sm_alloc(chunk);
-        let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-        let mut offset = 0i64;
-        loop {
-            let n = unsafe { sm_export_image_read(offset, buf, chunk) };
-            assert!(n >= 0, "the export completes, which is the problem. got {n}");
-            if n == 0 {
-                break;
-            }
-            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, n as usize) };
-            image.extend_from_slice(got);
-            offset += n as i64;
-        }
-        unsafe { sm_free(buf, chunk) };
+        let image = drain_export();
 
         let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
         let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
@@ -1278,9 +1828,1460 @@ mod tests {
     }
 
     #[test]
+    fn a_file_fetched_standalone_registers_and_exports_with_its_description() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+
+        // No archive: `archive_id == 0`, no member path, and the payload is the
+        // whole of what says where the bytes are. This is the shape 79 files in
+        // the shipped shell image have, and the shape lane S's setuid defect is
+        // about — and it was NOT registrable through this entry point before,
+        // because the archive declaration it went through refuses id 0.
+        let url: &[u8] = b"https://example.invalid/sudo#sha256:feedface";
+        let rc = with_two(b"/usr/sudo", url, |pp, pl, up, ul| unsafe {
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 99_999, 0o4755, 0, 0, 40, 0, up, ul, 0, 0, 0, 0, 0)
+        });
+        assert_eq!(rc, 0, "a standalone-fetch file registers");
+
+        // Its metadata is right before any fetch, setuid bit included.
+        let st = rootfs::lstat(b"/usr/sudo").expect("exists");
+        assert_eq!(st.st_size, 99_999);
+        assert_eq!(st.st_mode & 0o7777, 0o4755);
+
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let ino = fs.resolve(b"/usr/sudo", false).expect("the path survives");
+        let record = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("a deferred section")
+            .get(ino)
+            .cloned()
+            .expect("a record for it");
+
+        assert_eq!(record.size, 99_999, "the real size rides in the record");
+        assert_eq!(record.archive_id, 0, "fetched standalone");
+        assert!(record.source_path.is_empty(), "so with no member path");
+        assert_eq!(
+            record.payload, url,
+            "and the description carried through byte for byte — this is where a \
+             digest for a setuid binary would live",
+        );
+    }
+
+    #[test]
+    fn an_archive_member_and_a_standalone_file_can_share_one_image() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let rc = with_two(b"/member", b"members/x", |pp, pl, sp, sl| unsafe {
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+        });
+        assert_eq!(rc, 0);
+        let url: &[u8] = b"https://example.invalid/solo";
+        let rc = with_two(b"/solo", url, |pp, pl, up, ul| unsafe {
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 20, 0o644, 0, 0, 41, 0, up, ul, 0, 0, 0, 0, 0)
+        });
+        assert_eq!(rc, 0);
+
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let section = fs.deferred_section().expect("decodes").expect("section");
+        assert_eq!(section.len(), 2, "both are described");
+
+        // One archive declared, for the member that needs it — and not one for
+        // the standalone file, which has no archive to declare.
+        assert_eq!(section.archives.len(), 1);
+        assert_eq!(section.archive_bytes(3), Some(8_000_000));
+
+        let member = fs.resolve(b"/member", false).expect("member");
+        let solo = fs.resolve(b"/solo", false).expect("solo");
+        assert_eq!(section.get(member).expect("member record").archive_id, 3);
+        assert_eq!(section.get(solo).expect("solo record").archive_id, 0);
+        assert_eq!(section.get(solo).expect("solo record").payload, url);
+    }
+
+    #[test]
+    fn the_export_reports_its_own_growth_ceiling() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+
+        let buf = sm_alloc(40);
+        assert_eq!(unsafe { sm_check_headroom(0, 0, buf, 40) }, 0);
+        let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, 40) };
+        let ceiling =
+            u64::from_le_bytes(bytes[32..40].try_into().expect("8")) as i64;
+        unsafe { sm_free(buf, 40) };
+        assert!(ceiling > 0, "a real ceiling: {ceiling}");
+
+        // It is the ceiling the EXPORTED IMAGE declares, so reading the bytes
+        // back must agree. That is the property the builders assert, and
+        // checking it here is what makes asking the producer equivalent to
+        // parsing the artifact.
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        assert_eq!(
+            fs.growth_ceiling_bytes().expect("ceiling"),
+            ceiling as u64,
+            "the producer's answer and the artifact's own header agree",
+        );
+    }
+
+    #[test]
+    fn a_requested_capacity_raises_the_ceiling_without_shrinking_the_image() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+
+        let ceiling_of = || -> u64 {
+            let image = drain_export();
+            let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+            runtime_core::sffs::Sffs::mount(body)
+                .expect("mount")
+                .growth_ceiling_bytes()
+                .expect("ceiling")
+        };
+
+        // Without a request the export sizes to its own tree — gap 14's
+        // starting condition, and why a declared capacity was unmeetable.
+        let unrequested = ceiling_of();
+
+        // A request raises it. This is the number a product declares and its
+        // publication gate checks the artifact against.
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
+        let requested = ceiling_of();
+        assert!(
+            requested >= 64 * 1024 * 1024,
+            "the declared capacity is met: {requested}",
+        );
+        assert!(requested > unrequested, "and it is a raise, not a coincidence");
+
+        // A request SMALLER than the tree needs is a floor, not a size: the
+        // tree's own requirement still wins, because an image that cannot hold
+        // its contents is not a smaller image, it is a broken one.
+        assert_eq!(unsafe { sm_set_image_options(1, 0, 0, -1) }, 0);
+        assert_eq!(
+            ceiling_of(),
+            unrequested,
+            "a request below the tree's requirement changes nothing",
+        );
+
+        // And zero clears it.
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
+        assert_eq!(ceiling_of(), unrequested);
+    }
+
+    /// Hand an image to the module the way the host will: allocate, copy,
+    /// transfer. Returns the entry count `sm_load_image` reported.
+    fn load_image_bytes(image: &[u8]) -> i32 {
+        let ptr = sm_alloc(image.len());
+        assert_ne!(ptr, 0, "allocation for a {}-byte image", image.len());
+        unsafe { core::ptr::copy_nonoverlapping(image.as_ptr(), ptr as *mut u8, image.len()) };
+        // Ownership transfers on success; nothing here frees it.
+        unsafe { sm_load_image(ptr, image.len()) }
+    }
+
+    #[test]
+    fn an_image_this_module_exported_is_one_it_can_load_back() {
+        // The round trip is the whole claim of the bridge: a builder writes a
+        // tree, saves it, and a DERIVED build starts from what was saved. If
+        // the load cannot read what the export wrote, the two halves are not
+        // one format and every derived build is building on sand.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/etc", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        assert_eq!(with_two(b"/etc/motd", b"be excellent", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        assert_eq!(with_two(b"/link", b"/etc/motd", |pp, pl, tp, tl| unsafe {
+            sm_symlink(tp, tl, pp, pl, 0, 0)
+        }), 0);
+        let image = drain_export();
+
+        // A DIFFERENT filesystem: reset first, so nothing below can be
+        // answered by the tree that is still in memory.
+        sm_reset(0o755, 0, 0);
+        let entries = load_image_bytes(&image);
+        assert!(entries > 0, "load reported {entries} for a {}-byte image", image.len());
+
+        let stat_of = |path: &[u8]| -> [u64; 8] {
+            let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
+            let buf = sm_alloc(size);
+            let (pp, pl) = write_path(path);
+            let rc = unsafe { sm_lstat(pp, pl, buf, size) };
+            assert_eq!(rc, 0, "lstat {}", alloc::string::String::from_utf8_lossy(path));
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+            let mut out = [0u64; 8];
+            for (i, slot) in out.iter_mut().enumerate() {
+                let mut w = [0u8; 8];
+                w.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+                *slot = u64::from_le_bytes(w);
+            }
+            unsafe { sm_free(pp, pl) };
+            unsafe { sm_free(buf, size) };
+            out
+        };
+
+        assert_eq!(stat_of(b"/etc/motd")[5], 12, "the file's size came back");
+        assert_eq!(stat_of(b"/etc/motd")[1] & 0o777, 0o644, "and its mode");
+        assert_eq!(stat_of(b"/etc")[1] & 0o170000, 0o040000, "/etc is a directory");
+        assert_eq!(stat_of(b"/link")[1] & 0o170000, 0o120000, "/link is a symlink");
+
+        // The bytes, not just the metadata. A load that rebuilt the tree but
+        // lost its content would satisfy every assertion above.
+        let (pp, pl) = write_path(b"/etc/motd");
+        let buf = sm_alloc(64);
+        let n = unsafe { sm_read_file(pp, pl, 0, buf, 64) };
+        assert_eq!(n, 12, "read back {n}");
+        let got = unsafe { core::slice::from_raw_parts(buf as *const u8, 12) };
+        assert_eq!(got, b"be excellent", "the content survived the round trip");
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(buf, 64) };
+    }
+
+    #[test]
+    fn a_derived_export_carries_the_base_image_content_it_did_not_write() {
+        // The derived case: load an image, change one thing, export. Every file
+        // the builder did NOT touch must still export with its real bytes, and
+        // those bytes live in the loaded image rather than in any tree this
+        // module built. Before the load existed, the export's byte source was a
+        // hardcoded EIO and this was unreachable.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/base", b"from the base image", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let base = drain_export();
+
+        sm_reset(0o755, 0, 0);
+        assert!(load_image_bytes(&base) > 0);
+        assert_eq!(with_two(b"/added", b"by the derived build", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let derived = drain_export();
+
+        sm_reset(0o755, 0, 0);
+        assert!(load_image_bytes(&derived) > 0);
+        let read = |path: &[u8], want: &[u8]| {
+            let (pp, pl) = write_path(path);
+            let buf = sm_alloc(64);
+            let n = unsafe { sm_read_file(pp, pl, 0, buf, 64) };
+            assert_eq!(n as usize, want.len(), "reading {}", alloc::string::String::from_utf8_lossy(path));
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, want.len()) };
+            assert_eq!(got, want);
+            unsafe { sm_free(pp, pl) };
+            unsafe { sm_free(buf, 64) };
+        };
+        read(b"/base", b"from the base image");
+        read(b"/added", b"by the derived build");
+    }
+
+    #[test]
+    fn a_refused_image_leaves_its_buffer_with_the_host() {
+        // The ownership contract's dangerous half. On failure the host still
+        // owns what it allocated -- so the module must not have adopted it, or
+        // the host's own free is a double free. Observable here as: a refused
+        // load leaves NOTHING loaded, so a later export cannot serve base bytes
+        // out of a buffer the host is entitled to reuse.
+        sm_reset(0o755, 0, 0);
+        let junk = alloc::vec![0xABu8; 4096];
+        let ptr = sm_alloc(junk.len());
+        unsafe { core::ptr::copy_nonoverlapping(junk.as_ptr(), ptr as *mut u8, junk.len()) };
+        let rc = unsafe { sm_load_image(ptr, junk.len()) };
+        assert!(rc < 0, "4 KiB of 0xAB is not an image: {rc}");
+        // The host frees it, as the contract says it may. If the module had
+        // adopted it, this and the module's own free would both run.
+        unsafe { sm_free(ptr, junk.len()) };
+        assert!(image_bytes().is_none(), "nothing is loaded after a refusal");
+    }
+
+    #[test]
+    fn the_record_length_is_answerable_without_a_path() {
+        // The convention that let `sm_stat_size` go. A caller with no path yet
+        // -- which is every caller, before its first lstat -- can still size
+        // its buffer.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(unsafe { sm_lstat(0, 0, 0, 0) }, 64, "eight u64s");
+        // And a path that does not exist does not change the answer, because
+        // the probe is answered before the path is consulted.
+        let (pp, pl) = write_path(b"/nowhere");
+        assert_eq!(unsafe { sm_lstat(pp, pl, 0, 0) }, 64);
+        unsafe { sm_free(pp, pl) };
+        // While a real call with a too-small buffer is still refused -- on a
+        // path that EXISTS, because the ordering is probe, then path, then
+        // buffer: a missing path is ENOENT before the size is ever considered.
+        let (pp, pl) = write_path(b"/");
+        let buf = sm_alloc(8);
+        assert_eq!(unsafe { sm_lstat(pp, pl, buf, 8) }, -(Errno::EINVAL as i32));
+        unsafe { sm_free(buf, 8) };
+        unsafe { sm_free(pp, pl) };
+    }
+
+    #[test]
+    fn the_byte_source_serves_the_image_and_only_the_image() {
+        // `image_source` is the module's whole answer to "where do bytes come
+        // from", and every caller reaches it through several layers. Tested
+        // directly, because the boundaries that matter -- what it refuses, and
+        // what it does at the end of the image -- are hard to steer a builder
+        // into and trivial to state here.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        let len = image.len();
+
+        // Nothing loaded: a request cannot be served, and must not be answered
+        // with silence that reads like an empty file.
+        sm_reset(0o755, 0, 0);
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            image_source(rootfs::ByteReq::Image { offset: 0 }, &mut buf),
+            Err(Errno::EIO),
+            "no image loaded is a failure, not zero bytes",
+        );
+
+        assert!(load_image_bytes(&image) > 0);
+
+        // The image, from the front.
+        let mut head = [0u8; 8];
+        assert_eq!(image_source(rootfs::ByteReq::Image { offset: 0 }, &mut head), Ok(8));
+        assert_eq!(head, image[..8], "the bytes are the image's own");
+
+        // At the end: a short count, not a full buffer of whatever follows.
+        let mut tail = [0u8; 64];
+        let want = 10;
+        let n = image_source(
+            rootfs::ByteReq::Image { offset: (len - want) as u64 },
+            &mut tail,
+        );
+        assert_eq!(n, Ok(want), "a read straddling the end is short, not full");
+        assert_eq!(&tail[..want], &image[len - want..]);
+        // Past the end: nothing, and not an error -- a reader walking off the
+        // end has reached the end.
+        assert_eq!(
+            image_source(rootfs::ByteReq::Image { offset: len as u64 }, &mut tail),
+            Ok(0),
+        );
+
+        // And the requests this module cannot serve stay unserved. A blob or
+        // an archive is a HOST transport; answering one out of the image would
+        // hand back whatever bytes happen to sit at that offset, which is the
+        // most dangerous possible wrong answer because it looks like data.
+        assert_eq!(
+            image_source(rootfs::ByteReq::Base { blob_id: 1, offset: 0 }, &mut buf),
+            Err(Errno::EIO),
+        );
+        assert_eq!(
+            image_source(rootfs::ByteReq::Archive { archive_id: 1, offset: 0 }, &mut buf),
+            Err(Errno::EIO),
+        );
+    }
+
+    #[test]
+    fn a_blob_backed_file_is_not_read_out_of_the_loaded_image() {
+        // The same refusal, reached the way a builder would reach it. A base
+        // file whose bytes live in a host blob keeps its blob id after a load;
+        // if the byte source treated that id's offset as an image offset, the
+        // read would succeed and return unrelated bytes from the middle of the
+        // image.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        sm_reset(0o755, 0, 0);
+        assert!(load_image_bytes(&image) > 0);
+
+        rootfs::insert_base_file(b"/blob.bin", 7, 4096, 0o644, 0, 0, 99).expect("base file");
+        let (pp, pl) = write_path(b"/blob.bin");
+        let buf = sm_alloc(64);
+        let rc = unsafe { sm_read_file(pp, pl, 0, buf, 64) };
+        assert_eq!(rc, -(Errno::EIO as i32), "a blob is a host transport, not an offset");
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(buf, 64) };
+    }
+
+    #[test]
+    fn an_image_that_is_replaced_or_reset_is_freed() {
+        // The adopted buffer is the one allocation here whose lifetime
+        // outlives its call, so it is the one that can leak -- and a leak has
+        // no direct observation. A FREE does: the allocator can hand the region
+        // back.
+        //
+        // An earlier version asserted exact address equality after one replace.
+        // That was too coupled to the allocator's state: folding an inode
+        // allocation into `sm_reset` moved the addresses and broke a test whose
+        // subject had not changed. Counting DISTINCT adopted addresses across
+        // many loads says the same thing without depending on which address
+        // comes back. Each load allocates the new image BEFORE releasing the
+        // old, so a freeing implementation ping-pongs between two regions and
+        // a leaking one climbs forever.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        const LOADS: usize = 40;
+        let mut seen: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+        for _ in 0..LOADS {
+            assert!(load_image_bytes(&image) > 0);
+            let at = image_bytes().expect("loaded").as_ptr() as usize;
+            if !seen.contains(&at) {
+                seen.push(at);
+            }
+        }
+        // The property is that the region count stays BOUNDED while the number
+        // of loads grows -- a leak gives one fresh region per load, so forty
+        // loads would show forty.
+        //
+        // It used to assert two regions across eight loads, reasoning that
+        // allocate-before-release ping-pongs. That is what the allocator
+        // happens to do, not what freeing MEANS, and it made the test
+        // intermittent: one run in four observed four regions and failed with
+        // nothing wrong. A bound that encodes the allocator's choice fails for
+        // reasons unrelated to its subject, which is worse than a loose bound
+        // -- an intermittent gate teaches everyone to re-run it.
+        //
+        // Eight is far from both sides: a freeing implementation settles in a
+        // handful, and a leaking one is at forty. More loads than before, so
+        // this catches a leak more decisively than the tighter bound did.
+        assert!(
+            seen.len() <= 8,
+            "{LOADS} loads used {} distinct regions, which grows with the load \
+             count; a load that frees the image it replaces reuses them",
+            seen.len(),
+        );
+
+        // And a reset frees the last one, so the next load can have it back.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(image_bytes().is_none(), "nothing is loaded after a reset");
+        assert!(load_image_bytes(&image) > 0);
+        let after_reset = image_bytes().expect("loaded").as_ptr() as usize;
+        assert!(
+            seen.contains(&after_reset),
+            "the reset released its image, so the next load reused a region",
+        );
+    }
+
+    #[test]
+    fn an_empty_range_is_not_an_image() {
+        sm_reset(0o755, 0, 0);
+        let ptr = sm_alloc(16);
+        assert_eq!(unsafe { sm_load_image(ptr, 0) }, -(Errno::EINVAL as i32));
+        assert_eq!(unsafe { sm_load_image(0, 16) }, -(Errno::EINVAL as i32));
+        assert!(image_bytes().is_none());
+        unsafe { sm_free(ptr, 16) };
+
+        // The return code is not what the guard is for. A zero-length range
+        // would fail the load anyway -- there is no container in no bytes --
+        // so refusing it early changes no answer. What it changes is that the
+        // refusal happens BEFORE `release_image`, so a malformed call cannot
+        // destroy the image already loaded. Without that, any caller that
+        // passed a truncated buffer would silently empty the base layer and
+        // then get an error that says nothing about what it cost.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        sm_reset(0o755, 0, 0);
+        assert!(load_image_bytes(&image) > 0);
+        let loaded = image_bytes().expect("loaded").as_ptr() as usize;
+
+        let ptr = sm_alloc(16);
+        assert_eq!(unsafe { sm_load_image(ptr, 0) }, -(Errno::EINVAL as i32));
+        assert_eq!(
+            image_bytes().expect("still loaded").as_ptr() as usize,
+            loaded,
+            "a refused load left the loaded image alone",
+        );
+        unsafe { sm_free(ptr, 16) };
+    }
+
+    #[test]
+    fn a_failed_export_reports_the_failure_rather_than_a_byte_count() {
+        // A zero return from `sm_export_image_read` means "the image ends
+        // here", so an error reported as 0 is an error reported as SUCCESS --
+        // the host writes a truncated image and nothing says otherwise.
+        //
+        // This used to reach the failure by exporting with no root inode.
+        // Folding `sm_init_root` into `sm_reset` made that state unreachable,
+        // which is the fold working as intended and not a loss: a negative
+        // offset is a failure a real caller can actually produce, by carrying
+        // a cursor that went wrong.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let buf = sm_alloc(4096);
+        let rc = unsafe { sm_export_image_read(-1, buf, 4096) };
+        assert!(rc < 0, "a negative offset is a failure, got {rc}");
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn declaring_room_is_not_occupying_it() {
+        // The maintainer's rule, stated rather than assumed: "an image of
+        // capacity X should only take the size of its contents in memory when
+        // loaded. It should not take X in memory right away unless it is
+        // filled to capacity X already."
+        //
+        // This held before it was written down, and would have been lost
+        // quietly: the capacity test declares 64 MiB and passes only because
+        // `drain_export` gives up past 4 MiB, so a regression would have
+        // surfaced as a confusing drain failure rather than as this sentence.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
+
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+
+        assert!(
+            fs.growth_ceiling_bytes().expect("ceiling") >= 64 * 1024 * 1024,
+            "the room is declared",
+        );
+        // And not taken. The one cost that IS proportional is the inode table,
+        // which grows as `max_blocks / 4` -- about 2 MiB for this declaration,
+        // which is why the bound is generous rather than zero. It is still two
+        // orders of magnitude below the declared room.
+        assert!(
+            image.len() < 4 * 1024 * 1024,
+            "a five-byte tree declaring 64 MiB exported {} bytes",
+            image.len(),
+        );
+    }
+
+    #[test]
+    fn a_load_keeps_what_the_image_says_about_itself() {
+        // Gap 16. Both of these were written only by their setters and read
+        // only by the export, so an image loaded and re-exported came back
+        // having forgotten its own declarations.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let meta = b"{\"kernelAbi\":44,\"createdBy\":\"the test\"}";
+        let mp = sm_alloc(meta.len());
+        unsafe { core::ptr::copy_nonoverlapping(meta.as_ptr(), mp as *mut u8, meta.len()) };
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, mp, meta.len(), -1) }, 0);
+        unsafe { sm_free(mp, meta.len()) };
+        let original = drain_export();
+
+        // A DIFFERENT filesystem, with nothing declared on it.
+        sm_reset(0o755, 0, 0);
+        assert!(load_image_bytes(&original) > 0);
+        let rewritten = drain_export();
+
+        let body = runtime_core::sffs::unwrap_vfsi(&rewritten).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        assert!(
+            fs.growth_ceiling_bytes().expect("ceiling") >= 64 * 1024 * 1024,
+            "the declared capacity survived the load",
+        );
+        assert_eq!(
+            runtime_core::sffs::metadata_span(&rewritten.as_slice())
+                .expect("span")
+                .map(|(offset, len)| {
+                    let start = offset as usize;
+                    rewritten[start..start + len as usize].to_vec()
+                })
+                .as_deref(),
+            Some(&meta[..]),
+            "and so did the metadata the image declared",
+        );
+
+        // And the room is still declared rather than taken.
+        assert!(
+            rewritten.len() < 4 * 1024 * 1024,
+            "the re-export took {} bytes",
+            rewritten.len(),
+        );
+    }
+
+    #[test]
+    fn the_metadata_can_be_read_back_including_an_image_the_builder_never_set() {
+        // Six builder call sites read this, and every one of them is a GUARD:
+        // they compare the base image's declared `kernelAbi` against what the
+        // build expects. A guard must read the base's real answer, not the
+        // builder's memory of what it set -- and after a load the builder set
+        // nothing at all.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(unsafe { sm_image_metadata(0, 0) }, 0, "nothing declared yet");
+
+        let meta = b"{\"version\":1,\"kernelAbi\":44}";
+        let mp = sm_alloc(meta.len());
+        unsafe { core::ptr::copy_nonoverlapping(meta.as_ptr(), mp as *mut u8, meta.len()) };
+        assert_eq!(unsafe { sm_set_image_options(0, mp, meta.len(), -1) }, 0);
+        unsafe { sm_free(mp, meta.len()) };
+
+        let read = |expect: &[u8]| {
+            let size = unsafe { sm_image_metadata(0, 0) } as usize;
+            assert_eq!(size, expect.len(), "the probe reports the record's length");
+            let buf = sm_alloc(size);
+            let n = unsafe { sm_image_metadata(buf, size) };
+            assert_eq!(n as usize, size);
+            let got = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+            assert_eq!(got, expect, "the bytes come back exactly as given");
+            unsafe { sm_free(buf, size) };
+        };
+        read(meta);
+
+        // The case the entry point exists for: a DIFFERENT filesystem, which
+        // declared nothing, reading what an image declared.
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(unsafe { sm_image_metadata(0, 0) }, 0, "and it starts empty");
+        assert!(load_image_bytes(&image) > 0);
+        read(meta);
+
+        // A buffer too small is refused rather than truncating an answer a
+        // caller would then parse as JSON and get a confusing error from.
+        let small = sm_alloc(4);
+        assert_eq!(
+            unsafe { sm_image_metadata(small, 4) },
+            -(Errno::EINVAL as i32),
+        );
+        unsafe { sm_free(small, 4) };
+    }
+
+    #[test]
+    fn reset_gives_the_root_the_ownership_and_mode_it_was_handed() {
+        // A surviving mutant: `sm_reset` took a root mode, uid and gid, and
+        // nothing asserted that any of the three reached the inode. Every test
+        // passed 0o755 and then looked at some OTHER path's mode, so a reset
+        // that hardcoded its root would have gone unnoticed -- and a root with
+        // the wrong mode is a permission boundary silently in the wrong place
+        // at the top of every image built afterwards.
+        //
+        // Reachable only since the fold: creating the root used to be
+        // `sm_init_root`'s job, and this is the coverage that did not move
+        // across with it.
+        assert_eq!(sm_reset(0o751, 7, 11), 0);
+
+        let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
+        let buf = sm_alloc(size);
+        let (pp, pl) = write_path(b"/");
+        assert_eq!(unsafe { sm_lstat(pp, pl, buf, size) }, 0);
+        let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+        let field = |i: usize| {
+            let mut w = [0u8; 8];
+            w.copy_from_slice(&bytes[i * 8..i * 8 + 8]);
+            u64::from_le_bytes(w)
+        };
+        assert_eq!(field(1) & 0o7777, 0o751, "the root carries the mode given");
+        assert_eq!(field(1) & 0o170000, 0o040000, "and is a directory");
+        assert_eq!(field(3), 7, "and the uid");
+        assert_eq!(field(4), 11, "and the gid");
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(buf, size) };
+    }
+
+    /// Register one member of `archive_id`, carrying `descriptor` (possibly
+    /// empty) as the archive's fetch description.
+    fn register_member(path: &[u8], archive_id: u32, source: &[u8], descriptor: &[u8]) -> i32 {
+        let (pp, pl) = write_path(path);
+        let (sp, sl) = write_path(source);
+        let dp = if descriptor.is_empty() { 0 } else { sm_alloc(descriptor.len()) };
+        if dp != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(descriptor.as_ptr(), dp as *mut u8, descriptor.len())
+            };
+        }
+        let rc = unsafe {
+            sm_register_lazy_file(
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+                     0, 0, 0, 0, 0,
+                )
+        };
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        if dp != 0 {
+            unsafe { sm_free(dp, descriptor.len()) };
+        }
+        rc
+    }
+
+    /// Register a member of an archive that also DECLARES its cohort.
+    fn register_cohort_member(
+        path: &[u8],
+        archive_id: u32,
+        source: &[u8],
+        descriptor: &[u8],
+        cohort: &[u8],
+        member: &[u8],
+        expected_count: u32,
+    ) -> i32 {
+        let (pp, pl) = write_path(path);
+        let (sp, sl) = write_path(source);
+        let (dp, dl) = write_path(descriptor);
+        let (cp, cl) = write_path(cohort);
+        let (mp, ml) = write_path(member);
+        let rc = unsafe {
+            sm_register_lazy_file(
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, dl,
+                cp, cl, mp, ml, expected_count,
+            )
+        };
+        for (ptr, len) in [(pp, pl), (sp, sl), (dp, dl), (cp, cl), (mp, ml)] {
+            unsafe { sm_free(ptr, len) };
+        }
+        rc
+    }
+
+    /// A root with one directory, ready for archive members.
+    fn fresh_tree() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+    }
+
+    /// Read the record set back through the size-probe convention.
+    fn drain_lazy_entries() -> alloc::vec::Vec<u8> {
+        let required = unsafe { sm_lazy_entries(0, 0) };
+        assert!(required >= 0, "size probe failed: {required}");
+        let len = required as usize;
+        let buf = sm_alloc(len.max(1));
+        let wrote = unsafe { sm_lazy_entries(buf, len) };
+        assert_eq!(wrote, required, "the probe and the write must agree");
+        let out = unsafe { core::slice::from_raw_parts(buf as *const u8, len) }.to_vec();
+        unsafe { sm_free(buf, len.max(1)) };
+        out
+    }
+
+    fn read_u32(bytes: &[u8], at: &mut usize) -> u32 {
+        let v = u32::from_le_bytes(bytes[*at..*at + 4].try_into().unwrap());
+        *at += 4;
+        v
+    }
+
+    fn read_u64(bytes: &[u8], at: &mut usize) -> u64 {
+        let v = u64::from_le_bytes(bytes[*at..*at + 8].try_into().unwrap());
+        *at += 8;
+        v
+    }
+
+    fn read_bytes(bytes: &[u8], at: &mut usize) -> alloc::vec::Vec<u8> {
+        let len = read_u32(bytes, at) as usize;
+        let v = bytes[*at..*at + len].to_vec();
+        *at += len;
+        v
+    }
+
+    #[test]
+    fn a_requested_export_timestamp_reaches_the_image() {
+        // The WIRING, not the normalisation. `rootfs` has its own two tests for
+        // what a normalised export writes; this asserts that
+        // `sm_set_image_options` carries the request to it, which is the part
+        // that lives here and which nothing in this crate covered -- a mutation
+        // deleting the call survived a full `cargo test -p sffs-module`.
+        const FIXED: i64 = 946_684_800_000; // 2000-01-01T00:00:00Z
+        fresh_tree();
+        assert_eq!(with_two(b"/opt/f", b"bytes", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, FIXED) }, 0);
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("unwrap");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let node = fs.resolve(b"/opt/f", true).expect("/opt/f");
+        let stat = fs.stat_ino(node).expect("stat");
+        assert_eq!(
+            (stat.mtime_ms, stat.ctime_ms, stat.atime_ms),
+            (FIXED as u64, FIXED as u64, FIXED as u64),
+        );
+
+        // And the negative half: NOT asking leaves the file's own times, so
+        // this pair cannot pass for an implementation that flattens always.
+        fresh_tree();
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
+        assert_eq!(with_two(b"/opt/f", b"bytes", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("unwrap");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let node = fs.resolve(b"/opt/f", true).expect("/opt/f");
+        assert_ne!(
+            fs.stat_ino(node).expect("stat").mtime_ms,
+            FIXED as u64,
+            "an un-normalised export does not carry the request that was cleared",
+        );
+    }
+
+    #[test]
+    fn the_deferred_set_is_enumerable_with_every_identity_it_carries() {
+        // What a builder compares when it asserts that a step disturbed
+        // nothing: each deferred file's path, inode, real size, and which
+        // archive backs it.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"members/a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"", b"", 0),
+            0,
+        );
+        assert_eq!(register_member(b"/opt/solo", 0, b"", b"{\"url\":\"https://x/solo\"}"), 0);
+
+        let buf = drain_lazy_entries();
+        let mut at = 0usize;
+        let files = read_u32(&buf, &mut at);
+        let archives = read_u32(&buf, &mut at);
+        assert_eq!((files, archives), (2, 1));
+
+        // Path order, which the walk guarantees: /opt/a before /opt/solo.
+        let path = read_bytes(&buf, &mut at);
+        assert_eq!(path, b"/opt/a");
+        let _ino = read_u64(&buf, &mut at);
+        assert_eq!(read_u64(&buf, &mut at), 99, "the member's REAL size");
+        assert_eq!(read_u32(&buf, &mut at), 1, "backed by archive 1");
+        assert_eq!(read_bytes(&buf, &mut at), b"members/a");
+        assert!(read_bytes(&buf, &mut at).is_empty(), "a member carries no description of its own");
+
+        assert_eq!(read_bytes(&buf, &mut at), b"/opt/solo");
+        let _ino = read_u64(&buf, &mut at);
+        assert_eq!(read_u64(&buf, &mut at), 99);
+        assert_eq!(read_u32(&buf, &mut at), 0, "fetched standalone");
+        assert!(read_bytes(&buf, &mut at).is_empty(), "no member path without an archive");
+        // The standalone file's payload IS its identity: it is the only thing
+        // that says where its bytes come from.
+        let payload = read_bytes(&buf, &mut at);
+        assert!(!payload.is_empty(), "a standalone lazy file carries its description");
+
+        assert_eq!(read_u32(&buf, &mut at), 1, "archive id");
+        assert_eq!(read_u64(&buf, &mut at), 4096, "archive length");
+        assert!(!read_bytes(&buf, &mut at).is_empty(), "the archive's description");
+        assert_eq!(at, buf.len(), "every byte accounted for");
+    }
+
+    #[test]
+    fn an_ordinary_file_is_not_enumerated_as_a_deferred_one() {
+        // The distinction the walk has to make, and the one that would be
+        // easiest to get wrong: a resident file and a deferred file are both
+        // regular files, and only the fetch description tells them apart.
+        fresh_tree();
+        assert_eq!(with_two(b"/opt/plain", b"bytes", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+        let buf = drain_lazy_entries();
+        let mut at = 0usize;
+        assert_eq!(read_u32(&buf, &mut at), 0, "no deferred files");
+        assert_eq!(read_u32(&buf, &mut at), 0, "no archives");
+    }
+
+    #[test]
+    fn enumerating_into_a_buffer_too_small_for_the_set_fails_loudly() {
+        // The size probe exists so a caller can allocate; a caller that
+        // allocated from a STALE probe must not get a truncated record set
+        // that still parses.
+        fresh_tree();
+        assert_eq!(register_member(b"/opt/solo", 0, b"", b"{\"url\":\"https://x/solo\"}"), 0);
+        let required = unsafe { sm_lazy_entries(0, 0) } as usize;
+        assert!(required > 8);
+        let small = sm_alloc(required - 1);
+        assert_eq!(
+            unsafe { sm_lazy_entries(small, required - 1) },
+            -(Errno::ERANGE as i32),
+        );
+        unsafe { sm_free(small, required - 1) };
+    }
+
+    #[test]
+    fn a_declared_cohort_is_sealed_at_export_and_loads_back() {
+        // The producer half, end to end. A builder DECLARES membership and
+        // never computes a digest -- it cannot, because the cohort digest
+        // covers every member and the last one is not known while the first is
+        // being registered. The module completes the seal at the export door,
+        // and the verifier on the way back in accepts it.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/b", 2, b"b", b"{\"url\":\"https://x/b.zip\"}",
+                                   b"shell", b"docs", 2),
+            0,
+        );
+        let image = drain_export();
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(load_image_bytes(&image) > 0, "a sealed cohort authenticates");
+    }
+
+    #[test]
+    fn a_cohort_short_of_its_declared_count_is_refused_at_export() {
+        // The count is why `Pending` carries one. Deriving it from the pending
+        // members instead would seal a cohort of one that was meant to be two,
+        // every digest would agree, and the verifier would accept an image that
+        // can only activate partially -- which is the thing atomic activation
+        // exists to prevent.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        let buf = sm_alloc(4096);
+        assert_eq!(
+            unsafe { sm_export_image_read(0, buf, 4096) },
+            -(Errno::EINVAL as i32),
+            "the producer refuses to emit a cohort it cannot complete",
+        );
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn members_of_one_cohort_must_agree_about_its_size() {
+        // Believing either count would pick the answer by declaration order.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/b", 2, b"b", b"{\"url\":\"https://x/b.zip\"}",
+                                   b"shell", b"docs", 3),
+            0,
+        );
+        let buf = sm_alloc(4096);
+        assert_eq!(unsafe { sm_export_image_read(0, buf, 4096) }, -(Errno::EINVAL as i32));
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn two_archives_cannot_share_one_member_name() {
+        // The cohort identity is digested over the member NAMES, so two
+        // archives answering to one name make that identity ambiguous: the same
+        // bytes would describe two different sets of archives.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/b", 2, b"b", b"{\"url\":\"https://x/b.zip\"}",
+                                   b"shell", b"tools", 2),
+            0,
+        );
+        let buf = sm_alloc(4096);
+        assert_eq!(unsafe { sm_export_image_read(0, buf, 4096) }, -(Errno::EINVAL as i32));
+        unsafe { sm_free(buf, 4096) };
+    }
+
+    #[test]
+    fn export_recomputes_a_seal_rather_than_trusting_one_already_there() {
+        // The difference between "seal what is pending" and "re-seal every
+        // cohort", which is otherwise invisible: both produce identical bytes
+        // for a tree that was only ever registered.
+        //
+        // It becomes visible when a payload arrives ALREADY sealed and wrong --
+        // which is what a derived build sees, because loading a base image
+        // brings back its seals. Sealing only what is pending would emit that
+        // stale digest and build an image that fails its own verifier.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 1),
+            0,
+        );
+        // Overwrite the declaration with a SEALED payload whose cohort digest
+        // is nonsense, the way a stale or hand-edited one would be.
+        let descriptor: &[u8] = b"{\"url\":\"https://x/a.zip\"}";
+        let stale = seal::encode(&seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: seal::SealState::Sealed(seal::ArchiveSeal {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 1,
+                cohort_digest: [9u8; 32],
+                descriptor_digest: seal::sha256(descriptor),
+            }),
+        })
+        .expect("encode");
+        rootfs::set_archive_payload(1, &stale).expect("plant the stale seal");
+
+        let image = drain_export();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(
+            load_image_bytes(&image) > 0,
+            "the export recomputed the cohort instead of carrying the stale digest",
+        );
+    }
+
+    #[test]
+    fn a_cohort_may_be_declared_on_every_member_of_its_archive() {
+        // Registration is per file, membership is per archive, so a builder
+        // that names the cohort on each member is doing the ordinary thing.
+        // Declaring the same membership twice is a no-op, exactly as declaring
+        // the same length or the same description twice is.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 1),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/a2", 1, b"a2", b"", b"shell", b"tools", 1),
+            0,
+            "a second member may repeat its archive's cohort",
+        );
+    }
+
+    #[test]
+    fn one_archive_cannot_belong_to_two_cohorts() {
+        // The same rule as two descriptions, for the same reason: the image
+        // would otherwise activate according to whichever member happened to be
+        // registered last.
+        fresh_tree();
+        assert_eq!(
+            register_cohort_member(b"/opt/a", 1, b"a", b"{\"url\":\"https://x/a.zip\"}",
+                                   b"shell", b"tools", 1),
+            0,
+        );
+        assert_eq!(
+            register_cohort_member(b"/opt/a2", 1, b"a2", b"", b"desktop", b"tools", 1),
+            -(Errno::EINVAL as i32),
+        );
+    }
+
+    #[test]
+    fn an_archive_is_described_once_and_its_other_members_need_not_repeat_it() {
+        // GAP 19, and a regression from gap 18's own fix. The description is a
+        // property of the ARCHIVE while registration is per FILE, so a builder
+        // carries it on one member and omits it on the rest -- the shape the
+        // bridge's optional `archiveDescriptor` exists for.
+        //
+        // Wrapping the caller's bytes broke that. An omitted description used
+        // to arrive as an empty payload, which the store reads as "nothing new
+        // to say"; wrapped, it became a nine-byte envelope describing nothing,
+        // which is a DIFFERENT payload -- and a different payload for one
+        // archive is a conflict.
+        //
+        // The repair is not to special-case empty. It is that merging a
+        // description into an archive is a question about the FORMAT, and the
+        // format is the module's: the store keeps opaque bytes and has no
+        // business deciding when two of them agree.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        assert_eq!(register_member(b"/opt/one", 1, b"one", descriptor), 0);
+        assert_eq!(
+            register_member(b"/opt/two", 1, b"two", b""),
+            0,
+            "a second member of a described archive need not repeat the description",
+        );
+
+        // And the description SURVIVED the member that did not carry it.
+        let payloads = rootfs::archive_payloads();
+        let (_, stored) = payloads.iter().find(|(id, _)| *id == 1).expect("the archive");
+        assert_eq!(seal::decode(stored).expect("decode").descriptor, descriptor);
+    }
+
+    #[test]
+    fn an_archive_with_no_description_carries_no_payload_at_all() {
+        // "Nothing to say" is spelled the same way everywhere else in this
+        // format: an empty payload. A `KLZY`-described image carries exactly
+        // that, and `decode` accepts it early without reading a version word.
+        //
+        // Encoding the absence instead -- a version, a zero-length descriptor
+        // and a "no seal" byte -- would be nine bytes saying what zero bytes
+        // already say, and would put a deferred section into images that have
+        // no deferred description to carry.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        assert_eq!(register_member(b"/opt/one", 1, b"one", b""), 0);
+        let payloads = rootfs::archive_payloads();
+        let (_, stored) = payloads.iter().find(|(id, _)| *id == 1).expect("the archive");
+        assert!(stored.is_empty(), "an undescribed archive carries no payload");
+    }
+
+    #[test]
+    fn one_archive_cannot_be_given_two_descriptions() {
+        // The other half of the rule above, and the reason the merge cannot
+        // simply take the last value: two members describing one archive
+        // differently is a producer bug, and the image it would build fetches
+        // from whichever URL happened to be registered last.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        assert_eq!(register_member(b"/opt/one", 1, b"one", b"{\"url\":\"https://a/x.zip\"}"), 0);
+        assert_eq!(
+            register_member(b"/opt/two", 1, b"two", b"{\"url\":\"https://b/x.zip\"}"),
+            -(Errno::EINVAL as i32),
+        );
+    }
+
+    #[test]
+    fn an_image_with_an_ordinary_archive_descriptor_still_loads() {
+        // GAP 18. Wiring the verifier made every archive payload a SEAL
+        // payload, and the bridge writes a plain JSON descriptor — so decoding
+        // read its first four bytes as a version word and refused the load.
+        //
+        // Each half was tested and the cross-product was not: the load test
+        // above uses a payload built by `seal::encode`, the bridge's archive
+        // test never reloads, and the shipped corpus carries EMPTY payloads
+        // that decode accepts early. This is the case none of them covered.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        let (pp, pl) = write_path(b"/opt/tool");
+        let (sp, sl) = write_path(b"tool");
+        let dp = sm_alloc(descriptor.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(descriptor.as_ptr(), dp as *mut u8, descriptor.len())
+        };
+        assert_eq!(
+            unsafe {
+                sm_register_lazy_file(
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+                     0, 0, 0, 0, 0,
+                )
+            },
+            0,
+        );
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        unsafe { sm_free(dp, descriptor.len()) };
+        let image = drain_export();
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(
+            load_image_bytes(&image) > 0,
+            "an archive carrying an ordinary descriptor must still load",
+        );
+    }
+
+    #[test]
+    fn a_load_refuses_an_image_whose_seals_do_not_authenticate() {
+        // The wiring, not the verifier. `seal::verify_cohorts` has its own ten
+        // trials; this asserts that `sm_load_image` CALLS it — which it did not
+        // for several commits while the verifier sat complete and inert.
+        //
+        // The archive declares a cohort of two and supplies one, which is the
+        // partial activation atomic cohorts exist to prevent.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
+        let mut identity = alloc::vec![
+            (b"tools".to_vec(), seal::sha256(descriptor)),
+            (b"docs".to_vec(), seal::sha256(b"{}")),
+        ];
+        let cohort = seal::sha256(
+            &seal::cohort_identity(b"shell", &mut identity).expect("identity"),
+        );
+        let payload = seal::encode(&seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: seal::SealState::Sealed(seal::ArchiveSeal {
+                id: b"shell".to_vec(),
+                member: b"tools".to_vec(),
+                expected_count: 2,
+                cohort_digest: cohort,
+                descriptor_digest: seal::sha256(descriptor),
+            }),
+        })
+        .expect("encode");
+
+        // Build an image carrying that single sealed archive.
+        //
+        // Registration cannot be handed a seal — it wraps the caller's
+        // DESCRIPTOR and writes `SealState::None`, which is what makes every
+        // payload well formed. Sealing is the module's own act, and until the
+        // producer half performs it at export, the only honest way to stand up
+        // a sealed archive is to write the payload where the producer will:
+        // straight into the stored archive.
+        assert_eq!(with_two(b"/opt", b"", |pp, pl, _c, _l| unsafe {
+            sm_mkdir(pp, pl, 0o755, 0, 0)
+        }), 0);
+        let (pp, pl) = write_path(b"/opt/tool");
+        let (sp, sl) = write_path(b"tool");
+        let dp = sm_alloc(descriptor.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(descriptor.as_ptr(), dp as *mut u8, descriptor.len())
+        };
+        assert_eq!(
+            unsafe {
+                sm_register_lazy_file(
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
+                     0, 0, 0, 0, 0,
+                )
+            },
+            0,
+        );
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        unsafe { sm_free(dp, descriptor.len()) };
+        rootfs::set_archive_payload(1, &payload).expect("seal the registered archive");
+
+        // Emitted WITHOUT going through `sm_export_image_read`, and that is
+        // the point rather than a shortcut. The producer now re-seals at the
+        // export door, so it would refuse this cohort before writing a byte --
+        // an image whose seals do not authenticate is, by construction, one no
+        // honest producer emits. Reaching past the door is the only way to
+        // stand up the artifact a tampered image actually is, and what is
+        // under test here is the LOAD.
+        let image = {
+            let mut image: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            let mut chunk = alloc::vec![0u8; 64 * 1024];
+            let mut source = image_source;
+            let mut offset = 0i64;
+            loop {
+                let n = rootfs::export_container_read(offset, &mut chunk, &mut source)
+                    .expect("emit the tampered container");
+                if n == 0 {
+                    break;
+                }
+                image.extend_from_slice(&chunk[..n]);
+                offset += n as i64;
+                assert!(image.len() <= 4 * 1024 * 1024, "the export is not advancing");
+            }
+            image
+        };
+
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let rc = load_image_bytes(&image);
+        assert_eq!(rc, -(Errno::EPERM as i32), "a cohort short of its count");
+
+        // And the refusal UNLOADS: an image that failed to authenticate must
+        // not be left mounted for the next call to build on.
+        assert!(image_bytes().is_none(), "the refused image was released");
+        let (qp, ql) = write_path(b"/opt/tool");
+        let buf = sm_alloc(64);
+        assert!(unsafe { sm_lstat(qp, ql, buf, 64) } < 0, "and its tree is gone");
+        unsafe { sm_free(qp, ql) };
+        unsafe { sm_free(buf, 64) };
+    }
+
+    #[test]
+    fn a_small_request_cannot_cost_a_tree_the_inodes_it_needs() {
+        // The convergence loop already re-raises the ceiling to whatever the
+        // DATA needs, so a tiny tree cannot tell a floor from a replacement.
+        // The inode requirement is the half that loop does not recompute: a
+        // hundred empty files need `(n + 2) * 4` blocks for their inodes and
+        // almost no blocks for their bytes. A request that REPLACED the
+        // requirement instead of flooring it would size this image by its
+        // bytes and leave it without room for its own inodes.
+        //
+        // In practice the writer refuses before that: the export returns
+        // ENOSPC partway through creating the hundredth file, and
+        // `drain_export` fails on the negative count. The ceiling assertion
+        // below is still the contract being stated — an image sized to hold
+        // its own inodes — and it is what would catch a future writer that
+        // grew quieter about running out.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        const FILES: u64 = 100;
+        for i in 0..FILES {
+            let mut path = alloc::vec::Vec::from(&b"/f"[..]);
+            let mut n = i;
+            loop {
+                path.push(b'0' + (n % 10) as u8);
+                n /= 10;
+                if n == 0 {
+                    break;
+                }
+            }
+            let (pp, pl) = write_path(&path);
+            assert_eq!(unsafe { sm_write_file(pp, pl, 0o644, 0, 0) }, 0);
+            unsafe { sm_free(pp, pl) };
+        }
+
+        // One byte: as small a request as can be made without clearing it.
+        assert_eq!(unsafe { sm_set_image_options(1, 0, 0, -1) }, 0);
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
+
+        // `total_inodes = max_blocks / 4` is the writer's rule, so the ceiling
+        // is where the inode count is observable from the artifact.
+        let inodes = ceiling / 4096 / 4;
+        assert!(
+            inodes >= FILES + 2,
+            "{FILES} files plus root and its spare need {} inodes; the image              allows {inodes}",
+            FILES + 2,
+        );
+    }
+
+    #[test]
+    fn headroom_is_judged_with_the_numbers_behind_the_verdict() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
+            sm_write_file(pp, pl, 0o644, cp, cl)
+        }), 0);
+
+        let size = unsafe { sm_check_headroom(0, 0, 0, 0) };
+        assert_eq!(size, 40, "five u64s, discoverable without a second export");
+        let buf = sm_alloc(40);
+        let read = |min_bytes: u64, min_inodes: u64| -> (i32, [u64; 5]) {
+            let rc = unsafe { sm_check_headroom(min_bytes, min_inodes, buf, 40) };
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, 40) };
+            let mut out = [0u64; 5];
+            for (i, slot) in out.iter_mut().enumerate() {
+                *slot = u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8"));
+            }
+            (rc, out)
+        };
+
+        // A profile this image meets.
+        let (rc, [free_bytes, required_bytes, free_inodes, required_inodes, capacity]) = read(0, 0);
+        assert_eq!(rc, 0, "zero required is met by anything");
+        assert_eq!(required_bytes, 0);
+        assert_eq!(required_inodes, 0);
+        assert!(free_bytes > 0, "a fresh image has free space");
+        assert!(free_inodes > 0, "and free inodes");
+        assert!(capacity > 0, "and the ceiling it will declare");
+
+        // A profile it cannot meet. The numbers come back either way, which is
+        // the point: a caller that only learns "no" cannot say by how much.
+        let (rc, [reported_free, required, _, _, _]) = read(u64::MAX, 0);
+        assert!(rc < 0, "an unmeetable profile is a failure, got {rc}");
+        assert_eq!(required, u64::MAX, "and it reports what was required");
+        assert_eq!(
+            reported_free, free_bytes,
+            "and the same free count as the passing call -- the verdict changed, \
+             not the measurement",
+        );
+
+        let (rc, [_, _, _, required_inodes, _]) = read(0, u64::MAX);
+        assert!(rc < 0, "free inodes are checked too, not only bytes");
+        assert_eq!(required_inodes, u64::MAX);
+
+        // The REPORTED free count must be the real measurement, not merely a
+        // number that travels beside a correct verdict. Mutation found this
+        // gap: the verdict comes from the policy's own statfs, so a wrong
+        // `free_bytes` changed no outcome and every assertion above still
+        // passed. A build script PRINTS this number, and a confident wrong
+        // number is worse than none.
+        //
+        // Two independent checks, because either alone is weak. It cannot
+        // exceed what the image could ever hold, and it must FALL when the
+        // tree grows.
+        let (_, [free_bytes, _, _, _, capacity]) = read(0, 0);
+        assert!(
+            free_bytes <= capacity,
+            "free {free_bytes} exceeds the image's own ceiling {capacity}",
+        );
+
+        // Tie the reported number to the ARTIFACT rather than to itself. The
+        // verdict comes from its own comparison, so a wrong `free_bytes` would
+        // travel beside a correct answer and change no outcome — which is
+        // exactly what a mutation replacing this measurement with `u64::MAX`
+        // demonstrated. A build script PRINTS this, and a confident wrong
+        // number is worse than none.
+        let image = drain_export();
+        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let st = fs.statfs().expect("statfs");
+        let occupied = (st.f_blocks - st.f_bfree) * u64::from(st.f_frsize);
+        assert_eq!(
+            free_bytes,
+            fs.growth_ceiling_bytes().expect("ceiling") - occupied,
+            "the reported headroom is the exported image's own ceiling minus \
+             what it occupies",
+        );
+
+        // With no requested capacity the export sizes to its tree, so this is
+        // the fixed slack — which is what made the check meaningless before a
+        // capacity could be asked for (gap 14). SIXTY-THREE blocks, not
+        // sixty-four: one block of that slack now holds the deferred section
+        // every image carries so the kernel can load it back (gap 15).
+        assert_eq!(free_bytes, 63 * 4096, "the fixed slack, with nothing requested");
+
+        // Ask for a capacity and the headroom becomes a real measurement: it
+        // reflects the room the product declared, and it FALLS as the tree
+        // grows into it. That is the property the assertion exists for, and it
+        // was unreachable while the ceiling was derived from the tree.
+        assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
+        let (_, [roomy, _, _, _, _]) = read(0, 0);
+        assert!(
+            roomy > 60 * 1024 * 1024,
+            "a 64 MiB request leaves real headroom, got {roomy}",
+        );
+        let filler = alloc::vec![b'x'; 4 * 1024 * 1024];
+        assert_eq!(
+            with_two(b"/filler", &filler, |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o644, cp, cl)
+            }),
+            0
+        );
+        let (_, [after, _, _, _, _]) = read(0, 0);
+        assert!(
+            after < roomy,
+            "writing 4 MiB into the declared room consumes it: {roomy} -> {after}",
+        );
+        assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
+
+        unsafe { sm_free(buf, 32) };
+    }
+
+    #[test]
+    fn the_stat_record_says_whether_a_files_bytes_are_present() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+        assert_eq!(
+            with_two(b"/usr/here", b"bytes", |pp, pl, cp, cl| unsafe {
+                sm_write_file(pp, pl, 0o644, cp, cl)
+            }),
+            0
+        );
+        let rc = with_two(b"/usr/there", b"members/big.bin", |pp, pl, sp, sl| unsafe {
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+        });
+        assert_eq!(rc, 0);
+
+        let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
+        assert_eq!(size, 64, "eight u64s, and the bridge asks rather than assumes");
+        let read = |path: &[u8]| -> alloc::vec::Vec<u64> {
+            let buf = sm_alloc(size);
+            assert_eq!(with_path(path, |p, l| unsafe { sm_lstat(p, l, buf, size) }), 0);
+            let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, size) };
+            let out: alloc::vec::Vec<u64> = (0..8)
+                .map(|i| {
+                    u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8 bytes"))
+                })
+                .collect();
+            unsafe { sm_free(buf, size) };
+            out
+        };
+
+        let here = read(b"/usr/here");
+        assert_eq!(here[6], 0, "written through the ABI, so its bytes are here");
+        assert_eq!(here[5], 5);
+        assert_eq!(here[7], 0, "and no archive behind it");
+
+        let there = read(b"/usr/there");
+        assert_eq!(there[6], 1, "registered lazy, so its bytes are not");
+        assert_eq!(there[0], 40, "the inode it was registered under");
+        assert_eq!(
+            there[5], 99_999,
+            "the REAL size, not the zero-length stub -- a recipe asking how big \
+             a deferred file is must not have to fetch it first",
+        );
+        assert_eq!(there[7], 3, "and which archive backs it");
+    }
+
+    #[test]
     fn failures_come_back_as_negative_errno() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_path(b"/absent/deep", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) });
         assert!(rc < 0, "a missing parent must fail, got {rc}");
         let rc = with_path(b"/nothing-here", |p, l| unsafe { sm_unlink(p, l) });
@@ -1291,13 +3292,11 @@ mod tests {
     /// `sm_reset` must not inherit anything from the first.
     #[test]
     fn reset_gives_the_next_image_a_clean_slate() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert_eq!(with_path(b"/a", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         let first = rootfs::lstat(b"/a").expect("a").st_ino;
 
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
         assert!(rootfs::lstat(b"/a").is_err(), "the previous tree must be gone");
         assert_eq!(with_path(b"/a", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
         assert_eq!(
@@ -1327,8 +3326,7 @@ mod tests {
     /// whole suite.
     #[test]
     fn chown_clears_setuid_when_asked_and_leaves_it_otherwise() {
-        sm_reset();
-        assert_eq!(sm_init_root(0o755, 0, 0), 0);
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
 
         // Not cleared unless requested.
         assert_eq!(with_path(b"/keep", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);

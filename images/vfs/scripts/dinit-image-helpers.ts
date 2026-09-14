@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ENOENT,
   SFSError,
@@ -19,8 +20,8 @@ import { FILE_MODES } from "../../../host/src/generated/abi";
  */
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
+  hasVfsErrorCode,
   writeVfsBinary,
   writeVfsFile,
   ensureDirRecursive,
@@ -59,7 +60,7 @@ function resolveDinitBinaries(): { dinit: string; dinitctl: string } {
 const DINIT_GUEST_BINARIES = ["/sbin/dinit", "/sbin/dinitctl"] as const;
 
 function residentRegularFile(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
 ): "missing" | "resident" {
   if (fs.getLazyEntry(path) !== null || fs.isPathDeferred(path)) {
@@ -69,7 +70,12 @@ function residentRegularFile(
   try {
     stat = fs.stat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    // The shared predicate, not an `instanceof` on one implementation's error
+    // class: the module bridge throws `SffsImageError` with a POSITIVE `errno`
+    // where `MemoryFileSystem` throws `SFSError` with a NEGATIVE `code`. This
+    // catch recognised only the second, so "missing" — a documented outcome of
+    // this function — became an uncaught throw.
+    if (hasVfsErrorCode(error, ENOENT)) return "missing";
     throw error;
   }
   if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
@@ -79,7 +85,7 @@ function residentRegularFile(
 }
 
 function residentDinitBinaryState(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: (typeof DINIT_GUEST_BINARIES)[number],
 ): "missing" | "resident" {
   if (fs.getLazyEntry(path) !== null) {
@@ -96,7 +102,12 @@ function residentDinitBinaryState(
   try {
     stat = fs.stat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    // The shared predicate, not an `instanceof` on one implementation's error
+    // class: the module bridge throws `SffsImageError` with a POSITIVE `errno`
+    // where `MemoryFileSystem` throws `SFSError` with a NEGATIVE `code`. This
+    // catch recognised only the second, so "missing" — a documented outcome of
+    // this function — became an uncaught throw.
+    if (hasVfsErrorCode(error, ENOENT)) return "missing";
     throw error;
   }
   if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG || (stat.mode & 0o111) === 0) {
@@ -113,7 +124,7 @@ export interface DinitBinaryInputs {
 }
 
 function installDinitBinariesUnlessInherited(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   binaries?: DinitBinaryInputs,
 ): void {
   const states = DINIT_GUEST_BINARIES.map((path) =>
@@ -255,7 +266,7 @@ const ETC_HOSTS = ["127.0.0.1\tlocalhost", "::1\tlocalhost", ""].join("\n");
  * into a second, smaller service-name contract.
  */
 export function addDinitBaseSystemFiles(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   preserveExistingServices = false,
   exactServices?: Uint8Array,
 ): void {
@@ -329,7 +340,7 @@ export interface PathReadinessServiceOptions {
 }
 
 export function addPathReadinessService(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: PathReadinessServiceOptions,
 ): DinitService {
   const scriptPath = options.scriptPath ?? `/usr/local/bin/${options.name}`;
@@ -395,7 +406,7 @@ function shellSingleQuote(value: string): string {
  * With boot=false, demos must pass the target service name explicitly.
  */
 export function addDinitInit(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   services: DinitService[],
   opts: AddDinitInitOptions = {},
 ): void {

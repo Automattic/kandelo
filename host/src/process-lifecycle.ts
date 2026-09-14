@@ -64,7 +64,12 @@ import {
   retryKernelEntryResult,
   retryKernelEntryResultForGeneration,
 } from "./kernel-entry-retry";
-import { readPreparedPlatformFile } from "./vfs";
+// NOT from "./vfs": that barrel re-exports `resolveForNode` and `HostFileSystem`,
+// which import `node:fs` and `node:path`. This module is in the BROWSER kernel
+// worker's graph, so importing the barrel drags three Node-only modules into a
+// browser bundle for one function that lives in a Node-free file. See
+// `host/test/browser-worker-node-globals.test.ts`.
+import { readPreparedPlatformFile } from "./vfs/vfs";
 import type { PlatformIO } from "./types";
 import {
   describeWasmArtifactPolicyFailures,
@@ -128,7 +133,9 @@ import type {
 import {
   buildRootfsLazyWiring,
   createDeferredFileReader,
+  imageReadFromBody,
 } from "./vfs/rootfs-lazy-archives";
+import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
 import { CH_TOTAL_SIZE, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import { extractHeapBase } from "./constants";
 import {
@@ -4398,7 +4405,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
    * both reach the overlay through here.
    */
   function configureRootfsOverlayFromImage(options: {
-    baseImage: MemoryFileSystem;
+    baseImage: RootfsOverlayBaseImage;
     imageBytes: Uint8Array;
     foreignPrefixes: string[];
     nosuid: boolean;
@@ -4426,7 +4433,9 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
       options.foreignPrefixes,
       options.nosuid,
       options.imageBytes,
-      () => options.baseImage.imageBodyBytes(),
+      // Straight through: the backend answers in container coordinates, and
+      // whether its bytes are a bare body or a whole container is its business.
+      imageReadFromBody(options.baseImage),
     );
   }
 

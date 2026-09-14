@@ -12,10 +12,8 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   resolveBinary,
   tryResolveBinary,
@@ -155,7 +153,7 @@ export function resolvePolicyBoundVfsWasmArtifact(
 
 export async function loadShellBaseFileSystem(
   maxByteLength: number,
-): Promise<MemoryFileSystem> {
+): Promise<SffsImageFs> {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   const shellImage = new Uint8Array(readFileSync(shellImagePath));
   return await loadShellBaseFileSystemFromImage(shellImage, maxByteLength);
@@ -167,10 +165,10 @@ export async function loadShellBaseFileSystem(
  * The source shell composition carries no boot trigger to suppress, so the
  * build guest snapshot is the image's own serialization.
  */
-export function saveShellDerivedBuildGuestSnapshot(
-  fs: MemoryFileSystem,
+export async function saveShellDerivedBuildGuestSnapshot(
+  fs: SffsImageFs,
 ): Promise<Uint8Array> {
-  return fs.saveImage();
+  return fs.exportImage();
 }
 
 /**
@@ -178,7 +176,7 @@ export function saveShellDerivedBuildGuestSnapshot(
  * independent block and inode capacity for normal runtime writes.
  */
 export function saveShellDerivedVfsImage(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   outFile: string,
   options: Omit<
     SaveImageOptions,
@@ -256,7 +254,7 @@ export function saveShellDerivedVfsImage(
 }
 
 function shellDerivedImageMetadata(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   inherited: VfsImageMetadata,
   kernelAbi: number,
   maxByteLength: number,
@@ -363,11 +361,15 @@ function sha256Hex(bytes: Uint8Array): string {
 export async function loadShellBaseFileSystemFromImage(
   shellImage: Uint8Array,
   maxByteLength: number,
-): Promise<MemoryFileSystem> {
-  const fs = MemoryFileSystem.fromImagePreservingCapacity(shellImage);
-  // WHY: rebasing copies lazy metadata into a new authority boundary, so
-  // authenticate imported atomic seals before deciding whether to copy it.
-  await fs.verifyImportedLazyAtomicGroupSeals();
+): Promise<SffsImageFs> {
+  const fs = SffsImageFs.create();
+  // The load AUTHENTICATES. Verification runs inside the module's
+  // `sm_load_image`, so an image that reached this line is one whose activation
+  // cohorts checked out -- there is no window in which an unverified image is
+  // loaded and no separate call anyone can forget. The old `await
+  // fs.verifyImportedLazyAtomicGroupSeals()` that stood here was a second step
+  // guarding the same boundary from outside it.
+  fs.loadImage(shellImage);
   const metadata = fs.getImageMetadata();
   if (
     metadata === null ||
@@ -388,15 +390,22 @@ export async function loadShellBaseFileSystemFromImage(
       kernelAbi: metadata.kernelAbi,
     },
   });
-  const stats = fs.statfs("/");
-  const effectiveMaxByteLength = stats.blocks * stats.bsize;
-  if (effectiveMaxByteLength === maxByteLength) return fs;
-
-  console.log(
-    `Rebasing shell base VFS capacity from ${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB ` +
-      `to ${Math.round(maxByteLength / 1024 / 1024)} MiB...`,
-  );
-  return fs.rebaseToNewFileSystem(maxByteLength);
+  // A capacity REQUEST, not a rebuild. The old path copied the whole tree into
+  // a freshly sized filesystem, because a `SharedArrayBuffer` cannot be asked
+  // to mean something different after the fact. The module sizes the image when
+  // it EXPORTS, so the capacity is a number the export reads rather than a
+  // shape the tree has to be poured into -- which is also why an image of
+  // capacity X costs only what its contents cost until it is actually that
+  // full.
+  const effectiveMaxByteLength = fs.exportCapacityBytes();
+  if (effectiveMaxByteLength !== maxByteLength) {
+    console.log(
+      `Setting shell base VFS capacity from ${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB ` +
+        `to ${Math.round(maxByteLength / 1024 / 1024)} MiB...`,
+    );
+    fs.setImageCapacity(maxByteLength);
+  }
+  return fs;
 }
 
 export interface ShellVfsOptions {
@@ -438,7 +447,7 @@ export interface ShellVfsOptions {
  * "archive registers stub" → "symlink aliases stub" sequencing.
  */
 export function populateShellEnvironment(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   opts: ShellVfsOptions,
 ): void {
   const resolveArtifact = opts.resolveArtifact ?? resolveVfsArtifact;
@@ -485,11 +494,11 @@ export function populateShellEnvironment(
 
 // ── System layout ───────────────────────────────────────────────
 
-function populateSystem(fs: MemoryFileSystem): void {
+function populateSystem(fs: SffsImageFs): void {
   populateShellRuntimeLayout(fs);
 }
 
-function populateShellOverlay(fs: MemoryFileSystem): void {
+function populateShellOverlay(fs: SffsImageFs): void {
   populateShellRuntimeLayout(fs);
 
   // A rootfs artifact may provide the lazy binary inodes without the
@@ -504,7 +513,7 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
 // ── Shell binaries ──────────────────────────────────────────────
 
 function populateDash(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const dashBytes = readFileSync(resolveArtifact("programs/dash.wasm", "dash"));
@@ -515,7 +524,7 @@ function populateDash(
 }
 
 function populateBash(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bashBytes = readFileSync(resolveArtifact("programs/bash.wasm", "bash"));
@@ -523,7 +532,7 @@ function populateBash(
   symlink(fs, "/usr/bin/bash", "/bin/bash");
 }
 
-function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {
+function populateCoreutilsSymlinks(fs: SffsImageFs): void {
   for (const name of [...COREUTILS_NAMES, "["]) {
     symlink(fs, "/bin/coreutils", `/bin/${name}`);
     symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
@@ -531,14 +540,14 @@ function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {
 }
 
 function populateCoreutils(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/coreutils.wasm", "coreutils"));
   writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(bytes));
 }
 
-function populateGrepSedSymlinks(fs: MemoryFileSystem): void {
+function populateGrepSedSymlinks(fs: SffsImageFs): void {
   symlink(fs, "/usr/bin/grep", "/bin/grep");
   symlink(fs, "/usr/bin/grep", "/usr/bin/egrep");
   symlink(fs, "/usr/bin/grep", "/bin/egrep");
@@ -549,7 +558,7 @@ function populateGrepSedSymlinks(fs: MemoryFileSystem): void {
 }
 
 function populateGrep(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/grep.wasm", "grep"));
@@ -557,7 +566,7 @@ function populateGrep(
 }
 
 function populateSed(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const bytes = readFileSync(resolveArtifact("programs/sed.wasm", "sed"));
@@ -565,7 +574,7 @@ function populateSed(
 }
 
 function populateLazyBinaries(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
   opts: { skipExisting?: boolean } = {},
 ): void {
@@ -584,14 +593,14 @@ function populateLazyBinaries(
 
 // ── Extended toolset ────────────────────────────────────────────
 
-function populateBaseExtendedSymlinks(fs: MemoryFileSystem): void {
+function populateBaseExtendedSymlinks(fs: SffsImageFs): void {
   symlink(fs, "/usr/bin/bc", "/bin/bc");
   symlink(fs, "/usr/bin/file", "/bin/file");
   symlink(fs, "/usr/bin/m4", "/bin/m4");
   symlink(fs, "/usr/bin/make", "/bin/make");
 }
 
-function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
+function populateDemoExtendedSymlinks(fs: SffsImageFs): void {
   symlink(fs, "/usr/bin/less", "/bin/less");
   symlink(fs, "/usr/bin/tar", "/bin/tar");
   symlink(fs, "/usr/bin/curl", "/bin/curl");
@@ -659,7 +668,7 @@ function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
 }
 
 function populateBaseExtendedBinaries(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
@@ -676,7 +685,7 @@ function populateBaseExtendedBinaries(
 
 /** Bake every demo extended-toolset binary. Required for kernelOwnedFs demos. */
 function populateDemoExtendedBinaries(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
@@ -748,7 +757,7 @@ function resolveMagicPath(
 }
 
 function populateMagic(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
   strictArtifactResolution: boolean,
 ): void {
@@ -768,7 +777,7 @@ function populateMagic(
 // ── Lazy archives ───────────────────────────────────────────────
 
 function populateVimArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -779,7 +788,7 @@ function populateVimArchive(
 }
 
 function populateNetHackArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -790,7 +799,7 @@ function populateNetHackArchive(
 }
 
 function populateRubyArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -801,7 +810,7 @@ function populateRubyArchive(
 }
 
 function populatePythonArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -812,7 +821,7 @@ function populatePythonArchive(
 }
 
 function populateNodeArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -823,7 +832,7 @@ function populateNodeArchive(
 }
 
 function populatePerlArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -834,7 +843,7 @@ function populatePerlArchive(
 }
 
 function populateManArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   // posix-utils-lite's raw `man` applet may already occupy /usr/bin/man on a
@@ -848,7 +857,7 @@ function populateManArchive(
 }
 
 function populateCoreutilsDocsArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(
@@ -859,7 +868,7 @@ function populateCoreutilsDocsArchive(
 }
 
 function populateLsofDocsArchive(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   registerDeclaredShellLazyArchive(

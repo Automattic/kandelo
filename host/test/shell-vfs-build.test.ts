@@ -28,10 +28,7 @@ import type { ZipEntry } from "../src/vfs/zip";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../web-libs/kandelo-session/src/vfs-capacity";
-import {
-  addSealedLazyAtomicTestTree,
-  forgeLazyAtomicSeal,
-} from "./lazy-atomic-seal-fixture";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -55,6 +52,22 @@ function readFile(fs: MemoryFileSystem, path: string): string {
   const count = fs.read(fd, bytes, null, size);
   fs.close(fd);
   return new TextDecoder().decode(bytes.subarray(0, count));
+}
+
+/**
+ * A product filesystem with a declared capacity, built the way a product build
+ * builds one.
+ *
+ * These used to be `MemoryFileSystem.create(new SharedArrayBuffer(16 MiB, {
+ * maxByteLength }), maxByteLength)` — a buffer sized now and a ceiling declared
+ * for later, which is the shape the module removes. Capacity is a number the
+ * export reads, so there is no buffer to size and no second argument to keep in
+ * step with the first.
+ */
+function productFs(maxByteLength: number): SffsImageFs {
+  const fs = SffsImageFs.create();
+  fs.setImageCapacity(maxByteLength);
+  return fs;
 }
 
 function lazyArchiveEntry(): ZipEntry {
@@ -125,10 +138,23 @@ function loadedShellImageMetadata(
   };
 }
 
+/**
+ * A source image written by the OLD writer, on purpose.
+ *
+ * The builders under test now load through the Rust module, and the images
+ * they will meet in a product build were written by `MemoryFileSystem` until
+ * the bases are rebuilt. A fixture that switched writers alongside the code
+ * would stop covering the case that actually ships.
+ *
+ * It no longer plants a sealed atomic tree. That fixture sealed in the LEGACY
+ * format, which the module does not read -- so it proved nothing here once the
+ * loader changed, and asserting on it would have been a test passing for the
+ * wrong reason. Activation cohorts are covered where they are now produced and
+ * checked: the module's own suite and `sffs-image-fs.test.ts`.
+ */
 async function sourceImage(
   byteLength: number,
   maxByteLength: number,
-  sealedAtomicTree = false,
 ): Promise<Uint8Array> {
   const buffer = new SharedArrayBuffer(byteLength, { maxByteLength });
   const fs = MemoryFileSystem.create(buffer, maxByteLength);
@@ -142,75 +168,71 @@ async function sourceImage(
     123_456,
     0o755,
   );
+  // The archive declares its raw byte length, as every real builder does.
+  // Without one the legacy writer SKIPS the whole group when it encodes the
+  // kernel-facing section -- a truthful gap at the writing end that used to
+  // arrive at the reading end as a 4,096-byte member reporting zero. The
+  // loader now refuses such an image (gap 20), so a fixture that omitted the
+  // length would be testing the refusal rather than the capacity change it is
+  // named for.
   fs.registerLazyArchiveFromEntries(
     "https://example.invalid/demo.zip",
     [lazyArchiveEntry()],
     "/",
+    undefined,
+    { sha256: "d".repeat(64), bytes: 5_000 },
   );
-  if (sealedAtomicTree) {
-    await addSealedLazyAtomicTestTree(fs, {
-      groupId: "test:shell-base",
-      member: "shell-runtime",
-      root: "/sealed-shell-base",
-    });
-  }
   return fs.saveImage({
     metadata: shellImageMetadata(maxByteLength),
   });
 }
 
-function expectContentsPreserved(fs: MemoryFileSystem): void {
+function expectContentsPreserved(fs: SffsImageFs): void {
   expect(readFile(fs, "/ordinary.txt")).toBe("preserved contents");
   expect(fs.stat("/bin/lazy-tool").size).toBe(123_456);
   expect(fs.stat("/bin/lazy-tool").mode & 0o777).toBe(0o755);
-  expect(fs.exportLazyEntries()).toMatchObject([
-    {
-      path: "/bin/lazy-tool",
-      url: "https://example.invalid/lazy-tool.wasm",
-      size: 123_456,
-    },
-  ]);
+  // A deferred file keeps its REAL length and stays deferred across the load.
+  // The URL is deliberately not asserted: it lives in the payload the kernel
+  // carries without reading, and this bridge does not read it either -- the
+  // property that matters to a builder is that the file is still described
+  // rather than silently made empty or made resident.
+  expect(fs.isPathDeferred("/bin/lazy-tool")).toBe(true);
   expect(fs.stat("/usr/share/demo/archive.txt").size).toBe(4096);
-  expect(
-    fs.exportLazyArchiveEntries().filter(
-      (entry) => entry.url === "https://example.invalid/demo.zip",
-    ),
-  ).toMatchObject([
-    {
-      url: "https://example.invalid/demo.zip",
-      mountPrefix: "/",
-      materialized: false,
-    },
-  ]);
+  expect(fs.isPathDeferred("/usr/share/demo/archive.txt")).toBe(true);
 }
 
 describe("shell VFS base composition", () => {
-  it.each(["member", "cohort"] as const)(
-    "rejects a forged imported %s seal before shell build side effects",
-    async (forgery) => {
-      const source = MemoryFileSystem.create(new SharedArrayBuffer(8 * MiB));
-      await addSealedLazyAtomicTestTree(source, {
-        groupId: "test:shell-rootfs",
-        member: "rootfs",
-        root: "/shell-rootfs",
-      });
-      const resolveArtifact = vi.fn();
-      const register = vi.fn();
-      const save = vi.fn();
+  it("refuses an image the loader rejects, before any shell build side effect", async () => {
+    // This used to forge a legacy atomic seal and assert the refusal. The
+    // refusal moved layers: verification now happens inside the module's
+    // `sm_load_image`, where it has ten mutation trials against it, so the
+    // FORGERY belongs in Rust and what remains worth checking here is the
+    // boundary's own contract -- that a refused load aborts the build before
+    // it resolves an artifact, registers anything, or writes a file.
+    //
+    // The refusal is provoked with a corrupt image rather than a forged seal
+    // because this test cannot forge one honestly: the payload format is the
+    // module's, and a TypeScript fixture that wrote it would be asserting
+    // against its own idea of the format rather than against the module's.
+    const source = MemoryFileSystem.create(new SharedArrayBuffer(8 * MiB));
+    source.mkdir("/shell-rootfs", 0o755);
+    const image = await source.saveImage();
+    const corrupt = image.slice(0, Math.floor(image.byteLength / 2));
 
-      const image = forgeLazyAtomicSeal(await source.saveImage(), forgery);
-      const build = async () => {
-        await restoreTrustedShellRootfs(image, 8 * MiB);
-        resolveArtifact();
-        register();
-        save();
-      };
-      await expect(build()).rejects.toThrow(/seal/);
-      expect(resolveArtifact).not.toHaveBeenCalled();
-      expect(register).not.toHaveBeenCalled();
-      expect(save).not.toHaveBeenCalled();
-    },
-  );
+    const resolveArtifact = vi.fn();
+    const register = vi.fn();
+    const save = vi.fn();
+    const build = () => {
+      restoreTrustedShellRootfs(corrupt, 8 * MiB);
+      resolveArtifact();
+      register();
+      save();
+    };
+    expect(build).toThrow();
+    expect(resolveArtifact).not.toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
 
   it("never replaces a missing strict dependency with ambient magic data", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-strict-shell-resolver-"));
@@ -223,10 +245,7 @@ describe("shell VFS base composition", () => {
     const prior = process.env[key];
     process.env[key] = ambientFileDir;
     try {
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * MiB, { maxByteLength: 16 * MiB }),
-        16 * MiB,
-      );
+      const fs = productFs(16 * MiB);
       expect(() =>
         populateShellEnvironment(fs, {
           eagerBinaries: true,
@@ -302,7 +321,7 @@ describe("shell VFS base composition", () => {
   });
 
   it("rebases a serialized source larger than the downstream capacity", async () => {
-    const image = await sourceImage(16 * MiB, 32 * MiB, true);
+    const image = await sourceImage(16 * MiB, 32 * MiB);
     const compressed = new Uint8Array(zstdCompressSync(image));
 
     expect(() =>
@@ -311,10 +330,13 @@ describe("shell VFS base composition", () => {
 
     const rebased = await loadShellBaseFileSystemFromImage(compressed, 8 * MiB);
 
-    expect(rebased.sharedBuffer.byteLength).toBe(8 * MiB);
-    expect(rebased.sharedBuffer.maxByteLength).toBe(8 * MiB);
-    const stats = rebased.statfs("/");
-    expect(stats.blocks * stats.bsize).toBe(8 * MiB);
+    // The image's DECLARED capacity, not the size of a buffer holding it.
+    // The old assertions read `sharedBuffer.byteLength`, which enshrined the
+    // very behaviour this campaign is removing: an image of capacity X cost X
+    // of memory the moment it was loaded. The module sizes the image when it
+    // EXPORTS, so capacity is a number the export reads and a loaded image
+    // costs what its CONTENTS cost.
+    expect(rebased.exportCapacityBytes()).toBe(8 * MiB);
     expectContentsPreserved(rebased);
     expect(rebased.getImageMetadata()).toEqual(
       loadedShellImageMetadata(32 * MiB, compressed),
@@ -322,13 +344,11 @@ describe("shell VFS base composition", () => {
   });
 
   it("rebases upward to the downstream image's exact capacity", async () => {
-    const image = await sourceImage(4 * MiB, 8 * MiB, true);
+    const image = await sourceImage(4 * MiB, 8 * MiB);
 
     const rebased = await loadShellBaseFileSystemFromImage(image, 32 * MiB);
 
-    expect(rebased.sharedBuffer.maxByteLength).toBe(32 * MiB);
-    const stats = rebased.statfs("/");
-    expect(stats.blocks * stats.bsize).toBe(32 * MiB);
+    expect(rebased.exportCapacityBytes()).toBe(32 * MiB);
     expectContentsPreserved(rebased);
     expect(rebased.getImageMetadata()).toEqual(
       loadedShellImageMetadata(8 * MiB, image),
@@ -336,47 +356,37 @@ describe("shell VFS base composition", () => {
   });
 
   it("preserves the source filesystem when capacities already match", async () => {
-    const image = await sourceImage(4 * MiB, 8 * MiB, true);
+    const image = await sourceImage(4 * MiB, 8 * MiB);
 
     const restored = await loadShellBaseFileSystemFromImage(image, 8 * MiB);
 
-    expect(restored.sharedBuffer.byteLength).toBe(4 * MiB);
-    expect(restored.sharedBuffer.maxByteLength).toBe(8 * MiB);
+    expect(restored.exportCapacityBytes()).toBe(8 * MiB);
     expectContentsPreserved(restored);
     expect(restored.getImageMetadata()).toEqual(
       loadedShellImageMetadata(8 * MiB, image),
     );
   });
 
-  it.each([
-    ["member", /activation member .* changed after sealing/],
-    ["cohort", /activation group .* differs from its seal/],
-  ] as const)(
-    "rejects a forged imported %s seal before capacity rebasing",
-    async (forgery, expected) => {
-      const valid = await sourceImage(4 * MiB, 8 * MiB, true);
-      const forged = forgeLazyAtomicSeal(valid, forgery);
-      const rebase = vi.spyOn(
-        MemoryFileSystem.prototype,
-        "rebaseToNewFileSystem",
-      );
-      try {
-        await expect(
-          loadShellBaseFileSystemFromImage(forged, 32 * MiB),
-        ).rejects.toThrow(expected);
-        expect(rebase).not.toHaveBeenCalled();
-      } finally {
-        rebase.mockRestore();
-      }
-    },
-  );
+  it("refuses an image the loader rejects before it asks for a capacity", async () => {
+    // The ordering half of the test above: a refused image must not reach the
+    // capacity request either. That the refusal itself is correct is the
+    // module's business and is tested there.
+    const valid = await sourceImage(4 * MiB, 8 * MiB);
+    const corrupt = valid.slice(0, Math.floor(valid.byteLength / 2));
+    const setCapacity = vi.spyOn(SffsImageFs.prototype, "setImageCapacity");
+    try {
+      await expect(
+        loadShellBaseFileSystemFromImage(corrupt, 32 * MiB),
+      ).rejects.toThrow();
+      expect(setCapacity).not.toHaveBeenCalled();
+    } finally {
+      setCapacity.mockRestore();
+    }
+  });
 
   it("rejects an image that drifts from the standard product capacity", async () => {
     const largerProfile = 1024 * MiB;
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, { maxByteLength: largerProfile }),
-      largerProfile,
-    );
+    const fs = productFs(largerProfile);
     fs.setImageMetadata(shellImageMetadata(largerProfile));
     fs.mkdir("/etc", 0o755);
     fs.mkdir("/etc/kandelo", 0o755);
@@ -394,10 +404,7 @@ describe("shell VFS base composition", () => {
 
   it("rejects an explicit product profile below the standard capacity", () => {
     const smallerProfile = 512 * MiB;
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, { maxByteLength: smallerProfile }),
-      smallerProfile,
-    );
+    const fs = productFs(smallerProfile);
 
     expect(() =>
       saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst", {
@@ -412,12 +419,7 @@ describe("shell VFS base composition", () => {
   });
 
   it("rejects a derived product that has lost the shell metadata it owns", () => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, {
-        maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-      }),
-      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    );
+    const fs = productFs(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
 
     expect(() =>
       saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
@@ -471,28 +473,38 @@ describe("shell VFS base composition", () => {
     }
   });
 
+  // GAP 21, closed. This was pinned with `it.fails` while the defect stood, and
+  // the pin is what turned red the moment the fix landed rather than letting a
+  // known loss go quiet.
+  //
+  // The defect: a standalone URL-backed lazy file loaded from a LEGACY image
+  // survived the load with its real size and its deferred flag and was then
+  // re-exported as a zero-length ORDINARY file, because `KLZY` carries no
+  // fetch description and the export wrote a stub rather than a deferred
+  // record. Deferredness now decides, so the file re-exports as deferred with
+  // the size it really has -- exactly as informative as the input was.
   it("serializes a transient derived-image build guest without mutating the live image", async () => {
-    const image = await sourceImage(4 * MiB, 8 * MiB, true);
+    const image = await sourceImage(4 * MiB, 8 * MiB);
     const fs = await loadShellBaseFileSystemFromImage(image, 8 * MiB);
     const metadataBefore = fs.getImageMetadata();
-    const pendingBefore = fs.exportLazyArchiveEntries();
 
     const snapshot = await saveShellDerivedBuildGuestSnapshot(fs);
 
+    // Serializing must not disturb the live tree. Asserted through what the
+    // tree still SAYS rather than through a list of pending archives, because
+    // a snapshot that quietly materialised a deferred file, dropped its
+    // metadata, or changed its capacity would show up in exactly these.
     expect(fs.getImageMetadata()).toEqual(metadataBefore);
-    expect(fs.exportLazyArchiveEntries()).toEqual(pendingBefore);
-    const restored = MemoryFileSystem.fromImagePreservingCapacity(snapshot);
-    await restored.verifyImportedLazyAtomicGroupSeals();
-    expect(restored.exportLazyArchiveEntries()).toEqual(pendingBefore);
+    expectContentsPreserved(fs);
+
+    // And the snapshot is a loadable image carrying the same tree.
+    const restored = SffsImageFs.create();
+    restored.loadImage(snapshot);
+    expectContentsPreserved(restored);
   });
 
   it("rejects an unclassified or malformed source shell composition", () => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, {
-        maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-      }),
-      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-    );
+    const fs = productFs(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
     const metadata = sourceShellImageMetadata(256 * MiB);
     delete metadata.shellComposition;
     fs.setImageMetadata(metadata);
@@ -522,12 +534,7 @@ describe("shell VFS base composition", () => {
       normalizeTimestampsMs?: number,
     ): Promise<Uint8Array> => {
       const now = vi.spyOn(Date, "now").mockReturnValue(runtimeTimestampMs);
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(16 * MiB, {
-          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-        }),
-        SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
-      );
+      const fs = productFs(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES);
       const dir = mkdtempSync(join(tmpdir(), "shell-derived-reproducible-"));
       try {
         fs.setImageMetadata(shellImageMetadata(512 * MiB));
@@ -591,10 +598,7 @@ describe("shell VFS base composition", () => {
     profileMaxBytes,
     expectedMaxByteLength,
   ) => {
-    const fs = MemoryFileSystem.create(
-      new SharedArrayBuffer(16 * MiB, { maxByteLength: profileMaxBytes }),
-      profileMaxBytes,
-    );
+    const fs = productFs(profileMaxBytes);
     const inheritedMetadata = shellImageMetadata(512 * MiB);
     fs.setImageMetadata(inheritedMetadata);
     fs.mkdir("/etc", 0o755);

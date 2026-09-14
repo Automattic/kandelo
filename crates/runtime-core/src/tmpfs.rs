@@ -98,6 +98,18 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     ScratchMount { prefix: b"/home/maker", mode: 0o755, uid: 1000, gid: 1000, st_dev: TMPFS_DEV_BASE + 4 },
     ScratchMount { prefix: b"/root", mode: 0o700, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 5 },
     ScratchMount { prefix: b"/srv", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 6 },
+    // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
+    // here for the same reason: the kernel owns `/` and every other scratch
+    // prefix, and `/dev/shm` was the last filesystem mount a host still backed.
+    //
+    // Serving it here loses nothing. `MAP_SHARED` of a kernel-owned file is
+    // already implemented (`memory.rs`'s `fd_writeback`), and the coherence
+    // limit -- boundary-synchronous rather than immediate -- comes from one
+    // linear memory per process and applies to every shared mapping whoever
+    // backs the file. A `SharedArrayBuffer` is shared between WORKERS, not with
+    // a guest's linear memory, so the host path went through the same
+    // publish/refresh protocol.
+    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 7 },
 ];
 
 enum InodeKind {
@@ -1376,6 +1388,31 @@ mod tests {
     }
 
     #[test]
+    fn dev_shm_is_a_scratch_mount_and_behaves_like_one() {
+        // POSIX shared memory, served here rather than by a host mount. What a
+        // guest actually does with it: `shm_open` is an ordinary create under
+        // `/dev/shm`, and the segment is read and written like any file.
+        assert!(owns_path(b"/dev/shm"));
+        assert!(owns_path(b"/dev/shm/sem.foo"));
+        assert!(!owns_path(b"/dev/shmfoo"), "the prefix is a path boundary");
+        assert!(!owns_path(b"/dev/pts/0"), "the rest of /dev is not tmpfs's");
+
+        let p = b"/dev/shm/segment";
+        let h = open(p, O_CREAT | O_RDWR, 0o600, 0, 0).unwrap();
+        assert_eq!(write(h, 0, b"shared").unwrap(), 6);
+        assert_eq!(read_all(h), b"shared");
+
+        // The mount itself carries the mode POSIX expects of `/dev/shm`:
+        // world-writable and STICKY, which is what stops one process deleting
+        // another's segment. The enforcement lives in the syscall layer, above
+        // whichever filesystem serves the path, so carrying the bit correctly
+        // here is this module's whole part in it.
+        let st = lstat(b"/dev/shm").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFDIR);
+        assert_eq!(st.st_mode & 0o7777, 0o1777);
+    }
+
+    #[test]
     fn create_write_read_roundtrip() {
         let p = b"/tmp/roundtrip.txt";
         let h = open(p, O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
@@ -1424,6 +1461,27 @@ mod tests {
         );
         unlink(b"/var/run/s.sock").unwrap();
         assert_eq!(lstat(b"/var/run/s.sock").unwrap_err(), Errno::ENOENT);
+    }
+
+    /// A guest must not be able to remove or rename a mount root out from
+    /// under the mount. Both guards return EBUSY and neither was asserted;
+    /// `rename_moves_replaces_and_guards` covers the subtree EINVAL but not
+    /// these. `/dev/shm` is included because this campaign moved it in-kernel,
+    /// so it is the newest mount root and the one least covered by habit.
+    #[test]
+    fn a_mount_root_cannot_be_removed_or_renamed_over() {
+        assert_eq!(rmdir(b"/tmp").unwrap_err(), Errno::EBUSY);
+        assert_eq!(rmdir(b"/dev/shm").unwrap_err(), Errno::EBUSY);
+
+        // Renaming a file ONTO a mount root is refused for the same reason.
+        // Kept within one mount so the answer is EBUSY and not EXDEV.
+        let h = open(b"/tmp/mr_victim", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(h);
+        assert_eq!(rename(b"/tmp/mr_victim", b"/tmp").unwrap_err(), Errno::EBUSY);
+
+        // The mounts survived every attempt.
+        assert!(is_dir(b"/tmp"));
+        assert!(is_dir(b"/dev/shm"));
     }
 
     #[test]

@@ -1,0 +1,27 @@
+{
+ "file": "crates/runtime-core/src/tmpfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the in-kernel tmpfs does not claim /dev/shm",
+   "scope": "const SCRATCH_MOUNTS",
+   "scope_end": "\n];\n",
+   "find": "    ScratchMount { prefix: b\"/dev/shm\", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 7 },",
+   "replace": ""
+  },
+  {
+   "name": "/dev/shm is served without the sticky bit",
+   "scope": "const SCRATCH_MOUNTS",
+   "scope_end": "\n];\n",
+   "find": "prefix: b\"/dev/shm\", mode: 0o1777,",
+   "replace": "prefix: b\"/dev/shm\", mode: 0o777,"
+  },
+  {
+   "name": "a scratch prefix matches without a path boundary",
+   "scope": "fn match_mount(path: &[u8])",
+   "scope_end": "\n}\n",
+   "find": "            || (path.len() > p.len() && path.starts_with(p) && path[p.len()] == b'/');",
+   "replace": "            || path.starts_with(p);"
+  }
+ ]
+}

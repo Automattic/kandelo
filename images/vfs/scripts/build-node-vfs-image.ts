@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a pre-built VFS image containing the Shell VFS base, npm 10.9.2,
  * and a writable workspace for the browser Node demos.
@@ -20,7 +21,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
@@ -123,7 +123,7 @@ export async function buildNodeVfsImage(
   });
 }
 
-function populateNodeBinary(fs: MemoryFileSystem, node: Uint8Array): void {
+function populateNodeBinary(fs: VfsImageFilesystem, node: Uint8Array): void {
   // WHY: the dedicated Node demo always executes Node. Embedding its package-
   // resolved bytes avoids a second browser transport whose authority was not
   // part of the admitted flat shell lineage.

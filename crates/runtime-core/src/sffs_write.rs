@@ -232,6 +232,10 @@ pub struct SffsWriter {
     inode_table: Vec<u8>,
     blocks: BTreeMap<u32, BlockContent>,
     dir_indexes: BTreeMap<u32, Vec<FreeSlot>>,
+    /// Whether this writer states its deferred files in-body even when there
+    /// are none. Set by [`Self::declare_deferred_section`]; see
+    /// [`Self::emit_deferred_section`] for why it is not the default.
+    declares_deferred: bool,
     deferred: Vec<crate::sffs_deferred::DeferredRecord>,
     /// Archives the deferred records may point at. Declared separately from the
     /// records because an archive's LENGTH is per-archive, not per-member, and
@@ -340,6 +344,7 @@ impl SffsWriter {
             inode_table: vec![0u8; inode_table_blocks as usize * BLOCK_SIZE],
             blocks: BTreeMap::new(),
             dir_indexes: BTreeMap::new(),
+            declares_deferred: false,
             deferred: Vec::new(),
             deferred_archives: Vec::new(),
         };
@@ -1137,11 +1142,41 @@ impl SffsWriter {
     }
 
     /// Write the deferred section into an unlinked inode and name it in the
-    /// superblock. Returns the inode, or 0 when nothing is deferred — in which
-    /// case not one block is allocated and the image is byte-identical to one
-    /// built before this section existed.
+    /// superblock. Returns the inode, or 0 when nothing is deferred AND this
+    /// writer has not been asked to declare the section regardless.
+    ///
+    /// # Why "nothing deferred" and "no section" are different statements
+    ///
+    /// `rootfs::load_image` refuses an image that declares neither `KLZY` nor
+    /// `SDEF`, because it cannot tell "this image has no lazy files" from "this
+    /// image records its lazy files only in the host-side JSON the kernel
+    /// cannot read", and accepting the second builds a tree where every
+    /// deferred file reports size 0 — a wrong tree that looks like a right one.
+    ///
+    /// An EMPTY section is therefore not a formality: it is the statement "this
+    /// image was written by something that would have told you", and it is the
+    /// difference between silence and an answer. It costs one inode and one
+    /// block.
+    ///
+    /// It is opt-in rather than automatic because only a producer that really
+    /// would have told you may make that statement, and the TypeScript writer
+    /// this one is byte-compared against cannot. Emitting it unconditionally
+    /// broke four `matches_the_typescript_writer` tests, which is the migration
+    /// safety property saying so. See [`Self::declare_deferred_section`].
+    /// State that this producer describes its deferred files in this image's
+    /// body, so an image with none still carries an empty section rather than
+    /// no section at all.
+    ///
+    /// Only a producer that would genuinely have written the records may say
+    /// this. The kernel's own export may; a writer driven by a host that keeps
+    /// its lazy manifest in JSON beside the image may not, because for that
+    /// image "no section" is the truth and the loader is right to refuse it.
+    pub fn declare_deferred_section(&mut self) {
+        self.declares_deferred = true;
+    }
+
     fn emit_deferred_section(&mut self) -> Result<u32, Errno> {
-        if self.deferred.is_empty() {
+        if self.deferred.is_empty() && !self.declares_deferred {
             return Ok(0);
         }
         // `encode` requires ascending inodes. Allocation already produces them

@@ -9,7 +9,7 @@
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import {
   exactVfsImageMetadata,
   ensureDir,
@@ -89,8 +89,11 @@ export async function buildErlangVfsImage(
   // image silently stopped being sufficient once the VFS began consuming the
   // publisher-safe archive instead of only selected ebin directories.
   const bytes = stagedByteLength(installDirectory);
-  const sab = new SharedArrayBuffer(imageCapacity(bytes));
-  const fs = MemoryFileSystem.create(sab);
+  const fs = SffsImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(imageCapacity(bytes));
 
   // Standard directories
   ensureDir(fs, "/tmp");

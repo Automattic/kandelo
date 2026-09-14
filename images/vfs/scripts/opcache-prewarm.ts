@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build-time opcache prewarmer for PHP VFS images.
  *
@@ -5,7 +6,7 @@
  * with `opcache.file_cache_only=1` pointed at `/var/cache/opcache`, asks
  * it to `opcache_compile_file()` every `.php` under the configured source
  * roots, then dumps the resulting cache files back over stdout. Each
- * dumped file is written into the build's MemoryFileSystem at the same
+ * dumped file is written into the build's VfsImageFilesystem at the same
  * VFS path the kernel saw, so when the demo boots its FPM workers pick
  * up the cache without paying the first-request compile cost.
  *
@@ -37,7 +38,6 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { NodeKernelHost } from "../../../host/src/node-kernel-host";
 import { findRepoRoot, resolveBinary } from "../../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
 
 export interface OpcachePrewarmOptions {
@@ -87,7 +87,7 @@ const PHP_ENV = ["HOME=/tmp", "TMPDIR=/tmp"];
  * the build still works, opcache just runs cold on first request.
  */
 export async function prewarmOpcache(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: OpcachePrewarmOptions,
 ): Promise<number> {
   ensureDirRecursive(fs, CACHE_DIR);
@@ -397,7 +397,7 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
   return out;
 }
 
-function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
+function ingestDump(buf: Uint8Array, fs: VfsImageFilesystem): number {
   // Decode the entire buffer as UTF-8 (it's now all base64 + ASCII
   // framing). Locate the begin marker line, then read line-pairs:
   //   <count>\n

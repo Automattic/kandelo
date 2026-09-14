@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build-script helpers for VFS images. Pure memfs operations are re-exported
  * from host/src/vfs/image-helpers.ts so demo runtime code can share them.
@@ -13,10 +14,8 @@ import {
 } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 
@@ -64,7 +63,7 @@ export interface WalkOptions {
  * Returns the number of files written.
  */
 export function walkAndWrite(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   rootDir: string,
   mountPrefix: string,
   opts?: WalkOptions,
@@ -113,10 +112,10 @@ export function walkAndWrite(
 }
 
 /**
- * Save a MemoryFileSystem image to disk as a zstd-compressed `.vfs.zst`
+ * Save a VFS image to disk as a zstd-compressed `.vfs.zst`
  * file. The empty regions of the SharedFS allocator compress to almost
  * nothing, so this typically shrinks images by 80–95%. The browser-side
- * loader (`MemoryFileSystem.fromImage`) detects the zstd magic and
+ * loader detects the zstd magic and
  * decompresses on load.
  *
  * `outFile` must end in `.vfs.zst` to make the on-disk format obvious.
@@ -201,7 +200,7 @@ export function sourceDateEpochMilliseconds(
   return seconds * 1000;
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: VfsImageFilesystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -230,7 +229,7 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
  * those resources independently, so both reserves are part of the contract.
  */
 export function assertVfsImageHeadroom(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   headroom: VfsImageHeadroom,
   label: string,
 ): void {
@@ -243,12 +242,30 @@ export function assertVfsImageHeadroom(
     }
   }
 
-  const stats = fs.statfs("/");
-  const freeBytes = stats.bfree * stats.frsize;
+  // The filesystem JUDGES this; nothing here recomputes it from a primitive.
+  //
+  // The `statfs` arm that stood beside this one existed for
+  // `MemoryFileSystem`, which could only report free blocks and left the
+  // arithmetic — and therefore the decision — in TypeScript. Every builder now
+  // reaches the format through the module, which answers with a verdict AND
+  // the numbers behind it, so the arm is gone with its last caller rather than
+  // kept as a shape nothing fills.
+  if (!fs.checkHeadroom) {
+    throw new Error(
+      `${label} cannot report headroom: the filesystem offers no headroom ` +
+        `verdict`,
+    );
+  }
+  const verdict = fs.checkHeadroom(
+    headroom.minimumFreeBytes,
+    headroom.minimumFreeInodes,
+  );
+  const freeBytes = verdict.freeBytes;
+  const freeInodes = verdict.freeInodes;
   if (!Number.isSafeInteger(freeBytes) || freeBytes < 0) {
     throw new Error(`${label} reports an invalid free-byte count`);
   }
-  if (!Number.isSafeInteger(stats.ffree) || stats.ffree < 0) {
+  if (!Number.isSafeInteger(freeInodes) || freeInodes < 0) {
     throw new Error(`${label} reports an invalid free-inode count`);
   }
   const failures: string[] = [];
@@ -257,9 +274,9 @@ export function assertVfsImageHeadroom(
       `${freeBytes} free bytes remain; ${headroom.minimumFreeBytes} are required`,
     );
   }
-  if (stats.ffree < headroom.minimumFreeInodes) {
+  if (freeInodes < headroom.minimumFreeInodes) {
     failures.push(
-      `${stats.ffree} free inodes remain; ${headroom.minimumFreeInodes} are required`,
+      `${freeInodes} free inodes remain; ${headroom.minimumFreeInodes} are required`,
     );
   }
   if (failures.length > 0) {
@@ -272,14 +289,26 @@ export function assertVfsImageCapacity(
   image: Uint8Array,
   expectedMaxByteLength: number,
   label: string,
+  /**
+   * The filesystem that produced `image`, when the caller has it. A producer
+   * that can report its own ceiling is asked instead of parsing the artifact;
+   * the parse remains for the implementation that cannot.
+   */
+  fs?: VfsImageFilesystem,
 ): void {
   if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {
     throw new Error(
       `${label} expectedMaxByteLength must be a positive safe integer`,
     );
   }
-  const actualMaxByteLength =
-    MemoryFileSystem.readImageCapacity(image).maxByteLength;
+  // Ask the producer when there is one, and otherwise ask the MODULE to read
+  // the artifact. Neither branch parses a container here: the ceiling lives in
+  // the container header and the SFFS superblock, and reading it in TypeScript
+  // would be format knowledge on the wrong side of the boundary this lane
+  // exists to draw. Callers that hold only bytes take the second branch.
+  const actualMaxByteLength = fs?.exportCapacityBytes
+    ? fs.exportCapacityBytes()
+    : SffsImageFs.readImageCapacity(image).maxByteLength;
   if (actualMaxByteLength !== expectedMaxByteLength) {
     throw new Error(
       `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +
@@ -288,7 +317,7 @@ export function assertVfsImageCapacity(
   }
 }
 
-function walkVfsFiles(fs: MemoryFileSystem, dir: string, out: string[] = []): string[] {
+function walkVfsFiles(fs: VfsImageFilesystem, dir: string, out: string[] = []): string[] {
   // WHY: this walk protects the artifact that will be published. A namespace
   // inspection failure is not an intentional omission and must stop the build.
   const dh = fs.opendir(dir);
@@ -380,7 +409,7 @@ function declaredWasmArtifactPolicies(
 }
 
 function assertNoStaleWasmArtifacts(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   kernelAbi: number,
   declarations: readonly VfsWasmArtifactPolicy[] = [],
 ): void {
@@ -442,7 +471,7 @@ function assertNoStaleWasmArtifacts(
 
 /** Validate and compress one image without publishing it to the host filesystem. */
 export async function serializeImage(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   artifactLabel: string,
   options: SaveImageOptions = {},
 ): Promise<SerializedVfsImage> {
@@ -486,6 +515,7 @@ export async function serializeImage(
       image,
       options.expectedMaxByteLength,
       artifactLabel,
+      fs,
     );
   }
   // Level 19 — slow build, smaller download. Decompression speed is
@@ -505,7 +535,7 @@ export async function serializeImage(
 }
 
 export async function saveImage(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   outFile: string,
   options: SaveImageOptions = {},
 ): Promise<Uint8Array> {

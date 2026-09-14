@@ -8,26 +8,32 @@
   // hazard list says a gate written afterwards gets shaped to pass, and lane Y
   // is about to repoint thirteen of these files onto a new interface.
   //
-  // NOT YET WIRED AS A BLOCKING GATE. Its first run found four type errors
-  // under `images/`: one introduced by this lane and fixed, and three that
-  // predate it —
+  // ZERO ERRORS UNDER `images/` as of 2026-09-13. All four its first run found
+  // are fixed:
   //
-  //   images/vfs/scripts/build-source-rootfs-shell-image.ts:389
-  //     a StatResult passed where `{ ino, generation? }` is expected
-  //   images/vfs/scripts/staged-product-inputs.ts:1402
-  //     `keyof typeof STAGING_FLAGS` is a Map's METHOD names, not its keys
-  //   images/vfs/scripts/staged-product-inputs.ts:1570
-  //     `kind` stays `unknown`; the ternary chain narrows it for a reader but
-  //     not for the compiler
+  //   * a StatResult passed where `{ ino, generation? }` was expected — fixed
+  //     as a side effect of moving build-source-rootfs-shell-image.ts onto the
+  //     Rust filesystem, whose 64-bit inode numbers the identity comparison
+  //     now takes instead of silently comparing a bigint to a number;
+  //   * `keyof typeof STAGING_FLAGS`, which is a Map's METHOD names and not
+  //     its keys — the cast also asserted the flag is a KNOWN one, which is
+  //     precisely what the next line checks, so removing it removed a lie;
+  //   * `kind` left `unknown` by a ternary chain that narrows it for a reader
+  //     but not for the compiler — now checked before use, which also retires
+  //     an empty key list that stood in for "unsupported";
+  //   * one introduced by this lane and fixed when it was introduced.
   //
-  // Each is a real defect in a production build script, and fixing them means
-  // behaviour judgement in code this lane did not otherwise touch — a scope
-  // question for the maintainer, not a coding one. A gate with a baseline of
-  // three cannot detect the fourth, which is why this is recorded as unwired
-  // rather than wired with an allowance.
+  // STILL NOT WIRED AS A BLOCKING GATE, and the reason is no longer a
+  // baseline. `tsc` exits non-zero on five errors in
+  // `host/test/centralized-test-helper.ts`, which enters this program because
+  // `images/vfs/scripts/generate-coreutils-man.ts` imports `runCentralizedProgram`
+  // from it — a production build script depending on TEST scaffolding. Wiring
+  // this means untangling that first, which is a real change to a script this
+  // lane has not otherwise touched.
   //
   // It is useful as it stands: run it and require that the errors under
-  // `images/` are exactly those three.
+  // `images/` are exactly ZERO. Line numbers are deliberately not quoted — they
+  // moved once already and a stale number reads as a different defect.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

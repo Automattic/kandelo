@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeKernelHost, type NodeKernelHostOptions } from "../../../host/src/node-kernel-host";
 import { findRepoRoot, resolveBinary } from "../../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -114,7 +114,7 @@ export interface WordPressPreinstallPrograms {
 }
 
 export async function preinstallWordPressSqlite(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
   console.log("[wp-preinstall:sqlite] installing WordPress into SQLite database...");
@@ -138,7 +138,7 @@ export async function preinstallWordPressSqlite(
 }
 
 export async function preinstallWordPressMariaDb(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
   console.log("[wp-preinstall:mariadb] initializing MariaDB /data and installing WordPress...");
@@ -226,7 +226,7 @@ export async function preinstallWordPressMariaDb(
 }
 
 async function withKernelSession(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   fn: (session: KernelSession) => Promise<void>,
   hostOptions: PreinstallKernelHostOptions = {},
 ): Promise<void> {
@@ -455,7 +455,7 @@ function makeHostMariaDbDataWritable(hostDataDir: string): void {
 
 async function bootstrapMariaDbSystemTables(
   session: KernelSession,
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mariadbBytes: ArrayBuffer,
 ): Promise<void> {
   if (!session.hostDataDir) {
@@ -506,7 +506,7 @@ async function bootstrapMariaDbSystemTables(
   }
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: VfsImageFilesystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -705,7 +705,7 @@ fwrite(STDERR, "dumped " . count($records) . " entries\\n");
 `.trim();
 }
 
-function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
+function ingestDump(buf: Uint8Array, fs: VfsImageFilesystem): number {
   const text = new TextDecoder("utf-8").decode(buf);
   const beginAt = text.indexOf(DUMP_BEGIN);
   if (beginAt < 0) {
@@ -764,7 +764,7 @@ function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
   return records.length;
 }
 
-function ingestHostDirectory(hostRoot: string, fs: MemoryFileSystem, vfsRoot: string): number {
+function ingestHostDirectory(hostRoot: string, fs: VfsImageFilesystem, vfsRoot: string): number {
   let written = 0;
 
   function copyDir(hostDir: string, vfsDir: string): void {
@@ -819,7 +819,7 @@ function collectHostMariaDbDiagnostics(hostDataDir: string): string {
   return chunks.join("\n");
 }
 
-function ensureMariaDbDataOwnership(fs: MemoryFileSystem): void {
+function ensureMariaDbDataOwnership(fs: VfsImageFilesystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/wordpress"]) {
     try {
       fs.chown(dir, MYSQL_UID, MYSQL_GID);
@@ -830,7 +830,7 @@ function ensureMariaDbDataOwnership(fs: MemoryFileSystem): void {
   }
 }
 
-function assertVfsPath(fs: MemoryFileSystem, path: string): void {
+function assertVfsPath(fs: VfsImageFilesystem, path: string): void {
   try {
     fs.stat(path);
   } catch {

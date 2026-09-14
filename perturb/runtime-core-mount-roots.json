@@ -1,0 +1,20 @@
+{
+ "file": "crates/runtime-core/src/tmpfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a mount root can be removed with rmdir",
+   "scope": "pub fn rmdir(path: &[u8]) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "    if comps.is_empty() {\n        return Err(Errno::EBUSY); // cannot remove a mount root\n    }",
+   "replace": ""
+  },
+  {
+   "name": "a mount root can be renamed over",
+   "scope": "    if old_comps.is_empty() || new_comps.is_empty() {",
+   "scope_end": "\n    }\n",
+   "find": "    if old_comps.is_empty() || new_comps.is_empty() {\n        return Err(Errno::EBUSY); // cannot rename a mount root\n    }",
+   "replace": ""
+  }
+ ]
+}

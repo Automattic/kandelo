@@ -163,6 +163,21 @@ struct Inode {
     /// dies with the inode; a freed index cannot hand a stale payload to
     /// whatever is allocated there next.
     deferred_payload: Vec<u8>,
+    /// This file's bytes are NOT in the image, whether or not the image said
+    /// where they come from.
+    ///
+    /// `deferred_payload` cannot answer this. A `KLZY`-described image records
+    /// that a file is deferred and how big it really is, and carries NO fetch
+    /// description at all -- the URL lives in host-side JSON the kernel does
+    /// not read. So a deferred file loaded from one arrives with an empty
+    /// payload, which is indistinguishable from a base file the host WALKED,
+    /// whose bytes are an ordinary host file and which was never deferred.
+    ///
+    /// Those two must not be confused, because the export treats them
+    /// oppositely: a walked base file is a stub with nothing to re-emit, and a
+    /// deferred file re-emitted as a stub silently becomes a zero-length
+    /// ordinary file. That was gap 21.
+    deferred_base: bool,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
     uid: u32,
@@ -186,6 +201,7 @@ impl Inode {
         Inode {
             kind,
             deferred_payload: Vec::new(),
+            deferred_base: false,
             mode,
             uid,
             gid,
@@ -291,6 +307,15 @@ struct RootfsState {
     /// (Increment 3b-wiring.2, `fetch_archive`); cleared by `reset()` like the
     /// rest of the store, so a failed manifest load never leaves stale entries.
     archives: BTreeMap<u32, ArchiveEntry>,
+    /// Set by [`set_export_timestamp`]; overrides every emitted inode's times.
+    export_timestamp_ms: Option<u64>,
+    /// The capacity a builder asked the next exported image to have, if any.
+    ///
+    /// A product declares this (`expectedMaxByteLength`) and its publication
+    /// gate checks the artifact against it. Without it the export sizes to its
+    /// own tree, so the image has no runtime growth room and meets no declared
+    /// capacity — see the master plan, gap 14.
+    image_capacity_bytes: Option<u64>,
     /// Image metadata for the next export, as opaque bytes. The kernel neither
     /// writes nor reads what is in here — `version`, `kernelAbi`, `createdBy`
     /// are the builder's statements about its own artifact — but the section
@@ -352,7 +377,9 @@ impl RootfsState {
             free_dir_iters: Vec::new(),
             next_ino: 1,
             archives: BTreeMap::new(),
+            export_timestamp_ms: None,
             image: None,
+            image_capacity_bytes: None,
             image_metadata: None,
         }
     }
@@ -1108,6 +1135,17 @@ pub fn insert_base_file(
 /// URL-backed lazy file does, a base tree the host walked does not. Calling it
 /// with an empty payload is a no-op rather than an error, so a loader need not
 /// branch on whether the image declared a section.
+pub fn mark_deferred_base(path: &[u8]) -> Result<(), Errno> {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.deferred_base = true;
+        Ok(())
+    })
+}
+
 pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
     if payload.is_empty() {
         return Ok(());
@@ -1221,7 +1259,20 @@ pub fn insert_lazy_file(
     uid: u32,
     gid: u32,
     ino: u64,
+    payload: &[u8],
 ) -> Result<(), Errno> {
+    // `archive_id == 0` is a file fetched STANDALONE: no archive behind it, so
+    // no member path either, and `payload` is the only thing that says where
+    // its bytes are. That is the shape 79 files in the shipped shell image
+    // have, and the shape lane S's setuid defect is about — it was not
+    // registrable through this path at all until now, because the archive
+    // declaration it went through rejects id 0.
+    if (archive_id == 0) != source_path.is_empty() {
+        return Err(Errno::EINVAL);
+    }
+    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        return Err(Errno::EINVAL);
+    }
     ROOTFS.with(|state| {
         state.bump_next_ino(ino);
         let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
@@ -1237,6 +1288,9 @@ pub fn insert_lazy_file(
             1,
             ino,
         ));
+        if let Some(inode) = state.get_mut(child) {
+            inode.deferred_payload = payload.to_vec();
+        }
         let comps: Vec<&[u8]> = parent_comps.iter().map(|c| &**c).collect();
         if let Err(e) = link_into_parent(state, &comps, last, child) {
             state.inodes[child as usize] = None;
@@ -1244,6 +1298,42 @@ pub fn insert_lazy_file(
             return Err(e);
         }
         Ok(())
+    })
+}
+
+/// What a builder needs to know about whether `path`'s bytes are in the image.
+///
+/// `(deferred, ino, size, archive_id)`. `deferred` is false for an ordinary
+/// file, in which case the other fields still describe it — a caller asking
+/// "is this resident?" gets its answer without a second call.
+///
+/// **The fields are the ones something reads, not the ones the old TypeScript
+/// registry happened to expose.** Measured across the four recipes that call
+/// `getLazyEntry`/`isPathDeferred`: two use the result only as a boolean, one
+/// reads `size`, one reads inode identity. `url` is not here because nothing
+/// reads it through this path — it lives in the deferred payload, opaque, and
+/// building an accessor for it would be a floor nobody stands on.
+pub fn lazy_info(path: &[u8]) -> Result<(bool, u64, u64, u32), Errno> {
+    let comps = split_components(path);
+    ROOTFS.with(|state| {
+        let root = state.mount_root();
+        let idx = state.walk(root, &comps)?;
+        let inode = state.get(idx).ok_or(Errno::ENOENT)?;
+        Ok(match &inode.kind {
+            InodeKind::LazyMember {
+                archive_id, size, ..
+            } => (true, inode.ino, *size, *archive_id),
+            // A base file whose bytes the host fetches: deferred, with no
+            // archive behind it.
+            InodeKind::BaseRegular {
+                size,
+                source: BaseSource::Host,
+                ..
+            } => (true, inode.ino, *size, 0),
+            InodeKind::BaseRegular { size, .. } => (false, inode.ino, *size, 0),
+            InodeKind::Regular(data) => (false, inode.ino, data.len() as u64, 0),
+            _ => (false, inode.ino, 0, 0),
+        })
     })
 }
 
@@ -1275,34 +1365,21 @@ pub fn lazy_member_source(path: &[u8]) -> Result<(u32, Vec<u8>), Errno> {
 /// one would decide a fetch bound by declaration order. An already-populated
 /// entry keeps its fetched bytes — this declares a length, it does not reset an
 /// archive.
-pub fn declare_archive(archive_id: u32, bytes: u64, payload: &[u8]) -> Result<(), Errno> {
+pub fn declare_archive(archive_id: u32, bytes: u64) -> Result<(), Errno> {
     if archive_id == 0 {
         return Err(Errno::EINVAL);
     }
-    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
-        return Err(Errno::EINVAL);
-    }
-    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
-        Some(existing) if existing.size == bytes => {
-            // The length agrees, so this is a re-declaration. A payload that
-            // arrives with it is kept, so a caller that declares the archive
-            // once per member need not carry the descriptor on every call —
-            // but a DIFFERENT non-empty payload is a conflict for the same
-            // reason a different length is.
-            if !payload.is_empty() {
-                if !existing.payload.is_empty() && existing.payload != payload {
-                    return Err(Errno::EINVAL);
-                }
-                existing.payload = payload.to_vec();
-            }
-            Ok(())
-        }
+    ROOTFS.with(|state| match state.archives.get(&archive_id) {
+        // The length agrees, so this is a re-declaration by another member of
+        // the same archive, which is the ordinary case: a builder registers
+        // members one at a time and each names the archive it belongs to.
+        Some(existing) if existing.size == bytes => Ok(()),
         Some(_) => Err(Errno::EINVAL),
         None => {
             state.archives.insert(
                 archive_id,
                 ArchiveEntry {
-                    payload: payload.to_vec(),
+                    payload: Vec::new(),
                     size: bytes,
                     raw: None,
                     directory: None,
@@ -1442,7 +1519,7 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
                 let archive_id = rd_u32(buf, &mut pos)?;
                 let source_path_len = rd_u32(buf, &mut pos)? as usize;
                 let source_path = rd_bytes(buf, &mut pos, source_path_len)?.to_vec();
-                insert_lazy_file(&path, archive_id, &source_path, size, mode, uid, gid, ino)?
+                insert_lazy_file(&path, archive_id, &source_path, size, mode, uid, gid, ino, b"")?
             }
             _ => return Err(Errno::EINVAL),
         }
@@ -1732,6 +1809,33 @@ where
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));
 
+    // WHAT THE IMAGE SAYS ABOUT ITSELF, KEPT (gap 16). Both of these were read
+    // only by the export and written only by their setters, so an image loaded
+    // and re-exported came back having forgotten its own declarations: a base
+    // declaring 256 MiB of room re-exported sized to its tree, and a base
+    // declaring a kernel ABI re-exported declaring nothing. A load preserves
+    // what the image states, or it is not a load.
+    //
+    // The capacity is a CEILING and not an allocation: it floors the export's
+    // `max_blocks` while `total_blocks` stays sized to the content, so
+    // restoring it costs the inode table its share and not the declared room.
+    let declared_capacity = filesystem.growth_ceiling_bytes()?;
+    let declared_metadata = match crate::sffs::metadata_span(&source)? {
+        Some((offset, len)) => {
+            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
+            bytes.resize(len, 0u8);
+            source.read_exact_at(offset, &mut bytes)?;
+            Some(bytes)
+        }
+        None => None,
+    };
+    ROOTFS.with(|state| {
+        state.image_capacity_bytes = Some(declared_capacity);
+        state.image_metadata = declared_metadata;
+    });
+
     // The image's own deferred section, when it carries one. It is BOTH a
     // linkage source (below) and the place the opaque fetch descriptions live,
     // which is why it is read once and used twice.
@@ -1817,6 +1921,32 @@ where
         }
     }
 
+    // GAP 20. An image that SAYS it has lazy archives, through a carrier that
+    // describes none, is an image whose archives this reader cannot see.
+    //
+    // The refusal above catches an image that describes its deferred files
+    // nowhere. This catches the narrower and quieter case: a description that
+    // is present and PARTIAL. The legacy `KLZY` encoder skips any archive
+    // group whose raw byte length or transport it does not know -- documented
+    // there as a truthful gap, because bytes that cannot be validated should
+    // not be promised -- but the gap is truthful only at the writing end. Here
+    // it arrives as an archive that was never mentioned, so its members are
+    // walked as ordinary files and inserted with the zero length their stub
+    // inodes carry. A 4,096-byte binary becomes an empty file, the load
+    // reports success, and a build derived from it ships the emptiness.
+    //
+    // That is precisely the "wrong tree that looks like a right one" the
+    // neither-carrier refusal exists to prevent, reached one archive at a time
+    // instead of all at once. Same defect, same answer: a stale artifact fails
+    // loudly and is rebuilt.
+
+    let declared_flags = crate::sffs::container_flags(&source)?;
+    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0
+        && lazy_archives.is_empty()
+    {
+        return Err(Errno::EINVAL);
+    }
+
     let root_stat = filesystem.stat_ino(ROOT_INO)?;
     if file_type(root_stat.mode) != S_IFDIR {
         return Err(Errno::EINVAL); // `/` is not a directory in the image
@@ -1899,6 +2029,20 @@ where
                                 stat.uid,
                                 stat.gid,
                                 ino,
+                                // Retained below from the image's own deferred
+                                // section, once the walk knows which inode this
+                                // is; KLZY carries no payload to retain.
+                                // The file's own fetch description, when the
+                                // image carried one. An archive member usually
+                                // has none — the archive carries the transport
+                                // — but nothing says it cannot, and losing one
+                                // the image DID carry is the defect this whole
+                                // retention path exists to prevent.
+                                deferred
+                                    .as_ref()
+                                    .and_then(|section| section.get(entry.ino))
+                                    .map(|record| record.payload.as_slice())
+                                    .unwrap_or(b""),
                             )?;
                         }
                         // A URL-backed lazy file (`archive_id == 0`) is a base
@@ -1908,6 +2052,13 @@ where
                             insert_base_file(
                                 &abs, ino, lazy.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
+                            mark_deferred_base(&abs)?;
+                            // Deferred REGARDLESS of whether a description came
+                            // with it. `KLZY` carries none, so without this the
+                            // file is indistinguishable from one the host
+                            // walked -- and the export turns that into a
+                            // zero-length ordinary file (gap 21).
+
                             // Retain the fetch description verbatim. Without
                             // it, exporting this file loses the only thing that
                             // says where its bytes are: its inode number here
@@ -2049,20 +2200,26 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     return Err(Errno::ENOTDIR);
                 }
                 if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
-                    if matches!(inode.kind, InodeKind::LazyMember { .. }) {
-                        // Truncating a lazy-archive placeholder would silently
-                        // discard its (archive_id, source_path, size) and hand
-                        // back an empty writable file instead of the real
-                        // content. Byte-serving/materialization is
-                        // TODO(3b-wiring.2): materialize via fetch_archive, so
-                        // this stays a truthful ENOSYS rather than a silent
-                        // conversion.
-                        return Err(Errno::ENOSYS);
-                    }
+                    // A lazy-archive member truncates like anything else, and
+                    // discarding its `(archive_id, source_path, size)` is the
+                    // POINT rather than a loss: `O_TRUNC` means "this file is
+                    // now empty", and what its bytes used to be backed by stops
+                    // mattering the moment they stop existing.
+                    //
+                    // This used to be a deliberate `ENOSYS` guarding against
+                    // "an empty writable file instead of the real content" --
+                    // which is a description of truncation. It cost the derived
+                    // image builders: replacing `/usr/bin/node` with eager
+                    // bytes is a whole-file replace, and it failed `ENOSYS`.
+                    //
+                    // The case that genuinely needs the old bytes is a PARTIAL
+                    // write, which does not set `O_TRUNC` and still reaches the
+                    // materialization path that cannot serve them.
                     if let Some(node) = state.get_mut(existing) {
                         let shrank = match &node.kind {
                             InodeKind::Regular(d) => !d.is_empty(),
                             InodeKind::BaseRegular { size, .. } => *size > 0,
+                            InodeKind::LazyMember { size, .. } => *size > 0,
                             _ => false,
                         };
                         node.kind = InodeKind::Regular(Vec::new());
@@ -2662,6 +2819,18 @@ where
 ///
 /// Host-facing convenience for the 2e cutover so host-side `/` writes land in
 /// the authoritative overlay and are visible to live guests.
+///
+/// A symlinked path is followed ([`resolve_read_symlinks`], bounded by
+/// [`SYMLOOP_MAX`]) for the same reason [`read_file_at`] follows one, and the
+/// omission here was a real defect: `open` refuses a symlinked final component
+/// with `ELOOP` because the GUEST's namespace resolver pre-resolves, and a
+/// host-facing raw-path writer does not. So writing `/bin/bash` when it is a
+/// symlink failed `ELOOP` while READING it succeeded.
+///
+/// It surfaced building the shell package, where the composer materialises
+/// bash over a path the rootfs carries as a symlink. Following the link means
+/// the bytes land in the file the name refers to, which is what every other
+/// writer of a symlinked path does.
 pub fn write_file_at<F>(
     path: &[u8],
     offset: i64,
@@ -2673,15 +2842,29 @@ pub fn write_file_at<F>(
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
+    // Resolved BEFORE the open, and the mode is applied to the resolved path
+    // too: a truncating replace of `/bin/bash` must set the mode of the file
+    // the link names, not of the link.
+    //
+    // A path that does not RESOLVE is one this call may be about to create, so
+    // the raw path stands in. That keeps creation working without weakening
+    // anything: `open` below reports the real error for a missing parent, and
+    // an `ENOENT` here cannot hide a symlink, because resolving a symlink is
+    // the only way this returns a different path at all.
+    let resolved = match resolve_read_symlinks(path) {
+        Ok(resolved) => resolved,
+        Err(Errno::ENOENT) => path.to_vec(),
+        Err(e) => return Err(e),
+    };
     let flags = O_WRONLY | O_CREAT | if truncate { O_TRUNC } else { 0 };
-    let handle = open(path, flags, mode & 0o7777, 0, 0)?;
+    let handle = open(&resolved, flags, mode & 0o7777, 0, 0)?;
     let result = write(handle, offset, buf, byte_source);
     release_handle(handle);
     // open(O_CREAT) preserves an existing file's mode, so a truncating replace
     // sets it explicitly — create and replace then behave alike, matching the
     // host write_vfs_file handler.
     if truncate {
-        chmod(path, mode & 0o7777)?;
+        chmod(&resolved, mode & 0o7777)?;
     }
     result
 }
@@ -3540,6 +3723,11 @@ enum ExportNode {
         archive_id: u32,
         source_path: Vec<u8>,
         size: u64,
+        /// The file's own fetch description, when it has one. An archive member
+        /// usually does not -- the archive carries the transport -- but a file
+        /// fetched STANDALONE (`archive_id == 0`) has nothing else, and this is
+        /// the whole of what says where its bytes are.
+        payload: Vec<u8>,
     },
     /// A host-backed base file the loaded image DID describe: the description
     /// was retained verbatim at load, and is re-emitted here under the inode
@@ -3647,7 +3835,10 @@ fn apply_export_metadata(
     if !is_symlink {
         writer.set_mode(sffs_ino, mode)?;
     }
-    writer.set_times(sffs_ino, atime, mtime, ctime);
+    match ROOTFS.with(|state| state.export_timestamp_ms) {
+        Some(fixed) => writer.set_times(sffs_ino, fixed, fixed, fixed),
+        None => writer.set_times(sffs_ino, atime, mtime, ctime),
+    }
     Ok(())
 }
 
@@ -3706,8 +3897,20 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
     // files can need a larger maximum than its bytes do.
     let inode_requirement = (inode_count + 2).saturating_mul(4);
-    let mut max_blocks =
-        u32::try_from(core::cmp::max(inode_requirement, 64)).map_err(|_| Errno::EIO)?;
+    // A requested capacity enters here as a FLOOR rather than replacing the
+    // computation: the tree's own requirement still has to be met, and the loop
+    // below still converges `data_start` against whichever is larger. Replacing
+    // it would let a small request produce an image that cannot hold its own
+    // contents.
+    let requested_blocks = ROOTFS
+        .with(|state| state.image_capacity_bytes)
+        .map(|bytes| bytes.div_ceil(4096))
+        .unwrap_or(0);
+    let mut max_blocks = u32::try_from(core::cmp::max(
+        core::cmp::max(inode_requirement, 64),
+        requested_blocks,
+    ))
+    .map_err(|_| Errno::EIO)?;
     let mut data_start = planned_data_start(max_blocks);
     // One or two rounds converge: a larger maximum needs a larger block bitmap,
     // which pushes `data_start` out, which needs a larger maximum.
@@ -3732,8 +3935,19 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         // The kernel chooses this image's length; nothing caps growth but the
         // maximum above, so an underestimate costs a grow, not a failure.
         growable_to_bytes: u64::from(max_blocks) * 4096,
-        now_ms: 0,
+        // The writer's clock, which stamps the inodes IT creates -- the root
+        // above all, which `mkfs` makes before the walk starts and which the
+        // walk therefore never re-stamps. A normalised export has to set this
+        // too, or the root carries 0 while every other inode carries the
+        // requested instant, and the artifact is reproducible everywhere except
+        // its own root directory.
+        now_ms: ROOTFS.with(|state| state.export_timestamp_ms).unwrap_or(0),
     })?;
+    // The kernel writes its deferred files into the body, so an export with
+    // none says so explicitly rather than staying silent — silence is what
+    // `load_image` refuses, and an image this kernel wrote must be one it can
+    // read back (gap 15).
+    writer.declare_deferred_section();
 
     let mut contents: Vec<ImageContent> = Vec::new();
     let mut skipped_special = 0u32;
@@ -3771,13 +3985,21 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     // transport. Keep the file lazy rather than force-fetching
                     // it, which is the behaviour the host reconciler documents.
                     BaseSource::Host => {
-                        if inode.deferred_payload.is_empty() {
-                            ExportNode::LazyStub
-                        } else {
+                        // Deferredness decides, not the description. A file
+                        // that IS deferred re-exports as deferred even when the
+                        // image it came from said nothing about where its bytes
+                        // live -- that is exactly as informative as the input
+                        // was, and `KLZY` inputs are never more informative
+                        // than that. Emitting a stub instead would turn a
+                        // 4,242-byte binary into an empty file and call the
+                        // export a success.
+                        if inode.deferred_base || !inode.deferred_payload.is_empty() {
                             ExportNode::LazyBase {
                                 size: *size,
                                 payload: inode.deferred_payload.clone(),
                             }
+                        } else {
+                            ExportNode::LazyStub
                         }
                     }
                 },
@@ -3794,6 +4016,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     archive_id: *archive_id,
                     source_path: source_path.clone(),
                     size: *size,
+                    payload: inode.deferred_payload.clone(),
                 },
             };
             Ok::<_, Errno>((node, inode.mode, emitted.get(&item.overlay).copied()))
@@ -3822,6 +4045,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 archive_id,
                 source_path,
                 size,
+                payload,
             } => {
                 // Declare the archive before the first record that points into
                 // it. The length comes from the archive table this kernel
@@ -3829,7 +4053,10 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 // and `encode` would refuse the whole section — which is the
                 // behaviour we want, but the export should not have built an
                 // image it cannot finish.
-                if !declared_archives.contains(&archive_id) {
+                //
+                // `archive_id == 0` has no archive to declare: the file is
+                // fetched standalone and its own payload says where from.
+                if archive_id != 0 && !declared_archives.contains(&archive_id) {
                     let (bytes, payload) = ROOTFS
                         .with(|state| {
                             state
@@ -3841,10 +4068,11 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     writer.declare_lazy_archive(archive_id, bytes, &payload)?;
                     declared_archives.insert(archive_id);
                 }
-                // The payload is empty on purpose. It is the HOST's fetch
-                // description, and an archive member has none of its own: the
-                // archive carries the transport, and the two fields beside this
-                // one are the whole of what locates the member inside it.
+                // Usually empty: an archive MEMBER has no fetch description of
+                // its own, because the archive carries the transport and the
+                // two linkage fields beside this one locate the member inside
+                // it. A file fetched standalone has nothing else, and its
+                // payload is the whole of what says where its bytes are.
                 writer.create_deferred_file(
                     item.parent_sffs,
                     &item.name,
@@ -3852,7 +4080,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     size,
                     archive_id,
                     &source_path,
-                    b"",
+                    &payload,
                 )?
             }
             ExportNode::LazyBase { size, payload } => {
@@ -3997,6 +4225,180 @@ where
 /// campaign has spent this lane reducing to one.
 ///
 /// Empty clears it, so a builder can unset without a second entry point.
+/// Ask the next exported image to be capable of growing to `bytes`.
+///
+/// A FLOOR, not a size: the export still sizes itself to hold the tree, and a
+/// request smaller than that is met by the tree's own requirement rather than
+/// refused. Zero clears the request.
+///
+/// Separate from the tree because it is a statement about the ARTIFACT, not
+/// about its contents — the same product profile that declares it also checks
+/// the published image against it.
+/// Write this timestamp on every inode the next export emits, instead of the
+/// inode's own.
+///
+/// A build that produces the same tree from the same inputs must produce the
+/// same BYTES, or every downstream cache keys on the wall clock. Capacity
+/// requests and product writes both stamp live times, so only the detached
+/// artifact is normalised -- the tree keeps truthful timestamps while it is
+/// being worked on, and the thing that gets published does not carry the
+/// minute it was published in.
+///
+/// `None` clears the request, and the export writes each inode's real times.
+pub fn set_export_timestamp(ms: Option<u64>) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        state.export_timestamp_ms = ms;
+    });
+    Ok(())
+}
+
+pub fn set_image_capacity(bytes: u64) -> Result<(), Errno> {
+    ROOTFS.with(|state| {
+        state.image_capacity_bytes = if bytes == 0 { None } else { Some(bytes) };
+    });
+    Ok(())
+}
+
+/// One deferred file, as an enumerator sees it.
+///
+/// The fields are the file's IDENTITY, which is what a builder checking "this
+/// step disturbed nothing" compares. `payload` is the opaque fetch description,
+/// handed back unread exactly as [`archive_payloads`] hands back an archive's.
+pub struct LazyEntryView {
+    pub path: Vec<u8>,
+    pub ino: u64,
+    pub size: u64,
+    /// `0` for a file fetched standalone; otherwise the archive it belongs to.
+    pub archive_id: u32,
+    /// Empty exactly when `archive_id == 0`.
+    pub source_path: Vec<u8>,
+    pub payload: Vec<u8>,
+}
+
+fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyEntryView>) {
+    let Some(inode) = state.get(idx) else {
+        return;
+    };
+    match &inode.kind {
+        InodeKind::LazyMember {
+            archive_id,
+            source_path,
+            size,
+        } => out.push(LazyEntryView {
+            path: abs_path.to_vec(),
+            ino: inode.ino,
+            size: *size,
+            archive_id: *archive_id,
+            source_path: source_path.clone(),
+            payload: inode.deferred_payload.clone(),
+        }),
+        // A URL-backed lazy file is a BASE file whose bytes the host fetches:
+        // `Host`-sourced, with a real size and a fetch description. A base file
+        // with no description is an ordinary host-walked file and not deferred
+        // at all, which is why the payload -- not the source -- decides.
+        InodeKind::BaseRegular { size, source, .. }
+            if matches!(source, BaseSource::Host)
+                && (inode.deferred_base || !inode.deferred_payload.is_empty()) =>
+        {
+            out.push(LazyEntryView {
+                path: abs_path.to_vec(),
+                ino: inode.ino,
+                size: *size,
+                archive_id: 0,
+                source_path: Vec::new(),
+                payload: inode.deferred_payload.clone(),
+            })
+        }
+        InodeKind::Dir(entries) => {
+            for (name, &child) in entries.iter() {
+                let mut child_path = Vec::with_capacity(abs_path.len() + 1 + name.len());
+                if abs_path == b"/" {
+                    child_path.push(b'/');
+                } else {
+                    child_path.extend_from_slice(abs_path);
+                    child_path.push(b'/');
+                }
+                child_path.extend_from_slice(name);
+                lazy_walk(state, child, &child_path, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every deferred file in the tree, in path order, with its identity.
+///
+/// # Why this exists rather than a digest
+///
+/// The builders' invariant is not "did anything change" but "did anything
+/// change OTHER than these", because a build step legitimately supersedes some
+/// lazy files -- the mandoc archive replacing a `man` applet, a lazy binary
+/// made eager. A digest answers the first question and cannot express the
+/// second, and a failure that says only "something moved" sends whoever meets
+/// it to read the whole build.
+pub fn lazy_entries() -> Vec<LazyEntryView> {
+    ROOTFS.with(|state| {
+        let mut out = Vec::new();
+        if let Some(root) = state.root {
+            lazy_walk(state, root, b"/", &mut out);
+        }
+        out
+    })
+}
+
+/// Every declared archive, as `(archive_id, fetch description)`.
+///
+/// The descriptions are opaque here, exactly as they are everywhere else in
+/// this file: the kernel carries them and a CONSUMER reads them. This exists so
+/// one such consumer — the builder's own filesystem, authenticating an image
+/// before deriving from it — can reach them without the format learning to
+/// parse what it promises not to.
+pub fn archive_payloads() -> Vec<(u32, Vec<u8>)> {
+    ROOTFS.with(|state| {
+        state
+            .archives
+            .iter()
+            .map(|(id, entry)| (*id, entry.payload.clone()))
+            .collect()
+    })
+}
+
+/// One archive's fetch description, or `None` if no such archive is declared.
+///
+/// Opaque, like every other reach into this store. The MODULE merges a new
+/// description into an existing one, because deciding when two descriptions
+/// agree means reading them, and reading them is the format's job.
+pub fn archive_payload(archive_id: u32) -> Option<Vec<u8>> {
+    ROOTFS.with(|state| state.archives.get(&archive_id).map(|entry| entry.payload.clone()))
+}
+
+/// Replace one archive's fetch description.
+///
+/// The payload stays opaque here — this writes back whatever the caller hands
+/// over, exactly as [`declare_archive`] did. It exists because the description
+/// is not fully knowable at declaration time: a cohort digest covers every
+/// member, so the last member must be registered before any member's seal can
+/// be completed. The module completes them at export, which means rewriting a
+/// payload that was already stored.
+pub fn set_archive_payload(archive_id: u32, payload: &[u8]) -> Result<(), Errno> {
+    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
+        Some(entry) => {
+            entry.payload = payload.to_vec();
+            Ok(())
+        }
+        None => Err(Errno::ENOENT),
+    })
+}
+
+/// The image metadata this filesystem currently carries, if any.
+///
+/// Set by [`set_image_metadata`] or restored by [`load_image`] from what the
+/// image declared (gap 16). Opaque bytes: the kernel stores and emits them
+/// without reading them, so this hands back exactly what it was given.
+pub fn image_metadata() -> Option<Vec<u8>> {
+    ROOTFS.with(|state| state.image_metadata.clone())
+}
+
 pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
     let len = crate::sffs_container::MAX_SECTION_LEN as usize;
     if metadata.len() > len {
@@ -4088,6 +4490,75 @@ where
     let n = core::cmp::min(out.len(), trailer.len() - from);
     out[..n].copy_from_slice(&trailer[from..from + n]);
     Ok(n)
+}
+
+/// Judge the image this tree WOULD export against a headroom profile.
+///
+/// Free space is a property of a laid-out filesystem, not of a tree, and the
+/// export is what lays it out — so the plan is built and mounted, and the
+/// existing policy is applied to it. Building the plan holds structure rather
+/// than content, which is what makes this affordable for a 249 MiB image.
+///
+/// Lives here rather than in the module that calls it because `ExportPlan` is
+/// private: exposing the laid-out image to reach one field would trade an
+/// encapsulation for a convenience.
+pub fn check_export_headroom(
+    headroom: &crate::image_policy::Headroom,
+) -> Result<crate::image_policy::PolicyOutcome, Errno> {
+    let plan = build_export_image()?;
+    let source = crate::sffs_write::SffsImageSource {
+        image: &plan.image,
+        content: &crate::sffs_write::NoContent,
+    };
+    let fs = crate::sffs::Sffs::mount(source)?;
+    let st = fs.statfs()?;
+
+    // **Room to GROW, not free blocks in the current allocation.**
+    //
+    // An export sizes the image to its tree plus a fixed slack, so free blocks
+    // are a constant — 64 of them — however full the tree is. Judging a profile
+    // against that constant is a check that cannot fail for the reason it
+    // exists: it would compare 256 KiB to the minimum and answer the same way
+    // for an empty image and a stuffed one. Found by a mutation that replaced
+    // this measurement with `u64::MAX` and changed no outcome.
+    //
+    // What the assertion is FOR is "will normal runtime writes immediately run
+    // out of room", and at runtime the image is mounted into a buffer of its
+    // growth ceiling. So the headroom is the ceiling minus what the image
+    // already occupies, which falls as the tree grows — the behaviour the
+    // TypeScript path gets from a fixed-size buffer filling up.
+    let ceiling = fs.growth_ceiling_bytes()?;
+    let occupied = st
+        .f_blocks
+        .saturating_sub(st.f_bfree)
+        .saturating_mul(u64::from(st.f_frsize));
+    let free_bytes = ceiling.saturating_sub(occupied);
+
+    let met =
+        free_bytes >= headroom.minimum_free_bytes && st.f_ffree >= headroom.minimum_free_inodes;
+    Ok(crate::image_policy::PolicyOutcome {
+        met,
+        free_bytes,
+        required_bytes: headroom.minimum_free_bytes,
+        free_inodes: st.f_ffree,
+        required_inodes: headroom.minimum_free_inodes,
+    })
+}
+
+/// The growth ceiling the image this tree would export will declare.
+///
+/// The builders read this out of finished image BYTES today, by parsing the
+/// container header and then the SFFS superblock — format parsing in
+/// TypeScript, over an artifact the kernel just produced. Asking the producer
+/// avoids both the parse and the copy: a 249 MiB image does not have to cross
+/// a boundary to answer a question about its own header.
+pub fn export_capacity_bytes() -> Result<u64, Errno> {
+    let plan = build_export_image()?;
+    let source = crate::sffs_write::SffsImageSource {
+        image: &plan.image,
+        content: &crate::sffs_write::NoContent,
+    };
+    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()
 }
 
 /// Discard any in-progress export. Called by [`reset`] so a fresh store never
@@ -4223,7 +4694,7 @@ mod tests {
     fn build_lazy_tree() {
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_dir(b"/lazy", 0o755, 0, 0, 2).unwrap();
-        insert_lazy_file(b"/lazy/f", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3).unwrap();
+        insert_lazy_file(b"/lazy/f", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3, b"").unwrap();
         insert_archive_entry(7, TINY_ZIP.len() as u64);
     }
 
@@ -4245,7 +4716,14 @@ mod tests {
         let _g = TestGuard::acquire();
         // Baseline: with nothing registered, sibling `/` paths are overlay-owned.
         assert!(owns_path(b"/run/kandelo-run/work/1-1.wasm"));
-        assert!(owns_path(b"/dev/shm/sem.foo"));
+        assert!(owns_path(b"/mnt/data/file"));
+
+        // `/dev/shm` is NOT one of them any more: the in-kernel tmpfs serves it,
+        // so the overlay never owned it regardless of what the host registers.
+        // It used to be the example here, which stopped being true the moment
+        // POSIX shared memory moved in-kernel.
+        assert!(!owns_path(b"/dev/shm/sem.foo"));
+        assert!(crate::tmpfs::owns_path(b"/dev/shm/sem.foo"));
 
         // The host registers the sibling mounts that remain after dropping `/`.
         let n = set_foreign_prefixes(b"/dev/shm\0/run/kandelo-run\0/mnt/data\0");
@@ -4255,8 +4733,6 @@ mod tests {
         // fall through to the sibling host mount.
         assert!(!owns_path(b"/run/kandelo-run"));
         assert!(!owns_path(b"/run/kandelo-run/work/1-1.wasm"));
-        assert!(!owns_path(b"/dev/shm"));
-        assert!(!owns_path(b"/dev/shm/sem.foo"));
         assert!(!owns_path(b"/mnt/data/file"));
 
         // Siblings that share a leading path segment but are NOT under a
@@ -4492,6 +4968,117 @@ mod tests {
         release_handle(h);
     }
 
+    /// The three halves of `clear_setid_on_modify` that `write_clears_setuid_bit`
+    /// does not reach: that a no-op does NOT clear, that truncate does, and that
+    /// set-group-ID survives on a file the group cannot execute.
+    ///
+    /// `tmpfs.rs` asserts all three for its own twin of this method
+    /// (`write_and_truncate_clear_setid_only_on_real_modification`); rootfs —
+    /// the filesystem that owns `/` — asserted only that a real write clears
+    /// set-user-ID. The set-group-ID condition in particular was a live branch
+    /// with nothing behind it.
+    #[test]
+    fn setid_clears_only_on_real_modification_and_respects_group_exec() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/suid", 7, 3, 0o6755, 0, 0, 2).unwrap();
+        let (mut blob, _) =
+            make_byte_source(alloc::vec![(7u64, b"abc".to_vec())], alloc::vec::Vec::new());
+        let h = open(b"/suid", 2, 0, 0, 0).unwrap();
+
+        // A zero-length write is not a modification: both bits survive.
+        write(h, 0, b"", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o6755);
+
+        // A real write clears set-user-ID, and set-group-ID too because the
+        // file is group-executable.
+        write(h, 0, b"Z", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o0755);
+
+        // Truncating to the size it already has changes nothing, so the bits
+        // stay; a real shrink clears them.
+        chmod(b"/suid", 0o6755).unwrap();
+        let len = size(h).unwrap();
+        truncate_handle(h, len, &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o6755);
+        truncate_handle(h, 0, &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o0755);
+
+        // Set-group-ID on a file the GROUP CANNOT EXECUTE is not a
+        // privilege the write invalidates, so it survives while set-user-ID
+        // goes. This is the `S_IXGRP` branch, which no test reached before.
+        chmod(b"/suid", 0o6745).unwrap();
+        write(h, 0, b"Y", &mut blob).unwrap();
+        assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o2745);
+
+        release_handle(h);
+    }
+
+    /// A retry after `EAGAIN` must not write its bytes into a file that
+    /// replaced the one it was fetching for.
+    ///
+    /// This is the kernel-model form of a danger the TypeScript filesystem
+    /// guards with an inode compare-and-swap. There, materialization `await`s a
+    /// fetch, so a peer can unlink and recreate the path inside that window.
+    /// Here there is no window: the byte source answers or returns `EAGAIN`,
+    /// the call unwinds, and the guest retries. The risk moves to the retry —
+    /// between the two attempts the tree really can change.
+    ///
+    /// What keeps it correct is POSIX rather than a protocol: the open handle
+    /// pins its inode, so `unlink` detaches the NAME while the handle keeps the
+    /// FILE, and a replacement created at that name is a different inode. The
+    /// retry therefore serves the file the handle still refers to.
+    #[test]
+    fn a_retry_after_eagain_serves_the_handle_not_the_replacement() {
+        let _g = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        insert_base_file(b"/f", 21, 8, 0o644, 0, 0, 2).unwrap();
+
+        // EAGAIN on the first call, the real bytes on every call after it.
+        let calls = alloc::rc::Rc::new(core::cell::Cell::new(0usize));
+        let seen = calls.clone();
+        let mut source = move |req: ByteReq, dst: &mut [u8]| -> Result<usize, Errno> {
+            seen.set(seen.get() + 1);
+            if seen.get() == 1 {
+                return Err(Errno::EAGAIN);
+            }
+            let ByteReq::Base { offset, .. } = req else {
+                return Err(Errno::EIO);
+            };
+            let data = b"ORIGINAL";
+            let start = offset as usize;
+            if start >= data.len() {
+                return Ok(0);
+            }
+            let n = core::cmp::min(dst.len(), data.len() - start);
+            dst[..n].copy_from_slice(&data[start..start + n]);
+            Ok(n)
+        };
+
+        let h = open(b"/f", 2, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 16];
+        // First attempt: the bytes are not ready.
+        assert_eq!(read(h, 0, &mut buf, &mut source).unwrap_err(), Errno::EAGAIN);
+
+        // Between the attempts the tree changes underneath, exactly as another
+        // process would change it.
+        unlink(b"/f").unwrap();
+        let replacement = open(b"/f", O_CREAT | 2, 0o644, 0, 0).unwrap();
+        write(replacement, 0, b"REPLACED", &mut source).unwrap();
+
+        // The retry serves the handle's file, not the new name-holder.
+        let n = read(h, 0, &mut buf, &mut source).unwrap();
+        assert_eq!(&buf[..n], b"ORIGINAL");
+
+        // And the replacement is untouched by the fetch that was in flight.
+        let mut other = [0u8; 16];
+        let m = read(replacement, 0, &mut other, &mut source).unwrap();
+        assert_eq!(&other[..m], b"REPLACED");
+
+        assert!(release_handle(h));
+        assert!(release_handle(replacement));
+    }
+
     #[test]
     fn otrunc_discards_base_without_reading_blob() {
         let _g = TestGuard::acquire();
@@ -4618,6 +5205,39 @@ mod tests {
         assert_eq!(rename(b"/opt", b"/opt/sub").unwrap_err(), Errno::EINVAL);
     }
 
+    /// `rename`'s doc comment promises four POSIX guarantees about the
+    /// destination; `rename_moves_and_replaces` asserted one of them (an
+    /// existing regular file is replaced) plus the own-subtree EINVAL. These
+    /// are the other three, each a distinct branch in the implementation, plus
+    /// the case that makes ENOTEMPTY meaningful: a directory MAY replace an
+    /// empty directory.
+    #[test]
+    fn rename_enforces_destination_type_and_emptiness() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        mkdir(b"/opt", 0o755, 0, 0).unwrap();
+
+        // A directory cannot replace a non-directory.
+        assert_eq!(
+            rename(b"/opt", b"/usr/bin/hello").unwrap_err(),
+            Errno::ENOTDIR
+        );
+        // A non-directory cannot replace a directory.
+        assert_eq!(rename(b"/usr/bin/hello", b"/opt").unwrap_err(), Errno::EISDIR);
+
+        // A directory cannot replace a NON-EMPTY directory: `/usr/bin` still
+        // holds `hello`, because both renames above failed.
+        mkdir(b"/src", 0o755, 0, 0).unwrap();
+        assert_eq!(rename(b"/src", b"/usr/bin").unwrap_err(), Errno::ENOTEMPTY);
+
+        // ...but it may replace an empty one, which is what makes the check
+        // above a check on emptiness rather than on being a directory.
+        mkdir(b"/empty", 0o755, 0, 0).unwrap();
+        rename(b"/src", b"/empty").unwrap();
+        assert!(is_dir(b"/empty"));
+        assert_eq!(lstat(b"/src").unwrap_err(), Errno::ENOENT);
+    }
+
     #[test]
     fn hard_link_shares_inode() {
         let _g = TestGuard::acquire();
@@ -4632,6 +5252,138 @@ mod tests {
         assert_eq!(lstat(b"/usr/bin/hello2").unwrap().st_nlink, 1);
         // No hard links to directories.
         assert_eq!(link(b"/usr/bin", b"/bin2").unwrap_err(), Errno::EPERM);
+    }
+
+    #[test]
+    fn a_normalized_export_stamps_one_instant_on_every_inode_including_the_root() {
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        const FIXED: u64 = 946_684_800_000; // 2000-01-01T00:00:00Z
+
+        // Without normalisation the export writes each inode's own times, and
+        // two builds of the same tree differ by the minute they ran in --
+        // which keys every downstream cache on the wall clock.
+        set_export_timestamp(Some(FIXED)).expect("normalise");
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+
+        // THE ROOT ESPECIALLY. `mkfs` creates it before the walk begins, so the
+        // walk never re-stamps it: normalising only the walk leaves an artifact
+        // that is reproducible everywhere except its own root directory, which
+        // is the half of this that is invisible until something compares whole
+        // images.
+        let root = fs.resolve(b"/", true).expect("/");
+        let root_stat = fs.stat_ino(root).expect("root stat");
+        assert_eq!(
+            (root_stat.mtime_ms, root_stat.ctime_ms, root_stat.atime_ms),
+            (FIXED, FIXED, FIXED),
+            "the root carries the normalised instant",
+        );
+
+        let etc = fs.resolve(b"/etc", true).expect("/etc");
+        let etc_stat = fs.stat_ino(etc).expect("etc stat");
+        assert_eq!(
+            (etc_stat.mtime_ms, etc_stat.ctime_ms, etc_stat.atime_ms),
+            (FIXED, FIXED, FIXED),
+        );
+        let passwd = fs.resolve(b"/etc/passwd", true).expect("/etc/passwd");
+        let passwd_stat = fs.stat_ino(passwd).expect("passwd stat");
+        assert_eq!(
+            (passwd_stat.mtime_ms, passwd_stat.ctime_ms, passwd_stat.atime_ms),
+            (FIXED, FIXED, FIXED),
+        );
+    }
+
+    #[test]
+    fn an_export_that_was_not_normalized_keeps_each_inode_s_own_times() {
+        let _guard = TestGuard::acquire();
+        build_small_overlay();
+        // The negative control. Without it this pair would pass for an export
+        // that stamped one instant on everything ALWAYS, which would throw away
+        // truthful timestamps in every build that never asked for
+        // reproducibility.
+        set_base_times_from_ms(b"/etc/passwd", 1_700_000_000_000);
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let passwd = fs.resolve(b"/etc/passwd", true).expect("/etc/passwd");
+        assert_eq!(
+            fs.stat_ino(passwd).expect("stat").mtime_ms,
+            1_700_000_000_000,
+            "an un-normalised export carries the file's own time",
+        );
+    }
+
+    #[test]
+    fn only_a_file_with_a_fetch_description_enumerates_as_deferred() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // Two base files that differ in ONE thing. Both are `Host`-sourced
+        // regular files with a real size, which is why the source cannot be
+        // what decides: a tree the host walked is full of them and none of its
+        // files is deferred.
+        //
+        // What makes a file deferred is that something says where its bytes
+        // come from. `/walked.bin` has no such description and its bytes are an
+        // ordinary host file; `/fetched.bin` has one and its bytes are a
+        // promise. Enumerating the first would tell a builder its tree is full
+        // of lazy files it never registered.
+        insert_base_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 90).unwrap();
+        insert_base_file(b"/fetched.bin", 78, 8192, 0o644, 0, 0, 91).unwrap();
+        set_deferred_payload(b"/fetched.bin", br#"{"url":"https://x/f.bin"}"#).unwrap();
+
+        let entries = lazy_entries();
+        let paths: alloc::vec::Vec<&[u8]> =
+            entries.iter().map(|e| e.path.as_slice()).collect();
+        assert_eq!(paths, alloc::vec![b"/fetched.bin".as_slice()]);
+        assert_eq!(entries[0].size, 8192, "its REAL length, not a stub's");
+        assert_eq!(entries[0].archive_id, 0, "fetched standalone");
+    }
+
+    #[test]
+    fn chmod_keeps_the_bits_it_owns_and_takes_no_others() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        // `inode.mode` holds PERMISSIONS; the file's type comes from its kind
+        // and is OR-ed in by `lstat`. So a mode arriving with type bits set
+        // must be narrowed, or a regular file can be made to report itself as
+        // a directory as well -- `S_IFDIR | S_IFREG` at once, which is not a
+        // type any caller can act on.
+        //
+        // Every existing chmod assertion masks the result with `& 0o7777`,
+        // the SAME mask the code applies, so removing the code's mask changed
+        // nothing any of them could see. A test that applies the transform it
+        // is checking cannot check it. Mutation testing is what said so.
+        chmod(b"/usr/bin/hello", S_IFDIR | 0o700).unwrap();
+
+        // Asserted through the EXPORT, not through `lstat`, and the difference
+        // is the whole test. `Inode::stat` composes `type_bits | (mode &
+        // 0o7777)`, so it masks a second time and every `lstat` assertion in
+        // this file is blind to whether `chmod` masked at all -- a mutation
+        // that deleted the narrowing left the suite green, and a test I wrote
+        // against `lstat` to catch it stayed green too.
+        //
+        // The export walk reads `inode.mode` RAW and hands it to the writer,
+        // so that is where an unmasked mode becomes a file whose recorded type
+        // says directory and regular at once.
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let hello = fs.resolve(b"/usr/bin/hello", true).expect("/usr/bin/hello");
+        assert_eq!(
+            fs.stat_ino(hello).unwrap().mode,
+            S_IFREG | 0o700,
+            "the exported file keeps its own type and takes only permissions",
+        );
+
+        // And the bits chmod DOES own reach the image. Narrowing to `0o777`
+        // instead of `0o7777` would drop set-user-ID silently, which is the
+        // mutation this half exists to kill -- the existing setuid test
+        // chmods to `0o4755` and then CHOWNS, which clears the bit on purpose,
+        // so it can never notice a chmod that dropped it first.
+        chmod(b"/usr/bin/hello", 0o4711).unwrap();
+        let bytes = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let hello = fs.resolve(b"/usr/bin/hello", true).expect("/usr/bin/hello");
+        assert_eq!(fs.stat_ino(hello).unwrap().mode, S_IFREG | 0o4711);
     }
 
     #[test]
@@ -4811,7 +5563,7 @@ mod tests {
     }
 
     #[test]
-    fn open_o_trunc_on_lazy_member_is_enosys_not_silent_conversion() {
+    fn open_o_trunc_on_a_lazy_member_truncates_it_like_any_other_file() {
         let _g = TestGuard::acquire();
         let mut m = alloc::vec::Vec::new();
         m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
@@ -4827,22 +5579,35 @@ mod tests {
         m.extend_from_slice(&1234u64.to_le_bytes());
         assert_eq!(load_manifest(&m).unwrap(), 2);
 
-        // Opening the lazy-archive placeholder with O_TRUNC for write must not
-        // silently convert it into an empty writable file (which would drop
-        // its archive_id/source_path/size and hand back fabricated success).
-        assert_eq!(
-            open(b"/g", O_WRONLY | O_TRUNC, 0, 0, 0).unwrap_err(),
-            Errno::ENOSYS
-        );
+        // REVERSED 2026-09-13. This asserted `ENOSYS`, on the grounds that
+        // truncating would "silently convert it into an empty writable file
+        // ... and hand back fabricated success". That is a description of what
+        // `O_TRUNC` MEANS: the file becomes empty, and what its bytes used to
+        // be backed by stops mattering the moment they stop existing. Nothing
+        // is fabricated, because nothing was promised -- a truncating open
+        // never needed the content.
+        //
+        // It cost the derived image builders. Replacing `/usr/bin/node` with
+        // eager bytes is a whole-file replace, and it failed `ENOSYS` in a
+        // product build. It was also a host/kernel DIVERGENCE: the filesystem
+        // this campaign is deleting allows the same truncate, so two
+        // implementations of one filesystem disagreed about a POSIX operation.
+        //
+        // The case that genuinely cannot be served is a PARTIAL write, which
+        // needs the old bytes, does not set `O_TRUNC`, and still reaches the
+        // materialization path that cannot fetch them.
+        let handle = open(b"/g", O_WRONLY | O_TRUNC, 0, 0, 0).expect("truncate succeeds");
+        release_handle(handle);
 
-        // The node is still a LazyMember afterward: metadata and the
-        // (archive_id, source_path) mapping are unchanged.
+        // It is now an ordinary empty file, and no longer claims a backing it
+        // does not have.
         let st = lstat(b"/g").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(st.st_size, 999);
-        let (archive_id, source_path) = lazy_member_source(b"/g").unwrap();
-        assert_eq!(archive_id, 7);
-        assert_eq!(source_path, b"bin/g".to_vec());
+        assert_eq!(st.st_size, 0, "truncated to nothing");
+        assert!(
+            lazy_member_source(b"/g").is_err(),
+            "a truncated file no longer names an archive member",
+        );
     }
 
     #[test]
@@ -5361,8 +6126,8 @@ mod tests {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_dir(b"/lazy", 0o755, 0, 0, 2).unwrap();
-        insert_lazy_file(b"/lazy/big", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3).unwrap();
-        insert_lazy_file(b"/lazy/small", 7, b"etc/small.txt", 6, 0o644, 0, 0, 4).unwrap();
+        insert_lazy_file(b"/lazy/big", 7, b"bin/big.txt", 4096, 0o644, 0, 0, 3, b"").unwrap();
+        insert_lazy_file(b"/lazy/small", 7, b"etc/small.txt", 6, 0o644, 0, 0, 4, b"").unwrap();
         insert_archive_entry(7, TINY_ZIP.len() as u64);
         let (mut fetch, calls) =
             make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
@@ -5415,7 +6180,7 @@ mod tests {
     fn lazy_member_missing_source_path_is_enoent() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_lazy_file(b"/g", 7, b"bin/nope", 10, 0o644, 0, 0, 2).unwrap();
+        insert_lazy_file(b"/g", 7, b"bin/nope", 10, 0o644, 0, 0, 2, b"").unwrap();
         insert_archive_entry(7, TINY_ZIP.len() as u64);
         let (mut fetch, _calls) =
             make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
@@ -5432,7 +6197,7 @@ mod tests {
     fn lazy_member_missing_archive_registration_is_enoent() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_lazy_file(b"/g", 42, b"bin/big.txt", 4096, 0o644, 0, 0, 2).unwrap();
+        insert_lazy_file(b"/g", 42, b"bin/big.txt", 4096, 0o644, 0, 0, 2, b"").unwrap();
         // No insert_archive_entry(42, ..): archive_id 42 is not registered.
         let (mut fetch, _calls) =
             make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
@@ -5946,6 +6711,26 @@ mod tests {
     }
 
     /// Stream a whole export out through the public cursor, in `chunk`-sized
+    /// A drain loop stops when the export returns 0, which is correct until a
+    /// defect stops it returning 0 — and a mutation trial did exactly that in
+    /// the sibling module, making the export ignore its offset and restart
+    /// forever. The test span growing a buffer instead of failing, and the
+    /// perturbation harness waited eighteen minutes on it (H-11).
+    ///
+    /// The bound is far above any image these tests build, so it can only be
+    /// hit by non-termination, and it names the cause rather than just failing.
+    /// Applied here because the same trial class exists in
+    /// `perturb/runtime-core-rootfs-export.json`: no trial hangs these today,
+    /// and a test that CAN hang eventually will be.
+    fn assert_not_spinning(drained: usize) {
+        const SANE_LIMIT: usize = 4 * 1024 * 1024;
+        assert!(
+            drained <= SANE_LIMIT,
+            "the export is not advancing: {drained} bytes drained from a tiny image, \
+             so some chunk is being served again instead of the next one",
+        );
+    }
+
     /// reads, exactly as the host will.
     fn drain_export<F>(chunk: usize, byte_source: &mut F) -> Vec<u8>
     where
@@ -5961,6 +6746,7 @@ mod tests {
             }
             out.extend_from_slice(&buf[..n]);
             offset += n as i64;
+            assert_not_spinning(out.len());
         }
         out
     }
@@ -5981,6 +6767,7 @@ mod tests {
             }
             out.extend_from_slice(&buf[..n]);
             offset += n as i64;
+            assert_not_spinning(out.len());
         }
         out
     }
@@ -6072,6 +6859,91 @@ mod tests {
         crate::sffs_container::wrap(&body, &sections).expect("wrap")
     }
 
+    /// An image in the shape the legacy writer produces when it had to skip an
+    /// archive group: the member is an ordinary EMPTY file in the body, the
+    /// kernel-facing section describes nothing, and only the container header
+    /// still says there are lazy archives.
+    ///
+    /// `claims_archives` is the one thing that varies, so the test can show
+    /// that the header flag is what decides -- a fixture with the flag clear
+    /// must LOAD, or the refusal is coming from something else.
+    fn legacy_image_with_an_undescribed_archive(claims_archives: bool) -> Vec<u8> {
+        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+            256 * 1024,
+        ))
+        .expect("mkfs");
+        let root = w.root();
+        // The member as the legacy body holds it: a zero-length regular file.
+        // Its real length lived only in the archive metadata that was skipped,
+        // so nothing here says this file is 4,242 bytes of binary.
+        w.create_file(root, b"php", 0o755, crate::sffs_write::Content::Bytes(b""))
+            .expect("member stub");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+
+        // A `KLZY` that describes nothing, which is what the legacy encoder
+        // emits once it has skipped the only group it had.
+        //
+        // An earlier version of this fixture put the MEMBER in `KLZY` while
+        // leaving its archive out, and then wrote the member as a DEFERRED
+        // file in the body. Both passed without the guard: the first because
+        // `decode_kernel_lazy_linkage` refuses a record naming an undeclared
+        // archive, the second because the deferred body section produced its
+        // own `EINVAL`. Twice a different check was doing the refusing, and
+        // twice the test read as though it proved this one. H-5, and the only
+        // reason it is not still there is that the mutation kept surviving.
+        let klzy = klzy_section(&[], &[]);
+        // The HOST-side archive JSON, which a legacy image really carries and
+        // which the kernel cannot read. Its presence is what sets the header's
+        // lazy-archive flag, so the flag word and the sections AGREE -- and the
+        // container's own "no bytes the flags do not account for" check is
+        // therefore satisfied. Only the kernel-facing section is short.
+        //
+        // The first two versions of this fixture set the flag by hand with no
+        // such section, and the container check refused them before the load
+        // ever looked. That is a THIRD different check doing the refusing, and
+        // it is why the mutation kept surviving a test that read as correct.
+        let archive_json: &[u8] = br#"[{"url":"https://example.invalid/x.zip"}]"#;
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: if claims_archives { Some(archive_json) } else { None },
+            metadata_json: None,
+            kernel_lazy: Some(&klzy),
+        };
+        crate::sffs_container::wrap(&body, &sections).expect("wrap")
+    }
+
+    #[test]
+    fn an_image_claiming_archives_it_describes_nowhere_is_refused() {
+        let _guard = TestGuard::acquire();
+        // GAP 20. The neither-carrier refusal catches an image that describes
+        // its deferred files nowhere. This is the quieter case: a description
+        // that is PRESENT and partial.
+        //
+        // Accepting it builds a tree where an archive member is an ordinary
+        // empty file -- a 4,242-byte binary reporting zero -- and the load
+        // returns success. A build derived from that base ships the emptiness,
+        // and nothing anywhere reported a problem.
+        let claiming = legacy_image_with_an_undescribed_archive(true);
+        assert_eq!(
+            load_image(claiming.len() as u64, image_host(&claiming)).unwrap_err(),
+            Errno::EINVAL,
+            "an image whose archives this reader cannot see is refused",
+        );
+
+        // The negative control, and the reason it is here: the same bytes with
+        // the claim removed must LOAD. Without it this test would pass for any
+        // refusal at all, which is exactly how its first two versions passed.
+        let honest = legacy_image_with_an_undescribed_archive(false);
+        assert!(
+            load_image(honest.len() as u64, image_host(&honest)).is_ok(),
+            "the header's claim is what decides, not something else",
+        );
+    }
+
     #[test]
     fn an_image_the_kernel_exported_is_one_the_kernel_can_load() {
         let _guard = TestGuard::acquire();
@@ -6083,8 +6955,9 @@ mod tests {
         // breaks this.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
         mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
-        declare_archive(3, 8_000_000, b"sha256:abc").expect("declare archive");
-        insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2)
+        declare_archive(3, 8_000_000).expect("declare archive");
+        set_archive_payload(3, b"sha256:abc").expect("describe it");
+        insert_lazy_file(b"/usr/php", 3, b"usr/bin/php", 4_242, 0o755, 0, 0, 2, b"")
             .expect("archive member");
         write_file_at(b"/etc-ish", 0, b"ordinary bytes", 0o644, true, no_bytes())
             .expect("an ordinary file, so the tree is not all deferred");
@@ -6289,6 +7162,48 @@ mod tests {
     }
 
     #[test]
+    fn registering_a_half_specified_linkage_is_refused_at_the_call() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+
+        // An archive with no member to extract from it.
+        assert_eq!(
+            insert_lazy_file(b"/a", 4, b"", 10, 0o644, 0, 0, 2, b""),
+            Err(Errno::EINVAL),
+        );
+        // A member with no archive to extract it from.
+        assert_eq!(
+            insert_lazy_file(b"/b", 0, b"members/x", 10, 0o644, 0, 0, 3, b""),
+            Err(Errno::EINVAL),
+        );
+
+        // Refused at the CALL, not later at the export. Neither name exists, so
+        // the tree is not left holding a file it cannot describe — which is the
+        // whole point of checking here rather than in `create_deferred_file`.
+        assert!(lstat(b"/a").is_err());
+        assert!(lstat(b"/b").is_err());
+
+        // And both whole forms are accepted, so the refusals above are the
+        // half-specification and not something else about these calls.
+        insert_lazy_file(b"/member", 4, b"members/x", 10, 0o644, 0, 0, 4, b"")
+            .expect("an archive member");
+        insert_lazy_file(b"/solo", 0, b"", 10, 0o644, 0, 0, 5, b"https://example.invalid/x")
+            .expect("a standalone fetch");
+    }
+
+    #[test]
+    fn registering_an_oversized_fetch_description_is_refused() {
+        let _guard = TestGuard::acquire();
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        let too_long = alloc::vec![b'x'; crate::sffs_deferred::MAX_PAYLOAD_LEN as usize + 1];
+        assert_eq!(
+            insert_lazy_file(b"/a", 0, b"", 10, 0o644, 0, 0, 2, &too_long),
+            Err(Errno::EINVAL),
+        );
+        assert!(lstat(b"/a").is_err(), "and nothing was created");
+    }
+
+    #[test]
     fn exporting_a_member_of_an_archive_with_no_known_length_fails_loudly() {
         let _guard = TestGuard::acquire();
         // `insert_lazy_file` places a member; nothing here declares how long
@@ -6301,7 +7216,7 @@ mod tests {
         // length alongside the member for exactly this reason. It is reachable
         // here, and this is the layer that has to refuse.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
-        insert_lazy_file(b"/big", 3, b"members/big.bin", 99_999, 0o644, 0, 0, 2)
+        insert_lazy_file(b"/big", 3, b"members/big.bin", 99_999, 0o644, 0, 0, 2, b"")
             .expect("the member itself is well-formed");
 
         let mut buf = alloc::vec![0u8; 8192];
@@ -6313,7 +7228,7 @@ mod tests {
         // Declaring the length makes the same tree exportable, so the refusal
         // above is the missing length and not something else about the tree.
         reset_image_export();
-        declare_archive(3, 8_000_000, b"").expect("declare");
+        declare_archive(3, 8_000_000).expect("declare");
         let exported = drain_export(8192, &mut no_bytes());
         let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
         assert_eq!(
@@ -6322,6 +7237,177 @@ mod tests {
                 .expect("section")
                 .archive_bytes(3),
             Some(8_000_000),
+        );
+    }
+
+    #[test]
+    fn a_host_write_to_a_symlinked_path_lands_in_the_file_it_names() {
+        let _g = TestGuard::acquire();
+        // `open` refuses a symlinked final component with ELOOP on purpose:
+        // the GUEST's namespace resolver pre-resolves, so a symlink arriving
+        // there means `O_NOFOLLOW`. A host-facing raw-path writer does not
+        // pre-resolve, and `write_file_at` never closed that gap even though
+        // `read_file_at` beside it does.
+        //
+        // The result was that READING `/bin/bash` through a symlink worked and
+        // WRITING it failed ELOOP. It surfaced building the shell package,
+        // where the composer materialises bash over a path the rootfs carries
+        // as a symlink -- a product build, not a test.
+        mkdir(b"/bin", 0o755, 0, 0).expect("mkdir /bin");
+        mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
+        mkdir(b"/usr/bin", 0o755, 0, 0).expect("mkdir /usr/bin");
+        // A DIFFERENT initial mode, so the chmod a truncating replace performs
+        // is observable. With both at 0o755 the write could set the mode of the
+        // LINK and nothing would notice -- which is exactly what a surviving
+        // mutant showed.
+        write_file_at(b"/usr/bin/bash", 0, b"old", 0o600, true, no_bytes())
+            .expect("the real file");
+        symlink(b"/usr/bin/bash", b"/bin/bash", 0, 0).expect("the alias");
+
+        write_file_at(b"/bin/bash", 0, b"new bytes", 0o755, true, no_bytes())
+            .expect("writing through the symlink must not fail ELOOP");
+
+        // The bytes landed in the file the NAME refers to, and the link is
+        // still a link rather than having been replaced by a regular file.
+        let mut buf = [0u8; 16];
+        let n = read_file_at(b"/usr/bin/bash", 0, &mut buf, no_bytes()).expect("read target");
+        assert_eq!(&buf[..n], b"new bytes");
+        assert_eq!(
+            lstat(b"/bin/bash").expect("lstat").st_mode & S_IFMT,
+            S_IFLNK,
+            "the alias is still a symlink",
+        );
+
+        // The MODE landed on the target too. A truncating replace sets the mode
+        // explicitly, and it must set it on the file the name refers to --
+        // `chmod` here walks directories without following a final symlink, so
+        // handing it the raw path would silently re-mode the link instead.
+        assert_eq!(
+            lstat(b"/usr/bin/bash").expect("lstat").st_mode & 0o7777,
+            0o755,
+            "the replaced file carries the mode the write asked for",
+        );
+    }
+
+    #[test]
+    fn a_host_write_still_creates_a_file_that_does_not_exist_yet() {
+        let _g = TestGuard::acquire();
+        // The negative control for the resolution above. A path that does not
+        // RESOLVE is one the caller may be about to create, so the raw path
+        // stands in -- without this, following symlinks would have turned every
+        // creating write into ENOENT, which is exactly what it did on the first
+        // attempt and what sixteen tests caught.
+        mkdir(b"/etc", 0o755, 0, 0).expect("mkdir /etc");
+        write_file_at(b"/etc/fresh", 0, b"created", 0o644, true, no_bytes())
+            .expect("a creating write still creates");
+        let mut buf = [0u8; 16];
+        let n = read_file_at(b"/etc/fresh", 0, &mut buf, no_bytes()).expect("read it back");
+        assert_eq!(&buf[..n], b"created");
+
+        // And a missing PARENT is still the caller's error, not a silent
+        // creation somewhere else.
+        assert_eq!(
+            write_file_at(b"/nope/deep", 0, b"x", 0o644, true, no_bytes()).unwrap_err(),
+            Errno::ENOENT,
+        );
+    }
+
+    #[test]
+    fn a_klzy_described_lazy_file_survives_a_load_and_re_export() {
+        let _guard = TestGuard::acquire();
+        // GAP 21 through the DOOR a real image comes in by, rather than by
+        // setting the flag this test is about.
+        //
+        // The first version of this test called `mark_deferred_base` directly
+        // and left the LOADER untested: a mutation deleting the loader's call
+        // survived the whole `runtime-core` suite. A test one layer past the
+        // wiring proves the behaviour and not the wiring, which is H-21 and is
+        // the third time this change produced it.
+        //
+        // The image is built HERE rather than with `url_backed_image`, and the
+        // difference is the whole test: that helper writes the URL into the
+        // body's deferred record as well, so the loaded file has a description
+        // and is deferred by its PAYLOAD. Using it, the mutation deleting the
+        // loader's mark survived.
+        //
+        // A real `KLZY`-described image has no such payload to fall back on:
+        // `KLZY` has no field for a URL, and the host-side JSON that carries it
+        // is not something the kernel reads. So the body's record here carries
+        // an EMPTY description, which is the exact condition gap 21 flattened.
+        let image = {
+            let mut w = crate::sffs_write::SffsWriter::mkfs(
+                crate::sffs_write::SffsConfig::fixed(256 * 1024),
+            )
+            .expect("mkfs");
+            let root = w.root();
+            let ino = w
+                .create_deferred_file(root, b"big.bin", 0o644, 45_000, 0, b"", b"")
+                .expect("deferred, description unknown");
+            let body = w
+                .finish()
+                .expect("finish")
+                .to_vec(&crate::sffs_write::NoContent)
+                .expect("materialize");
+            let klzy = klzy_section(&[], &[(ino, 45_000, 0, "")]);
+            let sections = crate::sffs_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: Some(&klzy),
+            };
+            crate::sffs_container::wrap(&body, &sections).expect("wrap")
+        };
+        assert!(load_image(image.len() as u64, image_host(&image)).is_ok(), "load it");
+
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        let section = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the re-export describes its deferred files");
+        let record = section
+            .records
+            .iter()
+            .find(|r| r.size == 45_000)
+            .expect("the file is still deferred, at the size it really is");
+        assert_eq!(record.archive_id, 0, "still fetched standalone");
+    }
+
+    #[test]
+    fn a_deferred_file_with_no_description_re_exports_as_deferred() {
+        let _guard = TestGuard::acquire();
+        // GAP 21. A `KLZY`-described image says a file is deferred and how big
+        // it really is, and says NOTHING about where its bytes come from -- the
+        // URL lives in host-side JSON the kernel does not read. So a deferred
+        // file loaded from one arrives with an empty payload, which used to be
+        // indistinguishable from a base file the host WALKED.
+        //
+        // The export treated them the same and wrote a stub, so a 4,242-byte
+        // binary came out a zero-length ORDINARY file and the export reported
+        // success. Re-emitting it as deferred is not "dressed up as pointing
+        // nowhere": the input pointed nowhere too, and this carries exactly
+        // what the input carried.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
+        insert_base_file(b"/php", 77, 4_242, 0o755, 0, 0, 2).expect("base file");
+        mark_deferred_base(b"/php").expect("deferred, description unknown");
+
+        let exported = drain_export(8192, &mut no_bytes());
+        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        // The image's inode is a zero-length stub BY DESIGN -- a deferred file's
+        // bytes are not in the image, and its real length lives in the deferred
+        // record beside it. So the stub proves nothing either way, and the
+        // record is where the difference between a fix and the defect shows:
+        // without one, this file is simply an empty ordinary file.
+        let php = fs.resolve(b"/php", true).expect("/php");
+        assert_eq!(fs.stat_ino(php).expect("stat").size, 0, "a deferred stub");
+        let section = fs.deferred_section().expect("decodes").expect("section");
+        assert_eq!(section.records.len(), 1, "exactly this file is deferred");
+        let record = &section.records[0];
+        assert_eq!(record.size, 4_242, "the record carries the real length");
+        assert_eq!(record.archive_id, 0, "fetched standalone");
+        assert!(
+            record.payload.is_empty(),
+            "no description, because the image it came from carried none",
         );
     }
 
@@ -6341,11 +7427,16 @@ mod tests {
         let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
         let ino = fs.resolve(b"/walked.bin", true).expect("the path survives");
         assert_eq!(fs.stat_ino(ino).expect("stat").size, 0);
-        assert!(
-            fs.deferred_section().expect("decodes").is_none(),
-            "no description in, no record out -- an empty payload must not become \
-             a deferred record that says nothing",
-        );
+        // The export always DECLARES a section, because an image that declares
+        // none is one `load_image` refuses (gap 15). So the claim here is that
+        // the section is EMPTY, not absent: no description in, no record out --
+        // an empty payload must not become a deferred record that says nothing.
+        let section = fs
+            .deferred_section()
+            .expect("decodes")
+            .expect("the export always declares a section");
+        assert!(section.records.is_empty(), "no description in, no record out");
+        assert!(section.archives.is_empty());
     }
 
     #[test]

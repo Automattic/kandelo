@@ -5,13 +5,41 @@ import {
 import { createHash } from "node:crypto";
 import { FILE_MODES } from "../generated/abi";
 
-import {
-  MemoryFileSystem,
-  type DeferredTreeMaterializationHandle,
-  type LazyTreeActivation,
-  type LazyTreeContent,
-  type LazyTreeRegistrationEntry,
+import type {
+  DeferredTreeMaterializationHandle,
+  LazyTreeActivation,
+  LazyTreeContent,
+  LazyTreeRegistrationEntry,
+  LazyTreeRegistrationOwner,
+  SerializedLazyArchiveEntry,
 } from "./memory-fs";
+import type { StatResult } from "../types";
+
+/**
+ * What this module needs from the filesystem holding a package tree.
+ *
+ * Typed against `MemoryFileSystem` before, which is the 8,000-line class lane
+ * V is deleting; measured at the call sites it is these six methods. Nothing
+ * here needs the class, and the remaining `./memory-fs` imports are type-only,
+ * so this module no longer pulls it in as a value.
+ */
+export interface PackageDeferredTreeFs {
+  lstat(path: string): StatResult;
+  readlink(path: string): string;
+  isPathDeferred(path: string): boolean;
+  registerLazyTreeWithMaterializationHandle(
+    content: LazyTreeContent,
+    entries: readonly LazyTreeRegistrationEntry[],
+    mountPrefix?: string,
+    activation?: LazyTreeActivation,
+    owner?: LazyTreeRegistrationOwner,
+  ): DeferredTreeMaterializationHandle;
+  materializeRegisteredDeferredTree(
+    handle: DeferredTreeMaterializationHandle,
+    exactBytes: Uint8Array,
+  ): Promise<boolean>;
+  exportLazyArchiveEntries(): SerializedLazyArchiveEntry[];
+}
 import {
   extractZipEntryBounded,
   parseZipCentralDirectory,
@@ -448,7 +476,7 @@ export function parsePackageDeferredZipTreeDescriptor(
 
 /** Register one derived package tree and preserve its declared POSIX owner. */
 export function registerPackageDeferredZipTree(
-  fs: MemoryFileSystem,
+  fs: PackageDeferredTreeFs,
   derived: DerivedPackageDeferredZipTree,
 ): RegisteredPackageDeferredZipTree {
   preflightNamespace(fs, derived.descriptor, derived.entries);
@@ -464,7 +492,7 @@ export function registerPackageDeferredZipTree(
 
 /** Materialize the same registered descriptor from its exact package bytes. */
 export async function materializePackageDeferredZipTree(
-  fs: MemoryFileSystem,
+  fs: PackageDeferredTreeFs,
   registered: RegisteredPackageDeferredZipTree,
   archiveBytes: Uint8Array,
 ): Promise<void> {
@@ -485,7 +513,7 @@ export async function materializePackageDeferredZipTree(
 
 /** Prove the same descriptor survived either lazy serialization or eager pour. */
 export function assertPackageDeferredZipTreeState(
-  fs: MemoryFileSystem,
+  fs: PackageDeferredTreeFs,
   derived: DerivedPackageDeferredZipTree,
   expected: "deferred" | "materialized",
 ): void {
@@ -684,7 +712,7 @@ function assertCompleteDirectoryInventory(
 }
 
 function preflightNamespace(
-  fs: MemoryFileSystem,
+  fs: PackageDeferredTreeFs,
   descriptor: PackageDeferredZipTreeDescriptor,
   entries: readonly LazyTreeRegistrationEntry[],
 ): void {

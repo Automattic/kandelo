@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a pre-built VFS image containing the full shell environment.
  * The base utility layout comes from the canonical rootfs image. The shell
@@ -10,7 +11,6 @@
  */
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   saveImage,
   writeVfsBinary,
@@ -53,12 +53,12 @@ main().catch((err) => {
   process.exit(1);
 });
 
-function populateDoomRuntime(fs: MemoryFileSystem): void {
+function populateDoomRuntime(fs: VfsImageFilesystem): void {
   const fbdoomBytes = readFileSync(resolveVfsArtifact("programs/fbdoom.wasm", "fbdoom"));
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", new Uint8Array(fbdoomBytes), 0o755);
 }
 
-function populateModesetRuntime(fs: MemoryFileSystem): void {
+function populateModesetRuntime(fs: VfsImageFilesystem): void {
   const modesetBytes = readFileSync(resolveVfsArtifact("programs/modeset.wasm", "modeset"));
   writeVfsBinary(fs, "/usr/local/bin/modeset", new Uint8Array(modesetBytes), 0o755);
 }

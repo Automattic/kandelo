@@ -1,6 +1,30 @@
+import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { SffsImageFs, SffsImageError } from "../../images/vfs/lib/sffs-image-fs";
+import { writeVfsBinary } from "../src/vfs/image-helpers";
+import { OPEN_FLAGS } from "../src/generated/abi";
+import type { ZipEntry } from "../src/vfs/zip";
+
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+
+/** A zip central-directory entry with only the fields the bridge reads. */
+function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
+  return {
+    fileNameBytes: new TextEncoder().encode(over.fileName),
+    compressedSize: 0,
+    uncompressedSize: 0,
+    compressionMethod: 0,
+    localHeaderOffset: 0,
+    mode: 0o644,
+    isDirectory: false,
+    isSymlink: false,
+    externalAttrs: 0,
+    creatorOS: 3,
+    ...over,
+  } as ZipEntry;
+}
 
 /**
  * The bridge driven the way a builder drives it.
@@ -133,7 +157,7 @@ describe("SffsImageFs", () => {
   it("registers a lazy file whose metadata is readable before any fetch", () => {
     const fs = SffsImageFs.create();
     fs.mkdir("/usr", 0o755);
-    fs.registerLazyFile({
+    fs.registerArchiveMember({
       path: "/usr/big",
       archiveId: 3,
       sourcePath: "members/big.bin",
@@ -207,6 +231,141 @@ describe("SffsImageFs", () => {
     );
   });
 
+  it("reads the loaded image at any offset, in any order, while the tree mutates", () => {
+    // The window the in-kernel overlay reads base-file content through for a
+    // whole session. `exportImage` cannot serve it: that builds from the
+    // current tree and streams in order, and seals cohorts at offset 0 — so
+    // using it here would rebuild the image per read AND let a read mutate the
+    // tree it is reading.
+    const source = SffsImageFs.create();
+    source.mkdir("/d", 0o755);
+    source.writeFile("/d/f", new Uint8Array(9000).fill(0x5a), 0o644);
+    const image = source.exportImage();
+
+    const fs = SffsImageFs.create();
+    fs.loadImage(image);
+
+    // Any offset, and deliberately out of order.
+    const mid = new Uint8Array(64);
+    expect(fs.imageRead(4096n, mid)).toBe(64);
+    expect(Array.from(mid)).toEqual(Array.from(image.subarray(4096, 4160)));
+
+    const head = new Uint8Array(64);
+    expect(fs.imageRead(0n, head)).toBe(64);
+    expect(Array.from(head)).toEqual(Array.from(image.subarray(0, 64)));
+
+    // A short read at the end, then zero past it — the contract the kernel's
+    // provider relies on to stop, rather than an error it would report as a
+    // corrupt image.
+    const tail = new Uint8Array(128);
+    const n = fs.imageRead(BigInt(image.byteLength - 32), tail);
+    expect(n).toBe(32);
+    expect(fs.imageRead(BigInt(image.byteLength), tail)).toBe(0);
+    expect(fs.imageRead(BigInt(image.byteLength + 4096), tail)).toBe(0);
+
+    // Mutating the live tree does not disturb the window: it reads the image
+    // that was LOADED, not one rebuilt from the tree.
+    fs.mkdir("/after", 0o755);
+    const again = new Uint8Array(64);
+    expect(fs.imageRead(0n, again)).toBe(64);
+    expect(Array.from(again)).toEqual(Array.from(head));
+
+    // A negative offset is EINVAL, and the ERRNO is the assertion rather than
+    // the throw. Without the explicit refusal the cast lands on a huge u64 and
+    // the read fails as EIO instead — still an error, so `toThrow()` alone
+    // would pass against a module that had lost the check. A perturb trial
+    // that deleted it survived this test until this case existed.
+    let caught: unknown;
+    try {
+      fs.imageRead(-1n, again);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SffsImageError);
+    expect((caught as Error).message).toContain("EINVAL");
+  });
+
+  it("answers whether a path's bytes are in the image", () => {
+    // The question builder recipes ask: "is this resident?" They asked it of
+    // the TypeScript filesystem, which is the only reason they needed the
+    // implementation rather than an interface.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.writeFile("/usr/here", new TextEncoder().encode("bytes"), 0o644);
+    fs.registerArchiveMember({
+      path: "/usr/there",
+      archiveId: 3,
+      sourcePath: "members/big.bin",
+      size: 99_999,
+      mode: 0o755,
+      ino: 40,
+      archiveBytes: 8_000_000,
+    });
+
+    const here = fs.lstat("/usr/here");
+    expect(here.deferred).toBe(false);
+    expect(here.size).toBe(5);
+    expect(fs.isPathDeferred("/usr/here")).toBe(false);
+
+    const there = fs.lstat("/usr/there");
+    expect(there.deferred).toBe(true);
+    expect(there.ino).toBe(40);
+    // The REAL size, not the zero-length stub in the body. A recipe asking how
+    // big a deferred file is must not have to fetch it first.
+    expect(there.size).toBe(99_999);
+    expect(there.archiveId).toBe(3);
+    expect(fs.isPathDeferred("/usr/there")).toBe(true);
+
+    // A path that is not there is not a DEFERRED file. This asserted a throw
+    // until a real caller disagreed: `residentDinitBinaryState` treats
+    // "missing" as one of its own outcomes, so throwing here made that branch
+    // unreachable. The filesystem this replaces answers `false` too.
+    expect(fs.isPathDeferred("/nope")).toBe(false);
+  });
+
+  it("registers a file fetched standalone, with no archive behind it", () => {
+    // 79 files in the shipped shell image have this shape, and it is the shape
+    // lane S's setuid defect is about. The bridge could not express it until
+    // the archive declaration stopped being unconditional.
+    const fs = SffsImageFs.create();
+    const url = new TextEncoder().encode("https://example.invalid/sudo#sha256:feed");
+    fs.registerArchiveMember({
+      path: "/sudo",
+      archiveId: 0,
+      sourcePath: "",
+      size: 99_999,
+      mode: 0o4755,
+      ino: 40,
+      archiveBytes: 0,
+      archiveDescriptor: url,
+    });
+    const st = fs.lstat("/sudo");
+    expect(st.deferred).toBe(true);
+    expect(st.size).toBe(99_999);
+    expect(st.archiveId).toBe(0);
+    expect(st.mode & 0o7777).toBe(0o4755);
+  });
+
+  it("judges headroom and reports the numbers either way", () => {
+    // The assertion builders make — "this image must ship with room to write" —
+    // now comes back as a verdict computed in Rust rather than a statfs the
+    // caller has to turn into one.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/f", new TextEncoder().encode("hello"), 0o644);
+
+    const ok = fs.checkHeadroom(0, 0);
+    expect(ok.met).toBe(true);
+    expect(ok.freeBytes).toBeGreaterThan(0);
+    expect(ok.freeInodes).toBeGreaterThan(0);
+
+    // Unmeetable: still returns the measurement, because a caller that only
+    // learns "no" cannot say by how much.
+    const no = fs.checkHeadroom(Number.MAX_SAFE_INTEGER, 0);
+    expect(no.met).toBe(false);
+    expect(no.requiredBytes).toBe(Number.MAX_SAFE_INTEGER);
+    expect(no.freeBytes).toBe(ok.freeBytes);
+  });
+
   it("refuses one archive declared with two different lengths", () => {
     // The member's size and the ARCHIVE's size are different numbers, and the
     // second is what bounds the fetch. Two lengths for one archive would make
@@ -223,11 +382,174 @@ describe("SffsImageFs", () => {
       ino,
       archiveBytes,
     });
-    fs.registerLazyFile(member(40, 8_000_000));
+    fs.registerArchiveMember(member(40, 8_000_000));
     // The same length again is a no-op, so a builder may register many members
     // of one archive without tracking whether it has declared it.
-    expect(() => fs.registerLazyFile(member(41, 8_000_000))).not.toThrow();
-    expect(() => fs.registerLazyFile(member(42, 9_000_000))).toThrow(/EINVAL/);
+    expect(() => fs.registerArchiveMember(member(41, 8_000_000))).not.toThrow();
+    expect(() => fs.registerArchiveMember(member(42, 9_000_000))).toThrow(/EINVAL/);
+  });
+
+  it("answers deferredness about the file a symlink names, not the link", () => {
+    // A symlink is never itself deferred, so asking `lstat` answers "no" for
+    // every ALIAS of a lazy binary. The shell composer skips a binary that is
+    // already lazy, and with `lstat` it re-registered `/bin/coreutils` and
+    // failed the build on an undeclared dependency — in a product build, which
+    // is where this was found. The filesystem this replaces resolves the path.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.mkdir("/bin", 0o755);
+    fs.registerLazyFile("/usr/bin/tool", "https://example.invalid/tool.wasm", 4242, 0o755);
+    fs.symlink("/usr/bin/tool", "/bin/tool");
+
+    // Directly, and through the alias: both must say the same thing.
+    expect(fs.isPathDeferred("/usr/bin/tool")).toBe(true);
+    expect(fs.isPathDeferred("/bin/tool")).toBe(true);
+    expect(fs.getLazyEntry("/bin/tool")).not.toBeNull();
+    expect(fs.getLazyEntry("/bin/tool")?.size).toBe(4242);
+
+    // And the alias is still a symlink — resolving the QUESTION does not
+    // resolve the tree.
+    expect(fs.lstat("/bin/tool").deferred).toBe(false);
+  });
+
+  it("keeps a loaded image's declared capacity when metadata is written after", () => {
+    // GAP 24, and gap 17's defect on the other field the one entry point
+    // carries. `sm_set_image_options` sends capacity AND metadata together, so
+    // each must survive a load the KERNEL authored — and only the metadata was
+    // refreshed, so the bridge went on remembering a capacity of 0 and the next
+    // metadata write cleared what the image declared.
+    //
+    // This is the shell composer's exact sequence: load a base that declares a
+    // large capacity, write files, then save with metadata. The image came out
+    // sized to its own tree and failed its product profile at the publication
+    // gate — in a product build, which is where it was found.
+    const base = SffsImageFs.create();
+    base.mkdir("/etc", 0o755);
+    base.setImageCapacity(64 * 1024 * 1024);
+    const image = base.exportImage();
+
+    const derived = SffsImageFs.create();
+    derived.loadImage(image);
+    expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+
+    // The write that used to clear it.
+    derived.setImageMetadata({ version: 1, createdBy: "gap-24" });
+    expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
+
+    // And it reaches the artifact, not just the live tree.
+    expect(SffsImageFs.readImageCapacity(derived.exportImage()).maxByteLength)
+      .toBe(64 * 1024 * 1024);
+  });
+
+  it("enumerates every deferred file and archive with its identity", () => {
+    // What replaces `exportLazyEntries` and `exportLazyArchiveEntries`: the
+    // builders' "this step disturbed nothing" check, asked of the module that
+    // owns the tree rather than of a second filesystem that mirrored it.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    fs.registerLazyFile("/opt/solo", "https://example.invalid/solo.wasm", 4242, 0o755);
+    fs.registerArchiveMember({
+      path: "/opt/member",
+      archiveId: 3,
+      sourcePath: "members/member",
+      size: 99,
+      mode: 0o644,
+      ino: 71,
+      archiveBytes: 8_000_000,
+      archiveDescriptor: new TextEncoder().encode('{"url":"https://x/a.zip"}'),
+    });
+    fs.writeFile("/opt/plain", new TextEncoder().encode("resident"), 0o644);
+
+    const { files, archives } = fs.lazyEntries();
+    expect(files.map((f) => f.path)).toEqual(["/opt/member", "/opt/solo"]);
+    // A resident file is not deferred, which is the distinction that would be
+    // easiest to get wrong: both are regular files.
+    expect(files.some((f) => f.path === "/opt/plain")).toBe(false);
+
+    const member = files.find((f) => f.path === "/opt/member")!;
+    expect(member.size).toBe(99);
+    expect(member.archiveId).toBe(3);
+    expect(member.sourcePath).toBe("members/member");
+
+    const solo = files.find((f) => f.path === "/opt/solo")!;
+    expect(solo.size).toBe(4242);
+    expect(solo.archiveId).toBe(0);
+    // The standalone file's description IS its identity: without it nothing
+    // says where its bytes come from.
+    expect(solo.descriptor.byteLength).toBeGreaterThan(0);
+
+    expect(archives).toHaveLength(1);
+    expect(archives[0]!.archiveId).toBe(3);
+    expect(archives[0]!.bytes).toBe(8_000_000);
+  });
+
+  it("loads a zstd-compressed image without the caller unwrapping it", () => {
+    // Shipped images are `.vfs.zst`. The module reads IMAGES, not archives, so
+    // a compressed one reaches it as EINVAL -- a truthful refusal of the wrong
+    // question, and a confusing one to meet from a builder that was handed the
+    // bytes of a shipped artifact. Decompression is transport and happens in
+    // the bridge, exactly where the filesystem this replaces put it.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/etc", 0o755);
+    fs.writeFile("/etc/hello", new TextEncoder().encode("hi"), 0o644);
+    const image = fs.exportImage();
+    const compressed = new Uint8Array(zstdCompressSync(image));
+    expect(compressed).not.toEqual(image);
+
+    const back = SffsImageFs.create();
+    back.loadImage(compressed);
+    expect(new TextDecoder().decode(back.readFile("/etc/hello"))).toBe("hi");
+  });
+
+  it("seals a declared activation cohort when the image is exported", () => {
+    // The builder DECLARES membership and computes nothing. It cannot: the
+    // cohort's digest covers every member, and the last member is not known
+    // while the first is being registered. The module completes the seal at
+    // the export door, and loading the image back is what proves it did --
+    // load refuses a cohort that does not authenticate.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    const encoder = new TextEncoder();
+    for (const [id, name] of [[3, "tools"], [4, "docs"]] as const) {
+      fs.registerArchiveMember({
+        path: `/opt/${name}`,
+        archiveId: id,
+        sourcePath: `members/${name}`,
+        size: 10,
+        mode: 0o644,
+        ino: 40 + id,
+        archiveBytes: 8_000_000,
+        archiveDescriptor: encoder.encode(`{"url":"https://x/${name}.zip"}`),
+        cohort: { id: "shell", member: name, expectedCount: 2 },
+      });
+    }
+    const image = fs.exportImage();
+
+    const back = SffsImageFs.create();
+    expect(() => back.loadImage(image)).not.toThrow();
+  });
+
+  it("refuses to export a cohort short of the count it declared", () => {
+    // The declared count is the defence against a forgotten member. Counting
+    // the members that WERE registered cannot notice the one that was not, so
+    // the producer would seal a cohort of one that was meant to be two, every
+    // digest would agree, and the image would activate partially -- which is
+    // the thing atomic activation exists to prevent.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    fs.registerArchiveMember({
+      path: "/opt/tools",
+      archiveId: 3,
+      sourcePath: "members/tools",
+      size: 10,
+      mode: 0o644,
+      ino: 43,
+      archiveBytes: 8_000_000,
+      archiveDescriptor: new TextEncoder().encode('{"url":"https://x/tools.zip"}'),
+      cohort: { id: "shell", member: "tools", expectedCount: 2 },
+    });
+    expect(() => fs.exportImage()).toThrow(/EINVAL/);
   });
 
   it("survives an allocation large enough to grow the module's memory", () => {
@@ -241,6 +563,271 @@ describe("SffsImageFs", () => {
     expect(back.byteLength).toBe(big.byteLength);
     expect(back[0]).toBe(0x41);
     expect(back[back.byteLength - 1]).toBe(0x41);
+  });
+
+  it("writes a binary through the same helper path a recipe uses", () => {
+    // `writeVfsBinary` is how every recipe puts a program into an image: open
+    // with O_WRONLY|O_CREAT|O_TRUNC, write the whole buffer, close. Typechecking
+    // the bridge against the interface proves the methods EXIST; this proves
+    // they work, which is the part the repoint actually depends on.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    writeVfsBinary(fs, "/usr/bin/prog", new Uint8Array([1, 2, 3, 4, 5]), 0o755);
+    expect(fs.readFile("/usr/bin/prog")).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+    expect(fs.lstat("/usr/bin/prog").mode & 0o7777).toBe(0o755);
+  });
+
+  it("truncates on O_TRUNC instead of splicing into the old bytes", () => {
+    // The bridge ignored its open flags until `write` existed, and ignoring
+    // them would not have been harmless: a second build writing a SHORTER file
+    // over a longer one would have kept the old file's tail. The image would
+    // build, mount and boot, containing bytes nobody wrote.
+    const fs = SffsImageFs.create();
+    writeVfsBinary(fs, "/f", new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]), 0o644);
+    writeVfsBinary(fs, "/f", new Uint8Array([1, 2, 3]), 0o644);
+    expect(fs.readFile("/f")).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("writes at a position past the end by zero-filling the gap", () => {
+    const fs = SffsImageFs.create();
+    const fd = fs.open("/sparse", O_WRONLY_CREAT_TRUNC, 0o644);
+    fs.write(fd, new Uint8Array([7, 7]), 4, 2);
+    fs.close(fd);
+    // Length must agree with where the bytes are; dropping the gap would
+    // produce a two-byte file whose content sat at offset four.
+    expect(fs.readFile("/sparse")).toEqual(new Uint8Array([0, 0, 0, 0, 7, 7]));
+  });
+
+  it("keeps the tail when writing into the middle of a longer file", () => {
+    // The zero-fill test above cannot see a `end = at + length` mutation,
+    // because its file is empty and both spellings give the same answer. Only
+    // an EXISTING file longer than the write can tell them apart: the mutant
+    // truncates everything past the patch.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/patch", new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 0o644);
+    const fd = fs.open("/patch", OPEN_FLAGS.O_WRONLY, 0o644);
+    fs.write(fd, new Uint8Array([9, 9]), 2, 2);
+    fs.close(fd);
+    expect(fs.readFile("/patch")).toEqual(
+      new Uint8Array([1, 2, 9, 9, 5, 6, 7, 8]),
+    );
+  });
+
+  it("writes only the length it was asked for, not the whole buffer", () => {
+    // A caller handing over a larger buffer and a smaller length is how a
+    // partial write is expressed. Taking the whole buffer would write bytes
+    // the caller did not offer, and report a count it did not ask for.
+    const fs = SffsImageFs.create();
+    const fd = fs.open("/partial", O_WRONLY_CREAT_TRUNC, 0o644);
+    const took = fs.write(fd, new Uint8Array([1, 2, 3, 4, 5]), 0, 2);
+    fs.close(fd);
+    expect(took).toBe(2);
+    expect(fs.readFile("/partial")).toEqual(new Uint8Array([1, 2]));
+  });
+
+  it("opens a missing path only when asked to create it", () => {
+    const fs = SffsImageFs.create();
+    expect(() => fs.open("/absent", OPEN_FLAGS.O_RDONLY, 0o644)).toThrow();
+    // And the failed open must not have left the file behind.
+    expect(() => fs.lstat("/absent")).toThrow();
+  });
+
+  it("advances its own cursor when no position is given", () => {
+    const fs = SffsImageFs.create();
+    const fd = fs.open("/seq", O_WRONLY_CREAT_TRUNC, 0o644);
+    fs.write(fd, new Uint8Array([1, 2]), null, 2);
+    fs.write(fd, new Uint8Array([3, 4]), null, 2);
+    fs.close(fd);
+    expect(fs.readFile("/seq")).toEqual(new Uint8Array([1, 2, 3, 4]));
+  });
+
+  it("follows symlinks for stat and stops at the link for lstat", () => {
+    const fs = SffsImageFs.create();
+    fs.writeFile("/target", new Uint8Array([1, 2, 3]), 0o644);
+    fs.symlink("/target", "/link", 0, 0);
+    expect(fs.stat("/link").size).toBe(3);
+    expect(fs.stat("/link").mode & 0o170000).toBe(0o100000);
+    expect(fs.lstat("/link").mode & 0o170000).toBe(0o120000);
+  });
+
+  it("resolves a relative symlink against the link's own directory", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/d", 0o755);
+    fs.writeFile("/d/target", new Uint8Array([1, 2, 3, 4]), 0o644);
+    fs.symlink("target", "/d/link", 0, 0);
+    expect(fs.stat("/d/link").size).toBe(4);
+  });
+
+  it("refuses a symlink cycle rather than following it forever", () => {
+    const fs = SffsImageFs.create();
+    fs.symlink("/b", "/a", 0, 0);
+    fs.symlink("/a", "/b", 0, 0);
+    expect(() => fs.stat("/a")).toThrow();
+  });
+
+  it("bounds the chain it will follow, and the bound is the one it states", () => {
+    // A cycle alone cannot pin the LIMIT: raise it from forty to four million
+    // and the cycle test still passes, just slowly — H-11's mutant detectable
+    // only by hanging. A chain measures the bound directly and in bounded time:
+    // thirty-nine links resolve, forty-one do not.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/end", new Uint8Array([1]), 0o644);
+    fs.symlink("/end", "/hop0", 0, 0);
+    for (let i = 1; i < 60; i += 1) {
+      fs.symlink(`/hop${i - 1}`, `/hop${i}`, 0, 0);
+    }
+    expect(fs.stat("/hop37").size).toBe(1);
+    expect(() => fs.stat("/hop50")).toThrow();
+  });
+
+  it("reads back the metadata an image declared, not what this bridge set", () => {
+    const source = SffsImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    // A different instance, which declared nothing.
+    const derived = SffsImageFs.create();
+    expect(derived.getImageMetadata()).toBeNull();
+    derived.loadImage(image);
+    expect(derived.getImageMetadata()).toEqual({
+      version: 1,
+      kernelAbi: 44,
+      createdBy: "the test",
+    });
+  });
+
+  it("keeps a loaded image's metadata when the derived build sets a capacity", () => {
+    // GAP 17, and the sequence is the one the shell and php-test builders
+    // perform: load a base, then size the derived image. `setImageCapacity`
+    // re-sends the metadata because one module call carries both settings, so
+    // before the fix it re-sent the bridge's own null and cleared the base's
+    // declared ABI — losing, in the same session, the declaration the load had
+    // just restored.
+    const source = SffsImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44 });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    const derived = SffsImageFs.create();
+    derived.loadImage(image);
+    derived.setImageCapacity(64 * 1024 * 1024);
+
+    expect(derived.getImageMetadata()).toEqual({ version: 1, kernelAbi: 44 });
+    // And the capacity took effect, so this is not passing by ignoring the call.
+    expect(derived.exportCapacityBytes()).toBeGreaterThanOrEqual(64 * 1024 * 1024);
+  });
+
+  it("registers a whole archive under its mount prefix", () => {
+    const fs = SffsImageFs.create();
+    const id = fs.registerLazyArchive({
+      url: "https://example.invalid/tools.zip",
+      mountPrefix: "/opt/tools",
+      entries: [
+        zipEntry({ fileName: "bin/", isDirectory: true, mode: 0o755 }),
+        zipEntry({ fileName: "bin/tool", uncompressedSize: 1234, mode: 0o755 }),
+      ],
+      integrity: { sha256: "a".repeat(64), bytes: 4096 },
+    });
+    expect(id).toBe(1);
+    // The member is deferred, carries its REAL size, and is linked to the
+    // archive rather than fetched standalone.
+    const st = fs.lstat("/opt/tools/bin/tool");
+    expect(st.size).toBe(1234);
+    expect(st.deferred).toBe(true);
+    expect(st.archiveId).toBe(id);
+    // A second archive does not silently reuse the first one's id.
+    expect(fs.registerLazyArchive({
+      url: "https://example.invalid/more.zip",
+      mountPrefix: "/opt/more",
+      entries: [zipEntry({ fileName: "f", uncompressedSize: 1 })],
+    })).toBe(2);
+  });
+
+  it("refuses a member that would escape its mount prefix", () => {
+    // The reason the validator is shared rather than reimplemented: a path is
+    // resolved AFTER it is joined to the prefix, so this member would land in
+    // /etc rather than under /opt/tools.
+    const fs = SffsImageFs.create();
+    expect(() => fs.registerLazyArchive({
+      url: "https://example.invalid/evil.zip",
+      mountPrefix: "/opt/tools",
+      entries: [zipEntry({ fileName: "../../etc/passwd", uncompressedSize: 1 })],
+    })).toThrow();
+    expect(() => fs.lstat("/etc/passwd")).toThrow();
+  });
+
+  it("creates nothing when any member of an archive is rejected", () => {
+    // Planned before created: a member rejected halfway must not leave a
+    // partial tree. A half-registered archive is worse than a refused one,
+    // because the image builds and is missing exactly what nobody checked for.
+    const fs = SffsImageFs.create();
+    expect(() => fs.registerLazyArchive({
+      url: "https://example.invalid/partial.zip",
+      mountPrefix: "/opt/partial",
+      entries: [
+        zipEntry({ fileName: "good", uncompressedSize: 1 }),
+        zipEntry({ fileName: "bad\u0000name", uncompressedSize: 1 }),
+      ],
+    })).toThrow();
+    expect(() => fs.lstat("/opt/partial/good")).toThrow();
+  });
+
+  it("tells a URL-backed single apart from an archive member", () => {
+    // The two halves of "are these bytes here?". Recipes ask
+    // `getLazyEntry(p) !== null` for a URL-backed SINGLE and `isPathDeferred(p)`
+    // for an archive or tree backing, and re-join them by hand. A
+    // `getLazyEntry` that always answered null would collapse the pair into
+    // the second half alone and drop exactly the URL-backed case — which is
+    // the case the setuid-binary assertions are about.
+    const fs = SffsImageFs.create();
+    fs.writeFile("/eager", new Uint8Array([1, 2, 3]), 0o755);
+    fs.registerLazyFile("/lazy-single", "https://example.invalid/x.bin", 4096, 0o755);
+    fs.registerLazyArchive({
+      url: "https://example.invalid/tools.zip",
+      mountPrefix: "/opt/tools",
+      entries: [zipEntry({ fileName: "tool", uncompressedSize: 99 })],
+    });
+
+    // A URL-backed single: both halves say yes.
+    expect(fs.getLazyEntry("/lazy-single")).not.toBeNull();
+    expect(fs.isPathDeferred("/lazy-single")).toBe(true);
+
+    // An archive member: deferred, but NOT a per-inode registration. This is
+    // the distinction a stub returning null could never express, because it
+    // gave the same answer here as for the single above.
+    expect(fs.getLazyEntry("/opt/tools/tool")).toBeNull();
+    expect(fs.isPathDeferred("/opt/tools/tool")).toBe(true);
+
+    // A resident file is neither.
+    expect(fs.getLazyEntry("/eager")).toBeNull();
+    expect(fs.isPathDeferred("/eager")).toBe(false);
+
+    // A missing path is not a lazy registration, and asking is not an error —
+    // recipes ask about paths that may not exist yet.
+    expect(fs.getLazyEntry("/absent")).toBeNull();
+  });
+
+  it("reads an image's metadata from bytes alone", () => {
+    // The static form, for callers that hold bytes and want to know what they
+    // declare — a publication gate checking an artifact's ABI, say — rather
+    // than callers building a tree.
+    const source = SffsImageFs.create();
+    source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
+    source.writeFile("/f", new Uint8Array([1]), 0o644);
+    const image = source.exportImage();
+
+    expect(SffsImageFs.readImageMetadata(image)).toEqual({
+      version: 1,
+      kernelAbi: 44,
+      createdBy: "the test",
+    });
+
+    // An image declaring none says so, rather than throwing.
+    const bare = SffsImageFs.create();
+    bare.writeFile("/f", new Uint8Array([1]), 0o644);
+    expect(SffsImageFs.readImageMetadata(bare.exportImage())).toBeNull();
   });
 
   it("gives each instance an independent tree", () => {

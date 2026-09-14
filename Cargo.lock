@@ -1672,6 +1672,7 @@ version = "0.1.0"
 dependencies = [
  "dlmalloc",
  "runtime-core",
+ "sha2",
  "wasm-posix-shared",
 ]
 

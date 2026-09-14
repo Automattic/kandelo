@@ -1,4 +1,3 @@
-import { decompress as zstdDecompress } from "fzstd";
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -6,6 +5,23 @@ import type {
   StatResult,
   StatfsResult,
 } from "../types";
+import {
+  maybeDecompressImage,
+  parseImageHeader,
+  sectionOffsetAfterArchives,
+  VFS_IMAGE_FLAG_HAS_LAZY,
+  VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES,
+  VFS_IMAGE_FLAG_HAS_METADATA,
+  VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES,
+  VFS_IMAGE_MAGIC,
+  VFS_IMAGE_VERSION,
+  VFS_IMAGE_HEADER_SIZE,
+  VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
+  VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES,
+  VFS_IMAGE_MAX_LAZY_METADATA_BYTES,
+  VFS_IMAGE_MAX_METADATA_BYTES,
+  type ParsedImageHeader,
+} from "./vfs-image-transport";
 import {
   hostFileLimitForNumberBackend,
   hostFileOffsetToSafeNumber,
@@ -26,12 +42,8 @@ import {
   type MountConfig,
   type MountSetIdCapability,
 } from "./types";
+import { EROFS, SFSError } from "./vfs-errors";
 import {
-  EROFS,
-  O_CREAT,
-  O_EXCL,
-  O_TRUNC,
-  SFSError,
   SharedFS,
   type ConditionalNamespaceIdentity,
   type NamespaceEntryIdentity,
@@ -39,6 +51,11 @@ import {
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
+import {
+  normalizeLazyArchiveMountPrefix,
+  planLazyArchiveEntries,
+} from "./lazy-archive-paths";
+import type { PlannedLazyArchiveEntry } from "./lazy-archive-paths";
 import { resolveHardlinkGraph } from "./hardlink-graph";
 import {
   assertVfsDeferredTreeCollectionUsage,
@@ -457,18 +474,8 @@ export interface VfsImageRestoreOptions {
 }
 
 /** Versioned, image-level declarations carried outside the guest file tree. */
-export interface VfsImageMetadata {
-  version: 1;
-  /**
-   * Exact kernel ABI this image expects when it carries ABI-bound artifacts
-   * such as wasm-posix user programs. Omit for data-only images.
-   */
-  kernelAbi?: number;
-  /** Free-form builder id, e.g. "mkrootfs 0.1.0" or a package script name. */
-  createdBy?: string;
-  /** Preserve forwards compatibility for future signed/provenance fields. */
-  [key: string]: unknown;
-}
+export type { VfsImageMetadata } from "./vfs-image-filesystem";
+import type { VfsImageMetadata } from "./vfs-image-filesystem";
 
 export interface VfsImageCapacity {
   /** Serialized SharedArrayBuffer length carried by the image. */
@@ -477,23 +484,8 @@ export interface VfsImageCapacity {
   maxByteLength: number;
 }
 
-// zstd frame magic (little-endian on the wire: 28 B5 2F FD).
-// fromImage() auto-detects this and decompresses transparently so callers
-// don't have to know whether the bytes came from a `.vfs` or `.vfs.zst`.
-const ZSTD_MAGIC_BYTES = [0x28, 0xb5, 0x2f, 0xfd];
-const ZSTD_FRAME_MAGIC = 0xfd2fb528;
-const ZSTD_SKIPPABLE_MAGIC_MIN = 0x184d2a50;
-const ZSTD_SKIPPABLE_MAGIC_MAX = 0x184d2a5f;
-const ZSTD_MAX_BLOCK_BYTES = 128 * 1024;
 
 // VFS image binary format constants
-const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
-const VFS_IMAGE_VERSION = 1;
-const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
-const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
-const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
-const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
-const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
 const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
 const { DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK } = DIRENT_TYPES;
 const O_RDONLY = OPEN_FLAGS.O_RDONLY;
@@ -504,17 +496,6 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
-const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
-const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
-const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
-const VFS_IMAGE_MAX_DECOMPRESSED_BYTES =
-  1024 * 1024 * 1024
-  + VFS_IMAGE_MAX_LAZY_METADATA_BYTES
-  + VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES
-  + VFS_IMAGE_MAX_METADATA_BYTES
-  + VFS_IMAGE_MAX_KERNEL_LAZY_BYTES
-  + VFS_IMAGE_HEADER_SIZE
-  + 16;
 const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
 const MAX_LAZY_EXPANDED_BYTES = VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes;
 const MAX_LAZY_PAYLOAD_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPayloadBytes;
@@ -566,115 +547,6 @@ class LazyHttpResponseError extends Error {
     super(`HTTP ${status}`);
     this.name = "LazyHttpResponseError";
   }
-}
-
-interface PlannedLazyArchiveEntry {
-  entry: ZipEntry;
-  archivePath: string;
-  vfsPath: string;
-}
-
-function normalizeLazyArchiveMountPrefix(mountPrefix: unknown): string {
-  if (
-    typeof mountPrefix !== "string" ||
-    !mountPrefix.startsWith("/") ||
-    new TextEncoder().encode(mountPrefix).byteLength > MAX_LAZY_TREE_PATH_BYTES ||
-    mountPrefix.includes("\0") ||
-    mountPrefix.includes("\\")
-  ) {
-    throw new Error(
-      `Lazy archive mount prefix must be an absolute POSIX path: ${JSON.stringify(mountPrefix)}`,
-    );
-  }
-  const normalized = mountPrefix.replace(/\/+$/, "");
-  if (normalized === "") return "/";
-  const segments = normalized.slice(1).split("/");
-  if (
-    segments.some(
-      (segment) => segment === "" || segment === "." || segment === "..",
-    )
-  ) {
-    throw new Error(
-      `Lazy archive mount prefix is not canonical: ${JSON.stringify(mountPrefix)}`,
-    );
-  }
-  return normalized;
-}
-
-function planLazyArchiveEntries(
-  url: string,
-  zipEntries: ZipEntry[],
-  mountPrefix: string,
-  symlinkTargets?: Map<string, string>,
-): PlannedLazyArchiveEntry[] {
-  const normalizedPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
-  const seen = new Map<string, ZipEntry>();
-  const planned = zipEntries.map((entry): PlannedLazyArchiveEntry => {
-    const member = entry.fileName;
-    const context = `Lazy archive ${JSON.stringify(url)} member ${JSON.stringify(member)}`;
-    if (member.length === 0) {
-      throw new Error(`${context} has an empty path`);
-    }
-    if (member.includes("\0")) {
-      throw new Error(`${context} contains a NUL byte`);
-    }
-    if (member.includes("\\")) {
-      throw new Error(`${context} contains a backslash`);
-    }
-    if (member.startsWith("/") || /^[A-Za-z]:\//.test(member)) {
-      throw new Error(`${context} must be relative, not absolute`);
-    }
-    if (entry.isDirectory && entry.isSymlink) {
-      throw new Error(`${context} has conflicting directory and symlink types`);
-    }
-    if (entry.isDirectory !== member.endsWith("/")) {
-      throw new Error(`${context} has inconsistent directory metadata`);
-    }
-
-    const archivePath = entry.isDirectory ? member.slice(0, -1) : member;
-    const segments = archivePath.split("/");
-    if (
-      archivePath.length === 0 ||
-      segments.some(
-        (segment) => segment === "" || segment === "." || segment === "..",
-      )
-    ) {
-      throw new Error(
-        `${context} is not a canonical relative POSIX path`,
-      );
-    }
-    if (seen.has(archivePath)) {
-      throw new Error(
-        `${context} collides with another member at ${JSON.stringify(archivePath)}`,
-      );
-    }
-    if (entry.isSymlink && !symlinkTargets?.has(member)) {
-      throw new Error(`Lazy archive symlink target was not provided: ${member}`);
-    }
-    seen.set(archivePath, entry);
-    return {
-      entry,
-      archivePath,
-      vfsPath: normalizedPrefix === "/"
-        ? `/${archivePath}`
-        : `${normalizedPrefix}/${archivePath}`,
-    };
-  });
-
-  for (const { archivePath } of planned) {
-    const segments = archivePath.split("/");
-    for (let length = 1; length < segments.length; length++) {
-      const ancestorPath = segments.slice(0, length).join("/");
-      const ancestor = seen.get(ancestorPath);
-      if (ancestor && !ancestor.isDirectory) {
-        throw new Error(
-          `Lazy archive member ${JSON.stringify(archivePath)} descends ` +
-            `through non-directory ${JSON.stringify(ancestorPath)}`,
-        );
-      }
-    }
-  }
-  return planned;
 }
 
 function cloneMetadata(
@@ -737,241 +609,9 @@ function encodeMetadata(metadata: VfsImageMetadata | null): Uint8Array {
   return bytes;
 }
 
-function maybeDecompressImage(
-  image: Uint8Array,
-  maximum = VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
-): Uint8Array {
-  if (
-    !Number.isSafeInteger(maximum) || maximum < VFS_IMAGE_HEADER_SIZE ||
-    maximum > VFS_IMAGE_MAX_DECOMPRESSED_BYTES
-  ) {
-    throw new Error("VFS image decompressed byte bound is invalid");
-  }
-  if (
-    image.byteLength >= ZSTD_MAGIC_BYTES.length &&
-    image[0] === ZSTD_MAGIC_BYTES[0] &&
-    image[1] === ZSTD_MAGIC_BYTES[1] &&
-    image[2] === ZSTD_MAGIC_BYTES[2] &&
-    image[3] === ZSTD_MAGIC_BYTES[3]
-  ) {
-    assertBoundedZstdFrames(image, maximum);
-    const decompressed = decompressZstd(image);
-    if (decompressed.byteLength > maximum) {
-      throw new Error("zstd VFS image exceeds its decompressed byte bound");
-    }
-    return decompressed;
-  }
-  if (image.byteLength > maximum) {
-    throw new Error("VFS image exceeds its decompressed byte bound");
-  }
-  return image;
-}
 
-function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  let offset = 0;
-  let totalBound = 0;
-  let frames = 0;
-  const requireBytes = (count: number, label: string) => {
-    if (count < 0 || offset + count > image.byteLength) {
-      throw new Error(`zstd VFS image has a truncated ${label}`);
-    }
-  };
-  const addBound = (count: number) => {
-    totalBound += count;
-    if (!Number.isSafeInteger(totalBound) || totalBound > maximum) {
-      throw new Error("zstd VFS image exceeds its decompressed byte bound");
-    }
-  };
-  const readLittleEndian = (count: number): bigint => {
-    requireBytes(count, "frame header");
-    let result = 0n;
-    for (let index = 0; index < count; index++) {
-      result |= BigInt(image[offset + index]!) << BigInt(index * 8);
-    }
-    offset += count;
-    return result;
-  };
 
-  while (offset < image.byteLength) {
-    requireBytes(4, "frame magic");
-    const magic = view.getUint32(offset, true);
-    offset += 4;
-    if (magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX) {
-      requireBytes(4, "skippable frame size");
-      const bytes = view.getUint32(offset, true);
-      offset += 4;
-      requireBytes(bytes, "skippable frame");
-      offset += bytes;
-      continue;
-    }
-    if (magic !== ZSTD_FRAME_MAGIC) {
-      throw new Error("zstd VFS image contains an invalid frame magic");
-    }
-    frames++;
-    requireBytes(1, "frame descriptor");
-    const descriptor = image[offset++]!;
-    if ((descriptor & 0x08) !== 0) {
-      throw new Error("zstd VFS image uses a reserved frame descriptor bit");
-    }
-    const singleSegment = (descriptor & 0x20) !== 0;
-    const hasChecksum = (descriptor & 0x04) !== 0;
-    const dictionaryBytes = [0, 1, 2, 4][descriptor & 0x03]!;
-    const contentSizeFlag = descriptor >>> 6;
-    let windowBytes: bigint | undefined;
-    if (!singleSegment) {
-      requireBytes(1, "window descriptor");
-      const windowDescriptor = image[offset++]!;
-      const exponent = 10 + (windowDescriptor >>> 3);
-      const base = 1n << BigInt(exponent);
-      windowBytes = base + (base >> 3n) * BigInt(windowDescriptor & 0x07);
-    }
-    requireBytes(dictionaryBytes, "dictionary identity");
-    offset += dictionaryBytes;
-    const contentSizeBytes = contentSizeFlag === 0
-      ? (singleSegment ? 1 : 0)
-      : contentSizeFlag === 1
-      ? 2
-      : contentSizeFlag === 2
-      ? 4
-      : 8;
-    let contentBytes: bigint | undefined;
-    if (contentSizeBytes > 0) {
-      contentBytes = readLittleEndian(contentSizeBytes);
-      if (contentSizeFlag === 1) contentBytes += 256n;
-      if (singleSegment) windowBytes = contentBytes;
-    }
-    if (windowBytes !== undefined && windowBytes > BigInt(maximum)) {
-      throw new Error("zstd VFS image exceeds its decompressed window bound");
-    }
-    if (contentBytes !== undefined && contentBytes > BigInt(maximum)) {
-      throw new Error("zstd VFS image exceeds its decompressed byte bound");
-    }
 
-    let frameBound = 0;
-    for (;;) {
-      requireBytes(3, "block header");
-      const header = image[offset]!
-        | (image[offset + 1]! << 8)
-        | (image[offset + 2]! << 16);
-      offset += 3;
-      const last = (header & 1) !== 0;
-      const type = (header >>> 1) & 0x03;
-      const blockBytes = header >>> 3;
-      if (type === 3 || blockBytes > ZSTD_MAX_BLOCK_BYTES) {
-        throw new Error("zstd VFS image contains an invalid block header");
-      }
-      frameBound += type === 2 ? ZSTD_MAX_BLOCK_BYTES : blockBytes;
-      if (
-        !Number.isSafeInteger(frameBound) ||
-        (contentBytes === undefined && frameBound > maximum)
-      ) {
-        throw new Error("zstd VFS image exceeds its decompressed byte bound");
-      }
-      const encodedBytes = type === 1 ? 1 : blockBytes;
-      requireBytes(encodedBytes, "block payload");
-      offset += encodedBytes;
-      if (last) break;
-    }
-    if (hasChecksum) {
-      requireBytes(4, "content checksum");
-      offset += 4;
-    }
-    if (contentBytes !== undefined && contentBytes > BigInt(frameBound)) {
-      throw new Error("zstd VFS image frame content exceeds its block bound");
-    }
-    // A compressed block may expand to at most 128 KiB, so frameBound is the
-    // only safe pre-decompression bound when the frame omits its content
-    // size. When zstd carries the exact size, use that stronger declaration:
-    // summing the per-block maximum can otherwise reject a valid frame whose
-    // declared output remains below the caller-owned lifecycle ceiling.
-    addBound(
-      contentBytes === undefined ? frameBound : Number(contentBytes),
-    );
-  }
-  if (frames === 0) {
-    throw new Error("zstd VFS image contains no data frame");
-  }
-}
-
-interface ParsedImageHeader {
-  image: Uint8Array;
-  view: DataView;
-  flags: number;
-  sabLen: number;
-}
-
-function parseImageHeader(
-  input: Uint8Array,
-  maxDecompressedBytes?: number,
-): ParsedImageHeader {
-  const image = maybeDecompressImage(input, maxDecompressedBytes);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
-    throw new Error("VFS image too small");
-  }
-
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  const magic = view.getUint32(0, true);
-  if (magic !== VFS_IMAGE_MAGIC) {
-    throw new Error(
-      `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
-    );
-  }
-  const version = view.getUint32(4, true);
-  if (version !== VFS_IMAGE_VERSION) {
-    throw new Error(
-      `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
-    );
-  }
-  const flags = view.getUint32(8, true);
-  const sabLen = view.getUint32(12, true);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
-    throw new Error("VFS image truncated");
-  }
-
-  return { image, view, flags, sabLen };
-}
-
-function sectionOffsetAfterArchives(
-  image: Uint8Array,
-  view: DataView,
-  flags: number,
-  sabLen: number,
-): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
-  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-  const lazyLen = view.getUint32(lazyOffset, true);
-  if (lazyLen > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
-    throw new Error(
-      `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
-    );
-  }
-  if (image.byteLength < lazyOffset + 4 + lazyLen) {
-    throw new Error("VFS image truncated (lazy metadata section)");
-  }
-  const archiveOffset = lazyOffset + 4 + lazyLen;
-  let metadataOffset = archiveOffset;
-
-  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-    if (image.byteLength < archiveOffset + 4) {
-      throw new Error("VFS image truncated (lazy archive section)");
-    }
-    const archiveLen = view.getUint32(archiveOffset, true);
-    if (archiveLen > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
-      throw new Error(
-        `VFS image lazy archive metadata exceeds ` +
-          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
-      );
-    }
-    if (image.byteLength < archiveOffset + 4 + archiveLen) {
-      throw new Error("VFS image truncated (lazy archive payload)");
-    }
-    metadataOffset = archiveOffset + 4 + archiveLen;
-  }
-
-  return { lazyLen, archiveOffset, metadataOffset };
-}
 
 /**
  * Locate the image's binary kernel-facing lazy-linkage (`KLZY`) section.
@@ -7681,13 +7321,16 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   open(path: string, flags: number, mode: number): number {
     if (
-      (flags & O_TRUNC) === 0 &&
-      !((flags & O_CREAT) !== 0 && (flags & O_EXCL) !== 0)
+      (flags & OPEN_FLAGS.O_TRUNC) === 0 &&
+      !(
+        (flags & OPEN_FLAGS.O_CREAT) !== 0 &&
+        (flags & OPEN_FLAGS.O_EXCL) !== 0
+      )
     ) {
       this.guardSynchronousLazyAccess(path);
     }
     const handle = this.fs.open(path, flags, mode);
-    if ((flags & O_TRUNC) !== 0) {
+    if ((flags & OPEN_FLAGS.O_TRUNC) !== 0) {
       // O_TRUNC
       this.invalidateLazyData(this.fs.fstat(handle));
     }
@@ -8496,6 +8139,3 @@ export function resolveMountSetIdCapability(
 // static import is bundled by Vite for browser pages and resolved by
 // Node for tests + build scripts (host/package.json + apps/browser-demos/
 // package.json both declare fzstd, so it's always installed).
-function decompressZstd(image: Uint8Array): Uint8Array {
-  return zstdDecompress(image);
-}

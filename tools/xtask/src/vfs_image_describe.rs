@@ -32,6 +32,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use runtime_core::sffs::{self, Sffs};
+use wasm_posix_shared::Errno;
 
 /// Offset of the container flags word. `sffs_span` validates magic and
 /// version and hands back the body span; the flags are read here because the
@@ -391,6 +392,214 @@ fn digest_file<S: sffs::BlockSource>(
     Ok(hex(&hasher.finalize()))
 }
 
+/// Load a REAL image into the kernel, export it, and prove the two decode the
+/// same.
+///
+/// # Why against a real image rather than a fixture
+///
+/// V4's round trip — "an image the kernel exports is one the kernel can load" —
+/// is tested in `rootfs.rs` against trees this repository builds in a test: a
+/// handful of files, one archive, no hard links worth the name, nothing at
+/// scale. That proves the mechanism and says nothing about a 16 MB rootfs with
+/// thousands of entries, deep directories, and deferred files the TypeScript
+/// writer produced rather than this one.
+///
+/// This is the check that closes that gap, and it is deliberately a COMMAND
+/// rather than a test: the images it wants are build outputs, absent from a
+/// fresh checkout and not reproducible in a unit test. A test that silently
+/// skipped when they were missing would be the dead-floor pattern with a green
+/// tick on it.
+///
+/// # What equivalence means here, and what it does not
+///
+/// The comparison is the same decoded description `diff` uses: paths, POSIX
+/// metadata, hard-link groups, deferred files normalised across whichever
+/// carrier describes them, the growth ceiling and the image metadata. **It is
+/// not byte equality, and must not be** — the exported image describes its
+/// deferred files in `SDEF` where the input used `KLZY`, so the bytes differ by
+/// construction. That is the point of the carrier-blind normalisation.
+///
+/// The container fields are reported rather than compared: an export chooses
+/// its own capacity and declares no `KLZY`, so a difference there is expected
+/// and interesting rather than a failure.
+/// Load a whole VFSI container into the kernel, the way a host does.
+///
+/// Shared by both loads in [`roundtrip`] so the re-entry cannot drift into
+/// asking an easier question than the first load asked. `what` names which load
+/// failed, because "the image will not load" and "the image this kernel just
+/// wrote will not load" are different bugs with the same errno.
+fn load_into_kernel(bytes: &[u8], what: &str) -> Result<usize, String> {
+    runtime_core::rootfs::load_image(bytes.len() as u64, |req, dst| match req {
+        runtime_core::rootfs::ByteReq::Image { offset } => {
+            let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+            if start >= bytes.len() {
+                return Ok(0);
+            }
+            let end = core::cmp::min(start.saturating_add(dst.len()), bytes.len());
+            let n = end - start;
+            dst[..n].copy_from_slice(&bytes[start..end]);
+            Ok(n)
+        }
+        // A load walks structure, never content. Anything else means the walk
+        // reached for bytes it should not need, and saying so is more useful
+        // than serving them.
+        //
+        // NOT MUTATION-TESTABLE, and recorded rather than left as a permanent
+        // red. A load requests only `Image`, so this arm is unreachable during
+        // one and a mutant that serves zeroes here changes nothing a test can
+        // observe. A trial for it survives every time; writing a test that
+        // happened to pass would be worse than saying so. It stays because it
+        // is the guard that would fire if the walk ever did reach for content.
+        _ => Err(Errno::ENOSYS),
+    })
+    .map_err(|e| format!("{what}: {e:?}"))
+}
+
+fn roundtrip(path: &Path, out: Option<&Path>) -> Result<(), String> {
+    // `load_container` already handles the `.vfs.zst` every production image
+    // but the rootfs ships as; reusing it rather than writing a second reader
+    // keeps one answer to "what is an image file".
+    let original = load_container(path)?;
+    println!("{}: {} bytes decoded", path.display(), original.len());
+    println!("  loading into the kernel");
+
+    // The kernel reads its own image through a positioned byte source; here
+    // that source is the file we just read.
+    let entries = load_into_kernel(&original, "load failed")
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    println!("  loaded {entries} entries");
+
+    let exported = drain_container(&original)?;
+    println!("  exported {} bytes", exported.len());
+
+    if let Some(out) = out {
+        std::fs::write(out, &exported).map_err(|e| format!("{}: {e}", out.display()))?;
+        println!("  wrote the exported image to {}", out.display());
+    }
+
+    // RE-ENTER THE EXPORT AT THE DOOR THE ORIGINAL CAME IN BY (H-13). Comparing
+    // descriptions proves the DECODER understands what the export writes; it
+    // says nothing about whether the KERNEL can load it back, and those came
+    // apart: every image with no deferred files was refused by `load_image` as a
+    // stale artifact while this verb reported EQUIVALENT across the whole corpus
+    // (gap 15). A round-trip check that never re-enters its own output is
+    // checking a transform, not a round trip.
+    println!("  loading the export back into the kernel");
+    let reentered = load_into_kernel(&exported, "the export cannot be loaded back")
+        .map_err(|e| {
+            format!("{}: {e} -- the kernel wrote an image it cannot read", path.display())
+        })?;
+    println!("  loaded the export back: {reentered} entries");
+    if reentered != entries {
+        return Err(format!(
+            "{}: the export loads back as {reentered} entries, not the {entries} \
+             that were loaded from the original",
+            path.display(),
+        ));
+    }
+
+    let before = describe_container(&original, "original")?;
+    let after = describe_container(&exported, "exported")?;
+
+    // Inode NUMBERS are not part of equivalence, and comparing them says
+    // "not equivalent" about every entry in every image. An export assigns its
+    // own numbering — that is exactly why a deferred file's identity cannot be
+    // carried by inode across a rewrite — so a comparison that includes them is
+    // measuring the renumbering rather than the tree.
+    //
+    // What inodes DO carry is hard-link grouping, and that is compared below as
+    // sets of paths rather than as numbers, which is the property that survives
+    // renumbering.
+    let strip_ino = |entries: &[Entry]| -> Result<serde_json::Value, String> {
+        let mut out = serde_json::to_value(entries).map_err(|e| e.to_string())?;
+        if let Some(list) = out.as_array_mut() {
+            for entry in list {
+                if let Some(map) = entry.as_object_mut() {
+                    map.remove("ino");
+                }
+            }
+        }
+        Ok(out)
+    };
+    let ja = strip_ino(&before.entries)?;
+    let jb = strip_ino(&after.entries)?;
+    let da = serde_json::to_value(&before.deferred).map_err(|e| e.to_string())?;
+    let db = serde_json::to_value(&after.deferred).map_err(|e| e.to_string())?;
+
+    // Hard-link groups as sets of paths: same files sharing an inode, whatever
+    // that inode is called on either side.
+    let groups = |g: &BTreeMap<u32, Vec<String>>| -> std::collections::BTreeSet<Vec<String>> {
+        g.values().cloned().collect()
+    };
+
+    println!(
+        "  {} entries / {} deferred in, {} entries / {} deferred out (carriers: {} -> {})",
+        before.entries.len(),
+        before.deferred.len(),
+        after.entries.len(),
+        after.deferred.len(),
+        before.deferred_carrier,
+        after.deferred_carrier,
+    );
+
+    if ja == jb && da == db && groups(&before.hardlink_groups) == groups(&after.hardlink_groups) {
+        println!("EQUIVALENT: the exported image decodes to the tree that was loaded");
+        return Ok(());
+    }
+    report_difference(&before, &after);
+    Err(format!(
+        "NOT EQUIVALENT: {} does not survive a load-and-export round trip",
+        path.display()
+    ))
+}
+
+/// Drain the whole exported container, the way a builder saves one.
+///
+/// `image` is the source the export reads CONTENT from. A file inherited from
+/// the loaded image keeps its bytes there — that is what `BaseSource::Image`
+/// means — so the export streams them out through the same positioned read the
+/// loader used. Refusing this source does not test anything stricter; it just
+/// fails at the first content byte, which is how this was first written.
+fn drain_container(image: &[u8]) -> Result<Vec<u8>, String> {
+    const CHUNK: usize = 1 << 20;
+    // Bounded for the reason H-11 records: an export that stops advancing would
+    // otherwise spin here growing a buffer instead of failing.
+    const SANE_LIMIT: usize = 2 * 1024 * 1024 * 1024;
+    let mut out: Vec<u8> = Vec::new();
+    let mut offset = 0i64;
+    loop {
+        let mut buf = vec![0u8; CHUNK];
+        let n = runtime_core::rootfs::export_container_read(offset, &mut buf, &mut |req, dst| {
+            match req {
+                runtime_core::rootfs::ByteReq::Image { offset } => {
+                    let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+                    if start >= image.len() {
+                        return Ok(0);
+                    }
+                    let end = core::cmp::min(start.saturating_add(dst.len()), image.len());
+                    let n = end - start;
+                    dst[..n].copy_from_slice(&image[start..end]);
+                    Ok(n)
+                }
+                // A host blob store or an archive fetch. Neither is available
+                // here, and an image that needs one cannot round-trip through
+                // this command — which is worth failing on rather than hiding.
+                _ => Err(Errno::ENOSYS),
+            }
+        })
+        .map_err(|e| format!("export failed at {offset}: {e:?}"))?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+        offset += n as i64;
+        if out.len() > SANE_LIMIT {
+            return Err("the export is not advancing; some chunk is being served again".into());
+        }
+    }
+    Ok(out)
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("describe") => {
@@ -417,7 +626,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 Err(format!("NOT EQUIVALENT: {a} and {b}"))
             }
         }
-        _ => Err("usage: xtask vfs-image <describe|diff> ...".to_string()),
+        Some("roundtrip") => {
+            let path = args
+                .get(1)
+                .ok_or("usage: xtask vfs-image roundtrip <image> [out]")?;
+            // An optional output path, because when the two are NOT equivalent
+            // the next question is always "how", and that needs the bytes.
+            roundtrip(Path::new(path), args.get(2).map(Path::new))
+        }
+        _ => Err("usage: xtask vfs-image <describe|diff|roundtrip> ...".to_string()),
     }
 }
 
@@ -609,6 +826,28 @@ mod tests {
             "a content change with an unchanged size must still be visible"
         );
     }
+    /// The refusal the round trip's second load exists to hear.
+    ///
+    /// Before H-13, `roundtrip` compared decoded descriptions and never fed its
+    /// own output back in, so gap 15 -- the kernel refusing images it had just
+    /// written -- was invisible while the corpus reported EQUIVALENT. This pins
+    /// the half of that check which can silently go wrong: a loader that
+    /// accepts an image describing its deferred files NOWHERE would make the
+    /// re-entry vacuous, and the verb would go back to proving a transform.
+    #[test]
+    fn an_image_describing_its_deferred_files_nowhere_is_refused() {
+        // `build` writes a small tree and never calls `declare_deferred_section`,
+        // which is exactly the shape the TypeScript writer produces and the
+        // shape the loader must refuse.
+        let image = wrap_vfsi(&build(0o644, b"hello"));
+
+        let err = load_into_kernel(&image, "refused")
+            .expect_err("an image that describes its deferred files nowhere must be refused");
+        assert!(
+            err.contains("EINVAL"),
+            "refused for the stale-artifact reason, got {err}",
+        );
+    }
 }
 
 #[cfg(test)]
@@ -712,4 +951,5 @@ mod corpus_tests {
         );
         eprintln!("{with_deferred} of {} images carry deferred entries", images.len());
     }
+
 }
