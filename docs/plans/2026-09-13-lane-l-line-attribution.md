@@ -2163,6 +2163,38 @@ figure is the two corpora growing and their pairing checks; the `host/test`
 figure is the corpus-driven refusals, the declared-skip checks, and the spec
 validator.
 
+## If you curate this branch, it is three movements
+
+Fifty commits, and they do not weigh the same. Read in order they fall into
+three groups, which is the natural seam for squashing them.
+
+**One — the corpora and the invariant.** Both shared rules checked in both
+hosts for accepts, refusals and skips; L5's four capacity sites asking the
+region instead of restating a length; the source guard that holds them. This
+is lane L's brief.
+
+**Two — L-D3.** A transcribed launch-path copy that kept every errno of the
+TypeScript it cites and dropped the range proof, so a legal wasm32 pointer
+past the end of memory reached `copy_nonoverlapping` and killed the process
+with SIGBUS. Sixteen sites converted, `KernelLent` added as the inbound mirror
+that was missing, seven transcribed constants replaced by the declarations
+they were copied from. **This is the strongest evidence the lane produced and
+it was not in the brief** — it came from following "one rule, both hosts" into
+the second host.
+
+**Three — the instruments, and this lane's own errors.** The ratchet hole, the
+perturb harness's revert, and a long sequence of self-corrections: a
+reproduction command that measured a fifth of what it claimed, a floor counted
+from the working tree, a stale marker that would have switched a guard off, a
+ratio computed against one component of its denominator.
+
+**That third group is roughly half the commits, and it compresses hardest.**
+It is honest and it is process evidence, not deliverable. The findings in one
+and two are what a reader needs; three is what it cost to be sure of them. If
+the curation budget is tight, three is where to spend it — but the two
+campaign-wide items inside it, the ratchet hole and the harness revert, belong
+wherever other lanes will see them.
+
 ## What this did not establish
 
 - **Whether the 1,711-line capacity system is right-sized.** It was attributed,
