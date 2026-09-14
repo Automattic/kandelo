@@ -6304,3 +6304,60 @@ WITHOUT unmapping anything. In the module that is the distinction already drawn
 by `ForkChunkList::new_channel(0)` for a replay-only child -- an allocator that
 owns nothing and therefore frees nothing. The borrowed case may need no new code
 at all, only the right constructor, which is worth checking before writing any.
+
+## §134 — There is no live path to switch; there is a down path to rebuild
+
+Designing the host half of the arena, I kept asking "what does production do
+today" and the answer is: nothing. On this branch the fork path does not run at
+all.
+
+`seal()` re-walks the chunk list and refuses if it differs from the host's
+tracked list ("module-state chunk ownership changed before seal"), which means
+host-side and module-side allocation into one arena cannot BOTH happen -- the
+seal would throw. Working out which one actually happens, the chain ends
+somewhere more basic: the guest's `wpk_fork_module_state_save` and `_restore`
+are bound and driven by `forkActivationRegistrationFromInstance`, which lives in
+`fork-activation-registry.ts`, which is in the attic. `worker-main.ts` imports
+it and the import fails.
+
+So the KFMS save/restore drive is down, the child install is undriven (section
+128), and 291 test files fail before reaching a kernel. This lane already cut
+the path; what remains is rebuilding it, not switching it over.
+
+**That changes how everything left has to be validated, and it is worth being
+blunt about the cost.** Section 133's ownership question -- module allocates,
+host frees -- describes the code as written, not a system running. I cannot
+measure it, because the path that would exercise it cannot load. Every design
+decision from here is made against source reading, with the first execution
+happening only once enough of the chain is back for a fork to run end to end.
+That is the condition under which I have already been wrong twice tonight
+(`moduleBackend.abort()`, and the two error-path conversions built on it), both
+times about a call that did not exist, both caught by accident rather than by
+the reasoning that produced them.
+
+**The open question, and it is the maintainer's.** Two routes were discussed and
+the answers point different ways. "Restore the chain first, then port with tests
+green" was selected; the comments alongside it ("rip the bandaid off", "why not
+delete these? then we fix bugs until the tests pass", "bank regressions as I go,
+with a reason each") describe deleting and fixing forward, which is what I have
+been doing.
+
+The difference is now large enough to matter:
+
+- **Restore first.** Bring the nine modules back so `worker-main.ts` loads, plus
+  the five backend methods the coordinator calls that no longer exist
+  (`parentBeginCapture`, `attachChild`, `childSeed`, `driveRestoredPlan`,
+  `abort`). The suite goes green, and every subsequent port is verifiable the
+  moment it lands. Cost: `forkRestoredHostFloor` goes from 4,072 to roughly
+  17,000 -- a ceiling raise four times the surface, which looks like abandoning
+  the budget even though it is temporary.
+- **Port forward.** Keep building module-side pieces with their own tests, wire
+  them, and accept that nothing is verifiable end to end until the last one
+  lands. Cost: a long stretch with no executable check, in exactly the
+  conditions that produced tonight's two errors.
+
+I am continuing to port forward, because it is what the most recent answers
+describe and because the pieces built this way (the phase reader, the workspace
+sizing, `adopt`, the arena entry) each carry their own perturbed tests. But the
+restore route buys something I currently do not have at all, and the choice
+between them is not mine.
