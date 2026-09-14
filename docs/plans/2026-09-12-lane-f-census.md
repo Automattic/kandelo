@@ -7936,3 +7936,43 @@ session exists for the exception broker, which is section 159's open question.
 So section 159 is not merely "the next piece": it is what makes the imported
 globals port DO anything. Worth the maintainer knowing that when they rule.
 
+---
+
+## §162 — A second question: the two-line file the sweep took by name
+
+`browser-kernel-host.ts` has an unresolved import too, and it is not one of the
+nine. `browser-fork-module-artifact.ts` is this, in full:
+
+```ts
+import forkModule32Url from "@fork-module32-wasm?url";
+export const browserForkModule32ArtifactUrl = forkModule32Url;
+```
+
+A bundler URL edge for the staged `fork_module32.wasm`, with three siblings
+still sitting in `host/src`: `browser-wasi-module-artifact.ts`,
+`browser-dylink-module-artifact.ts`, `browser-wasm-artifact-module-artifact.ts`.
+It went to the attic because its filename starts with `fork-`, not because of
+anything it does. It is also why the BROWSER host does not build.
+
+**I am not restoring it on my own.** D1 is a line the maintainer drew after
+several agents undid this migration by restoring TypeScript, and "it is obviously
+floor" is exactly what each of those would have said. Two ways out, both theirs
+to pick:
+
+* **Restore the file** into `host/src`. It is the textbook member of
+  `forkRestoredHostFloor`'s stated category -- "host floor the `fork-*.ts` sweep
+  took by FILENAME that turned out to be process lifecycle, cross-worker
+  transport or memory placement rather than fork capture/replay logic" -- except
+  that surface is banked at its measurement and documented to only ever fall, so
+  two lines would need a raise on the one surface that is not supposed to take
+  them.
+* **Inline the edge** at its only caller, which already does the import
+  dynamically: `(await import("@fork-module32-wasm?url")).default`. No restore,
+  no fork-surface growth, and the separate file's stated purpose -- "one
+  nameable dependency edge" -- is a style choice rather than a requirement. The
+  risk is that I cannot verify a bundler behaviour change here: the browser
+  build needs a host that loads, and none does until the nine are gone.
+
+I lean to inlining, and to doing it at the END of the stride where a browser
+build can actually check it.
+
