@@ -2966,6 +2966,31 @@ the capacity invariant's test was shown failing before it was shown passing.
   guard. So the risk the fixture's comment names is one the migration
   CREATED -- before it, regenerating was safe because an independent writer
   existed.
+
+  **Restore or port those two generators? Neither, and for opposite
+  reasons.** `gen-dylink-archive-fixture.mts` died in `b8f5d9047` as
+  collateral of a deliberate migration: `host/src/dylink.ts` (4,188) and
+  `dylink-fork-archive.ts` (2,152) went because "a decision in TypeScript is
+  one the native executor cannot share". Restoring the generator means
+  restoring that writer, which the Rust-First contract forbids regrowing;
+  porting it to Rust means driving the only surviving writer, which is the
+  self-portrait the fixture exists to avoid. It stays frozen -- but its
+  meaning has an expiry worth naming: it anchors KFLA as of 2026-08-31, and
+  if the format legitimately changes the test must either be updated
+  (destroying the reference) or become an anchor to a version nobody writes.
+
+  `gen-reference-recipes-fixture.mts` died in `b653ac7e7` because the FORMAT
+  is dead, not the generator: KFRR's codec was "reached only from their own
+  unit test and one fixture generator" -- that generator. Nothing in Rust or
+  TypeScript encodes KFRR today, and `reference_recipes.rs:26` says of its
+  own decoder, "Only `decode_reference_recipes` is callerless". So the
+  fixture samples a format nothing produces, for a function nothing calls.
+  Restoring its generator would resurrect half of what that commit
+  deliberately killed. **The coherent move is the opposite one**: `b653ac7e7`
+  did the TypeScript half of the cleanup, and the Rust half -- decoder,
+  fixture, and its tests -- is still in the tree. That is fork-codec's call,
+  and it is the mirror of a decision already taken rather than a new
+  proposal. The recipe TYPES stay either way; seven modules use them.
 - **L-D4 — the epoch half CLOSED, the import half OPEN. The native host read
   no guest `__abi_version`, and `fixtures/README.md` claimed it did.** The marker is
   compared for the KERNEL only; nothing reads a guest's. Shown by running:
