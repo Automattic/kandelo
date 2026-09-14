@@ -1790,6 +1790,20 @@ with it. The long 14-trial run that was left alone **completed**, 14 trials,
 0 survived, 0 invalid, under exactly the contention that was blamed. There
 were no spontaneous deaths at all.
 
+**And there is a measured reason the misdiagnosis was tempting, which is worth
+knowing before anyone runs this spec.** One trial takes twenty-one minutes.
+`L3: a channel status word drifts from the generated header` sets
+`STATUS_PENDING` to 7, which breaks the syscall channel, so every blocking
+test in the smoke suite waits out its own timeout rather than failing fast:
+`28 passed; 42 failed ... finished in 1270.59s`. The other thirteen trials
+average under a minute. So the host-native spec is roughly a thirty-minute
+command whose last two thirds are one trial, and sampling it anywhere in that
+window looks exactly like a hung run.
+
+That also settles the contaminated verdict: with 42 failures, trial 14 was
+killed on its own merits, and a hand-restore partway through could only have
+let some of the remaining tests pass.
+
 The instructive one is worse than a crash. This lane read `git status`, saw a
 mutation and no `cargo test` process, concluded the harness had died, and
 **restored the file by hand while the run was still finishing** — reverting a
