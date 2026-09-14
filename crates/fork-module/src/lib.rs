@@ -2880,6 +2880,13 @@ mod wasm {
         // The host reads the allocated root back with `fm_module_state_arena(0)`
         // rather than it being returned here, because this entry's return value
         // is already activation 0's module-buffer anchor.
+        // Whether the MODULE owns this arena. It decides who declares the
+        // activation set below: a host that supplies its own root also writes
+        // its own `Module` records, and the module writing a second set would
+        // not overwrite them -- the writer's root is still 0, so `reserve` would
+        // start a SEPARATE arena on the same channel, and the records would land
+        // somewhere nothing reads while the host's arena stayed empty.
+        let module_owns_arena = arena_root == 0;
         let arena_root = if arena_root == 0 {
             let st = state().as_mut().ok_or(Errno::EINVAL)?;
             let mem = unsafe { mem_mut() };
@@ -2932,10 +2939,14 @@ mod wasm {
         // `arena.appendModule({ activationId, templateId })` loop, which ran at
         // exactly this point and for the same reason.
         //
+        // ONLY when the module allocated the arena. A caller that passed its own
+        // root writes its own records into it, and this block cannot add to that
+        // arena anyway -- see `module_owns_arena` above.
+        //
         // A host that seeded no template id for an activation is a host bug, not
         // an activation without a module, so it is `EINVAL` rather than a record
         // with a zero id.
-        {
+        if module_owns_arena {
             let ids: Vec<u32> = {
                 let st = state().as_ref().ok_or(Errno::EINVAL)?;
                 st.activations.keys().copied().collect()

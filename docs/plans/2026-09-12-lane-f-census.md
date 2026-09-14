@@ -6819,6 +6819,14 @@ which changes the `fork-codec` signatures that currently take a whole-memory
 `&[u8]` and index it with absolute offsets. That is the part that makes this too
 large to do mid-stride and on a path I cannot execute.
 
+Measured, so the size is a number rather than an impression: **67 function
+signatures across 9 files** in `crates/fork-codec` take a whole-memory
+`&[u8]`/`&mut [u8]` (`dylink_archive`, `dylink_table_append`, `linked_frames`,
+`linked_frames_writer`, `module_state`, `module_state_records`,
+`module_state_writer`, `reference_feed`, `rewind_driver`), before counting their
+callers in `crates/fork-module`, `crates/host-native`, and the same idiom in
+`crates/kernel/src/wasm_api.rs`.
+
 The failure mode is the part I would not want to meet later: a silent `None`,
 surfaced as a bad-argument errno, from a read that was in bounds. In the child
 install that reads as "no such record" — the same answer section 128 traced to a
@@ -6866,3 +6874,30 @@ carefully, published a warning about other people's code — and the freshest
 instance of it was in a commit of mine from the same session, which I found only
 because I went looking for the pattern rather than for the bug. Writing the note
 was not the same as checking my own work against it.
+
+## §142 — The Module-record write had to be gated on who owns the arena
+
+`fm_parent_begin_capture` takes an `arena_root`, and since section 137 it
+allocates its own when passed `0`. Section 139's Module-record write did not
+account for the other case, and the bug is the quiet kind.
+
+When a caller supplies its own root — which `crates/host-native` does, passing
+`fm.empty_module_state_root` — the module never calls
+`ModuleStateWriter::begin`, so the writer's root stays `0`. The record write then
+called `reserve`, and `reserve` on a writer with no root does not fail: it
+allocates a chunk and makes it the root. The records would have gone into a
+SECOND arena on the same channel, which nothing reads, while the caller's arena
+stayed empty — and the caller's own activation set, written by its own loop,
+would have been the only one there. No error anywhere.
+
+Gated on a `module_owns_arena` flag taken before the root is resolved. A caller
+that brings its own arena declares its own activation set into it; the module
+declares one only into an arena it made.
+
+**Not covered by a test, and the reason is the same as the rest of this
+function.** Reaching `begin_capture_impl` at all needs a capture with a live
+guest, which nothing at this layer drives. The three seeds and the encoder around
+it are tested because they are reachable on their own; this branch is not. It is
+recorded here instead, which is the weaker thing, and it is worth noticing that
+the bug existed for one commit in a function whose every path is unreachable from
+the test suite.
