@@ -7584,18 +7584,19 @@ import ordinals to owner ids, elect a provider per identity group (the same
 provide), and write the `KFBT` record. It writes nothing when no activation
 imports a table, so an arena gains a record only when there is something in it.
 
-**One guard is NOT covered, and saying so is the point.** The identity table is
-keyed by `(space, activation, owner)`. Dropping `space` from that key leaves the
-suite green: the test publishes the same coordinate in both spaces and can only
-observe the errno, which is 0 either way, because nothing reads the groups back.
-The only observable consequence is the elected provider inside the binding
-record, and no host test decodes the arena's records yet -- there is no KFMS
-reader on the host side at all now that the 3,825-line one is in the attic.
+**One guard was NOT covered when this section was written, and section 160
+closes it.** The identity table is keyed by `(space, activation, owner)`.
+Dropping `space` from that key left the suite green: the test published the same
+coordinate in both spaces and could only observe the errno, which is 0 either
+way, because nothing read the groups back. The only observable consequence is
+the elected provider inside the binding record, and no host test decoded the
+arena's records -- there was no KFMS reader on the host side at all once the
+3,825-line one went to the attic.
 
-That is a real gap in this lane's test coverage, not a note about one guard:
-`write_imported_global_bindings` and `write_imported_table_bindings` are both
-tested only for what they REFUSE. What they WRITE is unverified. The reader
-belongs with the arena port, and this is the second thing waiting on it.
+That was a real gap in this lane's coverage, not a note about one guard:
+`write_imported_global_bindings` and `write_imported_table_bindings` were both
+tested only for what they REFUSE. What they WRITE is now checked; see section
+160.
 
 The other five guards were perturbed and each failed the test that names it:
 the unknown-space refusal (with valid KFIT bytes, so the refusal is
@@ -7859,4 +7860,42 @@ I lean to the entry, on the campaign's own terms: it is the module absorbing
 work rather than the host keeping it, and the sequence is not something a second
 host should have to reimplement. But it is a seventh raise of a surface the
 maintainer has already questioned, so it is theirs to rule on.
+
+---
+
+## §160 — Reading the arena back, in forty lines
+
+Section 154 recorded that both binding writers were tested only for what they
+refuse, because checking what they WRITE means walking the KFMS arena and the
+host has no reader for that format any more. That was the honest statement at
+the time and it was also a reason to stop too early: the reader the tests need
+is about forty lines, and it is now in `fork-module-capture-drive.test.ts`.
+
+Which is itself worth noticing. The attic's `fork-module-state.ts` is 3,825
+lines, and the part of it that IS the wire format -- chunk header, record TLV,
+walk the chain -- fits in forty. The rest was the live allocator, the ownership
+protocol, the per-kind sub-decoders and the record builders, all of which the
+module owns now. When a file that big looks unportable, that ratio is the thing
+to measure first.
+
+**What the tests now prove**, driving a real capture through the serviced
+channel:
+
+* a global imported by activation 0 and DECLARED by activation 9 binds to
+  `(9, 5)` with kind `ACTIVATION_GLOBAL` -- the election choosing the owner over
+  two importers of the same object, inside the module, from KFIG;
+* the same for the table space, through the `KFBT` record;
+* a group whose every member imports the object comes out `BASE_IMPORT` with a
+  zero source, which the host is not allowed to say;
+* and the identity table's `(space, activation, owner)` key is load-bearing:
+  removing `space` makes the table publication overwrite the global one and the
+  election finds no owner. That is the guard section 154 could not cover.
+
+**The one piece of scaffolding worth explaining.** A global binding needs a
+`MutableGlobal` snapshot in the arena, which a real guest writes during its save
+walk. The test binds the SAVE drive slot to a two-instruction wasm thunk that
+calls back into JavaScript, which reserves and commits that record through the
+module's own `__wpk_fork_module_state_record_reserve` -- the same export a real
+guest's save calls. The drive slot needs a real funcref, so the JavaScript
+cannot be bound directly; the thunk is the smallest bridge.
 

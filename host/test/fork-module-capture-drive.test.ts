@@ -4,6 +4,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
 
 /**
@@ -490,3 +494,287 @@ describe("imported-global bindings, assembled by the module at capture", () => {
     expect(f.errno(), "capture must refuse rather than bind blind").not.toBe(0);
   });
 });
+
+/**
+ * What the module WRITES, which until now nothing checked.
+ *
+ * Both binding writers were tested only for what they refuse. Their output was
+ * unverified, because reading it means walking the KFMS arena and the host has
+ * no reader for that format any more -- the 3,825-line one is in the attic and
+ * is not coming back. So this walks it HERE, in about forty lines, which is
+ * also the answer to how much of that file was the format and how much was the
+ * live allocator.
+ *
+ * The layout is the one `crates/fork-codec/src/module_state.rs` documents:
+ * chunk header (40 bytes at pointer width 4) then records, each a 24-byte TLV
+ * header and a payload.
+ */
+
+const RECORD_HEADER_SIZE = 24;
+const CHUNK_HEADER_SIZE_32 = 40;
+const RECORD_KIND_IMPORTED_GLOBAL_BINDINGS = 9;
+const RECORD_KIND_IMPORTED_TABLE_BINDINGS = 11;
+const RECORD_KIND_MUTABLE_GLOBAL = 3;
+const GLOBAL_TYPE_I32 = 1;
+const SPACE_GLOBAL = 0;
+const SPACE_TABLE = 1;
+const KIND_ACTIVATION_GLOBAL = 4;
+const KIND_ACTIVATION_TABLE = 1;
+const KIND_BASE_IMPORT = 5;
+
+interface ArenaRecord {
+  readonly kind: number;
+  readonly activation: number;
+  readonly owner: number;
+  readonly payload: DataView;
+}
+
+/** Every record in the arena, chunk by chunk, in write order. */
+function arenaRecords(memory: WebAssembly.Memory, root: number): ArenaRecord[] {
+  const view = new DataView(memory.buffer);
+  const out: ArenaRecord[] = [];
+  let chunk = root;
+  while (chunk !== 0) {
+    if (view.getUint32(chunk, true) !== 0x434d_464b) {
+      throw new Error(`chunk at ${chunk} is not KFMC`);
+    }
+    const used = view.getUint32(chunk + 8 + 4 * 4, true);
+    const next = view.getUint32(chunk + 8 + 2 * 4, true);
+    let at = chunk + CHUNK_HEADER_SIZE_32;
+    const end = chunk + used;
+    while (at < end) {
+      if (view.getUint32(at, true) !== 0x524d_464b) {
+        throw new Error(`record at ${at} is not KFMR`);
+      }
+      const total = view.getUint32(at + 8, true);
+      const payloadSize = view.getUint32(at + 12, true);
+      out.push({
+        kind: view.getUint16(at + 6, true),
+        activation: view.getUint32(at + 16, true),
+        owner: view.getUint32(at + 20, true),
+        payload: new DataView(
+          memory.buffer,
+          at + RECORD_HEADER_SIZE,
+          payloadSize,
+        ),
+      });
+      at += total;
+    }
+    chunk = next;
+  }
+  return out;
+}
+
+/** One `KFIG` section declaring a single imported global. */
+function kfigOne(ownerId: number, ordinal: number, typeCode: number): Uint8Array {
+  const moduleName = new TextEncoder().encode("env");
+  const importName = new TextEncoder().encode("g");
+  const recordSize = 24 + moduleName.length + importName.length;
+  const bytes = new Uint8Array(16 + recordSize);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4b, 0x46, 0x49, 0x47], 0); // "KFIG"
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 16, true);
+  view.setUint32(8, 1, true); // one record
+  view.setUint32(16, recordSize, true);
+  view.setUint32(20, ownerId, true);
+  bytes[24] = typeCode;
+  bytes[25] = 1; // mutable
+  view.setUint32(28, moduleName.length, true);
+  view.setUint32(32, importName.length, true);
+  view.setUint32(36, ordinal, true);
+  bytes.set(moduleName, 40);
+  bytes.set(importName, 40 + moduleName.length);
+  return bytes;
+}
+
+/** One `KFIT` section declaring a single imported table. */
+function kfitOne(ownerId: number, ordinal: number): Uint8Array {
+  const moduleName = new TextEncoder().encode("env");
+  const importName = new TextEncoder().encode("t");
+  const recordSize = 24 + moduleName.length + importName.length;
+  const bytes = new Uint8Array(16 + recordSize);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4b, 0x46, 0x49, 0x54], 0); // "KFIT"
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 16, true);
+  view.setUint32(8, 1, true);
+  view.setUint32(16, recordSize, true);
+  view.setUint32(20, ownerId, true);
+  bytes[24] = 6; // funcref, in the module-state type numbering
+  view.setUint32(28, moduleName.length, true);
+  view.setUint32(32, importName.length, true);
+  view.setUint32(36, ordinal, true);
+  bytes.set(moduleName, 40);
+  bytes.set(importName, 40 + moduleName.length);
+  return bytes;
+}
+
+/**
+ * A wasm function for the SAVE drive slot that calls back into JavaScript.
+ *
+ * The slot is driven as `(i32) -> ()` and must be a real wasm funcref, so the
+ * JavaScript that writes the snapshot cannot be bound directly. This is the
+ * smallest thing that bridges the two.
+ */
+function saveSlotThunk(body: (activation: number) => void): CallableFunction {
+  const directory = mkdtempSync(join(tmpdir(), "fork-save-slot-"));
+  try {
+    const watPath = join(directory, "save.wat");
+    const wasmPath = join(directory, "save.wasm");
+    writeFileSync(
+      watPath,
+      '(module (import "env" "save" (func $s (param i32)))' +
+        ' (func (export "save") (param i32) (local.get 0) (call $s)))',
+    );
+    execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
+    const instance = new WebAssembly.Instance(
+      new WebAssembly.Module(readFileSync(wasmPath)),
+      { env: { save: body } },
+    );
+    return instance.exports.save as CallableFunction;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+describe("the binding records the module assembles at capture", () => {
+  /**
+   * Stand in for the guest's module-state save: write the one `MutableGlobal`
+   * snapshot a global binding needs, through the module's own record-reserve
+   * export -- the same one a real guest's save walk calls.
+   */
+  function saveWrites(f: Fixture, activation: number, owner: number): void {
+    const reserve = f.x.__wpk_fork_module_state_record_reserve as (
+      kind: number,
+      activation: number,
+      owner: number,
+      size: number,
+    ) => number;
+    const commit = f.x.__wpk_fork_module_state_record_commit as (
+      payload: number,
+    ) => void;
+    const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
+    f.instance.driveTable.set(
+      base + DRIVE_SLOT_MODULE_STATE_SAVE,
+      saveSlotThunk(() => {
+        const payload = reserve(RECORD_KIND_MUTABLE_GLOBAL, activation, owner, 12);
+        if (payload === 0) throw new Error("snapshot reserve failed");
+        const view = new DataView(f.memory.buffer);
+        view.setUint8(payload, GLOBAL_TYPE_I32);
+        view.setUint8(payload + 1, 4); // value size
+        view.setUint16(payload + 2, 0, true);
+        view.setUint32(payload + 4, 0, true);
+        view.setUint32(payload + 8, 0x2a, true); // the captured value
+        commit(payload);
+      }) as never,
+    );
+  }
+
+  function seedSections(f: Fixture): void {
+    const seed = f.x.fm_set_activation_imports as (
+      space: number,
+      activation: number,
+      ptr: number,
+      len: number,
+    ) => void;
+    const kfig = kfigOne(1, 0, GLOBAL_TYPE_I32);
+    new Uint8Array(f.memory.buffer, 6144, kfig.length).set(kfig);
+    seed(SPACE_GLOBAL, 0, 6144, kfig.length);
+    expect(f.errno(), "KFIG seed").toBe(0);
+    const kfit = kfitOne(1, 1);
+    new Uint8Array(f.memory.buffer, 7168, kfit.length).set(kfit);
+    seed(SPACE_TABLE, 0, 7168, kfit.length);
+    expect(f.errno(), "KFIT seed").toBe(0);
+  }
+
+  function publish(f: Fixture): {
+    identity: (s: number, a: number, o: number, g: number) => void;
+    provenance: (
+      s: number,
+      a: number,
+      ord: number,
+      kind: number,
+      group: number,
+      bits: bigint,
+    ) => void;
+  } {
+    return {
+      identity: f.x.fm_set_identity_group as never,
+      provenance: f.x.fm_set_import_provenance as never,
+    };
+  }
+
+  it("elects the activation that OWNS a shared global, not one that imports it", () => {
+    // Activation 0 imports the global and, like every instrumented activation,
+    // exports a catalog entry for it. Activation 9 declares it. Identity alone
+    // cannot tell them apart -- both name the same object -- and the host is not
+    // allowed to say which provides it, so this is the module's answer.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7); // the consumer's own entry: an importer
+    identity(SPACE_GLOBAL, 9, 5, 7); // the owner
+    // The SAME coordinate in the table space, with a different group. If the
+    // identity table were keyed without its space, this would overwrite the
+    // line above and the election would find no owner at all.
+    identity(SPACE_TABLE, 9, 5, 99);
+    identity(SPACE_TABLE, 0, 1, 99);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 99, 0n);
+    saveWrites(f, 0, 1);
+
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture").toBe(0);
+
+    const records = arenaRecords(f.memory, f.arena(ARENA_ROOT));
+    const globals = records.find(
+      (r) => r.kind === RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+    );
+    expect(globals, "a KFBG record").toBeDefined();
+    const g = globals!.payload;
+    expect(g.getUint32(12, true), "one binding").toBe(1);
+    expect([g.getUint32(24, true), g.getUint32(28, true)]).toEqual([0, 1]);
+    expect(
+      [g.getUint32(32, true), g.getUint32(36, true)],
+      "elected source",
+    ).toEqual([9, 5]);
+    expect(g.getUint8(56), "kind").toBe(KIND_ACTIVATION_GLOBAL);
+
+    // The table half, through the same election over a separate space.
+    const tables = records.find(
+      (r) => r.kind === RECORD_KIND_IMPORTED_TABLE_BINDINGS,
+    );
+    expect(tables, "a KFBT record").toBeDefined();
+    const t = tables!.payload;
+    expect(t.getUint32(12, true), "one binding").toBe(1);
+    expect([t.getUint32(24, true), t.getUint32(28, true)]).toEqual([0, 1]);
+    expect([t.getUint32(32, true), t.getUint32(36, true)]).toEqual([9, 5]);
+    expect(t.getUint8(44), "kind").toBe(KIND_ACTIVATION_TABLE);
+  });
+
+  it("falls back to a base import when no activation provides the object", () => {
+    // Same fork with the owner's catalog entry removed: every member of the
+    // group imports the global, so nobody can hand it to a child and it comes
+    // from the child's own base imports instead. The host never says this.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    saveWrites(f, 0, 1);
+
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture").toBe(0);
+
+    const globals = arenaRecords(f.memory, f.arena(ARENA_ROOT)).find(
+      (r) => r.kind === RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+    );
+    const g = globals!.payload;
+    expect(g.getUint8(56), "kind").toBe(KIND_BASE_IMPORT);
+    expect([g.getUint32(32, true), g.getUint32(36, true)]).toEqual([0, 0]);
+  });
+});
+
