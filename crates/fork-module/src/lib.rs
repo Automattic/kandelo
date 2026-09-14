@@ -597,6 +597,126 @@ mod wasm {
         ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
     static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
 
+    // -- Per-activation imported-global declarations (KFIG) -----------------
+    //
+    // The guest's own `kandelo.wpk_fork.imported_globals` custom section, one
+    // per activation. The module needs it to build the imported-global BINDINGS
+    // a child reads: the section says which globals an activation imports and
+    // at what type, which is half of every binding.
+    //
+    // Seeded rather than read, and the limit is specific: a custom section lives
+    // in the `WebAssembly.Module`, and only the host can get it out
+    // (`WebAssembly.Module.customSections`). The module cannot reach its own
+    // guests' modules. Same shape and same reason as the GC codec seed above.
+    //
+    // Storage mirrors it too: a fixed BSS byte arena plus an index, so it
+    // survives the per-fork bump reset. Overflow is a truthful `E2BIG`; a
+    // re-seeded activation is `EINVAL`.
+    const ACT_KFIG_BYTES_CAP: usize = 65_536;
+    const ACT_KFIG_MAX_ACTS: usize = 64;
+
+    #[repr(C, align(8))]
+    struct ActKfigBytes(UnsafeCell<[u8; ACT_KFIG_BYTES_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActKfigBytes {}
+    static ACT_KFIG_BYTES: ActKfigBytes =
+        ActKfigBytes(UnsafeCell::new([0u8; ACT_KFIG_BYTES_CAP]));
+
+    /// Each live entry is `[activation_id, offset, byte_len]` into the arena.
+    #[repr(C, align(4))]
+    struct ActKfigIndex(UnsafeCell<[[u32; 3]; ACT_KFIG_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActKfigIndex {}
+    static ACT_KFIG_INDEX: ActKfigIndex =
+        ActKfigIndex(UnsafeCell::new([[0u32; 3]; ACT_KFIG_MAX_ACTS]));
+
+    static ACT_KFIG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
+    static ACT_KFIG_BYTES_USED: AtomicU32 = AtomicU32::new(0);
+
+    fn set_activation_imported_globals_impl(
+        activation_id: u32,
+        ptr: u64,
+        byte_len: u64,
+    ) -> Result<(), Errno> {
+        let byte_len = usize::try_from(byte_len).map_err(|_| Errno::EINVAL)?;
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // section runs past the end of memory
+        }
+        // SAFETY: `[start, end)` is inside guest linear memory (checked above);
+        // the base is non-null for any real section offset. An empty section
+        // uses a valid empty slice rather than a raw part at a null base.
+        let incoming: &[u8] = if byte_len == 0 {
+            &[]
+        } else {
+            unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, byte_len)
+            }
+        };
+        // DECODE IT NOW and discard the result. A malformed section is the
+        // host's bug and belongs at the seed, not at the capture that finally
+        // reads it -- by then the fork is mid-flight and the truthful failure
+        // has become a trap.
+        fork_codec::imported_globals::decode_imported_globals(incoming)?;
+
+        let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        let used = ACT_KFIG_BYTES_USED.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let index = unsafe { &mut *ACT_KFIG_INDEX.0.get() };
+        for entry in index.iter().take(act_count) {
+            if entry[0] == activation_id {
+                return Err(Errno::EINVAL); // re-seeded activation
+            }
+        }
+        if act_count >= ACT_KFIG_MAX_ACTS {
+            return Err(Errno::E2BIG);
+        }
+        let next = used.checked_add(byte_len).ok_or(Errno::E2BIG)?;
+        if next > ACT_KFIG_BYTES_CAP {
+            return Err(Errno::E2BIG);
+        }
+        // SAFETY: single-threaded per worker; the range is inside the arena.
+        let arena = unsafe { &mut *ACT_KFIG_BYTES.0.get() };
+        arena[used..next].copy_from_slice(incoming);
+        index[act_count] = [activation_id, used as u32, byte_len as u32];
+        ACT_KFIG_ACT_COUNT.store(act_count as u32 + 1, Ordering::Relaxed);
+        ACT_KFIG_BYTES_USED.store(next as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// One activation's seeded KFIG bytes, or `None` if the host seeded none.
+    fn activation_imported_globals(activation_id: u32) -> Option<&'static [u8]> {
+        let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let index = unsafe { &*ACT_KFIG_INDEX.0.get() };
+        let arena = unsafe { &*ACT_KFIG_BYTES.0.get() };
+        index
+            .iter()
+            .take(act_count)
+            .find(|entry| entry[0] == activation_id)
+            .map(|entry| {
+                let at = entry[1] as usize;
+                &arena[at..at + entry[2] as usize]
+            })
+    }
+
+    /// Seed one activation's imported-global (KFIG) custom section.
+    ///
+    /// `EINVAL` for an out-of-range pointer, a malformed section, or a re-seed;
+    /// `E2BIG` past the arena or activation cap. Check `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_imported_globals(
+        activation_id: u32,
+        ptr: usize,
+        byte_len: usize,
+    ) {
+        match set_activation_imported_globals_impl(activation_id, ptr as u64, byte_len as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     // -- Per-activation module template ids ---------------------------------
     //
     // The 32-byte template id identifying the Wasm module behind an activation.
