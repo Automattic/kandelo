@@ -7978,6 +7978,12 @@ to pick:
 I lean to inlining, and to doing it at the END of the stride where a browser
 build can actually check it.
 
+**RULED 2026-09-14: restore the file.** Done, with the reason recorded in the
+file itself. It is budget-neutral after all -- `forkRestoredHostFloor` globs
+`host/src/fork-*.ts`, and this one begins `browser-`, so the surface that is
+documented to only fall does not move. The worry in the paragraph above was
+mine and unfounded.
+
 ---
 
 ## §163 — Section 159 asked the wrong question, and the answer would have been dead code
@@ -8419,4 +8425,53 @@ install ("wire it and let the failures teach us"), which I read as covering the
 work but not as a blanket for entry growth on a surface they have questioned
 twice and whose target is 5. One entry against 468 deleted lines is the trade;
 the ruling is theirs.
+
+---
+
+## §172 — Where the lane stands, in one place
+
+This file is 172 sections long and the standing decisions are at the top; what
+was missing is the middle — what is left, and what each remaining piece is
+waiting on. A reader coming back to this lane should be able to start here.
+
+**The goal, unchanged:** `host/src/worker-main.ts` imports nothing from
+`attic/fork-typescript-do-not-use/`. Nine imports at the start of this stride,
+**eight now** — `fork-process-continuation` is gone, and nothing about its 1,471
+lines was rewritten (§158).
+
+| import | what it is waiting on |
+|---|---|
+| `fork-imported-globals` | the child planner — §171, one entry, awaiting a ruling |
+| `fork-module-state` | the child's `recordViews()`, which goes with the planner; plus two pure host-floor functions (a module-bytes hash, a custom-section read) |
+| `fork-activation-registry` | three table methods (`markTableMutation`, the two funcref patches) and the exception broker's replay lookup |
+| `fork-exception-provider` | §159 — the premise was wrong and the real blocker is the replay-side lookup; both floor exception imports are already non-functional |
+| `fork-gc-codec` | nothing of its own: its provider is only ever passed on, to the registry's registration and to the child's early-reference registration |
+| `fork-early-reference-provider` | the child install |
+| `fork-reference-segments` | the child install — the module already decodes the graph |
+| `fork-table-snapshot` | the registry's peer-table capture, which is genuinely unported module work |
+
+**Four decisions are with the maintainer**, and three of the eight move behind
+them: §159 (the exception subsystem), §162 (the two-line browser artifact
+module, and D1), §167 (the multi-activation dirty journal — in-lane after the
+correction, three trampoline slots and three entries), §171 (the child
+planner's one entry).
+
+**What can be proved today**, which is new this stride: a capture runs to a
+sealed arena over a serviced channel, its records are read back and checked
+field by field, and a SECOND module instance — a child worker's shape over the
+same memory — attaches that arena and gets an install plan (§170). Every
+child-side refusal is now testable, which it was not on the morning of this
+stride.
+
+**What the suite says:** 201 expected failures, nothing new, nothing unbanked, re-checked after the seal and attach changes. That number cannot move until the
+last of the eight goes: every kernel-booting test fails on the first unresolved
+import and never reaches anything this lane changed (§153).
+
+**Three defects this stride surfaced that the broken host was hiding**, all now
+fixed or reported: the anyref transit view was constructed with a table where
+the module's exports belong, fatal at every fork-instrumented worker's startup;
+the pthread path called a function that lives only in the attic; and the module
+sealed no reference transaction at all, so no child could ever have attached
+(§170). Expect more of these when the suite first runs — the lane's own
+breakage has been masking them.
 
