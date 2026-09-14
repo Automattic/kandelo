@@ -5777,3 +5777,44 @@ corrupts a forked child's state -- and this session has already produced five
 corrections that came from reading one more level down. This is the level to read
 next, and it is the first question of the next stride rather than the tail of
 this one.
+
+## §124 — Answered: the two writers are sequential, not rival
+
+Section 123 stopped at "either these are one arena linked somewhere I have not
+found, or they are two, and which it is decides the entire shape of the port".
+The answer was five lines away, at the child-seed construction:
+
+```rust
+// A replay-only child never writes module state: it DECODES the list it
+// inherited. The writer is present but its chunk list allocates nothing
+// (`channel_base == 0`), so a stray guest reserve here fails truthfully
+// instead of writing into an unowned region.
+module_state: ModuleStateWriter::new(module_state_format()?),
+module_state_chunks: ForkChunkList::new_channel(0),
+```
+
+So the writers are split by ROLE, not racing:
+
+  * capture side -- the guest writes records through the module's writer
+    (`record_reserve`/`record_commit`) and reads them back with `record_find`,
+    entirely within one process's lifetime;
+  * replay side -- nothing writes. The child DECODES the inherited list, and its
+    writer is deliberately inert, with `channel_base == 0` turning a stray guest
+    reserve into a truthful failure rather than a write into an unowned region.
+
+Two writers over one FORMAT, sequenced by fork phase. Not two arenas competing
+over one lifecycle, which is what section 123 feared.
+
+That settles the port's shape: **the host's `ForkModuleStateArena` is the
+removable one.** The module already owns writing on the capture side and
+decoding on the replay side; the host's arena exists for the host's own appends
+and views, which are the calls section 118 counted. Removing them does not
+disturb the guest's path, because the guest's path never went through them.
+
+The correction to make to my own method: section 123 said "this is the level to
+read next" and was right about the level and wrong to stop at it. The decisive
+fact was a comment at a construction site -- the same shape as section 108, where
+the attic file I was about to make redundant carried the argument against doing
+so, and section 109, where I had written an impossibility claim myself and later
+read it back as evidence. Three times now the answer has been a comment
+explaining a decision, and twice I stopped one file short of it.
