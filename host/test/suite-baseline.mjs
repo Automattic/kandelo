@@ -62,6 +62,23 @@ const regressions = [...failing].filter((f) => !expected.has(f)).sort();
 const fixed = [...expected].filter((f) => !failing.has(f)).sort();
 
 /**
+ * How many tests DECLINED TO RUN, which this ratchet otherwise reads as success.
+ *
+ * It tracks failing FILES, so a file whose tests all skip looks exactly like one
+ * that passes: neither emits a `FAIL` line. That is not a hypothetical. Three
+ * dlopen fork e2e files left the expected-failure list when a restored module
+ * let them LOAD, and were reported as the env stride's first real coverage --
+ * while every test in them skipped on a missing `local-binaries/kernel.wasm`.
+ * Eighteen tests, none of which ran, recorded as a win.
+ *
+ * A skip is usually an artifact gate, which is provisioning rather than a
+ * boundary, so this number going UP is a reason to build something rather than
+ * to celebrate.
+ */
+const skipped = /^\s*Tests\s+.*?(\d+) skipped/m.exec(output)?.[1];
+const skippedFiles = /^\s*Test Files\s+.*?(\d+) skipped/m.exec(output)?.[1];
+
+/**
  * Why the baseline is the size it is, grouped by cause.
  *
  * A count alone is not a diagnosis, and this one hid a big fact for a long
@@ -93,6 +110,13 @@ if (fixed.length > 0) {
       `host/test/expected-failures.json in the same commit that fixed them:`,
   );
   for (const f of fixed) console.error(`  ${f}`);
+}
+if (skipped !== undefined && Number(skipped) > 0) {
+  console.log(
+    `${skipped} test(s) across ${skippedFiles ?? "?"} file(s) SKIPPED. A skipped ` +
+      `file emits no FAIL line, so this ratchet cannot tell it from a passing ` +
+      `one -- check what gates them before reading any file as restored.`,
+  );
 }
 if (ranked.length > 0) {
   console.log("what the failures are made of (unresolved imports, top causes):");
