@@ -288,6 +288,7 @@ lands — those are marked.
 | **W** `web-libs` contracts | **4–8 d** | medium *(W1 done)* | Unchanged in total but redistributed: W2 is hours, and W3 — the kernel serving structured data instead of the UI parsing `/proc` — is most of the lane and is a kernel change. |
 | **R** binary resolution | **0–0 d** | CLOSED 2026-09-12 | Landed 2026-09-12 in four increments. One shared constant; the writer and both readers derive from it. |
 | **G** ABI binding drift | **0–0 d** | CLOSED 2026-09-12 | All 15 modules anchored, snapshot records all 15. 109 constants, 71 asserts, every batch perturbation-tested. |
+| **N** committed binaries | **3–6 d** | medium | Fifteen artifacts to classify, two already fossils. Small, but N4 must agree the orphan list with F, V and Y first or it classifies against a vanishing baseline. |
 | **D** dead Rust floors | **2–5 d** | medium | A checklist, not a surface. Size is known; the risk is deleting something with a caller nobody found. |
 
 **Serial total is not the useful number** — these run in parallel lanes. The
@@ -2425,6 +2426,17 @@ ceiling that exists so this file shrinks. The growth was a verbose comment, not
 logic; the rationale moved here and the file came out at **32717, one line
 below where it started**, which is what removing slicing logic should measure.
 **Banked 32718 -> 32717.**
+
+**BROWSER-VERIFIED 2026-09-14: 167 passed / 14 failed / 6 skipped / 7 did not
+run, 0 tier errors, 0 `process is not defined`.** Against the 163/18 taken
+before the seam change, that is +4 passed and -4 failed, on the same index
+state, the same serial worker count and a clean port. So
+`configureRootfsOverlay`'s offset reader is verified on the browser host and
+not only on Node — which the host-runtime contract requires of a change to a
+shared file.
+
+The 14 remaining failures are the same set this lane established are not its
+own, by reverting its changes and reproducing them.
 
 **Browser validation of the seam, and a near-miss worth recording.** The three
 `browser-cors-proxy` specs failed after the change with the tier error this
@@ -8298,6 +8310,106 @@ every case a census precisely because that grounding does not exist yet.
 
 **No work has been done on any of the six new lanes.** They are planned, not
 started.
+
+---
+
+# LANE N — committed binaries without producers
+
+**Status: characterized 2026-09-14, not started.** Gate:
+`committedBinariesWithoutProducer` **15 → 0**.
+
+## What this lane is
+
+The maintainer's standing policy: **nothing binary is committed unless it was
+hand-compiled; everything else is generated, because it has to change with the
+source.** Lane L applied that once, taking the repository from **58 committed
+binaries to 15**. This lane makes the policy enforceable rather than a thing
+someone remembers.
+
+**It is deliberately not lane F's**, even though lane F's deletions make it
+urgent: F would be deciding the fate of fixtures that guard the code it is
+removing, which is a conflict of interest baked into the assignment.
+
+## The 15, measured 2026-09-14 — and the characterization that proposed this
+## lane had them wrong twice
+
+- **13 under `crates/fork-codec/testdata/`**, not 14; lane L removed
+  `reference-recipes-wasm32.bin`. Twelve have `gen-<name>-fixture.mts`
+  generators. **`dylink-archive-wasm32.bin` has none** — its writer and
+  generator were deleted with the TypeScript `ld.so`.
+- **2 under `crates/runtime-core/src/testdata/`**, which the proposal missed
+  entirely: `klzy-v1.bin` and `rtfs-v3-lazy.bin`.
+
+**`rtfs-v3-lazy.bin` is a second fossil and nobody had noticed.** Its producer
+is `emitRootfsManifest` in `host/src/vfs/rootfs-manifest.ts`, and that file was
+**deleted by `1f2ed5d84`** ("Kernel: Boot the kernel's own image parse, and
+delete the host's tree walk"). The symbol now survives only in three test
+files. `klzy-v1.bin` is emitted by `MemoryFileSystem.saveImage`, which lanes V
+and Y are deleting.
+
+**So the clock is set by three lanes, not one.** The proposal said lane F; it
+is F, V and Y.
+
+## End state
+
+Every committed binary is either produced by something that still runs, or is
+a deliberately frozen artifact with the freeze argued in writing. No binary
+exists because nobody noticed it had outlived its producer.
+
+## The floor
+
+**A genuinely hand-compiled artifact may be committed** — that is the
+maintainer's stated exception. The lane's job is to make each one an explicit
+decision rather than an inheritance.
+
+Some fixtures are also worth freezing on purpose: a record of the wire format
+at ABI 44 has value precisely because nothing regenerates it. That is a
+legitimate end state, not a failure, provided the reason is committed beside
+it.
+
+## Increments
+
+- **N1 — declare all fifteen** in `docs/committed-binaries.json`: for each,
+  the producer path, or a freeze reason. This is what the gate reads; it does
+  not guess.
+- **N2 — classify each into one of three buckets.** *Rust round-trip*
+  (encoder against decoder, regenerable from Rust alone); *deliberately
+  frozen* (a wire-format record, reason committed); *delete* (guards code that
+  no longer exists).
+- **N3 — close `dylink-archive-wasm32.bin` and `rtfs-v3-lazy.bin`**, the two
+  current violations with no path.
+- **N4 — agree the orphan list with lanes F, V and Y** before classifying
+  anything against a TypeScript baseline that is disappearing underneath it.
+
+## Acceptance evidence
+
+`committedBinariesWithoutProducer` reaches **0**. The measure counts two
+failures: a committed binary nobody declared, and **a declared producer that no
+longer exists on disk** — the second being how both current fossils formed.
+
+Filename inference was tried and rejected: `rtfs-v3-lazy.bin` is produced by
+`gen-rtfs-v3-fixture.mts`, which shares only a prefix with it. A gate that
+guessed would have scored that fixture either way and taught nothing.
+
+Perturbation: delete a declared producer and confirm the gate fires; rename a
+binary and confirm it reads as undeclared.
+
+## Known hazards
+
+- **Regenerating a differential fixture from Rust turns a cross-language guard
+  into a tautology.** These fixtures have value because two implementations
+  agree; producing one from the same side being checked converts a real guard
+  into Rust checking Rust, while every test still passes. **This is the
+  specific way this lane can do damage while appearing to succeed.**
+- **The twelve `.mts` generators work today.** The clock is invisible until it
+  runs out, which is exactly how `dylink-archive` and `rtfs-v3-lazy` became
+  fossils. Their working state is not evidence of safety.
+- **A manifest is hand-maintained**, which is the pattern this campaign keeps
+  catching. It is accepted here because the gate enforces *completeness*
+  automatically — an undeclared binary fails — and only the producer claim
+  itself is asserted by a human.
+- **`klzy-v1.bin` will become the third fossil** when lanes V and Y delete
+  `memory-fs.ts`, unless N4 happens first.
 
 ---
 
