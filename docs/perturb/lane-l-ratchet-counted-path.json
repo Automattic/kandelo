@@ -4,8 +4,8 @@
   "trials": [
     {
       "name": "ratchet: a counted path is renamed and must not improve the score",
-      "scope": "  hostKernelPlumbingTypeScript: () =>",
-      "scope_end": "    ]),\n",
+      "scope": "  hostKernelPlumbingTypeScript: [",
+      "scope_end": "  ],\n",
       "find": "host/src/process-memory.ts",
       "replace": "host/src/process-memory-RENAMED.ts"
     }
