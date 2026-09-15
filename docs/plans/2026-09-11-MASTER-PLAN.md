@@ -2714,6 +2714,47 @@ equivalent, and be willing to conclude that an assertion describes the
 incumbent rather than the platform. Two of twenty were real gaps. A wholesale
 port would have written eighteen duplicates and four tests of a deleted fd
 table.
+### THE SECOND OF THE 26 — `sharedfs-positioned-io.test.ts`, 2026-09-15
+
+Nine assertions, and the split is the same shape as the first file but the
+dividing line is different: **fd/OFD behaviour versus the TypeScript
+implementation's own machinery**, not filesystem versus not-filesystem.
+
+| TS assertion | disposition |
+|---|---|
+| `readAt`/`writeAt` and pread/pwrite keep the shared offset stable | **`positioned_io_leaves_the_shared_offset_alone` (new)** |
+| append is explicit, independent of flags captured at open | `regular_writes_follow_dynamic_rust_ofd_append_state` |
+| applies the append limit and reports exact EOF | `append_short_result_uses_the_backing_owned_end`, `append_rejects_malformed_end_and_limit_outcomes` |
+| clears set-ID after a short positive scalar/positioned write | `setid_clears_only_on_real_modification…`, `write_and_truncate_clear_setid…` |
+| lowest descriptors across concurrent workers; interleaved append actors; O_TRUNC reservation; reentrant observer | **do not port** |
+
+**The one real gap was the defining property of positioned I/O**, and it was
+absent for an instructive reason: `sys_pread` and `sys_pwrite` never touch the
+OFD offset, so they are correct BY CONSTRUCTION. There is no guard in the code
+to notice the absence of a test for. **Nothing looks missing when nothing looks
+like a check.**
+
+It is not a cosmetic property. The offset is SHARED — two processes holding one
+open file description through `fork` or `dup` share it — so a positioned read
+that advanced it would move a file pointer in a process that never asked, and
+the symptom would appear in the OTHER process.
+
+**The four that do not port are the TypeScript filesystem's fd table and its
+`SharedArrayBuffer` concurrency**: descriptor reservation, a reentrant observer,
+two worker threads racing on an append. The kernel has its own fd table, tested
+in `syscalls.rs`, and its own locking. Porting these would port the incumbent's
+internals under the name of platform behaviour.
+
+### THE FIRST PERTURB SPEC FOR `syscalls.rs`, AND ITS UNUSUAL SHAPE
+
+`perturb/runtime-core-positioned-io.json`. Both trials **ADD an offset movement
+rather than removing a check**, because there is no check to remove. That is
+worth naming as a category: a correct-by-construction behaviour cannot be
+perturbed by deleting a guard, only by introducing the bug — and it is exactly
+the category most likely to have no test, because a reviewer scanning for
+untested guards finds nothing to scan.
+
+**2 trials, 0 survived.** Running total across every spec: **311 anchoring.**
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
