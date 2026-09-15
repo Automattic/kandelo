@@ -1141,6 +1141,13 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         uid,
         gid,
         ino,
+        // No address and no digest yet: this entry point does not accept
+        // either. The format carries both since v5 and the kernel verifies
+        // against the digest, so an image built through here is one the kernel
+        // CANNOT verify -- visibly, by carrying no digest, rather than by
+        // verifying against something invented here.
+        b"",
+        b"",
         // With an archive, the payload described the ARCHIVE and the file needs
         // none of its own. Without one, it describes the file.
         if archive_id == 0 { archive_payload } else { b"" },
