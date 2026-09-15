@@ -134,7 +134,6 @@
     "test/fork-host-import-runtime.test.ts",
     "test/fork-imported-globals.test.ts",
     "test/fork-instrument-coverage.test.ts",
-    "test/fork-module-decode-scan-restore.test.ts",
     "test/fork-module-decoded-structure.test.ts",
     "test/fork-module-drive-r1-trace.test.ts",
     "test/fork-module-drive-shim.test.ts",
