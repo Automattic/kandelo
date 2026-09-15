@@ -1583,6 +1583,44 @@ describe("the binding records the module assembles at capture", () => {
       "the attach is legal from the phase the seed left",
     ).toBe(0);
     expect(plan, "and it builds an install plan").toBeGreaterThan(0);
+
+    // The install plan must END in a REWIND BEGIN per activation, carrying that
+    // activation's continuation root. Without those steps the child's guest is
+    // never told to rewind: `wpk_fork_resume_start` finds no rewind in progress
+    // and runs `_start` LEXICALLY, so the program begins again from `main`
+    // instead of resuming after `fork()`. No trap, no errno -- the child just
+    // runs the whole program a second time. Census 185.
+    const DRIVE_OP_REWIND_BEGIN = 8;
+    const DRIVE_STEP_SIZE = 16;
+    const count = (child.fm_gc_plan_count as () => number)();
+    const steps = new DataView(f.memory.buffer);
+    const tail = [];
+    for (let i = count - 2; i < count; i += 1) {
+      const at = plan + i * DRIVE_STEP_SIZE;
+      tail.push({
+        op: steps.getUint32(at, true),
+        recipe: steps.getUint32(at + 8, true),
+        arg: steps.getUint32(at + 12, true),
+      });
+    }
+    // eslint-disable-next-line no-console
+    expect(
+      tail.map((step) => step.op),
+      "the last two steps are the two activations' rewind begins",
+    ).toEqual([DRIVE_OP_REWIND_BEGIN, DRIVE_OP_REWIND_BEGIN]);
+    // `pack_root` splits the root across (recipe, arg); on wasm32 it is all arg.
+    expect(
+      tail.map((step) => step.recipe),
+      "a wasm32 root fits the low word",
+    ).toEqual([0, 0]);
+    expect(
+      tail.map((step) => step.arg).includes(act0Root),
+      "activation 0 rewinds from the anchor the capture returned",
+    ).toBe(true);
+    expect(
+      new Set(tail.map((step) => step.arg)).size,
+      "and each activation rewinds from a root of its own",
+    ).toBe(2);
   });
 
   it("still refuses a child install from a phase that is not an install", () => {

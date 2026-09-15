@@ -9319,3 +9319,85 @@ argument): `forkTypeScript` 855 -> 867 (`installChild`), `workerMainTypeScript`
 5545 -> 5550 (that call's argument list), `forkPlatformTypeScript` 1720 -> 1767
 (`fork-merged-catalog.ts` plus the shared sink). All three are recorded as
 PROVISIONAL RAISES.
+
+---
+
+## §186 -- The child now REPLAYS, and the next defect is behind that
+
+Census 185 called two of D8's four failures "timeouts, a different defect
+class". They were not: run on its own, each of the three non-pthread cases
+failed the SAME way, and the 30s timeouts were contention inside a six-case
+file. One defect accounted for all four.
+
+**The child re-ran the program from the top.** A probe printing `getpid()` at
+the head of `main` said it plainly: `main-start pid=100`, `pre-fork pid=100`,
+then `main-start pid=101` -- the CHILD entering `main` again, where its `dlsym`
+then missed. Not a trap and not an errno. The child simply ran the whole program
+a second time, and a dlopen symbol lookup in that second run was the symptom.
+
+**Why.** The child worker chooses its entry on the module's phase: `idle` means
+`_start`, anything else means `wpk_fork_resume_start`. The phase WAS
+`child-replay` and it did take `wpk_fork_resume_start` -- but nothing had told
+the guest to rewind, so that export found no rewind in progress and ran `_start`
+lexically. `append_attach_steps` emits RESTORE and FINISH_RESTORE per activation
+and nothing else. The REWIND BEGIN lives in a different plan builder,
+`build_child_rewind_plan_impl`, reached only through `fm_child_reconstruct` --
+which `crates/host-native` calls and no JavaScript host ever has.
+
+**The fix is a plan, not an entry.** `attach_from_arena_impl` now appends the
+rewind-begin steps itself, from the roots `fm_child_seed` put in the replay
+drivers, AFTER the restore/finish tail (the ordering rule
+`append_rewind_begin_steps` already states: a guest rewind reads what the
+restore installed). A JS host therefore needs no third module entry and cannot
+order the two wrong. It is also the other half of why the seed must precede the
+attach: those roots do not exist until the seed runs.
+
+`host/test/fork-module-capture-drive.test.ts` now reads the install plan's last
+two steps out of guest memory and asserts they are `DRIVE_OP_REWIND_BEGIN`
+carrying each activation's own root. Removing the append fails that test AND
+takes D8 back to the re-run-main shape.
+
+**What D8 does now, and what it does not.** It does not pass. The child REPLAYS
+-- `main` is no longer re-entered -- and the failure moved to a new place:
+
+    cannot acquire the process archive writer while owning a reader
+      at acquireArchiveWriter (worker-main.ts:1408)
+      at acquireMainDlopenLock
+      at __wasm_dlopen_prepare
+      ...
+      at __wpk_fork_resume_8
+
+During the child's replay the guest re-enters `__wasm_dlopen_prepare`, and the
+writer acquire refuses because that worker holds an archive READER. Whether the
+replayed frame stack should contain a `dlopen` call at all, or whether the
+child's reader should have been released before the resume, is the next
+question. 4 of 6 fail; the file stays in `expected-failures.json`.
+
+**An unexplained result, recorded rather than banked.** Two consecutive runs of
+this file -- immediately after the rewind-begin fix, against build key
+`68ed2c5f` -- reported `5 passed | 1 skipped`. Every run since, against the SAME
+build key and with the test scratch cleared, reports `4 failed | 1 passed |
+1 skipped`. I could not reproduce the green result and do not know what differed,
+so nothing is banked on it. If it returns, the thing to capture is the state of
+`local-binaries/` and the per-run fixture build, not the module.
+
+**The skipped case, named rather than left as a number.** "child preserves
+side-module TLS for a real compiled C++ throw/catch" is gated on libc++ PIC
+archives (`libc++-pic.a`, `libc++abi-pic.a`), which the sysroot does not carry.
+They exist in this lane's own source-only cache, so the gate is provisioning
+rather than a boundary -- and pointing `KANDELO_LIBCXX_PREFIX` at them shows the
+case failing in the PARENT's `dlopen`, before any fork:
+
+    dlopen: dl_step: libcppthrow.so: invalid side-module TLS base
+
+That is a dynamic-linker TLS defect, not a fork-replay one, and it is not fixed
+here.
+
+**Two method notes that cost real time.** A `store` placed immediately before
+`wasm_intr::unreachable()` is not evidence -- LLVM may drop it, and it did,
+producing a probe that read all zeros while a counter on a returning path read
+11. And `python .replace(old, new, 1)` replaces the FIRST occurrence: a
+perturbation aimed at the new `append_rewind_begin_steps` call hit the
+pre-existing one in `build_child_rewind_plan_impl` instead, and the mutant
+"survived" a guard it had never touched. When a perturbation survives, check
+that it was applied at all -- the build key not changing is the cheap tell.

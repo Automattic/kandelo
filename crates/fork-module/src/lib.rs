@@ -1693,8 +1693,7 @@ mod wasm {
         if abort {
             drive_plan::append_abort_begin_steps(&mut steps, &roots);
         } else {
-            drive_plan::append_rewind_begin_steps(&mut steps, &roots);
-        }
+            }
         serialize_and_store_plan(&steps)
     }
 
@@ -5351,6 +5350,33 @@ mod wasm {
         let mut steps = build_reconstruction_steps()?;
         let activations = arena_module_activations(module_state_root)?;
         drive_plan::append_attach_steps(&mut steps, &activations);
+        // ...and then the REWIND BEGIN that puts each guest into replay.
+        //
+        // Without it the child's guest is never told to rewind: its
+        // `wpk_fork_resume_start` finds no rewind in progress and runs `_start`
+        // LEXICALLY, so the program begins again from `main` instead of
+        // resuming after `fork()`. That is not a trap and not an errno -- the
+        // child simply runs the whole program a second time, which is how it
+        // surfaced (a `dlsym` in a re-run `main` failing in the child, census
+        // 185). `crates/host-native` drives this through `fm_child_reconstruct`
+        // as a separate call; putting the steps in the install plan instead
+        // means a JS host needs no third entry and cannot order the two wrong.
+        //
+        // AFTER the restore/finish tail on purpose: a guest rewind reads the
+        // globals and tables those steps installed (`append_rewind_begin_steps`
+        // states the same rule).
+        //
+        // The roots come from the replay drivers `fm_child_seed` built, which is
+        // the other half of why the seed must precede the attach.
+        let roots: alloc::vec::Vec<(u32, u64)> = match state().as_ref() {
+            Some(st) => st
+                .activations
+                .iter()
+                .map(|(id, act)| (*id, act.child_rewind_root))
+                .collect(),
+            None => alloc::vec::Vec::new(),
+        };
+        drive_plan::append_rewind_begin_steps(&mut steps, &roots);
         serialize_and_store_plan(&steps)
     }
 
