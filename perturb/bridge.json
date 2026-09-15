@@ -1,259 +1,294 @@
 {
- "file": "images/vfs/lib/sffs-image-fs.ts",
- "verify": "cd host && npx vitest run test/sffs-image-fs.test.ts >/dev/null 2>&1",
- "trials": [
-  {
-   "name": "the memory view is cached instead of taken fresh",
-   "scope": "  private get mem(): Uint8Array {",
-   "scope_end": "\n  }\n",
-   "find": "    return new Uint8Array(this.exports.memory.buffer);",
-   "replace": "    this.cachedMem ??= new Uint8Array(this.exports.memory.buffer);\n    return this.cachedMem;"
-  },
-  {
-   "name": "a negative errno is not thrown",
-   "scope": "  private check(rc: number",
-   "scope_end": "\n  }\n",
-   "find": "    if (rc < 0) throw new SffsImageError(-rc, operation, path);",
-   "replace": ""
-  },
-  {
-   "name": "readdir ignores the length prefix",
-   "scope": "  readDirNames(path: string): string[] {",
-   "scope_end": "\n  }\n",
-   "find": "        const len = view.getUint32(at, true);",
-   "replace": "        const len = 4;"
-  },
-  {
-   "name": "clearSetid is never passed through",
-   "scope": "  chown(path: string",
-   "scope_end": "\n  }\n",
-   "find": "clearSetid ? 1 : 0",
-   "replace": "0"
-  },
-  {
-   "name": "read ignores an explicit position and always uses the cursor",
-   "scope": "  read(handle: number",
-   "scope_end": "\n  }\n",
-   "find": "    const at = position ?? open.offset;",
-   "replace": "    const at = open.offset;"
-  },
-  {
-   "name": "read never advances the cursor",
-   "scope": "  read(handle: number",
-   "scope_end": "\n  }\n",
-   "find": "      if (position === null) open.offset += n;",
-   "replace": ""
-  },
-  {
-   "name": "close accepts a handle it never issued",
-   "scope": "  close(handle: number): void {",
-   "scope_end": "\n  }\n",
-   "find": "    if (!this.openFiles.delete(handle)) {\n      throw new Error(`sffs-module: bad file handle ${handle}`);\n    }",
-   "replace": "    this.openFiles.delete(handle);"
-  },
-  {
-   "name": "readdir reports an empty directory forever",
-   "scope": "  readdir(handle: number)",
-   "scope_end": "\n  }\n",
-   "find": "    if (dir.index >= dir.names.length) return null;",
-   "replace": "    return null;"
-  },
-  {
-   "name": "open ignores O_TRUNC, splicing into the old file's bytes",
-   "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
-   "scope_end": "\n  }\n",
-   "find": "    if (!exists || truncate) this.writeFile(path, new Uint8Array(0), mode);",
-   "replace": "    if (!exists) this.writeFile(path, new Uint8Array(0), mode);"
-  },
-  {
-   "name": "open creates a missing file even without O_CREAT",
-   "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
-   "scope_end": "\n  }\n",
-   "find": "      if (!create) throw error; // ENOENT, before a handle is issued.",
-   "replace": "      void create;"
-  },
-  {
-   "name": "a write past the end drops the gap",
-   "scope": "  write(",
-   "scope_end": "\n  }\n",
-   "find": "    const end = Math.max(existing.byteLength, at + incoming.byteLength);",
-   "replace": "    const end = at + incoming.byteLength;"
-  },
-  {
-   "name": "a write ignores its position and always writes at the start",
-   "scope": "  write(",
-   "scope_end": "\n  }\n",
-   "find": "    next.set(incoming, at);",
-   "replace": "    next.set(incoming, 0);"
-  },
-  {
-   "name": "a positionless write does not advance the cursor",
-   "scope": "  write(",
-   "scope_end": "\n  }\n",
-   "find": "    if (position === null) open.offset = at + incoming.byteLength;",
-   "replace": "    if (position === null) open.offset = at;"
-  },
-  {
-   "name": "a write reports the whole buffer rather than what it took",
-   "scope": "  write(",
-   "scope_end": "\n  }\n",
-   "find": "    const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength));",
-   "replace": "    const incoming = buffer.subarray(0, buffer.byteLength);"
-  },
-  {
-   "name": "stat does not follow symlinks",
-   "scope": "  stat(path: string): SffsStat {",
-   "scope_end": "\n  }\n",
-   "find": "      if ((st.mode & 0o170000) !== 0o120000) return st;",
-   "replace": "      return st;"
-  },
-  {
-   "name": "a relative symlink is resolved against the root instead of its own directory",
-   "scope": "  stat(path: string): SffsStat {",
-   "scope_end": "\n  }\n",
-   "find": "      current = target.startsWith(\"/\")\n        ? target\n        : `${current.slice(0, current.lastIndexOf(\"/\") + 1)}${target}`;",
-   "replace": "      current = target.startsWith(\"/\") ? target : `/${target}`;"
-  },
-  {
-   "name": "a symlink cycle is followed forever",
-   "scope": "  stat(path: string): SffsStat {",
-   "scope_end": "\n  }\n",
-   "find": "    for (let hop = 0; hop < 40; hop += 1) {",
-   "replace": "    for (let hop = 0; hop < 4000000; hop += 1) {"
-  },
-  {
-   "name": "a load leaves the replay buffer holding what this bridge last sent",
-   "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
-   "scope_end": "\n  }\n",
-   "find": "      this.lastMetadata = this.getImageMetadata();",
-   "replace": "      // the replay buffer is not refreshed"
-  },
-  {
-   "name": "getImageMetadata answers from the replay buffer instead of the module",
-   "scope": "  getImageMetadata(): VfsImageMetadata | null {",
-   "scope_end": "\n  }\n",
-   "find": "    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );",
-   "replace": "    return (this.lastMetadata as VfsImageMetadata | null) ?? null;\n    // eslint-disable-next-line no-unreachable\n    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );"
-  },
-  {
-   "name": "an archive is registered member by member as it is validated",
-   "scope": "  registerLazyArchive(args: {",
-   "scope_end": "\n  }\n",
-   "find": "    const planned = planLazyArchiveEntries(\n      args.url,\n      args.entries,\n      args.mountPrefix,\n      args.symlinkTargets,\n    );",
-   "replace": "    const planned = args.entries.map((entry) => ({\n      entry,\n      archivePath: entry.fileName,\n      vfsPath: `${args.mountPrefix}/${entry.fileName}`,\n    }));"
-  },
-  {
-   "name": "every archive reuses the same id",
-   "scope": "  registerLazyArchive(args: {",
-   "scope_end": "\n  }\n",
-   "find": "    const archiveId = ++this.lastArchiveId;",
-   "replace": "    const archiveId = 1;"
-  },
-  {
-   "name": "a member's real size is not recorded",
-   "scope": "  registerLazyArchive(args: {",
-   "scope_end": "\n  }\n",
-   "find": "        size: entry.uncompressedSize,",
-   "replace": "        size: 0,"
-  },
-  {
-   "name": "getLazyEntry answers for an archive member too",
-   "scope": "  getLazyEntry(path: string)",
-   "scope_end": "\n  }\n",
-   "find": "    return st.deferred && st.archiveId === 0",
-   "replace": "    return st.deferred"
-  },
-  {
-   "name": "getLazyEntry claims a resident file is lazily backed",
-   "scope": "  getLazyEntry(path: string)",
-   "scope_end": "\n  }\n",
-   "find": "    return st.deferred && st.archiveId === 0\n      ? { size: st.size, deferred: true }\n      : null;",
-   "replace": "    return { size: st.size, deferred: true };"
-  },
-  {
-   "name": "the static metadata reader never loads the image it was handed",
-   "scope": "  static readImageMetadata(image: Uint8Array)",
-   "scope_end": "\n  }\n",
-   "find": "    fs.loadImage(image);",
-   "replace": "    void image;"
-  },
-  {
-   "name": "the static metadata reader answers from a fresh tree",
-   "scope": "  static readImageMetadata(image: Uint8Array)",
-   "scope_end": "\n  }\n",
-   "find": "    return fs.getImageMetadata();",
-   "replace": "    return null;"
-  },
-  {
-   "name": "the cohort a member declares is never passed to the module",
-   "scope": "  registerArchiveMember(args: {",
-   "scope_end": "\n  }\n",
-   "find": "    const cohortId = args.cohort?.id ?? \"\";",
-   "replace": "    const cohortId = \"\";"
-  },
-  {
-   "name": "the cohort's declared size is passed as zero",
-   "scope": "  registerArchiveMember(args: {",
-   "scope_end": "\n  }\n",
-   "find": "                  args.cohort?.expectedCount ?? 0,",
-   "replace": "                  0,"
-  },
-  {
-   "name": "a compressed image is handed to the module as-is",
-   "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
-   "scope_end": "\n  }\n",
-   "find": "    const image = maybeDecompressImage(\n      compressedOrPlain,\n      options.maxDecompressedBytes,\n    );",
-   "replace": "    const image = compressedOrPlain;"
-  },
-  {
-   "name": "a loaded image's declared capacity is forgotten by the bridge",
-   "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
-   "scope_end": "\n  }\n",
-   "find": "      this.requestedCapacityBytes = this.exportCapacityBytes();",
-   "replace": ""
-  },
-  {
-   "name": "\"is this deferred\" answers about the link, not its target",
-   "scope": "  isPathDeferred(path: string): boolean {",
-   "scope_end": "\n  }\n",
-   "find": "      return this.stat(path).deferred;",
-   "replace": "      return this.lstat(path).deferred;"
-  },
-  {
-   "name": "a lazy entry is looked up without following symlinks",
-   "scope": "  getLazyEntry(path: string)",
-   "scope_end": "\n  }\n",
-   "find": "      st = this.stat(path);",
-   "replace": "      st = this.lstat(path);"
-  },
-  {
-   "name": "a missing path is reported as an error rather than not deferred",
-   "scope": "  isPathDeferred(path: string): boolean {",
-   "scope_end": "\n  }\n",
-   "find": "      if ((error as { errno?: number }).errno === ERRNO.ENOENT) return false;",
-   "replace": ""
-  },
-  {
-   "name": "the owner is never applied to a created file",
-   "scope": "  createFileWithOwner(",
-   "scope_end": "\n  }\n",
-   "find": "    this.chown(path, uid, gid);",
-   "replace": "    this.chown(path, 0, 0);"
-  },
-  {
-   "name": "a created directory takes the default owner rather than the caller's",
-   "scope": "  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {",
-   "scope_end": "\n  }\n",
-   "find": "    this.mkdir(path, mode, uid, gid);",
-   "replace": "    this.mkdir(path, mode);"
-  },
-  {
-   "name": "a setid mode is dropped when the file is created",
-   "scope": "  createFileWithOwner(",
-   "scope_end": "\n  }\n",
-   "find": "    this.writeFile(path, content, mode);",
-   "replace": "    this.writeFile(path, content, mode & 0o777);"
-  }
- ],
- "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
+  "file": "images/vfs/lib/sffs-image-fs.ts",
+  "verify": "cd host && npx vitest run test/sffs-image-fs.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the memory view is cached instead of taken fresh",
+      "scope": "  private get mem(): Uint8Array {",
+      "scope_end": "\n  }\n",
+      "find": "    return new Uint8Array(this.exports.memory.buffer);",
+      "replace": "    this.cachedMem ??= new Uint8Array(this.exports.memory.buffer);\n    return this.cachedMem;"
+    },
+    {
+      "name": "a negative errno is not thrown",
+      "scope": "  private check(rc: number",
+      "scope_end": "\n  }\n",
+      "find": "    if (rc < 0) throw new SffsImageError(-rc, operation, path);",
+      "replace": ""
+    },
+    {
+      "name": "readdir ignores the length prefix",
+      "scope": "  readDirNames(path: string): string[] {",
+      "scope_end": "\n  }\n",
+      "find": "        const len = view.getUint32(at, true);",
+      "replace": "        const len = 4;"
+    },
+    {
+      "name": "clearSetid is never passed through",
+      "scope": "  chown(path: string",
+      "scope_end": "\n  }\n",
+      "find": "clearSetid ? 1 : 0",
+      "replace": "0"
+    },
+    {
+      "name": "read ignores an explicit position and always uses the cursor",
+      "scope": "  read(handle: number",
+      "scope_end": "\n  }\n",
+      "find": "    const at = position ?? open.offset;",
+      "replace": "    const at = open.offset;"
+    },
+    {
+      "name": "read never advances the cursor",
+      "scope": "  read(handle: number",
+      "scope_end": "\n  }\n",
+      "find": "      if (position === null) open.offset += n;",
+      "replace": ""
+    },
+    {
+      "name": "close accepts a handle it never issued",
+      "scope": "  close(handle: number): void {",
+      "scope_end": "\n  }\n",
+      "find": "    if (!this.openFiles.delete(handle)) {\n      throw new Error(`sffs-module: bad file handle ${handle}`);\n    }",
+      "replace": "    this.openFiles.delete(handle);"
+    },
+    {
+      "name": "readdir reports an empty directory forever",
+      "scope": "  readdir(handle: number)",
+      "scope_end": "\n  }\n",
+      "find": "    if (dir.index >= dir.names.length) return null;",
+      "replace": "    return null;"
+    },
+    {
+      "name": "open ignores O_TRUNC, splicing into the old file's bytes",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "    if (!exists || truncate) this.writeFile(path, new Uint8Array(0), mode);",
+      "replace": "    if (!exists) this.writeFile(path, new Uint8Array(0), mode);"
+    },
+    {
+      "name": "open creates a missing file even without O_CREAT",
+      "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
+      "scope_end": "\n  }\n",
+      "find": "      if (!create) throw error; // ENOENT, before a handle is issued.",
+      "replace": "      void create;"
+    },
+    {
+      "name": "a write past the end drops the gap",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    const end = Math.max(existing.byteLength, at + incoming.byteLength);",
+      "replace": "    const end = at + incoming.byteLength;"
+    },
+    {
+      "name": "a write ignores its position and always writes at the start",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    next.set(incoming, at);",
+      "replace": "    next.set(incoming, 0);"
+    },
+    {
+      "name": "a positionless write does not advance the cursor",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    if (position === null) open.offset = at + incoming.byteLength;",
+      "replace": "    if (position === null) open.offset = at;"
+    },
+    {
+      "name": "a write reports the whole buffer rather than what it took",
+      "scope": "  write(",
+      "scope_end": "\n  }\n",
+      "find": "    const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength));",
+      "replace": "    const incoming = buffer.subarray(0, buffer.byteLength);"
+    },
+    {
+      "name": "stat does not follow symlinks",
+      "scope": "  stat(path: string): SffsStat {",
+      "scope_end": "\n  }\n",
+      "find": "      if ((st.mode & 0o170000) !== 0o120000) return st;",
+      "replace": "      return st;"
+    },
+    {
+      "name": "a relative symlink is resolved against the root instead of its own directory",
+      "scope": "  stat(path: string): SffsStat {",
+      "scope_end": "\n  }\n",
+      "find": "      current = target.startsWith(\"/\")\n        ? target\n        : `${current.slice(0, current.lastIndexOf(\"/\") + 1)}${target}`;",
+      "replace": "      current = target.startsWith(\"/\") ? target : `/${target}`;"
+    },
+    {
+      "name": "a symlink cycle is followed forever",
+      "scope": "  stat(path: string): SffsStat {",
+      "scope_end": "\n  }\n",
+      "find": "    for (let hop = 0; hop < 40; hop += 1) {",
+      "replace": "    for (let hop = 0; hop < 4000000; hop += 1) {"
+    },
+    {
+      "name": "a load leaves the replay buffer holding what this bridge last sent",
+      "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
+      "scope_end": "\n  }\n",
+      "find": "      this.lastMetadata = this.getImageMetadata();",
+      "replace": "      // the replay buffer is not refreshed"
+    },
+    {
+      "name": "getImageMetadata answers from the replay buffer instead of the module",
+      "scope": "  getImageMetadata(): VfsImageMetadata | null {",
+      "scope_end": "\n  }\n",
+      "find": "    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );",
+      "replace": "    return (this.lastMetadata as VfsImageMetadata | null) ?? null;\n    // eslint-disable-next-line no-unreachable\n    const size = this.check(\n      this.exports.sm_image_metadata(0, 0),\n      \"getImageMetadata\",\n      \"\",\n    );"
+    },
+    {
+      "name": "an archive is registered member by member as it is validated",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    const planned = planLazyArchiveEntries(\n      args.url,\n      args.entries,\n      args.mountPrefix,\n      args.symlinkTargets,\n    );",
+      "replace": "    const planned = args.entries.map((entry) => ({\n      entry,\n      archivePath: entry.fileName,\n      vfsPath: `${args.mountPrefix}/${entry.fileName}`,\n    }));"
+    },
+    {
+      "name": "every archive reuses the same id",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    const archiveId = ++this.lastArchiveId;",
+      "replace": "    const archiveId = 1;"
+    },
+    {
+      "name": "a member's real size is not recorded",
+      "scope": "  registerLazyArchive(args: {",
+      "scope_end": "\n  }\n",
+      "find": "        size: entry.uncompressedSize,",
+      "replace": "        size: 0,"
+    },
+    {
+      "name": "getLazyEntry answers for an archive member too",
+      "scope": "  getLazyEntry(path: string)",
+      "scope_end": "\n  }\n",
+      "find": "    return st.deferred && st.archiveId === 0",
+      "replace": "    return st.deferred"
+    },
+    {
+      "name": "getLazyEntry claims a resident file is lazily backed",
+      "scope": "  getLazyEntry(path: string)",
+      "scope_end": "\n  }\n",
+      "find": "    return st.deferred && st.archiveId === 0\n      ? { size: st.size, deferred: true }\n      : null;",
+      "replace": "    return { size: st.size, deferred: true };"
+    },
+    {
+      "name": "the static metadata reader never loads the image it was handed",
+      "scope": "  static readImageMetadata(image: Uint8Array)",
+      "scope_end": "\n  }\n",
+      "find": "    fs.loadImage(image);",
+      "replace": "    void image;"
+    },
+    {
+      "name": "the static metadata reader answers from a fresh tree",
+      "scope": "  static readImageMetadata(image: Uint8Array)",
+      "scope_end": "\n  }\n",
+      "find": "    return fs.getImageMetadata();",
+      "replace": "    return null;"
+    },
+    {
+      "name": "the cohort a member declares is never passed to the module",
+      "scope": "  registerArchiveMember(args: {",
+      "scope_end": "\n  }\n",
+      "find": "    const cohortId = args.cohort?.id ?? \"\";",
+      "replace": "    const cohortId = \"\";"
+    },
+    {
+      "name": "the cohort's declared size is passed as zero",
+      "scope": "  registerArchiveMember(args: {",
+      "scope_end": "\n  }\n",
+      "find": "                  args.cohort?.expectedCount ?? 0,",
+      "replace": "                  0,"
+    },
+    {
+      "name": "a compressed image is handed to the module as-is",
+      "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
+      "scope_end": "\n  }\n",
+      "find": "    const image = maybeDecompressImage(\n      compressedOrPlain,\n      options.maxDecompressedBytes,\n    );",
+      "replace": "    const image = compressedOrPlain;"
+    },
+    {
+      "name": "a loaded image's declared capacity is forgotten by the bridge",
+      "scope": "  loadImage(\n    compressedOrPlain: Uint8Array,",
+      "scope_end": "\n  }\n",
+      "find": "      this.requestedCapacityBytes = this.exportCapacityBytes();",
+      "replace": ""
+    },
+    {
+      "name": "\"is this deferred\" answers about the link, not its target",
+      "scope": "  isPathDeferred(path: string): boolean {",
+      "scope_end": "\n  }\n",
+      "find": "      return this.stat(path).deferred;",
+      "replace": "      return this.lstat(path).deferred;"
+    },
+    {
+      "name": "a lazy entry is looked up without following symlinks",
+      "scope": "  getLazyEntry(path: string)",
+      "scope_end": "\n  }\n",
+      "find": "      st = this.stat(path);",
+      "replace": "      st = this.lstat(path);"
+    },
+    {
+      "name": "a missing path is reported as an error rather than not deferred",
+      "scope": "  isPathDeferred(path: string): boolean {",
+      "scope_end": "\n  }\n",
+      "find": "      if ((error as { errno?: number }).errno === ERRNO.ENOENT) return false;",
+      "replace": ""
+    },
+    {
+      "name": "the owner is never applied to a created file",
+      "scope": "  createFileWithOwner(",
+      "scope_end": "\n  }\n",
+      "find": "    this.chown(path, uid, gid);",
+      "replace": "    this.chown(path, 0, 0);"
+    },
+    {
+      "name": "a created directory takes the default owner rather than the caller's",
+      "scope": "  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {",
+      "scope_end": "\n  }\n",
+      "find": "    this.mkdir(path, mode, uid, gid);",
+      "replace": "    this.mkdir(path, mode);"
+    },
+    {
+      "name": "a setid mode is dropped when the file is created",
+      "scope": "  createFileWithOwner(",
+      "scope_end": "\n  }\n",
+      "find": "    this.writeFile(path, content, mode);",
+      "replace": "    this.writeFile(path, content, mode & 0o777);"
+    },
+    {
+      "name": "a malformed digest is accepted and padded instead of refused",
+      "scope": "function sha256HexToBytes(",
+      "scope_end": "\n}\n",
+      "find": "  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {",
+      "replace": "  if (false) {"
+    },
+    {
+      "name": "the digest is measured by length alone, so 64 non-hex characters pass",
+      "scope": "function sha256HexToBytes(",
+      "scope_end": "\n}\n",
+      "find": "  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {",
+      "replace": "  if (hex.length !== 64) {"
+    },
+    {
+      "name": "the decoded digest reads each byte from the wrong offset",
+      "scope": "function sha256HexToBytes(",
+      "scope_end": "\n}\n",
+      "find": "    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);",
+      "replace": "    out[i] = Number.parseInt(hex.slice(i, i + 2), 16);"
+    },
+    {
+      "name": "a standalone lazy file's digest never reaches the writer",
+      "scope": "  registerLazyFile(",
+      "scope_end": "\n  }\n",
+      "find": "      archiveDigest: digestHex === undefined ? undefined : sha256HexToBytes(digestHex),",
+      "replace": "      archiveDigest: undefined,"
+    },
+    {
+      "name": "a standalone lazy file's address never reaches the writer",
+      "scope": "  registerLazyFile(",
+      "scope_end": "\n  }\n",
+      "find": "      archiveUri: url,",
+      "replace": "      archiveUri: \"\","
+    }
+  ],
+  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
 }
