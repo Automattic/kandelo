@@ -60,11 +60,11 @@
    "replace": "        if false {\n            return Ok(0);\n        }"
   },
   {
-   "name": "running out of space leaves the image claiming a block it does not have",
-   "scope": "    fn grow(&mut self)",
+   "name": "a failed allocation hands back block zero, the superblock",
+   "scope": "    fn block_alloc(&mut self) -> Result<u32, Errno> {",
    "scope_end": "\n    }\n",
-   "find": "            if grow_by == 0 {\n                return Err(Errno::ENOSPC);",
-   "replace": "            if grow_by == 0 {\n                self.total_blocks = self.total_blocks.saturating_add(1);\n                return Err(Errno::ENOSPC);"
+   "find": "        self.block_alloc_no_grow().ok_or(Errno::ENOSPC)",
+   "replace": "        Ok(self.block_alloc_no_grow().unwrap_or(0))"
   }
  ]
 }

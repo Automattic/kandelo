@@ -2189,6 +2189,43 @@ mod tests {
         );
     }
 
+    /// Running out of BLOCKS, which is a different exhaustion from running out
+    /// of inodes and was not covered.
+    ///
+    /// The test below is named for a full filesystem and fills it with 4096
+    /// tiny files, which exhausts the INODE table first -- measured by handing
+    /// `block_alloc` a mutation that returns block zero on its out-of-space
+    /// path and watching every assertion still pass. The block allocator's
+    /// ENOSPC was reachable only through code no test ran.
+    ///
+    /// One file larger than the filesystem reaches it directly.
+    #[test]
+    fn exhausting_blocks_reports_enospc_and_leaves_a_mountable_image() {
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"small", 0o644, Content::Bytes(b"kept"))
+            .expect("a small file fits");
+
+        // Larger than the whole filesystem: this cannot be satisfied by any
+        // number of blocks the configuration allows.
+        let huge = alloc::vec![9u8; 256 * 1024];
+        assert_eq!(
+            w.create_file(root, b"huge", 0o644, Content::Bytes(&huge)).err(),
+            Some(Errno::ENOSPC),
+            "a file larger than the filesystem must be refused, not truncated",
+        );
+
+        // And the refusal leaves what was already written readable.
+        let image = w.finish().expect("finish after a refused write");
+        let content = NoContent;
+        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+            .expect("a refused write leaves a mountable image");
+        let small = fs.resolve(b"/small", true).expect("the earlier file survives");
+        let mut buf = [0u8; 8];
+        let n = fs.read_at(small, 0, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"kept", "a survivor's bytes are its own");
+    }
+
     #[test]
     fn a_full_filesystem_reports_enospc_rather_than_corrupting() {
         // Truthful failure: a writer that ran out of blocks must say so.
