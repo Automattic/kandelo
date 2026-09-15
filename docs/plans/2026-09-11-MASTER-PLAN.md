@@ -3629,6 +3629,24 @@ to put a digest; it names four layers now, one per place the chain can break.
 manifest has no field for an address. Three ways out, each costing something
 only the maintainer should spend — see B42.
 
+**The risk a digest introduces, checked rather than assumed.** A digest turns
+"the host served something else" from an invisible substitution into a hard
+`EIO`, so if the builder hashed different bytes than the host serves, every
+lazy binary would break — and B40 means nobody could watch it happen. Traced
+both producers to the file the host actually serves:
+
+* the rootfs manifest emitter hashes `resolveBinary(...)`, and in staging mode
+  `binariesDir` is the stage root the emitter filled with `copyFileSync`, which
+  is byte-for-byte;
+* `binaries/programs/wasm32/<x>.wasm` is a **symlink into the xtask cache** —
+  the same file `resolveVfsArtifact` resolves for the shell builder — so
+  hashing the resolved artifact and serving the published path read the same
+  bytes by construction, not by coincidence.
+
+Worth recording because it is the question a reviewer should ask about this
+change, and because "same bytes" here rests on a symlink rather than on a
+convention anyone wrote down.
+
 **Not run: the browser suite** (B40). The pinned `ld64.lld` cannot parse this
 Xcode's `libSystem.tbd`, which blocks six products. Everything here stands on
 Node evidence: runtime-core 2197, sffs-module 80, tools/mkrootfs 184, host VFS
