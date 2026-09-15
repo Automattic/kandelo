@@ -232,6 +232,27 @@
    "scope_end": "\n  }\n",
    "find": "      if ((error as { errno?: number }).errno === ERRNO.ENOENT) return false;",
    "replace": ""
+  },
+  {
+   "name": "chmod runs before chown, so a setuid bit is cleared and never restored",
+   "scope": "  createFileWithOwner(",
+   "scope_end": "\n  }\n",
+   "find": "    this.chown(path, uid, gid);\n    this.chmod(path, mode);",
+   "replace": "    this.chmod(path, mode);\n    this.chown(path, uid, gid);"
+  },
+  {
+   "name": "the owner is never applied to a created file",
+   "scope": "  createFileWithOwner(",
+   "scope_end": "\n  }\n",
+   "find": "    this.chown(path, uid, gid);",
+   "replace": "    this.chown(path, 0, 0);"
+  },
+  {
+   "name": "a created directory takes the default owner rather than the caller's",
+   "scope": "  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {",
+   "scope_end": "\n  }\n",
+   "find": "    this.mkdir(path, mode, uid, gid);",
+   "replace": "    this.mkdir(path, mode);"
   }
  ],
  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"
