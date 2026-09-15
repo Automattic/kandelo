@@ -774,6 +774,50 @@ describe("SffsImageFs", () => {
     expect(() => fs.lstat("/opt/partial/good")).toThrow();
   });
 
+  it("carries a standalone lazy file's digest through to the image", () => {
+    // The producer half of the kernel's verification, at the layer where the
+    // hex the builders speak becomes the value the format stores. Covered here
+    // and not only through `tools/mkrootfs`, because a bridge tested solely by
+    // its callers is a bridge whose own failures look like theirs.
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    const digest = "a1".repeat(32);
+    fs.registerLazyFile("/usr/bin/sudo", "https://example.invalid/sudo.wasm", 4242, 0o4755, digest);
+
+    const { files } = fs.lazyEntries();
+    const sudo = files.find((f) => f.path === "/usr/bin/sudo");
+    expect(sudo).toBeDefined();
+    expect(sudo?.uri).toBe("https://example.invalid/sudo.wasm");
+    expect(Array.from(sudo!.digest, (b) => b.toString(16).padStart(2, "0")).join(""))
+      .toBe(digest);
+
+    // Omitting it is a real state — every image built before the format
+    // carried a digest has none — and it reaches the record as "declared
+    // none" rather than as some invented value.
+    fs.registerLazyFile("/usr/bin/other", "https://example.invalid/other.wasm", 7, 0o755);
+    const other = fs.lazyEntries().files.find((f) => f.path === "/usr/bin/other");
+    expect(other?.digest.every((b) => b === 0)).toBe(true);
+  });
+
+  it("refuses a digest that is not a SHA-256, with the value in the message", () => {
+    // A malformed digest silently becoming "no digest" would turn a typo into
+    // an unverified setuid binary — and the whole value of the field is that
+    // its absence is deliberate. The message carries the string because the
+    // caller that wrote it is the one that has to find it.
+    const fs = SffsImageFs.create();
+    const register = (digest: string) =>
+      fs.registerLazyFile("/x", "https://example.invalid/x", 1, 0o755, digest);
+
+    expect(() => register("abc")).toThrow(/64 hex characters/);
+    expect(() => register("abc")).toThrow(/"abc"/);
+    // 64 characters, but not hex — a length check alone would let this past.
+    expect(() => register("z".repeat(64))).toThrow(/64 hex characters/);
+    // 63 and 65: the off-by-ones a `>=` would accept.
+    expect(() => register("a".repeat(63))).toThrow(/64 hex characters/);
+    expect(() => register("a".repeat(65))).toThrow(/64 hex characters/);
+  });
+
   it("tells a URL-backed single apart from an archive member", () => {
     // The two halves of "are these bytes here?". Recipes ask
     // `getLazyEntry(p) !== null` for a URL-backed SINGLE and `isPathDeferred(p)`
