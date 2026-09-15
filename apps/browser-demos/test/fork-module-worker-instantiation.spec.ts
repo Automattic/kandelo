@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,9 +16,16 @@ const browserKernelModulePath = resolve(
   __dirname,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const sffsImageFsModulePath = resolve(
   __dirname,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/sffs-image-fs.ts",
+);
+const sffsModuleWasmPath = resolve(
+  __dirname,
+  "../../../local-binaries/sffs_module32.wasm",
 );
 
 const FIXTURE = "programs/d_01_single_fork.wasm";
@@ -40,15 +48,16 @@ async function runSingleFork(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      sffsImageFsModuleUrl,
+      sffsModuleBytes,
       fixtureUrl,
       argv0,
     }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { SffsImageFs } = await import(
+        /* @vite-ignore */ sffsImageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -91,9 +100,7 @@ async function runSingleFork(
         // A minimal image keeps this a BrowserKernel integration proof without
         // coupling it to the much larger shell image; d_01 is a self-contained
         // single-fork fixture that needs no rootfs.
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(1024 * 1024),
-        );
+        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
         const vfsImage = await imageOwner.saveImage();
         await kernel.initFromImage({ vfsImage });
         initialized = true;
@@ -128,7 +135,8 @@ async function runSingleFork(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      sffsImageFsModuleUrl: asViteFsUrl(sffsImageFsModulePath),
+      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
       fixtureUrl: asViteFsUrl(resolveBinary(FIXTURE)),
       argv0: FIXTURE,
     },
