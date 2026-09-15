@@ -3,7 +3,10 @@ import { Worker } from "node:worker_threads";
 import { afterAll, describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
-import { ForkModuleContinuationBackend } from "../src/fork-module-backend";
+import {
+  FORK_ACTIVATION_DRIVE_SLOTS,
+  ForkModuleContinuationBackend,
+} from "../src/fork-module-backend";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -940,6 +943,26 @@ describe("the binding records the module assembles at capture", () => {
     }
     return out;
   }
+
+  it("strides the drive table by the geometry every reader must agree on", () => {
+    // Three readers compute a drive-table index: this module, the host's
+    // `bindActivationDrive`, and the INJECTED thunks inside the module's own
+    // wasm (`__wpk_fork_capture_encode` and friends compute
+    // `activation * stride + slot` inline). The third disagreed -- it strode by
+    // 13 while these two strode by 14 -- so for every activation above 0 it
+    // aimed a `call_indirect` at another slot entirely: activation 1's GC
+    // encode landed on 24, which is activation 1's `wpk_fork_unwind_begin`.
+    //
+    // This pins the number the other two use. It does NOT reach the injected
+    // thunks: wabt 1.0.37 cannot disassemble this module (it rejects the GC and
+    // exnref types), so there is no artifact test for them, and the real fix
+    // was to delete the injector's duplicate constant rather than pin it.
+    const f = fixture();
+    const base = f.x.fm_drive_table_base as (a: number) => number;
+    expect(base(0)).toBe(0);
+    expect(base(1), "one stride up").toBe(FORK_ACTIVATION_DRIVE_SLOTS);
+    expect(base(2), "and linear from there").toBe(2 * FORK_ACTIVATION_DRIVE_SLOTS);
+  });
 
   it("plans a child's imports from the arena, ordered by import ordinal", () => {
     // The whole point of the two entries: the host asks WHAT TO DO with each

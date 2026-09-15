@@ -28,3 +28,10 @@ anyhow = "1"
 # parameter produced "invalid local index: 1", and the artifact was written and
 # staged before any harness got a chance to notice.
 wasmparser = "0.247"
+# The drive-table geometry, so it cannot drift. It HAD drifted: this tool strode
+# the drive table by 13 while `fork_codec` and the host used 14, and for every
+# activation above 0 that aimed a `call_indirect` at the wrong guest export.
+# The old comment said the injector "cannot link fork-codec" and pinned the
+# duplicate with a test that does not exist. It can link it; this is the fix
+# that makes the class of bug impossible rather than merely detected.
+fork-codec = { path = "../fork-codec" }

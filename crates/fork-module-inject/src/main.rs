@@ -80,18 +80,25 @@ const DRIVE_PLAN_THUNK_IMPORT: &str = "__wpk_fork_drive_plan";
 /// arrangement `DRIVE_PLAN_THUNK_IMPORT` uses.
 const CAPTURE_WITNESS_THUNK_IMPORT: &str = "__wpk_fork_capture_witness";
 /// Drive-table slot the host binds the guest's `__wpk_fork_ref_gc_encode_slot`
-/// into. MUST equal `fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE`; the
-/// injector cannot link fork-codec, so the constant is duplicated and pinned by
-/// a test rather than left to drift.
-const DRIVE_SLOT_GC_ENCODE: i32 = 11;
-/// MUST equal `fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE`.
-const DRIVE_SLOT_GC_PROBE: i32 = 12;
+/// into.
+///
+/// READ FROM `fork_codec`, not copied. These three used to be duplicated here
+/// with a comment saying the injector could not link fork-codec and that a test
+/// pinned them instead. Both halves were wrong: it can link it, and no such
+/// test existed -- which is how `DRIVE_SLOTS_PER_ACTIVATION` came to say 13
+/// while `fork_codec` and the host said 14, aiming every activation above 0 at
+/// the wrong guest export.
+const DRIVE_SLOT_GC_ENCODE: i32 = fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE as i32;
+/// See [`DRIVE_SLOT_GC_ENCODE`].
+const DRIVE_SLOT_GC_PROBE: i32 = fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE as i32;
 /// The capture-side probe placeholder, rewritten like the witness one.
 const CAPTURE_PROBE_THUNK_IMPORT: &str = "__wpk_fork_capture_probe";
 /// Encode-from-transit placeholder: the cross-activation broker's second step.
 const CAPTURE_ENCODE_THUNK_IMPORT: &str = "__wpk_fork_capture_encode";
-/// MUST equal `fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION`.
-const DRIVE_SLOTS_PER_ACTIVATION: i32 = 13;
+/// The per-activation stride of the drive table. See [`DRIVE_SLOT_GC_ENCODE`]
+/// for why this is read rather than copied.
+const DRIVE_SLOTS_PER_ACTIVATION: i32 =
+    fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION as i32;
 /// The anyref transit slot a capture encode reads its value from.
 const CAPTURE_TRANSIT_SLOT: i32 = 0;
 /// The injected loop export the host calls to run a serialized plan.
@@ -2194,6 +2201,18 @@ mod tests {
         }
         add_stub_export(module, "fm_frame_commit", &[ValType::I32, ValType::I32], &[]);
         add_stub_export(module, "fm_resume_peek", &[ValType::I32], &[ValType::I32]);
+        // The sixth trampoline target, added to the pass by 88e039c041 and NOT
+        // to this fixture -- which left both trampoline tests failing on
+        // "module does not export fm_module_state_table_state_owned" from that
+        // commit until now. Nobody ran `cargo test -p fork-module-inject`; that
+        // is also how this crate's drive-table stride came to disagree with
+        // `fork_codec`'s by one.
+        add_stub_export(
+            module,
+            "fm_module_state_table_state_owned",
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
     }
 
     /// The `i32.const` an emitted trampoline body folds in, and the function it
@@ -2221,6 +2240,115 @@ mod tests {
             folded.expect("trampoline folds a constant"),
             called.expect("trampoline calls a shared export"),
         )
+    }
+
+    /// The `i32.const` operands and the arithmetic an emitted forwarding thunk
+    /// applies to them, in order.
+    ///
+    /// The OPERATORS are read as well as the constants, because the index math
+    /// is wrong in two independent ways: the wrong numbers, and the right
+    /// numbers combined wrongly. A test that read only the constants passed
+    /// with `i32.add` turned into `i32.sub`.
+    fn folded_arithmetic(module: &Module, func: FunctionId) -> (Vec<i32>, Vec<String>) {
+        let local = match &module.funcs.get(func).kind {
+            walrus::FunctionKind::Local(local) => local,
+            _ => panic!("the rewritten import is not a local function"),
+        };
+        let mut constants = Vec::new();
+        let mut binops = Vec::new();
+        for (instr, _) in &local.block(local.entry_block()).instrs {
+            match instr {
+                walrus::ir::Instr::Const(c) => {
+                    if let walrus::ir::Value::I32(v) = c.value {
+                        constants.push(v);
+                    }
+                }
+                // `BinaryOp` has no `PartialEq`, so compare its debug spelling.
+                walrus::ir::Instr::Binop(b) => binops.push(format!("{:?}", b.op)),
+                _ => {}
+            }
+        }
+        (constants, binops)
+    }
+
+    /// A fixture carrying the drive table and one `(activation, slot)`
+    /// placeholder import, which is all `inject_forwarding_drive_thunk` reads.
+    fn drive_thunk_fixture(import_name: &str) -> (Module, FunctionId) {
+        let mut module = fixture_module();
+        module.add_import_table(
+            IMPORT_MODULE,
+            DRIVE_TABLE_IMPORT,
+            false,
+            0,
+            None,
+            RefType::FUNCREF,
+        );
+        let ty = module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (func, _) = module.add_import_func(IMPORT_MODULE, import_name, ty);
+        (module, func)
+    }
+
+    #[test]
+    fn a_forwarding_thunk_strides_by_the_shared_drive_geometry() {
+        // THIS TEST EXISTS BECAUSE THE CONSTANT DRIFTED. The injector carried
+        // its own copy of the drive-table stride, 13, while `fork_codec` and
+        // the host used 14. Activation 0 is unaffected (0 * 13 == 0 * 14),
+        // which is why nothing ever failed; activation 1's GC encode aimed at
+        // slot 24, which is activation 1's `wpk_fork_unwind_begin`. A wrong
+        // guest function, called with the encode's arguments, inside a capture.
+        //
+        // The duplicate is gone -- the constants are now one symbol -- so this
+        // asserts the EMITTED ARITHMETIC against `fork_codec`'s own base
+        // helper, which is the thing a future edit could still get wrong.
+        // The real entry points, not the shared emitter: the slot each one
+        // passes is the other thing an edit can get wrong, and comparing the
+        // emitter's own argument against itself would prove nothing. Each
+        // expectation is `fork_codec`'s constant, read here independently.
+        type Inject = fn(&mut Module) -> Result<()>;
+        for (import_name, slot, inject) in [
+            (
+                CAPTURE_PROBE_THUNK_IMPORT,
+                fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE as i32,
+                inject_capture_probe_thunk as Inject,
+            ),
+            (
+                CAPTURE_ENCODE_THUNK_IMPORT,
+                fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE as i32,
+                inject_capture_encode_thunk as Inject,
+            ),
+        ] {
+            let (mut module, func) = drive_thunk_fixture(import_name);
+            inject(&mut module).expect("the thunk injects");
+            let (constants, binops) = folded_arithmetic(&module, func);
+            assert_eq!(
+                binops,
+                vec![String::from("I32Mul"), String::from("I32Add")],
+                "{import_name} must MULTIPLY by the stride and ADD its slot",
+            );
+            assert_eq!(
+                constants,
+                vec![
+                    fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION as i32,
+                    slot,
+                ],
+                "{import_name} must multiply by the shared stride and add its slot",
+            );
+            // Exhaustive over the activations a trampoline table can address,
+            // because an off-by-one shows up only above activation 0 -- which
+            // is exactly how the original defect hid.
+            for activation in 0..TRAMPOLINE_ACTIVATIONS {
+                let emitted = activation as i32 * constants[0] + constants[1];
+                let expected = fork_codec::drive_plan::drive_table_base(activation) as i32
+                    + slot;
+                assert_eq!(
+                    emitted, expected,
+                    "{import_name} at activation {activation} must land on \
+                     fork_codec's own slot",
+                );
+            }
+        }
     }
 
     #[test]

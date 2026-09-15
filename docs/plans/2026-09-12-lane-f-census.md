@@ -8793,3 +8793,73 @@ new file, which is the same structural report as §174: the 468 attic lines it
 replaces are measured by nothing, so a net deletion reads as growth. That is
 now the fourth time this surface has been reported past its target of 500.
 
+---
+
+## §178 -- The injector strode the drive table by 13
+
+Found while sizing two new drive slots for the peer-table port, which is the
+only reason anyone looked: `crates/fork-module-inject/src/main.rs` carried
+
+```rust
+/// MUST equal `fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION`.
+const DRIVE_SLOTS_PER_ACTIVATION: i32 = 13;
+```
+
+and `fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION` is **14**.
+
+**What that did.** The injector rewrites three guest imports into thunks that
+compute a drive-table index inline as `activation * stride + slot`. At
+activation 0 both strides agree, which is why nothing ever noticed. At
+activation 1 the injected GC-encode thunk aimed at slot `1 * 13 + 11 = 24`,
+while the host bound that guest's encode at `1 * 14 + 11 = 25`. Slot 24 is
+activation 1's `wpk_fork_unwind_begin`. So a dlopen'd activation capturing a
+typed GC value would `call_indirect` its own unwind-begin, with the encode's
+arguments.
+
+Not a trap and not a refusal -- a wrong function, called with the wrong meaning,
+inside a capture. This is the class of defect the lane's own rule about
+gate-on-exit-codes exists for: nothing failed.
+
+**Why the duplicate existed.** The comment says the injector "cannot link
+fork-codec, so the constant is duplicated and pinned by a test rather than left
+to drift". Both halves were false. It links fine -- one line in `Cargo.toml`,
+and `fork-codec` already builds for the host target because its own tests run
+there. And there was no such test: `crates/fork-module-inject` has no `tests/`
+directory at all, and `grep -rn DRIVE_SLOTS_PER_ACTIVATION` finds the two
+declarations and no assertion tying them.
+
+**The fix is deletion, not a test.** The three "MUST equal" constants now read
+`fork_codec::drive_plan::*` directly, so drift is not detected -- it is
+impossible. A test asserting two identical symbols are equal would be theatre.
+
+**And the emitted arithmetic IS tested**, which I first said it could not be.
+The reasoning was wrong in an instructive way: wabt 1.0.37 does refuse this
+module (`expected valid param type (got -0x12)` on its GC/exnref types), and I
+took that to mean no artifact test was available. But wabt is one parser of
+three here -- the injector itself links **walrus** and **wasmparser**, and
+walrus round-trips this very module on every build. The maintainer asked whether
+there was another parser; there were two, already in the crate's own
+dependencies.
+
+So `a_forwarding_thunk_strides_by_the_shared_drive_geometry` builds a fixture,
+runs the REAL entry points (`inject_capture_probe_thunk` /
+`inject_capture_encode_thunk`, not the shared emitter -- comparing the emitter's
+own argument against itself proves nothing), and reads the emitted instructions
+back: the constants against `fork_codec`'s, and the OPERATORS too, because
+`activation * 14 + 11` and `activation * 14 - 11` fold identical constants. Then
+it checks every activation the trampoline table can address against
+`fork_codec::drive_plan::drive_table_base`, since an off-by-one is invisible at
+activation 0 -- which is how the original defect hid.
+
+Perturbation found two vacuous versions of this test before it was right: one
+compared `DRIVE_SLOT_GC_ENCODE` against itself, and one read constants without
+operators.
+
+**The crate's tests were red, and that is the same story.** Running them for the
+first time showed two PRE-EXISTING failures: `add_frame_exports` never grew the
+sixth trampoline target, so both trampoline tests have failed on "module does
+not export fm_module_state_table_state_owned" since `88e039c041` (2026-09-13).
+Nobody ran `cargo test -p fork-module-inject`. That is also how a constant
+marked "MUST equal" came to disagree by one: this crate's tests are in the
+workspace run, so the drift was catchable the whole time and the suite was
+already red when it happened.

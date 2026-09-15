@@ -721,6 +721,7 @@ name = "fork-module-inject"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fork-codec",
  "walrus",
  "wasmparser 0.247.0",
 ]
