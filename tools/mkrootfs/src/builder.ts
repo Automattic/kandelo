@@ -18,10 +18,8 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   parseZipCentralDirectory,
   extractZipEntry,
@@ -106,23 +104,49 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
     throw new Error("maxSizeBytes must be greater than or equal to sabSize");
   }
 
+  // `maxSizeBytes` is a DECLARED capacity on the artifact, not an allocation.
+  // The SharedArrayBuffer it used to size is gone with the memfs backing
+  // store: the Rust writer builds a plan and streams it, so there is no live
+  // filesystem to reserve memory for. `sabSize` survives only as the floor
+  // this default is computed from, which is what every caller passing one
+  // meant by it.
   const maxSizeBytes = opts.maxSizeBytes ?? sabSize * 4;
-  const SharedArrayBufferCtor = SharedArrayBuffer as new (
-    byteLength: number,
-    options?: { maxByteLength?: number },
-  ) => SharedArrayBuffer;
-  const sab = new SharedArrayBufferCtor(sabSize, { maxByteLength: maxSizeBytes });
-  const mfs = MemoryFileSystem.create(sab, maxSizeBytes);
+  const mfs = SffsImageFs.create();
+  mfs.setImageCapacity(maxSizeBytes);
 
   buildDirectories(mfs, entries);
   buildFiles(mfs, entries, opts);
   buildSymlinks(mfs, entries);
   buildArchives(mfs, archiveBundles, plan);
 
-  return await mfs.saveImage({
+  // The declared capacity is a PROMISE about the artifact, so it is checked
+  // before the artifact exists rather than discovered while writing it.
+  //
+  // It used to be checked by accident: the memfs backing store was a
+  // SharedArrayBuffer of exactly this size, so an oversized tree ran out of
+  // buffer and a file came up short. That produced a real refusal from an
+  // allocation failure, which is a guarantee only for as long as the writer
+  // happens to allocate. The Rust writer plans and streams, so nothing runs
+  // out — and without this the same manifest would have produced a 2.4 MB
+  // image declaring a 1 MB capacity, silently.
+  //
+  // The check is against the EMITTED artifact, because that is what the
+  // promise is about: an image whose declared growth ceiling is below its own
+  // size declares a ceiling under its floor, and every consumer that sizes a
+  // buffer from that declaration is then wrong. The message carries both
+  // numbers, because a caller told only "too big" cannot tell whether to raise
+  // the cap or shrink the tree.
+  const image = await mfs.saveImage({
     metadata: opts.metadata,
     normalizeTimestampsMs: sourceDateEpochSeconds * 1000,
   });
+  if (image.byteLength > maxSizeBytes) {
+    throw new Error(
+      `image does not fit its declared capacity: ${image.byteLength} bytes emitted, `
+        + `${maxSizeBytes} declared (maxSizeBytes)`,
+    );
+  }
+  return image;
 }
 
 function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {
@@ -134,7 +158,7 @@ function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {
   });
 }
 
-function buildDirectories(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {
+function buildDirectories(mfs: SffsImageFs, entries: ManifestEntry[]): void {
   const dirs = entries.filter(
     (e): e is ManifestNode => e.kind === "node" && e.type === "d",
   );
@@ -146,7 +170,7 @@ function buildDirectories(mfs: MemoryFileSystem, entries: ManifestEntry[]): void
 }
 
 function buildFiles(
-  mfs: MemoryFileSystem,
+  mfs: SffsImageFs,
   entries: ManifestEntry[],
   opts: BuildOptions,
 ): void {
@@ -178,14 +202,14 @@ function buildFiles(
   }
 }
 
-function buildSymlinks(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {
+function buildSymlinks(mfs: SffsImageFs, entries: ManifestEntry[]): void {
   const symlinks = entries.filter(
     (e): e is ManifestNode => e.kind === "node" && e.type === "l",
   );
   for (const l of symlinks) {
     // The parser guarantees target is set for type=l; assert for typing.
     if (!l.target) throw new Error(`internal: symlink ${l.path} missing target`);
-    mfs.symlinkWithOwner(l.target, l.path, l.uid, l.gid);
+    mfs.symlink(l.target, l.path, l.uid, l.gid);
   }
 }
 
@@ -221,7 +245,7 @@ function loadArchives(
 }
 
 function buildArchives(
-  mfs: MemoryFileSystem,
+  mfs: SffsImageFs,
   archives: LoadedArchive[],
   plan: ArchiveExtractionPlan,
 ): void {
@@ -238,7 +262,7 @@ function buildArchives(
 }
 
 function extractArchive(
-  mfs: MemoryFileSystem,
+  mfs: SffsImageFs,
   zipBytes: Uint8Array,
   members: PlannedArchiveMember[],
   a: ManifestArchive,
@@ -280,12 +304,12 @@ function extractArchive(
     ensureParentDirs(mfs, member.vfsPath, a);
     const targetBytes = extractZipEntry(zipBytes, member.entry);
     const target = decodeSymlinkTarget(targetBytes, member);
-    mfs.symlinkWithOwner(target, member.vfsPath, a.uid, a.gid);
+    mfs.symlink(target, member.vfsPath, a.uid, a.gid);
   }
 }
 
 function createFileExactWithOwner(
-  mfs: MemoryFileSystem,
+  mfs: SffsImageFs,
   path: string,
   mode: number,
   uid: number,
@@ -336,7 +360,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 function ensureParentDirs(
-  mfs: MemoryFileSystem,
+  mfs: SffsImageFs,
   filePath: string,
   a: ManifestArchive,
 ): void {
@@ -354,7 +378,7 @@ function ensureParentDirs(
 }
 
 function requireDirectory(
-  mfs: MemoryFileSystem,
+  mfs: SffsImageFs,
   path: string,
   a: ManifestArchive,
 ): void {
@@ -366,7 +390,7 @@ function requireDirectory(
   }
 }
 
-function existsAt(mfs: MemoryFileSystem, path: string): boolean {
+function existsAt(mfs: SffsImageFs, path: string): boolean {
   try {
     mfs.lstat(path);
     return true;

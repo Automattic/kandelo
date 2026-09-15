@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
@@ -235,24 +236,31 @@ describe("image builder — pass 2: regular files", () => {
         manifest,
         repoRoot: tmp,
       });
-      const mfs = MemoryFileSystem.fromImage(image);
+      // Read back with the writer's OWN reader. `MemoryFileSystem` cannot
+      // read this image: it understands `KLZY` and the builder now emits
+      // `SDEF`, so it would report the deferred file as a zero-length ordinary
+      // one — an image full of deferred files loading as an image with none,
+      // which is exactly the failure the format change exists to prevent. A
+      // test that kept the old reader would have asserted that failure.
+      const reader = SffsImageFs.create();
+      reader.loadImage(image);
 
-      const st = mfs.stat("/usr/bin/find");
+      const st = reader.stat("/usr/bin/find");
       expect(st.mode & 0o777).toBe(0o755);
+      // The REAL length, from the deferred record, not the zero-length stub
+      // the body carries.
       expect(st.size).toBe(12345);
-      expect(mfs.exportLazyEntries()).toEqual([
-        {
-          ino: st.ino,
-          // Root, /usr, /usr/bin, then the untouched lazy stub allocate
-          // generations 1 through 4; a fresh lazy stub starts at sequence 1.
-          generation: 4,
-          dataSequence: 1,
-          path: "/usr/bin/find",
-          paths: ["/usr/bin/find"],
-          url: "binaries/programs/wasm32/findutils/find.wasm",
-          size: 12345,
-        },
-      ]);
+      expect(st.deferred).toBe(true);
+
+      const { files } = reader.lazyEntries();
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe("/usr/bin/find");
+      expect(files[0].size).toBe(12345);
+      expect(files[0].archiveId).toBe(0);
+      // Addressed by its own URI, because nothing else says where its bytes
+      // are. This is the field the kernel relays; the descriptor beside it
+      // stays opaque.
+      expect(files[0].uri).toBe("binaries/programs/wasm32/findutils/find.wasm");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -892,7 +900,7 @@ describe("image builder — round-trip", () => {
     }
   });
 
-  it("fails instead of serializing a partial source file at the size limit", async () => {
+  it("refuses an image that does not fit the capacity it declares", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-enospc-"));
     try {
       const source = new Uint8Array(2 * 1024 * 1024);
@@ -911,8 +919,22 @@ describe("image builder — round-trip", () => {
           sabSize: 1024 * 1024,
           maxSizeBytes: 1024 * 1024,
         }),
+        // The refusal changed SHAPE with the writer, and deliberately.
+        //
+        // It used to be a short write: the memfs backing store was a
+        // SharedArrayBuffer of exactly `maxSizeBytes`, so an oversized tree ran
+        // out of buffer mid-file and the builder caught the truncation. That
+        // was a real guarantee resting on an allocation accident — it held only
+        // while the writer happened to allocate, and the Rust writer plans and
+        // streams instead, so nothing runs out.
+        //
+        // Stated directly now: an image whose declared growth ceiling is below
+        // its own emitted size declares a ceiling under its floor, and every
+        // consumer sizing a buffer from that declaration is wrong. Same
+        // manifest, same refusal, a reason that does not depend on how the
+        // writer gets its memory.
       ).rejects.toThrow(
-        /short write.*\/large\.bin.*expected 2097152 bytes.*wrote [0-9]+/,
+        /does not fit its declared capacity: [0-9]+ bytes emitted, 1048576 declared/,
       );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
