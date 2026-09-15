@@ -10,11 +10,11 @@
    "replace": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;\nconst SYNTHESIZE_POSIX_MODE = process.platform === \"win32\";\nvoid SYNTHESIZE_POSIX_MODE;"
   },
   {
-   "name": "the guard short-circuits with ||, which runs the right side exactly when process is undefined",
+   "name": "the guard keeps !== and swaps && for ||, so the right side runs exactly when process is undefined",
    "scope": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
    "scope_end": "\n",
    "find": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
-   "replace": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;\nconst SYNTHESIZE_POSIX_MODE = typeof process === \"undefined\" || process.platform === \"win32\";\nvoid SYNTHESIZE_POSIX_MODE;"
+   "replace": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;\nconst SYNTHESIZE_POSIX_MODE = typeof process !== \"undefined\" || process.platform === \"win32\";\nvoid SYNTHESIZE_POSIX_MODE;"
   },
   {
    "name": "the guard tests the wrong global, leaving process unchecked",
