@@ -1623,6 +1623,58 @@ describe("the binding records the module assembles at capture", () => {
     ).toBe(2);
   });
 
+  it("drives one rewind begin per activation, or refuses the replay", () => {
+    // The parent's replay is the mirror of the child's install: both end by
+    // telling each guest to rewind, and both fail SILENTLY if they do not. An
+    // activation never told to rewind leaves `wpk_fork_resume_start` with no
+    // rewind in progress, so it runs `_start` lexically and the process runs
+    // its whole program again -- no trap, no errno, and the first visible sign
+    // is something far away (here, `dlopen` called a second time while the fork
+    // still held the loader's archive reader). Census 186.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedTemplateId(f, 1, 2048);
+    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sides = new DataView(f.memory.buffer);
+    sides.setUint32(sidesPtr, 1, true);
+    sides.setUint32(sidesPtr + 4, 0, true);
+    for (const activation of [0, 1]) {
+      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+      if (f.instance.driveTable.length < needed) {
+        f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+      }
+      for (const slot of [
+        DRIVE_SLOT_MODULE_STATE_SAVE,
+        DRIVE_SLOT_UNWIND_BEGIN,
+        DRIVE_SLOT_REWIND_BEGIN,
+      ]) {
+        f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
+      }
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_UNWIND_END,
+        voidSlotThunk(() => {}) as never,
+      );
+    }
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+      sidesPtr,
+      1,
+    );
+    expect(f.errno(), "a two-activation capture begins").toBe(0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "and seals").toBe(0);
+
+    (f.x.fm_parent_replay as (abort: number) => void)(0);
+    expect(f.errno(), "the parent replay is accepted").toBe(0);
+    expect(
+      (f.x.fm_gc_plan_count as () => number)(),
+      "one rewind begin for each of the two activations",
+    ).toBe(2);
+  });
+
   it("still refuses a child install from a phase that is not an install", () => {
     // Widening the attach to accept CHILD_REPLAY must not widen it to accept
     // everything: an attach while THIS worker is capturing its own fork would

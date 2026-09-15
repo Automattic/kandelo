@@ -185,6 +185,79 @@ resolve its attic imports. It is also `artifactGate`d on the musl sysroot and
 Until that is done, the peer-table port's joined path is UNPROVEN and every
 report of it must say so.
 
+### D9 — WHAT CLOSES THIS LANE (2026-09-15)
+
+Measured on this branch at `5fad7a5b5`+, full suite run and grouped by cause.
+Nothing here is a guess: every number has the command that produced it.
+
+**The one-line statement of done.** `host/test/expected-failures.json` is
+EMPTY or holds only entries argued as not-lane-F, the attic directory is
+deleted, and the four surfaces are at or under the ceilings the maintainer
+rules on. The baseline file says it itself: *"This list should only ever
+SHRINK. Every entry removed is a file the cluster port brought back."* It is
+the lane's debt made countable, and draining it is the close-out.
+
+**Where it stands: 184 failing files of 456.** 3,785 tests pass, 349 fail.
+Grouped by first cause (`suite-baseline.mjs` output, clustered on the error
+text; files appear under more than one cause):
+
+| # | Cause | Files | What it is |
+|---|---|---|---|
+| C1 | `missing valid process-owned fork unwind tag` | 52 | worker-main's NO-fork-instrumentation branch calls `processForkUnwindTag()`, which only an instrumented worker can answer. A program without fork instrumentation cannot start at all. |
+| C2 | `fm_set_activation_imports failed with errno 22` | 41 | the module refuses the KFIG/KFIT seed. Four EINVAL sources: bad space, out-of-range section, a section that fails to decode, or a RE-SEEDED activation. |
+| C3 | unresolved attic import | 28 | test files that import a set-aside module directly. These test deleted implementations; each is a port-or-delete decision, not a bug. |
+| C4 | `borrowed vfork workspace consumed 0 prefix bytes` | 6 | the vfork/borrowed-child prefix reservation. |
+| C5 | everything else | remainder | to be grouped once C1-C4 are down; the count is currently dominated by them. |
+
+Reproduce the grouping:
+
+    node host/test/suite-baseline.mjs > /tmp/suite.txt 2>&1
+    grep -oE "fork-module: fm_[a-z_]+ failed with errno [0-9]+|Kernel worker failed: [^\"]{0,60}" \
+      /tmp/suite.txt | sort | uniq -c | sort -rn | head
+
+**PRIORITY ORDER, and why this order.** C1 first because it is the widest and
+the cheapest: a whole class of programs that do not fork cannot run, which is
+not a fork feature at all — it is the lane having made the fork path mandatory
+for everyone. C2 next, same shape (one seed refusing, many programs). C4 is
+narrow and specific. C3 is last of the four because each file is a judgement
+call and none of them gate a user-visible capability.
+
+Then, and only then, the rest:
+
+1. **C1** — 52 files.
+2. **C2** — 41 files.
+3. **C4** — 6 files.
+4. **C3** — 28 files: port or delete, one argument each.
+5. **C5** — regroup and drain.
+6. **D7** — nothing drives `__wpk_fork_ref_exn_clear`/`_abort`. A drive slot,
+   not a host call. Still open.
+7. **Delete `attic/fork-typescript-do-not-use/`** — 22 files, 14,259 code
+   lines. It can go the moment nothing imports it, which is the end of C3.
+8. **Surfaces to targets.** `forkPlatformTypeScript` 1767 vs target 500;
+   `workerMainTypeScript` 5550 vs 2400; `forkModuleHostEntries` 59 vs 5;
+   `forkTypeScript` 867 (target == ceiling, a floor to hold). The three
+   PROVISIONAL raises in D6 need the maintainer's ruling either way.
+9. **Browser parity.** The host-runtime contract says Node and browser are
+   peers and a change is incomplete until both behave the same. Everything in
+   this lane has been validated on Node only. `./run.sh browser` plus the
+   fork-relevant Playwright specs is a REQUIRED close-out step, not an extra.
+10. **Curate.** The lane's commits become the narrative the campaign merges.
+
+**What is explicitly NOT lane F's, recorded so it is not re-litigated.**
+
+- `dl_step: invalid side-module TLS base` — the C++ dlopen case in
+  `fork-dlopen-replay-e2e`, reachable only with libc++ PIC archives supplied.
+  It fails in the PARENT's `dlopen`, before any fork. A dynamic-linker TLS
+  defect (§186).
+- The `artifact lacks a kandelo.abi.contract stamp` / `__abi_version` warnings
+  throughout the suite: stale program artifacts wanting a rebuild through the
+  normal package path.
+
+**How the lane merges.** D4 stands: merging is the maintainer's. When it is
+time, merge THIS branch into the campaign branch, and check first that no other
+lane agent is working in the same files — `worker-main.ts` and
+`crates/fork-module/src/lib.rs` are the ones several lanes touch.
+
 ### D6 — Ledger: provisional ceiling raises awaiting a ruling
 
 All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
@@ -9357,29 +9430,11 @@ two steps out of guest memory and asserts they are `DRIVE_OP_REWIND_BEGIN`
 carrying each activation's own root. Removing the append fails that test AND
 takes D8 back to the re-run-main shape.
 
-**What D8 does now, and what it does not.** It does not pass. The child REPLAYS
--- `main` is no longer re-entered -- and the failure moved to a new place:
+**What D8 does now.** 5 passed, 1 skipped, 0 failed, reproducibly. The file
+comes out of `expected-failures.json` (185 -> 184).
 
-    cannot acquire the process archive writer while owning a reader
-      at acquireArchiveWriter (worker-main.ts:1408)
-      at acquireMainDlopenLock
-      at __wasm_dlopen_prepare
-      ...
-      at __wpk_fork_resume_8
-
-During the child's replay the guest re-enters `__wasm_dlopen_prepare`, and the
-writer acquire refuses because that worker holds an archive READER. Whether the
-replayed frame stack should contain a `dlopen` call at all, or whether the
-child's reader should have been released before the resume, is the next
-question. 4 of 6 fail; the file stays in `expected-failures.json`.
-
-**An unexplained result, recorded rather than banked.** Two consecutive runs of
-this file -- immediately after the rewind-begin fix, against build key
-`68ed2c5f` -- reported `5 passed | 1 skipped`. Every run since, against the SAME
-build key and with the test scratch cleared, reports `4 failed | 1 passed |
-1 skipped`. I could not reproduce the green result and do not know what differed,
-so nothing is banked on it. If it returns, the thing to capture is the state of
-`local-binaries/` and the per-run fixture build, not the module.
+That is NOT what the first version of this section said. The correction, and
+the reason it took hours, is §187.
 
 **The skipped case, named rather than left as a number.** "child preserves
 side-module TLS for a real compiled C++ throw/catch" is gated on libc++ PIC
@@ -9393,11 +9448,75 @@ case failing in the PARENT's `dlopen`, before any fork:
 That is a dynamic-linker TLS defect, not a fork-replay one, and it is not fixed
 here.
 
-**Two method notes that cost real time.** A `store` placed immediately before
+**One method note.** A `store` placed immediately before
 `wasm_intr::unreachable()` is not evidence -- LLVM may drop it, and it did,
 producing a probe that read all zeros while a counter on a returning path read
-11. And `python .replace(old, new, 1)` replaces the FIRST occurrence: a
-perturbation aimed at the new `append_rewind_begin_steps` call hit the
-pre-existing one in `build_child_rewind_plan_impl` instead, and the mutant
-"survived" a guard it had never touched. When a perturbation survives, check
-that it was applied at all -- the build key not changing is the cheap tell.
+11. The second method note this section used to carry was wrong about which
+function the stray perturbation hit; §187 has it right, and it matters more than
+anything else here.
+
+---
+
+## §187 -- I broke the parent's replay with a perturbation and shipped it
+
+Census 186 first concluded that D8 could not be made green, that the child was
+re-entering `dlopen` during replay, and that two earlier green runs were
+"unexplained". Every part of that was wrong, and the cause was mine.
+
+**What actually happened.** While perturbing the new child-install rewind step I
+used `python str.replace(old, new, 1)` on
+
+    drive_plan::append_rewind_begin_steps(&mut steps, &roots);
+
+which replaces the FIRST occurrence. The first occurrence in the file is not the
+line I wrote -- it is the one in `build_rewind_plan_impl`, the PARENT's replay
+plan builder -- and removing it leaves
+
+    if abort {
+        drive_plan::append_abort_begin_steps(&mut steps, &roots);
+    } else {
+        }
+
+an empty `else`. The parent then builds a ZERO-step replay plan,
+`parent_replay_impl` skips the drive on its `count > 0` guard, no guest is told
+to rewind, and the parent re-runs its whole program from `main`. In a dlopen
+fork the first visible sign is `dlopen` called a second time while the fork
+still holds the loader's archive reader:
+
+    cannot acquire the process archive writer while owning a reader
+
+**Why it survived.** Three compounding mistakes:
+
+1. The perturbation "survived" its test, and I read that as the guard being
+   vacuous rather than as the mutation not having been applied where I aimed it.
+   The build key had not changed on one of those builds, which was the tell.
+2. I then captured a RESTORE BASELINE by copying the working file -- AFTER the
+   damage. Every later "restore" restored the damage.
+3. The damage shows only on the parent's NORMAL replay (`parentReplay(false)`),
+   which a dlopen fork reaches only once its child launches successfully. Before
+   the install was wired the child always died first and the parent took the
+   ABORT path, where the `if abort` branch is intact. So the whole host suite --
+   185 expected failures, nothing new -- ran green over it, twice.
+
+It went out in `5fad7a5b5`. This commit restores the line.
+
+**What is now gated rather than trusted.**
+`fork-module-capture-drive.test.ts` asserts the PARENT's replay plan carries one
+`DRIVE_OP_REWIND_BEGIN` per activation -- the mirror of the child-install
+assertion added beside it. Perturbing either builder now fails a unit test in
+seconds and takes D8 from 5 passed to 4 failed. Both were run with the build key
+recorded per mutation, so "the mutation did not apply" is now a reported outcome
+rather than a silent pass.
+
+A runtime "one step per open activation, or refuse" check was written and then
+REMOVED: the count is derived from the same `st.activations` a step is emitted
+for, so it can never fire. It survived its own perturbation, which is what an
+unreachable guard does, and an unreachable guard is a second opinion on a
+question the builder already answers.
+
+**Three things to do differently, all cheap.** Anchor a perturbation on text
+unique to the line under attack and assert the match is unique rather than
+taking the first. Take the restore baseline from git, never from the working
+tree. And treat a surviving mutant as "prove it was applied" before "prove the
+guard is vacuous" -- the build key is a two-second check and it was in the
+output the whole time.

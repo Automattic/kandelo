@@ -1693,7 +1693,8 @@ mod wasm {
         if abort {
             drive_plan::append_abort_begin_steps(&mut steps, &roots);
         } else {
-            }
+            drive_plan::append_rewind_begin_steps(&mut steps, &roots);
+        }
         serialize_and_store_plan(&steps)
     }
 
@@ -1715,6 +1716,16 @@ mod wasm {
         }
         let plan = build_rewind_plan_impl(abort)?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
+        // NO "one step per activation" check here, deliberately. A short plan is
+        // a real defect -- an activation never told to rewind leaves its guest
+        // with no rewind in progress, so `wpk_fork_resume_start` runs `_start`
+        // LEXICALLY and the process runs its whole program again from `main`,
+        // with no trap and no errno where it goes wrong. But the count is
+        // derived from the same `st.activations` a step is emitted for, so a
+        // check here could never fire: it is unreachable by construction, and
+        // an unreachable guard is a second opinion on a question the builder
+        // already answers. `fork-module-capture-drive.test.ts` asserts the plan
+        // size instead, where a wrong builder is caught before it ships.
         if count > 0 {
             drive_plan_via_injector(plan, count);
         }
