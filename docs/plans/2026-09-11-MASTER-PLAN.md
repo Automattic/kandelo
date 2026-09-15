@@ -437,6 +437,32 @@ carried a typed address and digest since v5, and the one the kernel verifies
 against. That is lane Y's central migration, not a four-line change, so it is
 the maintainer's call rather than something to slip in beside a format commit.
 
+**The same migration blocks the URI relay**, which is worth stating because the
+two looked independent. Flipping `host_fetch_deferred(kind, id, …)` to
+`host_fetch_deferred(uri, …)` requires every deferred file to HAVE a URI. A
+`KLZY`-described image's files do not: `KLZY`'s record is
+`{ino, size, archive_id, source_path}`, the loader has nothing to put in
+`deferred_uri`, and the kernel would relay an empty string for every lazy file
+in the shipped rootfs. The host's id-keyed JSON table is the only thing that
+resolves them today — and it exists precisely because the producer never gave
+the kernel an address. So the relay and the setuid digest are one blocker
+wearing two hats.
+
+**Scope, measured rather than guessed.** `tools/mkrootfs` uses nine filesystem
+methods and `SffsImageFs` already has all nine: `symlinkWithOwner` maps onto
+its `symlink`, which takes the same `(target, path, uid, gid)`, and
+`saveImage({metadata, normalizeTimestampsMs})` is signature-compatible. The
+archive path materializes members eagerly (`createFileWithOwner` with extracted
+bytes), so no lazy-archive registration is involved. The migration also DELETES
+the `SharedArrayBuffer` construction, which exists only because the memfs
+backing store needs one — the Rust writer does not.
+
+**What makes it a decision rather than a task**: it changes the on-disk format
+of the artifact every demo boots from, from `KLZY` to `SDEF`, and B40 has the
+browser suite blocked, so the usual way to watch a demo actually boot is
+unavailable. Node evidence is available — the `tools/mkrootfs` suite, and
+loading the built image through the kernel — but it is not the same evidence.
+
 **The measure should move too**, whoever takes it: from "the emitter contains a
 digest field" to something that fails while a setuid lazy binary reaches a
 kernel that cannot verify it. The current form cannot distinguish a fix from a
