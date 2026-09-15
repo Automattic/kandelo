@@ -3617,25 +3617,26 @@ fn define_kernel_host_imports(
             )?;
         }
     }
-    // host_fetch_deferred(kind, id_lo, id_hi, buf_ptr, buf_len, offset_lo,
-    // offset_hi) -> i32 (N1-I2): a positioned read of a resource the `/` image
-    // does not carry. `kind` is `abi::HOST_DEFERRED_KIND_*`; `id` and `offset`
-    // are 64-bit values split into lo/hi 32-bit words for the (JS-shaped) ABI,
-    // matching `host_pread`'s offset convention — mirrors `wasm_api.rs`'s
-    // declaration exactly.
+    // host_fetch_deferred(uri_ptr, uri_len, buf_ptr, buf_len, offset_lo,
+    // offset_hi) -> i32: a positioned read of a resource the `/` image does not
+    // carry, named by the URI the image recorded. `offset` is a 64-bit value
+    // split into lo/hi 32-bit words for the (JS-shaped) ABI, matching
+    // `host_pread`'s convention — mirrors `wasm_api.rs`'s declaration exactly.
     //
-    // This host serves only `KIND_FILE`, and its id space is the blob map a
-    // `BaseImage` manifest was built with (see the "in-memory base VFS image"
-    // section above): every `BaseRegular` entry the manifest loader placed is
-    // host-backed, because this host hands the kernel a manifest rather than a
-    // real VFS image. Returns bytes written into `buf_ptr` (0 at EOF), or a
-    // negated errno: ENOENT for an id with no entry in the map (never expected
-    // once a manifest has been loaded correctly, since every `BaseRegular`
-    // entry's blob_id came from this same map — but a real, truthful boundary
-    // if it ever happens), and ENOSYS for `KIND_ARCHIVE`, which this host has
-    // no lazy-archive transport for. With no `BaseImage` loaded (`base_blobs`
-    // empty, T1's and N1-I1's default), this import is simply never reached:
-    // the overlay has no `BaseRegular` entries to read.
+    // The `kind` discriminator and the id are gone. They existed because the
+    // kernel addressed a resource by a number from one of two namespaces, and
+    // a host could only resolve that by keeping its own table mapping numbers
+    // back to addresses — a second author for where a file's bytes live, with
+    // the image as the first. A URI is a complete address, so the table has
+    // nothing to hold and a base file's blob and a lazy archive's raw bytes
+    // stop being different requests.
+    //
+    // This host keys its `BaseImage` blobs by the address the image gave them
+    // (see the "in-memory base VFS image" section above). Returns bytes written
+    // into `buf_ptr` (0 at EOF), or a negated errno: ENOENT for an address this
+    // host serves nothing at, which is a real and truthful boundary. With no
+    // `BaseImage` loaded (`base_blobs` empty), this import is never reached:
+    // the overlay has no deferred entries to read.
     {
         let mem = kernel_mem.clone();
         let blobs = base_blobs.clone();
@@ -3643,22 +3644,19 @@ fn define_kernel_host_imports(
             "env",
             "host_fetch_deferred",
             move |_c: Caller<'_, ()>,
-                  kind: u32,
-                  id_lo: u32,
-                  id_hi: u32,
+                  uri_ptr: i32,
+                  uri_len: i32,
                   buf_ptr: i32,
                   buf_len: i32,
                   offset_lo: u32,
                   offset_hi: u32|
                   -> i32 {
-                if buf_len < 0 {
+                if buf_len < 0 || uri_len < 0 {
                     return -libc_errno::EINVAL;
                 }
-                if kind != wasm_posix_shared::abi::HOST_DEFERRED_KIND_FILE {
-                    return -libc_errno::ENOSYS;
-                }
-                let blob_id = ((id_hi as u64) << 32) | (id_lo as u64);
-                let Some(bytes) = blobs.get(&blob_id) else {
+                let uri =
+                    unsafe { read_bytes(&mem, uri_ptr as u32 as usize, uri_len as usize) };
+                let Some(bytes) = blobs.get(&uri) else {
                     return -libc_errno::ENOENT;
                 };
                 let offset = (((offset_hi as u64) << 32) | (offset_lo as u64)) as usize;

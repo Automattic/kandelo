@@ -81,25 +81,24 @@ pub trait HostIO {
         // implementation would race another user of the shared host cursor.
         Err(Errno::ENOSYS)
     }
-    /// Read up to `buf.len()` bytes at `offset` from a content byte-leaf named by
-    /// `blob_id`. This is the narrow byte-provider seam for the in-kernel rootfs
-    /// overlay (Phase 5 Increment 2): the kernel owns the `/` tree and asks the
-    /// host only for a base file's immutable bytes, addressed by a manifest-
-    /// assigned blob id rather than a mutable path or a shared-cursor handle.
+    /// Read up to `buf.len()` bytes at `offset` of the deferred resource named
+    /// by `uri`.
+    ///
+    /// One method for what used to be two — `blob_read` for a base file's
+    /// blob and `fetch_archive` for a lazy archive's raw bytes. They were never
+    /// two capabilities: both are "fetch bytes for this resource at this
+    /// offset", split only because the kernel addressed them through two
+    /// id namespaces the host had to translate back into addresses. A URI is a
+    /// complete address by construction, so the host keeps no table and the
+    /// two methods collapse into one.
+    ///
+    /// The kernel does not interpret `uri`. It carries the image's own words
+    /// through unread, and whoever fetches decides whether that address may be
+    /// fetched at all — the same contract the payload beside it has always had.
+    ///
     /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
     /// mock hosts and hosts predating the overlay compile unchanged.
-    fn blob_read(&mut self, _blob_id: u64, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
-        Err(Errno::ENOSYS)
-    }
-    /// Read up to `buf.len()` bytes at `offset` from the raw byte store backing
-    /// lazy-archive member `archive_id`. This is the narrow raw-archive
-    /// transport seam for the in-kernel rootfs overlay's `LazyMember` nodes
-    /// (Phase 5 Increment 3b-wiring.2): the host is only a byte store for the
-    /// whole archive blob, addressed by a manifest-assigned `archive_id`; the
-    /// kernel decodes the archive format (zip) and owns member extraction.
-    /// Returns the number of bytes read (0 at EOF). Defaults to unsupported so
-    /// mock hosts and hosts predating lazy-archive support compile unchanged.
-    fn fetch_archive(&mut self, _archive_id: u32, _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
+    fn fetch_deferred(&mut self, _uri: &[u8], _buf: &mut [u8], _offset: u64) -> Result<usize, Errno> {
         Err(Errno::ENOSYS)
     }
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS

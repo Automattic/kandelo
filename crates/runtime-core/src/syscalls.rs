@@ -5225,12 +5225,7 @@ pub fn sys_read(
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
                 let n = crate::rootfs::read(host_handle, current_offset, buf, |req, b| match req {
-                    crate::rootfs::ByteReq::Base { blob_id, offset } => {
-                        host.blob_read(blob_id, b, offset)
-                    }
-                    crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                        host.fetch_archive(archive_id, b, offset)
-                    }
+                    crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
                     crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
                 })?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
@@ -5490,12 +5485,7 @@ pub fn sys_write(
                 tmpfs_stamp_now(host)?;
                 let n =
                     crate::rootfs::write(host_handle, start, &buf[..writable_len], |req, b| match req {
-                        crate::rootfs::ByteReq::Base { blob_id, offset } => {
-                            host.blob_read(blob_id, b, offset)
-                        }
-                        crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                            host.fetch_archive(archive_id, b, offset)
-                        }
+                        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
                         crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
                     })?;
                 let new_offset = checked_host_cursor_advance(start, writable_len, n)?;
@@ -6023,10 +6013,7 @@ pub fn sys_pread(
     // In-kernel rootfs overlay: positioned read; base-file bytes via blob_read.
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         return crate::rootfs::read(host_handle, offset, buf, |req, b| match req {
-            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                host.fetch_archive(archive_id, b, offset)
-            }
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
@@ -6475,10 +6462,7 @@ pub fn sys_pwrite(
     if crate::rootfs::is_rootfs_file_handle(host_handle) {
         tmpfs_stamp_now(host)?;
         return crate::rootfs::write(host_handle, offset, &buf[..writable_len], |req, b| match req {
-            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                host.fetch_archive(archive_id, b, offset)
-            }
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
@@ -17621,10 +17605,7 @@ pub fn sys_ftruncate(
         }
         tmpfs_stamp_now(host)?;
         return crate::rootfs::truncate_handle(host_handle, length, |req, b| match req {
-            crate::rootfs::ByteReq::Base { blob_id, offset } => host.blob_read(blob_id, b, offset),
-            crate::rootfs::ByteReq::Archive { archive_id, offset } => {
-                host.fetch_archive(archive_id, b, offset)
-            }
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         });
     }
@@ -19557,6 +19538,10 @@ mod tests {
         crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         crate::rootfs::insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
         crate::rootfs::insert_base_file(b"/bin/hello", 7, 11, 0o755, 0, 0, 3).unwrap();
+        // The address its image would have recorded. A deferred file with none
+        // cannot be fetched, so a fixture has to state one — the mock host
+        // below resolves it back to the blob id it keys on.
+        crate::rootfs::set_deferred_source(b"/bin/hello", b"test:blob/7", b"").unwrap();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -21031,7 +21016,16 @@ mod tests {
             })
         }
 
-        fn blob_read(&mut self, blob_id: u64, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+        fn fetch_deferred(&mut self, uri: &[u8], buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
+            // The fixtures key their blobs by id, so this host resolves the
+            // address back to one — which is exactly the table the real host no
+            // longer keeps, kept here because a TEST host is allowed to be a
+            // stub as long as it is honest about being one.
+            let blob_id: u64 = core::str::from_utf8(uri)
+                .ok()
+                .and_then(|s| s.strip_prefix("test:blob/"))
+                .and_then(|s| s.parse().ok())
+                .ok_or(Errno::EIO)?;
             let data = self.base_blobs.get(&blob_id).ok_or(Errno::EIO)?;
             let start = offset as usize;
             if start >= data.len() {

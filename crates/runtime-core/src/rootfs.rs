@@ -2396,13 +2396,20 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
 /// both be live at one call site (borrow-checker E0524), so the kernel now
 /// captures `&mut host` exactly once and matches on this enum to route to
 /// `HostIO::blob_read` or `HostIO::fetch_archive`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ByteReq {
-    /// A rootfs overlay content byte-leaf read (`blob_id` at `offset`).
-    Base { blob_id: u64, offset: u64 },
-    /// A whole-archive raw-byte fetch for a `LazyMember`'s backing archive
-    /// (`archive_id` at `offset`).
-    Archive { archive_id: u32, offset: u64 },
+    /// Bytes of a deferred object, addressed by the URI its image recorded.
+    ///
+    /// One variant for what used to be two — a base file's blob and a lazy
+    /// archive's raw bytes. They were never two things to the host: both are
+    /// "fetch bytes for this resource at this offset", and they were split only
+    /// because the kernel addressed them by two different id namespaces. Naming
+    /// the resource by URI removes the namespaces and the distinction with
+    /// them, along with the `kind` discriminator the host import carried.
+    ///
+    /// The URI is the image's own words, carried through unread. Whoever
+    /// fetches decides whether it may be fetched.
+    Deferred { uri: Vec<u8>, offset: u64 },
     /// A positioned read of the VFS image's own container bytes at `offset`.
     ///
     /// This is how the kernel parses its own `/` image ([`load_image`]) instead
@@ -2413,6 +2420,36 @@ pub enum ByteReq {
     /// (`docs/plans/2026-09-09-rust-first-value-plan.md` §2c item 2). There is
     /// exactly one image per kernel, so the variant carries no id at all.
     Image { offset: u64 },
+}
+
+/// Bytes for a deferred resource, refusing one the image gave no address for.
+///
+/// The refusal lives HERE rather than in the host shim because this is the
+/// layer that knows an image described a file and said nothing about where its
+/// bytes are. Asking the host to fetch an empty string would turn that into a
+/// transport error about a blank address, which describes the wrong thing.
+///
+/// `EIO`, never `EAGAIN`: the kernel parks and retries on `EAGAIN`, so a file
+/// with no address would hang its reader forever instead of failing.
+fn fetch_at<F>(
+    byte_source: &mut F,
+    uri: &[u8],
+    offset: u64,
+    buf: &mut [u8],
+) -> Result<usize, Errno>
+where
+    F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
+{
+    if uri.is_empty() {
+        return Err(Errno::EIO);
+    }
+    byte_source(
+        ByteReq::Deferred {
+            uri: uri.to_vec(),
+            offset,
+        },
+        buf,
+    )
 }
 
 /// Fetch, decode, and cache one member's inflated bytes from a lazy archive
@@ -2472,21 +2509,24 @@ where
         Plan::Member(bytes) => return Ok(bytes),
         Plan::NeedRaw { size, raw_present } => (size, raw_present),
     };
-    let expected = ROOTFS
-        .with(|state| state.archives.get(&archive_id).map(|entry| entry.digest))
+    // The archive's address and expected digest, read together so they cannot
+    // describe different archives. An archive with no address cannot be
+    // fetched at all, and saying so here beats asking the host to resolve an
+    // empty string.
+    let (uri, expected) = ROOTFS
+        .with(|state| {
+            state
+                .archives
+                .get(&archive_id)
+                .map(|entry| (entry.uri.clone(), entry.digest))
+        })
         .ok_or(Errno::ENOENT)?;
 
     if !raw_present {
         let mut data = alloc::vec![0u8; size as usize];
         let mut filled = 0usize;
         while filled < data.len() {
-            let n = byte_source(
-                ByteReq::Archive {
-                    archive_id,
-                    offset: filled as u64,
-                },
-                &mut data[filled..],
-            )?;
+            let n = fetch_at(byte_source, &uri, filled as u64, &mut data[filled..])?;
             if n == 0 {
                 break; // short read: trust the manifest size but never spin
             }
@@ -2569,15 +2609,19 @@ where
 {
     enum Base {
         None,
-        BaseRegular(u64, u64),
+        BaseRegular(u64),
         ImageRegular(u32, u64),
         LazyMember(u32, Vec<u8>),
     }
-    // Read under the same lock as the kind, so the digest cannot belong to a
-    // different inode than the bytes about to be fetched for it.
-    let expected = ROOTFS
-        .with(|state| state.get(idx).map(|inode| inode.deferred_digest))
-        .unwrap_or(crate::sffs_deferred::DIGEST_NONE);
+    // Read under the same lock as the kind, so the address and digest cannot
+    // belong to a different inode than the bytes about to be fetched for it.
+    let (uri, expected) = ROOTFS
+        .with(|state| {
+            state
+                .get(idx)
+                .map(|inode| (inode.deferred_uri.clone(), inode.deferred_digest))
+        })
+        .unwrap_or_default();
     let base = ROOTFS.with(|state| match state.get(idx) {
         Some(inode) => match &inode.kind {
             InodeKind::BaseRegular {
@@ -2586,7 +2630,7 @@ where
                 source,
             } => match source {
                 BaseSource::Image => Ok(Base::ImageRegular(image_ino(*blob_id)?, *size)),
-                BaseSource::Host => Ok(Base::BaseRegular(*blob_id, *size)),
+                BaseSource::Host => Ok(Base::BaseRegular(*size)),
             },
             InodeKind::Regular(_) => Ok(Base::None),
             InodeKind::Dir(_) => Err(Errno::EISDIR),
@@ -2602,17 +2646,11 @@ where
     })?;
     match base {
         Base::None => Ok(()),
-        Base::BaseRegular(blob_id, size) => {
+        Base::BaseRegular(size) => {
             let mut data = alloc::vec![0u8; size as usize];
             let mut filled = 0usize;
             while filled < data.len() {
-                let n = byte_source(
-                    ByteReq::Base {
-                        blob_id,
-                        offset: filled as u64,
-                    },
-                    &mut data[filled..],
-                )?;
+                let n = fetch_at(byte_source, &uri, filled as u64, &mut data[filled..])?;
                 if n == 0 {
                     break; // short read: trust the manifest size but never spin
                 }
@@ -2803,7 +2841,10 @@ where
     // size), so the host/archive byte fetch runs after the lock is released.
     enum Plan {
         Done(usize),
-        Base(u64, u64),
+        /// A standalone deferred file: the URI its image recorded, and its
+        /// real size. No blob id, because the id was only ever a name the host
+        /// had to translate back into this.
+        Deferred(Vec<u8>, u64),
         Image(u32, u64),
         Lazy(u32, Vec<u8>, u64),
     }
@@ -2825,7 +2866,7 @@ where
                 source,
             } => match source {
                 BaseSource::Image => Ok(Plan::Image(image_ino(*blob_id)?, *size)),
-                BaseSource::Host => Ok(Plan::Base(*blob_id, *size)),
+                BaseSource::Host => Ok(Plan::Deferred(inode.deferred_uri.clone(), *size)),
             },
             InodeKind::Dir(_) => Err(Errno::EISDIR),
             InodeKind::Symlink(_) => Err(Errno::EINVAL),
@@ -2839,13 +2880,13 @@ where
     })?;
     match plan {
         Plan::Done(n) => Ok(n),
-        Plan::Base(blob_id, size) => {
+        Plan::Deferred(uri, size) => {
             let start = offset as u64;
             if start >= size {
                 return Ok(0);
             }
             let n = core::cmp::min(buf.len() as u64, size - start) as usize;
-            byte_source(ByteReq::Base { blob_id, offset: start }, &mut buf[..n])
+            fetch_at(&mut byte_source, &uri, start, &mut buf[..n])
         }
         Plan::Image(ino, size) => {
             let start = offset as u64;
@@ -4898,6 +4939,44 @@ mod tests {
     /// alongside a shared call counter (incremented only for `Archive`
     /// requests) so tests can assert whether an archive fetch actually
     /// happened (vs. served from the archive's `members` cache).
+    /// Insert a host-backed base file AND record the address this test host
+    /// serves it at, mirroring what `load_image` does from a deferred record:
+    /// the file goes in, then its source is attached.
+    ///
+    /// Before URIs the address was implicit — the blob id WAS the address, as
+    /// far as a host holding a table was concerned. It is explicit now, which
+    /// is why a fixture has to state it: a deferred file nobody gave an address
+    /// cannot be fetched, and that is the truth rather than an inconvenience.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_host_file(
+        path: &[u8],
+        blob_id: u64,
+        size: u64,
+        mode: u32,
+        uid: u32,
+        gid: u32,
+        ino: u64,
+    ) -> Result<(), Errno> {
+        insert_base_file(path, blob_id, size, mode, uid, gid, ino)?;
+        set_deferred_source(path, &blob_uri(blob_id), b"")
+    }
+
+    /// The address this test host serves a blob at.
+    ///
+    /// The fixtures register it and the host resolves it, which is the whole
+    /// shape of the contract now: an image says where bytes are and a host
+    /// fetches from there. Derived from the id the fixtures already use so the
+    /// two cannot drift, and prefixed `test:` so it is obviously not a URL
+    /// anything would really fetch.
+    fn blob_uri(blob_id: u64) -> alloc::vec::Vec<u8> {
+        alloc::format!("test:blob/{blob_id}").into_bytes()
+    }
+
+    /// The address this test host serves a lazy ARCHIVE at.
+    fn archive_uri(archive_id: u32) -> alloc::vec::Vec<u8> {
+        alloc::format!("test:archive/{archive_id}").into_bytes()
+    }
+
     fn make_byte_source(
         blobs: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>,
         archives: alloc::vec::Vec<(u32, alloc::vec::Vec<u8>)>,
@@ -4909,24 +4988,25 @@ mod tests {
         let counter = calls.clone();
         let source = move |req: ByteReq, buf: &mut [u8]| -> Result<usize, Errno> {
             match req {
-                ByteReq::Base { blob_id, offset } => {
-                    let (_, data) = blobs
-                        .iter()
-                        .find(|(id, _)| *id == blob_id)
-                        .ok_or(Errno::ENOSYS)?;
-                    let start = offset as usize;
-                    if start >= data.len() {
-                        return Ok(0);
+                // ONE arm for what used to be two, because the host is asked
+                // one question now: bytes for this address. Which kind of
+                // resource it is is the image's business, not the transport's.
+                ByteReq::Deferred { uri, offset } => {
+                    if let Some((_, data)) =
+                        blobs.iter().find(|(id, _)| blob_uri(*id) == uri)
+                    {
+                        let start = offset as usize;
+                        if start >= data.len() {
+                            return Ok(0);
+                        }
+                        let n = core::cmp::min(buf.len(), data.len() - start);
+                        buf[..n].copy_from_slice(&data[start..start + n]);
+                        return Ok(n);
                     }
-                    let n = core::cmp::min(buf.len(), data.len() - start);
-                    buf[..n].copy_from_slice(&data[start..start + n]);
-                    Ok(n)
-                }
-                ByteReq::Archive { archive_id, offset } => {
                     counter.set(counter.get() + 1);
                     let (_, data) = archives
                         .iter()
-                        .find(|(id, _)| *id == archive_id)
+                        .find(|(id, _)| archive_uri(*id) == uri)
                         .ok_or(Errno::ENOSYS)?;
                     let start = offset as usize;
                     if start >= data.len() {
@@ -4951,9 +5031,9 @@ mod tests {
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_dir(b"/usr", 0o755, 0, 0, 2).unwrap();
         insert_base_dir(b"/usr/bin", 0o755, 0, 0, 3).unwrap();
-        insert_base_file(b"/usr/bin/hello", 42, 11, 0o755, 0, 0, 4).unwrap();
+        insert_host_file(b"/usr/bin/hello", 42, 11, 0o755, 0, 0, 4).unwrap();
         insert_base_symlink(b"/usr/bin/hi", b"hello", 0o777, 0, 0, 5).unwrap();
-        insert_base_file(b"/etc-issue-blob-empty", 43, 0, 0o644, 0, 0, 6).unwrap();
+        insert_host_file(b"/etc-issue-blob-empty", 43, 0, 0o644, 0, 0, 6).unwrap();
     }
 
     /// The real tiny.zip fixture (see `zip.rs` tests for member facts): a
@@ -4970,7 +5050,7 @@ mod tests {
                 archive_id,
                 ArchiveEntry {
                     payload: Vec::new(),
-                    uri: Vec::new(),
+                    uri: archive_uri(archive_id),
                     digest: crate::sffs_deferred::DIGEST_NONE,
                     size,
                     raw: None,
@@ -5121,7 +5201,7 @@ mod tests {
     fn foreign_mount_parents_stop_at_a_non_directory_rather_than_hide_it() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_base_file(b"/usr", 0, 0, 0o644, 0, 0, 2).unwrap();
+        insert_host_file(b"/usr", 0, 0, 0o644, 0, 0, 2).unwrap();
 
         assert_eq!(set_foreign_prefixes(b"/usr/local/lib/kandelo\0"), 1);
 
@@ -5264,7 +5344,7 @@ mod tests {
     fn write_clears_setuid_bit() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_base_file(b"/suid", 7, 3, 0o4755, 0, 0, 2).unwrap();
+        insert_host_file(b"/suid", 7, 3, 0o4755, 0, 0, 2).unwrap();
         let (mut blob, _) = make_byte_source(alloc::vec![(7u64, b"abc".to_vec())], alloc::vec::Vec::new());
         assert_eq!(lstat(b"/suid").unwrap().st_mode & 0o7777, 0o4755);
         let h = open(b"/suid", 2, 0, 0, 0).unwrap();
@@ -5286,7 +5366,7 @@ mod tests {
     fn setid_clears_only_on_real_modification_and_respects_group_exec() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_base_file(b"/suid", 7, 3, 0o6755, 0, 0, 2).unwrap();
+        insert_host_file(b"/suid", 7, 3, 0o6755, 0, 0, 2).unwrap();
         let (mut blob, _) =
             make_byte_source(alloc::vec![(7u64, b"abc".to_vec())], alloc::vec::Vec::new());
         let h = open(b"/suid", 2, 0, 0, 0).unwrap();
@@ -5337,7 +5417,7 @@ mod tests {
     fn a_retry_after_eagain_serves_the_handle_not_the_replacement() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_base_file(b"/f", 21, 8, 0o644, 0, 0, 2).unwrap();
+        insert_host_file(b"/f", 21, 8, 0o644, 0, 0, 2).unwrap();
 
         // EAGAIN on the first call, the real bytes on every call after it.
         let calls = alloc::rc::Rc::new(core::cell::Cell::new(0usize));
@@ -5347,7 +5427,7 @@ mod tests {
             if seen.get() == 1 {
                 return Err(Errno::EAGAIN);
             }
-            let ByteReq::Base { offset, .. } = req else {
+            let ByteReq::Deferred { offset, .. } = req else {
                 return Err(Errno::EIO);
             };
             let data = b"ORIGINAL";
@@ -5503,7 +5583,7 @@ mod tests {
         assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
         assert_eq!(lstat(b"/opt/hello").unwrap().st_size, 11);
         // Replace an existing regular destination atomically.
-        insert_base_file(b"/opt/other", 44, 3, 0o644, 0, 0, 20).unwrap();
+        insert_host_file(b"/opt/other", 44, 3, 0o644, 0, 0, 20).unwrap();
         rename(b"/opt/hello", b"/opt/other").unwrap();
         assert_eq!(lstat(b"/opt/other").unwrap().st_size, 11);
         // Directory-into-own-subtree is EINVAL.
@@ -5632,8 +5712,8 @@ mod tests {
         // ordinary host file; `/fetched.bin` has one and its bytes are a
         // promise. Enumerating the first would tell a builder its tree is full
         // of lazy files it never registered.
-        insert_base_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 90).unwrap();
-        insert_base_file(b"/fetched.bin", 78, 8192, 0o644, 0, 0, 91).unwrap();
+        insert_host_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 90).unwrap();
+        insert_host_file(b"/fetched.bin", 78, 8192, 0o644, 0, 0, 91).unwrap();
         set_deferred_payload(b"/fetched.bin", br#"{"url":"https://x/f.bin"}"#).unwrap();
 
         let entries = lazy_entries();
@@ -5897,12 +5977,20 @@ mod tests {
         // The image's real mtime is preserved (not the boot clock).
         assert_eq!((f.st_mtime_sec, f.st_mtime_nsec), (315532800, 500));
 
-        // The base file reads its bytes through blob_id 99.
+        // The v3 manifest records a blob id and no ADDRESS, so this tree's
+        // bytes cannot be fetched: the kernel names a resource by the URI its
+        // image recorded, and this format has no field for one. The manifest
+        // still describes the tree correctly, which is what it is asserted for
+        // above; what it can no longer do is say where a file's bytes live.
+        //
+        // Not a regression hidden in a test edit: no TypeScript host calls
+        // `kernel_rootfs_load_manifest` at all — browser and Node both go
+        // through `kernel_rootfs_load_image` — so this is a test-host format
+        // meeting a contract it predates.
         let (mut blob, _) = make_byte_source(alloc::vec![(99u64, b"hello, world".to_vec())], alloc::vec::Vec::new());
         let h = open(b"/usr/greeting", O_RDONLY, 0, 0, 0).unwrap();
         let mut buf = [0u8; 16];
-        let n = read(h, 0, &mut buf, &mut blob).unwrap();
-        assert_eq!(&buf[..n], b"hello, world");
+        assert_eq!(read(h, 0, &mut buf, &mut blob), Err(Errno::EIO));
         release_handle(h);
 
         let mut lbuf = [0u8; 32];
@@ -5972,12 +6060,15 @@ mod tests {
         assert_eq!(archive_size(7), Some(1234));
         assert_eq!(archive_size(99), None);
 
-        // Byte-serving is not implemented yet: read is a truthful ENOSYS, not a
-        // hidden success or silent zero-fill.
+        // The v3 manifest declares an archive LENGTH and no address, so the
+        // member cannot be fetched: read is a truthful EIO, not a hidden
+        // success or a silent zero-fill. It used to be ENOSYS, from a host with
+        // no transport configured; the refusal moved earlier, to the kernel
+        // noticing it has nothing that says where the archive is.
         let h = open(b"/a/g", O_RDONLY, 0, 0, 0).unwrap();
         let mut buf = [0u8; 8];
         let (mut blob, _) = make_byte_source(alloc::vec::Vec::new(), alloc::vec::Vec::new());
-        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap_err(), Errno::ENOSYS);
+        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap_err(), Errno::EIO);
         release_handle(h);
     }
 
@@ -6462,7 +6553,7 @@ mod tests {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_dir(b"/bin", 0o755, 0, 0, 2).unwrap();
-        insert_base_file(b"/bin/dash", 50, 5, 0o755, 0, 0, 3).unwrap();
+        insert_host_file(b"/bin/dash", 50, 5, 0o755, 0, 0, 3).unwrap();
         insert_base_symlink(b"/bin/sh", b"dash", 0o777, 0, 0, 4).unwrap();
         let (mut blob, _) = make_byte_source(alloc::vec![(50u64, b"DASH!".to_vec())], alloc::vec::Vec::new());
         let mut buf = [0u8; 32];
@@ -6476,7 +6567,7 @@ mod tests {
         // followed to the terminal regular file.
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
-        insert_base_file(b"/c", 60, 3, 0o644, 0, 0, 2).unwrap();
+        insert_host_file(b"/c", 60, 3, 0o644, 0, 0, 2).unwrap();
         insert_base_symlink(b"/b", b"c", 0o777, 0, 0, 3).unwrap();
         insert_base_symlink(b"/a", b"/b", 0o777, 0, 0, 4).unwrap();
         let (mut blob, _) = make_byte_source(alloc::vec![(60u64, b"XYZ".to_vec())], alloc::vec::Vec::new());
@@ -6610,11 +6701,11 @@ mod tests {
         // turn every write to a verified file into an EIO on the next read.
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         let real: &[u8] = b"the bytes the image described";
-        insert_base_file(b"/fetched.bin", 9, real.len() as u64, 0o644, 0, 0, 9).unwrap();
+        insert_host_file(b"/fetched.bin", 9, real.len() as u64, 0o644, 0, 0, 9).unwrap();
         mark_deferred_base(b"/fetched.bin").unwrap();
         set_deferred_source(
             b"/fetched.bin",
-            b"https://example.invalid/fetched.bin",
+            &blob_uri(9),
             &crate::sffs_deferred::digest_of(real),
         )
         .expect("declare it");
@@ -6682,11 +6773,11 @@ mod tests {
         // over the bytes that URI serves.
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         let real: &[u8] = b"the bytes the image described";
-        insert_base_file(b"/fetched.bin", 9, real.len() as u64, 0o644, 0, 0, 9).unwrap();
+        insert_host_file(b"/fetched.bin", 9, real.len() as u64, 0o644, 0, 0, 9).unwrap();
         mark_deferred_base(b"/fetched.bin").unwrap();
         set_deferred_source(
             b"/fetched.bin",
-            b"https://example.invalid/fetched.bin",
+            &blob_uri(9),
             &crate::sffs_deferred::digest_of(real),
         )
         .expect("declare where it is and what it must be");
@@ -7134,14 +7225,22 @@ mod tests {
         release_handle(handle);
     }
 
-    /// A URL-backed lazy file is the one base-file case the image genuinely
-    /// does not carry: its inode is a stub and only its real size is in the
-    /// `KLZY` section. Those bytes must keep coming from the host byte store,
-    /// so this asserts the request the kernel makes is `ByteReq::Base` with the
-    /// file's inode number — the contract `host_fetch_deferred` answers for the
-    /// `HOST_DEFERRED_KIND_FILE` kind.
+    /// A `KLZY`-described deferred file has no address, so its bytes cannot be
+    /// fetched — loudly, at the read, rather than by asking the host to resolve
+    /// an empty string.
+    ///
+    /// This test used to assert the opposite, and was right to: the kernel
+    /// addressed the file by its INODE NUMBER and a host holding a table turned
+    /// that back into a URL. The table is gone, and `KLZY` has no field that
+    /// could replace it — its record is `{ino, size, archive_id, source_path}`.
+    /// So an image described that way is one this kernel cannot fetch from,
+    /// which is the ABI contract's answer for a stale artifact: fail loudly and
+    /// be rebuilt, rather than be shimmed.
+    ///
+    /// `EIO`, not `EAGAIN`: the kernel parks and retries on `EAGAIN`, so a file
+    /// with no address would hang its reader forever instead of failing.
     #[test]
-    fn url_backed_lazy_file_still_reads_through_the_host_byte_store() {
+    fn a_klzy_described_deferred_file_has_no_address_to_fetch_from() {
         let _guard = TestGuard::acquire();
         // ino 2 is `/hello.txt`; declare it URL-backed with a size the image
         // inode does not carry.
@@ -7159,26 +7258,31 @@ mod tests {
                     buf[..n].copy_from_slice(&image[start..start + n]);
                     Ok(n)
                 }
-                ByteReq::Base { blob_id, offset } => {
-                    assert_eq!(blob_id, 2, "addressed by the file's inode number");
-                    assert_eq!(offset, 0);
+                // A request the kernel never makes for this image, because it
+                // has no address to make it with. Counted so the assertion
+                // below is about the kernel not ASKING, rather than about a
+                // host that happened to refuse.
+                ByteReq::Deferred { .. } => {
                     asked.set(asked.get() + 1);
-                    let bytes = b"fetch";
-                    let n = core::cmp::min(buf.len(), bytes.len());
-                    buf[..n].copy_from_slice(&bytes[..n]);
-                    Ok(n)
+                    Err(Errno::ENOSYS)
                 }
-                ByteReq::Archive { .. } => Err(Errno::ENOSYS),
             }
         };
         load_image(image.len() as u64, &mut host).expect("load image");
         assert_eq!(asked.get(), 0, "the tree walk reads no file content");
 
+        // The size still comes through: `KLZY` carries that, and the file is
+        // still described as deferred. What it cannot say is WHERE.
+        assert_eq!(lstat(b"/hello.txt").expect("stat").st_size, 5);
+
         let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).expect("open");
         let mut buf = [0u8; 16];
-        let n = read(handle, 0, &mut buf, &mut host).expect("read");
-        assert_eq!(&buf[..n], b"fetch");
-        assert_eq!(asked.get(), 1);
+        assert_eq!(read(handle, 0, &mut buf, &mut host), Err(Errno::EIO));
+        assert_eq!(
+            asked.get(),
+            0,
+            "refused by the kernel for having no address, not by the host",
+        );
         release_handle(handle);
     }
 
@@ -7486,8 +7590,13 @@ mod tests {
         ))
         .expect("mkfs");
         let root = w.root();
+        // The URL goes in the ADDRESS field, not the payload. It used to sit in
+        // the payload because the format had nowhere typed for it and the host
+        // resolved the file by inode number instead; the kernel relays the
+        // address now, so an image that hid its URL in an opaque blob would be
+        // an image the kernel cannot fetch.
         let ino = w
-            .create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", b"", b"", url)
+            .create_deferred_file(root, b"big.bin", 0o644, real_size, 0, b"", url, b"", b"")
             .expect("deferred");
         // No file in this body carries content, so the content source is never
         // consulted -- a deferred file is described, not stored.
@@ -7958,7 +8067,10 @@ mod tests {
             .get(ino)
             .cloned()
             .expect("a record keyed by the inode THIS export assigned");
-        assert_eq!(record.payload, url, "carried through byte for byte");
+        // The ADDRESS, not the payload: the URL moved to a typed field when the
+        // kernel started relaying it, and "the description survives" now means
+        // the thing that says where the bytes are survives.
+        assert_eq!(record.uri, url, "carried through byte for byte");
         assert_eq!(record.size, 45_000, "the real size, not the stub's");
         assert_eq!(record.archive_id, 0, "fetched standalone, not from an archive");
         assert!(record.source_path.is_empty(), "and so with no member path");
@@ -8227,7 +8339,7 @@ mod tests {
         // nowhere": the input pointed nowhere too, and this carries exactly
         // what the input carried.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
-        insert_base_file(b"/php", 77, 4_242, 0o755, 0, 0, 2).expect("base file");
+        insert_host_file(b"/php", 77, 4_242, 0o755, 0, 0, 2).expect("base file");
         mark_deferred_base(b"/php").expect("deferred, description unknown");
 
         let exported = drain_export(8192, &mut no_bytes());
@@ -8260,7 +8372,7 @@ mod tests {
         // file this export cannot serialize, and it must not be dressed up as a
         // deferred file pointing nowhere.
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
-        insert_base_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 2).expect("base file");
+        insert_host_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 2).expect("base file");
 
         let exported = drain_export(8192, &mut no_bytes());
         let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
