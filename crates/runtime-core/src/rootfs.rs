@@ -5461,6 +5461,45 @@ mod tests {
         release_handle(handle);
     }
 
+    /// `statfs` reports `ST_NOSUID` when the `/` mount is nosuid, and nothing
+    /// asserted it.
+    ///
+    /// `is_nosuid()` has exactly one reader in the whole tree — the `f_flags`
+    /// field built here — so an unasserted flag means the setter, the getter
+    /// and the field they exist for were all covered by nothing. A mount that
+    /// reports itself as permitting set-user-ID when it does not is the kind
+    /// of answer a program uses to decide whether to trust a binary.
+    ///
+    /// This is the property the four browser tests blocked behind `mount(2)`
+    /// cover for a HOST-side filesystem. Asserting it here means the kernel's
+    /// own answer does not depend on those tests surviving.
+    #[test]
+    fn statfs_reports_nosuid_exactly_when_the_mount_is_nosuid() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let previous = is_nosuid();
+
+        set_nosuid(false);
+        let permissive = statfs(b"/").expect("statfs");
+        assert_eq!(
+            permissive.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID,
+            0,
+            "a permissive mount must not claim ST_NOSUID",
+        );
+
+        set_nosuid(true);
+        let restricted = statfs(b"/").expect("statfs");
+        assert_eq!(
+            restricted.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID,
+            wasm_posix_shared::statfs_flags::ST_NOSUID,
+            "a nosuid mount must say so: a program asks this before trusting a setuid binary",
+        );
+
+        // The setter reports what it replaced, which is how a caller restores
+        // the previous state rather than guessing at it.
+        assert!(set_nosuid(previous), "set_nosuid returns the prior value");
+    }
+
     #[test]
     fn chmod_chown_and_symlink_creation() {
         let _g = TestGuard::acquire();
