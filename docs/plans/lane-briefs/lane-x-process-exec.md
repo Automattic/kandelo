@@ -20,8 +20,16 @@ and never merge PR #1350 — the maintainer is the sole merger.
 
 ## Your gate
 
-`parseShebangReferences` **12 → 0** — references to `parseShebang` in
-`host/src`.
+`parseShebangReferences` **2 → 0** — `grep -ro 'parseShebang' host/src | wc -l`.
+
+**Not 12.** That figure appeared in earlier plan text and in the first version
+of this brief. The ceiling was banked 12 -> 2 on 2026-09-15 after measuring:
+most references went when B10's kernel-side work landed, and only the two in
+`host/src/process-lifecycle.ts` survive. The old slack EQUALLED the ceiling,
+which disables the banking test by construction — `actual > ceiling - slack - 1`
+reduces to `actual > -1` — so the surface could not have caught its own
+reduction. Slack is now 1. Read gates from `docs/surface-budget.json`, never
+from prose, including this brief.
 
 ## End state
 
@@ -53,12 +61,40 @@ first report that you are holding it. If lane F needs it, yield and sequence
 after their next merge rather than racing. This lane is 2–5 days; it is not
 worth a merge conflict in the campaign's most contended file.
 
-## The blocker, and a time box
+## The blocker — the bisect is DONE, do not repeat it
 
-B10's direction is settled; its blocker is a panic with a precise bisect.
-**Time-box the bisect to one day.** If it has not fallen out by then, hand the
-bisect back with what you learned rather than letting a 2-day lane run five.
-Say so explicitly — that is a report, not a deferral.
+A previous agent finished this. Start from its result, not from scratch.
+
+**What is already banked in the branch:** `exec_target::probe`, its export, the
+ABI snapshot entry and six tests, all with **no production caller** — inert, so
+they cannot fault anything. The repoint itself was **reverted**; that is why
+`parseShebang` is still present and why this lane's deletion is not banked yet.
+
+**The fault:** `kernel_exec_target_probe` traps with a wasm `unreachable` — a
+Rust panic. It is NOT an artifact-stamping refusal and NOT a missing export;
+both of those hypotheses were tested and disproved. Three `vi.fn()` spawn files
+were also shown unrelated, by reverting all four commits and getting
+byte-identical failure counts.
+
+**The bisect, recorded in `1fd2141d8`:** a sentinel return placed BEFORE the
+`exec_target::probe` call clears the fault; placed AFTER it reproduces. The
+suspect is therefore `resolve_shebang`'s internal header read —
+`rootfs::read` through `blob_read`/`image_read` for an overlay-backed target.
+
+**Why it was never caught:** `resolve_shebang` had never executed in the
+TypeScript kernel at all. Only `crates/host-native` called it.
+
+**What you need next:** the panic's actual line, which requires a kernel built
+WITHOUT `panic=immediate-abort`. That is the first thing to do.
+
+**A trap for you:** the native test
+`probe_resolves_an_overlay_target_without_trapping` exercises exactly the
+failing shape and PASSES — because `MockHostIO` has no blob/image byte source.
+It is committed saying so. Do not read it as evidence the path is sound.
+
+This lane becomes progress only when the trap is fixed and `6b3a00438` is
+reapplied as a single commit. Until then it is addition without its deletion,
+which the campaign's standing lesson calls not-a-port.
 
 ## Non-negotiables
 
