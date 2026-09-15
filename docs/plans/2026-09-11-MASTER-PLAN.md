@@ -2412,6 +2412,52 @@ test is where it belongs.
 failure re-classify the file.** That is slower than a census and it is the only
 one that cannot be wrong — six sizings by inspection have each been wrong in a
 different direction, and a file that boots is not a file that was counted.
+### THE CORPUS IS THREE POPULATIONS, NOT TWO — and the third was invisible
+### to every sizing because it looks exactly like the first
+
+Six sizings split the corpus by *what a test calls* or *whether it asserts on
+the filesystem*. Repointing files and running them found a third group both
+questions miss:
+
+| population | what it needs | where it goes |
+|---|---|---|
+| tests OF the filesystem | Rust equivalents | **Rust** |
+| tests of the HOST that need a disk | an image builder | **stay TS, repoint the fixture** |
+| tests that need a **live mount** | a whole `FileSystemBackend` | **blocked on `mount(2)`** |
+
+**The third is invisible to "does it assert on the filesystem?" because a mount
+backend is never asserted on either** — the kernel consumes it. `login`,
+`sudo-lite`, `secure-exec`, `nosuid-exec` and `reusable-kernel-export-stack`
+all read as pure fixtures and all fail identically:
+`TypeError: backend.statfs is not a function`.
+
+**That is not a gap in the bridge to close.** They need the 30-method
+`FileSystemBackend` surface, and `nosuid-exec` is one of the four the
+maintainer already deferred behind `mount(2)`. **The deferral is therefore
+load-bearing for step 4, not only for step 5** — a fact neither had recorded.
+
+### A FOURTH CONSTRAINT: AN IMAGE CARRYING LAZY ENTRIES CANNOT BE REPOINTED YET
+
+`exec-lazy-archive-binary.test.ts` repoints cleanly, typechecks, builds its
+image — and fails at exec with `KernelScratchError: rootfs read failed`.
+
+**This is the producer divergence recorded above, arriving as a test failure
+rather than as a prediction.** The test registers a lazy ARCHIVE and execs a
+binary out of it. Built through `MemoryFileSystem` the archive is recorded in
+the host-side JSON section the overlay reads; built through the module it is
+recorded in KLZY instead, the section is absent, `exportLazyArchiveEntries()`
+answers `[]`, and the archive the exec needs was never wired.
+
+**So the repointable population shrinks again, and by a rule rather than a
+list: any test whose image carries lazy files or archives stays on
+`MemoryFileSystem` until the module-sourced metadata path handles archives** —
+the half `createBaseImageFromContainer` currently REFUSES rather than
+half-answers. That refusal is what turned this into a diagnosable failure
+instead of a test that silently executed nothing.
+
+**The ordering this implies:** finish the module-sourced archive reconstruction
+FIRST, then repoint the lazy-carrying tests, then delete `memory-fs.ts`. Doing
+it in any other order means either a silent breakage or a revert.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
