@@ -9215,3 +9215,107 @@ is therefore that the host passes 0 for the root and the module resolves it from
 the manifest it wrote -- no new entry, no format change, and the one field each
 side genuinely owns.
 
+
+---
+
+## §185 -- The child install is wired, and D8 goes 0/6 to 1/6
+
+Four defects behind each other, each found by fixing the one in front of it.
+Every claim below is either a test that fails when the fix is perturbed, or an
+observation stated as an observation.
+
+**1. The two install calls fought over the phase.** `fm_child_seed` requires
+`PHASE_IDLE` and enters `PHASE_CHILD_REPLAY`; `fm_attach_child` did the same. A
+host performing both got `EBUSY` from whichever ran second. They are ONE arrival
+at child replay spread over two calls, so the attach now takes
+`require_phase_either(PHASE_IDLE, PHASE_CHILD_REPLAY)`. It still refuses
+capture, sealed-parent, parent replay and abort replay -- everything the
+single-phase guard refused.
+
+The order is seed-then-attach, because the install plan's restore/finish tail is
+built per activation and the activations must exist first. `crates/host-native`
+is not a counter-example: it never calls `fm_attach_child` at all, seeding and
+then driving `fm_child_reconstruct` instead.
+
+**2. The side record carries only what the host owns.** §184 predicted a 16-byte
+`(id, fixed_prefix, root_lo, root_hi)` record with the root passed as 0. Having
+built it, the zero is not a value -- it is the absence of one, and a record
+field that must always be zero is a field that should not exist. `fm_child_seed`
+now reads the SAME 8-byte `(id, fixed_prefix)` record `fm_parent_begin_capture`
+reads, and resolves every side root from the `KFAC` manifest. One layout, one
+host staging helper (`stageSides`), and the host cannot supply a root it could
+only get wrong.
+
+**3. The parent's merged funcref catalog was never filled.** This is the one
+worth reading twice. The merged `__wpk_fork_function_catalog` table was
+populated ONLY on the child-install path, which was correct while
+`__wpk_fork_ref_encode_funcref` was a host function reading the host's own
+per-activation catalogs. Serving encode from the module (`593dda0e85`, this
+lane) made that table load-bearing for the PARENT, and nothing filled it there.
+
+The injected scan therefore saw a zero-length table and answered
+`fm_funcref_uncatalogued` -- which returns -1 -- for every funcref it was
+handed. The parent sealed a table page whose every recipe was `0xFFFFFFFF`, and
+the child trapped decoding them, inside `fm_funcref_ordinal`'s
+`Err(_) => unreachable`.
+
+**How it was found, because the method generalises.** The trap surfaced as a
+bare `unreachable` attributed to the guest's `finish_restore`, with the origin
+masked by the import-exception normalizer. `WASM_POSIX_FORK_TRAP_DIAG=1` unmasks
+it and named two wasm function INDEXES. Building the fork-module once with
+`CARGO_PROFILE_RELEASE_STRIP=false` and reading the name section mapped index
+263 to `fm_funcref_ordinal` (indexes are identical -- stripping removes only the
+name section). Which of that function's five trap arms fired was then read out
+by making the arm non-fatal and counting: 22 decode calls, 11 EDOM, every failing
+recipe `0xFFFFFFFF`, graph node count 1. A `store` placed immediately before a
+trap is NOT reliable evidence -- LLVM may drop it -- which cost two misleading
+probe runs; a counter on a path that RETURNS is.
+
+The fix fills the merged catalog as each activation registers, on every worker.
+`host/src/fork-merged-catalog.ts` holds it, 23 lines, and both directions read
+the same table.
+
+**4. A pthread replica had no fork module, then no sink.** A dlopen from a
+pthread failed with "side activation N has no fork module" -- a throw this lane
+added, correctly, where the old code silently bound nothing. The replica
+instantiates its OWN fork-module; its activation owner simply was not told. With
+that wired, the next gap appeared behind it: its `ForkActivations` was built
+with no catalog sink, so nothing registered a table and the first host table
+mutation failed with "host mutated a Table outside the registered fork
+catalogs". Both workers now build the sink through one shared
+`forkActivationCatalogSink`, which is also how the duplication that caused this
+goes away.
+
+**D8's state: 1 of 6 passing, 4 failing, 1 skipped.** Passing: "blocks a foreign
+pthread until the staged loader owner commits". Still failing:
+
+- "child can call function pointers baked into a parent-dlopened side module" --
+  now reaches `dlsym: symbol not found: trigger` in the child, with
+  `fork_module_references=15` reconstructed. The install completes; symbol
+  resolution after it does not.
+- "drives a dlopen fork's frames through the co-resident module (flag on)" and
+  "drives a SIDE module's own fork frames through the module (flag on)" -- both
+  now TIME OUT at 30s rather than trapping. A hang is a different defect from a
+  trap and has not been narrowed.
+- "replays pthread-hosted dlopen table state into a fresh fork child" --
+  `null function or function signature mismatch` inside `wpk_fork_resume_thread`,
+  i.e. a resume-table slot the replica never bound.
+
+The file stays in `expected-failures.json`; nothing is banked.
+
+**What is proven by a test, and what by observation.** Four module guards are
+perturbed to failure against `fork-module-capture-drive.test.ts`: the attach
+insisting on IDLE, the attach accepting every phase, the seed keeping a
+host-supplied root, and the seed not entering child replay. The pthread wiring
+is perturbed to failure against D8's pass count (1 -> 0). The merged catalog and
+the seed call are perturbed to an OBSERVED change, not a test failure: with
+either removed, the child reconstructs 0 references instead of 15 and traps back
+inside `finish_restore`. D8 is an expected failure, so no assertion there can
+gate; the durable test for the merged catalog is owed and belongs with whatever
+makes D8 green.
+
+**Three ceilings need a ruling** (see `docs/surface-budget.json` for the full
+argument): `forkTypeScript` 855 -> 867 (`installChild`), `workerMainTypeScript`
+5545 -> 5550 (that call's argument list), `forkPlatformTypeScript` 1720 -> 1767
+(`fork-merged-catalog.ts` plus the shared sink). All three are recorded as
+PROVISIONAL RAISES.

@@ -65,6 +65,7 @@ const PHASE_IDLE = 0;
 const PHASE_CAPTURE = 1;
 const PHASE_SEALED_PARENT = 2;
 const PHASE_PARENT_REPLAY = 3;
+const PHASE_CHILD_REPLAY = 4;
 const PHASE_ABORT_REPLAY = 5;
 
 /** `fm_borrowed_replay_workspace` fields. */
@@ -1506,6 +1507,99 @@ describe("the binding records the module assembles at capture", () => {
       steps,
       "one activation: a restore and a finish-restore at least",
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("seeds a child from the arena, then attaches it in the phase that left", () => {
+    // The two halves of a child install, in the order a host performs them.
+    // `fm_child_seed` rebuilds every activation's replay driver from the
+    // inherited journal image; `fm_attach_child` seeds the reference graph and
+    // builds the install plan. The seed moves the module to CHILD_REPLAY, so an
+    // attach that insisted on IDLE answered EBUSY and the whole install stopped
+    // there -- which is exactly what the dlopen e2e hit once the seed was wired
+    // back up (its caller went with the fork coordinator).
+    //
+    // A SIDE activation's record carries no root at all, on purpose: a host
+    // cannot know one (it is a per-fork address), so the module resolves it
+    // from the KFAC manifest it wrote at seal.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedTemplateId(f, 1, 2048);
+    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sides = new DataView(f.memory.buffer);
+    sides.setUint32(sidesPtr, 1, true);
+    sides.setUint32(sidesPtr + 4, 0, true);
+    for (const activation of [0, 1]) {
+      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+      if (f.instance.driveTable.length < needed) {
+        f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+      }
+      for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
+        f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
+      }
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_UNWIND_END,
+        voidSlotThunk(() => {}) as never,
+      );
+    }
+    (f.x.fm_capture_begin as () => void)();
+    const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+      sidesPtr,
+      1,
+    );
+    expect(f.errno(), "a two-activation capture begins").toBe(0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "and seals").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    // The child's side record is the SAME `(id, fixedPrefix)` pair the capture
+    // side reads: the host owns the fixed prefix and nothing else about it.
+    const childSides = MMAP_FLOOR + 4 * PAGE;
+    const sideRecord = new DataView(f.memory.buffer);
+    sideRecord.setUint32(childSides, 1, true);
+    sideRecord.setUint32(childSides + 4, 0, true);
+
+    const child = childModule(f);
+    (
+      child.fm_child_seed as (r: number, a: number, s: number, n: number) => void
+    )(root, act0Root, childSides, 1);
+    expect(
+      (child.fm_last_errno as () => number)(),
+      "the seed resolves the side root from the manifest",
+    ).toBe(0);
+    expect(
+      (child.fm_phase as () => number)(),
+      "and the seed is what enters child replay",
+    ).toBe(PHASE_CHILD_REPLAY);
+
+    const plan = (child.fm_attach_child as (r: number, pid: number) => number)(
+      root,
+      1,
+    );
+    expect(
+      (child.fm_last_errno as () => number)(),
+      "the attach is legal from the phase the seed left",
+    ).toBe(0);
+    expect(plan, "and it builds an install plan").toBeGreaterThan(0);
+  });
+
+  it("still refuses a child install from a phase that is not an install", () => {
+    // Widening the attach to accept CHILD_REPLAY must not widen it to accept
+    // everything: an attach while THIS worker is capturing its own fork would
+    // seed a replay driver over a live capture.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture open").toBe(0);
+    expect((f.x.fm_phase as () => number)(), "in capture").toBe(PHASE_CAPTURE);
+    (f.x.fm_attach_child as (r: number, pid: number) => number)(
+      f.arena(ARENA_ROOT),
+      1,
+    );
+    expect(f.errno(), "an attach mid-capture is refused").toBe(EBUSY);
   });
 
   it("lets the PARENT decode its own sealed graph, for the replay lookups", () => {

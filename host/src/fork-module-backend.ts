@@ -498,31 +498,32 @@ export class ForkModuleContinuationBackend {
     arenaRoot: number,
     sides: readonly ForkSideActivation[],
   ): number {
-    // Staged here rather than by the caller: the module reads the list as
-    // `(id, fixedPrefix)` u32 pairs out of guest memory, and where they are
-    // written is this wrapper's business, not worker-main's.
-    let at = 0;
-    if (sides.length > 0) {
-      const bytes = new Uint8Array(sides.length * 8);
-      const view = new DataView(bytes.buffer);
-      sides.forEach((side, index) => {
-        view.setUint32(index * 8, side.id >>> 0, true);
-        view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
-      });
-      at = this.stage(bytes, `${sides.length} side activation(s)`);
-    }
     return this.call(
       "fm_parent_begin_capture",
       channelBase,
       arenaRoot,
-      at,
+      this.stageSides(sides),
       sides.length,
     );
   }
 
   /**
-   * Install this fork's child: seed the reference replay from the inherited
+   * Install this fork's child: SEED every activation's replay driver from the
+   * inherited journal image, then seed the reference replay from the inherited
    * arena, admit its exnref tags, and build the whole reconstruction plan.
+   *
+   * Both module calls, in this order, because they are one arrival at the
+   * child-replay phase and the install plan's restore/finish tail is built per
+   * activation -- so the activations must exist before the plan is built.
+   * WITHOUT THE SEED THE CHILD HAS NO MODULE STATE AT ALL: every
+   * `__wpk_fork_module_state_record_find` the guest's restore makes answers 0,
+   * which the guest reads as a page header at address 0 and traps on. The
+   * seed's only caller was the fork coordinator; census 183.
+   *
+   * Each side activation carries the ONE fact the host owns: its `fixedPrefix`,
+   * a static property of the module this child loaded. Its continuation root is
+   * a per-fork address the parent recorded in the arena's
+   * `ActivationContinuations` manifest, and the module reads that back itself.
    *
    * ONE call for both child shapes. A COW child and a vfork BORROWED child
    * share an identical install plan -- the only borrowed-specific work is the
@@ -533,7 +534,19 @@ export class ForkModuleContinuationBackend {
    * step count comes from the module rather than the caller, so the two cannot
    * disagree about how much of the plan to run.
    */
-  attachChild(moduleStateRoot: number, pid: number): number {
+  installChild(
+    moduleStateRoot: number,
+    act0Root: number,
+    pid: number,
+    sides: readonly ForkSideActivation[],
+  ): number {
+    this.call(
+      "fm_child_seed",
+      moduleStateRoot,
+      act0Root,
+      this.stageSides(sides),
+      sides.length,
+    );
     return this.call("fm_attach_child", moduleStateRoot, pid);
   }
 
@@ -833,6 +846,26 @@ export class ForkModuleContinuationBackend {
    * wrapping would silently overwrite an earlier activation's section with a
    * later one's and leave the module pointing at the wrong bytes.
    */
+  /**
+   * Stage a side-activation list as `(id, fixedPrefix)` u32 pairs.
+   *
+   * The SAME layout serves capture and child seed, because the host owns the
+   * same one fact in both: `fixedPrefix`, a static property of the loaded
+   * module. Everything else about a side activation -- above all its per-fork
+   * continuation root -- the module recorded itself and reads back itself.
+   * Where the pairs are written is this wrapper's business, not the caller's.
+   */
+  private stageSides(sides: readonly ForkSideActivation[]): number {
+    if (sides.length === 0) return 0;
+    const bytes = new Uint8Array(sides.length * 8);
+    const view = new DataView(bytes.buffer);
+    sides.forEach((side, index) => {
+      view.setUint32(index * 8, side.id >>> 0, true);
+      view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
+    });
+    return this.stage(bytes, `${sides.length} side activation(s)`);
+  }
+
   private stage(bytes: Uint8Array, what: string): number {
     const base = this.options.instance.stagingBase;
     const limit = base + this.options.instance.stagingBytes;

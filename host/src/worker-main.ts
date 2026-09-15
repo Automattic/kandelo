@@ -143,8 +143,9 @@ import {
   type ForkWasmImports,
   type PreparedForkParentActivation,
 } from "./fork-import-identity";
-import { ForkActivations } from "./fork-activations";
+import { ForkActivations, forkActivationCatalogSink } from "./fork-activations";
 import { ForkTableStateOwners } from "./fork-table-state-owners";
+import { ForkMergedFunctionCatalog } from "./fork-merged-catalog";
 import { ForkTables } from "./fork-tables";
 import { ForkChildImports } from "./fork-child-imports";
 import {
@@ -3947,16 +3948,18 @@ export async function centralizedWorkerMain(
       const forkActivations = new ForkActivations(
         requireForkModuleBackend(forkModuleBackend, pid),
         `pid=${pid}: fork activations`,
-        {
-          registerCatalog: (activationId, catalog) =>
-            forkTables.registerCatalog(activationId, catalog),
-          registerStaticRoots: (activationId, catalog) =>
-            forkStaticRoots.set(activationId, catalog),
-          registerTable: (activationId, ownerId, table) => {
-            forkTables.register(activationId, ownerId, table);
-            processTableStateOwners.register(activationId, ownerId, table);
-          },
-        },
+        forkActivationCatalogSink({
+          tables: forkTables,
+          // Filled as activations register, on the PARENT as well as the child
+          // -- see `ForkMergedFunctionCatalog` for why both.
+          merged: new ForkMergedFunctionCatalog(
+            forkModuleInstance!.functionCatalog,
+            requireForkModuleBackend(forkModuleBackend, pid),
+            `pid=${pid}: merged function catalog`,
+          ),
+          staticRoots: forkStaticRoots,
+          owners: processTableStateOwners,
+        }),
       );
       const importedStateCapture = new ForkImportIdentity(
         requireForkModuleBackend(forkModuleBackend, pid),
@@ -4792,53 +4795,14 @@ export async function centralizedWorkerMain(
         // over -- it resolves each coordinate through the module and keeps no
         // table of its own.
         if (moduleReferenceKindsSupported && forkModuleInstance) {
-          // Phase 6 D6.1/D7a.1b: the guest instances now exist, so mirror every
-          // activation's `__wpk_fork_function_catalog` funcref table into the ONE
-          // host-owned merged table the fork-module imported at init (the module
-          // could not import the guest exports directly — it is instantiated
-          // BEFORE the guests to supply the frame-flip imports). Copying preserves
-          // funcref identity (`table.get` returns the same functions), so the
-          // module's reconstruction matches the JS catalog byte for byte.
+          // The merged funcref catalog was filled as each activation registered
+          // (see `mirrorFunctionCatalog`), parent and child alike, so nothing
+          // mirrors here any more.
           //
-          // MERGED, ACTIVATION-NAMESPACED CATALOG: each activation `a`'s catalog
-          // occupies slots `[base[a], base[a] + len_a)`, where `base[a]` is the
-          // running sum of every prior (sorted) activation's catalog length. The
-          // module is seeded that base via `setActivationCatalogBase`, and
-          // `fm_funcref_ordinal` then returns the global slot
-          // `base(module_activation) + function_ordinal` — so a funcref minted in
-          // one activation but held by another's frame resolves against its own
-          // activation's slice. A SINGLE-activation fork seeds NO base (the module
-          // defaults base 0), so its mirror + reconstruction is byte-identical to
-          // D6.1. Activation 0 is registered first (sorted), so its base is 0 and
-          // its funcrefs still map to raw ordinals.
           // Ascending by id, from the host's own record rather than the
           // registry: every loop below needs the same order the module drives
           // activations in, and the record already answers in it.
           const sortedActivations = forkActivations.ordered();
-          const mirror = forkModuleInstance.functionCatalog;
-          const multiActivation = sortedActivations.length > 1;
-          let base = 0;
-          for (const activation of sortedActivations) {
-            const guestCatalog = activation.instance.exports
-              .__wpk_fork_function_catalog as WebAssembly.Table;
-            const needed = base + guestCatalog.length;
-            if (mirror.length < needed) {
-              mirror.grow(needed - mirror.length);
-            }
-            for (let slot = 0; slot < guestCatalog.length; slot += 1) {
-              mirror.set(base + slot, guestCatalog.get(slot));
-            }
-            // Only seed bases for a multi-activation fork; keeping the base map
-            // EMPTY for a single activation makes its funcref mapping provably
-            // byte-identical to D6.1 (base defaults to 0 in the module).
-            if (multiActivation && forkModuleBackend) {
-              forkModuleBackend.setActivationCatalogBase(
-                activation.activationId,
-                base,
-              );
-            }
-            base += guestCatalog.length;
-          }
           // Phase 6 item 3b/3c: bind each activation's guest
           // `_gc_allocate`/`_gc_fill`/`_exception_materialize` exports into the
           // module's imported drive table at
@@ -5026,7 +4990,22 @@ export async function centralizedWorkerMain(
         // missing is what running this will say.
         earlyChildReferences = null;
         exceptionBroker.invalidate();
-        const installPlan = forkModule().attachChild(childArenaRoot, pid);
+        // Seed the child's module state BEFORE attaching. Without it the module
+        // has no state at all, so every `record_find` the guest's restore makes
+        // answers 0 and the guest traps reading a page header from address 0.
+        // The coordinator did this; deleting it took the call with no caller
+        // left to notice. Census 183.
+        //
+        // Activation 0's root is the launch anchor this child already read. Each
+        // side activation contributes only its `fixedPrefix`; its continuation
+        // root is a per-fork address the parent recorded in the arena, which the
+        // module reads back itself.
+        const installPlan = forkModule().installChild(
+          childArenaRoot,
+          inheritedLaunchRoot,
+          pid,
+          forkActivations.sides(),
+        );
         forkModule().driveRestoredPlan(installPlan);
         if (borrowedWorkspace) borrowedWorkspace.assertAttachComplete();
         // Static-root binder: the attach synchronously drove the plan, so the
@@ -6462,6 +6441,15 @@ export async function centralizedThreadWorkerMain(
       `pid=${pid} tid=${tid}: fork tables`,
     );
     const threadActivationRegistry = hasForkInstrumentation;
+    // One election per physical table for this replica, shared by the imported
+    // identity capture and by the activation record's table registration -- two
+    // separate owner sets would let two coordinates both believe they own one
+    // table's sparse state.
+    const threadTableStateOwners = new ForkTableStateOwners(
+      (activationId, ownerId, owns) =>
+        requireForkModuleBackend(threadForkModuleBackend, pid)
+          .setActivationTableStateOwner(activationId, ownerId, owns),
+    );
     let threadImportedStateCapture: ForkImportIdentity | null = null;
     let threadForkActivations: ForkActivations | null = null;
     let threadCaptureModule: ForkReferenceCaptureModule | null = null;
@@ -6622,17 +6610,28 @@ export async function centralizedThreadWorkerMain(
         // point. Nothing reads it earlier.
         if (threadActivationRegistry) {
           const backend = threadForkModuleBackend;
+          // A pthread replica runs its OWN fork-module instance, so it needs
+          // its own merged catalog and its own bases -- and, like every other
+          // worker, its own activation record.
           threadForkActivations = new ForkActivations(
             backend,
             `pid=${pid} tid=${tid}: fork activations`,
+            forkActivationCatalogSink({
+              tables: threadForkTables,
+              merged: new ForkMergedFunctionCatalog(
+                threadForkModuleInstance.functionCatalog,
+                backend,
+                `pid=${pid} tid=${tid}: merged function catalog`,
+              ),
+              staticRoots: new Map(),
+              owners: threadTableStateOwners,
+            }),
           );
           threadFixedPrefixSize = linkedFrameFormat.fixedPrefixSize;
           threadImportedStateCapture = new ForkImportIdentity(
             backend,
             `pid=${pid} tid=${tid}: imported activation state`,
-            new ForkTableStateOwners((activationId, ownerId, owns) =>
-              backend.setActivationTableStateOwner(activationId, ownerId, owns),
-            ),
+            threadTableStateOwners,
           );
         }
         // Path-A A4 parity: route this pthread worker's peer-table CAPTURE
@@ -6867,9 +6866,24 @@ export async function centralizedThreadWorkerMain(
               `pid=${pid} tid=${tid}: fork host floor`,
             ).floor,
             importedStateCapture: threadImportedStateCapture ?? undefined,
+            activations: threadForkActivations ?? undefined,
             tableReplication: threadTableReplicationImports,
             isForkChild: false,
             isPthreadReplica: true,
+            // A pthread replica instantiates its OWN co-resident fork-module
+            // (`threadForkModuleInstance`, above), and its side activations need
+            // the same frame/resume flip the main worker's do: the module is the
+            // only frame/journal implementation on this path too, so an
+            // activation without the flip has no continuation at all. Omitting
+            // it here is what made a dlopen from a pthread fail with "side
+            // activation N has no fork module" even though the module was
+            // sitting right there.
+            forkModuleFrameFlip: threadForkModuleBackend
+              ? {
+                  moduleExports: threadForkModuleInstance!.exports,
+                  backend: threadForkModuleBackend,
+                }
+              : undefined,
             invokeProcessFork: () => {
               const fork = threadInstance?.exports.fork;
               if (typeof fork !== "function") {

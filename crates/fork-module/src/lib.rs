@@ -3559,9 +3559,18 @@ mod wasm {
 
     /// Refuse an entry point legal from either of two phases.
     ///
-    /// Only the replay-finish entries need this: a parent replay and a child
-    /// replay both end at idle through the same call, and collapsing them into
-    /// one `require_phase` would mean accepting every phase instead.
+    /// Two shapes need this, and neither is "accept every phase":
+    ///
+    /// - The replay-FINISH entries: a parent replay and a child replay both end
+    ///   at idle through the same call.
+    /// - The child-INSTALL entries: a COW/borrowed child install is ONE arrival
+    ///   at `PHASE_CHILD_REPLAY` spread over two calls (`fm_child_seed` seeds
+    ///   the per-activation replay drivers, `fm_attach_child` seeds the
+    ///   reference graph and builds the install plan), so whichever runs first
+    ///   makes the transition and the second must be legal from the phase its
+    ///   sibling just entered. Accepting `PHASE_CHILD_REPLAY` here still
+    ///   refuses an attach during capture, sealed-parent, parent replay, or
+    ///   abort replay -- everything the single-phase guard refused.
     fn require_phase_either(first: u32, second: u32) -> Result<(), Errno> {
         let current = PHASE.load(Ordering::Relaxed);
         if current == first || current == second {
@@ -4690,6 +4699,73 @@ mod wasm {
     /// (only activation 0 is seeded from the launch anchor + journal image).
     /// Truthful failure: a malformed inheritance or an already-seeded activation is
     /// a `fm_last_errno`.
+    /// A side activation's inherited continuation root, from the `KFAC`
+    /// manifest the parent's seal wrote into this arena.
+    ///
+    /// The host cannot supply this and should not try: it is a PER-FORK address
+    /// the parent allocated, not a static property of the side module the child
+    /// loaded. The host owns the other half of the pair -- `fixed_prefix` --
+    /// which is static and which no inherited record carries. So each side
+    /// tells the other exactly what only it knows.
+    fn activation_continuation_root(
+        module_state_root: u64,
+        activation_id: u32,
+    ) -> Result<u64, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+        let header = usize::from(abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE);
+        let entry = usize::from(abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE);
+        for record in &module_state.records {
+            if record.kind != abi::WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS
+            {
+                continue;
+            }
+            let payload = record_payload(record)?;
+            if payload.len() < header {
+                return Err(Errno::EINVAL);
+            }
+            if payload[0..4] != abi::WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC {
+                return Err(Errno::EINVAL);
+            }
+            let count = u32::from_le_bytes([
+                payload[12], payload[13], payload[14], payload[15],
+            ]) as usize;
+            let need = header
+                .checked_add(entry.checked_mul(count).ok_or(Errno::EINVAL)?)
+                .ok_or(Errno::EINVAL)?;
+            if payload.len() < need {
+                return Err(Errno::EINVAL);
+            }
+            for index in 0..count {
+                let at = header + index * entry;
+                let id = u32::from_le_bytes([
+                    payload[at], payload[at + 1], payload[at + 2], payload[at + 3],
+                ]);
+                if id != activation_id {
+                    continue;
+                }
+                let mut root = [0u8; 8];
+                root.copy_from_slice(&payload[at + 8..at + 16]);
+                let root = u64::from_le_bytes(root);
+                if root == 0 {
+                    return Err(Errno::EINVAL); // a manifest entry with no root
+                }
+                return Ok(root);
+            }
+        }
+        Err(Errno::EINVAL) // no manifest, or it does not name this activation
+    }
+
     fn child_seed_impl(
         module_state_root: u64,
         act0_root: u64,
@@ -4700,23 +4776,28 @@ mod wasm {
         begin_child_replay_impl(act0_root, image_ptr, image_len)?;
         let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
         if count > 0 {
-            let bytes = (count as u64).checked_mul(16).ok_or(Errno::EINVAL)?;
+            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
             let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
             if sides_ptr == 0 || end > mem_len_bytes() as u64 {
                 return Err(Errno::EINVAL);
             }
             for i in 0..count {
-                let base = (i as u64) * 16;
+                let base = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
                 let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
-                let root_lo = unsafe { ch_read_u32(sides_ptr, (base + 8) as usize) };
-                let root_hi = unsafe { ch_read_u32(sides_ptr, (base + 12) as usize) };
-                let root = ((root_hi as u64) << 32) | root_lo as u64;
                 if id == 0 {
                     // Activation 0 is seeded from the launch anchor + journal image
                     // above; a side entry naming it is a host bug.
                     return Err(Errno::EINVAL);
                 }
+                // The host knows this activation's `fixed_prefix` -- a static
+                // property of the module it loaded -- and CANNOT know its
+                // continuation root, which is a per-fork address the parent
+                // recorded at seal. So the record carries only what the host
+                // owns, and the root comes from the manifest; see
+                // `activation_continuation_root`. Same `(id, fixed_prefix)`
+                // layout the capture side reads, for the same reason.
+                let root = activation_continuation_root(module_state_root, id)?;
                 add_activation_child_replay_impl(id, root, fixed_prefix)?;
             }
         }
@@ -9117,7 +9198,16 @@ mod wasm {
     /// smaller change than carrying a duplicate export until then.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_attach_child(module_state_root: usize, pid: u32) -> usize {
-        match require_phase(PHASE_IDLE)
+        // A child install arrives at `PHASE_CHILD_REPLAY` through TWO calls, and
+        // the host is free to order them: `fm_child_seed` seeds each
+        // activation's replay driver from the inherited journal image, this
+        // entry seeds the reference graph and builds the install plan. A host
+        // that seeds first (the JS hosts do -- the plan's restore/finish tail
+        // is built per activation, so the activations must exist) finds the
+        // phase already at `PHASE_CHILD_REPLAY`; one that attaches first (the
+        // shape the module's own unit tests drive) finds it idle. Both are the
+        // same install, so both are legal here; every other phase is not.
+        match require_phase_either(PHASE_IDLE, PHASE_CHILD_REPLAY)
             .and_then(|()| attach_from_arena_impl(module_state_root as u64, pid))
         {
             Ok(ptr) => {

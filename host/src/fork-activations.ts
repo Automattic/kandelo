@@ -80,6 +80,41 @@ export interface ForkActivationCatalogSink {
   registerTable(activationId: number, ownerId: number, table: WebAssembly.Table): void;
 }
 
+/**
+ * The one sink every worker builds, from the four records it keeps.
+ *
+ * A process worker and a pthread replica each run their OWN fork-module
+ * instance and therefore their own catalogs, tables and owner election -- but
+ * the wiring between them is identical, and writing it twice is how the replica
+ * came to have no sink at all (a dlopen there registered no table, and the
+ * first host table mutation failed with "host mutated a Table outside the
+ * registered fork catalogs").
+ */
+export function forkActivationCatalogSink(records: {
+  tables: {
+    registerCatalog(activationId: number, catalog: WebAssembly.Table): void;
+    register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
+  };
+  merged: { take(activationId: number, catalog: WebAssembly.Table): void };
+  staticRoots: Map<number, WebAssembly.Table>;
+  owners: {
+    register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
+  };
+}): ForkActivationCatalogSink {
+  return {
+    registerCatalog: (activationId, catalog) => {
+      records.tables.registerCatalog(activationId, catalog);
+      records.merged.take(activationId, catalog);
+    },
+    registerStaticRoots: (activationId, catalog) =>
+      records.staticRoots.set(activationId, catalog),
+    registerTable: (activationId, ownerId, table) => {
+      records.tables.register(activationId, ownerId, table);
+      records.owners.register(activationId, ownerId, table);
+    },
+  };
+}
+
 export class ForkActivations {
   private readonly live = new Map<number, ForkActivation>();
   private readonly bootstrapped = new Set<number>();
