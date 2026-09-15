@@ -357,7 +357,7 @@
       "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
       "scope_end": "\n}\n",
       "find": "    let files = rootfs::lazy_entries();",
-      "replace": "    let files = rootfs::lazy_entries();\n    let files = { let mut f = files; f.push(rootfs::LazyEntryView { path: b\"/ghost\".to_vec(), ino: 0, size: 0, archive_id: 0, source_path: alloc::vec::Vec::new(), payload: alloc::vec::Vec::new() }); f };"
+      "replace": "    let files = rootfs::lazy_entries();\n    let files = { let mut f = files; f.push(rootfs::LazyEntryView { path: b\"/ghost\".to_vec(), ino: 0, size: 0, archive_id: 0, source_path: alloc::vec::Vec::new(), payload: alloc::vec::Vec::new(), uri: alloc::vec::Vec::new(), digest: runtime_core::sffs_deferred::DIGEST_NONE }); f };"
     },
     {
       "name": "the enumeration writes into a buffer smaller than the record set",
