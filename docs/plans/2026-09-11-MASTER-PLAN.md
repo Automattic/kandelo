@@ -466,10 +466,27 @@ empty and rebuilding produced **the identical error**, so either the fallback
 is not the path or an empty value does not override it. The change was
 reverted rather than left in as an unproven edit.
 
-**What the next person should try:** capture the actual link command mach runs
-for `host_nsinstall` — `mach build -v` or the `.mozbuild` command log — and
-read which linker and which library paths it is given. The diagnosis needs the
-real invocation, not another hypothesis about where the flags come from.
+**A SECOND hypothesis was tested and also DISPROVED.** The dev shell exports
+`LD=ld`, and `ld` on PATH resolves to
+`/nix/store/...clang-wrapper-21.1.7/bin/ld` — the CROSS toolchain wrapper, not
+Apple's linker — while `HOST_LD` is unset. That explains both observations
+exactly: `ld64.lld` appears because the wrapper drives lld, and even `strcpy`
+is missing because no macOS libSystem is supplied. Rebuilding with
+`HOST_LD=/usr/bin/ld` produced **the identical error**, so mozbuild is not
+honouring `HOST_LD` either, or the linker is selected somewhere else entirely.
+
+**Two evidence-backed hypotheses have now failed.** Both looked right, both
+were measured rather than imagined, and both were wrong. That is the signal to
+stop hypothesising: the remaining question is not *where might the flags come
+from* but *what command is actually run*.
+
+**What the next person should do FIRST:** capture the actual link invocation —
+`mach build -v`, or the `.mozbuild` command log — and read which linker binary
+and which library paths `host_nsinstall` is given. Everything above is
+elimination; none of it substitutes for that one line of output.
+
+Ruled out so far, each by a full rebuild: target `LDFLAGS` leaking through
+unset `HOST_*FLAGS`, and the cross `LD` leaking through unset `HOST_LD`.
 
 ## B43 — the Xcode licence blocks spidermonkey, and only the maintainer can clear it
 
