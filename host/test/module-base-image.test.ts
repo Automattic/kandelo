@@ -336,6 +336,84 @@ describe("a module-backed base image", () => {
     expect(lazyInput.archives[0].size).toBe(4242);
   });
 
+  it("keeps each archive's members its own, and standalone files out of both", async () => {
+    // TWO archives plus a standalone file. With one archive, a grouping bug is
+    // invisible: everything lands in the only bucket there is.
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerLazyFile("/opt/loose.bin", "assets/loose.bin", 3, 0o644);
+    module.registerLazyArchive({
+      url: "archives/one.zip",
+      entries: [zipEntry("one/a")],
+      mountPrefix: "/opt",
+      integrity: { sha256: "1".repeat(64), bytes: 11 },
+    });
+    module.registerLazyArchive({
+      url: "archives/two.zip",
+      entries: [zipEntry("two/b")],
+      mountPrefix: "/opt",
+      integrity: { sha256: "2".repeat(64), bytes: 22 },
+    });
+    const container = await module.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      undefined,
+      () => reader.lazyEntries(),
+    );
+
+    const archives = baseImage.exportLazyArchiveEntries();
+    expect(archives.length).toBe(2);
+    const sources = archives.map((a) => a.entries.map((e) => e.sourcePath).sort());
+    expect(sources).toEqual([["one/a"], ["two/b"]]);
+    // The standalone file belongs to neither.
+    for (const archive of archives) {
+      expect(archive.entries.map((e) => e.vfsPath)).not.toContain("/opt/loose.bin");
+    }
+    expect(baseImage.exportLazyEntries().map((e) => e.path)).toEqual(["/opt/loose.bin"]);
+  });
+
+  it("refuses a descriptor that is not the shape this reader knows", async () => {
+    // Producers cannot hand the reader a malformed ENVELOPE: the module wraps
+    // whatever it is given in its own well-formed one, so a descriptor that is
+    // itself an envelope arrives double-wrapped. What the reader can meet is a
+    // descriptor whose CONTENT it does not understand, and it must say so
+    // rather than build an archive from a guess.
+    const envelope = new Uint8Array(8 + 4);
+    const view = new DataView(envelope.buffer);
+    view.setUint32(0, 1, true);
+    view.setUint32(4, 0xffff, true);
+    envelope.set(new TextEncoder().encode("{}"), 8);
+
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerArchiveMember({
+      path: "/opt/member",
+      archiveId: 1,
+      sourcePath: "member",
+      size: 1,
+      mode: 0o644,
+      ino: 4243,
+      archiveBytes: 5,
+      archiveDescriptor: envelope,
+    });
+    const container = await module.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      undefined,
+      () => reader.lazyEntries(),
+    );
+    expect(() => baseImage.exportLazyArchiveEntries())
+      .toThrow(/cannot parse/);
+  });
+
   it("refuses a module-built archive whose descriptor it cannot parse", async () => {
     const module = SffsImageFs.create();
     module.mkdir("/opt", 0o755);
@@ -380,10 +458,10 @@ describe("a module-backed base image", () => {
 });
 
 /** The minimal ZIP member a legacy archive registration accepts. */
-function zipEntry() {
+function zipEntry(fileName = "bin/vim") {
   return {
-    fileName: "bin/vim",
-    fileNameBytes: new TextEncoder().encode("bin/vim"),
+    fileName,
+    fileNameBytes: new TextEncoder().encode(fileName),
     compressedSize: 1,
     uncompressedSize: 1,
     compressionMethod: 0,

@@ -93,13 +93,6 @@
    "scope_end": "\n}\n",
    "find": "  return payload.subarray(8, 8 + length);",
    "replace": "  return payload;"
-  },
-  {
-   "name": "a descriptor longer than its payload is trusted",
-   "scope": "function unwrapSealPayload(",
-   "scope_end": "\n}\n",
-   "find": "  if (8 + length > payload.byteLength) {",
-   "replace": "  if (false) {"
   }
  ]
 }

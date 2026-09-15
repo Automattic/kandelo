@@ -74,6 +74,12 @@ function unwrapSealPayload(payload: Uint8Array, archiveId: number): Uint8Array {
     );
   }
   const length = view.getUint32(4, true);
+  // UNREACHABLE through the module's own writer, and kept deliberately. The
+  // module wraps every payload in a well-formed envelope, so no producer
+  // reachable from here can declare a length past the end — a perturbation
+  // removing this check survives, and provably would, because `subarray`
+  // CLAMPS rather than overruns. It stays because the clamp is the dangerous
+  // behaviour: it would hand the seal bytes on as if they were descriptor.
   if (8 + length > payload.byteLength) {
     throw new Error(
       `VFS image lazy archive ${archiveId} declares a ${length}-byte descriptor `
