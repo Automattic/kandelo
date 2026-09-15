@@ -227,15 +227,16 @@ Then, and only then, the rest:
 
 1. **C1** — 52 files.
 2. **C2** — 41 files.
-3. **C4** -- 7 files, and a DESIGN decision rather than a fix. The obvious move
-   -- a `childSeedBorrowed` backend method -- costs host surface on a ceiling the
-   maintainer has just ruled should next FALL, and it keeps the per-activation
-   private-prefix carving in JavaScript. The better shape is the opposite: seed
-   the admitted workspace region to the module ONCE and let it carve each
-   activation's prefix itself, which deletes the prefix half of
-   `vfork-workspace.ts` (158 code lines) along with `reservePrefix` and
-   `assertAttachComplete`. The host would keep only what it alone knows: the
-   region the kernel admitted. Size it before writing it.
+3. **C4** -- 7 files. **RULED 2026-09-15: trade one `fm_*` entry for the host
+   cut.** The maintainer chose the module-carves shape over a
+   `childSeedBorrowed` backend method: the host seeds the kernel-admitted
+   workspace region to the module ONCE, the module carves each activation's
+   private prefix itself, and the prefix half of `vfork-workspace.ts` goes --
+   `reservePrefix`, `assertAttachComplete` and the layout arithmetic around
+   them, about 170 host lines. `forkModuleHostEntries` 59 -> 60, argued in the
+   ledger as a RECLASSIFICATION rather than growth: the work does not vanish, it
+   moves to the side that owns the arena. The host keeps only what it alone
+   knows, which is the region the kernel admitted.
 4. **C3** -- 25 files, and they are two populations, not one. The distinction
    decides the work:
 
@@ -275,8 +276,14 @@ Then, and only then, the rest:
    PROVISIONAL raises in D6 need the maintainer's ruling either way.
 9. **Browser parity.** The host-runtime contract says Node and browser are
    peers and a change is incomplete until both behave the same. Everything in
-   this lane has been validated on Node only. `./run.sh browser` plus the
+   this lane has been validated on Node only, so `./run.sh browser` plus the
    fork-relevant Playwright specs is a REQUIRED close-out step, not an extra.
+
+   **SEQUENCED 2026-09-15: after more of the baseline is drained, not before.**
+   The maintainer's reason is one this lane cannot see from inside -- ANOTHER
+   AGENT is fixing broken browser builds right now, so a browser pass today
+   would measure their work in progress rather than this lane's. It also makes
+   the browser build files someone else's ground; see the merge note below.
 10. **Curate.** The lane's commits become the narrative the campaign merges.
 
 **What is explicitly NOT lane F's, recorded so it is not re-litigated.**
@@ -292,7 +299,9 @@ Then, and only then, the rest:
 **How the lane merges.** D4 stands: merging is the maintainer's. When it is
 time, merge THIS branch into the campaign branch, and check first that no other
 lane agent is working in the same files — `worker-main.ts` and
-`crates/fork-module/src/lib.rs` are the ones several lanes touch.
+`crates/fork-module/src/lib.rs` are the ones several lanes touch. As of
+2026-09-15 another agent holds the BROWSER BUILD files; this lane has not
+touched them and should not start.
 
 ### D6 — Ledger: provisional ceiling raises awaiting a ruling
 

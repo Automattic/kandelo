@@ -276,14 +276,31 @@ export function voidSlotThunk(body: () => void): CallableFunction {
 }
 
 
+export interface ChildModuleOptions {
+  /** The single residual externref host seam, when the caller decodes one. */
+  readonly resolveExternref?: (handle: number) => unknown;
+  readonly label?: string;
+}
+
+/** The child module's EXPORTS. Most callers want only these. */
 export function childModule(
   f: Fixture,
-  options: {
-    /** The single residual externref host seam, when the caller decodes one. */
-    readonly resolveExternref?: (handle: number) => unknown;
-    readonly label?: string;
-  } = {},
+  options: ChildModuleOptions = {},
 ): Record<string, unknown> {
+  return childInstance(f, options).exports as Record<string, unknown>;
+}
+
+/**
+ * The child module's INSTANCE.
+ *
+ * A funcref decode needs more than the exports: the module resolves a recipe to
+ * a slot in the MERGED function catalog it imported at init, and only the
+ * instance carries that table for a test to fill.
+ */
+export function childInstance(
+  f: Fixture,
+  options: ChildModuleOptions = {},
+): ReturnType<typeof instantiateForkModule> {
   const needed = CHILD_MODULE_BASE + 8 * 1024 * 1024;
   if (f.memory.buffer.byteLength < needed) {
     f.memory.grow(Math.ceil((needed - f.memory.buffer.byteLength) / PAGE));
@@ -302,7 +319,7 @@ export function childModule(
   });
   const cx = child.exports as Record<string, unknown>;
   (cx.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
-  return cx;
+  return child;
 }
 
 
