@@ -198,7 +198,7 @@ function buildFiles(
       }
       throw e;
     }
-    createFileExactWithOwner(mfs, f.path, f.mode, f.uid, f.gid, content);
+    mfs.createFileWithOwner(f.path, f.mode, f.uid, f.gid, content);
   }
 }
 
@@ -289,14 +289,7 @@ function extractArchive(
     if (skipPaths.has(member.vfsPath)) continue;
     ensureParentDirs(mfs, member.vfsPath, a);
     const content = extractZipEntry(zipBytes, member.entry);
-    createFileExactWithOwner(
-      mfs,
-      member.vfsPath,
-      member.fileMode,
-      a.uid,
-      a.gid,
-      content,
-    );
+    mfs.createFileWithOwner(member.vfsPath, member.fileMode, a.uid, a.gid, content);
   }
 
   for (const member of symlinks) {
@@ -305,23 +298,6 @@ function extractArchive(
     const targetBytes = extractZipEntry(zipBytes, member.entry);
     const target = decodeSymlinkTarget(targetBytes, member);
     mfs.symlink(target, member.vfsPath, a.uid, a.gid);
-  }
-}
-
-function createFileExactWithOwner(
-  mfs: SffsImageFs,
-  path: string,
-  mode: number,
-  uid: number,
-  gid: number,
-  content: Uint8Array,
-): void {
-  mfs.createFileWithOwner(path, mode, uid, gid, content);
-  const actualBytes = mfs.stat(path).size;
-  if (actualBytes !== content.byteLength) {
-    throw new Error(
-      `short write while building ${JSON.stringify(path)}: expected ${content.byteLength} bytes, wrote ${actualBytes}`,
-    );
   }
 }
 
