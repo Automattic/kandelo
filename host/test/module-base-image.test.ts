@@ -231,6 +231,66 @@ describe("a module-backed base image", () => {
     expect(entries[0].url).toBe("/kandelo/assets/one.bin");
   });
 
+  it("does not mistake an archive MEMBER for a standalone deferred file", async () => {
+    // Both kinds in one image. A member's bytes come from its archive, and its
+    // descriptor is not a URL — reporting it as a standalone lazy file would
+    // hand the pipe a fetch target that is not one.
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerLazyFile("/opt/standalone.bin", "assets/one.bin", 11, 0o644);
+    module.registerArchiveMember({
+      path: "/opt/member.bin",
+      archiveId: 1,
+      sourcePath: "member.bin",
+      size: 7,
+      mode: 0o644,
+      ino: 4242,
+      archiveBytes: 99,
+      archiveDescriptor: new TextEncoder().encode('{"url":"archives/a.zip"}'),
+    });
+    const container = await module.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      undefined,
+      () => reader.lazyEntries(),
+    );
+
+    const paths = baseImage.exportLazyEntries().map((e) => e.path);
+    expect(paths).toEqual(["/opt/standalone.bin"]);
+  });
+
+  it("prefers the sections over the module when an image carries both", async () => {
+    // A MemoryFileSystem-built image records the URL in the sections and
+    // leaves the module's descriptor EMPTY. Consulting the module anyway would
+    // return an entry whose url is "", which fetches nothing and reports no
+    // error — so which source wins is not a preference, it is correctness.
+    const source = MemoryFileSystem.createFresh(4 * 1024 * 1024);
+    source.mkdirWithOwner("/opt", 0o755, 0, 0);
+    source.registerLazyFile("/opt/one.bin", "assets/one.bin", 11, 0o644);
+    const container = await source.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    // Proves the premise rather than assuming it: the module really does hold
+    // an empty descriptor for this image.
+    expect(new TextDecoder().decode(reader.lazyEntries().files[0]!.descriptor))
+      .toBe("");
+
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      "/kandelo/",
+      () => reader.lazyEntries(),
+    );
+    const entries = baseImage.exportLazyEntries();
+    expect(entries.length).toBe(1);
+    expect(entries[0].url).toBe("/kandelo/assets/one.bin");
+  });
+
   it("refuses a module-built image whose archives it cannot reconstruct", async () => {
     const module = SffsImageFs.create();
     module.mkdir("/opt", 0o755);
