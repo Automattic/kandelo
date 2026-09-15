@@ -2789,6 +2789,32 @@ sizing because a census counts FILES:
 **A file-level census cannot see the third**, which is how "76 files binding a
 MemoryFileSystem" overstated the work every time it was counted. The unit that
 moves is an assertion, sometimes a row in a table, not a file.
+### THE 26, CLASSIFIED BY WHAT THEY IMPORT — 2026-09-15
+
+The three dispositions make the remaining files classifiable by their import
+list rather than by reading every assertion. Across the 26:
+
+| class | count | files | disposition |
+|---|---|---|---|
+| **host floor** | **4** | `advisory-lock-kernel`, `host-file-offset`, `node-host-mounts`, `vfs` | **TRIM** — they import `NodePlatformIO` / `HostFileSystem` / `OpfsFileSystem` and test the host's own filesystems. `MemoryFileSystem` is one row among backends. |
+| **lazy/deferred** | **12** | `lazy-tree`, `lazy-archive`, `package-deferred-tree`, the `vfs-image-*` family, … | **BLOCKED** — an image carrying lazy entries stays on `MemoryFileSystem` until the overlay reads module metadata, which is the worker-flip decision. |
+| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `derived-vfs-symlink`, `demo-login-image`, `node-demo-workspace`, `shell-lazy-archive-inputs`, `vfs/image-helpers`, `wordpress-source-layout` | **PORT or DELETE**, assertion by assertion. Two done. |
+| **builder helper** | **1** | `mariadb-image-helpers` | repoint the fixture |
+
+**So the genuine porting work is SIX files, not twenty-six**, and the twelve
+largest are gated on a decision already recorded and waiting.
+
+**`vfs.test.ts` deserves its own line.** It is the dispatcher test — the only
+place that drives `FileSystemBackend`'s thirty methods — and it is host floor,
+not filesystem behaviour. It stays until the BACKEND goes, which is after
+`memory-fs.ts`, not before. A sizing that read its name would have filed it
+with the filesystem tests; its imports say otherwise.
+
+**What made this cheap** was giving up on counting files. Two sizings by
+keyword, three by file count, one by method census, one by call site — each
+produced a number and none produced a schedule. Reading imports produces a
+schedule because the import list says what a test is ABOUT, and that is the
+thing the disposition depends on.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
