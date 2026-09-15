@@ -2887,6 +2887,11 @@ mod wasm {
         // instantiates its own module into a FRESH region, whose BSS starts
         // zeroed, and `PHASE_IDLE` is 0.
         enter_phase(PHASE_IDLE);
+        // Per-worker like everything above it: a borrowed child seeds its own
+        // admitted region, and an inherited base would name the parent's.
+        BORROWED_PREFIX_BASE.store(0, Ordering::Relaxed);
+        BORROWED_PREFIX_BYTES.store(0, Ordering::Relaxed);
+        BORROWED_PREFIX_CURSOR.store(0, Ordering::Relaxed);
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
         FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
         Ok(())
@@ -3120,6 +3125,19 @@ mod wasm {
     /// it, because a high-water carried across forks would over-reserve every
     /// later child by the worst fork the worker ever ran.
     static SCRATCH_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
+    // The vfork BORROWED child's admitted workspace, seeded by the host.
+    //
+    // The host knows ONE thing about it that this module cannot derive: where
+    // the kernel put it. Everything else -- how much prefix each activation
+    // needs, in what order, with what alignment -- this module already computes,
+    // and `fm_borrowed_replay_workspace` has been answering that question for
+    // the host since it existed. Carving the prefixes here rather than in
+    // JavaScript removes the only reason the host had to do that arithmetic
+    // twice.
+    static BORROWED_PREFIX_BASE: AtomicUsize = AtomicUsize::new(0);
+    static BORROWED_PREFIX_BYTES: AtomicUsize = AtomicUsize::new(0);
+    static BORROWED_PREFIX_CURSOR: AtomicUsize = AtomicUsize::new(0);
 
     fn scratch_align(len: usize) -> usize {
         (len.wrapping_add(15)) & !15
@@ -4894,38 +4912,59 @@ mod wasm {
     fn child_seed_borrowed_impl(
         module_state_root: u64,
         act0_root: u64,
-        act0_private_prefix: u64,
         sides_ptr: u64,
         sides_count: u64,
     ) -> Result<(), Errno> {
         let (image_ptr, image_len) = journal_image_from_arena(module_state_root)?;
+        // Activation 0's private prefix is CARVED, not passed. The host seeded
+        // the region the kernel admitted (`fm_set_borrowed_workspace`); the
+        // walk that divides it among activations is this module's, and it was
+        // already reporting the total for that walk through
+        // `fm_borrowed_replay_workspace`. Carving in the same order the total
+        // was computed in is what makes the two agree.
+        let act0_prefix_size = borrowed_fixed_prefix(module_state_root, 0)?;
+        let act0_private_prefix = carve_borrowed_prefix(act0_prefix_size)?;
         begin_borrowed_child_replay_impl(act0_root, image_ptr, image_len, act0_private_prefix)?;
         let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
         if count > 0 {
-            let bytes = (count as u64).checked_mul(24).ok_or(Errno::EINVAL)?;
+            // The SAME `(id, fixed_prefix)` 8-byte record the COW seed and the
+            // capture side read. A borrowed child's records used to be 24 bytes
+            // because they also carried a root and a private prefix; the module
+            // reads the root from its own manifest and carves the prefix, so
+            // neither is the host's to say.
+            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
             let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
             if sides_ptr == 0 || end > mem_len_bytes() as u64 {
                 return Err(Errno::EINVAL);
             }
             for i in 0..count {
-                let base = (i as u64) * 24;
+                let base = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
                 let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
-                let root_lo = unsafe { ch_read_u32(sides_ptr, (base + 8) as usize) };
-                let root_hi = unsafe { ch_read_u32(sides_ptr, (base + 12) as usize) };
-                let priv_lo = unsafe { ch_read_u32(sides_ptr, (base + 16) as usize) };
-                let priv_hi = unsafe { ch_read_u32(sides_ptr, (base + 20) as usize) };
-                let root = ((root_hi as u64) << 32) | root_lo as u64;
-                let private_prefix = ((priv_hi as u64) << 32) | priv_lo as u64;
                 if id == 0 {
                     // Activation 0 is seeded from the launch anchor + journal image
                     // above; a side entry naming it is a host bug.
                     return Err(Errno::EINVAL);
                 }
+                let root = activation_continuation_root(module_state_root, id)?;
+                let private_prefix = carve_borrowed_prefix(fixed_prefix as u64)?;
                 add_activation_borrowed_child_replay_impl(id, root, fixed_prefix, private_prefix)?;
             }
         }
         Ok(())
+    }
+
+    /// One activation's fixed prefix size, as the SEEDED format reports it.
+    ///
+    /// Activation 0's comes from the worker's own `fm_set_format`; a side
+    /// activation's arrives in its `(id, fixed_prefix)` record, because a side
+    /// module's prefix is a static property of the module THIS child loaded and
+    /// no inherited record carries it.
+    fn borrowed_fixed_prefix(_module_state_root: u64, activation_id: u32) -> Result<u64, Errno> {
+        if activation_id != 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(FMT_FIXED_PREFIX.load(Ordering::Relaxed) as u64)
     }
 
     // -- Reference reconstruction impls (Phase 6 D6.1) ----------------------
@@ -6029,7 +6068,6 @@ mod wasm {
     pub extern "C" fn fm_child_seed_borrowed(
         module_state_root: usize,
         act0_root: usize,
-        act0_private_prefix: usize,
         sides_ptr: usize,
         sides_count: usize,
     ) {
@@ -6037,7 +6075,6 @@ mod wasm {
             child_seed_borrowed_impl(
                 module_state_root as u64,
                 act0_root as u64,
-                act0_private_prefix as u64,
                 sides_ptr as u64,
                 sides_count as u64,
             )
@@ -6200,6 +6237,34 @@ mod wasm {
     /// exactly the activations that reach `fm_set_activation_exception_codec`. It
     /// is not derived because nothing could observe that it had been: see census
     /// section 67.
+    /// Seed the vfork BORROWED child's admitted replay workspace.
+    ///
+    /// `base` is where the kernel put the region and `bytes` is how much it
+    /// admitted. That is the whole of what a host knows about it and this module
+    /// cannot derive -- the address comes from the child's launch message, and a
+    /// borrowed child does not use its own channel's control block. Everything
+    /// else about the workspace is already this module's: how much prefix each
+    /// activation needs, in what order, with what alignment. It has been
+    /// answering exactly that through `fm_borrowed_replay_workspace` since that
+    /// entry existed, so the host was performing the same walk a second time to
+    /// hand the answers back.
+    ///
+    /// With this seeded, `fm_child_seed_borrowed` carves each activation's
+    /// private prefix itself and its side records shrink to the `(id,
+    /// fixed_prefix)` pair the COW path and the capture path already use.
+    ///
+    /// Seeded ONCE per borrowed child, before its seed. `base == 0` or
+    /// `bytes == 0` is `EINVAL`: a borrowed child with no admitted prefix cannot
+    /// isolate its own active-frame writes and would scribble on the parked
+    /// parent's storage, which is a wrong value rather than a trap.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_borrowed_workspace(base: usize, bytes: usize) {
+        match set_borrowed_workspace_impl(base, bytes) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_host_exception_owner(owner: u32) {
         HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
@@ -9472,6 +9537,62 @@ mod wasm {
                 -1
             }
         }
+    }
+
+    fn set_borrowed_workspace_impl(base: usize, bytes: usize) -> Result<(), Errno> {
+        if base == 0 || bytes == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let end = base.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // admitted region past the end of memory
+        }
+        BORROWED_PREFIX_BASE.store(base, Ordering::Relaxed);
+        BORROWED_PREFIX_BYTES.store(bytes, Ordering::Relaxed);
+        BORROWED_PREFIX_CURSOR.store(base, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Carve one activation's private prefix out of the admitted workspace.
+    ///
+    /// The same alignment walk `fm_borrowed_replay_workspace` reports the total
+    /// for, run for real: align the cursor, take `fixed_prefix` bytes, refuse to
+    /// cross the admitted end. Ascending activation id, because that is the
+    /// order the total was computed in and the two must agree or the last
+    /// activation runs off the end of a region that was sized for it.
+    ///
+    /// NOT GATED BY ANY TEST TODAY, and stated here rather than left to be
+    /// discovered. All three of this function's refusals -- no workspace
+    /// seeded, a prefix crossing the admitted end, and the cursor advance that
+    /// keeps two activations from carving the same bytes -- were perturbed and
+    /// all three SURVIVED, because every vfork path that runs today is
+    /// single-activation: the workspace is always seeded, one prefix always
+    /// fits, and with one activation the cursor never has to move. The gate is a
+    /// MULTI-activation borrowed child (dlopen plus vfork), which nothing
+    /// exercises yet. Census D9 records it as owed.
+    fn carve_borrowed_prefix(fixed_prefix: u64) -> Result<u64, Errno> {
+        let base = BORROWED_PREFIX_BASE.load(Ordering::Relaxed);
+        let bytes = BORROWED_PREFIX_BYTES.load(Ordering::Relaxed);
+        if base == 0 || bytes == 0 {
+            return Err(Errno::EINVAL); // no workspace was seeded
+        }
+        let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as usize;
+        if alignment == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let want = usize::try_from(fixed_prefix).map_err(|_| Errno::EINVAL)?;
+        let cursor = BORROWED_PREFIX_CURSOR.load(Ordering::Relaxed);
+        let aligned = cursor
+            .checked_add(alignment - 1)
+            .map(|v| v / alignment * alignment)
+            .ok_or(Errno::EINVAL)?;
+        let end = aligned.checked_add(want).ok_or(Errno::EINVAL)?;
+        let admitted_end = base.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > admitted_end {
+            return Err(Errno::EINVAL); // more prefix than the kernel admitted
+        }
+        BORROWED_PREFIX_CURSOR.store(end, Ordering::Relaxed);
+        Ok(aligned as u64)
     }
 
     #[unsafe(no_mangle)]

@@ -227,16 +227,27 @@ Then, and only then, the rest:
 
 1. **C1** — 52 files.
 2. **C2** — 41 files.
-3. **C4** -- 7 files. **RULED 2026-09-15: trade one `fm_*` entry for the host
-   cut.** The maintainer chose the module-carves shape over a
-   `childSeedBorrowed` backend method: the host seeds the kernel-admitted
-   workspace region to the module ONCE, the module carves each activation's
-   private prefix itself, and the prefix half of `vfork-workspace.ts` goes --
-   `reservePrefix`, `assertAttachComplete` and the layout arithmetic around
-   them, about 170 host lines. `forkModuleHostEntries` 59 -> 60, argued in the
-   ledger as a RECLASSIFICATION rather than growth: the work does not vanish, it
-   moves to the side that owns the arena. The host keeps only what it alone
-   knows, which is the region the kernel admitted.
+3. **C4** -- **DONE 2026-09-15**, on the ruled shape: the host seeds the
+   kernel-admitted workspace (`fm_set_borrowed_workspace`, one new entry) and
+   the module carves each activation's private prefix with the same alignment
+   walk it already reports the total for. `vfork-workspace.ts` is deleted whole
+   -- not just its prefix half, because `reservePrefix`, `allocateScratch` and
+   `deallocateScratch` had no caller either once the module began seeding
+   borrowed children, which is why `assertAttachComplete` could only ever fail.
+   Both JS hosts and `crates/host-native` moved together. Net -165 host lines
+   for +1 module entry; the four surface numbers are in
+   `docs/surface-budget.json` as one trade.
+
+   **OWED, and not to be forgotten: the carve's three refusals are UNGATED.**
+   No workspace seeded, a prefix crossing the admitted end, and the cursor
+   advance that stops two activations carving the same bytes -- all three were
+   perturbed and all three SURVIVED, against both the module unit tests and the
+   vfork e2e. Every vfork path that runs today is single-activation: the
+   workspace is always seeded, one prefix always fits, and the cursor never has
+   to move. The gate is a MULTI-activation borrowed child -- dlopen plus vfork
+   -- which nothing exercises. Until something does, those three refusals are
+   code that has never been shown to do anything.
+
 4. **C3** -- 25 files, and they are two populations, not one. The distinction
    decides the work:
 

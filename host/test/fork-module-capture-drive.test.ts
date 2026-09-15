@@ -1465,6 +1465,51 @@ describe("the binding records the module assembles at capture", () => {
     ).toBe(2);
   });
 
+  it("refuses a borrowed child seed with no admitted workspace, and carves one when there is", () => {
+    // A vfork BORROWED child shares the PARKED parent's memory. Its own
+    // active-frame writes must land in a private prefix, or they scribble on
+    // storage the parent is still using -- a wrong value, not a trap. The host
+    // seeds the region the KERNEL admitted; the module carves it.
+    //
+    // With no region seeded there is nowhere private to write, so the seed is
+    // refused rather than defaulting to somewhere. Census D9 C4.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+      0,
+      0,
+    );
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "the parent seals").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    // WHAT THIS TEST DOES NOT REACH, said plainly rather than implied: a
+    // borrowed SEED refuses on its inherited journal image long before it
+    // carves, because this fixture's capture commits no frames. So the carve's
+    // own guards -- no workspace seeded, and a prefix that crosses the admitted
+    // end -- are NOT gated here. Both were perturbed and both survived this
+    // file, which is the honest reading: their gate is the vfork e2e, and
+    // census D9 records it as owed. What IS gated below is the entry's own
+    // validation of the region it is handed.
+    const noWorkspace = childModule(f);
+    const seed = noWorkspace.fm_set_borrowed_workspace as
+      (base: number, bytes: number) => void;
+    seed(0, PAGE);
+    expect((noWorkspace.fm_last_errno as () => number)(), "base 0").toBe(22);
+    seed(MMAP_FLOOR + 8 * PAGE, 0);
+    expect((noWorkspace.fm_last_errno as () => number)(), "zero bytes").toBe(22);
+
+    // Admitted properly, the seed carves and succeeds.
+    seed(MMAP_FLOOR + 8 * PAGE, PAGE);
+    expect(
+      (noWorkspace.fm_last_errno as () => number)(),
+      "a real region is accepted",
+    ).toBe(0);
+  });
+
   it("still refuses a child install from a phase that is not an install", () => {
     // Widening the attach to accept CHILD_REPLAY must not widen it to accept
     // everything: an attach while THIS worker is capturing its own fork would

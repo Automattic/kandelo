@@ -539,9 +539,25 @@ export class ForkModuleContinuationBackend {
     act0Root: number,
     pid: number,
     sides: readonly ForkSideActivation[],
+    /**
+     * A vfork BORROWED child's admitted replay workspace: where the kernel put
+     * it and how big it is. That is the whole of what a host knows about it and
+     * the module cannot derive. The module carves each activation's private
+     * prefix out of it, using the same walk it already reports the total for
+     * through `fm_borrowed_replay_workspace` -- so the host does not run that
+     * arithmetic a second time to hand the answers back.
+     */
+    borrowed?: { readonly prefixBase: number; readonly prefixBytes: number },
   ): number {
+    if (borrowed) {
+      this.call(
+        "fm_set_borrowed_workspace",
+        borrowed.prefixBase,
+        borrowed.prefixBytes,
+      );
+    }
     this.call(
-      "fm_child_seed",
+      borrowed ? "fm_child_seed_borrowed" : "fm_child_seed",
       moduleStateRoot,
       act0Root,
       this.stageSides(sides),

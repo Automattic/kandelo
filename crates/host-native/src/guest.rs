@@ -5718,7 +5718,15 @@ pub struct ForkModule {
     /// `fm_child_seed_borrowed(module_state_root, act0_root,
     /// act0_private_prefix, sides_ptr, sides_count)` — the vfork borrowed
     /// sibling of `fm_child_seed`.
-    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
+    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
+    /// Seed the vfork BORROWED child's admitted replay workspace.
+    ///
+    /// The host knows where the kernel put the region; the module knows how much
+    /// prefix each activation needs and in what order -- it has been reporting
+    /// exactly that total through `fm_borrowed_replay_workspace`. Seeding the
+    /// region lets the module carve the prefixes itself, so neither host has to
+    /// run that walk a second time.
+    pub fm_set_borrowed_workspace: wasmtime::TypedFunc<(u32, u32), ()>,
     /// `fm_child_reconstruct()` — drives each guest `wpk_fork_rewind_begin(root)`
     /// from the child's seeded per-activation `child_rewind_root`.
     pub fm_child_reconstruct: wasmtime::TypedFunc<(), ()>,
@@ -6159,7 +6167,8 @@ pub(crate) fn instantiate_fork_module(
         fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
         fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
         fm_child_seed: fm_func!("fm_child_seed": (u32, u32, u32, u32) => ()),
-        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32, u32) => ()),
+        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32) => ()),
+        fm_set_borrowed_workspace: fm_func!("fm_set_borrowed_workspace": (u32, u32) => ()),
         fm_child_reconstruct: fm_func!("fm_child_reconstruct": () => ()),
         gc_transit_table,
         function_catalog_table,
@@ -9232,9 +9241,32 @@ fn run_fork_capable_entry(
         // Folds the former `fm_begin_borrowed_child_replay(root, image_ptr,
         // image_len, private_prefix)`. Single-activation vfork: `sides_count
         // == 0`.
+        // Seed the admitted workspace FIRST: the module carves each
+        // activation's private prefix out of it rather than being handed one.
+        // `compute_vfork_borrowed_region` reserves exactly one page below the
+        // child's private channel for this, which is the region -- and the only
+        // fact about it this host knows that the module cannot derive.
+        if let Err(e) = fm.fm_set_borrowed_workspace.call(
+            &mut *store,
+            (private_prefix, WASM_PAGE_SIZE as u32),
+        ) {
+            eprintln!("fm_set_borrowed_workspace failed: {e:#}");
+            return;
+        }
+        match fm.fm_last_errno.call(&mut *store, ()) {
+            Ok(0) => {}
+            Ok(errno) => {
+                eprintln!("fm_set_borrowed_workspace failed: errno {errno}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("fm_last_errno after fm_set_borrowed_workspace failed: {e:#}");
+                return;
+            }
+        }
         if let Err(e) = fm.fm_child_seed_borrowed.call(
             &mut *store,
-            (arena_root, root, private_prefix, 0, 0),
+            (arena_root, root, 0, 0),
         ) {
             eprintln!("fm_child_seed_borrowed failed: {e:#}");
             return;

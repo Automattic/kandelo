@@ -70,7 +70,13 @@
     "TypeScript; a parent module interns and seals, a child reads what it sealed.",
     "That is the shape a real fork has, and the only one that can catch a",
     "capture/replay disagreement at all. `fork-module-capture-fixture.ts` holds the",
-    "shared machinery; seven files to go."
+    "shared machinery; seven files to go.",
+    "",
+    "2026-09-15: the vfork BORROWED child install is wired for the first time. It",
+    "had NO host caller at all -- `fm_child_seed_borrowed` and",
+    "`fm_attach_borrowed_child` were unreferenced, so a borrowed child ran the COW",
+    "path, got no private prefix, and wrote into the parked parent's storage. The",
+    "module carves the prefixes now out of a region the host seeds; census D9 C4."
   ],
   "expectedFailures": [
     "../packages/registry/bash/test/bash.test.ts",
@@ -116,7 +122,6 @@
     "test/dri-cube-pyramid.test.ts",
     "test/exec-brk-base.test.ts",
     "test/exec-state-tracking.test.ts",
-    "test/exec.test.ts",
     "test/exnref-local-fork-fresh-worker.test.ts",
     "test/externref-fork-module-worker.test.ts",
     "test/externref-gated-fork-module-worker.test.ts",
@@ -124,7 +129,6 @@
     "test/fork-capture-session-host-exception.test.ts",
     "test/fork-early-reference-provider.test.ts",
     "test/fork-externref-process-owner.test.ts",
-    "test/fork-from-dlopen-side-module-e2e.test.ts",
     "test/fork-function-catalog.test.ts",
     "test/fork-gc-codec.test.ts",
     "test/fork-host-import-runtime.test.ts",
@@ -179,9 +183,6 @@
     "test/static-root-bare-local-fork-fresh-worker.test.ts",
     "test/static-root-local-fork-fresh-worker.test.ts",
     "test/terminfo-shared-db.test.ts",
-    "test/vfork-fork-module.test.ts",
-    "test/vfork-lifecycle-guest.test.ts",
-    "test/vfork-production-mechanism.test.ts",
     "test/virtual-network-e2e.test.ts",
     "test/wasm-binary-parse.test.ts"
   ]

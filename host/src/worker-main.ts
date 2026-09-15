@@ -11,7 +11,6 @@ import {
   type CentralizedThreadInitMessage,
   type WorkerToHostMessage,
 } from "./worker-protocol";
-import { BorrowedVforkWorkspace } from "./vfork-workspace";
 import {
   createCppExceptionTag,
   createLongjmpTag,
@@ -3463,32 +3462,32 @@ export async function centralizedWorkerMain(
           "owner control address",
         )
       : channelOffset - FORK_BUF_SIZE;
+    // The vfork BORROWED child's admitted replay workspace, as two numbers.
+    //
+    // `BorrowedVforkWorkspace` used to stand here: 158 lines that validated the
+    // layout, carved each activation's private prefix with an alignment walk,
+    // and asserted afterwards that capture's measure and the carving agreed.
+    // Every one of those jobs is the module's. It performs the SAME walk to
+    // answer `fm_borrowed_replay_workspace`, so the host was re-deriving the
+    // module's own arithmetic in order to hand the results back -- and since the
+    // module started seeding borrowed children itself, nothing called the
+    // carver at all, which is why the accounting assertion could only ever fail
+    // ("consumed 0 prefix bytes; admission declared 32").
+    //
+    // What is left is the one fact a host has and the module cannot: where the
+    // kernel put the region. The module carves it.
     const borrowedWorkspace = borrowedForkChild
-      ? new BorrowedVforkWorkspace(
-          memory,
-          ptrWidth,
-          {
-            prefixAddress: requiredBorrowedNumber(
-              initData.forkPrivatePrefixAddr,
-              "private prefix address",
-            ),
-            prefixBytes: requiredBorrowedNumber(
-              initData.forkPrivatePrefixBytes,
-              "private prefix bytes",
-            ),
-            scratchAddress: requiredBorrowedNumber(
-              initData.forkScratchAddr,
-              "scratch address",
-            ),
-            scratchBytes: requiredBorrowedNumber(
-              initData.forkScratchBytes,
-              "scratch bytes",
-              true,
-            ),
-          },
-          `pid=${pid}: borrowed vfork workspace`,
-        )
-      : null;
+      ? {
+          prefixBase: requiredBorrowedNumber(
+            initData.forkPrivatePrefixAddr,
+            "private prefix address",
+          ),
+          prefixBytes: requiredBorrowedNumber(
+            initData.forkPrivatePrefixBytes,
+            "private prefix bytes",
+          ),
+        }
+      : undefined;
     if (borrowedForkChild) {
       // A vfork child may not create another pthread owner before exec. Keep
       // the request off its channel entirely; Rust's Process marker remains a
@@ -5005,9 +5004,9 @@ export async function centralizedWorkerMain(
           inheritedLaunchRoot,
           pid,
           forkActivations.sides(),
+          borrowedWorkspace,
         );
         forkModule().driveRestoredPlan(installPlan);
-        if (borrowedWorkspace) borrowedWorkspace.assertAttachComplete();
         // Static-root binder: the attach synchronously drove the plan, so the
         // static roots are now rooted in the anyref transit (and the child
         // instance holds them as immutable roots). Null the merged catalog mirror
