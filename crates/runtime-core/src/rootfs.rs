@@ -6691,8 +6691,15 @@ mod tests {
         )
         .expect("declare where it is and what it must be");
 
+        // EXACTLY as long as the real thing, because length is the check that
+        // already passed: `fetchArchive` compares byte counts today, and the
+        // whole reason a digest was needed is that same-length substitution
+        // sails through it. A shorter forgery would be refused by the size
+        // clamp and this test would prove nothing.
+        let forged: &[u8] = b"the bytes a substituting host";
+        assert_eq!(forged.len(), real.len(), "the forgery must not be caught by length");
         let (mut bad, _) = make_byte_source(
-            alloc::vec![(9u64, b"the bytes something else served".to_vec())],
+            alloc::vec![(9u64, forged.to_vec())],
             alloc::vec::Vec::new(),
         );
         let h = open(b"/fetched.bin", O_RDONLY, 0, 0, 0).unwrap();
@@ -6707,7 +6714,7 @@ mod tests {
         // a four-byte read has nothing to check itself against and must not be
         // the one read that escapes verification.
         let (mut bad_window, _) = make_byte_source(
-            alloc::vec![(9u64, b"the bytes something else served".to_vec())],
+            alloc::vec![(9u64, forged.to_vec())],
             alloc::vec::Vec::new(),
         );
         let mut window = [0u8; 4];

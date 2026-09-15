@@ -423,13 +423,6 @@
       "replace": "        uri,\n        digest,"
     },
     {
-      "name": "a null digest pointer is read as bytes anyway",
-      "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file(",
-      "scope_end": "\n}\n",
-      "find": "    let digest: &[u8] = if archive_digest_ptr == 0 {\n        b\"\"\n    } else {",
-      "replace": "    let digest: &[u8] = if false {\n        b\"\"\n    } else {"
-    },
-    {
       "name": "the enumeration stops reporting each archive's address",
       "scope": "pub unsafe extern \"C\" fn sm_lazy_entries(",
       "scope_end": "\n}\n",
@@ -444,5 +437,11 @@
       "replace": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &runtime_core::sffs_deferred::DIGEST_NONE).is_err()"
     }
   ],
-  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
+  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "retired": [
+    {
+      "name": "a null digest pointer is read as bytes anyway",
+      "why": "Unfalsifiable by construction. The trial deleted an `archive_digest_ptr == 0` check in `sm_register_lazy_file`, but `slice` already returns an empty slice for a null pointer and `digest_from` already reads empty as 'none declared', so the mutant took the same path and produced the same digest. The survivor was a redundant guard, not a missing test; the guard was removed and the test that documents the behaviour kept."
+    }
+  ]
 }
