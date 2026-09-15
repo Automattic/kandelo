@@ -5151,6 +5151,38 @@ mod wasm {
         // (`assertForkModuleExnrefTagsDeclared`); the host seeds each activation's
         // declared tags via `fm_set_activation_exception_tags` before this entry.
         assert_exnref_tags_admissible()?;
+        // ADOPT THE INHERITED ARENA before anything drives the guest's restore.
+        //
+        // `__wpk_fork_module_state_record_find` searches from the WRITER's root,
+        // and a child's writer has never built one -- its arena was mapped by
+        // its parent. Its own doc comment predicted this exactly: "That
+        // asymmetry is inert today because nothing in production drives the
+        // guest's `wpk_fork_module_state_restore` ... It stops being inert the
+        // moment that drive is wired up -- the guest would then load its
+        // restored global from linear address 0. Whoever wires it must give this
+        // function the replay root first."
+        //
+        // This lane wired that drive up, and the prediction came true as a trap
+        // inside the guest's `finish_restore`: every `record_find` answered 0,
+        // so the sparse table overlay loaded its page header from address 0 and
+        // `emit_trap_if` refused the nonsense that came back. Census 182.
+        //
+        // Adopting rather than building also keeps ownership honest:
+        // `is_adopted()` makes `module_owns_arena_now()` false, so this child
+        // never frees chunks its parent mapped.
+        //
+        // NOT YET REACHABLE, and that is the other half of the defect: a child
+        // arrives here with NO `ForkModule` state at all, because
+        // `fm_child_seed` -- the entry that builds it -- lost its only caller
+        // when the fork coordinator was deleted (`18762e9cb`). `record_find`
+        // then fails at its FIRST check (`state()` is `None`) rather than on the
+        // root. Wiring the seed is what makes this line run; both halves are
+        // needed and neither is sufficient. Census 183.
+        if let Some(module) = state().as_mut() {
+            if module.module_state.root() == 0 {
+                module.module_state.adopt(module_state_root)?;
+            }
+        }
         let mut steps = build_reconstruction_steps()?;
         let activations = arena_module_activations(module_state_root)?;
         drive_plan::append_attach_steps(&mut steps, &activations);

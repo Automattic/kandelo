@@ -9129,3 +9129,54 @@ and data segment drop state). One of those traps inside the reference codecs it
 calls. That is the next thing to look at, and it is guest-codegen territory
 rather than host or module.
 
+---
+
+## §183 -- The child has no module state, and the coordinator was its only seeder
+
+Section 182 narrowed the child-install trap to the guest's `finish_restore` and
+ruled out the bootstrap flag. The cause is one layer below that, and it is the
+fourth instance tonight of the same pattern.
+
+**The finding, with the errno that proved it.** Adding a distinct sentinel to
+the child-attach path showed `state()` is `None` when `fm_attach_child` runs. So
+`__wpk_fork_module_state_record_find` fails at its FIRST check -- no module state
+-- and answers 0 for every lookup. The guest's table overlay then loads its page
+header from guest address 0 and `emit_trap_if` refuses what comes back. The trap
+is real and correct; what is wrong is that the child was never seeded.
+
+**Why there is no state.** `fm_child_seed` (and `fm_child_seed_borrowed`) build
+it. Their only caller was the fork coordinator, deleted in `18762e9cb` -- the
+same commit that silently took `prepared = true` (section 180). Nothing has
+called them since, and nothing could notice, because no fork reached the child.
+
+**That doc comment predicted this precisely**, and is worth quoting because it
+names the obligation this lane inherited:
+
+> That asymmetry is inert today because nothing in production drives the guest's
+> `wpk_fork_module_state_restore` ... It stops being inert the moment that drive
+> is wired up -- the guest would then load its restored global from linear
+> address 0. **Whoever wires it must give this function the replay root first.**
+
+This lane wired the drive up. So the obligation is ours.
+
+**THE FIX IS TWO HALVES, and neither is sufficient alone:**
+
+1. *Seed the child.* The host must call `fm_child_seed(module_state_root,
+   act0_root, sides_ptr, sides_count)` before `fm_attach_child`. `act0_root` is
+   the inherited launch root the child already reads. The sides list is
+   `(id, fixed_prefix, root_lo, root_hi)` per side activation -- and the OPEN
+   QUESTION is where a side activation's inherited continuation root comes from
+   on the child, since `fm_activation_module_buffer` answers only for a live
+   fork. The attic backend's `childSeed` took it from the caller; the
+   coordinator sourced it from the replay archive.
+2. *Adopt the arena.* `ModuleStateWriter::adopt` is landed in
+   `attach_from_arena_impl` and is correct, but unreachable until (1) lands --
+   marked as such in the code rather than left to look finished. Adopting also
+   keeps ownership honest: `is_adopted()` makes `module_owns_arena_now()` false,
+   so a child never frees chunks its parent mapped.
+
+**The count so far of "the coordinator was the only caller":** `prepared = true`
+(180), `fm_set_activation_template_id` (180, never called by anyone),
+`fm_child_seed` (here). Deleting a 1,471-line coordinator removed a lot of
+calls whose absence nothing could report.
+
