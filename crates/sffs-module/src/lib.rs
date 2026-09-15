@@ -1448,6 +1448,62 @@ mod tests {
     /// A buffer too small for the record is refused rather than partially
     /// filled: a half-written stat is worse than no stat, because it looks
     /// like data.
+    /// The deferred half of the stat record, which only its NEGATIVE case was
+    /// asserted for.
+    ///
+    /// `lstat_writes_the_documented_record` checks fields 6 and 7 read zero
+    /// for an ordinary file. Nothing checked they read anything else — so
+    /// `rootfs::lazy_info`, which computes both, was exercised in Rust only
+    /// through a path that always answers "no". Its interesting answer was
+    /// covered by a TypeScript test (`isPathDeferred`), which is coverage that
+    /// leaves with the language this lane is deleting.
+    ///
+    /// The two fields are not redundant: a member of an ARCHIVE reports the
+    /// archive's id, a file fetched STANDALONE reports zero, and the host
+    /// needs the difference to know whether it is fetching an archive or a
+    /// file.
+    #[test]
+    fn lstat_reports_a_deferred_file_and_which_archive_backs_it() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
+
+        // A member of archive 3 ...
+        assert_eq!(
+            with_two(b"/usr/member", b"members/big.bin", |pp, pl, sp, sl| unsafe {
+                sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+            }),
+            0
+        );
+        // ... and a file fetched standalone, which has no archive behind it.
+        assert_eq!(
+            with_two(b"/usr/alone", b"", |pp, pl, sp, sl| unsafe {
+                sm_register_lazy_file(pp, pl, 0, sp, sl, 11, 0o644, 0, 0, 41, 0, 0, 0, 0, 0, 0, 0, 0)
+            }),
+            0
+        );
+
+        let size = unsafe { sm_lstat(0, 0, 0, 0) } as usize;
+        let out = sm_alloc(size);
+        assert_ne!(out, 0);
+        let field = |path: &[u8], index: usize| -> u64 {
+            assert_eq!(with_path(path, |p, l| unsafe { sm_lstat(p, l, out, size) }), 0);
+            let bytes = unsafe { core::slice::from_raw_parts(out as *const u8, size) };
+            let mut v = [0u8; 8];
+            v.copy_from_slice(&bytes[index * 8..index * 8 + 8]);
+            u64::from_le_bytes(v)
+        };
+
+        assert_eq!(field(b"/usr/member", 6), 1, "an archive member is deferred");
+        assert_eq!(field(b"/usr/member", 7), 3, "and names the archive that backs it");
+        assert_eq!(field(b"/usr/alone", 6), 1, "a standalone lazy file is deferred too");
+        assert_eq!(
+            field(b"/usr/alone", 7),
+            0,
+            "and reports no archive, which is how the host knows to fetch the FILE",
+        );
+        unsafe { sm_free(out, size) };
+    }
+
     #[test]
     fn lstat_refuses_an_undersized_buffer() {
         assert_eq!(sm_reset(0o755, 0, 0), 0);
