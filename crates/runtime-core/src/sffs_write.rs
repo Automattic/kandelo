@@ -40,10 +40,10 @@ use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
 use crate::sffs::{
-    BlockSource, DIRECT_BLOCKS, DIRENT_HEADER, INLINE_SYMLINK_SIZE, INODES_PER_BLOCK, INODE_SIZE,
-    INO_ATIME, INO_CTIME, INO_DIRECT, INO_DOUBLE_INDIRECT, INO_GENERATION, INO_GID, INO_INDIRECT,
-    INO_LINK_COUNT, INO_MODE, INO_MTIME, INO_SIZE, INO_UID, PTRS_PER_BLOCK, ROOT_INO, SFFS_MAGIC,
-    SFFS_VERSION,
+    BlockSource, DIRECT_BLOCKS, DIRENT_HEADER, INLINE_SYMLINK_SIZE, INO_ATIME, INO_CTIME,
+    INO_DIRECT, INO_DOUBLE_INDIRECT, INO_GENERATION, INO_GID, INO_INDIRECT, INO_LINK_COUNT,
+    INO_MODE, INO_MTIME, INO_SIZE, INO_UID, INODE_SIZE, INODES_PER_BLOCK, PTRS_PER_BLOCK, ROOT_INO,
+    SFFS_MAGIC, SFFS_VERSION,
 };
 
 const BLOCK_SIZE: usize = 4096;
@@ -1071,14 +1071,23 @@ impl SffsWriter {
     /// Declaring the same id twice is an error rather than a silent overwrite:
     /// two lengths for one archive is a writer bug, and the reader would have
     /// no way to tell which was meant.
-    /// `payload` is the archive's own fetch description — URL, transport,
-    /// integrity digest — carried opaquely, exactly as a deferred file's is.
-    /// Pass `b""` when the caller has none; whether it SHOULD have one is a
-    /// producer policy question this layer does not answer.
+    /// `uri` is where the archive is, and `digest` is the SHA-256 the fetched
+    /// bytes must hash to. `payload` is what is left once those two come out:
+    /// transport selection and activation mode, carried opaquely exactly as a
+    /// deferred file's is.
+    ///
+    /// `digest` is empty or exactly [`crate::sffs_deferred::DIGEST_LEN`] bytes;
+    /// empty records that the producer declared none. Empty rather than a
+    /// zero-filled array so that "I have no digest" is something a caller
+    /// states, not something it can arrive at by forgetting to fill a buffer.
+    /// Whether a producer SHOULD have one is a policy question this layer does
+    /// not answer.
     pub fn declare_lazy_archive(
         &mut self,
         archive_id: u32,
         bytes: u64,
+        uri: &[u8],
+        digest: &[u8],
         payload: &[u8],
     ) -> Result<(), Errno> {
         if archive_id == 0 {
@@ -1087,6 +1096,10 @@ impl SffsWriter {
         if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
             return Err(Errno::EINVAL);
         }
+        if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+            return Err(Errno::EINVAL);
+        }
+        let digest = crate::sffs_deferred::digest_from(digest)?;
         if self
             .deferred_archives
             .iter()
@@ -1098,6 +1111,8 @@ impl SffsWriter {
             .push(crate::sffs_deferred::DeferredArchive {
                 archive_id,
                 bytes,
+                uri: uri.to_vec(),
+                digest,
                 payload: payload.to_vec(),
             });
         Ok(())
@@ -1105,10 +1120,17 @@ impl SffsWriter {
 
     /// `archive_id`/`source_path` are the kernel-facing linkage: which lazy
     /// archive backs the file and which member within it. Pass `0` and `b""`
-    /// for a file fetched standalone, where `payload` is the only way to find
-    /// the bytes. The pair is all-or-nothing and [`crate::sffs_deferred::encode`]
+    /// for a file fetched standalone, where `uri` is the only way to find the
+    /// bytes. The pair is all-or-nothing and [`crate::sffs_deferred::encode`]
     /// refuses a half-specified one, so a caller cannot record an archive with
     /// no member.
+    ///
+    /// `uri` addresses a STANDALONE file only; an archive member is addressed
+    /// by its archive, and passing both is refused rather than ignored.
+    /// `digest` is empty or [`crate::sffs_deferred::DIGEST_LEN`] bytes and
+    /// covers the file's `size` bytes as they should land — the inflated
+    /// member for an archive member, the fetched bytes for a standalone file.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_deferred_file(
         &mut self,
         parent: u32,
@@ -1117,6 +1139,8 @@ impl SffsWriter {
         size: u64,
         archive_id: u32,
         source_path: &[u8],
+        uri: &[u8],
+        digest: &[u8],
         payload: &[u8],
     ) -> Result<u32, Errno> {
         if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
@@ -1125,6 +1149,13 @@ impl SffsWriter {
         if source_path.len() > crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize {
             return Err(Errno::EINVAL);
         }
+        if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+            return Err(Errno::EINVAL);
+        }
+        if archive_id != 0 && !uri.is_empty() {
+            return Err(Errno::EINVAL);
+        }
+        let digest = crate::sffs_deferred::digest_from(digest)?;
         // Rejected at the call rather than at `finish`, so the caller that got
         // it wrong is the one that sees the error.
         if (archive_id == 0) != source_path.is_empty() {
@@ -1136,6 +1167,8 @@ impl SffsWriter {
             size,
             archive_id,
             source_path: source_path.to_vec(),
+            uri: uri.to_vec(),
+            digest,
             payload: payload.to_vec(),
         });
         Ok(ino)
@@ -2424,7 +2457,7 @@ mod tests {
         let root = w.root();
         let url: &[u8] = b"https://example.invalid/big.bin";
         let deferred = w
-            .create_deferred_file(root, b"big.bin", 0o644, 4242, 0, b"", url)
+            .create_deferred_file(root, b"big.bin", 0o644, 4242, 0, b"", b"", b"", url)
             .expect("deferred");
         write_file(&mut w, root, b"present", Content::Bytes(b"here"), 0o600, 0, 0);
         let image = w.finish().expect("finish");
@@ -2488,9 +2521,20 @@ mod tests {
         // record that says a file is deferred but not where its bytes are.
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
-        w.declare_lazy_archive(7, 8_000_000, b"").expect("declare archive 7");
+        w.declare_lazy_archive(7, 8_000_000, b"", b"", b"")
+            .expect("declare archive 7");
         let deferred = w
-            .create_deferred_file(root, b"php", 0o755, 99_999, 7, b"usr/bin/php", b"")
+            .create_deferred_file(
+                root,
+                b"php",
+                0o755,
+                99_999,
+                7,
+                b"usr/bin/php",
+                b"",
+                b"",
+                b"",
+            )
             .expect("deferred");
         let image = w.finish().expect("finish");
 
@@ -2532,18 +2576,35 @@ mod tests {
         // writer can see the whole section.
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
-        w.create_deferred_file(root, b"php", 0o755, 99_999, 7, b"usr/bin/php", b"")
-            .expect("the record itself is well-formed");
+        w.create_deferred_file(
+            root,
+            b"php",
+            0o755,
+            99_999,
+            7,
+            b"usr/bin/php",
+            b"",
+            b"",
+            b"",
+        )
+        .expect("the record itself is well-formed");
         assert_eq!(w.finish().err(), Some(Errno::EINVAL));
     }
 
     #[test]
     fn one_archive_cannot_be_declared_with_two_lengths() {
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
-        w.declare_lazy_archive(7, 100, b"").expect("first declaration");
-        assert_eq!(w.declare_lazy_archive(7, 200, b""), Err(Errno::EINVAL));
+        w.declare_lazy_archive(7, 100, b"", b"", b"")
+            .expect("first declaration");
+        assert_eq!(
+            w.declare_lazy_archive(7, 200, b"", b"", b""),
+            Err(Errno::EINVAL)
+        );
         // And an archive id of zero is the "no archive" sentinel, not an id.
-        assert_eq!(w.declare_lazy_archive(0, 100, b""), Err(Errno::EINVAL));
+        assert_eq!(
+            w.declare_lazy_archive(0, 100, b"", b"", b""),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]
@@ -2552,7 +2613,7 @@ mod tests {
         let root = w.root();
         let too_long = alloc::vec![b'x'; crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize + 1];
         assert_eq!(
-            w.create_deferred_file(root, b"a", 0o644, 10, 4, &too_long, b""),
+            w.create_deferred_file(root, b"a", 0o644, 10, 4, &too_long, b"", b"", b""),
             Err(Errno::EINVAL)
         );
         // The refusal has to happen HERE. If it only happened in `encode`, the
@@ -2569,17 +2630,20 @@ mod tests {
 
         // An archive with no member to extract from it.
         assert_eq!(
-            w.create_deferred_file(root, b"a", 0o644, 10, 4, b"", b""),
+            w.create_deferred_file(root, b"a", 0o644, 10, 4, b"", b"", b"", b""),
             Err(Errno::EINVAL)
         );
         // A member with no archive to extract it from.
         assert_eq!(
-            w.create_deferred_file(root, b"b", 0o644, 10, 0, b"m", b""),
+            w.create_deferred_file(root, b"b", 0o644, 10, 0, b"m", b"", b"", b""),
             Err(Errno::EINVAL)
         );
         // Refused at the CALL, not at `finish`: neither name was created, so
         // the writer is not left holding a file it will later fail to describe.
-        assert!(w.create_deferred_file(root, b"a", 0o644, 10, 4, b"m", b"").is_ok());
+        assert!(
+            w.create_deferred_file(root, b"a", 0o644, 10, 4, b"m", b"", b"", b"")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2590,7 +2654,7 @@ mod tests {
         // names it.
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
-        w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"u")
+        w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"", b"", b"u")
             .expect("deferred");
         let image = w.finish().expect("finish");
         let source = SffsImageSource {
@@ -2640,7 +2704,17 @@ mod tests {
                 write_file(&mut w, parent, &ordinary, Content::Bytes(b"z"), 0o644, 0, 0);
             }
             let ino = w
-                .create_deferred_file(parent, &name, 0o644, i as u64 * 1000, 0, b"", &payload)
+                .create_deferred_file(
+                    parent,
+                    &name,
+                    0o644,
+                    i as u64 * 1000,
+                    0,
+                    b"",
+                    b"",
+                    b"",
+                    &payload,
+                )
                 .expect("deferred");
             expected.push((ino, i as u64 * 1000, payload));
         }
@@ -2665,7 +2739,7 @@ mod tests {
         // link. A damaged section must fail the read, not yield some records.
         let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
-        w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"payload")
+        w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"", b"", b"payload")
             .expect("deferred");
         let image = w.finish().expect("finish");
         let mut bytes = image.to_vec(&NoContent).expect("emit");
