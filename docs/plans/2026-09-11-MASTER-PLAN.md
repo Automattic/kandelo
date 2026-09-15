@@ -4080,6 +4080,45 @@ the hard part and should not hold nineteen verified commits hostage.
 Rust export writes is now one the kernel can load back, which is what the lane
 existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
 producer side, then V9 (after lane Y) and V10. The 12,000-line finding below is NOT yet
+
+### H-24 COMPLETED ITSELF — I finished another agent's merge, 2026-09-15
+
+**What happened.** The parent-branch agent had the lane merge STAGED and
+uncommitted in `/Users/brandon/kandelo-abi44-reconcile`. I ran
+`git add docs/plans/… && git commit` to record a handoff, and **`git commit`
+commits everything staged** — so it finalised their merge under my docs commit
+message.
+
+**The merge itself is correct**: `5aef74226` is now an ancestor of the parent,
+34 files, +877/−241, both parents right, and no perturb mutant captured
+(`process-lifecycle.ts` was unstaged and is not in the commit). **Only the
+message is wrong**, and it describes one docs file rather than a merge.
+
+**Two failures, and the first is the embarrassing one.**
+
+1. **The mitigation already existed and I did not use it.** The recorded
+   guidance is *"stage and commit in a single path-limited command
+   (`git commit -- <paths>`)"*. I used `git add X && git commit`, which is
+   exactly the form the guidance names as unsafe. **Knowing the rule and
+   applying it are different acts**, which is the same gap that produced the
+   H-23 stale-kernel browser run an hour earlier.
+2. **`git status --porcelain | head -3` hid the evidence.** The staged merge
+   files were below the cut. A truncated status is worse than none: it looks
+   like a check.
+
+**What was NOT done, deliberately.** The commit is untouched. That worktree is
+running a perturb trial right now — `.perturb-in-progress` is present and
+`process-lifecycle.ts` holds a live mutation — and amending would change a SHA
+under an agent mid-run. A bad message is cheaper than that.
+
+**The corrected practice**, which belongs with the H-24 entry rather than in a
+session log: before writing in a shared worktree, read the FULL `git status`,
+check for `.git/MERGE_HEAD`, `.git/rebase-merge` and `.perturb-in-progress`,
+and commit with `git commit -- <paths>`. The path-limited form makes this
+failure unrepresentable rather than merely unlikely.
+
+**Status: partly characterized. V1–V3 landed; V4 blocked on a decision made;
+V5 designed and building. The 12,000-line finding below is NOT yet
 characterized and must not be dispatched until it is.**
 
 ## End state
