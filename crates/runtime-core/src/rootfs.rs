@@ -6569,6 +6569,39 @@ mod tests {
     }
 
     #[test]
+    fn a_verified_file_the_guest_has_written_is_not_re_verified() {
+        let _g = TestGuard::acquire();
+        // A digest describes the bytes the IMAGE declared, not the bytes the
+        // file has. Once it is materialized and the guest writes to it, the
+        // contents are deliberately something else — re-checking them would
+        // turn every write to a verified file into an EIO on the next read.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let real: &[u8] = b"the bytes the image described";
+        insert_base_file(b"/fetched.bin", 9, real.len() as u64, 0o644, 0, 0, 9).unwrap();
+        mark_deferred_base(b"/fetched.bin").unwrap();
+        set_deferred_source(
+            b"/fetched.bin",
+            b"https://example.invalid/fetched.bin",
+            &crate::sffs_deferred::digest_of(real),
+        )
+        .expect("declare it");
+
+        let (mut fetch, _) =
+            make_byte_source(alloc::vec![(9u64, real.to_vec())], alloc::vec::Vec::new());
+        let h = open(b"/fetched.bin", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(
+            read(h, 0, &mut buf, &mut fetch).expect("verified once"),
+            real.len()
+        );
+        write(h, 0, b"THE", &mut fetch).expect("the guest replaces three bytes");
+        let n = read(h, 0, &mut buf, &mut fetch).expect("still readable after a write");
+        assert_eq!(&buf[..3], b"THE");
+        assert_eq!(n, real.len());
+        release_handle(h);
+    }
+
+    #[test]
     fn an_archive_that_declares_no_digest_is_still_served() {
         let _g = TestGuard::acquire();
         // Every image in existence before v5 declares none, and `KLZY` has no
