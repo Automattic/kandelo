@@ -483,6 +483,52 @@ What is new here is the MEASURED reason the fix cannot work today — that
 record has no digest field — rather than the judgement that it should not be
 landed alone.
 
+## B42 — the URI relay is built and held on one unanswered question
+
+The kernel half is **done and green**, on
+`brandonpayton/lane-y-uri-relay-wip` (`f0244e5fa`), deliberately not on the
+lane branch. `ByteReq::Base`/`Archive` collapse into one
+`ByteReq::Deferred { uri, offset }`; `HostIO::blob_read` and `fetch_archive`
+collapse into one `fetch_deferred(uri, buf, offset)`; the
+`host_fetch_deferred` import takes a URI instead of a `kind` plus an id from
+one of two namespaces. runtime-core 2195 passed, sffs-module 80, kernel builds
+for wasm32.
+
+The legacy formats lose byte-serving, asserted rather than hidden. A
+`KLZY`-described deferred file and a v3 manifest entry both record a length and
+no address, so a read is `EIO` — refused by the kernel for having nothing that
+says where the bytes are, not by a host that happened to have no transport.
+`EIO` and never `EAGAIN`: the kernel parks and retries on `EAGAIN`, so a file
+with no address would hang its reader forever.
+
+**What holds it: `crates/host-native`.** Its `BaseImage` is a v3 manifest plus
+a `blob_id -> bytes` map, and the manifest has no field for an address — so the
+native reference host's base tree cannot be fetched under URI addressing. Every
+way out costs something only the maintainer should spend:
+
+1. **Give the host-walked tree its own honestly-named id-keyed import.** This
+   is the maintainer's own first option and it is architecturally right: a
+   host-walked base tree IS host storage, not a deferred fetch, and the two
+   deserve different names. It breaches `hostImportFunctions` (ceiling 72,
+   slack 0), and a ceiling is not something to raise to make a check pass.
+2. **Have host-native build a real `SDEF` image.** Correct in the long run, but
+   host-native does not depend on `runtime-core` and adding it means a HOST
+   linking the kernel's filesystem writer.
+3. **Accept the loss** and let the native reference host stop testing base-file
+   reads — while B40 has the browser suite blocked and that host is one of the
+   few real validations left.
+
+A fourth was considered and rejected on the maintainer's own reasoning: render
+the manifest's `blob_id` into a canonical `uri:` string. That re-encodes an id
+as an address, so the host still resolves a number back to storage and the
+table survives under a new spelling — which is the option the maintainer
+already turned down.
+
+**Not a reason to hold the rest.** Everything the relay depends on is landed:
+SDEF v5 carries the address, the kernel verifies the digest, every production
+producer emits both, and `tools/mkrootfs` writes the rootfs image with the Rust
+writer. The relay re-applies onto whichever answer comes back.
+
 ## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
 
 OPEN, and it blocks **all six browser products** exactly as B39 did.
