@@ -2807,6 +2807,33 @@ mod tests {
     }
 
     #[test]
+    fn a_null_digest_pointer_records_no_digest_rather_than_reading_one() {
+        // "No digest declared" and "a digest at address zero" must not be the
+        // same read. The length is fixed, so the pointer is the whole of the
+        // argument — and a reader that ignored the null would take 32 bytes
+        // from wherever address zero lands and store them as a digest nobody
+        // computed. The kernel would then verify against it and refuse the
+        // right bytes, which is the failure mode a verifier must never have.
+        fresh_tree();
+        let (pp, pl) = write_path(b"/opt/undeclared");
+        let (sp, sl) = write_path(b"");
+        let rc = unsafe {
+            sm_register_lazy_file(
+                pp, pl, 0, sp, sl, 99, 0o644, 0, 0, 4_000_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        };
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        assert_eq!(rc, 0);
+        assert_eq!(
+            rootfs::deferred_source(b"/opt/undeclared").expect("the file"),
+            (
+                alloc::vec::Vec::new(),
+                runtime_core::sffs_deferred::DIGEST_NONE,
+            ),
+        );
+    }
+
+    #[test]
     fn a_standalone_files_address_and_digest_land_on_the_file() {
         // With no archive there is nothing else to carry them, and the URI is
         // the only thing in the world that says where the bytes are. This is
@@ -2834,6 +2861,19 @@ mod tests {
             0,
         );
         assert_eq!(register_member(b"/opt/solo", 0, b"", b"{\"url\":\"https://x/solo\"}"), 0);
+        // Declared AFTER the members, the way a builder that learns an
+        // archive's digest last would. Without a declared address and digest
+        // the assertions below compare empty against empty, and an enumeration
+        // that dropped both would read exactly like one that reported them --
+        // which is what a surviving mutant showed.
+        const A_URI: &[u8] = b"https://example.invalid/a.zip";
+        const A_DIGEST: [u8; runtime_core::sffs_deferred::DIGEST_LEN] =
+            [0x4Au8; runtime_core::sffs_deferred::DIGEST_LEN];
+        const SOLO_DIGEST: [u8; runtime_core::sffs_deferred::DIGEST_LEN] =
+            [0x50u8; runtime_core::sffs_deferred::DIGEST_LEN];
+        rootfs::set_archive_source(1, A_URI, &A_DIGEST).expect("describe the archive");
+        rootfs::set_deferred_source(b"/opt/solo", b"https://example.invalid/solo", &SOLO_DIGEST)
+            .expect("describe the standalone file");
 
         let buf = drain_lazy_entries();
         let mut at = 0usize;
@@ -2871,26 +2911,18 @@ mod tests {
         // Its ADDRESS and digest are the two fields a consumer used to read by
         // parsing the payload above. They come out typed now, which is the
         // whole point: the payload stays opaque and stays unread.
-        assert!(
-            read_bytes(&buf, &mut at).is_empty(),
-            "this registration declared no address",
-        );
         assert_eq!(
             read_bytes(&buf, &mut at),
-            &runtime_core::sffs_deferred::DIGEST_NONE[..],
+            b"https://example.invalid/solo",
+            "a standalone file's address, which is the whole of what locates it",
         );
+        assert_eq!(read_bytes(&buf, &mut at), &SOLO_DIGEST[..]);
 
         assert_eq!(read_u32(&buf, &mut at), 1, "archive id");
         assert_eq!(read_u64(&buf, &mut at), 4096, "archive length");
         assert!(!read_bytes(&buf, &mut at).is_empty(), "the archive's description");
-        assert!(
-            read_bytes(&buf, &mut at).is_empty(),
-            "this registration declared no address for the archive either",
-        );
-        assert_eq!(
-            read_bytes(&buf, &mut at),
-            &runtime_core::sffs_deferred::DIGEST_NONE[..],
-        );
+        assert_eq!(read_bytes(&buf, &mut at), A_URI, "the archive's address");
+        assert_eq!(read_bytes(&buf, &mut at), &A_DIGEST[..], "and its digest");
         assert_eq!(at, buf.len(), "every byte accounted for");
     }
 
