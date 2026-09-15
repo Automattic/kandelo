@@ -2966,11 +2966,27 @@ interrupting one, `git status` the worktree and restore before doing anything
 else, because the next commit would otherwise carry a deliberately broken
 guard, with a message about something entirely different.
 
-**Cost of the sweep**: the wasm-rebuilding specs are ~20x the cost of the
-cargo-verified ones, and 8 specs hold 66 trials at that rate. Splitting the run
-by verifier is what made a full kernel-side sweep finishable at all — and it is
-the argument for repointing more specs at Rust verifiers, as
-`sffs-module-image-read.json` was tonight.
+**Cost of the sweep, corrected the same night.** The first version of this
+entry said the expensive specs rebuild wasm, and recommended repointing more of
+them at Rust verifiers. **Checked: no spec rebuilds wasm any more.**
+`sffs-module-image-read.json` was the only one that did, and it was fixed
+hours earlier.
+
+**The recommendation has no remaining targets either.** All eight expensive
+specs mutate TYPESCRIPT — the bridge, the worker entries, the base image, the
+product builders — and a TypeScript mutation can only be caught by a TypeScript
+test. There is nothing to repoint.
+
+**The real cost is vitest's own startup.** A single-file run measures
+*Duration 73.74s (transform 111ms, setup 0ms, import 52ms, tests 5ms)* — the
+tests take five milliseconds and the invocation takes seventy-three seconds,
+nearly all of it the global setup that generates the program package index. A
+spec of N trials pays that N times.
+
+**So the lever is not the verifier, it is running one vitest invocation for
+many trials** — which is a change to the perturb harness rather than to any
+spec, and is recorded here rather than started because the harness is shared
+infrastructure every lane's specs run through.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
