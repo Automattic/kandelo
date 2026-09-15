@@ -2908,8 +2908,24 @@ causes, and they are indistinguishable from the report:
    module's own writer cannot violate; one half of a union that is redundant
    against `MemoryFileSystem`; and an `ok_or(ENOSPC)` behind a size pre-check
    that refuses first. **Rewriting the test cannot fix any of them.**
+4. **The spec points outside its own test's reach.** All three trials in
+   `browser-worker-node-globals` survived while the guard was perfectly
+   healthy: they mutate `platform/native-metadata.ts`, and that file LEFT the
+   browser worker's value-import graph when the entry stopped reaching it —
+   132 modules in the graph, zero hits. **The file leaving is good news**, one
+   fewer path from the worker to a Node-only module, and it is exactly the kind
+   of good news that disarms a guard without touching it.
 
-### THE ONE COMMAND THAT SEPARATES THEM
+**A fifth, which is not the spec's fault or the test's: the trial does not
+express the defect it names.** The repointed `||` trial wrote
+`typeof process === "undefined" || process.platform`, which short-circuits
+BEFORE touching `process` — wrong, but not the Node-global read the guard is
+for, so the test was right to stay green. The shipped defect keeps the polarity
+and swaps the operator: `typeof process !== "undefined" || process.platform`.
+**The same polarity trap caught this lane twice — writing the guard, and
+writing its trial.**
+
+### THE ONE COMMAND THAT SEPARATES THE FIRST THREE
 
 **Apply the mutation by hand and run the test.**
 
