@@ -2256,8 +2256,37 @@ deadlock.
   this lane's own design, reached from the producer side and now met from the
   consumer side.
 
-**So step 4 begins with five bridge methods and no ABI change at all**, and the
-37 follow mechanically. What is left after that is the 26 that assert on the
+**CORRECTION, made the same day: it is not five. Two are already done, one is
+not a gap at all, and one should never be ported.**
+
+* `createFileWithOwner` and `mkdirWithOwner` **landed** (`99576edd5`,
+  `77fef93ac`), and the second commit exists because the first was wrong about
+  its own reason — see B39.
+* **`registerLazyArchiveFromEntries` is not a gap.** The bridge already has
+  `registerLazyArchive({url, entries, mountPrefix, symlinkTargets, integrity})`
+  — the same operation with object arguments, sharing the same
+  `planLazyArchiveEntries` validator. `vfs-image-filesystem.ts` already records
+  that callers "prefer this one and fall back", so the 37 files change a CALL
+  SITE, not an API. Adding a positional alias would be new surface to carry a
+  shape nothing needs.
+* **`sealLazyAtomicGroup` should not be ported, and the reason is this lane's
+  own design.** The plan chose *"the module seals at EXPORT, with the builder
+  only declaring which cohort each archive belongs to"* precisely so that
+  *"nothing can be forgotten"*. A bridge method whose job is to remember to seal
+  reintroduces the weakness the design removed. Cohort membership is declared at
+  registration — `sm_register_lazy_file` carries `cohort_id`, `cohort_member`
+  and `cohort_expected_count` — and `saveImage` seals.
+
+**So the real gap is ONE method: `registerLazyTree`**, the typed V3 form
+carrying decoder, media type, digest, ordered transports and an activation
+mode. Everything else is a call-site change or a thing that should not exist.
+
+**Twice now this lane has sized a gap by listing what the incumbent has and
+the replacement lacks**, and twice the list has been too long, because a method
+missing from the replacement is not automatically work: it can be a different
+spelling of something present, or a step the new design deleted on purpose.
+**The question that produces the right number is "what must a caller be able to
+DO", not "which names are absent".** What is left after that is the 26 that assert on the
 filesystem plus the 13 that call non-builder methods, and those need reading
 rather than counting — but they are 39 files, not 76, and the corpus has been
 scoped by measurement rather than by name for the first time.
