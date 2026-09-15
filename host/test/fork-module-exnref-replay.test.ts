@@ -39,21 +39,20 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { resolveBinary } from "../src/binary-resolver";
-import { FmStatField } from "../src/fork-module-backend";
+import { FORK_MODULE_STATS } from "../src/fork-module-backend";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabilities";
 import { ForkExternrefTokenCache } from "../src/fork-reference-broker";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
-import { ForkModuleStateArena } from "../src/fork-module-state";
-import type { ForkReferenceRecipeEntry } from "../src/fork-reference-recipes";
-import {
-  appendSegmentedForkReferenceTransaction,
-  PagedForkReferenceVector,
-  type ForkReferenceVector,
-} from "../src/fork-reference-segments";
-import { WPK_FORK_REFERENCE_TRANSACTION_OWNER } from "../src/generated/abi";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
+import {
+  CAPTURE_KIND_EXNREF,
+  INTERN_KIND_EXTERNREF,
+  captureGraph,
+  childInstance,
+  fixture,
+  type Fixture,
+} from "./fork-module-capture-fixture";
 
 const PAGE = 65536;
 const PTR_WIDTH = 4 as const;
@@ -61,6 +60,18 @@ const PID = 5151;
 const GENERATION_ID = 9;
 // The durable broker handle the exnref's reference payload names.
 const PAYLOAD_HANDLE = 44;
+
+/** `fm_stats` field indices, read from the one list the backend pins. */
+const STAT = Object.fromEntries(
+  FORK_MODULE_STATS.map((name, index) => [name, index]),
+) as Record<(typeof FORK_MODULE_STATS)[number], number>;
+
+/** The committed KFEC fixture: an activation declaring tags {0, 1, 2}. */
+const EXCEPTION_CODEC = new Uint8Array(
+  readFileSync(
+    new URL("../../crates/fork-codec/testdata/exception-codec-wasm32.bin", import.meta.url),
+  ),
+);
 
 const DRIVE_OP_ALLOC = 0;
 const DRIVE_OP_FILL = 1;
@@ -72,56 +83,33 @@ const DRIVE_OP_EXN = 2;
  *   id 1 = externref naming `PAYLOAD_HANDLE`
  *   id 2 = exnref whose reference payload edge names id 1 (transit-reachable)
  */
-function buildExnrefArena(
-  memory: WebAssembly.Memory,
+/**
+ * CAPTURE an exnref over an externref payload, through the module.
+ *
+ * Constructed in TypeScript before, with the set-aside arena encoders, and then
+ * asserted against recipe ids this file had chosen. The ids are the module's;
+ * they come back from it now. For an exnref the aggregate's "type ordinal" IS
+ * its TAG ordinal, which is what the admission gate below checks against the
+ * tags an activation declared.
+ */
+function captureExnref(
+  f: Fixture,
   tagOrdinal = 0,
-): number {
-  let next = PAGE;
-  const allocate = (size: number): number => {
-    const addr = next;
-    next += size;
-    if (next > memory.buffer.byteLength) {
-      memory.grow(Math.ceil((next - memory.buffer.byteLength) / PAGE));
-    }
-    return addr;
-  };
-  const arena = new ForkModuleStateArena(
-    memory,
-    PTR_WIDTH,
-    allocate,
-    () => {},
-    "exnref-replay-test",
-  );
-
-  const nodes: ForkReferenceRecipeEntry[] = [
-    { id: 0, node: { kind: "null" } },
-    { id: 1, node: { kind: "externref", handle: PAYLOAD_HANDLE } },
-    {
-      id: 2,
-      node: {
-        kind: "exnref",
-        moduleActivation: 0,
-        tagOrdinal,
+): { root: number; exnId: number; payloadId: number } {
+  const { root, recipes, aggregateRecipes } = captureGraph(
+    f,
+    [[INTERN_KIND_EXTERNREF, PAYLOAD_HANDLE, 0]],
+    [
+      {
+        kind: CAPTURE_KIND_EXNREF,
+        activation: 0,
+        typeOrdinal: tagOrdinal,
         layoutId: 0,
-        scalars: new Uint8Array(0),
-        payloads: [1],
+        edges: ({ leaves }) => [leaves[0]!],
       },
-    },
-  ];
-  const vectors: ForkReferenceVector[] = [PagedForkReferenceVector.empty];
-
-  const root = arena.begin();
-  arena.appendModule({ activationId: 0, templateId: new Uint8Array(32).fill(0xe0) });
-  appendSegmentedForkReferenceTransaction(
-    arena,
-    WPK_FORK_REFERENCE_TRANSACTION_OWNER,
-    nodes,
-    vectors,
-    // Force multi-segment reassembly so the module's decode is exercised.
-    { segmentDataBytes: 48 },
+    ],
   );
-  arena.seal();
-  return root;
+  return { root, exnId: aggregateRecipes[0]!, payloadId: recipes[0]! };
 }
 
 interface ForkModuleRefExports {
@@ -134,8 +122,8 @@ interface ForkModuleRefExports {
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
   fm_drive_table_base: (act: number) => number;
-  fm_ref_exn_route: (recipeId: number, expectedActivation: number) => number;
-  fm_ref_exn_load: (
+  __wpk_fork_ref_exn_route: (recipeId: number, expectedActivation: number) => number;
+  __wpk_fork_ref_exn_load: (
     recipeId: number,
     moduleActivation: number,
     tagOrdinal: number,
@@ -145,10 +133,10 @@ interface ForkModuleRefExports {
     referenceIdsDestination: number,
     referenceCount: number,
   ) => number;
-  fm_ref_exn_cache_index: (recipeId: number) => number;
+  __wpk_fork_ref_exn_cache_index: (recipeId: number) => number;
   // The exnref tag-validity admission gate: seed one activation's declared tag
   // ordinals, then the child-install entry re-checks the graph against them.
-  fm_set_activation_exception_tags: (
+  fm_set_activation_exception_codec: (
     activation: number,
     ptr: number,
     count: number,
@@ -156,23 +144,15 @@ interface ForkModuleRefExports {
   fm_attach_child: (root: number, pid: number) => number;
 }
 
-const MODULE = new WebAssembly.Module(
-  readFileSync(resolveBinary("fork_module32.wasm")),
-);
-
-function instantiate(
-  memory: WebAssembly.Memory,
-  resolveExternref: (handle: number) => unknown,
-) {
-  const reserveBase = 8 * 1024 * 1024;
-  const fm = instantiateForkModule({
-    module: MODULE,
-    memory,
-    ptrWidth: PTR_WIDTH,
-    reserve: () => reserveBase,
-    label: "exnref-replay-test",
-    resolveExternref,
-  });
+/**
+ * The CHILD module that replays what the parent captured.
+ *
+ * A second instance, because that is what a fork has: a parent seals and a
+ * fresh child rebuilds. Replaying in the capturing instance would let a graph
+ * the module never wrote to memory pass.
+ */
+function replayChild(f: Fixture, resolveExternref: (handle: number) => unknown) {
+  const fm = childInstance(f, { label: "exnref-replay-child", resolveExternref });
   return { fm, x: fm.exports as unknown as ForkModuleRefExports };
 }
 
@@ -187,7 +167,12 @@ function bindFaithfulGuest(
   x: ForkModuleRefExports,
   maxRecipeId: number,
 ) {
-  const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+  // The module's EXPORTS, not its transit TABLE: this wrapper reads
+  // `__wpk_fork_ref_gc_transit`, `fm_transit_grow` and `fm_last_errno` off them.
+  const transitTable = new ForkAnyrefTransitTable(
+    fm.exports as Record<string, unknown>,
+    "exnref-replay transit",
+  );
   transitTable.ensureRecipeSlot(maxRecipeId);
   const { guest } = instantiateFaithfulGuest(transitTable);
   const base = x.fm_drive_table_base(0);
@@ -202,19 +187,15 @@ function bindFaithfulGuest(
 
 describe("fork-module exnref reference reconstruction + transit into production (Phase 6 D6.3a / M2)", () => {
   it("roots the exnref's reachable externref payload in the real anyref transit with identity parity, advances the counters, and never mints a tag", () => {
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
-
+    const f = fixture();
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
     const hostCapabilities = createForkModuleHostCapabilities({ tokens });
 
-    const root = buildExnrefArena(memory);
-    const { fm, x } = instantiate(memory, hostCapabilities.imports.resolve_externref);
+    const { root, exnId, payloadId } = captureExnref(f);
+    const { fm, x } = replayChild(f, hostCapabilities.imports.resolve_externref);
 
-    x.fm_set_format(PTR_WIDTH, 0);
-    expect(x.fm_last_errno()).toBe(0);
-
-    const externrefsBefore = Number(x.fm_stats(FmStatField.ExternrefsResolved));
-    const exnrefsBefore = Number(x.fm_stats(FmStatField.ExnrefsReconstructed));
+    const externrefsBefore = Number(x.fm_stats(STAT.externrefsResolved));
+    const exnrefsBefore = Number(x.fm_stats(STAT.exnrefsReconstructed));
 
     // Seed the reference graph (bookkeeping only).
     x.fm_begin_reference_replay(root, PID);
@@ -222,8 +203,8 @@ describe("fork-module exnref reference reconstruction + transit into production 
 
     // (b) PROOF OF USE (graph admission) — one exnref admitted, one externref
     // node counted, purely from bookkeeping.
-    expect(Number(x.fm_stats(FmStatField.ExnrefsReconstructed)) - exnrefsBefore).toBe(1);
-    expect(Number(x.fm_stats(FmStatField.ExternrefsResolved)) - externrefsBefore).toBe(1);
+    expect(Number(x.fm_stats(STAT.exnrefsReconstructed)) - exnrefsBefore).toBe(1);
+    expect(Number(x.fm_stats(STAT.externrefsResolved)) - externrefsBefore).toBe(1);
 
     // Build + execute the real drive plan: PHASE 0 publishes the reachable
     // externref payload into the anyref transit; the EXN step then drives the
@@ -263,12 +244,10 @@ describe("fork-module exnref reference reconstruction + transit into production 
     // step internalizes null, `table.set`s it, reads it back, and TRAPS —
     // failing loud rather than letting the guest's exception materialize
     // consume a null/wrong payload.
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+    const f = fixture();
+    const { root, payloadId } = captureExnref(f);
+    const { fm, x } = replayChild(f, () => null);
 
-    const root = buildExnrefArena(memory);
-    const { fm, x } = instantiate(memory, () => null);
-
-    x.fm_set_format(PTR_WIDTH, 0);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
@@ -279,7 +258,10 @@ describe("fork-module exnref reference reconstruction + transit into production 
     // Presize the transit table (mirrors production's `ensureRecipeSlot`) so the
     // trap below is the intended non-null structural check, not an unrelated
     // out-of-bounds `table.set` on a too-small default table.
-    new ForkAnyrefTransitTable(fm.gcTransitTable).ensureRecipeSlot(2);
+    new ForkAnyrefTransitTable(
+      fm.exports as Record<string, unknown>,
+      "exnref R1 transit",
+    ).ensureRecipeSlot(payloadId + 1);
 
     expect(() => x.fm_drive_execute(planPtr, count)).toThrowError(/unreachable/i);
   });
@@ -291,29 +273,30 @@ describe("fork-module exnref reference reconstruction + transit into production 
     // produced JS-identical results, in a real WebAssembly engine. This data
     // feed does not touch the externref transit at all, so a resolver that is
     // never expected to be called is enough.
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
-    const root = buildExnrefArena(memory);
-    const { x } = instantiate(memory, () => {
+    const f = fixture();
+    const memory = f.memory;
+    const { root, exnId, payloadId } = captureExnref(f);
+    const { x } = replayChild(f, () => {
       throw new Error("resolve_externref should not be called by the data feed");
     });
-    x.fm_set_format(PTR_WIDTH, 0);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
-    const readsBefore = Number(x.fm_stats(FmStatField.RefFeedReads));
+    const readsBefore = Number(x.fm_stats(STAT.referenceFeedReads));
 
-    // exnref id 2: activation 0, tag 0, layout 0, no scalars, payload edge [1].
-    expect(x.fm_ref_exn_route(2, 0)).toBe(0); // layout id
-    expect(x.fm_ref_exn_route(2, 9)).toBe(-1); // wrong activation -> sentinel
-    expect(x.fm_ref_exn_cache_index(2)).toBe(1); // first (only) exnref
+    // The exnref: activation 0, tag 0, layout 0, no scalars, one payload edge.
+    // Ids are the module's, read back from the capture.
+    expect(x.__wpk_fork_ref_exn_route(exnId, 0)).toBe(0); // layout id
+    expect(x.__wpk_fork_ref_exn_route(exnId, 9)).toBe(-1); // wrong activation
+    expect(x.__wpk_fork_ref_exn_cache_index(exnId)).toBe(1); // first (only) exnref
 
     // Load the exnref: no scalar bytes, one reference-payload recipe id (LE u32).
     const refIdsDst = 13 * 1024 * 1024;
-    expect(x.fm_ref_exn_load(2, 0, 0, 0, refIdsDst, 0, refIdsDst, 1)).toBe(1);
-    expect(new Uint32Array(memory.buffer, refIdsDst, 1)[0]).toBe(1);
+    expect(x.__wpk_fork_ref_exn_load(exnId, 0, 0, 0, refIdsDst, 0, refIdsDst, 1)).toBe(1);
+    expect(new Uint32Array(memory.buffer, refIdsDst, 1)[0]).toBe(payloadId);
 
     // PROOF OF USE: the module served every one of these feed reads.
-    expect(Number(x.fm_stats(FmStatField.RefFeedReads)) - readsBefore).toBeGreaterThan(0);
+    expect(Number(x.fm_stats(STAT.referenceFeedReads)) - readsBefore).toBeGreaterThan(0);
   });
 });
 
@@ -330,27 +313,34 @@ describe("fork-module exnref tag-validity admission gate (fm_attach_child)", () 
 
   /** Seed activation 0's declared exnref tags, then invoke the coarse
    *  child-install entry against `root` and return its `fm_last_errno`. */
+  /**
+   * Attach a child after declaring an activation's exception tags -- or not.
+   *
+   * The tags arrive as the guest's own KFEC SECTION, not as a host-decoded u32
+   * array. `fm_set_activation_exception_tags` took the array and was DELETED
+   * for exactly that reason: decoding the section to produce it made the host a
+   * second decoder of a module-owned format. The committed fixture declares
+   * tags {0, 1, 2}, which is what `declareTags` seeds; `false` seeds nothing,
+   * for the activation-declared-no-codec case.
+   */
   function attachWithSeededTags(
-    memory: WebAssembly.Memory,
+    f: Fixture,
     root: number,
-    declaredTags: readonly number[],
+    declareTags: boolean,
   ): { errno: number; x: ForkModuleRefExports } {
-    const { x } = instantiate(memory, () => {
+    const memory = f.memory;
+    const { x } = replayChild(f, () => {
       throw new Error("resolve_externref must not run: the gate rejects first");
     });
-    x.fm_set_format(PTR_WIDTH, 0);
-    expect(x.fm_last_errno()).toBe(0);
 
-    // Stage the declared tag ordinals into a FRESH page past the current memory
-    // end (the module has not touched it) as a little-endian u32 array, then
-    // seed them. An empty catalog is simply not seeded (nothing to declare).
-    if (declaredTags.length > 0) {
+    if (declareTags) {
       const scratch = memory.buffer.byteLength;
       memory.grow(1);
-      const view = new DataView(memory.buffer);
-      declaredTags.forEach((tag, i) => view.setUint32(scratch + i * 4, tag, true));
-      x.fm_set_activation_exception_tags(0, scratch, declaredTags.length);
-      expect(x.fm_last_errno()).toBe(0);
+      new Uint8Array(memory.buffer, scratch, EXCEPTION_CODEC.byteLength).set(
+        EXCEPTION_CODEC,
+      );
+      x.fm_set_activation_exception_codec(0, scratch, EXCEPTION_CODEC.byteLength);
+      expect(x.fm_last_errno(), "the codec section is accepted").toBe(0);
     }
 
     x.fm_attach_child(root, PID);
@@ -358,30 +348,30 @@ describe("fork-module exnref tag-validity admission gate (fm_attach_child)", () 
   }
 
   it("REJECTS an exnref recipe naming a tag its activation never declared (EINVAL)", () => {
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
-    // The captured exnref names tag 7, but activation 0's exception codec only
-    // declares {0, 1}: a corrupt / mismatched recipe the gate must reject.
-    const root = buildExnrefArena(memory, 7);
-    const { errno } = attachWithSeededTags(memory, root, [0, 1]);
+    const f = fixture();
+    // The captured exnref names tag 7, but activation 0's exception codec
+    // declares {0, 1, 2}: a corrupt / mismatched recipe the gate must reject.
+    const { root } = captureExnref(f, 7);
+    const { errno } = attachWithSeededTags(f, root, true);
     expect(errno).toBe(EINVAL);
   });
 
   it("REJECTS an exnref whose activation declared no exception tags at all (EINVAL)", () => {
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+    const f = fixture();
     // A well-formed tag ordinal (0), but NOTHING seeded for activation 0: an
     // exnref naming an activation with no declared codec is still a violation,
     // never a silent admit.
-    const root = buildExnrefArena(memory, 0);
-    const { errno } = attachWithSeededTags(memory, root, []);
+    const { root } = captureExnref(f, 0);
+    const { errno } = attachWithSeededTags(f, root, false);
     expect(errno).toBe(EINVAL);
   });
 
   it("ADMITS an exnref recipe whose tag its activation declares (well-formed fork)", () => {
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+    const f = fixture();
     // The well-formed case: tag 0 is declared, so the gate passes and the
     // child-install entry builds the reconstruction plan (errno 0).
-    const root = buildExnrefArena(memory, 0);
-    const { errno } = attachWithSeededTags(memory, root, [0, 1]);
+    const { root } = captureExnref(f, 0);
+    const { errno } = attachWithSeededTags(f, root, true);
     expect(errno).toBe(0);
   });
 });
