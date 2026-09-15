@@ -686,89 +686,243 @@ configure behind `[ ! -f <artifact> ]` and interpolate a `$*_PREFIX` into
 compiler flags, then check which of those keep their source tree inside
 `packages/registry/<pkg>/`.
 
-## B44 — spidermonkey cannot rebuild: a host tool links against wasm archives
+## B44 — spidermonkey cannot rebuild: lld cannot read Xcode 27's SDK
 
-OPEN, found 2026-09-15 once B43's licence cleared and spidermonkey actually
-tried to build. **Blocks all six browser products**, so the browser suite
-cannot run to completion.
+RESOLVED 2026-09-15 on `brandonpayton/b44-spidermonkey-host-link`. Found once
+B43's licence cleared and spidermonkey actually tried to build.
+
+It **blocked all six browser products**, so the browser suite could not run to
+completion. The chain is worth spelling out, because "a JS engine broke the
+nginx demo" is not obvious: `spidermonkey` -> `node` -> `node-browser-bundle`
+-> `shell`, and `shell` is a dependency of `nginx-vfs`, `nginx-php-vfs`,
+`wordpress`, `lamp` and `node-vfs`, which are what the six `browser-*`
+products are built from. `browser-main-shell` depends on `shell` directly.
 
     ld64.lld: error: undefined symbol: access
     >>> referenced by host_nsinstall.o:(symbol main+0x540)
-    ... chown, strtol, getgrnam, getpwnam
+    ... chown, strtol, getgrnam, getpwnam, rmdir, strncmp, readlink, strcpy
 
-`host_nsinstall` is a HOST tool — a Mach-O binary — and it is being linked
-without a usable libc.
+**It was latent, not new.** spidermonkey was served from cache in every earlier
+run (`setup-offline.log`, `less-fix.log` both show `CACHED`), so nothing had
+rebuilt it in this worktree. It began failing only when its cache key moved,
+which is B38's mechanism: the lane Y/V merge touched `runtime-core`, and
+downstream keys followed.
 
-**It is latent, not new.** spidermonkey was served from cache in every earlier
-run today (`setup-offline.log`, `less-fix.log` both show `CACHED`), so nothing
-had rebuilt it in this worktree. It began failing only when its cache key
-moved, which is B38's mechanism: the lane Y/V merge touched `runtime-core`,
-and downstream keys followed. The failing build names hash `6c57280...` while
-the cache holds `0e6a3011...`.
+### The cause
 
-**Ruled out, each by test rather than argument:**
+Xcode 27 — which landed on this machine the same day, as B43 records — ships a
+`libSystem.tbd` carrying two targets that did not exist in 26.x:
 
-- Not the Xcode licence. `/usr/bin/cc` compiles and links a host binary
-  successfully, inside the dev shell, once B43 cleared.
-- Not a broken dev-shell environment. A plain host link works there.
-- Not stale configure state from an earlier experiment. No spidermonkey work
-  directory persists; each build starts in a fresh temp dir.
+    targets: [ x86_64-macos, x86_64-maccatalyst, arm64e-macos, arm64e-maccatalyst,
+               arm64e.x1-macos, arm64e.x1-maccatalyst ]
 
-**A plausible cause was tested and DISPROVED.** The recipe exports target
-`LDFLAGS` carrying wasm32 archives and `-Wl,-z,stack-size=16777216`, and never
-sets `HOST_LDFLAGS`; mozbuild falls back to the target forms for host programs
-when the `HOST_*` forms are unset, which would explain a Mach-O link against
-wasm archives exactly. Setting `HOST_CFLAGS`/`HOST_CXXFLAGS`/`HOST_LDFLAGS` to
-empty and rebuilding produced **the identical error**, so either the fallback
-is not the path or an empty value does not override it. The change was
-reverted rather than left in as an unproven edit.
+The pinned LLVM 21.1.7's `ld64.lld` cannot parse `arm64e.x1`:
 
-**A SECOND hypothesis was tested and also DISPROVED.** The dev shell exports
-`LD=ld`, and `ld` on PATH resolves to
-`/nix/store/...clang-wrapper-21.1.7/bin/ld` — the CROSS toolchain wrapper, not
-Apple's linker — while `HOST_LD` is unset. That explains both observations
-exactly: `ld64.lld` appears because the wrapper drives lld, and even `strcpy`
-is missing because no macOS libSystem is supplied. Rebuilding with
-`HOST_LD=/usr/bin/ld` produced **the identical error**, so mozbuild is not
-honouring `HOST_LD` either, or the linker is selected somewhere else entirely.
+    ld64.lld: error: could not load TAPI file at .../MacOSX.sdk/usr/lib/libSystem.tbd: malformed file
+    .../libSystem.tbd:4:20: error: unknown architecture
+                       arm64e.x1-macos, arm64e.x1-maccatalyst ]
 
-**Two evidence-backed hypotheses have now failed.** Both looked right, both
-were measured rather than imagined, and both were wrong. That is the signal to
-stop hypothesising: the remaining question is not *where might the flags come
-from* but *what command is actually run*.
+It then discards the whole file, so *every* libc symbol comes back undefined.
+The symbols were never the problem; the SDK was unreadable.
 
-**THE CAUSE IS FOUND, 2026-09-15.** `mach build -v` gives the failing link:
+Three facts had to line up for this to reach a host tool:
 
-    /usr/bin/cc -isysroot .../MacOSX.sdk --target=arm64-apple-darwin \
-      -o nsinstall_real  -fuse-ld=lld  host_nsinstall.o host_pathsub.o
+1. `build-spidermonkey.sh` was the only Kandelo-owned recipe that **reached
+   for the system Xcode**. It forced `DEVELOPER_DIR=/Applications/Xcode.app/…`
+   and defaulted `HOST_CC` to `/usr/bin/cc`, so the host build used whichever
+   Xcode the machine had — Xcode 27, with the unreadable SDK. Grepping the
+   tree for `/Applications/Xcode`, `/usr/bin/cc` and `/usr/bin/clang` finds
+   nothing else outside vendored upstream source under `vim-src`.
+2. SpiderMonkey's configure **selects lld for host programs** whenever the host
+   compiler is clang 15 or newer. `select_linker_tmpl(host)` in
+   `build/moz.configure/toolchain.configure` is handed `dependable(None)` for
+   the linker option, so `--enable-linker` does not apply to the host and
+   there is no knob at all.
+3. Apple's own `ld` reads the Xcode 27 SDK fine. That is why `/usr/bin/cc`
+   works normally, and why a plain host link in the dev shell — which uses
+   nixpkgs' apple-sdk 14.4 — also works. Only the *combination* fails.
 
-Apple's `cc`, the right SDK, the right target — and **`-fuse-ld=lld`**, which
-sends the link to the nix `ld64.lld` on PATH. That linker does not know Apple's
-default library search paths, so no libSystem is supplied and every libc symbol
-is undefined. The compile step is fine; only the link is wrong.
+The captured command, from `mach build -v`:
 
-**The flag is GENERATED, not inherited.** It appears in neither the dev shell
-(`LDFLAGS` is unset), nor the recipe, nor `scripts/`. It is mozbuild's own
-configure, which detects `lld` on PATH and prefers it for host programs. That
-is exactly why hypothesis 1 failed: `HOST_LDFLAGS=""` cannot clear a flag that
-does not come from `HOST_LDFLAGS`.
+    /usr/bin/cc -isysroot /Applications/Xcode.app/…/MacOSX.sdk \
+        --target=arm64-apple-darwin -o nsinstall_real -fuse-ld=lld \
+        host_nsinstall.o host_pathsub.o
 
-**Direction for the fix:** stop mozbuild choosing lld for the HOST link, or
-append a later `-fuse-ld` that overrides it — clang honours the last one. A run
-with `HOST_LDFLAGS=-fuse-ld=/usr/bin/ld` was started and **killed before it
-finished**, so its result is unknown and must not be read as either confirmation
-or refutation. Whatever is chosen must leave the TARGET link on `wasm-ld`.
+and the generated `config/autoconf.mk` confirms configure's own choice:
 
-**Superseded:** the instruction below to capture the invocation first. It has
-been captured; it is quoted above.
+    HOST_LDFLAGS = -fuse-ld=lld
 
-**What the next person should do FIRST:** capture the actual link invocation —
-`mach build -v`, or the `.mozbuild` command log — and read which linker binary
-and which library paths `host_nsinstall` is given. Everything above is
-elimination; none of it substitutes for that one line of output.
+### Why the two earlier hypotheses "failed"
 
-Ruled out so far, each by a full rebuild: target `LDFLAGS` leaking through
-unset `HOST_*FLAGS`, and the cross `LD` leaking through unset `HOST_LD`.
+Both were reported as disproved by full rebuilds. Neither test could reach the
+code it was aimed at — H-25, twice.
+
+- **Target `LDFLAGS` leaking into host links.** Setting `HOST_CFLAGS` /
+  `HOST_CXXFLAGS` / `HOST_LDFLAGS` empty produced the identical error, which
+  looked like a disproof. It was a no-op: `HOST_LDFLAGS` already defaults to
+  `""` (`build/moz.configure/toolchain.configure`), so setting it empty
+  changed nothing. Separately, the hypothesis was wrong on its own terms —
+  `-Wl,-z,stack-size=16777216` fed to a Mach-O link produces
+  `ld64.lld: error: unknown argument '-z'`, not undefined symbols.
+- **The cross linker leaking through `LD`.** `HOST_LD` is not a mozbuild
+  variable at all, so `HOST_LD=/usr/bin/ld` set nothing. And an env
+  `HOST_LDFLAGS=-fuse-ld=…` cannot work either: `host_ldflags` in
+  `build/moz.configure/flags.configure` appends configure's `-fuse-ld=lld`
+  **after** the environment's flags, and the last `-fuse-ld` on a clang
+  command line wins — measured with `clang -###`.
+
+The lesson is the one already in the ledger: a full rebuild is not evidence
+that a hypothesis was tested. Confirm the change reaches the code first.
+
+### The fix
+
+Stay inside Nix, which is where the rest of the package tree already lives.
+
+- `flake.nix` declares `pkgs.apple-sdk_15` (15.5) and exports it as
+  `KANDELO_MACOS_SDK_DIR` / `KANDELO_MACOS_DEVELOPER_DIR`. It is **not** added
+  to `devShellPackages`: that would move `SDKROOT` for every host-side compile
+  in the shell, and only SpiderMonkey needs it. 15.5 is Mozilla's declared
+  minimum (`mac_sdk_min_version()`), and since the failure was a too-*new*
+  SDK, the oldest acceptable version is the safest place to sit.
+- `build-spidermonkey.sh` takes that SDK, which makes it match what the rest
+  of the tree already does — MariaDB, the other large cross-build with
+  host-side tools, resolves its host compiler from `NIX_CC_FOR_BUILD` and
+  falls back to `cc`, never to `/usr/bin/cc`. The recipe drops both the
+  `/Applications/Xcode.app` preference and the `/usr/bin/cc` host-compiler
+  default. Nothing in the build reads Xcode or its licence any more, which
+  retires B43's whole failure class rather than working around it. Whether a
+  machine with no Xcode at all can build it was not tested; the only remaining
+  reference is an `xcrun` fallback taken outside the dev shell.
+- A host-link preflight in the recipe links a tiny C file with the same
+  compiler, SDK and linker the build will use, and fails naming the SDK, the
+  linker and the linker's own error. Without it this failure appears half an
+  hour into a build as a screen of `undefined symbol: strcpy` that names
+  neither. It first runs configure's own selection test
+  (`$HOST_CC -fuse-ld=lld -Wl,--version`) so it probes lld only when configure
+  would choose lld, and cannot block a host that has no lld.
+
+There is no smaller fix. Mozilla evaluates `macos_sdk` under
+`only_when(host_is_osx | target_is_osx)`, so an OSX *host* needs a macOS SDK
+even though the target is wasm; without `--with-macos-sdk` it calls `xcrun`,
+which in the dev shell resolves nixpkgs' 14.4 and dies "SDK version 14.4 is
+too old". Resolving a newer SDK inside the recipe instead of the flake would
+mean building from undeclared host state, which the build contract forbids.
+So the SDK has to be declared, and declaring it is what moves the cache key.
+
+`darwinMinVersion` stays at 14.0 — the SDK is a Nix store path and does not
+change what the built binaries require at runtime, so nothing regresses for
+contributors on older macOS. The Linux dev shell still evaluates; the Darwin
+SDK is never forced there.
+
+The fix is not specific to this machine. The SDK is a Nix store path pinned
+through `flake.lock`'s nixpkgs revision, so every machine entering this dev
+shell resolves the same `apple-sdk-15.5`, independent of which Xcode the
+machine has. It was validated in a fresh
+`git worktree` with its own isolated source and binary caches, so nothing
+it built came from an artifact produced before the change.
+
+`flake.nix` is in `GLOBAL_PACKAGE_TOOLCHAIN_INPUTS`
+(`tools/xtask/src/build_deps.rs:7145`), so this moves every package's cache key
+once. That is the cache correctly noticing that the toolchain moved.
+
+### How this was verified
+
+- The preflight was perturbed until it failed, **inside the resolver**, not
+  only in isolation. Re-running the spidermonkey node with `--rebuild` and
+  `WASM_POSIX_MACOS_SDK_DIR` pointed at the Xcode 27 SDK stops the real recipe
+  at the preflight, before `mach` ever starts, with the host compiler, the SDK
+  and the linker all named and lld's own TAPI error quoted beneath them. The
+  `--rebuild` matters: without it the resolver serves the cached success and
+  the perturbation proves nothing.
+- Its other three branches were exercised against the recipe's own bytes: the
+  selected nix SDK passes, no SDK at all passes, and a host with `lld`
+  genuinely absent from `PATH` skips the check rather than blocking. The first
+  attempt at that last case was invalid — appending `-fuse-ld=nosuchlinker` to
+  `HOST_CC` does not remove lld, the later `-fuse-ld=lld` simply wins — so it
+  was redone by removing the LLVM tree from `PATH`.
+- `clang -###` confirms the 15.5 SDK reaches both the `cc1` compile line and
+  the linker's `-syslibroot`, so the compiler is not silently reading 14.4
+  headers while configure believes it selected 15.5.
+- `nix eval .#devShells.x86_64-linux.default.drvPath` still evaluates, so the
+  Darwin SDK is never forced on Linux.
+- `shellcheck -S warning` is clean on the recipe.
+- The exact link that failed now produces a binary. In the validating run,
+  `obj-wasm32/config/nsinstall_real` is a `Mach-O 64-bit arm64 executable,
+  flags:<NOUNDEFS|DYLDLINK|TWOLEVEL|PIE>` linked against
+  `/usr/lib/libSystem.B.dylib` — the library `ld64.lld` had been discarding as
+  malformed. `NOUNDEFS` is the direct contradiction of the reported failure.
+- The validating `./run.sh setup` ran to completion. Its result JSON reports
+  98 nodes: **80 succeeded, 6 failed, 12 blocked**, 61 published, and
+  `"outcome":"failed"` with a real exit code of 1. `spidermonkey`,
+  `spidermonkey-node` and `node` are all in the succeeded set; every failed
+  and blocked node traces to the six unrelated failures below. The run still
+  exits non-zero, and saying otherwise would misreport it.
+- In the validating `./run.sh setup`, the recipe's own preflight line appears
+  in the build log — `[spidermonkey/wasm32] ==> Checking the host linker can
+  link against the macOS SDK...` — followed by `SUCCEEDED spidermonkey/wasm32`.
+  That is what proves the check runs on the executed path and not merely in
+  isolation. The published entry carries `js.wasm` (53,182,772 bytes, opening
+  `00 61 73 6d 01 00 00 00`) and `node.wasm`.
+
+### What this did not establish
+
+- **The six browser products did not build in this worktree, for a reason
+  that is not B44.** B44's fix is complete and verified: `spidermonkey`,
+  `spidermonkey-node` and `node` all report `SUCCEEDED`. But `shell` declares
+  `tar@1.35`, `wget@1.25.0` and `gzip@1.13` among its dependencies, and those
+  three are the in-tree-source failures described below, so `shell` is
+  `BLOCKED` and with it `nginx-vfs`, `nginx-php-vfs`, `node-vfs`, `wordpress`,
+  `lamp` and every `browser-*` product. In a worktree sharing the machine-wide
+  cache those three are served from cache and never re-run, which is where
+  B44 was originally the only thing in the way. That cannot be checked from
+  here without using the shared cache, which this lane deliberately does not.
+- The browser suite was not run. This unblocks spidermonkey for it; it does
+  not prove the suite passes.
+- Only `aarch64-darwin` was exercised. The Linux dev shell derivation still
+  evaluates, and the Darwin SDK is never forced there, but no Linux or
+  `x86_64-darwin` build was run.
+- Six failures unrelated to B44 still stop `./run.sh setup` short of
+  `"outcome":"succeeded"` from a cold cache, so the overall run still reports
+  failure even with spidermonkey fixed. They are described below rather than
+  fixed here, because they are separate mechanisms.
+
+### Found while validating B44, not fixed here
+
+A cold, worktree-isolated cache surfaces failures a shared cache hides. They
+share B44's latency exactly: they pass elsewhere only because a cached
+artifact already exists, so nothing re-runs the recipe. Two mechanisms, six
+packages. Neither is fixed here — they are separate work.
+
+**Eighteen recipes build inside the repository rather than from the
+resolver's staged source.** Each sets `SRC_DIR="$SCRIPT_DIR/<name>-src"` and
+never mentions `WASM_POSIX_DEP_SOURCE_DIR`, so it downloads and builds into
+`packages/registry/<name>/<name>-src`: `bzip2 git gzip less libcurl libcxx
+libpng msmtpd nginx redis tar texlive unzip vim wget xz zip zstd`. Most still
+succeed, which is why this has gone unnoticed. Three do not, from a clean
+worktree:
+
+- `gzip` — `version.ht: Permission denied`
+- `tar` — `C compiler cannot create executables`, then
+  `unknown type name 'bool'`
+- `wget` — `use of undeclared identifier 'false'`, `unknown type name 'bool'`
+
+The shared shape is a resolver-contract violation, not a compiler problem: a
+recipe that builds in the repository keeps state between runs and does not
+get the source the resolver verified for it.
+
+**Nothing ever builds `local-binaries/sffs_module32.wasm`.** `kandelo-sdk`,
+`mariadb-test` and `node-browser-bundle` all die with
+`ENOENT ... local-binaries/sffs_module32.wasm`, reached through
+`images/vfs/lib/sffs-image-fs.ts:1381` — every recipe that constructs an SFFS
+VFS image. The cause is not ordering: the local-build engine declares
+projection nodes for `fork-module`, `wasi-module` and `dylink-module`
+(`tools/xtask/src/local_build.rs:2677-2697`, running each crate's
+`build-wasm.sh`) and **no node for `sffs-module` at all**, though
+`crates/sffs-module/build-wasm.sh` exists. A fresh `local-binaries/` ends up
+holding `fork_module{32,64}.wasm`, `wasi_module32.wasm` and
+`dylink_module32.wasm`, and no `sffs_module32.wasm` — which is exactly what
+this worktree has. Any checkout that has one is carrying an artifact from
+before, the same way spidermonkey was.
 
 ## B43 — the Xcode licence blocks spidermonkey, and only the maintainer can clear it
 
@@ -835,6 +989,16 @@ Until then, treat a spidermonkey/node/browser-node failure in `run.sh setup`
 as this and not as a regression. Everything upstream of it still builds: the
 package graph reached every other node, and `scripts/build-rootfs.sh` exits 0
 since B40 was fixed.
+
+**B44's fix retires this dependency entirely, 2026-09-15.**
+`build-spidermonkey.sh` no longer prefers `/Applications/Xcode.app` or
+`/usr/bin/cc`; it takes a macOS SDK the dev shell declares (`macosSdk` in
+`flake.nix`) and the dev shell's own clang. Nothing in the build reads
+Xcode or its licence any more, so this class of failure cannot recur —
+and a contributor with only the Command Line Tools, or with no Xcode at
+all, can build spidermonkey. The Xcode 27 upgrade this entry flagged as
+"a real toolchain change" was indeed the trigger, but for B44 rather
+than for anything here: see B44 for what it broke and why.
 
 ## B41 — three perturb trials stopped anchoring when the graph moved under them
 

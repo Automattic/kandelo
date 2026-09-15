@@ -1,6 +1,11 @@
 # B44 — spidermonkey cannot rebuild: a host tool links against no libc
 
-Paste everything below into a fresh agent.
+**RESOLVED 2026-09-15. Do not dispatch this brief again** — see `## B44` in
+`docs/plans/2026-09-11-MASTER-PLAN.md` for the cause and the fix. Two of the
+three "eliminated" causes below were eliminated by tests that could not reach
+the code they aimed at, so the elimination list is kept as a record of what was
+believed, not as a list of things now known to be false. The brief is preserved
+because what it got wrong is the instructive part.
 
 ---
 
