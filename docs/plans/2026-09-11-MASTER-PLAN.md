@@ -429,6 +429,48 @@ configure behind `[ ! -f <artifact> ]` and interpolate a `$*_PREFIX` into
 compiler flags, then check which of those keep their source tree inside
 `packages/registry/<pkg>/`.
 
+## B44 — spidermonkey cannot rebuild: a host tool links against wasm archives
+
+OPEN, found 2026-09-15 once B43's licence cleared and spidermonkey actually
+tried to build. **Blocks all six browser products**, so the browser suite
+cannot run to completion.
+
+    ld64.lld: error: undefined symbol: access
+    >>> referenced by host_nsinstall.o:(symbol main+0x540)
+    ... chown, strtol, getgrnam, getpwnam
+
+`host_nsinstall` is a HOST tool — a Mach-O binary — and it is being linked
+without a usable libc.
+
+**It is latent, not new.** spidermonkey was served from cache in every earlier
+run today (`setup-offline.log`, `less-fix.log` both show `CACHED`), so nothing
+had rebuilt it in this worktree. It began failing only when its cache key
+moved, which is B38's mechanism: the lane Y/V merge touched `runtime-core`,
+and downstream keys followed. The failing build names hash `6c57280...` while
+the cache holds `0e6a3011...`.
+
+**Ruled out, each by test rather than argument:**
+
+- Not the Xcode licence. `/usr/bin/cc` compiles and links a host binary
+  successfully, inside the dev shell, once B43 cleared.
+- Not a broken dev-shell environment. A plain host link works there.
+- Not stale configure state from an earlier experiment. No spidermonkey work
+  directory persists; each build starts in a fresh temp dir.
+
+**A plausible cause was tested and DISPROVED.** The recipe exports target
+`LDFLAGS` carrying wasm32 archives and `-Wl,-z,stack-size=16777216`, and never
+sets `HOST_LDFLAGS`; mozbuild falls back to the target forms for host programs
+when the `HOST_*` forms are unset, which would explain a Mach-O link against
+wasm archives exactly. Setting `HOST_CFLAGS`/`HOST_CXXFLAGS`/`HOST_LDFLAGS` to
+empty and rebuilding produced **the identical error**, so either the fallback
+is not the path or an empty value does not override it. The change was
+reverted rather than left in as an unproven edit.
+
+**What the next person should try:** capture the actual link command mach runs
+for `host_nsinstall` — `mach build -v` or the `.mozbuild` command log — and
+read which linker and which library paths it is given. The diagnosis needs the
+real invocation, not another hypothesis about where the flags come from.
+
 ## B43 — the Xcode licence blocks spidermonkey, and only the maintainer can clear it
 
 OPEN, **needs the maintainer at a terminal**, found 2026-09-15.
