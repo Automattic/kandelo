@@ -5386,7 +5386,6 @@ mod tests {
         assert_eq!(fs.stat_ino(hello).unwrap().mode, S_IFREG | 0o4711);
     }
 
-    #[test]
     /// `chown` here does NOT follow a final symlink, and the syscall layer
     /// depends on that.
     ///
@@ -5423,6 +5422,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn chmod_chown_and_symlink_creation() {
         let _g = TestGuard::acquire();
         build_sample_tree();
