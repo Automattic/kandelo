@@ -937,6 +937,7 @@ dependencies = [
  "cap-std",
  "fork-codec",
  "libc",
+ "runtime-core",
  "rustix",
  "wasm-artifact",
  "wasm-posix-shared",
