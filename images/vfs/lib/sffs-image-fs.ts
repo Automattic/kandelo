@@ -234,6 +234,34 @@ export class SffsImageFs {
         this.check(this.exports.sm_write_file(p, pl, mode, c, cl), "write", path)));
   }
 
+  /**
+   * Create a file owned by `uid`/`gid`, the way the image builders do.
+   *
+   * The order is `MemoryFileSystem.createFileWithOwner`'s and is load-bearing:
+   * **chown before chmod**, because changing an owner clears set-user-ID and
+   * set-group-ID bits, so a mode carrying one has to be re-applied afterwards
+   * or the bit is silently lost. Doing it the other way round produces an
+   * image whose setuid binaries are not setuid, and every structural check
+   * still passes.
+   */
+  createFileWithOwner(
+    path: string,
+    mode: number,
+    uid: number,
+    gid: number,
+    content: Uint8Array,
+  ): void {
+    this.writeFile(path, content, mode);
+    this.chown(path, uid, gid);
+    this.chmod(path, mode);
+  }
+
+  /** The directory peer of {@link createFileWithOwner}, same ordering rule. */
+  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {
+    this.mkdir(path, mode, uid, gid);
+    this.chmod(path, mode);
+  }
+
   lstat(path: string): SffsStat {
     // `out_len === 0` is the module's one size-probe convention, shared with
     // `sm_read_dir` and `sm_check_headroom`. Queried rather than hardcoded, so

@@ -838,3 +838,55 @@ describe("SffsImageFs", () => {
     expect(a.lstat("/only-in-a").mode & 0o7777).toBe(0o755);
   });
 });
+
+describe("owner-carrying creation, against MemoryFileSystem", () => {
+  it("keeps a setuid bit that chown would otherwise clear", async () => {
+    const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+
+    // 0o4755: setuid. This is the mode `sudo` ships with, and the whole reason
+    // the incumbent re-chmods after chown.
+    const incumbent = MemoryFileSystem.createFresh(4 * 1024 * 1024);
+    incumbent.mkdirWithOwner("/usr", 0o755, 0, 0);
+    incumbent.createFileWithOwner(
+      "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
+    );
+
+    const bridge = SffsImageFs.create();
+    bridge.mkdirWithOwner("/usr", 0o755, 0, 0);
+    bridge.createFileWithOwner(
+      "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
+    );
+
+    const shape = (st: { mode: number; uid: number; gid: number }) =>
+      ({ mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
+    expect(shape(bridge.lstat("/usr/sudo"))).toEqual(shape(incumbent.lstat("/usr/sudo")));
+    // Guards the guard: both agreeing on a cleared bit would satisfy toEqual.
+    expect(bridge.lstat("/usr/sudo").mode & 0o4000).toBe(0o4000);
+  });
+
+  it("carries a non-root owner onto both a file and a directory", async () => {
+    const { MemoryFileSystem } = await import("../src/vfs/memory-fs");
+
+    const incumbent = MemoryFileSystem.createFresh(4 * 1024 * 1024);
+    incumbent.mkdirWithOwner("/home", 0o755, 0, 0);
+    incumbent.mkdirWithOwner("/home/maker", 0o750, 1000, 1001);
+    incumbent.createFileWithOwner(
+      "/home/maker/.profile", 0o640, 1000, 1001, new TextEncoder().encode("hi"),
+    );
+
+    const bridge = SffsImageFs.create();
+    bridge.mkdirWithOwner("/home", 0o755, 0, 0);
+    bridge.mkdirWithOwner("/home/maker", 0o750, 1000, 1001);
+    bridge.createFileWithOwner(
+      "/home/maker/.profile", 0o640, 1000, 1001, new TextEncoder().encode("hi"),
+    );
+
+    const shape = (st: { mode: number; uid: number; gid: number }) =>
+      ({ mode: st.mode & 0o7777, uid: st.uid, gid: st.gid });
+    for (const path of ["/home/maker", "/home/maker/.profile"]) {
+      expect(shape(bridge.lstat(path))).toEqual(shape(incumbent.lstat(path)));
+    }
+    expect(bridge.lstat("/home/maker").uid).toBe(1000);
+    expect(bridge.lstat("/home/maker").gid).toBe(1001);
+  });
+});
