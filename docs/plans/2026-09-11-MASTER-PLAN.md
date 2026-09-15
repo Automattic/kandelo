@@ -2824,6 +2824,55 @@ keyword, three by file count, one by method census, one by call site — each
 produced a number and none produced a schedule. Reading imports produces a
 schedule because the import list says what a test is ABOUT, and that is the
 thing the disposition depends on.
+### A PREDICATE THAT COULD NOT TELL, AND A BRANCH STILL UNPROVEN — 2026-09-15
+
+**The defect, fixed.** `hasConfiguredDemoLogin` asked
+`fs.getLazyEntry(path) !== null`. The module bridge deliberately has no
+`getLazyEntry` — it answers the same question with `isPathDeferred`, which
+reports archive- AND url-backed files, where `MemoryFileSystem` splits them and
+needs both calls.
+
+Against the bridge the missing method **threw, the caller's `try` swallowed it,
+and a predicate about login policy answered "not configured" when what happened
+was "could not tell."** That is the convenient-illusion shape inside a check on
+whether a setuid login program is resident.
+
+`isDeferredEitherWay` now asks the narrow question first and adds the union only
+where it exists, so it is complete against both filesystems — asking only
+`isPathDeferred` would have weakened the check against `MemoryFileSystem`, whose
+url-backed single-file case is exactly lane S's defect.
+
+### THE PART THAT IS NOT DONE, STATED PLAINLY
+
+**`perturb/demo-login-eagerness.json` reports 2 survivors, and that is left
+standing on purpose.** Deleting either half of the eagerness union leaves the
+suite green, so **the branch the predicate exists for is still not covered by a
+test.**
+
+Three attempts failed, each teaching something:
+
+1. **A fixture assembled by hand** returned `false` for the deferred case — and
+   also would have for an eager one, because it failed some other condition.
+   The test passed for the wrong reason, which is indistinguishable from
+   passing.
+2. **Proving the premise** (assert the same fixture IS configured when eager)
+   made the test honest and still did not kill the mutants.
+3. **Rebuilding through `configureDemoLogin`** gave `true` for eager and
+   `false` for deferred — and the mutants STILL survive, which means the
+   deferred image fails an earlier condition, most likely the `loginIsStaged`
+   mode/type check on what `registerLazyFile` produces, before eagerness is
+   ever consulted.
+
+**So the honest state is: the fix is right, the branch is untested, and the
+spec says so on every run.** A spec reporting a known survivor is a visible,
+accurate statement that a behaviour is uncovered. Deleting the trials to get a
+clean run would convert that statement into silence, which is the thing this
+campaign exists to stop.
+
+**What the next person needs**: find what `MemoryFileSystem.registerLazyFile`
+gives a stub for mode, type, uid and gid, and make the deferred fixture
+identical to the eager one in all of them. Then eagerness is the only
+difference and the trials die.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
