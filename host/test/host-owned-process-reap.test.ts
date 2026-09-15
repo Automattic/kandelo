@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { reapHostOwnedExitedProcess } from "../src/host-owned-process-reap";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { signalExitStatus, SIGILL } from "../src/trap-signals";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const helloWasm = join(__dirname, "../../examples/hello.wasm");
@@ -30,7 +30,7 @@ function loadProgramBytes(path: string): ArrayBuffer {
 }
 
 async function spawnSmokeRootfs(): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  const fs = SffsImageFs.create();
   fs.mkdir("/usr", 0o755);
   fs.mkdir("/usr/bin", 0o755);
   fs.createFileWithOwner(
