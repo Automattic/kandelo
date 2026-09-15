@@ -44,6 +44,34 @@
    "scope_end": "\n  };\n",
    "find": "      url: transports[0] ?? entry.url,",
    "replace": "      url: entry.url,"
+  },
+  {
+   "name": "a module-built image's deferred files are reported as none",
+   "scope": "    exportLazyEntries: () => {",
+   "scope_end": "\n    },\n",
+   "find": "          .filter((file) => file.archiveId === 0)",
+   "replace": "          .filter(() => false)"
+  },
+  {
+   "name": "an archive member is mistaken for a standalone deferred file",
+   "scope": "    exportLazyEntries: () => {",
+   "scope_end": "\n    },\n",
+   "find": "          .filter((file) => file.archiveId === 0)",
+   "replace": "          .filter(() => true)"
+  },
+  {
+   "name": "archives the reader cannot reconstruct are reported as none",
+   "scope": "    exportLazyArchiveEntries: () => {",
+   "scope_end": "\n    },\n",
+   "find": "        if (fromModule.archives.length !== 0) {",
+   "replace": "        if (false) {"
+  },
+  {
+   "name": "the module is consulted even when the sections carry the answer",
+   "scope": "  const fromModule = lazy === null && archives === null",
+   "scope_end": ";\n",
+   "find": "  const fromModule = lazy === null && archives === null && moduleLazyEntries !== undefined",
+   "replace": "  const fromModule = moduleLazyEntries !== undefined"
   }
  ]
 }
