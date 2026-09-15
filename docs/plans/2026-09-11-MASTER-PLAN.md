@@ -550,6 +550,51 @@ SDEF v5 carries the address, the kernel verifies the digest, every production
 producer emits both, and `tools/mkrootfs` writes the rootfs image with the Rust
 writer. The relay re-applies onto whichever answer comes back.
 
+## B43 — the mkrootfs migration breaks the canonical Node mount path
+
+**OPEN, and it means `brandonpayton/lane-y-image-writer` must not merge as it
+stands.** Found by looking for the validation the migration did not have, and
+proven by controlled measurement rather than reasoning.
+
+`DEFAULT_MOUNT_SPEC` — documented as *"Canonical mount layout"* — declares
+`{ path: "/", source: "image" }`. `node-kernel-worker-entry.ts:773` passes it to
+`resolveForNodeKernelSession`, which calls `restoreVerifiedImageMounts`, which
+restores the rootfs image into a **`MemoryFileSystem` backend for `/`**.
+`MemoryFileSystem` reads `KLZY`. `tools/mkrootfs` now writes `SDEF`.
+
+**Measured, same reader, same paths, two images:**
+
+| rootfs image | `/usr/bin/sudo` | lazy entries |
+|---|---|---|
+| pre-migration (`KLZY`, built 11:47) | size 2,107,300, mode 4755 | **65** |
+| post-migration (`SDEF`) | **size 0**, mode 4755 | **0** |
+
+So every one of the 65 lazy binaries reads as an empty file through that
+backend. A Node boot confirms the consequence end to end:
+`/bin/sh: 1: /bin/ls: Exec format error`, exit 126 — the signature of executing
+an empty file.
+
+**Why no suite caught it.** Both Node runtime tests build their fixtures with
+`MemoryFileSystem`, so they exercise `KLZY` images only:
+`node-lazy-archive-runtime.test.ts:88` and `node-image-runtime.test.ts:116`.
+Nothing anywhere boots a real `SDEF` image through the host. The migration's
+own evidence — `tools/mkrootfs` 184 passed, runtime-core 2197 — is all true and
+none of it covers this seam.
+
+**What the fix is NOT.** Teaching `MemoryFileSystem` to read `SDEF` builds a new
+feature into the file the campaign is deleting, which this plan already rejects
+by name.
+
+**What it probably is:** `/` should not be an image mount at all under
+kernel-owned FS. The kernel loads the image itself through
+`kernel_rootfs_load_image` and serves `/` from its own tree; a second,
+KLZY-only view of the same image mounted underneath it is the two-authors
+defect again, one layer up. Removing it is host-lane work, not lane Y's.
+
+**Browser status unknown.** `live-setup.ts` boots kernel-owned and may not use
+`DEFAULT_MOUNT_SPEC` at all, so the browser may be unaffected — but B40 blocks
+the suite that would say.
+
 ## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
 
 OPEN, and it blocks **all six browser products** exactly as B39 did.
