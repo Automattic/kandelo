@@ -924,7 +924,7 @@ holding `fork_module{32,64}.wasm`, `wasi_module32.wasm` and
 this worktree has. Any checkout that has one is carrying an artifact from
 before, the same way spidermonkey was.
 
-## B43 — the Xcode licence blocks spidermonkey, and only the maintainer can clear it
+## B43 — the Xcode licence blocked spidermonkey — RESOLVED by B44, 2026-09-15
 
 OPEN, **needs the maintainer at a terminal**, found 2026-09-15.
 
@@ -940,6 +940,20 @@ The cause is not in this repository. SpiderMonkey's `mach` build shells out to
 
 Reproduced directly rather than inferred: compiling a two-line C file with
 `/usr/bin/cc` fails with the same message.
+
+**RESOLVED 2026-09-15 by B44's fix, not by accepting the licence.** The
+licence WAS accepted mid-session and cleared this specific failure, but the
+underlying dependency is what mattered: `build-spidermonkey.sh` was the only
+Kandelo-owned recipe reaching for the system Xcode, forcing
+`DEVELOPER_DIR=/Applications/Xcode.app/...` and defaulting `HOST_CC` to
+`/usr/bin/cc`. B44 moved its host tools inside Nix, so no Kandelo build reads
+Xcode or its licence any more. A machine whose Xcode licence is unaccepted --
+or whose Xcode updates and resets it, which is exactly what happened here --
+no longer fails because of it.
+
+The verification advice below still stands for anyone diagnosing a similar
+report, and the general lesson holds: an acceptance can look like it worked
+while leaving the machine-wide record untouched.
 
 **It is new today and is not caused by any campaign change.** spidermonkey
 built successfully in this worktree earlier the same day — `setup-offline.log`
