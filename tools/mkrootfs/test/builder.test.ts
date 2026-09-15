@@ -900,6 +900,37 @@ describe("image builder — round-trip", () => {
     }
   });
 
+  it("stamps the declared capacity into the image it emits", async () => {
+    // The capacity is a PROMISE carried by the artifact — consumers size
+    // buffers and judge headroom from it — so it has to arrive there, not just
+    // be passed to the builder. Nothing checked that until a mutant deleted
+    // the call that sets it and every test stayed green.
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-capacity-"));
+    try {
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(manifest, "/ d 0755 0 0\n/small.txt f 0644 0 0 src=small.txt\n");
+      writeFileSync(join(tmp, "small.txt"), "hi");
+      // Above the default 16 MiB `sabSize`, which is still the floor the
+      // builder validates a declared capacity against.
+      const declared = 64 * 1024 * 1024;
+      const image = await buildImage({
+        sourceTree: tmp,
+        manifest,
+        repoRoot: tmp,
+        maxSizeBytes: declared,
+      });
+
+      const reader = SffsImageFs.create();
+      reader.loadImage(image);
+      expect(reader.exportCapacityBytes()).toBe(declared);
+      // And it is a FLOOR on growth, not a description of the artifact: the
+      // image itself is far smaller than what it declares room for.
+      expect(image.byteLength).toBeLessThan(declared);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("refuses an image that does not fit the capacity it declares", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-enospc-"));
     try {

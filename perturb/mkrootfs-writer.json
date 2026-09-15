@@ -43,13 +43,12 @@
       "scope_end": "\n  }\n",
       "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);",
       "replace": "      mfs.registerLazyFile(f.path, f.lazyUrl, 0, f.mode);"
-    },
+    }
+  ],
+  "retired": [
     {
       "name": "a short write while building is not noticed",
-      "scope": "  const actualBytes = mfs.stat(path).size;",
-      "scope_end": "\n}\n",
-      "find": "  if (actualBytes !== content.byteLength) {",
-      "replace": "  if (false) {"
+      "why": "Unfalsifiable by construction, and the guard it mutated was removed rather than covered. `createFileExactWithOwner` compared `stat(path).size` against the content it had just written, to catch a memfs SharedArrayBuffer running out mid-file. The Rust writer cannot short-write: `sm_write_file` stores the whole content or returns an errno, which `check` throws on. So the wrapper's entire body was a comparison that could not differ, and its two callers now call `createFileWithOwner` directly. The failure mode became impossible rather than caught, which is the better outcome — but a guard that cannot fail is a guard that lies about being one."
     }
   ]
 }
