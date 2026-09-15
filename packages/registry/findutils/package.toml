@@ -6,6 +6,11 @@ depends_on = []
 
 [source]
 url = "https://ftpmirror.gnu.org/findutils/findutils-4.10.0.tar.xz"
+# ftpmirror.gnu.org is GNU's redirector and stays primary. It picks a mirror
+# without checking that mirror carries the file, and the pick is sticky, so a
+# package can 404 on every retry while the canonical archive serves it fine.
+# sha256 below gates the bytes whichever host answers.
+mirrors = ["https://ftp.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz"]
 sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
 provider = "archive"
 

@@ -424,6 +424,11 @@ pub struct DepsManifest {
 #[serde(deny_unknown_fields)]
 struct RawSource {
     pub url: String,
+    /// Additional hosts serving the SAME bytes as `url`, tried in order when
+    /// `url` fails. Safe because `sha256` gates the content regardless of who
+    /// served it: a mirror list widens availability without widening trust.
+    #[serde(default)]
+    pub mirrors: Vec<String>,
     pub sha256: String,
     #[serde(default)]
     pub provider: Option<SourceProvider>,
@@ -452,6 +457,7 @@ impl SourceProvider {
 #[derive(Debug, Clone)]
 pub struct Source {
     pub url: String,
+    pub mirrors: Vec<String>,
     pub sha256: String,
     pub provider: SourceProvider,
     pub provider_was_explicit: bool,
@@ -1686,8 +1692,24 @@ impl DepsManifest {
                 }
             }
         }
+        for mirror in &raw.source.mirrors {
+            if mirror.is_empty() {
+                return Err("source.mirrors entries must not be empty".into());
+            }
+            if mirror == &raw.source.url {
+                return Err(format!(
+                    "source.mirrors repeats source.url ({mirror});                      a mirror that is the primary adds no redundancy"
+                ));
+            }
+            if source_provider == SourceProvider::Archive {
+                ArchiveFormat::from_url(mirror).map_err(|error| {
+                    format!("source.mirrors entry {mirror} is not a supported archive URL: {error}")
+                })?;
+            }
+        }
         let source = Source {
             url: raw.source.url,
+            mirrors: raw.source.mirrors,
             sha256: raw.source.sha256,
             provider: source_provider,
             provider_was_explicit,

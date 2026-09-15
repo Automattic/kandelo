@@ -11864,6 +11864,12 @@ fn configure_primary_source_environment(
             command.env("WASM_POSIX_DEP_SOURCE_ARCHIVE", &handoff.archive);
             command.env("WASM_POSIX_DEP_SOURCE_DIR", &handoff.source_dir);
             command.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
+            // Newline-separated so a URL containing a space cannot split into
+            // two hosts. Empty when the manifest declares no mirrors.
+            command.env(
+                "WASM_POSIX_DEP_SOURCE_MIRRORS",
+                target.source.mirrors.join("\n"),
+            );
             command.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         }
         (ResolvePolicy::SourceOnlyV1, SourceProvider::Repository | SourceProvider::DevShell) => {
@@ -11883,6 +11889,12 @@ fn configure_primary_source_environment(
                 ));
             }
             command.env("WASM_POSIX_DEP_SOURCE_URL", &target.source.url);
+            // Newline-separated so a URL containing a space cannot split into
+            // two hosts. Empty when the manifest declares no mirrors.
+            command.env(
+                "WASM_POSIX_DEP_SOURCE_MIRRORS",
+                target.source.mirrors.join("\n"),
+            );
             command.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         }
         (ResolvePolicy::Default, SourceProvider::Repository | SourceProvider::DevShell) => {
