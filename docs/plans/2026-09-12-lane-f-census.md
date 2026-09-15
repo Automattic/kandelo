@@ -197,8 +197,8 @@ rules on. The baseline file says it itself: *"This list should only ever
 SHRINK. Every entry removed is a file the cluster port brought back."* It is
 the lane's debt made countable, and draining it is the close-out.
 
-**Where it stands: 116 failing files of 456** (184 before C1, 136 before C2).
-3,989 tests pass, 146 fail.
+**Where it stands: 113 failing files of 456** (184 at the start of this
+count, then 136, then 116). 4,006 tests pass, 134 fail.
 Grouped by first cause (`suite-baseline.mjs` output, clustered on the error
 text; files appear under more than one cause):
 
@@ -206,7 +206,7 @@ text; files appear under more than one cause):
 |---|---|---|---|
 | C1 | `missing valid process-owned fork unwind tag` | 52 | **CLOSED 2026-09-15.** worker-main's NO-fork-instrumentation branch called `processForkUnwindTag()`, which only an instrumented worker's fork module can answer, so a program that does not fork could not START. Both binders bind `env.__wpk_fork_unwind` only when the guest declares it, so the branch passes `undefined`. **48 baseline files came back**; 184 -> 136. |
 | C2 | `fm_set_activation_imports failed with errno 22` | 41 | **CLOSED 2026-09-15.** A COW child inherits the module's statics through the memory clone -- BSS lives in the guest's memory at `__memory_base` and is not re-zeroed on instantiation -- so the child read the PARENT's KFIG/KFIT seed table, its template-id table, and `PHASE` (cloned MID-CAPTURE, so every child-install entry answered EBUSY). The two seeds this lane added are idempotent on identical bytes now; `fm_set_format` clears the phase. **20 more files came back**; 136 -> 116. |
-| C3 | unresolved attic import | 28 | test files that import a set-aside module directly. These test deleted implementations; each is a port-or-delete decision, not a bug. |
+| C3 | unresolved attic import | 25 | test files that import a set-aside module directly. TWO populations: 11 are tests OF the deleted implementation and go with the attic; 12 test something LIVE and need repointing or porting. Three were repointed 2026-09-15 (`abi-version`, `fork-unwind-transport`, `process-table-replication`) for the price of an import. |
 | C4 | `borrowed vfork workspace consumed 0 prefix bytes` | 7 | the vfork/borrowed child install was NEVER WIRED: `fm_child_seed_borrowed` and `fm_attach_borrowed_child` have no backend method and no host caller, and `reservePrefix` in `vfork-workspace.ts` has no caller either, so a borrowed child runs the COW path, gets no private prefix, and `assertAttachComplete` catches the accounting honestly. |
 | C5 | everything else | remainder | to be grouped once C1-C4 are down; the count is currently dominated by them. |
 
@@ -236,7 +236,34 @@ Then, and only then, the rest:
    `vfork-workspace.ts` (158 code lines) along with `reservePrefix` and
    `assertAttachComplete`. The host would keep only what it alone knows: the
    region the kernel admitted. Size it before writing it.
-4. **C3** — 28 files: port or delete, one argument each.
+4. **C3** -- 25 files, and they are two populations, not one. The distinction
+   decides the work:
+
+   **A -- 11 tests OF a set-aside module** (`fork-module-state.test.ts`,
+   `fork-activation-registry.test.ts`, `fork-early-reference-provider.test.ts`,
+   `fork-function-catalog`, `fork-gc-codec`, `fork-imported-globals`,
+   `fork-module-reconstruction`, `fork-module-trampoline`,
+   `fork-reference-segments`, `fork-replay-events`, `fork-static-root-catalog`).
+   Their SUBJECT is the deleted implementation and the Rust equivalents are
+   tested in `crates/fork-codec`. They go when the attic goes -- one commit, not
+   eleven.
+
+   **B -- 12 tests of something LIVE** that reach for a set-aside module to
+   build a fixture. Three were repointed on 2026-09-15 for the price of an
+   import (`abi-version`, `fork-unwind-transport`, `process-table-replication`);
+   what is left is harder and has ONE shape. Eight `fork-module-*.test.ts` files
+   drive the live module but build their sealed KFMS arena in TypeScript with
+   the attic `ForkModuleStateArena` + `appendSegmentedForkReferenceTransaction`
+   -- 4,412 attic lines between them.
+
+   **Do not port those encoders to `host/test/`.** D1 forbids the restore, and
+   re-deriving a module-owned binary format in TypeScript is the duplication
+   this lane exists to remove. Build the arena the way
+   `fork-module-capture-drive.test.ts` already does instead: drive the MODULE
+   through a real capture and read back the root it sealed. One shared fixture
+   helper in `host/test/` serves all eight, costs no measured surface (the
+   budgets measure `host/src`), and tests through the live path rather than a
+   second implementation of it.
 5. **C5** — regroup and drain.
 6. **D7** — nothing drives `__wpk_fork_ref_exn_clear`/`_abort`. A drive slot,
    not a host call. Still open.

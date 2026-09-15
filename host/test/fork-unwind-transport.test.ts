@@ -3,12 +3,24 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { isForkUnwindException } from "../src/fork-guest-imports";
 import {
-  createForkUnwindTag,
-  FORK_UNWIND_TAG_IMPORT_MODULE,
-  FORK_UNWIND_TAG_IMPORT_NAME,
-  isForkUnwindException,
-} from "../src/fork-unwind-transport";
+  WPK_FORK_UNWIND_TAG_IMPORT_MODULE as FORK_UNWIND_TAG_IMPORT_MODULE,
+  WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME,
+} from "../src/generated/abi";
+
+/**
+ * The private unwind tag, minted here rather than imported.
+ *
+ * `createForkUnwindTag` was DELETED from the host: the co-resident fork module
+ * DEFINES this tag and exports it, so a host that minted its own would leave
+ * that export dead and make the module and the guest disagree the moment the
+ * module throws one itself. A TEST that only needs some tag to throw and catch
+ * is the one caller that can still make its own.
+ */
+function createForkUnwindTag(): WebAssembly.Tag {
+  return new WebAssembly.Tag({ parameters: [] });
+}
 
 function throwingModule(): WebAssembly.Module {
   const dir = mkdtempSync(join(tmpdir(), "kandelo-unwind-tag-"));
