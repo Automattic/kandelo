@@ -113,6 +113,20 @@
    "scope_end": "\n}\n",
    "find": "            inode.mode &= !S_ISUID;",
    "replace": "            inode.mode |= 0;"
+  },
+  {
+   "name": "statfs reports a permissive mount as nosuid",
+   "scope": "pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        f_flags: if is_nosuid() {",
+   "replace": "        f_flags: if true {"
+  },
+  {
+   "name": "a nosuid mount reports itself as permitting set-user-ID",
+   "scope": "pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        f_flags: if is_nosuid() {",
+   "replace": "        f_flags: if false {"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
