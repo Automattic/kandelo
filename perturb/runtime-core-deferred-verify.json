@@ -51,6 +51,34 @@
       "scope_end": "                        // Not deferred at all",
       "find": "                                    set_deferred_source(&abs, &record.uri, &record.digest)?;",
       "replace": ""
+    },
+    {
+      "name": "set-ID survives on deferred bytes nothing can verify",
+      "scope": "fn demote_unverifiable_setid()",
+      "scope_end": "\n}\n",
+      "find": "            if deferred && inode.deferred_digest == crate::sffs_deferred::DIGEST_NONE {\n                inode.demote_setid_unverified();\n            }",
+      "replace": ""
+    },
+    {
+      "name": "set-ID is demoted even when the image DID declare a digest",
+      "scope": "fn demote_unverifiable_setid()",
+      "scope_end": "\n}\n",
+      "find": "            if deferred && inode.deferred_digest == crate::sffs_deferred::DIGEST_NONE {",
+      "replace": "            if deferred {"
+    },
+    {
+      "name": "the demotion is never run, so the image's own bits stand",
+      "scope": "    // Lane S's other half, applied once the image's description is complete",
+      "scope_end": "\n}\n",
+      "find": "    demote_unverifiable_setid();",
+      "replace": ""
+    },
+    {
+      "name": "only set-user-ID is dropped, leaving set-group-ID honoured",
+      "scope": "fn demote_setid_unverified(&mut self)",
+      "scope_end": "\n    }\n",
+      "find": "        self.mode &= !(S_ISUID | S_ISGID);",
+      "replace": "        self.mode &= !S_ISUID;"
     }
   ],
   "retired": [
