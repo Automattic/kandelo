@@ -5387,6 +5387,42 @@ mod tests {
     }
 
     #[test]
+    /// `chown` here does NOT follow a final symlink, and the syscall layer
+    /// depends on that.
+    ///
+    /// `MemoryFileSystem` answered symlink ownership with two operations --
+    /// `chown` followed the link, `lchown` did not. This filesystem has one,
+    /// and the reason it needs only one is the layering: `sys_chown` resolves
+    /// with `PathResolveOptions::FOLLOW` and hands down an ALREADY-RESOLVED
+    /// path, so following again here would be a second traversal of a link the
+    /// caller already walked. POSIX is satisfied above, not here.
+    ///
+    /// Nothing asserted it, and it is not a detail: a VFS image builder creates
+    /// symlinks in bulk -- the shipped shell image carries thousands -- and it
+    /// calls this function directly, without a syscall layer in front. Whether
+    /// ownership lands on the link or its target is a difference that ships.
+    #[test]
+    fn chown_does_not_follow_a_final_symlink() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+
+        chown(b"/usr/bin/hello", 11, 12, false).unwrap();
+        symlink(b"hello", b"/usr/bin/hello-link", 0, 0).unwrap();
+
+        chown(b"/usr/bin/hello-link", 21, 22, false).unwrap();
+
+        let link = lstat(b"/usr/bin/hello-link").unwrap();
+        let target = lstat(b"/usr/bin/hello").unwrap();
+        // The link moved; the target kept the ownership it was given.
+        assert_eq!(
+            (link.st_uid, link.st_gid, target.st_uid, target.st_gid),
+            (21, 22, 11, 12),
+            "chown followed the symlink instead of owning it: link={:?} target={:?}",
+            (link.st_uid, link.st_gid),
+            (target.st_uid, target.st_gid),
+        );
+    }
+
     fn chmod_chown_and_symlink_creation() {
         let _g = TestGuard::acquire();
         build_sample_tree();
