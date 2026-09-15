@@ -636,6 +636,32 @@ describe("the budget's code-line counter", () => {
 describe("campaign surface budget", () => {
   const surfaces = budget();
 
+  it("no surface configures a banking test that cannot fail", () => {
+    // The banking test below asserts `actual > ceiling - slack - 1`. When
+    // slack reaches the ceiling that reduces to `actual > -1`, which is true
+    // for every possible count -- so the surface can never report an unbanked
+    // reduction, and a real one sits invisible behind it.
+    //
+    // This is not hypothetical. On 2026-09-15 two surfaces were in that state.
+    // `parseShebangReferences` was ceilinged at 12 against a measured 2, and
+    // its slack of 12 is why nothing said so. `setuidLazyWithoutDigest` had
+    // ceiling 2 and slack 2, so if its lane's fix had landed and the count
+    // fell to 0, nothing would have required the ceiling to follow.
+    //
+    // A ceiling of 0 is exempt and correctly so: there is nothing left to
+    // bank, and the ceiling test still pins the surface at 0.
+    const inert = Object.entries(surfaces)
+      .filter(([, s]) => s.ceiling > 0 && s.slack >= s.ceiling)
+      .map(([name, s]) => `${name} (ceiling ${s.ceiling}, slack ${s.slack})`);
+    expect(
+      inert,
+      `These surfaces have a slack at or above their ceiling, so their `
+        + `banking test asserts "actual > -1" and cannot fail. Lower the `
+        + `slack below the ceiling, or the surface reports a cap it is no `
+        + `longer enforcing.`,
+    ).toEqual([]);
+  });
+
   it("measures every surface the budget declares", () => {
     // A budget entry nobody measures is the advisory document this test
     // exists to replace.
