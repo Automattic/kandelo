@@ -2930,6 +2930,47 @@ improving a test that was already adequate.
 it green-less is a permanent false signal; deleting it silently invites the next
 person to add it back. `runtime-core-sffs-write.json` now carries the absence
 and its reason in its own comment.
+### THE KERNEL-SIDE SPECS SWEPT CLEAN — 2026-09-15
+
+Every `runtime-core` spec, run end to end: **11 specs, 83 trials, 0 survivors,
+0 invalid, 0 timed out.**
+
+```
+sffs-deferred 21   rootfs-export 35   sffs 5   image-policy 5   tmpfs 3
+setid 3   rename 3   mount-roots 2   sffs-errnos 2   sffs-container 3
+retry-identity 1
+```
+
+Together with `runtime-core-rootfs` (16), `runtime-core-positioned-io` (2) and
+`runtime-core-sffs-write` (8) run earlier, **every kernel-side guard kills its
+mutants.** The one survivor that predated tonight — the declaring producer — is
+closed.
+
+### A KILLED PERTURB RUN LEAVES A LIVE MUTATION IN THE WORKTREE
+
+Found by doing it. A first sweep was interrupted, and
+`images/vfs/lib/sffs-image-fs.ts` was left holding
+
+```ts
+-      if (!create) throw error; // ENOENT, before a handle is issued.
++      void create;
+```
+
+— a silent behaviour change sitting in the tree, **indistinguishable from work
+in progress.** `git status` says "modified"; nothing says "this is a mutant."
+
+The loop's standing rule covers the adjacent hazard — *"a perturb run mutates
+the lane worktree, so never edit that tree while one is in flight"* — and this
+is the other half of it: **a run that does not finish does not revert.** After
+interrupting one, `git status` the worktree and restore before doing anything
+else, because the next commit would otherwise carry a deliberately broken
+guard, with a message about something entirely different.
+
+**Cost of the sweep**: the wasm-rebuilding specs are ~20x the cost of the
+cargo-verified ones, and 8 specs hold 66 trials at that rate. Splitting the run
+by verifier is what made a full kernel-side sweep finishable at all — and it is
+the argument for repointing more specs at Rust verifiers, as
+`sffs-module-image-read.json` was tonight.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
