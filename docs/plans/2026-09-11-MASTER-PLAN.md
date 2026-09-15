@@ -325,6 +325,48 @@ number.
 **Still NOT established here:** the remaining 273 trials of the full perturb
 corpus.
 
+## Lane Y/V second tranche merged — `7c2c1806c`, 2026-09-15
+
+28 commits since `5fe08d499`, 44 files, +1592/-576. Where the first merge
+repointed the image BUILDERS off the TypeScript filesystem, this one takes the
+runtime half: a module-backed base image, the deferred path turned into a
+pipe, and the readers and progress plumbing that served only the old shape
+deleted rather than wrapped.
+
+**Two new surfaces**, both measuring what nothing measured:
+`workerEntryTypeScript` (browser and node worker entries plus the browser
+protocol) at **2606**, and `hostVfsTypeScript` (the rest of `host/src/vfs`) at
+**8819**. The second subtracts `memory-fs.ts` and `sharedfs-vendor.ts`
+deliberately — they are counted by their own surfaces, and a line counted
+twice is banked twice. `memoryFsTypeScript` falls 7141 -> 7123.
+
+**All nine line-count ceilings were re-derived against the merge result.** The
+lane branched before the code-line unit landed, so its budget was still in
+whole lines; accepting it would have restored whole-line ceilings across the
+board and handed back every reduction the unit change banked. The two new
+surfaces arrived at 3585 and 11091 whole lines.
+
+**`perturb/browser-worker-node-globals.json` stayed deleted.** The lane branch
+still carries it, so the merge could have resurrected the three trials retired
+under B41. Checked explicitly, not assumed.
+
+**Validation.** Surface budget **100 passing**, up from 96; the four new tests
+are the two new surfaces in both directions. Each changed ceiling perturbed
+and observed failing at one below. `./run.sh setup` after the merge:
+`"outcome":"succeeded"`, real exit code 0, nothing failed or blocked.
+
+Browser suite, in `scripts/dev-shell.sh`, after rebuilding the module and
+re-running setup: **163 passed / 15 failed / 6 skipped / 10 did not run**,
+against 162/16 before the merge. The failure sets were diffed rather than
+compared by count: **no new failures**, and one that had been failing
+(`vite-binary-cache-boundary`) now passes — though that spec was already shown
+to be flaky under full-suite load, so it is most likely flakiness resolving
+rather than a fix.
+
+**NOT run here:** the lane's three new perturb specs — `deferred-url-reader`
+(4 trials), `module-base-image` (13), `bridge` (36, up from 33). They parse
+and name files that exist; their trials are the lane's numbers.
+
 ## Starting a lane — briefs in `docs/plans/lane-briefs/`
 
 One self-contained prompt per lane, each with a dedicated worktree path and
