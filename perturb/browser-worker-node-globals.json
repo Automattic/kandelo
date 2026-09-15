@@ -1,27 +1,28 @@
 {
- "file": "host/src/platform/native-metadata.ts",
+ "file": "host/src/process-lifecycle.ts",
  "verify": "cd host && npx vitest run test/browser-worker-node-globals.test.ts >/dev/null 2>&1",
  "trials": [
   {
-   "name": "the Windows check reads process.platform unguarded, as it shipped",
-   "scope": "const SYNTHESIZE_POSIX_MODE",
-   "scope_end": ";\n",
-   "find": "  typeof process !== \"undefined\" && process.platform === \"win32\";",
-   "replace": "  process.platform === \"win32\";"
+   "name": "a Node-only global is read at module load, as the shipped defect did",
+   "scope": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
+   "scope_end": "\n",
+   "find": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
+   "replace": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;\nconst SYNTHESIZE_POSIX_MODE = process.platform === \"win32\";\nvoid SYNTHESIZE_POSIX_MODE;"
   },
   {
-   "name": "the guard short-circuits with || , which runs the right side exactly when process is undefined",
-   "scope": "const SYNTHESIZE_POSIX_MODE",
-   "scope_end": ";\n",
-   "find": "  typeof process !== \"undefined\" && process.platform === \"win32\";",
-   "replace": "  typeof process !== \"undefined\" || process.platform === \"win32\";"
+   "name": "the guard short-circuits with ||, which runs the right side exactly when process is undefined",
+   "scope": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
+   "scope_end": "\n",
+   "find": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
+   "replace": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;\nconst SYNTHESIZE_POSIX_MODE = typeof process === \"undefined\" || process.platform === \"win32\";\nvoid SYNTHESIZE_POSIX_MODE;"
   },
   {
    "name": "the guard tests the wrong global, leaving process unchecked",
-   "scope": "const SYNTHESIZE_POSIX_MODE",
-   "scope_end": ";\n",
-   "find": "  typeof process !== \"undefined\" && process.platform === \"win32\";",
-   "replace": "  typeof Buffer !== \"undefined\" && process.platform === \"win32\";"
+   "scope": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
+   "scope_end": "\n",
+   "find": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;",
+   "replace": "export const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;\nconst SYNTHESIZE_POSIX_MODE = typeof globalThis !== \"undefined\" && process.platform === \"win32\";\nvoid SYNTHESIZE_POSIX_MODE;"
   }
- ]
+ ],
+ "_comment": "No Node-only global may be evaluated at MODULE LOAD in the browser worker's value-import graph. REPOINTED 2026-09-15: the trials used to mutate host/src/platform/native-metadata.ts, where the shipped defect lived, and that file LEFT the graph when the worker entry stopped reaching it through the rootfs overlay. All three trials then survived -- not because the guard weakened, but because they mutated a file the guard no longer walks. A spec pointed outside its own test's reach proves nothing and reads exactly like a covered one. They now mutate process-lifecycle.ts, which the sibling imports spec confirms is in the graph."
 }
