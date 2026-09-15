@@ -363,9 +363,18 @@ compared by count: **no new failures**, and one that had been failing
 to be flaky under full-suite load, so it is most likely flakiness resolving
 rather than a fix.
 
-**NOT run here:** the lane's three new perturb specs — `deferred-url-reader`
-(4 trials), `module-base-image` (13), `bridge` (36, up from 33). They parse
-and name files that exist; their trials are the lane's numbers.
+**The lane's three new perturb specs were RUN here**, 53 trials in total:
+
+| spec | trials | result |
+|---|---|---|
+| `deferred-url-reader` | 4 | 0 survived, 0 invalid, 0 timed out |
+| `bridge` | 36 | 0 survived, 0 invalid, 0 timed out |
+| `module-base-image` | 13 | **1 survived** — see B42 |
+
+52 of 53 mutations were killed by their verifiers. The one survivor is the
+subject of B42: a trial the lane's own commit says it closed, which it did
+not. It is lane V's to fix and does not block this merge, because the
+behaviour it names is untested rather than broken.
 
 ## Starting a lane — briefs in `docs/plans/lane-briefs/`
 
