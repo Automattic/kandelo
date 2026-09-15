@@ -291,14 +291,14 @@
     },
     "S": {
       "title": "setuid lazy references are fetched without integrity",
-      "status": "deferred",
+      "status": "closed",
       "closure": [
         {
           "surface": "setuidLazyWithoutDigest",
           "atMost": 0
         }
       ],
-      "why": "DEFERRED by the maintainer 2026-09-12: \"I only want the problem fixed for the new Rust-based FS which is not completed yet.\" The fix was built and worked, and it was ~46 code lines in host/src/vfs/memory-fs.ts, the TypeScript filesystem lane V exists to delete. Handoff at docs/plans/2026-09-12-lane-s-deferral-handoff.md. Closure is that no setuid binary is fetched without its bytes being VERIFIED -- not merely that a digest is emitted, which is all the surface above currently measures. Resumes behind V5, which resumes behind lane Y."
+      "why": "Closure is that no setuid binary is fetched without its bytes being verified, AND that set-ID is not honoured on bytes nothing could verify. Both hold. The measure was strengthened at the same time, because as written it asked only whether the emitter contained the string `lazy_sha256=` — satisfiable by a four-line change while the image had nowhere to put a digest and the kernel had nothing to check it with, reporting the lane closed and sudo exactly as unverified (B41). It now names four layers, one per place the chain can break: the producer records a digest, the format carries it as a typed field, the kernel checks arriving bytes against it, and the kernel demotes set-ID on bytes it could not check."
     },
     "M": {
       "title": "shared-mapping cutover",

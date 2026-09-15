@@ -614,8 +614,11 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
         if (install !== "lazy") {
           throw new Error(`rootfs package output ${inputId} must be embedded`);
         }
+        // `resolved.sha256` is validated above and is the identity the lazy
+        // reference itself embeds, so this records a fact the manifest already
+        // depended on rather than computing a new one.
         lines.push(
-          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(resolved.reference, "lazy_url")} lazy_size=${resolved.bytes}`,
+          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(resolved.reference, "lazy_url")} lazy_size=${resolved.bytes} lazy_sha256=${resolved.sha256}`,
         );
       } else if (resolved?.materialization === "embedded") {
         lines.push(
@@ -624,9 +627,14 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
       } else if (install === "lazy") {
         const lazyUrl =
           output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${encodeBinaryUrlPath(binaryRel)}`;
-        const size = statSync(resolvedBinary).size;
+        // Hashed from the artifact this line already opened to measure. Until
+        // now these files were fetched with LENGTH as their only check, and
+        // several ship mode 4755 — so bytes of the same length from a
+        // substituting host, a poisoned cache or a network position executed as
+        // root inside the guest.
+        const contents = readFileSync(resolvedBinary);
         lines.push(
-          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${size}`,
+          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${contents.byteLength} lazy_sha256=${createHash("sha256").update(contents).digest("hex")}`,
         );
       } else if (install === "eager") {
         const src = relative(repoRoot, resolvedBinary);

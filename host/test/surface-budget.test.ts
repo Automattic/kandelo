@@ -532,14 +532,37 @@ const MEASURED: Record<string, () => number> = {
         )
       : 0,
   setuidLazyWithoutDigest: () => {
-    const emitter = readFileSync(
-      join(repoRoot, "scripts/generate-rootfs-package-manifest.mjs"),
-      "utf8",
+    // THREE layers, because a digest is only worth something if all three
+    // hold, and this measure used to check one. It asked whether the emitter
+    // contained the string `lazy_sha256=` — which a four-line change could
+    // satisfy while the image had nowhere to put a digest and the kernel had
+    // nothing to check it with, reporting the lane closed and sudo exactly as
+    // unverified. B41 records that trap; this is it closed.
+    //
+    // Each condition names a different layer, so removing any one of them puts
+    // the count back up rather than leaving a guard that cannot fail:
+    //
+    //   1. the PRODUCER records a digest for lazy outputs;
+    //   2. the FORMAT has a typed field to carry one (a payload the kernel
+    //      promises never to read cannot be verified BY the kernel);
+    //   3. the KERNEL checks arriving bytes against it before serving them;
+    //   4. and it does not honour set-ID on bytes it could not check, which is
+    //      the half of lane S that the digest alone does not deliver — an image
+    //      declaring no digest would otherwise still run a setuid-root binary
+    //      as root on bytes of merely the right length.
+    const records = /lazy_sha256=|lazy_digest=/.test(
+      readFileSync(join(repoRoot, "scripts/generate-rootfs-package-manifest.mjs"), "utf8"),
     );
-    // The emitter's lazy branch writes `lazy_url=` and `lazy_size=`. Until it
-    // also writes a digest, every setuid package that ships lazy is fetched
-    // with length as its only check.
-    if (/lazy_sha256=|lazy_digest=/.test(emitter)) return 0;
+    const carries = /pub digest: \[u8; DIGEST_LEN\]/.test(
+      readFileSync(join(repoRoot, "crates/runtime-core/src/sffs_deferred.rs"), "utf8"),
+    );
+    const verifies = /digest_accepts\(&expected, &data\)/.test(
+      readFileSync(join(repoRoot, "crates/runtime-core/src/rootfs.rs"), "utf8"),
+    );
+    const demotes = /fn demote_unverifiable_setid\(\)/.test(
+      readFileSync(join(repoRoot, "crates/runtime-core/src/rootfs.rs"), "utf8"),
+    );
+    if (records && carries && verifies && demotes) return 0;
     const packages = readFileSync(
       join(repoRoot, "images/rootfs/PACKAGES.toml"),
       "utf8",

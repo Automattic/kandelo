@@ -289,6 +289,26 @@ impl Inode {
     /// Clear set-user-ID, and set-group-ID on a group-executable file, on a
     /// content-modifying operation — the POSIX "a successful write clears
     /// set-user-ID" rule, matching the host path and tmpfs.
+    /// Drop set-user-ID and set-group-ID because these bytes arrived without a
+    /// digest to check them against.
+    ///
+    /// Lane S's other half: *"the setuid bit is not honoured on unverified
+    /// bytes."* A deferred setuid-root binary fetched over a URL with its
+    /// LENGTH as the only check is bytes of the right size from wherever the
+    /// host got them — a substituting host, a poisoned cache, a network
+    /// position — executing as root inside the guest.
+    ///
+    /// Demoted rather than refused, which is what "not honoured" says. The file
+    /// still runs; it runs as the calling user. Refusing would make an image
+    /// that predates digests unbootable, and the truthful statement is not
+    /// "these bytes are wrong" — it is "nothing here can tell you they are
+    /// right, so they do not get to be root."
+    fn demote_setid_unverified(&mut self) {
+        const S_ISUID: u32 = 0o4000;
+        const S_ISGID: u32 = 0o2000;
+        self.mode &= !(S_ISUID | S_ISGID);
+    }
+
     fn clear_setid_on_modify(&mut self) {
         const S_ISUID: u32 = 0o4000;
         const S_ISGID: u32 = 0o2000;
@@ -2235,7 +2255,45 @@ where
         }
     });
 
+    // Lane S's other half, applied once the image's description is complete
+    // rather than when bytes arrive: a file with no digest is STREAMED, never
+    // materialized, so a demotion on the materialize path would never fire for
+    // exactly the files it is about. Doing it here also means `lstat` never
+    // reports a set-ID bit the kernel would not honour.
+    demote_unverifiable_setid();
     Ok(count)
+}
+
+/// Drop set-user-ID and set-group-ID from every deferred file whose image
+/// declared no digest.
+///
+/// A deferred setuid-root binary fetched by URL with its LENGTH as the only
+/// check is bytes of the right size from wherever the host got them — a
+/// substituting host, a poisoned cache, a network position — executing as root
+/// inside the guest. Nothing in the image can say they are the right bytes, so
+/// they do not get to be root.
+///
+/// Demoted rather than refused, which is what "not honoured" means: the file
+/// still runs, as the calling user. Refusing would make every image that
+/// predates digests unbootable, and the truthful statement is not "these bytes
+/// are wrong" — it is that nothing here can tell you they are right.
+fn demote_unverifiable_setid() {
+    ROOTFS.with(|state| {
+        for slot in state.inodes.iter_mut() {
+            let Some(inode) = slot.as_mut() else { continue };
+            let deferred = matches!(inode.kind, InodeKind::LazyMember { .. })
+                || (matches!(
+                    inode.kind,
+                    InodeKind::BaseRegular {
+                        source: BaseSource::Host,
+                        ..
+                    }
+                ) && inode.deferred_base);
+            if deferred && inode.deferred_digest == crate::sffs_deferred::DIGEST_NONE {
+                inode.demote_setid_unverified();
+            }
+        }
+    });
 }
 
 /// [`set_base_times`] for a source that reports one millisecond timestamp, which
@@ -5282,11 +5340,93 @@ mod tests {
     /// the filesystem that owns `/` — asserted only that a real write clears
     /// set-user-ID. The set-group-ID condition in particular was a live branch
     /// with nothing behind it.
+    /// An image carrying one setuid-root deferred file, with `digest` declared
+    /// or not. Built by the real writer so the section is the one production
+    /// emits.
+    fn setuid_deferred_image(digest: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut w =
+            crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(128 * 1024))
+                .expect("mkfs");
+        let root = w.root();
+        w.create_deferred_file(
+            root,
+            b"sudo",
+            0o6755,
+            4_242,
+            0,
+            b"",
+            b"https://example.invalid/sudo.wasm",
+            digest,
+            b"",
+        )
+        .expect("a setuid-root lazy binary, which is the shape lane S is about");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::sffs_write::NoContent)
+            .expect("materialize");
+        let sections = crate::sffs_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        let mut image = crate::sffs_container::header(body.len(), sections.flags())
+            .expect("header")
+            .to_vec();
+        image.extend_from_slice(&body);
+        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
+        image
+    }
+
+    #[test]
+    fn setid_is_demoted_on_deferred_bytes_nothing_can_verify() {
+        let _guard = TestGuard::acquire();
+        // Lane S's other half: "the setuid bit is not honoured on unverified
+        // bytes". A deferred setuid-root binary fetched by URL with its LENGTH
+        // as the only check is bytes of the right size from wherever the host
+        // got them, executing as root inside the guest.
+        let image = setuid_deferred_image(b"");
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert_eq!(
+            lstat(b"/sudo").expect("stat").st_mode & 0o7777,
+            0o0755,
+            "no digest, so not root and not the group either",
+        );
+        // Demoted, not refused: the file is still there, still deferred, still
+        // its real size. Refusing would make every image predating digests
+        // unbootable, and the truthful statement is not "these bytes are wrong".
+        assert_eq!(lstat(b"/sudo").expect("stat").st_size, 4_242);
+        assert!(lazy_info(b"/sudo").expect("described").0);
+    }
+
+    #[test]
+    fn setid_survives_when_the_image_says_what_the_bytes_must_be() {
+        let _guard = TestGuard::acquire();
+        // The control, and the reason the demotion above is about
+        // VERIFIABILITY rather than about being deferred. Without this the
+        // demotion could be stripping set-ID from every lazy file and the test
+        // above would read the same.
+        let image = setuid_deferred_image(&[0x5Au8; crate::sffs_deferred::DIGEST_LEN]);
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert_eq!(
+            lstat(b"/sudo").expect("stat").st_mode & 0o7777,
+            0o6755,
+            "a declared digest keeps the bits: these bytes can be checked",
+        );
+    }
+
     #[test]
     fn setid_clears_only_on_real_modification_and_respects_group_exec() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
         insert_base_file(b"/suid", 7, 3, 0o6755, 0, 0, 2).unwrap();
+        // Declared WITH a digest, so materializing it verifies and the set-ID
+        // bits survive the fetch. Without one they are demoted on arrival (the
+        // test above), which would mask the modification behaviour this test is
+        // named for.
+        set_deferred_source(b"/suid", b"", &crate::sffs_deferred::digest_of(b"abc"))
+            .expect("declare it");
         let (mut blob, _) =
             make_byte_source(alloc::vec![(7u64, b"abc".to_vec())], alloc::vec::Vec::new());
         let h = open(b"/suid", 2, 0, 0, 0).unwrap();

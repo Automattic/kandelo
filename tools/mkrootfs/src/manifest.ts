@@ -47,6 +47,14 @@ export interface ManifestNode {
   src?: string;
   lazyUrl?: string;
   lazySize?: number;
+  /**
+   * The SHA-256 the fetched bytes must hash to, as 64 lowercase hex
+   * characters. Optional: a manifest written before the field existed carries
+   * none, and such a file is fetched with its length as the only check — which
+   * is what every lazy binary had until the image format gained somewhere to
+   * put a digest.
+   */
+  lazyDigest?: string;
   target?: string;
   major?: number;
   minor?: number;
@@ -211,6 +219,7 @@ function parseNode(tokens: string[], lineNumber: number, sourcePath: string | un
       case "src": node.src = value; break;
       case "lazy_url": node.lazyUrl = value; break;
       case "lazy_size": node.lazySize = parseDecimal(value, lineNumber, sourcePath, "lazy_size"); break;
+      case "lazy_sha256": node.lazyDigest = value; break;
       case "target": node.target = value; break;
       case "major": node.major = parseDecimal(value, lineNumber, sourcePath, "major"); break;
       case "minor": node.minor = parseDecimal(value, lineNumber, sourcePath, "minor"); break;
@@ -246,6 +255,12 @@ function validateRequiredExtras(node: ManifestNode, lineNumber: number, sourcePa
     }
     if (node.lazyUrl === "") {
       throw err(lineNumber, sourcePath, `"${node.path}" has empty lazy_url=`);
+    }
+    if (node.lazyDigest !== undefined && !/^[0-9a-f]{64}$/.test(node.lazyDigest)) {
+      // Refused rather than ignored. A malformed digest silently becoming "no
+      // digest" would turn a typo into an unverified setuid binary, and the
+      // whole value of this field is that its absence is deliberate.
+      throw err(lineNumber, sourcePath, `"${node.path}" has a lazy_sha256= that is not 64 lowercase hex characters`);
     }
     if (node.lazySize === undefined) {
       throw err(lineNumber, sourcePath, `"${node.path}" requires lazy_size= with lazy_url=`);
