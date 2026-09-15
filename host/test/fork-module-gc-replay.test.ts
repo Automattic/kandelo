@@ -47,28 +47,34 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { resolveBinary } from "../src/binary-resolver";
-import { FmStatField } from "../src/fork-module-backend";
+import { FORK_MODULE_STATS } from "../src/fork-module-backend";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabilities";
 import { ForkExternrefTokenCache } from "../src/fork-reference-broker";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
-import { ForkModuleStateArena } from "../src/fork-module-state";
-import type { ForkReferenceRecipeEntry } from "../src/fork-reference-recipes";
-import {
-  appendSegmentedForkReferenceTransaction,
-  PagedForkReferenceVector,
-  type ForkReferenceVector,
-} from "../src/fork-reference-segments";
-import { WPK_FORK_REFERENCE_TRANSACTION_OWNER } from "../src/generated/abi";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
+import {
+  CAPTURE_KIND_ARRAY,
+  CAPTURE_KIND_STRUCT,
+  INTERN_KIND_EXTERNREF,
+  MMAP_FLOOR,
+  PAGE,
+  captureGraph,
+  childInstance,
+  fixture,
+  type Fixture,
+} from "./fork-module-capture-fixture";
 
-const PAGE = 65536;
 const PTR_WIDTH = 4 as const;
 const PID = 6262;
 const GENERATION_ID = 11;
 // The durable broker handle the aliased externref leaf names.
 const LEAF_HANDLE = 77;
+
+/** `fm_stats` field indices, read from the one list the backend pins. */
+const STAT = Object.fromEntries(
+  FORK_MODULE_STATS.map((name, index) => [name, index]),
+) as Record<(typeof FORK_MODULE_STATS)[number], number>;
 
 const DRIVE_OP_ALLOC = 0;
 const DRIVE_OP_FILL = 1;
@@ -90,66 +96,56 @@ const GC_CODEC = new Uint8Array(
  * placed just past it so `fm_set_activation_gc_codec` can copy them from guest
  * memory.
  */
-function buildGcCycleArena(memory: WebAssembly.Memory): { root: number; codecPtr: number } {
-  let next = PAGE;
-  const allocate = (size: number): number => {
-    const addr = next;
-    next += size;
-    if (next > memory.buffer.byteLength) {
-      memory.grow(Math.ceil((next - memory.buffer.byteLength) / PAGE));
-    }
-    return addr;
-  };
-  const arena = new ForkModuleStateArena(
-    memory,
-    PTR_WIDTH,
-    allocate,
-    () => {},
-    "gc-replay-test",
-  );
-
-  const nodes: ForkReferenceRecipeEntry[] = [
-    { id: 0, node: { kind: "null" } },
-    {
-      id: 1,
-      node: {
-        kind: "struct",
-        moduleActivation: 0,
+/**
+ * CAPTURE the struct-to-array cycle through the module, and stage the codec.
+ *
+ * This used to CONSTRUCT the sealed arena in TypeScript with the set-aside
+ * `ForkModuleStateArena` and `appendSegmentedForkReferenceTransaction`, then
+ * assert against recipe ids it had chosen itself. A parent module interns and
+ * seals now; the ids come back from it, because they are its to assign.
+ *
+ * The cycle is the point: the struct's fields name the array and the shared
+ * externref leaf, the array's elements name the struct back and the same leaf.
+ * Type ordinals and layout ids match the committed KFGC fixture -- struct
+ * layout 1 (type ordinal 0), array layout 4 (type ordinal 3), both activation 0.
+ */
+function captureGcCycle(f: Fixture): {
+  root: number;
+  codecPtr: number;
+  structId: number;
+  arrayId: number;
+  leafId: number;
+} {
+  const { root, recipes, aggregateRecipes } = captureGraph(
+    f,
+    [[INTERN_KIND_EXTERNREF, LEAF_HANDLE, 0]],
+    [
+      {
+        kind: CAPTURE_KIND_STRUCT,
+        activation: 0,
         typeOrdinal: 0,
         layoutId: 1,
         scalars: new Uint8Array([0x78, 0x56, 0x34, 0x12]),
-        fields: [2, 3],
+        edges: ({ leaves, aggregates }) => [aggregates[1]!, leaves[0]!],
       },
-    },
-    {
-      id: 2,
-      node: {
-        kind: "array",
-        moduleActivation: 0,
+      {
+        kind: CAPTURE_KIND_ARRAY,
+        activation: 0,
         typeOrdinal: 3,
         layoutId: 4,
-        scalars: new Uint8Array(0),
-        elements: [1, 3],
+        edges: ({ leaves, aggregates }) => [aggregates[0]!, leaves[0]!],
       },
-    },
-    { id: 3, node: { kind: "externref", handle: LEAF_HANDLE } },
-  ];
-  const vectors: ForkReferenceVector[] = [PagedForkReferenceVector.empty];
-
-  const root = arena.begin();
-  arena.appendModule({ activationId: 0, templateId: new Uint8Array(32).fill(0xa0) });
-  appendSegmentedForkReferenceTransaction(
-    arena,
-    WPK_FORK_REFERENCE_TRANSACTION_OWNER,
-    nodes,
-    vectors,
-    // Force multi-segment reassembly so the module's decode is exercised.
-    { segmentDataBytes: 48 },
+    ],
   );
-  arena.seal();
-  const codecPtr = allocate(GC_CODEC.byteLength);
-  new Uint8Array(memory.buffer, codecPtr, GC_CODEC.byteLength).set(GC_CODEC);
-  return { root, codecPtr };
+  const codecPtr = MMAP_FLOOR + 10 * PAGE;
+  new Uint8Array(f.memory.buffer, codecPtr, GC_CODEC.byteLength).set(GC_CODEC);
+  return {
+    root,
+    codecPtr,
+    structId: aggregateRecipes[0]!,
+    arrayId: aggregateRecipes[1]!,
+    leafId: recipes[0]!,
+  };
 }
 
 interface ForkModuleRefExports {
@@ -164,13 +160,13 @@ interface ForkModuleRefExports {
   fm_gc_plan_count: () => number;
   fm_drive_execute: (ptr: number, count: number) => void;
   fm_drive_table_base: (act: number) => number;
-  fm_ref_gc_route: (recipeId: number, expectedActivation: number) => number;
-  fm_ref_gc_payload_len: (
+  __wpk_fork_ref_gc_route: (recipeId: number, expectedActivation: number) => number;
+  __wpk_fork_ref_gc_payload_len: (
     recipeId: number,
     expectedActivation: number,
     expectedLayoutId: number,
   ) => number;
-  fm_ref_gc_load: (
+  __wpk_fork_ref_gc_load: (
     recipeId: number,
     moduleActivation: number,
     typeOrdinal: number,
@@ -179,26 +175,22 @@ interface ForkModuleRefExports {
     scalarDestination: number,
     scalarByteLength: number,
   ) => number;
-  fm_ref_vector_get: (ordinal: number, index: number) => number;
+  __wpk_fork_ref_vector_get: (ordinal: number, index: number) => number;
 }
 
-const MODULE = new WebAssembly.Module(
-  readFileSync(resolveBinary("fork_module32.wasm")),
-);
 
-function instantiate(
-  memory: WebAssembly.Memory,
+/**
+ * The CHILD module that replays what the parent captured.
+ *
+ * A second instance, not the capturing one, because that is what a fork has: a
+ * parent seals and a fresh child rebuilds. Replaying in the instance that
+ * captured would let a graph the module never actually wrote to memory pass.
+ */
+function replayChild(
+  f: Fixture,
   resolveExternref: (handle: number) => unknown,
 ) {
-  const reserveBase = 8 * 1024 * 1024;
-  const fm = instantiateForkModule({
-    module: MODULE,
-    memory,
-    ptrWidth: PTR_WIDTH,
-    reserve: () => reserveBase,
-    label: "gc-replay-test",
-    resolveExternref,
-  });
+  const fm = childInstance(f, { label: "gc-replay-child", resolveExternref });
   return { fm, x: fm.exports as unknown as ForkModuleRefExports };
 }
 
@@ -211,7 +203,13 @@ function bindFaithfulGuest(
   x: ForkModuleRefExports,
   maxRecipeId: number,
 ) {
-  const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+  // The module's EXPORTS, not its transit TABLE. This wrapper reads
+  // `__wpk_fork_ref_gc_transit`, `fm_transit_grow` and `fm_last_errno` off
+  // them, because the module owns the transit and its growth.
+  const transitTable = new ForkAnyrefTransitTable(
+    fm.exports as Record<string, unknown>,
+    "gc-replay transit",
+  );
   transitTable.ensureRecipeSlot(maxRecipeId);
   const { guest, published } = instantiateFaithfulGuest(transitTable);
   const base = x.fm_drive_table_base(0);
@@ -226,21 +224,19 @@ function bindFaithfulGuest(
 
 describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting through the module (Phase 6 D6.4a / M2)", () => {
   it("roots the aliased externref leaf of a struct↔array cycle in the real anyref transit ONCE with identity parity, advances the counters, and never mints a tag", () => {
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
-
+    const f = fixture();
     const tokens = new ForkExternrefTokenCache(GENERATION_ID);
     const hostCapabilities = createForkModuleHostCapabilities({ tokens });
 
-    const { root, codecPtr } = buildGcCycleArena(memory);
-    const { fm, x } = instantiate(memory, hostCapabilities.imports.resolve_externref);
+    const { root, codecPtr, structId, arrayId, leafId } = captureGcCycle(f);
+    const { fm, x } = replayChild(f, hostCapabilities.imports.resolve_externref);
 
-    x.fm_set_format(PTR_WIDTH, 0);
     x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
     expect(x.fm_last_errno()).toBe(0);
 
-    const externrefsBefore = Number(x.fm_stats(FmStatField.ExternrefsResolved));
-    const gcNodesBefore = Number(x.fm_stats(FmStatField.GcNodesReconstructed));
-    const exnrefsBefore = Number(x.fm_stats(FmStatField.ExnrefsReconstructed));
+    const externrefsBefore = Number(x.fm_stats(STAT.externrefsResolved));
+    const gcNodesBefore = Number(x.fm_stats(STAT.gcNodesReconstructed));
+    const exnrefsBefore = Number(x.fm_stats(STAT.exnrefsReconstructed));
 
     // Seed the reference graph (bookkeeping only).
     x.fm_begin_reference_replay(root, PID);
@@ -248,9 +244,9 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
 
     // (b) PROOF OF USE (graph admission) — two typed-GC nodes admitted (struct +
     // array), one externref leaf counted, and NO exnref.
-    expect(Number(x.fm_stats(FmStatField.GcNodesReconstructed)) - gcNodesBefore).toBe(2);
-    expect(Number(x.fm_stats(FmStatField.ExternrefsResolved)) - externrefsBefore).toBe(1);
-    expect(Number(x.fm_stats(FmStatField.ExnrefsReconstructed)) - exnrefsBefore).toBe(0);
+    expect(Number(x.fm_stats(STAT.gcNodesReconstructed)) - gcNodesBefore).toBe(2);
+    expect(Number(x.fm_stats(STAT.externrefsResolved)) - externrefsBefore).toBe(1);
+    expect(Number(x.fm_stats(STAT.exnrefsReconstructed)) - exnrefsBefore).toBe(0);
 
     // Build + execute the real drive plan: Phase 0 publishes the aliased
     // externref leaf into the REAL anyref transit ONCE (dedup) with the
@@ -260,23 +256,28 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     expect(x.fm_last_errno()).toBe(0);
     const count = x.fm_gc_plan_count();
 
-    const { transitTable, published } = bindFaithfulGuest(fm, x, 3);
+    const { transitTable, published } = bindFaithfulGuest(
+      fm,
+      x,
+      Math.max(structId, arrayId, leafId),
+    );
 
     x.fm_drive_execute(planPtr, count);
 
     // (a) TRANSIT IDENTITY — the token the drive rooted for the leaf is the SAME
     // object `tokens.materialize(handle)` returns (idempotent cache), and it is
     // what actually sits in the real anyref transit slot (recipe_id 3 -> slot 4),
-    // rooted EXACTLY ONCE despite the alias.
+    // rooted EXACTLY ONCE despite the alias. The transit slot is `recipe + 1`,
+    // and the recipe is the module's to assign -- read back, never assumed.
     const canonical = tokens.materialize(LEAF_HANDLE);
-    expect(transitTable.get(4)).toBe(canonical);
+    expect(transitTable.get(leafId + 1)).toBe(canonical);
     // Dedup: exactly one externref was re-rooted through the seam despite two
     // aggregate edges naming it.
     expect(hostCapabilities.resolvedCount).toBe(1);
 
     // The guest published a live store-#2 identity for both aggregates (struct
     // recipe 1, array recipe 2).
-    expect(new Set(published)).toEqual(new Set([1, 2]));
+    expect(new Set(published)).toEqual(new Set([structId, arrayId]));
 
     // (c) MINT INERT — the typed-GC drive never mints an exception tag. This
     // used to be proven by spying on a `host_mint_exception_tag` stub
@@ -293,12 +294,10 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // step internalizes null, `table.set`s it, reads it back, and TRAPS — before
     // any ALLOC/FILL runs (Phase 0 precedes every allocate/fill) — failing loud
     // rather than letting the struct/array fill consume a null/wrong leaf.
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+    const f = fixture();
+    const { root, codecPtr, leafId } = captureGcCycle(f);
+    const { fm, x } = replayChild(f, () => null);
 
-    const { root, codecPtr } = buildGcCycleArena(memory);
-    const { fm, x } = instantiate(memory, () => null);
-
-    x.fm_set_format(PTR_WIDTH, 0);
     x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
     expect(x.fm_last_errno()).toBe(0);
 
@@ -314,7 +313,7 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // out-of-bounds `table.set` on a too-small default table. Bind the guest
     // double too — the trap must fire in Phase 0, BEFORE any `call_indirect`
     // reaches it, proving the leaf rooting genuinely gates the aggregate drive.
-    bindFaithfulGuest(fm, x, 3);
+    bindFaithfulGuest(fm, x, leafId + 1);
 
     expect(() => x.fm_drive_execute(planPtr, count)).toThrowError(/unreachable/i);
   });
@@ -327,52 +326,52 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     // MODULE (not the JS provider) produced JS-identical results, in a real
     // WebAssembly engine. This data feed does not touch the externref transit at
     // all, so a resolver that is never expected to be called is enough.
-    const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
-    const { root, codecPtr } = buildGcCycleArena(memory);
-    const { x } = instantiate(memory, () => {
+    const f = fixture();
+    const memory = f.memory;
+    const { root, codecPtr, structId, arrayId, leafId } = captureGcCycle(f);
+    const { x } = replayChild(f, () => {
       throw new Error("resolve_externref should not be called by the data feed");
     });
-    x.fm_set_format(PTR_WIDTH, 0);
     x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
     x.fm_begin_reference_replay(root, PID);
     expect(x.fm_last_errno()).toBe(0);
 
-    const readsBefore = Number(x.fm_stats(FmStatField.RefFeedReads));
+    const readsBefore = Number(x.fm_stats(STAT.referenceFeedReads));
 
     // struct id 1: activation 0, type 0, layout 1, scalars [0x78,0x56,0x34,0x12],
     // fields [2, 3]. array id 2: activation 0, type 3, layout 4, no scalars,
     // elements [1, 3].
-    expect(x.fm_ref_gc_route(1, 0)).toBe(1); // struct layout id
-    expect(x.fm_ref_gc_payload_len(1, 0, 1)).toBe(4);
-    expect(x.fm_ref_gc_route(2, 0)).toBe(4); // array layout id
-    expect(x.fm_ref_gc_payload_len(2, 0, 4)).toBe(0);
+    expect(x.__wpk_fork_ref_gc_route(structId, 0)).toBe(1); // struct layout id
+    expect(x.__wpk_fork_ref_gc_payload_len(structId, 0, 1)).toBe(4);
+    expect(x.__wpk_fork_ref_gc_route(arrayId, 0)).toBe(4); // array layout id
+    expect(x.__wpk_fork_ref_gc_payload_len(arrayId, 0, 4)).toBe(0);
     // A mismatched activation routes to the -1 sentinel (a value, not a trap).
-    expect(x.fm_ref_gc_route(1, 9)).toBe(-1);
+    expect(x.__wpk_fork_ref_gc_route(structId, 9)).toBe(-1);
 
     // Load the struct scalars into guest memory (well above the module's 4 MiB
     // heap at the 8 MiB reserve base) and read back its interned edge vector.
     const structDst = 13 * 1024 * 1024;
-    const structVec = x.fm_ref_gc_load(1, 0, 0, 1, 1 /* struct */, structDst, 4);
+    const structVec = x.__wpk_fork_ref_gc_load(structId, 0, 0, 1, 1 /* struct */, structDst, 4);
     expect([...new Uint8Array(memory.buffer, structDst, 4)]).toEqual([
       0x78, 0x56, 0x34, 0x12,
     ]);
     // Base vectors = [empty sentinel] (length 1), so the first appended edge
     // vector takes ordinal 1.
     expect(structVec).toBe(1);
-    expect(x.fm_ref_vector_get(structVec, 0)).toBe(2); // field -> array
-    expect(x.fm_ref_vector_get(structVec, 1)).toBe(3); // field -> externref
+    expect(x.__wpk_fork_ref_vector_get(structVec, 0)).toBe(arrayId); // field -> array
+    expect(x.__wpk_fork_ref_vector_get(structVec, 1)).toBe(leafId); // field -> externref
 
     const arrayDst = structDst + PAGE;
-    const arrayVec = x.fm_ref_gc_load(2, 0, 3, 4, 2 /* array */, arrayDst, 0);
+    const arrayVec = x.__wpk_fork_ref_gc_load(arrayId, 0, 3, 4, 2 /* array */, arrayDst, 0);
     expect(arrayVec).toBe(2);
-    expect(x.fm_ref_vector_get(arrayVec, 0)).toBe(1); // element -> struct (back-edge)
-    expect(x.fm_ref_vector_get(arrayVec, 1)).toBe(3); // element -> externref (alias)
+    expect(x.__wpk_fork_ref_vector_get(arrayVec, 0)).toBe(structId); // element -> struct (back-edge)
+    expect(x.__wpk_fork_ref_vector_get(arrayVec, 1)).toBe(leafId); // element -> externref (alias)
 
     // A repeated struct load returns the SAME cached ordinal (no duplicate append).
-    expect(x.fm_ref_gc_load(1, 0, 0, 1, 1, structDst, 4)).toBe(1);
+    expect(x.__wpk_fork_ref_gc_load(structId, 0, 0, 1, 1, structDst, 4)).toBe(structVec);
 
     // PROOF OF USE: the module served every one of these feed reads. A silent JS
     // fallback (imports left on the reference provider) would leave this at 0.
-    expect(Number(x.fm_stats(FmStatField.RefFeedReads)) - readsBefore).toBeGreaterThan(0);
+    expect(Number(x.fm_stats(STAT.referenceFeedReads)) - readsBefore).toBeGreaterThan(0);
   });
 });
