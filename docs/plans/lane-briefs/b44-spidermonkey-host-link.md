@@ -74,15 +74,34 @@ a host binary fine inside the dev shell), a broken dev shell (a plain host link
 works there), and stale configure state (no spidermonkey work directory
 persists — each build starts in a fresh temp dir).
 
-## Start here, before forming any hypothesis
+## The cause is FOUND — start from here, not from scratch
 
-Two evidence-backed hypotheses have already failed. The open question is not
-*where might the flags come from* — it is **what command actually runs**.
+This section supersedes the earlier advice to capture the invocation first. It
+has been captured. `mach build -v` gives the failing link:
 
-Capture the real link invocation for `host_nsinstall`: `mach build -v`, or the
-`.mozbuild` command log under `MOZBUILD_STATE_PATH`. Read which linker binary
-it names and which library search paths it is given. One line of that output is
-worth more than a fourth theory.
+    /usr/bin/cc -isysroot .../MacOSX.sdk --target=arm64-apple-darwin \
+      -o nsinstall_real  -fuse-ld=lld  host_nsinstall.o host_pathsub.o
+
+Apple's `cc`, the right SDK, the right target — and **`-fuse-ld=lld`**, which
+routes the link to the nix `ld64.lld` on PATH. That linker supplies none of
+Apple's default library search paths, so libSystem is missing and every libc
+symbol is undefined. **The compile step is correct; only the link is wrong.**
+
+**The flag is GENERATED, not inherited.** It is in neither the dev shell
+(`LDFLAGS` is unset), nor the recipe, nor `scripts/`. It comes from mozbuild's
+own configure, which prefers `lld` when it finds it on PATH. That is exactly
+why elimination 1 below failed: `HOST_LDFLAGS=""` cannot clear a flag that does
+not originate in `HOST_LDFLAGS`.
+
+**Your job is the fix, not the diagnosis.** Stop mozbuild choosing lld for the
+HOST link, or append a later `-fuse-ld` that overrides it — clang honours the
+last one wins. Whatever you choose, the TARGET link must stay on `wasm-ld`;
+breaking that trades one failure for a worse one.
+
+**One candidate is untested.** A run with `HOST_LDFLAGS=-fuse-ld=/usr/bin/ld`
+was started and **killed before it finished** when this work was handed over.
+Its result is unknown. Do not read it as either confirmation or refutation —
+re-run it yourself if you want to know.
 
 Useful context while reading it: the recipe generates its mozconfig inline
 (`build-spidermonkey.sh`, around line 319) with
