@@ -234,13 +234,6 @@
    "replace": ""
   },
   {
-   "name": "chmod runs before chown, so a setuid bit is cleared and never restored",
-   "scope": "  createFileWithOwner(",
-   "scope_end": "\n  }\n",
-   "find": "    this.chown(path, uid, gid);\n    this.chmod(path, mode);",
-   "replace": "    this.chmod(path, mode);\n    this.chown(path, uid, gid);"
-  },
-  {
    "name": "the owner is never applied to a created file",
    "scope": "  createFileWithOwner(",
    "scope_end": "\n  }\n",
@@ -253,6 +246,13 @@
    "scope_end": "\n  }\n",
    "find": "    this.mkdir(path, mode, uid, gid);",
    "replace": "    this.mkdir(path, mode);"
+  },
+  {
+   "name": "a setid mode is dropped when the file is created",
+   "scope": "  createFileWithOwner(",
+   "scope_end": "\n  }\n",
+   "find": "    this.writeFile(path, content, mode);",
+   "replace": "    this.writeFile(path, content, mode & 0o777);"
   }
  ],
  "build": "cd host && npx tsc --noEmit -p . >/dev/null 2>&1 || true"

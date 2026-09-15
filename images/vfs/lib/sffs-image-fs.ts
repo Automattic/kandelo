@@ -237,12 +237,17 @@ export class SffsImageFs {
   /**
    * Create a file owned by `uid`/`gid`, the way the image builders do.
    *
-   * The order is `MemoryFileSystem.createFileWithOwner`'s and is load-bearing:
-   * **chown before chmod**, because changing an owner clears set-user-ID and
-   * set-group-ID bits, so a mode carrying one has to be re-applied afterwards
-   * or the bit is silently lost. Doing it the other way round produces an
-   * image whose setuid binaries are not setuid, and every structural check
-   * still passes.
+   * `MemoryFileSystem.createFileWithOwner` re-applies the mode after the
+   * chown, and this does not. **That is a real difference between the two
+   * filesystems, not a simplification:** measured, `MemoryFileSystem.chown`
+   * clears set-user-ID unconditionally — `0o4755` becomes `0o755` — while the
+   * module leaves it, because `sm_chown` takes the POSIX clearing as an
+   * explicit flag and this bridge does not set it. So the incumbent NEEDS the
+   * re-chmod to end up where it meant to, and here it would be dead code.
+   *
+   * Written the incumbent's way first, with the re-chmod, a perturbation that
+   * swapped chown and chmod survived — which is how the divergence was found
+   * rather than assumed.
    */
   createFileWithOwner(
     path: string,
@@ -253,13 +258,11 @@ export class SffsImageFs {
   ): void {
     this.writeFile(path, content, mode);
     this.chown(path, uid, gid);
-    this.chmod(path, mode);
   }
 
-  /** The directory peer of {@link createFileWithOwner}, same ordering rule. */
+  /** The directory peer of {@link createFileWithOwner}. */
   mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {
     this.mkdir(path, mode, uid, gid);
-    this.chmod(path, mode);
   }
 
   lstat(path: string): SffsStat {
