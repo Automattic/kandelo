@@ -476,6 +476,15 @@ exists:
     defaults read /Library/Preferences/com.apple.dt.Xcode \
         IDEXcodeVersionForAgreedToGMLicense    # must print 27.0, not 26.5
 
+**Overriding the host compiler does NOT route around it — tested, not assumed.**
+The recipe defaults to `/usr/bin/cc` on Darwin but honours an override:
+`export HOST_CC="${HOST_CC:-/usr/bin/cc}"`. Re-running setup with
+`HOST_CC=clang HOST_CXX=clang++` from the dev shell moves the failure to
+*"checking whether the host C compiler can be used"* and produces the same
+licence refusal, because the nix clang wrapper still builds against Xcode's
+macOS SDK. The licence gates every host compilation on this machine, whichever
+compiler is named. There is no in-repo workaround; the acceptance is required.
+
 **Xcode moved 26.5 -> 27.0 under the campaign today.** That is a real toolchain
 change, not merely a licence prompt. The first full rebuild after the licence
 clears is where any behavioural difference would surface, and it should be read
