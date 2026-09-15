@@ -618,9 +618,20 @@ export class SffsImageFs {
     // The archive's own fetch description. Opaque to the kernel, which carries
     // it and never parses it; whoever fetches decides whether the URL may be
     // fetched and validates the digest.
+    //
+    // `mountPrefix` and `bytes` are here because the CONSUMER needs them and
+    // the kernel does not read this. Rebuilding the kernel's lazy manifest
+    // from an image requires the mount prefix — it is encoded into the manifest
+    // record — and the module's own metadata does not carry one. Writing it in
+    // the descriptor keeps the reconstruction exact instead of inferring a
+    // prefix from member paths, which would be inventing data and would be
+    // wrong for any archive whose members do not share one.
     const descriptor = encoder.encode(JSON.stringify({
       url: args.url,
-      ...(args.integrity ? { sha256: args.integrity.sha256 } : {}),
+      mountPrefix: args.mountPrefix,
+      ...(args.integrity
+        ? { sha256: args.integrity.sha256, bytes: args.integrity.bytes }
+        : {}),
     }));
     const archiveBytes = args.integrity?.bytes ?? 0;
 

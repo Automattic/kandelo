@@ -246,6 +246,8 @@ describe("a module-backed base image", () => {
       mode: 0o644,
       ino: 4242,
       archiveBytes: 99,
+      // No mountPrefix: unparseable-by-contract, because the prefix is
+      // written into the kernel manifest and cannot be inferred.
       archiveDescriptor: new TextEncoder().encode('{"url":"archives/a.zip"}'),
     });
     const container = await module.saveImage();
@@ -291,7 +293,50 @@ describe("a module-backed base image", () => {
     expect(entries[0].url).toBe("/kandelo/assets/one.bin");
   });
 
-  it("refuses a module-built image whose archives it cannot reconstruct", async () => {
+  it("reconstructs a module-built image's archives, members included", async () => {
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerLazyArchive({
+      url: "archives/tool.zip",
+      entries: [zipEntry()],
+      mountPrefix: "/opt",
+      integrity: { sha256: "b".repeat(64), bytes: 4242 },
+    });
+    const container = await module.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      "/kandelo/",
+      () => reader.lazyEntries(),
+    );
+
+    const [archive] = baseImage.exportLazyArchiveEntries();
+    expect(archive).toBeDefined();
+    expect(archive.url).toBe("/kandelo/archives/tool.zip");
+    // The mount prefix is written into the kernel's lazy manifest, so losing
+    // it is not cosmetic — it is a wrong manifest.
+    expect(archive.mountPrefix).toBe("/opt");
+    expect(archive.integrity).toEqual({ sha256: "b".repeat(64), bytes: 4242 });
+    // A member, with the source path the fetcher needs to find it in the zip.
+    expect(archive.entries.length).toBe(1);
+    expect(archive.entries[0].sourcePath).toBe("bin/vim");
+    expect(archive.entries[0].vfsPath).toBe("/opt/bin/vim");
+
+    // And the whole point: the consumer's reducer accepts it and mints a group
+    // with the transports and members the deferred provider will serve from.
+    const { buildRootfsLazyWiring } = await import("../src/vfs/rootfs-lazy-archives");
+    const { lazyInput } = buildRootfsLazyWiring(
+      baseImage.exportLazyArchiveEntries(),
+      async () => new Uint8Array(),
+    );
+    expect(lazyInput.archives.length).toBe(1);
+    expect(lazyInput.archives[0].size).toBe(4242);
+  });
+
+  it("refuses a module-built archive whose descriptor it cannot parse", async () => {
     const module = SffsImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerArchiveMember({
@@ -317,7 +362,7 @@ describe("a module-backed base image", () => {
     // Refused, not half-answered. Returning [] here would mount an image whose
     // archives silently never activate.
     expect(() => baseImage.exportLazyArchiveEntries())
-      .toThrow(/cannot yet reconstruct/);
+      .toThrow(/declares no url or no mount prefix/);
   });
 
   it("leaves every URL untouched when no deployment base is given", async () => {

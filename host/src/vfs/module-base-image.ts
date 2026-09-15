@@ -45,6 +45,44 @@ export interface ModuleLazyEntries {
   archives: readonly { archiveId: number; bytes: number; descriptor: Uint8Array }[];
 }
 
+/**
+ * Take the descriptor half out of an archive's seal payload.
+ *
+ * The module wraps every archive payload as
+ * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]` —
+ * `seal::encode` in `crates/sffs-module/src/seal.rs`. Reading it here is the
+ * design rather than a duplication of it: the seal was deliberately split so
+ * that *"the descriptor half stays whatever the producer writes ... and the
+ * kernel still never parses it. The seal half is parsed by the VERIFIER, which
+ * is consumer-side."* The host is that consumer. What this must never do is
+ * re-derive the canonical cohort IDENTITY, which is the part a second
+ * implementation could get subtly wrong; a length-prefixed slice has no such
+ * freedom.
+ */
+function unwrapSealPayload(payload: Uint8Array, archiveId: number): Uint8Array {
+  if (payload.byteLength < 8) {
+    throw new Error(
+      `VFS image lazy archive ${archiveId} has a payload too short to carry a descriptor.`,
+    );
+  }
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const version = view.getUint32(0, true);
+  if (version !== 1) {
+    throw new Error(
+      `VFS image lazy archive ${archiveId} declares payload version ${version}, `
+        + "which this reader does not know.",
+    );
+  }
+  const length = view.getUint32(4, true);
+  if (8 + length > payload.byteLength) {
+    throw new Error(
+      `VFS image lazy archive ${archiveId} declares a ${length}-byte descriptor `
+        + `that does not fit in its ${payload.byteLength}-byte payload.`,
+    );
+  }
+  return payload.subarray(8, 8 + length);
+}
+
 function decodeSection(bytes: Uint8Array | null, label: string): unknown {
   if (bytes === null) return null;
   try {
@@ -169,20 +207,55 @@ export function createBaseImageFromContainer(
     },
     exportLazyArchiveEntries: () => {
       if (fromModule !== undefined) {
-        if (fromModule.archives.length !== 0) {
-          // Refused rather than half-answered. A `SerializedLazyArchiveEntry`
-          // needs the kind, mount prefix and per-member inventory that this
-          // reconstruction does not yet derive, and an archive returned
-          // without them would activate wrongly instead of not at all. The
-          // empty list is the dangerous answer here, not the exception.
-          throw new Error(
-            `VFS image carries ${fromModule.archives.length} lazy archive(s) in `
-              + "module metadata, which this reader cannot yet reconstruct. "
-              + "Rebuild the image with the host-side sections, or extend "
-              + "createBaseImageFromContainer to derive archives from the module.",
-          );
+        // Members are grouped by the archive they came from. `archiveId === 0`
+        // is the standalone registration handled above, not a member.
+        const membersByArchive = new Map<number, SerializedLazyArchiveEntry["entries"]>();
+        for (const file of fromModule.files) {
+          if (file.archiveId === 0) continue;
+          const list = membersByArchive.get(file.archiveId) ?? [];
+          list.push({
+            vfsPath: file.path,
+            ino: Number(file.ino),
+            size: file.size,
+            isSymlink: false,
+            deleted: false,
+            type: "file",
+            sourcePath: file.sourcePath,
+          });
+          membersByArchive.set(file.archiveId, list);
         }
-        return [];
+        return fromModule.archives.map((archive) => {
+          const text = new TextDecoder().decode(unwrapSealPayload(archive.descriptor, archive.archiveId));
+          let described: { url?: unknown; mountPrefix?: unknown; sha256?: unknown };
+          try {
+            described = JSON.parse(text) as typeof described;
+          } catch {
+            // Refused, not guessed. A descriptor this reader cannot parse is a
+            // producer it does not know, and an archive built from a guess
+            // activates wrongly rather than not at all.
+            throw new Error(
+              `VFS image lazy archive ${archive.archiveId} has a descriptor this `
+                + "reader cannot parse, so its transports and mount prefix are unknown.",
+            );
+          }
+          if (typeof described.url !== "string" || typeof described.mountPrefix !== "string") {
+            throw new Error(
+              `VFS image lazy archive ${archive.archiveId} declares no url or no `
+                + "mount prefix, and the mount prefix is written into the kernel's "
+                + "lazy manifest — it cannot be inferred from member paths.",
+            );
+          }
+          return rebaseArchive({
+            kind: "kandelo-legacy-zip-v1",
+            url: described.url,
+            mountPrefix: described.mountPrefix,
+            materialized: false,
+            integrity: typeof described.sha256 === "string"
+              ? { sha256: described.sha256, bytes: archive.bytes }
+              : undefined,
+            entries: membersByArchive.get(archive.archiveId) ?? [],
+          } as SerializedLazyArchiveEntry);
+        });
       }
       return (Array.isArray(archives) ? (archives as SerializedLazyArchiveEntry[]) : [])
         .map(rebaseArchive);
