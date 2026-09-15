@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { refuseImageThisReaderCannotSee } from "./sdef-reader-guard.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs extract <image> <out-dir> [options]
 
@@ -245,6 +246,7 @@ export async function runExtract(args: string[]): Promise<number> {
     mfs = MemoryFileSystem.fromImage(bytes);
     // WHY: authenticate before creating an output directory or copying entries.
     await mfs.verifyImportedLazyAtomicGroupSeals();
+    refuseImageThisReaderCannotSee(bytes, mfs);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(

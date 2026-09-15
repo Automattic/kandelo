@@ -10,6 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { refuseImageThisReaderCannotSee } from "./sdef-reader-guard.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs inspect <image> [options]
 
@@ -216,6 +217,7 @@ export async function runInspect(args: string[]): Promise<number> {
     mfs = MemoryFileSystem.fromImage(bytes);
     // WHY: stdout must never expose namespace claims from an unauthenticated image.
     await mfs.verifyImportedLazyAtomicGroupSeals();
+    refuseImageThisReaderCannotSee(bytes, mfs);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`mkrootfs inspect: not a valid VFS image (${parsed.image}): ${msg}\n`);

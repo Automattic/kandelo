@@ -1,0 +1,34 @@
+{
+  "file": "tools/mkrootfs/src/cli/sdef-reader-guard.ts",
+  "verify": "cd tools/mkrootfs && npx vitest run test/builder.test.ts >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "the guard never refuses, so an unreadable image is answered about anyway",
+      "scope": "export function refuseImageThisReaderCannotSee(",
+      "scope_end": "\n}\n",
+      "find": "  if (actual === 0) return;",
+      "replace": "  if (true) return;"
+    },
+    {
+      "name": "the guard refuses exactly when there is nothing to refuse",
+      "scope": "export function refuseImageThisReaderCannotSee(",
+      "scope_end": "\n}\n",
+      "find": "  if (actual === 0) return;",
+      "replace": "  if (actual !== 0) return;"
+    },
+    {
+      "name": "the guard forgets this reader may already see them, and refuses KLZY images too",
+      "scope": "export function refuseImageThisReaderCannotSee(",
+      "scope_end": "\n}\n",
+      "find": "  if (seenByThisReader > 0) return;",
+      "replace": ""
+    },
+    {
+      "name": "the truth is read from the wrong reader, so it always agrees",
+      "scope": "export function refuseImageThisReaderCannotSee(",
+      "scope_end": "\n}\n",
+      "find": "  const actual = truth.lazyEntries().files.length;",
+      "replace": "  const actual = 0;"
+    }
+  ]
+}
