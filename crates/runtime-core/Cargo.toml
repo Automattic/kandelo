@@ -12,6 +12,12 @@ miniz_oxide = { version = "0.8", default-features = false, features = ["with-all
 spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"] }
 wasm-posix-shared = { path = "../shared" }
 
+# The one hash this crate computes: the integrity digest a deferred record
+# declares, checked against the bytes that arrive for it. `default-features =
+# false` because this crate is no_std + alloc on wasm, exactly as
+# `crates/fork-codec` and `crates/sffs-module` take it.
+sha2 = { version = "0.10", default-features = false }
+
 # The single authority for reading a WebAssembly artifact. `exec` asks it for
 # one fact: the pointer width of the image about to commit. Reading it here,
 # from the exact bytes the target committed to, is what keeps a process's
