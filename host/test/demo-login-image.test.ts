@@ -283,30 +283,36 @@ describe("canonical demo login image policy", () => {
     // depends on a fetch. Nothing exercised that branch, so both halves of the
     // eagerness union could be deleted and this file stayed green -- found by
     // perturbation, not by reading.
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
-    ensureDirRecursive(fs, "/etc");
-    ensureDirRecursive(fs, "/usr/bin");
-    // Registered lazily rather than written: this is the url-backed single
-    // file `isPathDeferred` alone does not see, which is why the predicate
-    // asks both questions.
-    fs.registerLazyFile(DEMO_LOGIN_PROGRAM_PATH, "https://example.invalid/login", 1, 0o4755);
-    fs.createFileWithOwner("/etc/passwd", 0o644, 0, 0, new TextEncoder().encode(
-      "root:x:0:0:root:/root:/bin/sh\n" +
-        "maker:x:1000:1000:maker:/home/maker:/bin/sh\n",
-    ));
-    fs.createFileWithOwner("/etc/shadow", 0o600, 0, 0, new TextEncoder().encode(
-      "root:*:0:0:99999:7:::\n" +
-        `maker:${DEMO_LOGIN_PASSWORD_HASH}:0:0:99999:7:::\n`,
-    ));
-    fs.createFileWithOwner("/etc/group", 0o644, 0, 0, new TextEncoder().encode(
-      "root:x:0:\nwheel:x:10:maker\nmaker:x:1000:\n",
-    ));
-    fs.createFileWithOwner(DEMO_SUDOERS_PATH, 0o440, 0, 0, new TextEncoder().encode(
-      DEMO_SUDOERS,
-    ));
-    fs.createFileWithOwner(DEMO_AUTOLOGIN_MOTD_PATH, 0o644, 0, 0,
-      new TextEncoder().encode(DEMO_AUTOLOGIN_MOTD));
+    const stage = (deferLogin: boolean) => {
+      const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+      ensureDirRecursive(fs, "/etc");
+      ensureDirRecursive(fs, "/usr/bin");
+      if (deferLogin) {
+        // A url-backed single file: the case `isPathDeferred` alone does not
+        // see, which is why the predicate asks both questions.
+        fs.registerLazyFile(
+          DEMO_LOGIN_PROGRAM_PATH, "https://example.invalid/login", 1, 0o4755,
+        );
+      } else {
+        fs.createFileWithOwner(
+          DEMO_LOGIN_PROGRAM_PATH, 0o4755, 0, 0, new Uint8Array([0]),
+        );
+      }
+      writeText(fs, "/etc/passwd",
+        "root:x:0:0:root:/root:/bin/sh\nmaker:x:1000:1000:maker:/home/maker:/bin/sh\n");
+      writeText(fs, "/etc/shadow", "root:*:0:0:99999:7:::\nmaker:*:0:0:99999:7:::\n");
+      writeText(fs, "/etc/group", "root:x:0:\nmaker:x:1000:\n");
+      writeText(fs, "/etc/motd", "");
+      configureDemoLogin(fs, { home: "/home/maker", shell: "/bin/sh" });
+      return fs;
+    };
 
-    expect(hasConfiguredDemoLogin(fs)).toBe(false);
+    // The premise, proved rather than assumed: this fixture IS a configured
+    // login when the program is eager. Without it the deferred assertion below
+    // passes for whatever other reason the fixture happens to fail -- which is
+    // exactly what the first version of this test did, and two perturb trials
+    // went on surviving because of it.
+    expect(hasConfiguredDemoLogin(stage(false))).toBe(true);
+    expect(hasConfiguredDemoLogin(stage(true))).toBe(false);
   });
 });
