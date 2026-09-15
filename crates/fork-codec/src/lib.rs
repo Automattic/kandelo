@@ -40,6 +40,7 @@ extern crate wasm_posix_shared;
 // `drive_plan`, `reference_replay`, etc.) depended on it.
 
 pub mod catalogs;
+pub mod child_import_plan;
 pub mod drive_plan;
 pub mod drive_plan_hints;
 pub mod dylink_archive;
@@ -80,6 +81,10 @@ pub use exception_codec::{
 pub use drive_plan_hints::{GcCodecHints, FORK_HOST_EXCEPTION_ACTIVATION_ID};
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
 pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlobals};
+pub use child_import_plan::{
+    build_child_import_plan, plan_provider_dependencies, ImportPlanEntry, PlanSnapshot,
+    IMPORT_PLAN_FLAG_SAVED, IMPORT_SPACE_GLOBAL, IMPORT_SPACE_TABLE,
+};
 pub use imported_tables::{decode_imported_tables, ImportedTable, ImportedTables};
 pub use linked_frames::{
     DescriptorRejection,

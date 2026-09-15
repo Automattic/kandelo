@@ -8600,3 +8600,63 @@ guard; with `readForkExceptionCodecDescriptor` gone there is one decoder of that
 section, so the guard had nothing left to compare. The Rust doc comments that
 named both were corrected rather than left pointing at files that do not exist.
 
+---
+
+## §175 -- The child planner's two entries answer a PLAN, not binding rows
+
+The maintainer approved §171's option 2: two entries, count plus field
+accessor, the shape `fm_decoded_node_count` / `fm_decoded_node_field`
+established. §173 then overturned the argument §171 made FOR them, so this
+records what the two entries should carry, at the same count.
+
+**What §171 got wrong.** It said the host must read "the binding facts the
+module decoded" because only JavaScript can construct a `WebAssembly.Global`.
+The maintainer doubted that and was right: `resolveGlobal` in the attic
+constructs nothing. Its five arms return a plain number, a BigInt, a
+materialized reference, the provider activation's ALREADY EXPORTED Global, or
+throw. So the host never needed the binding rows -- it needed to be told, per
+import, which of five things to do.
+
+**What the two entries answer instead.** One entry per imported global or table
+of one activation, carrying `import_ordinal`, `space`, `kind`, `type_code`,
+`flags`, `bits`, `source_activation`, `source_owner`. The host walks it against
+`WebAssembly.Module.imports()` and does the only irreducible thing: assembles a
+JavaScript import object.
+
+`space` travels with every entry for the reason the import seeds already found
+out: the two `kind` numberings OVERLAP (`RAW_NUMBER` and `ACTIVATION_TABLE` are
+both 1), so a reader that looks at `kind` alone is reading a different record
+than the writer wrote.
+
+**What that deletes from the 468-line planner**, none of which is a capability
+limit: matching each KFIG/KFIT declaration to its binding record; cross-checking
+their types; the five-arm `RawReference`-on-a-scalar and non-null-`exnref`
+refusals; the saved-snapshot lookup behind a base import; the accounting that a
+binding naming no declaration is an error. All of it is a decision over byte
+images `fork-codec` already decodes, and all of it is now
+`crates/fork-codec/src/child_import_plan.rs`, 280 lines with 12 tests and every
+one of its 14 refusals perturbed to failure.
+
+**The flag that exists because zero is a legal saved value.**
+`IMPORT_PLAN_FLAG_SAVED` says "`bits` is the parent's saved scalar for this base
+import". Without it a genuinely saved 0 and "nothing was saved" are the same
+entry, and the dylink GOT cells -- mutable unshared `i32`/`i64` base imports,
+where the loader allocates the fresh wrapper but the parent still owns the
+contents -- are exactly where that matters.
+
+**One thing the plan deliberately does not decide: instantiation order.**
+`plan_provider_dependencies` returns the provider edges the plan implies, and
+says in its own doc comment that reference recipes are not among them: which
+activation owns a recipe is a property of the decoded reference graph, not of
+the import records. The host adds those edges from `decodedNodeModuleActivation`,
+which it already has and which costs no entry.
+
+**An ordering constraint found while designing this, which the next increment
+has to respect.** On the child path `importsForActivation(0, ...)` runs BEFORE
+`prepareActivation(0, module, ...)`, and it is `prepareActivation` that seeds an
+activation's KFIG/KFIT sections into the module. So a module-built plan needs
+those sections seeded EARLIER than they are today -- at planner construction,
+where the child's compiled `modules` map is already in hand. That is a host
+sequencing change, not a new entry, and it is the first thing the module-side
+increment will have to do.
+
