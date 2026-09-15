@@ -3344,6 +3344,24 @@ and swaps the operator: `typeof process !== "undefined" || process.platform`.
 **The same polarity trap caught this lane twice — writing the guard, and
 writing its trial.**
 
+### A WAIT LOOP THAT MATCHES ITSELF NEVER EXITS — 2026-09-15
+
+`until ! pgrep -f "xtask.*perturb"; do sleep 30; done` **never terminates**,
+because the shell running it has that pattern in its own command line and
+`pgrep -f` matches against the full command line. Every poll finds the waiter
+and reports the run still going.
+
+It cost an hour of reading "RUNNING" that described the watcher rather than the
+work — and the failure is silent in the worst way: the answer is always the
+plausible one. A perturb run really can take 20 minutes (each trial re-runs
+vitest, whose global setup rebuilds the program index), so "still running" never
+looked wrong.
+
+**Wait on the PID, not on a pattern:** capture the run's pid and poll
+`while kill -0 <pid> 2>/dev/null; do sleep 30; done`. If a pattern is
+unavoidable, make it one the watcher cannot contain — match the built binary
+path (`target/.../xtask`) rather than a substring of the command you typed.
+
 ### THE ONE COMMAND THAT SEPARATES THE FIRST THREE
 
 **Apply the mutation by hand and run the test.**
