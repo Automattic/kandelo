@@ -377,3 +377,138 @@ export function captureArena(
   expect(root, "and leaves an arena root").toBeGreaterThan(0);
   return { root, recipes };
 }
+
+/** `fm_capture_define_gc` aggregate kinds, from the module's `CAPTURE_KIND_*`. */
+export const CAPTURE_KIND_STRUCT = 1;
+export const CAPTURE_KIND_ARRAY = 2;
+export const CAPTURE_KIND_EXNREF = 3;
+
+/** One aggregate to define inside a capture, in the module's own terms. */
+export interface CapturedAggregate {
+  readonly kind: number;
+  readonly activation: number;
+  /** Type ordinal for struct/array; TAG ordinal for an exnref. */
+  readonly typeOrdinal: number;
+  readonly layoutId?: number;
+  /** Scalar payload bytes, staged into guest memory by the fixture. */
+  readonly scalars?: Uint8Array;
+  /**
+   * Recipe ids this aggregate's fields/elements point at, or a function of the
+   * LEAF recipe ids -- which the caller cannot know in advance, because the
+   * module assigns them during this same capture.
+   */
+  readonly edges?:
+    | readonly number[]
+    | ((ids: {
+        readonly leaves: readonly number[];
+        readonly aggregates: readonly number[];
+      }) => readonly number[]);
+}
+
+/**
+ * Capture a sealed arena containing LEAVES and AGGREGATES, through the module.
+ *
+ * The aggregate half is why this exists rather than the tests each building an
+ * arena: struct/array/exnref recipes are claimed, then completed with a scalar
+ * span and an interned edge VECTOR, and getting that order wrong produces a
+ * graph the module accepts and the child rebuilds wrong. Driving the module's
+ * own entries means the test cannot get it wrong in a way production would not.
+ *
+ * Returns the sealed root, the leaf recipe ids in the order they were interned,
+ * and the aggregate recipe ids in theirs.
+ */
+export function captureGraph(
+  f: Fixture,
+  leaves: readonly (readonly [kind: number, a: number, b: number])[],
+  aggregates: readonly CapturedAggregate[] = [],
+  options: { readonly scalarStagingBase?: number } = {},
+): { root: number; recipes: number[]; aggregateRecipes: number[] } {
+  seedTemplateId(f, 0, 2048);
+  expect(f.errno(), "template id seeds").toBe(0);
+  const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
+  const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+  if (f.instance.driveTable.length < needed) {
+    f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+  }
+  for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
+    f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
+  }
+  f.instance.driveTable.set(
+    base + DRIVE_SLOT_UNWIND_END,
+    voidSlotThunk(() => {}) as never,
+  );
+
+  (f.x.fm_capture_begin as () => void)();
+  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+  expect(f.errno(), "the capture opens").toBe(0);
+
+  const intern = f.x.fm_capture_intern as (k: number, a: number, b: number) => number;
+  const recipes = leaves.map(([kind, a, b]) => {
+    const id = intern(kind, a, b);
+    expect(f.errno(), `intern kind ${kind}`).toBe(0);
+    return id;
+  });
+
+  let scalarAt = options.scalarStagingBase ?? MMAP_FLOOR + 6 * PAGE;
+
+  // CLAIM every aggregate before building any edge vector. A recipe id has to
+  // exist before an edge can name it, so a struct<->array CYCLE -- the shape the
+  // drive order exists to handle -- is only expressible if the claims come
+  // first. Within one aggregate the order is still vector, then define: a
+  // define completes a claim, and the builder refuses a vector opened inside
+  // one.
+  const aggregateRecipes = aggregates.map(() => {
+    const id = (f.x.fm_capture_claim_gc as () => number)();
+    expect(f.errno(), "claim").toBe(0);
+    return id;
+  });
+
+  aggregates.forEach((aggregate, index) => {
+    const id = aggregateRecipes[index]!;
+    const edges = typeof aggregate.edges === "function"
+      ? aggregate.edges({ leaves: recipes, aggregates: aggregateRecipes })
+      : aggregate.edges ?? [];
+    const handle = (f.x.__wpk_fork_ref_vector_begin as (n: number) => number)(
+      edges.length,
+    );
+    expect(f.errno(), "vector begin").toBe(0);
+    for (const edge of edges) {
+      (f.x.__wpk_fork_ref_vector_append as (h: number, r: number) => void)(handle, edge);
+      // `append` returns nothing -- that is the guest ABI -- so a failure only
+      // latches. Checking here names the edge that failed instead of surfacing
+      // as a count mismatch at `finish`.
+      expect(f.errno(), `vector append ${edge} (handle ${handle})`).toBe(0);
+    }
+    const ordinal = (f.x.__wpk_fork_ref_vector_finish as (h: number) => number)(handle);
+    expect(f.errno(), "vector finish").toBe(0);
+    expect(ordinal, "and it interns to a durable ordinal").toBeGreaterThanOrEqual(0);
+
+    const scalars = aggregate.scalars ?? new Uint8Array(0);
+    let scalarPtr = 0;
+    if (scalars.length > 0) {
+      scalarPtr = scalarAt;
+      new Uint8Array(f.memory.buffer, scalarPtr, scalars.length).set(scalars);
+      scalarAt += (scalars.length + 15) & ~15;
+    }
+    (f.x.fm_capture_define_gc as (...a: number[]) => number)(
+      id,
+      aggregate.activation,
+      aggregate.typeOrdinal,
+      aggregate.layoutId ?? 0,
+      aggregate.kind,
+      scalarPtr,
+      scalars.length,
+      ordinal,
+      0,
+      0,
+      0,
+    );
+    expect(f.errno(), `define kind ${aggregate.kind}`).toBe(0);
+  });
+
+  (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+  expect(f.errno(), "the capture seals").toBe(0);
+  const root = f.arena(ARENA_ROOT);
+  expect(root, "and leaves an arena root").toBeGreaterThan(0);
+  return { root, recipes, aggregateRecipes };
+}

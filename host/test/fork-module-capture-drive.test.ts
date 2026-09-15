@@ -5,6 +5,11 @@ import {
 } from "../src/fork-module-backend";
 import {
   ARENA_OWNED,
+  CAPTURE_KIND_ARRAY,
+  CAPTURE_KIND_STRUCT,
+  INTERN_KIND_EXTERNREF,
+  INTERN_KIND_I31,
+  captureGraph,
   ARENA_ROOT,
   CHANNEL_BASE,
   DRIVE_SLOT_ABORT_BEGIN,
@@ -1463,6 +1468,129 @@ describe("the binding records the module assembles at capture", () => {
       (f.x.fm_gc_plan_count as () => number)(),
       "one rewind begin for each of the two activations",
     ).toBe(2);
+  });
+
+  it("captures an aggregate graph the child decodes back with the same shape", () => {
+    // The fixture's aggregate half, proven before any replay test is built on
+    // it. A struct is CLAIMED, its edge vector interned, then COMPLETED -- and
+    // getting that order wrong produces a graph the module accepts and a child
+    // rebuilds wrong, which is exactly the class of bug a test that constructs
+    // its own arena in TypeScript cannot find.
+    const f = fixture();
+    const scalars = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const { root, recipes, aggregateRecipes } = captureGraph(
+      f,
+      [
+        [INTERN_KIND_EXTERNREF, 77, 0],
+        [INTERN_KIND_I31, 42, 0],
+      ],
+      [
+        {
+          kind: CAPTURE_KIND_STRUCT,
+          activation: 0,
+          typeOrdinal: 13,
+          scalars,
+          // Edges naming the two leaves above, so the child walks a real graph
+          // rather than an isolated node. The ids are not knowable in advance:
+          // the module assigns them during this same capture.
+          edges: ({ leaves }) => leaves,
+        },
+      ],
+    );
+    expect(aggregateRecipes).toHaveLength(1);
+    expect(recipes).toHaveLength(2);
+
+    // The CHILD decodes the sealed graph and reports it back. Node count and
+    // the aggregate's own coordinates are what a replay then drives from.
+    const child = childModule(f, { label: "aggregate-capture-child" });
+    const nodes = (child.fm_decode_reference_graph as (r: number) => number)(root);
+    expect(
+      (child.fm_last_errno as () => number)(),
+      "the child decodes what the parent sealed",
+    ).toBe(0);
+    // Canonical null, two leaves, one aggregate.
+    expect(nodes).toBe(4);
+
+    const field = child.fm_decoded_node_field as (i: number, f: number) => number;
+    const aggregateIndex = aggregateRecipes[0]!;
+    expect(
+      field(aggregateIndex, 1),
+      "the aggregate reports the activation it was captured for",
+    ).toBe(0);
+    expect(
+      field(aggregateIndex, 2),
+      "and the type ordinal it was defined with",
+    ).toBe(13);
+  });
+
+  it("captures a struct-to-array CYCLE, which needs every claim before any edge", () => {
+    // Two aggregates that point at each other. This is the shape the whole
+    // typed drive order exists for -- a topological walk has to break the cycle
+    // somewhere -- and it is only EXPRESSIBLE if both recipe ids exist before
+    // either edge vector is built. Claiming in its own pass is what buys that;
+    // a fixture that claimed and defined one aggregate at a time could not
+    // write this graph at all, and so could not test the drive that handles it.
+    const f = fixture();
+    const { root, aggregateRecipes } = captureGraph(
+      f,
+      [[INTERN_KIND_EXTERNREF, 91, 0]],
+      [
+        {
+          kind: CAPTURE_KIND_STRUCT,
+          activation: 0,
+          typeOrdinal: 4,
+          scalars: new Uint8Array([9, 9, 9, 9]),
+          // -> the array, and the shared externref leaf.
+          edges: ({ leaves, aggregates }) => [aggregates[1]!, leaves[0]!],
+        },
+        {
+          kind: CAPTURE_KIND_ARRAY,
+          activation: 0,
+          typeOrdinal: 5,
+          scalars: new Uint8Array([7, 7, 7, 7]),
+          // -> back to the struct, closing the cycle, and the same leaf.
+          edges: ({ leaves, aggregates }) => [aggregates[0]!, leaves[0]!],
+        },
+      ],
+    );
+    expect(aggregateRecipes).toHaveLength(2);
+
+    const child = childModule(f, { label: "cycle-capture-child" });
+    const nodes = (child.fm_decode_reference_graph as (r: number) => number)(root);
+    expect(
+      (child.fm_last_errno as () => number)(),
+      "a child decodes a cyclic graph without looping",
+    ).toBe(0);
+    // Canonical null, one leaf, two aggregates.
+    expect(nodes).toBe(4);
+  });
+
+  it("refuses a vector whose appends do not match what was promised", () => {
+    // The guest declares an edge count at `begin` and then appends. If it
+    // appends FEWER, the module must fail loud at `finish` rather than intern a
+    // short vector -- a child would then reconstruct an aggregate with missing
+    // references, which is a wrong object rather than an error. `append`
+    // returns nothing (that is the guest ABI), so `finish` is the only place
+    // this can surface.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "the capture opens").toBe(0);
+    const leaf = (f.x.fm_capture_intern as (k: number, a: number, b: number) => number)(
+      INTERN_KIND_EXTERNREF,
+      5,
+      0,
+    );
+    expect(f.errno(), "a leaf to point at").toBe(0);
+
+    const handle = (f.x.__wpk_fork_ref_vector_begin as (n: number) => number)(2);
+    expect(f.errno(), "promise two edges").toBe(0);
+    (f.x.__wpk_fork_ref_vector_append as (h: number, r: number) => void)(handle, leaf);
+    expect(f.errno(), "append one").toBe(0);
+    const ordinal = (f.x.__wpk_fork_ref_vector_finish as (h: number) => number)(handle);
+    expect(f.errno(), "and a short vector is refused").toBe(22);
+    expect(ordinal, "with no ordinal handed back").toBe(-1);
   });
 
   it("refuses a borrowed child seed with no admitted workspace, and carves one when there is", () => {
