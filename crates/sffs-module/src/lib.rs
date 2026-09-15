@@ -741,7 +741,11 @@ pub unsafe extern "C" fn sm_lazy_entries(out_ptr: usize, out_len: usize) -> i32 
     }
 
     let files = rootfs::lazy_entries();
-    let archives = rootfs::archive_payloads();
+    // The whole description, not just the opaque half. Reading the URL and the
+    // digest out of the payload was the consumer's job until v5 gave them a
+    // typed home, and that consumer had to PARSE a blob the format promises
+    // nobody parses. Emitting them here is what lets it stop.
+    let archives = rootfs::archive_descriptions();
     let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     let Ok(file_count) = u32::try_from(files.len()) else {
         return err(Errno::EINVAL);
@@ -760,14 +764,19 @@ pub unsafe extern "C" fn sm_lazy_entries(out_ptr: usize, out_len: usize) -> i32 
         put_u32(&mut buf, entry.archive_id);
         if put_bytes(&mut buf, &entry.source_path).is_err()
             || put_bytes(&mut buf, &entry.payload).is_err()
+            || put_bytes(&mut buf, &entry.uri).is_err()
+            || put_bytes(&mut buf, &entry.digest).is_err()
         {
             return err(Errno::EINVAL);
         }
     }
-    for (archive_id, payload) in &archives {
+    for (archive_id, bytes, uri, digest, payload) in &archives {
         put_u32(&mut buf, *archive_id);
-        put_u64(&mut buf, rootfs::archive_size(*archive_id).unwrap_or(0));
-        if put_bytes(&mut buf, payload).is_err() {
+        put_u64(&mut buf, *bytes);
+        if put_bytes(&mut buf, payload).is_err()
+            || put_bytes(&mut buf, uri).is_err()
+            || put_bytes(&mut buf, digest).is_err()
+        {
             return err(Errno::EINVAL);
         }
     }
@@ -1021,6 +1030,9 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     archive_bytes: u64,
     archive_payload_ptr: usize,
     archive_payload_len: usize,
+    archive_uri_ptr: usize,
+    archive_uri_len: usize,
+    archive_digest_ptr: usize,
     cohort_id_ptr: usize,
     cohort_id_len: usize,
     cohort_member_ptr: usize,
@@ -1048,6 +1060,29 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         }
         unsafe { slice(archive_payload_ptr, archive_payload_len) }
     };
+    // Where the bytes are, and what they must hash to. Typed arguments rather
+    // than fields inside the descriptor because the kernel ACTS on both: it
+    // relays the address and it checks the digest. Three fields left the
+    // descriptor when they became these — the URL, the digest, and a length
+    // that was already a parameter beside it — so this call carries more
+    // arguments and the image carries less opaque JSON.
+    let uri: &[u8] = if archive_uri_len == 0 {
+        b""
+    } else {
+        if archive_uri_ptr == 0 {
+            return err(Errno::EINVAL);
+        }
+        unsafe { slice(archive_uri_ptr, archive_uri_len) }
+    };
+    // Fixed length, so a pointer is the whole argument: null means the producer
+    // declared no digest. A LENGTH here would let a caller pass a truncated
+    // hash and have it read as a short-but-present one, which is the shape
+    // `digest_from` refuses for the same reason.
+    let digest: &[u8] = if archive_digest_ptr == 0 {
+        b""
+    } else {
+        unsafe { slice(archive_digest_ptr, runtime_core::sffs_deferred::DIGEST_LEN) }
+    };
     // `archive_id == 0` is a file fetched STANDALONE — no archive behind it, so
     // nothing to declare, and the payload belongs to the FILE rather than to an
     // archive. That case was unreachable through this entry point until now,
@@ -1059,6 +1094,15 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         // The length is the STORE's rule: one archive with two lengths has no
         // correct reading, and it can say so without reading anything.
         if let Err(e) = rootfs::declare_archive(archive_id, archive_bytes) {
+            return err(e);
+        }
+        // The address and digest belong to the ARCHIVE, not to this member:
+        // a member is addressed by its archive, and the format refuses a
+        // second address on one. Registration is per file and this is per
+        // archive, so a builder naming the same archive on every member
+        // rewrites the same two values -- idempotent, and cheaper to allow
+        // than to make every builder remember which member was first.
+        if let Err(e) = rootfs::set_archive_source(archive_id, uri, digest) {
             return err(e);
         }
         // The description is the FORMAT's, so it is merged here. Registration
@@ -1141,13 +1185,12 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         uid,
         gid,
         ino,
-        // No address and no digest yet: this entry point does not accept
-        // either. The format carries both since v5 and the kernel verifies
-        // against the digest, so an image built through here is one the kernel
-        // CANNOT verify -- visibly, by carrying no digest, rather than by
-        // verifying against something invented here.
-        b"",
-        b"",
+        // A STANDALONE file is addressed by its own URI and covered by its own
+        // digest. An archive MEMBER is addressed by its archive, and the
+        // format refuses a second address on it, so both are withheld here and
+        // recorded on the archive above.
+        if archive_id == 0 { uri } else { b"" },
+        if archive_id == 0 { digest } else { b"" },
         // With an archive, the payload described the ARCHIVE and the file needs
         // none of its own. Without one, it describes the file.
         if archive_id == 0 { archive_payload } else { b"" },
@@ -1477,14 +1520,14 @@ mod tests {
         // A member of archive 3 ...
         assert_eq!(
             with_two(b"/usr/member", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-                sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+                sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
             }),
             0
         );
         // ... and a file fetched standalone, which has no archive behind it.
         assert_eq!(
             with_two(b"/usr/alone", b"", |pp, pl, sp, sl| unsafe {
-                sm_register_lazy_file(pp, pl, 0, sp, sl, 11, 0o644, 0, 0, 41, 0, 0, 0, 0, 0, 0, 0, 0)
+                sm_register_lazy_file(pp, pl, 0, sp, sl, 11, 0o644, 0, 0, 41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
             }),
             0
         );
@@ -1837,7 +1880,7 @@ mod tests {
         assert_eq!(with_path(b"/usr", |p, l| unsafe { sm_mkdir(p, l, 0o755, 0, 0) }), 0);
 
         let rc = with_two(b"/usr/big", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 
@@ -1902,7 +1945,7 @@ mod tests {
         // because the archive declaration it went through refuses id 0.
         let url: &[u8] = b"https://example.invalid/sudo#sha256:feedface";
         let rc = with_two(b"/usr/sudo", url, |pp, pl, up, ul| unsafe {
-            sm_register_lazy_file(pp, pl, 0, 0, 0, 99_999, 0o4755, 0, 0, 40, 0, up, ul, 0, 0, 0, 0, 0)
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 99_999, 0o4755, 0, 0, 40, 0, up, ul, 0, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0, "a standalone-fetch file registers");
 
@@ -1937,12 +1980,12 @@ mod tests {
     fn an_archive_member_and_a_standalone_file_can_share_one_image() {
         assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = with_two(b"/member", b"members/x", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 10, 0o644, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
         let url: &[u8] = b"https://example.invalid/solo";
         let rc = with_two(b"/solo", url, |pp, pl, up, ul| unsafe {
-            sm_register_lazy_file(pp, pl, 0, 0, 0, 20, 0o644, 0, 0, 41, 0, up, ul, 0, 0, 0, 0, 0)
+            sm_register_lazy_file(pp, pl, 0, 0, 0, 20, 0o644, 0, 0, 41, 0, up, ul, 0, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 
@@ -2595,9 +2638,8 @@ mod tests {
         }
         let rc = unsafe {
             sm_register_lazy_file(
-                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
-                     0, 0, 0, 0, 0,
-                )
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(), 0, 0, 0,
+                     0, 0, 0, 0, 0)
         };
         unsafe { sm_free(pp, pl) };
         unsafe { sm_free(sp, sl) };
@@ -2624,9 +2666,8 @@ mod tests {
         let (mp, ml) = write_path(member);
         let rc = unsafe {
             sm_register_lazy_file(
-                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, dl,
-                cp, cl, mp, ml, expected_count,
-            )
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, dl, 0, 0, 0,
+                cp, cl, mp, ml, expected_count)
         };
         for (ptr, len) in [(pp, pl), (sp, sl), (dp, dl), (cp, cl), (mp, ml)] {
             unsafe { sm_free(ptr, len) };
@@ -2715,6 +2756,72 @@ mod tests {
         );
     }
 
+    /// Register with an address and a digest, the way a real builder now does.
+    fn register_addressed(
+        path: &[u8],
+        archive_id: u32,
+        source: &[u8],
+        uri: &[u8],
+        digest: &[u8; runtime_core::sffs_deferred::DIGEST_LEN],
+    ) -> i32 {
+        let (pp, pl) = write_path(path);
+        let (sp, sl) = write_path(source);
+        let (up, ul) = write_path(uri);
+        let gp = sm_alloc(digest.len());
+        unsafe { core::ptr::copy_nonoverlapping(digest.as_ptr(), gp as *mut u8, digest.len()) };
+        let rc = unsafe {
+            sm_register_lazy_file(
+                pp, pl, archive_id, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, 0, 0,
+                if ul == 0 { 0 } else { up }, ul, gp, 0, 0, 0, 0, 0)
+        };
+        unsafe { sm_free(pp, pl) };
+        unsafe { sm_free(sp, sl) };
+        unsafe { sm_free(up, ul) };
+        unsafe { sm_free(gp, digest.len()) };
+        rc
+    }
+
+    #[test]
+    fn an_archives_address_and_digest_land_on_the_archive_not_the_member() {
+        // The producer half of the kernel's verification. Until this entry
+        // point took them, an image built through the module carried no digest
+        // at all and the kernel had nothing to check -- the check existed and
+        // could never fire.
+        fresh_tree();
+        let uri: &[u8] = b"https://example.invalid/tool.zip";
+        let digest = [0x7Eu8; runtime_core::sffs_deferred::DIGEST_LEN];
+        assert_eq!(register_addressed(b"/opt/a", 1, b"members/a", uri, &digest), 0);
+
+        // On the ARCHIVE, where a member's one answer to "where are these
+        // bytes" lives.
+        assert_eq!(
+            rootfs::archive_source(1),
+            Some((uri.to_vec(), digest)),
+        );
+        // And NOT on the member: the format refuses a second address on one,
+        // so a registration that put it there would make an unencodable image.
+        assert_eq!(
+            rootfs::deferred_source(b"/opt/a").expect("the member"),
+            (alloc::vec::Vec::new(), runtime_core::sffs_deferred::DIGEST_NONE),
+        );
+    }
+
+    #[test]
+    fn a_standalone_files_address_and_digest_land_on_the_file() {
+        // With no archive there is nothing else to carry them, and the URI is
+        // the only thing in the world that says where the bytes are. This is
+        // the shape the setuid-root lazy binaries have -- the ones the budget
+        // records as fetched by URL with length as the only check.
+        fresh_tree();
+        let uri: &[u8] = b"https://example.invalid/sudo";
+        let digest = [0x11u8; runtime_core::sffs_deferred::DIGEST_LEN];
+        assert_eq!(register_addressed(b"/opt/solo", 0, b"", uri, &digest), 0);
+        assert_eq!(
+            rootfs::deferred_source(b"/opt/solo").expect("the file"),
+            (uri.to_vec(), digest),
+        );
+    }
+
     #[test]
     fn the_deferred_set_is_enumerable_with_every_identity_it_carries() {
         // What a builder compares when it asserts that a step disturbed
@@ -2742,6 +2849,15 @@ mod tests {
         assert_eq!(read_u32(&buf, &mut at), 1, "backed by archive 1");
         assert_eq!(read_bytes(&buf, &mut at), b"members/a");
         assert!(read_bytes(&buf, &mut at).is_empty(), "a member carries no description of its own");
+        assert!(
+            read_bytes(&buf, &mut at).is_empty(),
+            "a member is addressed by its archive, never by an address of its own",
+        );
+        assert_eq!(
+            read_bytes(&buf, &mut at),
+            &runtime_core::sffs_deferred::DIGEST_NONE[..],
+            "no digest was declared for this member",
+        );
 
         assert_eq!(read_bytes(&buf, &mut at), b"/opt/solo");
         let _ino = read_u64(&buf, &mut at);
@@ -2752,10 +2868,29 @@ mod tests {
         // that says where its bytes come from.
         let payload = read_bytes(&buf, &mut at);
         assert!(!payload.is_empty(), "a standalone lazy file carries its description");
+        // Its ADDRESS and digest are the two fields a consumer used to read by
+        // parsing the payload above. They come out typed now, which is the
+        // whole point: the payload stays opaque and stays unread.
+        assert!(
+            read_bytes(&buf, &mut at).is_empty(),
+            "this registration declared no address",
+        );
+        assert_eq!(
+            read_bytes(&buf, &mut at),
+            &runtime_core::sffs_deferred::DIGEST_NONE[..],
+        );
 
         assert_eq!(read_u32(&buf, &mut at), 1, "archive id");
         assert_eq!(read_u64(&buf, &mut at), 4096, "archive length");
         assert!(!read_bytes(&buf, &mut at).is_empty(), "the archive's description");
+        assert!(
+            read_bytes(&buf, &mut at).is_empty(),
+            "this registration declared no address for the archive either",
+        );
+        assert_eq!(
+            read_bytes(&buf, &mut at),
+            &runtime_core::sffs_deferred::DIGEST_NONE[..],
+        );
         assert_eq!(at, buf.len(), "every byte accounted for");
     }
 
@@ -3049,9 +3184,8 @@ mod tests {
         assert_eq!(
             unsafe {
                 sm_register_lazy_file(
-                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
-                     0, 0, 0, 0, 0,
-                )
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(), 0, 0, 0,
+                     0, 0, 0, 0, 0)
             },
             0,
         );
@@ -3116,9 +3250,8 @@ mod tests {
         assert_eq!(
             unsafe {
                 sm_register_lazy_file(
-                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(),
-                     0, 0, 0, 0, 0,
-                )
+                    pp, pl, 1, sp, sl, 99, 0o644, 0, 0, 4_000_000, 4096, dp, descriptor.len(), 0, 0, 0,
+                     0, 0, 0, 0, 0)
             },
             0,
         );
@@ -3339,7 +3472,7 @@ mod tests {
             0
         );
         let rc = with_two(b"/usr/there", b"members/big.bin", |pp, pl, sp, sl| unsafe {
-            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0)
+            sm_register_lazy_file(pp, pl, 3, sp, sl, 99_999, 0o755, 0, 0, 40, 8_000_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         });
         assert_eq!(rc, 0);
 

@@ -4488,6 +4488,12 @@ pub struct LazyEntryView {
     /// Empty exactly when `archive_id == 0`.
     pub source_path: Vec<u8>,
     pub payload: Vec<u8>,
+    /// Where a STANDALONE file's bytes are. Empty for an archive member, which
+    /// is addressed by its archive.
+    pub uri: Vec<u8>,
+    /// What the file's bytes must hash to, or
+    /// [`crate::sffs_deferred::DIGEST_NONE`] when the image declared none.
+    pub digest: [u8; crate::sffs_deferred::DIGEST_LEN],
 }
 
 fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyEntryView>) {
@@ -4506,6 +4512,8 @@ fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyE
             archive_id: *archive_id,
             source_path: source_path.clone(),
             payload: inode.deferred_payload.clone(),
+            uri: inode.deferred_uri.clone(),
+            digest: inode.deferred_digest,
         }),
         // A URL-backed lazy file is a BASE file whose bytes the host fetches:
         // `Host`-sourced, with a real size and a fetch description. A base file
@@ -4522,6 +4530,8 @@ fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyE
                 archive_id: 0,
                 source_path: Vec::new(),
                 payload: inode.deferred_payload.clone(),
+                uri: inode.deferred_uri.clone(),
+                digest: inode.deferred_digest,
             })
         }
         InodeKind::Dir(entries) => {
@@ -4574,6 +4584,31 @@ pub fn archive_payloads() -> Vec<(u32, Vec<u8>)> {
             .archives
             .iter()
             .map(|(id, entry)| (*id, entry.payload.clone()))
+            .collect()
+    })
+}
+
+/// Every declared archive as `(archive_id, bytes, uri, digest, payload)`.
+///
+/// The whole of what an image says about an archive, in one pass. It exists
+/// because the caller that re-describes archives out of a built tree was
+/// reading the URL and the digest by PARSING them back out of the opaque
+/// payload — the format's one rule, broken by the layer above it — and could
+/// not stop until the typed fields had a way out.
+pub fn archive_descriptions() -> Vec<(u32, u64, Vec<u8>, [u8; crate::sffs_deferred::DIGEST_LEN], Vec<u8>)> {
+    ROOTFS.with(|state| {
+        state
+            .archives
+            .iter()
+            .map(|(id, entry)| {
+                (
+                    *id,
+                    entry.size,
+                    entry.uri.clone(),
+                    entry.digest,
+                    entry.payload.clone(),
+                )
+            })
             .collect()
     })
 }

@@ -404,6 +404,10 @@ describe("a module-backed base image", () => {
       ino: 4243,
       archiveBytes: 5,
       archiveDescriptor: envelope,
+      // A valid address, so the ENVELOPE is this archive's only fault. Without
+      // it the reader refuses the missing address first and this test passes
+      // for a reason it was not written to check.
+      archiveUri: "archives/a.zip",
     });
     const container = await module.saveImage();
 
@@ -430,7 +434,12 @@ describe("a module-backed base image", () => {
       mode: 0o644,
       ino: 4242,
       archiveBytes: 99,
+      // Parses as JSON and carries no mount prefix: the one thing left in a
+      // descriptor that this reader still needs. `url` in here is now inert —
+      // the address is a typed field — so a descriptor carrying only it says
+      // nothing the reader can use.
       archiveDescriptor: new TextEncoder().encode('{"url":"archives/a.zip"}'),
+      archiveUri: "archives/a.zip",
     });
     const container = await module.saveImage();
 
@@ -445,7 +454,42 @@ describe("a module-backed base image", () => {
     // Refused, not half-answered. Returning [] here would mount an image whose
     // archives silently never activate.
     expect(() => baseImage.exportLazyArchiveEntries())
-      .toThrow(/declares no url or no mount prefix/);
+      .toThrow(/declares no mount prefix/);
+  });
+
+  it("refuses a module-built archive that declares no address", async () => {
+    // The address is the whole of what says where an archive's bytes come
+    // from. It used to live inside the descriptor, where this reader had to
+    // parse a blob the image format says nobody parses — and parse it on
+    // untrusted input, since an image can arrive from a shared link. Now it is
+    // a typed field the section decoder already checked, and its absence is a
+    // refusal rather than an archive that mounts and silently never activates.
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerArchiveMember({
+      path: "/opt/member",
+      archiveId: 1,
+      sourcePath: "member",
+      size: 1,
+      mode: 0o644,
+      ino: 4244,
+      archiveBytes: 7,
+      // A descriptor that is otherwise complete, so the missing address is the
+      // only fault and no other rule can be the one that refuses.
+      archiveDescriptor: new TextEncoder().encode('{"mountPrefix":"/opt"}'),
+    });
+    const container = await module.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      undefined,
+      () => reader.lazyEntries(),
+    );
+    expect(() => baseImage.exportLazyArchiveEntries())
+      .toThrow(/declares no address/);
   });
 
   it("leaves every URL untouched when no deployment base is given", async () => {

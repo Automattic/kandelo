@@ -64,6 +64,8 @@ interface ModuleExports {
     size: bigint, mode: number, uid: number, gid: number, ino: bigint,
     archiveBytes: bigint,
     archivePayload: number, archivePayloadLen: number,
+    archiveUri: number, archiveUriLen: number,
+    archiveDigest: number,
     cohortId: number, cohortIdLen: number,
     cohortMember: number, cohortMemberLen: number,
     cohortExpectedCount: number,
@@ -76,6 +78,29 @@ interface ModuleExports {
   sm_lazy_entries(o: number, ol: number): number;
   sm_export_image_read(offset: bigint, o: number, ol: number): number;
   sm_image_read(offset: bigint, o: number, ol: number): number;
+}
+
+/**
+ * A 64-character hex SHA-256 as the 32 bytes the image format stores.
+ *
+ * The builders carry digests as hex because that is how registries and lock
+ * files write them; the format stores a value, and a fixed-length one, so that
+ * no reader ever has to decide what a short digest means. Converting at this
+ * boundary means a malformed digest fails at the producer that wrote it — with
+ * the string in the message — instead of arriving in the image as a
+ * plausible-looking wrong answer nobody can trace back.
+ */
+function sha256HexToBytes(hex: string): Uint8Array {
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(
+      `lazy archive digest must be 64 hex characters (SHA-256), got ${JSON.stringify(hex)}`,
+    );
+  }
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i += 1) {
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
 }
 
 /**
@@ -553,7 +578,13 @@ export class SffsImageFs {
    * registers an ARCHIVE MEMBER, which is a different operation that wore this
    * same name until now.
    */
-  registerLazyFile(path: string, url: string, size: number, mode = 0o755): number {
+  registerLazyFile(
+    path: string,
+    url: string,
+    size: number,
+    mode = 0o755,
+    digestHex?: string,
+  ): number {
     this.registerArchiveMember({
       path,
       archiveId: 0,
@@ -563,6 +594,18 @@ export class SffsImageFs {
       ino: this.nextStandaloneIno(),
       archiveBytes: 0,
       archiveDescriptor: encoder.encode(url),
+      // The address, typed. The descriptor above still carries the same URL,
+      // because the incumbent writer's readers expect it there and this bridge
+      // is not the place to break them; the difference is that the kernel can
+      // now read THIS one, and acts on it.
+      archiveUri: url,
+      // And what the bytes must hash to, when the builder knows. These are the
+      // files the surface budget records as "fetched by URL with length as the
+      // only check" — sudo and sudo-lite ship setuid-root this way, so bytes of
+      // the same length from a substituting host, a poisoned cache or a network
+      // position execute as root inside the guest. A digest here is what makes
+      // the kernel refuse them.
+      archiveDigest: digestHex === undefined ? undefined : sha256HexToBytes(digestHex),
     });
     return 0;
   }
@@ -613,25 +656,31 @@ export class SffsImageFs {
       args.symlinkTargets,
     );
     const archiveId = ++this.lastArchiveId;
-    // The archive's own fetch description. Opaque to the kernel, which carries
-    // it and never parses it; whoever fetches decides whether the URL may be
-    // fetched and validates the digest.
+    // What is LEFT of the archive's fetch description once the kernel's own
+    // fields come out of it.
     //
-    // `mountPrefix` and `bytes` are here because the CONSUMER needs them and
-    // the kernel does not read this. Rebuilding the kernel's lazy manifest
-    // from an image requires the mount prefix — it is encoded into the manifest
-    // record — and the module's own metadata does not carry one. Writing it in
-    // the descriptor keeps the reconstruction exact instead of inferring a
-    // prefix from member paths, which would be inventing data and would be
-    // wrong for any archive whose members do not share one.
+    // `url`, `sha256` and `bytes` used to be in here. The kernel acts on all
+    // three now — it relays the address, checks the digest, and bounds the
+    // fetch with the length — so they are typed arguments below, and this blob
+    // is no longer where the truth about them lives. `bytes` was the clearest
+    // case: it was ALREADY a parameter beside this, so the descriptor was a
+    // second copy of a fact the call had stated once.
+    //
+    // `mountPrefix` stays, because the kernel genuinely never reads it and a
+    // CONSUMER does: rebuilding the kernel's lazy manifest from an image needs
+    // the prefix, and inferring one from member paths would be inventing data
+    // and would be wrong for any archive whose members do not share one.
     const descriptor = encoder.encode(JSON.stringify({
-      url: args.url,
       mountPrefix: args.mountPrefix,
-      ...(args.integrity
-        ? { sha256: args.integrity.sha256, bytes: args.integrity.bytes }
-        : {}),
     }));
     const archiveBytes = args.integrity?.bytes ?? 0;
+    // Raw bytes, not the hex the builders carry: a digest is a value, and the
+    // module is not in the business of parsing one. Decoding here also means a
+    // malformed hex string fails at the producer that wrote it rather than
+    // arriving as a plausible-looking wrong digest.
+    const archiveDigest = args.integrity
+      ? sha256HexToBytes(args.integrity.sha256)
+      : undefined;
 
     // Directories first, so a member never arrives before its parent.
     //
@@ -670,6 +719,8 @@ export class SffsImageFs {
         ino: this.nextStandaloneIno(),
         archiveBytes,
         archiveDescriptor: descriptor,
+        archiveUri: args.url,
+        archiveDigest,
       });
     }
     return archiveId;
@@ -725,28 +776,58 @@ export class SffsImageFs {
      * registered cannot notice the one that was not.
      */
     cohort?: { id: string; member: string; expectedCount: number };
+    /**
+     * Where the bytes are, and what they must hash to.
+     *
+     * With an archive these describe the ARCHIVE: a member is addressed by its
+     * archive, and the image format refuses a second address on a member.
+     * Without one (`archiveId: 0`) they describe this FILE, and the URI is
+     * then the only thing in the world that says where its bytes are.
+     *
+     * Unlike `archiveDescriptor` the kernel READS both: it relays the address
+     * when it asks the host for bytes, and it refuses bytes that do not match
+     * the digest. Omitting the digest is a real state — every image built
+     * before the format carried one has none — and it means the kernel cannot
+     * verify this archive, visibly rather than silently.
+     */
+    archiveUri?: string;
+    archiveDigest?: Uint8Array;
   }): void {
     const descriptor = args.archiveDescriptor ?? new Uint8Array(0);
     const cohortId = args.cohort?.id ?? "";
     const cohortMember = args.cohort?.member ?? "";
+    const archiveUri = args.archiveUri ?? "";
+    const archiveDigest = args.archiveDigest ?? new Uint8Array(0);
+    if (archiveDigest.byteLength !== 0 && archiveDigest.byteLength !== 32) {
+      throw new Error(
+        `lazy archive digest must be 32 bytes (SHA-256), got ${archiveDigest.byteLength}`,
+      );
+    }
     this.withPath(args.path, (p, pl) =>
       this.withPath(args.sourcePath, (s, sl) =>
         this.withBytes(descriptor, (d, dl) =>
-          this.withPath(cohortId, (c, cl) =>
-            this.withPath(cohortMember, (m, ml) =>
-              this.check(
-                this.exports.sm_register_lazy_file(
-                  p, pl, args.archiveId, s, sl,
-                  BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
-                  BigInt(args.archiveBytes),
-                  dl === 0 ? 0 : d, dl,
-                  cl === 0 ? 0 : c, cl,
-                  ml === 0 ? 0 : m, ml,
-                  args.cohort?.expectedCount ?? 0,
-                ),
-                "registerLazyFile",
-                args.path,
-              ))))));
+          this.withPath(archiveUri, (u, ul) =>
+            this.withBytes(archiveDigest, (g, gl) =>
+              this.withPath(cohortId, (c, cl) =>
+                this.withPath(cohortMember, (m, ml) =>
+                  this.check(
+                    this.exports.sm_register_lazy_file(
+                      p, pl, args.archiveId, s, sl,
+                      BigInt(args.size), args.mode, args.uid ?? 0, args.gid ?? 0, BigInt(args.ino),
+                      BigInt(args.archiveBytes),
+                      dl === 0 ? 0 : d, dl,
+                      ul === 0 ? 0 : u, ul,
+                      // A null pointer is "no digest declared". The length is
+                      // not passed because it is fixed: a length argument would
+                      // let a truncated hash read as a short-but-present one.
+                      gl === 0 ? 0 : g,
+                      cl === 0 ? 0 : c, cl,
+                      ml === 0 ? 0 : m, ml,
+                      args.cohort?.expectedCount ?? 0,
+                    ),
+                    "registerLazyFile",
+                    args.path,
+                  ))))))));
   }
 
   /**
@@ -1182,10 +1263,17 @@ export class SffsImageFs {
    * identity of a deferred file is its path, inode, real size and backing
    * archive; an archive's is its id, length and fetch description.
    *
-   * The descriptions are returned as BYTES and not parsed here. They are the
-   * fetcher's to read -- a URL, a transport, a digest -- and this bridge
-   * carries them for the same reason the kernel does: whoever fetches decides
-   * whether a URL may be fetched, and carrying the bytes authorises nothing.
+   * The descriptor is returned as BYTES and not parsed here. It is the
+   * fetcher's to read -- a transport, an activation mode, a seal -- and this
+   * bridge carries it for the same reason the kernel does: whoever fetches
+   * decides whether a resource may be fetched, and carrying the bytes
+   * authorises nothing.
+   *
+   * The ADDRESS and the DIGEST come back typed beside it, because the kernel
+   * acts on both and so they are not the fetcher's private business any more.
+   * Returning them this way is what lets a caller stop parsing them out of the
+   * descriptor -- which is a thing the format says nobody does, and which one
+   * caller was doing anyway because there was no other way to reach them.
    */
   lazyEntries(): {
     files: {
@@ -1195,8 +1283,16 @@ export class SffsImageFs {
       archiveId: number;
       sourcePath: string;
       descriptor: Uint8Array;
+      uri: string;
+      digest: Uint8Array;
     }[];
-    archives: { archiveId: number; bytes: number; descriptor: Uint8Array }[];
+    archives: {
+      archiveId: number;
+      bytes: number;
+      descriptor: Uint8Array;
+      uri: string;
+      digest: Uint8Array;
+    }[];
   } {
     const required = this.check(this.exports.sm_lazy_entries(0, 0), "lazyEntries", "");
     const ptr = this.exports.sm_alloc(Math.max(required, 1));
@@ -1234,11 +1330,21 @@ export class SffsImageFs {
           archiveId: u32(),
           sourcePath: text(),
           descriptor: blob(),
+          // Field order is the module's, and an object literal evaluates in
+          // source order, so these must stay where the writer put them.
+          uri: text(),
+          digest: blob(),
         });
       }
       const archives = [];
       for (let i = 0; i < archiveCount; i++) {
-        archives.push({ archiveId: u32(), bytes: Number(u64()), descriptor: blob() });
+        archives.push({
+          archiveId: u32(),
+          bytes: Number(u64()),
+          descriptor: blob(),
+          uri: text(),
+          digest: blob(),
+        });
       }
       if (at !== required) {
         // Every byte the module wrote must be accounted for. Trailing bytes
