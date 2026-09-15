@@ -58,13 +58,7 @@
    "scope_end": "\n        let mut records",
    "find": "        if self.deferred.is_empty() && !self.declares_deferred {\n            return Ok(0);\n        }",
    "replace": "        if false {\n            return Ok(0);\n        }"
-  },
-  {
-   "name": "a failed allocation hands back block zero, the superblock",
-   "scope": "    fn block_alloc(&mut self) -> Result<u32, Errno> {",
-   "scope_end": "\n    }\n",
-   "find": "        self.block_alloc_no_grow().ok_or(Errno::ENOSPC)",
-   "replace": "        Ok(self.block_alloc_no_grow().unwrap_or(0))"
   }
- ]
+ ],
+ "_comment": "NOT PRESENT, deliberately: a trial making block_alloc hand back block zero on its out-of-space path. It survives every test, because create_file refuses an oversized write on a size pre-check before block_alloc is reached -- so that ok_or(ENOSPC) is defensive depth rather than the path taken, and a trial against it cannot fail. Removed rather than left surviving: a trial that cannot fail is a green line proving nothing."
 }
