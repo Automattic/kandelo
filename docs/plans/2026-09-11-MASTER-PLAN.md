@@ -5794,6 +5794,81 @@ is expected to run.
 - **T4 — the residue**, ~20 items, explicitly after T1–T3 because most should
   vanish with them.
 
+## The deferred record's address and digest — decided 2026-09-15
+
+**Maintainer decision, taken directly:** digest and length on BOTH record
+kinds; on a digest mismatch, EIO and do not cache the bytes; lane V does it
+now. Plus the standing correction that motivated all of it — *"The URI should
+be the only way any lazy reference is addressed, whether a lazy file or
+archive"* — and *"The digest is supposed to be verified by the kernel, not the
+host today. If it is missing from the kernel, I want you to fix it. If it is
+missing from JS/TS, that is intended."* An earlier TypeScript digest repair was
+reverted on that second point; it was the right check in the wrong layer.
+
+**What the format does.** SDEF v5 promotes the URI and a SHA-256 digest out of
+the opaque payload onto both the archive table and the per-file record. The
+line the format draws is unchanged and is the reason these two moved: a field
+is typed when the kernel ACTS on it. The kernel now relays the URI as the
+address and checks arriving bytes against the digest. Transport selection,
+activation mode and the atomic-group seal stay opaque beside them, because the
+kernel still only carries those.
+
+An archive member carries no address of its own — its archive's is the one
+answer — and both encoder and decoder refuse a second one, the decoder
+independently because a section can arrive from a shared link.
+
+An all-zero digest means the producer declared none. It is a sentinel, not a
+hole: whoever can zero the field can equally set it to the hash of bytes they
+chose. What a digest defends is the bytes in TRANSIT, not the image. Whether an
+image may declare none belongs to whoever decides it may be loaded, which is
+not this layer.
+
+**What the kernel does.** Three materialization points verify before anything
+is stored: the whole-archive fetch against the archive's digest, the inflated
+member against the record's own digest (the archive's cannot cover this — an
+archive that hashes correctly can still unpack wrongly), and a standalone
+file's fetched bytes against its record's digest. A mismatch drops the buffer
+rather than caching it, because caching would make one bad fetch permanent for
+the life of the kernel.
+
+A declared digest also changes how a read is served: a digest covers a whole
+object, so a positioned read of one window has nothing to check itself against.
+`rootfs::read` materializes first when the inode declares one. That is the cost
+of declaring a digest — the file's full length in memory on first read — and it
+is stated rather than hidden. A file declaring none keeps the streaming path,
+which is every image that ships today.
+
+**Why the URI relay is NOT the next commit, measured rather than assumed.**
+The obvious next step is flipping `host_fetch_deferred(kind, id, …)` to
+`host_fetch_deferred(uri, …)`. It is the wrong next step, for a reason that
+only appears when you look:
+
+- The v3 host-walked manifest, which seemed to be the obstacle, is not a
+  production feature. **No TypeScript host calls `kernel_rootfs_load_manifest`
+  at all** — browser and Node both go through `kernel_rootfs_load_image`, and
+  the only caller in the tree is `crates/host-native`, the native reference
+  host used in tests.
+- The real obstacle is `KLZY`, which is what ships. `host/src/vfs/memory-fs.ts`
+  emits `KLZY` plus host-side JSON, and `KLZY` has no field for a URL. So a
+  deferred file from a shipped image reaches the kernel with no address, and
+  the host's id-keyed JSON table is the only thing that can resolve it.
+
+That table is the second author, and it exists **because the producer never
+gave the kernel an address**. Flipping the import first would relay an empty
+string for every file in every image we ship. So the order is: wire the
+producer to emit SDEF v5 with the URI and digest, THEN flip the import.
+
+**Producer wiring, decided inside the lane.** The URI and digest go on
+`sm_register_lazy_file` as parameters rather than onto a new
+`sm_declare_archive_source` entry point. `sffsModuleEntryPoints` has a ceiling
+of 22 with slack 0, so a new entry point breaches the budget while extra
+parameters on an existing one do not — and the call already carries the
+archive's length and cohort declaration on exactly that argument, with the code
+comment beside it making this same case. The TypeScript builders already hold
+both values: `reduceLazyArchiveGroups` reads `group.integrity?.bytes` and
+discards `integrity.sha256` today.
+
+
 ## Acceptance evidence
 
 Unattributed failures reach **0**, with the attribution written down rather
