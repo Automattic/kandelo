@@ -1,17 +1,21 @@
 //! Decoder for the fork exact-tag exception codec descriptor
 //! (`kandelo.wpk_fork.exception_codec`).
 //!
-//! Ported from `readForkExceptionCodecDescriptor` in
-//! `host/src/fork-exception-provider.ts`. The wire format is emitted by the Rust
+//! Ported from `readForkExceptionCodecDescriptor`, which lived in
+//! `host/src/fork-exception-provider.ts` and no longer exists: this is the only
+//! decoder of the section now. The wire format is emitted by the Rust
 //! instrumenter (`fork_instrument::module_exception_codec`, specifically its
 //! `replace_descriptor`, reached through `module_exception_codec::inject`) into
 //! the `kandelo.wpk_fork.exception_codec` custom section; its structural
 //! constants live in `crates/shared/src/lib.rs` (`WPK_FORK_EXCEPTION_CODEC_*`).
-//! The host runtime only DECODES this section — there is no TypeScript encoder —
-//! so the committed cross-language fixture is emitted by the REAL Rust encoder
-//! (see `crates/fork-codec/tests/gen_exception_codec_fixture.rs`) and
-//! cross-checked by the real host decoder
-//! (`testdata/gen-exception-codec-fixture.mts`).
+//! The committed fixture is emitted by the REAL Rust encoder (see
+//! `crates/fork-codec/tests/gen_exception_codec_fixture.rs`). It USED to be
+//! cross-checked by a host TypeScript decoder as well; that decoder
+//! (`readForkExceptionCodecDescriptor`) is gone, and so is the `.mts` half of
+//! the drift guard. The guard is not weakened so much as emptied: it compared
+//! two implementations of one wire format, and there is one now — this file,
+//! which the module reads the section through
+//! (`fm_set_activation_exception_codec`).
 //!
 //! Layout recap (all little-endian):
 //!
@@ -46,6 +50,15 @@
 //! `ForkWorkerLocalImportExceptionNormalizer`, which own live thrown values and
 //! session state). Those materialize live exceptions; this decoder reproduces
 //! only the descriptor IMAGE and its structural invariants.
+//!
+//! UPDATE 2026-09-14: most of that list resolved, and not by being rewritten.
+//! `forkExceptionProviderFromInstance` had no caller left once the module drove
+//! `__wpk_fork_exception_materialize` through its drive table, and the broker's
+//! catch-and-reprobe half is served by the module's
+//! `__wpk_fork_ref_exn_broker_encode`, which refuses it with `EOPNOTSUPP`. What
+//! remains in TypeScript is `host/src/fork-exception-broker.ts`: re-throwing a
+//! recipe through the OWNING activation's exported thrower, the owner read from
+//! this crate's decoded graph.
 
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::abi;
@@ -112,8 +125,7 @@ fn r_u32(bytes: &[u8], off: u64) -> Result<u32, Errno> {
 /// ordered, fully validated tag catalog. Any framing or consistency violation
 /// yields `Err(Errno::EINVAL)`; the function never panics.
 ///
-/// Mirrors `readForkExceptionCodecDescriptor` in
-/// `host/src/fork-exception-provider.ts`.
+/// Was `readForkExceptionCodecDescriptor`; that host decoder is gone.
 pub fn decode_exception_codec(bytes: &[u8]) -> Result<ForkExceptionCodec, Errno> {
     if bytes.len() < HEADER_SIZE as usize {
         return Err(Errno::EINVAL); // truncated header
@@ -171,11 +183,9 @@ mod tests {
 
     /// Bytes are the `kandelo.wpk_fork.exception_codec` section emitted by the
     /// REAL Rust instrumenter over a real three-tag module, via
-    /// `crates/fork-codec/tests/gen_exception_codec_fixture.rs`. The same
-    /// committed bytes are decoded field-for-field by the REAL host TypeScript
-    /// decoder in `crates/fork-codec/testdata/gen-exception-codec-fixture.mts`;
-    /// if the encoder and either decoder ever disagree on the wire format, that
-    /// oracle and this test catch the drift.
+    /// `crates/fork-codec/tests/gen_exception_codec_fixture.rs`. This test is
+    /// now the only decoder asserting against them: the host TypeScript decoder
+    /// that used to do the same was deleted with the exception provider.
     const FIXTURE: &[u8] = include_bytes!("../testdata/exception-codec-wasm32.bin");
 
     fn tag(

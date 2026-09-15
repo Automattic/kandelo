@@ -8519,3 +8519,84 @@ only by `encodeFromSlot`, whose guest import the module deliberately refuses wit
 `EOPNOTSUPP` because routing a foreign exception needs the capture-side drive
 that is F3's. Porting it means honouring that boundary, not inventing one.
 
+---
+
+## §174 -- The exception port: 507 attic lines, 190 host lines, no new entry
+
+The maintainer's ruling on §159 was a question -- "Is this something that needs
+to work? If so, why not port it?" -- and the answer is that almost none of it
+needed porting. `attic/fork-typescript-do-not-use/fork-exception-provider.ts` is
+507 lines. What replaces it is `host/src/fork-exception-broker.ts`, 190 lines of
+which more than half are the argument for why the rest is gone.
+
+**What evaporated, and to where.**
+
+| what | where it went |
+|---|---|
+| `encodeFromSlot` + the probe stack + the ingress token allocator | the module serves `__wpk_fork_ref_exn_broker_encode` and refuses it with `EOPNOTSUPP`; an `exnref` cannot cross into a JS import, so the host could never have inspected one either |
+| `readForkExceptionCodecDescriptor` (~70 lines of section parsing) | the module reads `kandelo.wpk_fork.exception_codec` itself, seeded by `fm_set_activation_exception_codec`, and gates admission on it |
+| `forkExceptionProviderFromInstance`'s seven wrapped exports | `__wpk_fork_exception_materialize` is drive slot 2; encode/decode are the guest's own generated code; `throw_slot` had no caller left |
+| `buildForkExceptionImports` (13 imports) | every one is module-served or a member of `fork-guest-host-floor` |
+
+**What is irreducibly here.** One question -- which activation owns this recipe
+-- and one act: calling activation B's exported thrower from inside activation
+A's import frame, so the exception re-enters wasm with B's tag rather than as a
+foreign JavaScript throw (§109). The owner is NOT the host's to remember: it is
+`module_activation` on the recipe's node in the graph the module decoded, read
+through `fm_decoded_node_field`. §173 established the last missing piece -- that
+a PARENT can make its own sealed graph resident to ask -- and there is a test
+for it. **No new entry: 56 stays 56.**
+
+**Decoding is invalidated, not repeated.** `decode_reference_graph_impl` calls
+`abandon_resident`, which drops the previous graph WITHOUT freeing it (a COW
+child inherits one it must not drop). Decoding per throw would therefore leak
+per throw, and decoding per fork would charge every fork for a path most never
+take. So the broker caches the decode and the host calls `invalidate()` at the
+two moments a new graph exists: after the parent's seal, and before a child
+attaches. That is an O(1) flag on the fork path.
+
+**One honest boundary stays.** A JavaScript exception no activation's codec
+claims is recorded with owner `0xffff_ffff`, which is above `i32::MAX`, so
+`fm_decoded_node_field` answers `EINVAL` for it. Materializing one needs that
+node's externref payload edge, and no `fm_*` entry exposes a node's edges. The
+broker says exactly that rather than inventing a value.
+
+**A finding, not fixed: nothing clears the guest exception codecs.** The attic
+registry called `activation.exceptionProvider.clear()` at the end of a child's
+reference replay (`fork-activation-registry.ts:1666`). In the module path
+`__wpk_fork_ref_exn_clear` and `__wpk_fork_ref_exn_abort` have no caller
+anywhere -- not in `crates/`, not in `host/src`, not in the instrumenter. A
+child replays once, so the immediate case is benign; a child that later forks
+carries its install-time recipe cache into its own capture. Reported here rather
+than fixed, because the fix is a drive slot and slots are the module's to
+allocate.
+
+**The endgame this is not.** The module already serves one of this family's
+guest imports. It could serve `__wpk_fork_ref_exn_broker_throw_recipe` too: bind
+each guest's `__wpk_fork_ref_exn_throw_recipe` to a drive slot and
+`call_indirect` it, and the raised exception propagates out through the module
+to the calling guest's frame exactly as it now propagates through the JS import
+frame. The owner lookup is already inside the module. That would delete this
+file and two `fork-guest-host-floor` members and costs a drive slot plus
+injector routing, not an `fm_*` entry. It is not done here because §109 records
+the maintainer deferring the exception floor to last, and because this stride's
+job is the nine imports.
+
+**The baseline caught a fix nobody claimed.** Running the suite after this port,
+the ratchet failed in the UNBANKED direction on `test/browser-kernel.test.ts`.
+It is not this commit's doing: that file imports `../src/browser-fork-module-`
+`artifact` directly, and `9220bf579` restored it on the maintainer's §162
+ruling without banking the baseline in the same commit. Run alone it passes 43
+tests, so it is a real pass rather than a wholly-skipped file reading as green --
+which the runner explicitly cannot tell apart, and which is why it was checked.
+Banked here. A fix sitting unclaimed in the baseline is free cover for the next
+regression, which is the whole reason the ratchet fails in both directions.
+
+Two orphans went with the provider, both deletions rather than ports.
+`host/test/fork-exception-provider.test.ts` (355 lines) tested the probe and
+ingress machinery the module now refuses. `crates/fork-codec/testdata/gen-`
+`exception-codec-fixture.mts` was the TypeScript half of a cross-language drift
+guard; with `readForkExceptionCodecDescriptor` gone there is one decoder of that
+section, so the guard had nothing left to compare. The Rust doc comments that
+named both were corrected rather than left pointing at files that do not exist.
+

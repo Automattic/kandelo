@@ -56,7 +56,8 @@ export interface ForkGuestHostFloorDeps {
    *
    * Lazy because the exports do not exist when the import object is built: the
    * instance that owns them is created FROM that object. The caller resolves it
-   * after registration, exactly as `fork-exception-provider` does.
+   * after registration; `host/src/fork-exception-broker.ts` is what it resolves
+   * to in production.
    */
   readonly exceptionThrower?: () => ForkGuestExceptionThrower;
 }
@@ -97,20 +98,20 @@ export function createForkGuestHostFloor(
       return value;
     },
 
-    // NOT IMPLEMENTED HERE, and the reason is narrower than it once said.
+    // DELEGATED, not implemented here, and the delegate is the point.
     //
     // This file used to claim these two "must re-enter wasm THROWING a tagged
     // exception, which a JavaScript import cannot do". The first half is true
     // and the conclusion was wrong. A JS `throw` does cross back as a foreign
     // exception with the wrong tag -- but the host import does not have to
-    // throw. `fork-exception-provider` in the attic implements both by CALLING
-    // A GUEST EXPORT that throws (`FORK_EXCEPTION_THROW_RECIPE_EXPORT`), and
-    // wasm raising its own tagged exception is exactly right.
+    // throw. It can CALL A GUEST EXPORT that throws, and wasm raising its own
+    // tagged exception is exactly right.
     //
-    // So these are implementable, and by the same route the module could serve
-    // them: it already calls guest exports through `__wpk_fork_drive_table`.
-    // They stay unimplemented because the MAINTAINER deferred them to last, not
-    // because they cannot be done. See census section 109.
+    // `host/src/fork-exception-broker.ts` does that now: it reads which
+    // activation owns the recipe out of the module's decoded graph and calls
+    // that activation's `__wpk_fork_ref_exn_throw_recipe`. The refusals below
+    // are reached only with no thrower bound. The same route is open to the
+    // MODULE, which would delete both members; census 174 states its shape.
     __wpk_fork_ref_exn_ingress_throw(token: number): void {
       deps.exceptionThrower?.().throwIngress(token);
       // Only reachable with no thrower bound, or if one returned without

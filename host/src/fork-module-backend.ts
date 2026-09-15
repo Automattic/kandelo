@@ -706,6 +706,22 @@ export class ForkModuleContinuationBackend {
     this.call("fm_decode_reference_graph", moduleStateRoot);
   }
 
+  /**
+   * The root of the KFMS arena THIS module built, or 0 when it built none.
+   *
+   * `fm_module_state_arena` operation 0 (ROOT). Zero is the ordinary answer on
+   * a fork child before its own first capture: the arena it reads was mapped by
+   * its parent and adopted by nobody, so the module has no root of its own and
+   * the caller must use the inherited one.
+   */
+  moduleStateArenaRoot(): number {
+    const read = this.exports.fm_module_state_arena as
+      (op: number, arg: number) => bigint;
+    const root = Number(read(0, 0));
+    if (root < 0) throw new Error(`${this.label}: arena refused ROOT`);
+    return root;
+  }
+
   decodedNodeCount(): number {
     return this.call("fm_decoded_node_count");
   }

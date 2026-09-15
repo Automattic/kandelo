@@ -136,11 +136,7 @@ import {
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
 import { createForkGuestHostFloor } from "./fork-guest-host-floor";
 import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
-import {
-  ForkExceptionBroker,
-  forkExceptionProviderFromInstance,
-  type ForkExceptionProvider,
-} from "./fork-exception-provider";
+import { ForkExceptionBroker } from "./fork-exception-broker";
 import { ForkEarlyChildReferenceProvider } from "./fork-early-reference-provider";
 import {
   decodeSegmentedForkReferenceTransaction,
@@ -906,7 +902,6 @@ function createProcessDylinkActivationOwner(
       let prepared = false;
       let registered = false;
       let released = false;
-      let exceptionProvider: ForkExceptionProvider | null = null;
       let importedStatePreparation: PreparedForkParentActivation | null = null;
       let childImportedStatePlanner: ForkImportedGlobalPlanner | null = null;
       let importedStateRegistered = false;
@@ -1068,10 +1063,6 @@ function createProcessDylinkActivationOwner(
               `${request.name}: child activation ${activationId} did not wrap its final imports`,
             );
           }
-          exceptionProvider = forkExceptionProviderFromInstance(
-            activationId,
-            instance,
-          );
           const typedReferenceProvider = forkGcCodecProviderFromInstance(
             activationId,
             request.module,
@@ -1082,7 +1073,6 @@ function createProcessDylinkActivationOwner(
             module: request.module,
             instance,
             templateId,
-            exceptionProvider,
             typedReferenceProvider,
           });
           options.registry.registerActivation(registration);
@@ -1144,12 +1134,6 @@ function createProcessDylinkActivationOwner(
               } catch (error) {
                 failure = error;
               }
-            } else {
-              try {
-                exceptionProvider?.abort();
-              } catch (error) {
-                failure = error;
-              }
             }
             if (!importedStateRegistered && importedStatePreparation) {
               try {
@@ -1161,7 +1145,6 @@ function createProcessDylinkActivationOwner(
           } finally {
             registered = false;
             prepared = false;
-            exceptionProvider = null;
             importedStatePreparation = null;
             childImportedStatePlanner = null;
             importedStateRegistered = false;
@@ -4031,14 +4014,27 @@ export async function centralizedWorkerMain(
           processTableReplication?.abort();
         },
       };
+      // Which arena's graph answers "who owns this exception recipe".
+      //
+      // The module's own root first, and the inherited one only as a fallback,
+      // because a fork CHILD that later forks has both: `childArena` still
+      // points at the arena it was installed from, and that graph is not the
+      // one its own capture just sealed. The module has no root of its own
+      // until it builds one, which is exactly the window where the inherited
+      // arena is the right answer.
+      const exceptionGraphRoot = (): number => {
+        const own = requireForkModuleBackend(
+          forkModuleBackend,
+          pid,
+        ).moduleStateArenaRoot();
+        if (own !== 0) return own;
+        return childArena ? Number(childArena.rootAddress()) : 0;
+      };
       const exceptionBroker = new ForkExceptionBroker(
-        activationRegistry,
+        () => requireForkModuleBackend(forkModuleBackend, pid),
+        () => forkActivations,
+        exceptionGraphRoot,
         `pid=${pid}: exception broker`,
-        () => earlyChildReferences ?? activationRegistry.currentReferences(),
-        (value) =>
-          processHostImportRuntime!.localExceptions.normalizeUnclaimedForkException(
-            value,
-          ),
       );
 
       // The process's host identity floor: the two things a JS host must do
@@ -4055,7 +4051,6 @@ export async function centralizedWorkerMain(
         },
         `pid=${pid}: fork host floor`,
       ).floor;
-      let mainExceptionProvider: ForkExceptionProvider | null = null;
       const registerChildReferenceActivation = (
         activationId: number,
         activationModule: WebAssembly.Module,
@@ -4115,7 +4110,6 @@ export async function centralizedWorkerMain(
               activationRegistry.decodeStaticRoot(activationId, ordinal),
           },
           typed: typedReferenceProvider,
-          exceptions: registration.exceptionProvider,
         });
       };
 
@@ -4801,7 +4795,6 @@ export async function centralizedWorkerMain(
         fixedPrefixSize: linkedFrameFormat.fixedPrefixSize,
       });
       mainImportedStatePreparation?.complete(instance);
-      mainExceptionProvider = forkExceptionProviderFromInstance(0, instance);
       const mainTypedReferenceProvider = forkGcCodecProviderFromInstance(
         0,
         module,
@@ -4812,7 +4805,6 @@ export async function centralizedWorkerMain(
         module,
         instance,
         templateId: mainTemplateId,
-        exceptionProvider: mainExceptionProvider,
         typedReferenceProvider: mainTypedReferenceProvider,
       });
       resumeTable.registerActivation(
@@ -4837,7 +4829,6 @@ export async function centralizedWorkerMain(
         } catch (error) {
           processTableReplication.abortActiveMutations();
           resumeTable.unregisterActivation(0);
-          mainExceptionProvider = null;
           throw error;
         }
       }
@@ -5134,6 +5125,7 @@ export async function centralizedWorkerMain(
         // `ModuleStateWriter::adopt` closes that; whether it was the ONLY thing
         // missing is what running this will say.
         adoptEarlyReferences();
+        exceptionBroker.invalidate();
         const installPlan = forkModule().attachChild(childArena.rootAddress(), pid);
         forkModule().driveRestoredPlan(installPlan);
         if (borrowedWorkspace) borrowedWorkspace.assertAttachComplete();
@@ -5258,6 +5250,11 @@ export async function centralizedWorkerMain(
               // demands. The returned image location is no longer the host's to
               // carry anywhere.
               forkModule().sealCaptureAndSerialize();
+              // The parent's own graph is now the one that answers an exnref
+              // recipe's owner during the replay below. Cheap: it only marks
+              // the broker's cached decode stale, so a fork that throws no
+              // exception decodes nothing.
+              exceptionBroker.invalidate();
             } catch (sealError) {
               // SEAL-TIME TRUTHFUL FAILURE (Phase 2 carry / Phase 4): the unwind
               // completed but the module could not channel-mmap the
@@ -6609,18 +6606,31 @@ export async function centralizedThreadWorkerMain(
     // The frame format is read where the fork-module is built, which is a
     // narrower block than the registration below.
     let threadFixedPrefixSize = 0;
-    const threadExceptionBroker = threadActivationRegistry
+    // Keyed on fork instrumentation rather than on the activation registry:
+    // that was always the real predicate (the registry is built from the same
+    // flag), and the broker no longer reads the registry for anything.
+    const threadExceptionBroker = hasForkInstrumentation
       ? new ForkExceptionBroker(
-          threadActivationRegistry,
+          () => requireForkModuleBackend(threadForkModuleBackend, pid),
+          () => {
+            if (!threadForkActivations) {
+              throw new Error(
+                `pid=${pid} tid=${tid}: exception broker ran before this ` +
+                  `thread registered any activation`,
+              );
+            }
+            return threadForkActivations;
+          },
+          // A pthread worker never installs a fork child, so its module's own
+          // arena is the only one it can be asked about.
+          () =>
+            requireForkModuleBackend(
+              threadForkModuleBackend,
+              pid,
+            ).moduleStateArenaRoot(),
           `pid=${pid} tid=${tid}: exception broker`,
-          undefined,
-          (value) =>
-            threadHostImportRuntime!.localExceptions.normalizeUnclaimedForkException(
-              value,
-            ),
         )
       : null;
-    let threadExceptionProvider: ForkExceptionProvider | null = null;
     // The fork-from-thread launch anchor, as two plain functions. They were
     // options on `prepareActivation`, whose other argument -- the continuation
     // whose entry points the module drives -- has no reader left.
@@ -7180,14 +7190,12 @@ export async function centralizedThreadWorkerMain(
           `pid=${pid} tid=${tid}: fork module is missing thread bootstrap`,
         );
       }
-      threadExceptionProvider = forkExceptionProviderFromInstance(0, instance);
       threadActivationRegistry.registerActivation(
         forkActivationRegistrationFromInstance({
           activationId: 0,
           module,
           instance,
           templateId: threadTemplateId,
-          exceptionProvider: threadExceptionProvider,
         }),
       );
       threadResumeTable.registerActivation(
@@ -7210,7 +7218,6 @@ export async function centralizedThreadWorkerMain(
         threadResumeTable.unregisterActivation(0);
         threadActivationRegistry.unregisterActivation(0);
         threadForkActivations?.forget(0);
-        threadExceptionProvider = null;
         throw error;
       }
     }
@@ -7331,6 +7338,7 @@ export async function centralizedThreadWorkerMain(
             // module-built arena needs no separate seal, because every chunk is
             // born SEALED and the first born ROOT.
             threadForkModule().sealCaptureAndSerialize();
+            threadExceptionBroker?.invalidate();
           } catch (sealError) {
             // SEAL-TIME TRUTHFUL FAILURE (fork-from-thread mirror of the main
             // run loop): the unwind completed but the module could not
