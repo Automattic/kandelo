@@ -186,7 +186,13 @@ export interface VfsImageFilesystem {
    * not here — only two recipes register one, and giving both operations one
    * name is what hid a missing capability in the bridge until it was measured.
    */
-  registerLazyFile(path: string, url: string, size: number, mode?: number): number;
+  /**
+   * `digestHex` is the SHA-256 the fetched bytes must hash to, as 64 hex
+   * characters. Optional because `KLZY` has no field for one, so
+   * `MemoryFileSystem` ignores it rather than failing — the image then says,
+   * truthfully, that it carries no digest.
+   */
+  registerLazyFile(path: string, url: string, size: number, mode?: number, digestHex?: string): number;
 
   /**
    * Free space and free inodes in the image, judged against a profile.

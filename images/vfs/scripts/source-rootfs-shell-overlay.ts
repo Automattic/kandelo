@@ -1,4 +1,5 @@
-import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import type { SffsImageFs } from "../lib/sffs-image-fs";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 import { symlink } from "../../../host/src/vfs/image-helpers";
@@ -39,11 +40,14 @@ export function populateSourceRootfsShellOverlay(
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (fs.getLazyEntry(spec.vfsPath) === null) {
       const source = resolveArtifact(spec.resolverPath, spec.id);
+      // Same reason as the shell builder: length alone never distinguished the
+      // right bytes from same-length wrong ones, and some of these run setuid.
       fs.registerLazyFile(
         spec.vfsPath,
         shellLazyPlaceholderUrl(spec),
         statSync(source).size,
         0o755,
+        createHash("sha256").update(readFileSync(source)).digest("hex"),
       );
     }
     for (const alias of spec.symlinks) {

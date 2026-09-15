@@ -40,9 +40,26 @@ export interface ModuleLazyEntries {
     size: number;
     archiveId: number;
     sourcePath: string;
-    descriptor: Uint8Array;
+    /** Where a standalone file's bytes are; empty for an archive member. */
+    uri: string;
+    digest: Uint8Array;
   }[];
-  archives: readonly { archiveId: number; bytes: number; descriptor: Uint8Array }[];
+  archives: readonly {
+    archiveId: number;
+    bytes: number;
+    descriptor: Uint8Array;
+    /** Where the archive is; the kernel relays it. */
+    uri: string;
+    /** What its bytes must hash to; 32 zero bytes when none was declared. */
+    digest: Uint8Array;
+  }[];
+}
+
+/** A 32-byte SHA-256 as hex: the image stores a value, the host speaks hex. */
+function bytesToSha256Hex(digest: Uint8Array): string {
+  let out = "";
+  for (const byte of digest) out += byte.toString(16).padStart(2, "0");
+  return out;
 }
 
 /**
@@ -193,8 +210,7 @@ export function createBaseImageFromContainer(
     exportLazyEntries: () => {
       if (fromModule !== undefined) {
         // `archiveId === 0` is the STANDALONE registration: no archive behind
-        // it, and the descriptor is the whole of what says where the bytes
-        // are — written as the raw URL, not as JSON.
+        // it, so `uri` is the whole of what says where the bytes are.
         return fromModule.files
           .filter((file) => file.archiveId === 0)
           .map((file) => ({
@@ -203,7 +219,7 @@ export function createBaseImageFromContainer(
             dataSequence: 1,
             path: file.path,
             paths: [file.path],
-            url: rebaseUrl(new TextDecoder().decode(file.descriptor)),
+            url: rebaseUrl(file.uri),
             size: file.size,
           })) as LazyFileEntry[];
       }
@@ -231,8 +247,20 @@ export function createBaseImageFromContainer(
           membersByArchive.set(file.archiveId, list);
         }
         return fromModule.archives.map((archive) => {
+          // Read as FIELDS, not parsed back out of the descriptor: they were
+          // in there only because the format had nowhere typed to put them, so
+          // this reader had to open a blob the format says nobody opens — on
+          // untrusted input, since an image can arrive from a shared link.
+          if (archive.uri === "") {
+            throw new Error(
+              `VFS image lazy archive ${archive.archiveId} declares no address, `
+                + "so there is nothing that says where its bytes come from.",
+            );
+          }
+          // `mountPrefix` stays parsed: the kernel genuinely never reads it,
+          // so it is the one field here that is the consumer's alone.
           const text = new TextDecoder().decode(unwrapSealPayload(archive.descriptor, archive.archiveId));
-          let described: { url?: unknown; mountPrefix?: unknown; sha256?: unknown };
+          let described: { mountPrefix?: unknown };
           try {
             described = JSON.parse(text) as typeof described;
           } catch {
@@ -241,23 +269,23 @@ export function createBaseImageFromContainer(
             // activates wrongly rather than not at all.
             throw new Error(
               `VFS image lazy archive ${archive.archiveId} has a descriptor this `
-                + "reader cannot parse, so its transports and mount prefix are unknown.",
+                + "reader cannot parse, so its mount prefix is unknown.",
             );
           }
-          if (typeof described.url !== "string" || typeof described.mountPrefix !== "string") {
+          if (typeof described.mountPrefix !== "string") {
             throw new Error(
-              `VFS image lazy archive ${archive.archiveId} declares no url or no `
-                + "mount prefix, and the mount prefix is written into the kernel's "
+              `VFS image lazy archive ${archive.archiveId} declares no mount `
+                + "prefix, and the mount prefix is written into the kernel's "
                 + "lazy manifest — it cannot be inferred from member paths.",
             );
           }
           return rebaseArchive({
             kind: "kandelo-legacy-zip-v1",
-            url: described.url,
+            url: archive.uri,
             mountPrefix: described.mountPrefix,
             materialized: false,
-            integrity: typeof described.sha256 === "string"
-              ? { sha256: described.sha256, bytes: archive.bytes }
+            integrity: archive.digest.length === 32 && archive.digest.some((b) => b !== 0)
+              ? { sha256: bytesToSha256Hex(archive.digest), bytes: archive.bytes }
               : undefined,
             entries: membersByArchive.get(archive.archiveId) ?? [],
           } as SerializedLazyArchiveEntry);

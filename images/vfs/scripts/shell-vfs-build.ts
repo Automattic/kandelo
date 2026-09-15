@@ -582,11 +582,17 @@ function populateLazyBinaries(
     if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
     const resolved = resolveArtifact(spec.resolverPath, spec.id);
     const size = statSync(resolved).size;
+    // Hashed from the artifact this line already opened to measure. Length was
+    // the only check these files had, and several of them ship setuid-root, so
+    // bytes of the same length from a substituting host or a poisoned cache
+    // executed as root inside the guest. The kernel refuses them now, but only
+    // because this says what they should have been.
     fs.registerLazyFile(
       spec.vfsPath,
       shellLazyPlaceholderUrl(spec),
       size,
       0o755,
+      createHash("sha256").update(readFileSync(resolved)).digest("hex"),
     );
   }
 }
