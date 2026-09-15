@@ -252,33 +252,6 @@ fn scalar_bits(value: &[u8]) -> Result<u64, Errno> {
     }
 }
 
-/// The activations this one must be instantiated after.
-///
-/// A provider's `WebAssembly.Global` or `Table` has to exist before a consumer
-/// can import it, so this is the edge set of the topological order the child
-/// instantiates in. Reference recipes are NOT here: which activation owns a
-/// recipe is a property of the decoded reference graph, not of the import
-/// records, and the caller adds those edges from the graph.
-pub fn plan_provider_dependencies(activation: u32, plan: &[ImportPlanEntry]) -> Vec<u32> {
-    let mut deps: Vec<u32> = Vec::new();
-    for entry in plan {
-        let provides = match entry.space {
-            IMPORT_SPACE_GLOBAL => {
-                entry.kind == abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
-            }
-            _ => entry.kind == abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE,
-        };
-        if !provides || entry.source_activation == activation {
-            continue;
-        }
-        if !deps.contains(&entry.source_activation) {
-            deps.push(entry.source_activation);
-        }
-    }
-    deps.sort_unstable();
-    deps
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,40 +528,6 @@ mod tests {
                 }],
             ),
             Err(Errno::EINVAL)
-        );
-    }
-
-    #[test]
-    fn provider_dependencies_drop_self_edges_and_duplicates() {
-        let mut a = ImportPlanEntry {
-            import_ordinal: 0,
-            space: IMPORT_SPACE_GLOBAL,
-            kind: ACTIVATION_GLOBAL,
-            type_code: I32,
-            flags: 0,
-            bits: 0,
-            source_activation: 3,
-            source_owner: 0,
-        };
-        let mut b = a;
-        b.import_ordinal = 1;
-        b.source_activation = 3; // the same provider twice
-        let mut own = a;
-        own.import_ordinal = 2;
-        own.source_activation = 1; // itself
-        let mut raw = a;
-        raw.import_ordinal = 3;
-        raw.kind = RAW_NUMBER;
-        raw.source_activation = 9; // not a provider: must not become an edge
-        let mut t = a;
-        t.import_ordinal = 4;
-        t.space = IMPORT_SPACE_TABLE;
-        t.kind = ACTIVATION_TABLE;
-        t.source_activation = 2;
-        a.source_activation = 3;
-        assert_eq!(
-            plan_provider_dependencies(1, &[a, b, own, raw, t]),
-            vec![2, 3]
         );
     }
 }

@@ -162,7 +162,7 @@ import {
 } from "./fork-import-identity";
 import { ForkActivations } from "./fork-activations";
 import { ForkTableStateOwners } from "./fork-table-state-owners";
-import { ForkImportedGlobalPlanner } from "./fork-imported-globals";
+import { ForkChildImports } from "./fork-child-imports";
 import {
   checkedWasmGuestPointerOffset,
   type WasmGuestPointer,
@@ -793,7 +793,7 @@ interface ProcessDylinkActivationOwnerOptions {
    * the actual side-module instantiation boundary to break that construction
    * cycle without permitting a side activation to instantiate unplanned.
    */
-  readonly importedStatePlanner?: () => ForkImportedGlobalPlanner | null;
+  readonly importedStatePlanner?: () => ForkChildImports | null;
   readonly registerChildReferenceActivation?: (
     activationId: number,
     module: WebAssembly.Module,
@@ -903,7 +903,7 @@ function createProcessDylinkActivationOwner(
       let registered = false;
       let released = false;
       let importedStatePreparation: PreparedForkParentActivation | null = null;
-      let childImportedStatePlanner: ForkImportedGlobalPlanner | null = null;
+      let childImportedStatePlanner: ForkChildImports | null = null;
       let importedStateRegistered = false;
       let importsWrapped = false;
       // The co-resident Rust module owns all linked frames, journal and resume
@@ -3944,7 +3944,7 @@ export async function centralizedWorkerMain(
           ).setActivationTableStateOwner(activationId, ownerId, owns),
         ),
       );
-      let importedStatePlanner: ForkImportedGlobalPlanner | null = null;
+      let importedStatePlanner: ForkChildImports | null = null;
       let earlyChildReferences: ForkEarlyChildReferenceProvider | null = null;
       let decodedChildReferences: DecodedSegmentedForkReferenceTransaction | null =
         null;
@@ -4624,9 +4624,11 @@ export async function centralizedWorkerMain(
           },
           label: `pid=${pid}: early child references`,
         });
-        importedStatePlanner = new ForkImportedGlobalPlanner(
-          records,
+        importedStatePlanner = new ForkChildImports(
+          requireForkModuleBackend(forkModuleBackend, pid),
+          importedStateCapture,
           modules,
+          childArena.rootAddress(),
           earlyChildReferences,
           `pid=${pid}: child imported activation state`,
         );
@@ -4873,16 +4875,14 @@ export async function centralizedWorkerMain(
             `pid=${pid}: fork child lost its pre-instantiation reference plan`,
           );
         }
-        importedStatePlanner.bindTableDirtyTrackers(
-          new Map(
-            activationRegistry
-              .activations()
-              .map((activation) => [
-                activation.activationId,
-                activation.tableDirty,
-              ]),
-          ),
-        );
+        // WHAT USED TO BE HERE: `bindTableDirtyTrackers`, joining the child's
+        // per-activation table journals so aliases of one physical table shared
+        // a tracker. It is not ported, because both halves of it have moved.
+        // The dirty-page journal is the module's
+        // (`__wpk_fork_module_state_table_dirty_*`), and deciding WHICH
+        // coordinate of an aliased table writes sparse state is exactly what
+        // `ForkTableStateOwners` does -- by comparing table object identity,
+        // the part of it that genuinely cannot leave the host. See census 157.
         const early = earlyChildReferences;
         const adoptEarlyReferences = (): void => {
           early.adoptInto(activationRegistry.currentReferences());

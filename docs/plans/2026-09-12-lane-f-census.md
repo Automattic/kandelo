@@ -122,6 +122,37 @@ actually say"). D1 was nearly lost to exactly this: a chip reading "restore the
 chain first" carried forward over prose in the same batch that said delete and
 fix forward.
 
+### D7 — OPEN DEFECT: nothing clears the guest exception codecs
+
+**Carried here so it is not lost in the log.** Found 2026-09-14 while porting the
+exception broker (section 174), reported to the maintainer, NOT fixed.
+
+`__wpk_fork_ref_exn_clear` and `__wpk_fork_ref_exn_abort` are guest exports that
+reset one activation's exact-tag exception codec — its recipe-id to `exnref`
+cache. In the module path **they have no caller anywhere**: not in `crates/`,
+not in `host/src`, not in `crates/fork-instrument`. Reproduce with
+`grep -rn "exn_clear\|exn_abort" crates host/src` — the only hits are the two
+name constants.
+
+The attic registry called them, at the end of a child's reference replay
+(`attic/fork-typescript-do-not-use/fork-activation-registry.ts:1666`), and the
+call went when the registry did.
+
+**Why it is benign today and not tomorrow.** A child replays exactly once, so
+its codec cache is built once and never reused against a second graph. But a
+fork child that LATER FORKS carries that install-time cache into its own
+capture, where recipe ids are assigned afresh from a new graph. The two
+numberings are unrelated, so a stale hit returns the wrong exception object.
+Nothing detects that; it is a wrong value, not a trap.
+
+**What the fix is.** A drive slot, not a host call: the module drives every
+other per-activation guest entry point through `__wpk_fork_drive_table`, and
+this belongs beside `wpk_fork_abort_end`. Slots are the module's to allocate, so
+this is a module change plus one line in `FORK_ACTIVATION_DRIVE_BINDINGS`. It is
+not in this lane's nine-import stride, and it must not be closed by having the
+host call the export directly — that would add host surface to work around a
+missing slot.
+
 ### D6 — Ledger: provisional ceiling raises awaiting a ruling
 
 All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
@@ -8706,4 +8737,59 @@ over the whole-activation-set cycle check the TypeScript planner did, which is
 the better home but needs every activation's sections seeded at attach. The
 host-planner increment picks one and deletes the loser -- shipping an unused
 function past that point would be exactly the dead surface this lane removes.
+
+---
+
+## §177 -- The child planner lands, and what the host kept
+
+`host/src/fork-child-imports.ts` replaces `ForkImportedGlobalPlanner`, and
+`worker-main.ts` stops importing `fork-imported-globals`: **six attic imports
+left of the nine this stride started with.**
+
+**What the host kept, and why each is not a choice.**
+
+| kept | why it cannot move |
+|---|---|
+| assembling the import object | an import object is a JavaScript object carrying `WebAssembly.Global`/`Table` values |
+| the per-namespace recording Proxy | a repeated `(module, name)` is answered by POSITION -- the Nth read binds the Nth ordinal -- and reads are observable nowhere else |
+| `references.materialize` | the one engine floor the 2026-09-03 probe could not move |
+| reading `__wpk_fork_global_N` off a provider | needs the instance, which the module cannot hold |
+| the topological order | provider edges come from the plan, but a raw reference's edges come from the decoded reference graph, and only the host has both |
+
+**What went.** Matching declarations to binding records; cross-checking their
+types; the five-arm kind analysis; the saved-snapshot hunt; the
+missing-binding/unknown-declaration accounting. All of it is
+`fork_codec::child_import_plan` now.
+
+**A defect this rewrite introduced and the tests caught.** The first draft
+resolved EVERY planned row, including `BASE_IMPORT` -- which is a decision not
+to override. Resolving one throws ("nothing to resolve to"), and overriding it
+would take the dylink GOT cell away from the loader that owns it. The fix is
+three lines and a test; the lesson is that "the module planned it" and "the host
+must supply it" are different statements, and the plan carries both.
+
+**`bindTableDirtyTrackers` is not ported.** It joined a child's per-activation
+table journals so that aliases of one physical table shared a tracker. Both
+halves of it have moved: the dirty-page journal is the module's
+(`__wpk_fork_module_state_table_dirty_*`), and deciding WHICH coordinate of an
+aliased table writes sparse state is what `ForkTableStateOwners` already does,
+by comparing table object identity -- the part that genuinely cannot leave the
+host. Census 157.
+
+**`plan_provider_dependencies` is deleted**, as §176 said one of its two
+candidates would be. The host derives the edges from the plan's `KIND` and
+`SOURCE_ACTIVATION` fields because it must merge the reference-graph edges in
+anyway, so the Rust helper had no caller and was never going to get one.
+
+**The section seed moved earlier, and is now idempotent.**
+`ForkImportIdentity.seedActivationSections` is called by the child planner at
+construction and by `prepareActivation` at instantiation; the module refuses a
+re-seed with `EINVAL`, so the second caller has to be the one that does nothing.
+This is the sequencing constraint §175 predicted, and it cost a `Set` rather
+than an entry.
+
+**Budget.** `forkAtticImports` 7 -> 6. `forkPlatformTypeScript` rises for the
+new file, which is the same structural report as §174: the 468 attic lines it
+replaces are measured by nothing, so a net deletion reads as growth. That is
+now the fourth time this surface has been reported past its target of 500.
 
