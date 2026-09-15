@@ -1078,11 +1078,13 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     // declared no digest. A LENGTH here would let a caller pass a truncated
     // hash and have it read as a short-but-present one, which is the shape
     // `digest_from` refuses for the same reason.
-    let digest: &[u8] = if archive_digest_ptr == 0 {
-        b""
-    } else {
-        unsafe { slice(archive_digest_ptr, runtime_core::sffs_deferred::DIGEST_LEN) }
-    };
+    //
+    // No null check of its own: `slice` already returns an empty slice for a
+    // null pointer, and `digest_from` already reads empty as "none declared".
+    // A second check here looked necessary and was not — perturbation proved
+    // it, by deleting it and changing nothing.
+    let digest: &[u8] =
+        unsafe { slice(archive_digest_ptr, runtime_core::sffs_deferred::DIGEST_LEN) };
     // `archive_id == 0` is a file fetched STANDALONE — no archive behind it, so
     // nothing to declare, and the payload belongs to the FILE rather than to an
     // archive. That case was unreachable through this entry point until now,
