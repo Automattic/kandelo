@@ -1923,6 +1923,87 @@ mod wasm {
         Ok(())
     }
 
+    /// Write the `ActivationContinuations` (KFAC) manifest: every activation's
+    /// id and the guest offset of its continuation root.
+    ///
+    /// **Without this a multi-activation child cannot be seeded at all.** A
+    /// child reads the launch anchor to find ACTIVATION 0's root, and nothing
+    /// anywhere else says where a SIDE activation's continuation begins -- it is
+    /// a per-fork address, not a static property of the loaded module. The JS
+    /// coordinator wrote this record at seal
+    /// (`arena.appendActivationContinuations`) and read it back on the child
+    /// (`activationRootsFromChildArena`); the write went with the coordinator
+    /// and nothing replaced it, so the record kind has been defined and unused
+    /// since. Census 183.
+    ///
+    /// A single-activation capture writes nothing, exactly as before: the child
+    /// reads the launch anchor, and a manifest would only repeat it.
+    fn write_activation_continuations() -> Result<(), Errno> {
+        if !module_owns_arena_now() {
+            return Ok(());
+        }
+        let roots: Vec<(u32, u64)> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations
+                .iter()
+                .map(|(id, act)| (*id, act.module_buffer))
+                .collect()
+        };
+        if roots.len() < 2 {
+            return Ok(());
+        }
+        let header = u64::from(abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE);
+        let entry = u64::from(abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE);
+        let count = u32::try_from(roots.len()).map_err(|_| Errno::EINVAL)?;
+        let size = header
+            .checked_add(entry.checked_mul(roots.len() as u64).ok_or(Errno::EINVAL)?)
+            .ok_or(Errno::EINVAL)?;
+
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = st;
+        let payload = module_state.reserve(
+            module_state_chunks,
+            mem,
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS,
+            0,
+            abi::WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER,
+            size,
+        )?;
+        let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+        let bytes = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        let out: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(core::hint::black_box(start) as *mut u8, bytes)
+        };
+        out.fill(0);
+        out[0..4].copy_from_slice(&abi::WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC);
+        out[4..6]
+            .copy_from_slice(&abi::WPK_FORK_ACTIVATION_CONTINUATIONS_VERSION.to_le_bytes());
+        out[6..8].copy_from_slice(
+            &abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE.to_le_bytes(),
+        );
+        out[8..10].copy_from_slice(
+            &abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE.to_le_bytes(),
+        );
+        out[12..16].copy_from_slice(&count.to_le_bytes());
+        let header_bytes = usize::try_from(header).map_err(|_| Errno::EINVAL)?;
+        let entry_bytes = usize::try_from(entry).map_err(|_| Errno::EINVAL)?;
+        for (index, (id, root)) in roots.iter().enumerate() {
+            let at = header_bytes + index * entry_bytes;
+            out[at..at + 4].copy_from_slice(&id.to_le_bytes());
+            out[at + 8..at + 16].copy_from_slice(&root.to_le_bytes());
+        }
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem = unsafe { mem_mut() };
+        st.module_state.commit(mem, payload)?;
+        Ok(())
+    }
+
     fn seal_capture_impl(channel_base: u64) -> Result<u64, Errno> {
         let plan = build_seal_plan_impl()?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
@@ -1936,6 +2017,9 @@ mod wasm {
         // edge bounds) and fails loud on any fault.
         capture_builder()?.validate()?;
         write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
+        // Where each activation's continuation begins, for a child that has
+        // more than one and so cannot read them all off the launch anchor.
+        write_activation_continuations()?;
         let image = serialize_journal_alloc_impl(channel_base)?;
         // Announce where the image landed, in the arena, as the child reads it.
         //

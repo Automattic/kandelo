@@ -9180,3 +9180,38 @@ This lane wired the drive up. So the obligation is ours.
 `fm_child_seed` (here). Deleting a 1,471-line coordinator removed a lot of
 calls whose absence nothing could report.
 
+---
+
+## §184 -- The parent writes the manifest a multi-activation child needs
+
+Census 183 left one open question rather than guessing at it: where does a SIDE
+activation's inherited continuation root come from on the child? Reading the
+deleted coordinator answered it.
+
+**It is a per-fork address, and only the parent can record it.** Activation 0's
+root is the launch anchor, which the child already reads. A side activation's is
+not a static property of its loaded module and appears in no other record. The
+JS coordinator wrote an `ActivationContinuations` manifest at seal
+(`arena.appendActivationContinuations`, guarded on `activations.length > 1`) and
+read it back on the child (`activationRootsFromChildArena`).
+
+**That write went with the host arena and nothing replaced it.** Record kind 10
+is defined in `crates/shared` -- magic `KFAC`, version 1, a 24-byte header, and
+16-byte entries of `(activation_id, flags, root)` -- and until now NOTHING in
+the repository wrote one. The module does, at seal, from roots it already holds
+in `st.activations`.
+
+**A single-activation capture still writes nothing**, which is the same rule the
+coordinator had and worth keeping for the same reason: the child reads the
+launch anchor there, so a manifest would be a record repeating what the anchor
+says, in every ordinary fork's arena, for nobody.
+
+**What remains for a child to install.** The host must call `fm_child_seed`
+before `fm_attach_child`. Its sides list is 16-byte
+`(id, fixed_prefix, root_lo, root_hi)` records, and the split is now clear: the
+host knows `fixed_prefix` (a static property of the side module it loaded) and
+CANNOT know `root` (a per-fork address the module recorded). The intended shape
+is therefore that the host passes 0 for the root and the module resolves it from
+the manifest it wrote -- no new entry, no format change, and the one field each
+side genuinely owns.
+

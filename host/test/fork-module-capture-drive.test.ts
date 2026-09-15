@@ -313,6 +313,90 @@ describe("capture begin, driven through a serviced channel", () => {
     ).toEqual([0, 1]);
   });
 
+  it("records where every activation's continuation begins, for the child", () => {
+    // A child reads the launch anchor to find activation 0's continuation, and
+    // nothing else says where a SIDE activation's begins -- it is a per-fork
+    // address, not a static property of the loaded module. The JS coordinator
+    // wrote this manifest at seal and read it back on the child; the write went
+    // with the coordinator and the record kind sat defined and unused. Without
+    // it a multi-activation child cannot be seeded at all. Census 183.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedTemplateId(f, 1, 2048);
+    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sides = new DataView(f.memory.buffer);
+    sides.setUint32(sidesPtr, 1, true);
+    sides.setUint32(sidesPtr + 4, 0, true);
+    for (const activation of [0, 1]) {
+      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+      if (f.instance.driveTable.length < needed) {
+        f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+      }
+      for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
+        f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
+      }
+      // `wpk_fork_unwind_end()` takes no activation id, so it needs a thunk of
+      // its own shape; a mismatched one is a signature trap, not a no-op.
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_UNWIND_END,
+        voidSlotThunk(() => {}) as never,
+      );
+    }
+    (f.x.fm_capture_begin as () => void)();
+    const act0Root = (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+      sidesPtr,
+      1,
+    );
+    expect(f.errno(), "a two-activation capture begins").toBe(0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "and seals").toBe(0);
+
+    const manifest = arenaRecords(f.memory, f.arena(ARENA_ROOT)).find(
+      (r) => r.kind === RECORD_KIND_ACTIVATION_CONTINUATIONS,
+    );
+    expect(manifest, "the seal writes a KFAC manifest").toBeDefined();
+    const p = manifest!.payload;
+    expect(
+      String.fromCharCode(p.getUint8(0), p.getUint8(1), p.getUint8(2), p.getUint8(3)),
+      "magic",
+    ).toBe("KFAC");
+    expect(p.getUint32(12, true), "one entry per activation").toBe(2);
+    const header = p.getUint16(6, true);
+    const entry = p.getUint16(8, true);
+    const seen = new Map<number, number>();
+    for (let i = 0; i < 2; i += 1) {
+      const at = header + i * entry;
+      seen.set(p.getUint32(at, true), Number(p.getBigUint64(at + 8, true)));
+    }
+    expect([...seen.keys()].sort(), "both activations").toEqual([0, 1]);
+    expect(seen.get(0), "activation 0's root is the one begin returned").toBe(
+      act0Root,
+    );
+    expect(seen.get(1), "and the side activation has one of its own")
+      .toBeGreaterThan(0);
+    expect(seen.get(1), "distinct from activation 0's").not.toBe(act0Root);
+  });
+
+  it("writes no manifest for a single-activation capture", () => {
+    // The child reads the launch anchor for activation 0; a manifest would only
+    // repeat it, and writing one would put a record in every ordinary fork's
+    // arena for nobody.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "seal").toBe(0);
+    expect(
+      arenaRecords(f.memory, f.arena(ARENA_ROOT)).some(
+        (r) => r.kind === RECORD_KIND_ACTIVATION_CONTINUATIONS,
+      ),
+    ).toBe(false);
+  });
+
   it("does not build an arena when the caller supplies one", () => {
     // The section 142 bug, now reachable. Reserving into a rootless writer does
     // not fail -- it starts a second arena on the same channel that nothing
@@ -588,6 +672,7 @@ const RECORD_HEADER_SIZE = 24;
 const CHUNK_HEADER_SIZE_32 = 40;
 /** The KFMS record kind a `Module` declaration uses. */
 const RECORD_KIND_MODULE = 1;
+const RECORD_KIND_ACTIVATION_CONTINUATIONS = 10;
 const RECORD_KIND_IMPORTED_GLOBAL_BINDINGS = 9;
 const RECORD_KIND_IMPORTED_TABLE_BINDINGS = 11;
 const RECORD_KIND_MUTABLE_GLOBAL = 3;
@@ -710,6 +795,27 @@ function saveSlotThunk(body: (activation: number) => void): CallableFunction {
       { env: { save: body } },
     );
     return instance.exports.save as CallableFunction;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** A `() -> ()` wasm function, for drive slots called with no argument. */
+function voidSlotThunk(body: () => void): CallableFunction {
+  const directory = mkdtempSync(join(tmpdir(), "fork-void-slot-"));
+  try {
+    const watPath = join(directory, "v.wat");
+    const wasmPath = join(directory, "v.wasm");
+    writeFileSync(
+      watPath,
+      '(module (import "env" "v" (func $v)) (func (export "v") (call $v)))',
+    );
+    execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
+    const instance = new WebAssembly.Instance(
+      new WebAssembly.Module(readFileSync(wasmPath)),
+      { env: { v: body } },
+    );
+    return instance.exports.v as CallableFunction;
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
