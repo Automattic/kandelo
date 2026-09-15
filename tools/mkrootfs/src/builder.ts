@@ -179,7 +179,7 @@ function buildFiles(
   );
   for (const f of files) {
     if (f.lazyUrl !== undefined) {
-      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);
+      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);
       mfs.chown(f.path, f.uid, f.gid);
       mfs.chmod(f.path, f.mode);
       continue;

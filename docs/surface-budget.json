@@ -63,7 +63,7 @@
       "ceiling": 8123,
       "slack": 200,
       "target": 0,
-      "why": "The other half of the 12,198-line TypeScript filesystem the lane V text names and no register measured. MemoryFileSystem backs `/` on every machine and implements stat, statfs, pathconf, dirents, open flags and ST_NOSUID setuid handling in the host, against 1,724 lines of tmpfs.rs in the kernel. Target is 0 because lane V's end state says the host supplies nothing inside the image body; the V6 census is the deliverable that would prove any of it is floor, and until that census runs the 0 is an assertion of the plan's end state, not a measured floor. If the census finds real floor here, this target gets revised in the open with that evidence attached. BANKED 8491 -> 8387 on 2026-09-13: the lazy-archive path validator moved to host/src/vfs/lazy-archive-paths.ts, where both filesystems can share it. It was within the 200-line slack and so passed unbanked, which is exactly how a reduction gets given back. BANKED 8387 -> 8215 on 2026-09-13 by extracting `vfs-image-transport.ts`: zstd detection, the frame-bound walk that stops a decompression bomb before a byte is decompressed, and the size constants. It moved because a second reader needed it -- a builder on the Rust module met a `.vfs.zst` as EINVAL -- and getting an image's bytes off the wire was never `MemoryFileSystem`'s to own. It survives that file's deletion. BANKED 8215 -> 8141 on 2026-09-14: the VFSI container format \u2014 its magic, version and flag constants, the header parse and the section-offset walk \u2014 moved to vfs-image-transport.ts, which survives this file's deletion. The format belongs with the transport rather than with one of its two readers, and banking the 74 lines keeps them from being spent again on something else. BANKED 8141 -> 8123 on 2026-09-14: the container's host-side JSON sections \u2014 the slicing that finds the lazy and archive metadata, and the flag-consistency refusal \u2014 moved to vfs-image-transport.ts. Those sections are the fetch descriptions the courier contract keeps host-side, so whatever reads a container reads them; they belong with the format rather than inside one of its two readers."
+      "why": "The other half of the 12,198-line TypeScript filesystem the lane V text names and no register measured. MemoryFileSystem backs `/` on every machine and implements stat, statfs, pathconf, dirents, open flags and ST_NOSUID setuid handling in the host, against 1,724 lines of tmpfs.rs in the kernel. Target is 0 because lane V's end state says the host supplies nothing inside the image body; the V6 census is the deliverable that would prove any of it is floor, and until that census runs the 0 is an assertion of the plan's end state, not a measured floor. If the census finds real floor here, this target gets revised in the open with that evidence attached. BANKED 8491 -> 8387 on 2026-09-13: the lazy-archive path validator moved to host/src/vfs/lazy-archive-paths.ts, where both filesystems can share it. It was within the 200-line slack and so passed unbanked, which is exactly how a reduction gets given back. BANKED 8387 -> 8215 on 2026-09-13 by extracting `vfs-image-transport.ts`: zstd detection, the frame-bound walk that stops a decompression bomb before a byte is decompressed, and the size constants. It moved because a second reader needed it -- a builder on the Rust module met a `.vfs.zst` as EINVAL -- and getting an image's bytes off the wire was never `MemoryFileSystem`'s to own. It survives that file's deletion. BANKED 8215 -> 8141 on 2026-09-14: the VFSI container format — its magic, version and flag constants, the header parse and the section-offset walk — moved to vfs-image-transport.ts, which survives this file's deletion. The format belongs with the transport rather than with one of its two readers, and banking the 74 lines keeps them from being spent again on something else. BANKED 8141 -> 8123 on 2026-09-14: the container's host-side JSON sections — the slicing that finds the lazy and archive metadata, and the flag-consistency refusal — moved to vfs-image-transport.ts. Those sections are the fetch descriptions the courier contract keeps host-side, so whatever reads a container reads them; they belong with the format rather than inside one of its two readers."
     },
     "hostImportFunctions": {
       "measure": "env.host_* function imports of the built kernel; see EXPECTED_HOST_IMPORT_COUNT",
@@ -105,56 +105,56 @@
       "ceiling": 32717,
       "slack": 400,
       "target": 12000,
-      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job \u2014 fork, exec, clone, the blocking-retry pump \u2014 in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B. BANKED 32718 -> 32717 on 2026-09-14: `configureRootfsOverlay`'s whole-body callback became an offset reader, which moved the header arithmetic and the body slicing out to the backend that knows its bytes are a bare body. The reduction is small and is banked rather than left as headroom, because headroom in this file is what the ceiling exists to deny."
+      "why": "The single largest file in the host and the one every lane contends for. **Target validated by the K1 census, no longer provisional**: crates/host-native's guest.rs does the same job — fork, exec, clone, the blocking-retry pump — in 13,577 lines, against CentralizedKernelWorker's 29,975. The 12,000 target was guessed as 'roughly a third' and the native host independently lands near it. Note the measurement hazard: moving code inside this file shifts V8 parse and compile for unrelated functions, which was visible in the select A/B. BANKED 32718 -> 32717 on 2026-09-14: `configureRootfsOverlay`'s whole-body callback became an offset reader, which moved the header arithmetic and the body slicing out to the backend that knows its bytes are a bare body. The reduction is small and is banked rather than left as headroom, because headroom in this file is what the ceiling exists to deny."
     },
     "unguardedLayoutModules": {
       "measure": "process_layout modules whose C-side _Static_asserts are not anchored to a generated KANDELO_ macro",
       "ceiling": 1,
       "slack": 0,
       "target": 0,
-      "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' \u2014 WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it \u2014 two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
+      "why": "Lane G. **Measure corrected twice while implementing G1, and the second correction retracts a claim in the first.** (1) It originally counted modules the generated header DELIVERS as #defines, which extending the emitter would have driven to 0 while guarding nothing (H-2). (2) The replacement said 'no struct-layout assert exists anywhere in libc' — WRONG: libc/musl-overlay/arch/wasm32posix/bits/stat.h has 8, missed because they use __builtin_offsetof. The real defect is sharper: those 8 asserts compare C against **hand-written literals** (112, 32, 40...), not against the Rust authority, so 0 of 15 modules are anchored to the generated constants. The overlay header states in prose 'The complete layout MUST match crates/shared/src/process_layout.rs' and nothing enforces it — two sources agreeing by convention, the campaign's recurring shape. statx is the proven instance: stx_dev_minor was never written."
     },
     "kernelHostImportTypeScript": {
       "measure": "line count of host/src/kernel.ts",
       "ceiling": 4774,
       "slack": 150,
       "target": 2650,
-      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction \u2014 4,774 x (40/72) \u2014 a consequence of the lane succeeding rather than an independent goal, and it is not a measurement."
+      "why": "The implementation behind lane I's 72 host imports; its host_* definitions span 3,771 of 4,775 lines. **Target re-derived by the I/X surface census (docs/plans/2026-09-11-lane-i-x-surface-census.md), which refuted the guessed 1,200**: host-native supplies the same surface through 71 linker.func_wrap calls spanning 7,646 lines of guest.rs, so there is no evidence the implementations shrink to 1,200. Lane I's real lever is the NUMBER of imports, gated separately by hostImportFunctions (72 -> 40). This target is arithmetic on that reduction — 4,774 x (40/72) — a consequence of the lane succeeding rather than an independent goal, and it is not a measurement."
     },
     "workerEntryTypeScript": {
       "measure": "line count of host/src/browser-kernel-worker-entry.ts, host/src/node-kernel-worker-entry.ts and host/src/browser-kernel-protocol.ts",
       "ceiling": 3585,
       "slack": 150,
       "target": 1800,
-      "why": "The worker entries are where host-side sequencing accumulates, and nothing measured them. On 2026-09-14 three deletions landed in them \u2014 a lazy-registration protocol nobody sent, and the rootfs overlay repointed off MemoryFileSystem \u2014 and no campaign number moved at all. An unbanked reduction silently funds the next change's growth, which is the failure the banking rule exists to stop. **The target is a DIRECTION, not a measured floor.** The irreducible part is worker spawn, the syscall-channel transport and the Node/browser platform bridges; nobody has measured how much of these files that is."
+      "why": "The worker entries are where host-side sequencing accumulates, and nothing measured them. On 2026-09-14 three deletions landed in them — a lazy-registration protocol nobody sent, and the rootfs overlay repointed off MemoryFileSystem — and no campaign number moved at all. An unbanked reduction silently funds the next change's growth, which is the failure the banking rule exists to stop. **The target is a DIRECTION, not a measured floor.** The irreducible part is worker spawn, the syscall-channel transport and the Node/browser platform bridges; nobody has measured how much of these files that is."
     },
     "hostVfsTypeScript": {
       "measure": "line count of host/src/vfs/*.ts excluding memory-fs.ts and sharedfs-vendor.ts, which memoryFsTypeScript and sffsTypeScript already count",
       "ceiling": 11091,
       "slack": 200,
       "target": 2000,
-      "why": "Lane V's two budgeted files are the large halves, but ~11,000 lines of VFS TypeScript sit beside them unmeasured: transports, container parsing, lazy-archive planning, materialization plans. Deleting 242 of them on 2026-09-14 moved no campaign number. The exclusions prevent double-counting, because a line counted twice is banked twice. **The target is a DIRECTION:** the plan's stated floor is that the host fetches deferred bytes and reads host-backed mounts, neither of which needs a filesystem \u2014 but that floor has not been measured. **RAISED 11,048 -> 11,091 on 2026-09-14, hours after it was set, and the argument is recorded rather than assumed.** The two image producers write a deferred URL in different places: a MemoryFileSystem-built image in the host-side JSON sections, a module-built one in the KLZY descriptor, and neither writes both. Reading only the sections is correct today and returns an EMPTY LIST after memory-fs.ts is deleted \u2014 an image full of deferred files loading as an image with none. The 43 lines buy a module-sourced fallback and a refusal for the archive half it cannot yet reconstruct, so that the step-5 failure is either correct or loud. 27 lines were repaid in the same commit by deleting imageReadFromBody, whose last production caller went when the overlay started reading the container directly."
+      "why": "Lane V's two budgeted files are the large halves, but ~11,000 lines of VFS TypeScript sit beside them unmeasured: transports, container parsing, lazy-archive planning, materialization plans. Deleting 242 of them on 2026-09-14 moved no campaign number. The exclusions prevent double-counting, because a line counted twice is banked twice. **The target is a DIRECTION:** the plan's stated floor is that the host fetches deferred bytes and reads host-backed mounts, neither of which needs a filesystem — but that floor has not been measured. **RAISED 11,048 -> 11,091 on 2026-09-14, hours after it was set, and the argument is recorded rather than assumed.** The two image producers write a deferred URL in different places: a MemoryFileSystem-built image in the host-side JSON sections, a module-built one in the KLZY descriptor, and neither writes both. Reading only the sections is correct today and returns an EMPTY LIST after memory-fs.ts is deleted — an image full of deferred files loading as an image with none. The 43 lines buy a module-sourced fallback and a refusal for the archive half it cannot yet reconstruct, so that the step-5 failure is either correct or loud. 27 lines were repaid in the same commit by deleting imageReadFromBody, whose last production caller went when the overlay started reading the container directly."
     },
     "hostKernelPlumbingTypeScript": {
       "measure": "line count of host/src/kernel-scratch.ts, kernel-entry-gate.ts, process-memory.ts and worker-protocol.ts",
       "ceiling": 5853,
       "slack": 150,
       "target": 3600,
-      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge \u2014 one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
+      "why": "Lane L. What a wasmtime host builds around the imports: entry serialization, capacity-carrying scratch views, process memory layout and the worker wire. **Target set by the L1 census (docs/plans/2026-09-11-lane-l1-census.md), not provisional.** The census raised it from a guessed 1,500 to a derived 3,600: ~428 lines are JavaScript self-defence a native host never writes, worker-protocol.ts (429) is JS-host structural because host-native uses native threads, and the re-entrancy gate stays because Rust gets it from the borrow checker and JavaScript cannot. What actually moves is duplicated knowledge — one process-memory layout, one bounds-check rule, and a generated scratch pointer table."
     },
     "imageBuilderFilesystemImporters": {
       "measure": "files under images/ importing host/src/vfs/memory-fs or sharedfs-vendor",
       "ceiling": 0,
       "slack": 0,
       "target": 0,
-      "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes \u2014 which packages go in the LAMP image, how WordPress is preinstalled \u2014 and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done. BANKED 20 -> 11 on 2026-09-12: nine recipes construct SffsImageFs instead of MemoryFileSystem, which they could do only once the module could hold a declared capacity (gap 14) and the interface described a stat by what builders read. The eleven left need five named methods between them, one of which is the sha256 cohort seal check. BANKED 11 -> 10 on 2026-09-13: shell-lazy-archives types against the interface, which needed bulk archive registration on the bridge \u2014 the existing registerArchiveMember driven by the shared path validator, at no module surface cost. BANKED 10 -> 7 on 2026-09-13: three files needed no seal check at all. Two wanted only a static metadata reader, which the bridge can answer by loading the image it was handed; the third was a type-only importer whose filesystem goes to one function that already calls nothing outside the interface. BANKED 7 -> 5 on 2026-09-13. `shell-vfs-build.ts` and `shell-rootfs-restore.ts` moved to `SffsImageFs` together, because the restore's return type feeds the populator and neither could go alone. The seal check they waited on did not need porting: verification runs inside the module's load, so `verifyImportedLazyAtomicGroupSeals` dissolved into `loadImage` rather than being reimplemented. BANKED 5 -> 3 on 2026-09-13. `build-source-rootfs-shell-image.ts` and `source-rootfs-shell-overlay.ts` moved together, unblocked by `sm_lazy_entries`. Two checks got BETTER in the move rather than merely ported: 'is this archive already registered' and 'did the shell omit a production archive' both asked a table of URLs and now ask the TREE whether the archive's required member is present and deferred -- a URL is the archive's transport, and a rebuild that changed one would have failed both checks while shipping exactly the right contents. Bash's hardlink set is likewise derived from the inodes rather than read from a list the filesystem kept beside the tree. BANKED 3 -> 1 on 2026-09-13. build-php-test-vfs-image.ts and package-shell-vfs-build.ts followed; both wanted only the seal check and a capacity change, and both dissolved the same way. ONE remains: vfs-image-helpers.ts, the funnel every builder reaches the format through, which goes last by construction. BANKED 1 -> 0 on 2026-09-13, reaching this surface's target. The last importer was `vfs-image-helpers.ts`, the funnel, and both of its uses were FALLBACKS for MemoryFileSystem whose comments already said they die with it: a `statfs` arm that recomputed a headroom decision in TypeScript from free blocks, and a capacity read that parsed the artifact host-side. The first is deleted, because the module answers with a verdict and the numbers behind it; the second now asks the MODULE to read the artifact, so neither branch parses a container in TypeScript."
+      "why": "Lane Y, set by the Y1 census (docs/plans/2026-09-11-lane-y1-census.md). It replaces a line-count surface that measured the wrong thing: the builders' 13,502 lines are overwhelmingly recipes — which packages go in the LAMP image, how WordPress is preinstalled — and that product configuration stays. A line target invited deleting exactly the wrong lines. This counts the coupling instead, which is the fact lane V is blocked on: memory-fs.ts cannot be deleted while 36 builder files import it. Goes to 0 exactly when the lane is done. BANKED 20 -> 11 on 2026-09-12: nine recipes construct SffsImageFs instead of MemoryFileSystem, which they could do only once the module could hold a declared capacity (gap 14) and the interface described a stat by what builders read. The eleven left need five named methods between them, one of which is the sha256 cohort seal check. BANKED 11 -> 10 on 2026-09-13: shell-lazy-archives types against the interface, which needed bulk archive registration on the bridge — the existing registerArchiveMember driven by the shared path validator, at no module surface cost. BANKED 10 -> 7 on 2026-09-13: three files needed no seal check at all. Two wanted only a static metadata reader, which the bridge can answer by loading the image it was handed; the third was a type-only importer whose filesystem goes to one function that already calls nothing outside the interface. BANKED 7 -> 5 on 2026-09-13. `shell-vfs-build.ts` and `shell-rootfs-restore.ts` moved to `SffsImageFs` together, because the restore's return type feeds the populator and neither could go alone. The seal check they waited on did not need porting: verification runs inside the module's load, so `verifyImportedLazyAtomicGroupSeals` dissolved into `loadImage` rather than being reimplemented. BANKED 5 -> 3 on 2026-09-13. `build-source-rootfs-shell-image.ts` and `source-rootfs-shell-overlay.ts` moved together, unblocked by `sm_lazy_entries`. Two checks got BETTER in the move rather than merely ported: 'is this archive already registered' and 'did the shell omit a production archive' both asked a table of URLs and now ask the TREE whether the archive's required member is present and deferred -- a URL is the archive's transport, and a rebuild that changed one would have failed both checks while shipping exactly the right contents. Bash's hardlink set is likewise derived from the inodes rather than read from a list the filesystem kept beside the tree. BANKED 3 -> 1 on 2026-09-13. build-php-test-vfs-image.ts and package-shell-vfs-build.ts followed; both wanted only the seal check and a capacity change, and both dissolved the same way. ONE remains: vfs-image-helpers.ts, the funnel every builder reaches the format through, which goes last by construction. BANKED 1 -> 0 on 2026-09-13, reaching this surface's target. The last importer was `vfs-image-helpers.ts`, the funnel, and both of its uses were FALLBACKS for MemoryFileSystem whose comments already said they die with it: a `statfs` arm that recomputed a headroom decision in TypeScript from free blocks, and a capacity read that parsed the artifact host-side. The first is deleted, because the module answers with a verdict and the numbers behind it; the second now asks the MODULE to read the artifact, so neither branch parses a container in TypeScript."
     },
     "hostPeerDuplicateDeclarations": {
       "measure": "declaration names appearing in both halves of the three browser-/node- pairs",
       "ceiling": 29,
       "slack": 0,
       "target": 29,
-      "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons \u2014 vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."
+      "why": "Lane E. Counts declaration names present in both halves of a browser-/node- pair, excluding members destructured from the shared createProcessLifecycle factory. **Target corrected from a guessed 12 to a derived 29 by the E3 audit (2026-09-12).** The 21 same-named worker-entry declarations were read one at a time: 4 are `let` MODULE STATE initialised from shared constants (maxPages, initReady, defaultThreadSlots, processMemoryAllocator) which cannot be shared because each host needs its own instance, and 17 differ for platform reasons — vforkMechanismTraceEnabled reads process.env in Node and a runtime message in the browser, which has no env vars. None is duplication to remove. The floor is 21 worker-entry + 6 genuinely-different protocol types + 2 message unions = 29."
     },
     "artifactTierPathSpellings": {
       "measure": "independent production spellings of the local-binaries/source-only-v1 tier path",
@@ -182,19 +182,19 @@
       "ceiling": 14,
       "slack": 0,
       "target": 6,
-      "why": "Lane U, set by the U1 census. Replaces two line-count surfaces that measured size \u2014 the axis the lane's own text says is wrong \u2014 and would have been satisfied by rewriting loud, harmless test runners. This counts the tier that can silently produce a wrong artifact. The archetype is build-step-input-hash.sh: a content-identity cache-key primitive written in shell, consumed by build-host.sh, build-rootfs.sh AND tools/xtask/src/local_build.rs, and mirroring a second shell script that folds the same logic. The repo has already served a stale kernel from a cache key that omitted an input. Target is 6, not 0: release verification and CI deployment checks legitimately compute digests in shell and fail loudly."
+      "why": "Lane U, set by the U1 census. Replaces two line-count surfaces that measured size — the axis the lane's own text says is wrong — and would have been satisfied by rewriting loud, harmless test runners. This counts the tier that can silently produce a wrong artifact. The archetype is build-step-input-hash.sh: a content-identity cache-key primitive written in shell, consumed by build-host.sh, build-rootfs.sh AND tools/xtask/src/local_build.rs, and mirroring a second shell script that folds the same logic. The repo has already served a stale kernel from a cache key that omitted an input. Target is 6, not 0: release verification and CI deployment checks legitimately compute digests in shell and fail loudly."
     },
     "kernelWorkerClassMethods": {
       "measure": "methods declared in class CentralizedKernelWorker",
       "ceiling": 522,
       "slack": 10,
       "target": 150,
-      "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration \u2014 the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
+      "why": "Lane K, added by the K1 census. 91.6% of kernel-worker.ts is one class: 522 methods over 29,780 lines. A line-count gate alone permits shuffling code between methods of the same god class while nothing improves; method count in the largest class does not. The lane is decomposition, not migration — the 85 syscalls the host dispatches genuinely need host services, and host-native dispatches them too."
     }
   },
   "lanes": {
     "F": {
-      "title": "fork control flow \u2014 invert, do not port",
+      "title": "fork control flow — invert, do not port",
       "status": "open",
       "closure": [
         {
@@ -213,7 +213,7 @@
       "why": "Inversion is done when the host calls a handful of coarse entries and no longer drives the sequence. Each fine-grained fm_* entry leaves a host-side seeding loop behind, so the entry count and the TypeScript line count fall together or neither has moved."
     },
     "V": {
-      "title": "VFS image \u2014 one implementation of SFFS",
+      "title": "VFS image — one implementation of SFFS",
       "status": "open",
       "closure": [
         {
@@ -228,7 +228,7 @@
       "why": "The block filesystem is implemented twice at near-identical size. The lane closes when the TypeScript copy is gone, not when the Rust one works."
     },
     "I": {
-      "title": "host import surface \u2014 V4",
+      "title": "host import surface — V4",
       "status": "open",
       "closure": [
         {
@@ -278,14 +278,14 @@
     },
     "S": {
       "title": "setuid lazy references are fetched without integrity",
-      "status": "open",
+      "status": "closed",
       "closure": [
         {
           "surface": "setuidLazyWithoutDigest",
           "atMost": 0
         }
       ],
-      "why": "Closure is that no setuid binary is fetched without its bytes being verified. Either the emitter records a digest for lazy outputs, or those packages stop shipping lazy."
+      "why": "Closure is that no setuid binary is fetched without its bytes being verified, AND that set-ID is not honoured on bytes nothing could verify. Both hold. The measure was strengthened at the same time, because as written it asked only whether the emitter contained the string `lazy_sha256=` — satisfiable by a four-line change while the image had nowhere to put a digest and the kernel had nothing to check it with, reporting the lane closed and sudo exactly as unverified (B41). It now names four layers, one per place the chain can break: the producer records a digest, the format carries it as a typed field, the kernel checks arriving bytes against it, and the kernel demotes set-ID on bytes it could not check."
     },
     "M": {
       "title": "shared-mapping cutover",
@@ -328,7 +328,7 @@
       "whyExempt": "Deprioritized by the maintainer, who asked to push implementation further before paying the cost of browser verification. Characterizing it now would plan work nobody intends to start."
     },
     "K": {
-      "title": "kernel-worker.ts \u2014 one god class every lane contends for",
+      "title": "kernel-worker.ts — one god class every lane contends for",
       "status": "open",
       "closure": [
         {
@@ -340,10 +340,10 @@
           "atMost": 150
         }
       ],
-      "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service \u2014 worker creation, Atomics.wait blocking, shared memory \u2014 and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
+      "why": "The K1 census corrected the lane's framing: this is NOT the host's second syscall table. The 85 syscalls it dispatches are the ones needing a host service — worker creation, Atomics.wait blocking, shared memory — and host-native dispatches the same set. The defect is shape: 522 methods in one class, 29,975 lines, against guest.rs's 13,577 for the same responsibility."
     },
     "G": {
-      "title": "ABI binding drift \u2014 14/15 layout modules anchored to generated constants",
+      "title": "ABI binding drift — 14/15 layout modules anchored to generated constants",
       "status": "open",
       "closure": [
         {
@@ -368,7 +368,7 @@
       "whyExempt": "Dead code has no capability boundary to describe; the floor question belongs to whichever lane owns the subsystem each module was written for."
     },
     "L": {
-      "title": "Host-kernel plumbing \u2014 what a wasmtime host writes beyond the imports",
+      "title": "Host-kernel plumbing — what a wasmtime host writes beyond the imports",
       "status": "open",
       "closure": [
         {
@@ -376,10 +376,10 @@
           "atMost": 3600
         }
       ],
-      "why": "Goal V1 more than V4, which the L1 census established: a new host's burden here is already near zero \u2014 host-native proves it \u2014 but the same knowledge exists twice and the second copy was made by transcription (47 comments in host-native cite host/src/*.ts). Two transcribed copies drift and host #3 transcribes a third."
+      "why": "Goal V1 more than V4, which the L1 census established: a new host's burden here is already near zero — host-native proves it — but the same knowledge exists twice and the second copy was made by transcription (47 comments in host-native cite host/src/*.ts). Two transcribed copies drift and host #3 transcribes a third."
     },
     "E": {
-      "title": "Node/browser peer divergence \u2014 shared types unified to the audited floor",
+      "title": "Node/browser peer divergence — shared types unified to the audited floor",
       "status": "closed",
       "closure": [
         {
@@ -387,10 +387,10 @@
           "atMost": 29
         }
       ],
-      "why": "Goal V1. CLOSED 2026-09-12 at the floor the E3 audit derived. The consolidation was already largely done before the lane started \u2014 the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory \u2014 and what remained was 36 duplicated protocol declarations, now unified. The floor of 29 is 21 worker-entry declarations that are legitimately per-host (4 module-state lets, 17 platform differences), 6 genuinely-different protocol types, and 2 message unions. No category-three divergence was ever found: no bug one host fixed and the other did not."
+      "why": "Goal V1. CLOSED 2026-09-12 at the floor the E3 audit derived. The consolidation was already largely done before the lane started — the worker-entry pair shares 72 lifecycle members through a createProcessLifecycle factory — and what remained was 36 duplicated protocol declarations, now unified. The floor of 29 is 21 worker-entry declarations that are legitimately per-host (4 module-state lets, 17 platform differences), 6 genuinely-different protocol types, and 2 message unions. No category-three divergence was ever found: no bug one host fixed and the other did not."
     },
     "R": {
-      "title": "Binary and artifact resolution \u2014 one declaration of the tier order",
+      "title": "Binary and artifact resolution — one declaration of the tier order",
       "status": "closed",
       "closure": [
         {
@@ -409,7 +409,7 @@
           "atMost": 0
         }
       ],
-      "why": "Goal V3, and a hard prerequisite for lane V. The Y1 census found the Rust side already covers nearly the whole builder contract across sffs_write.rs, sffs.rs and sffs_deferred.rs; the gaps are six image-level operations and three policy assertions, not a filesystem. Not a line-reduction lane \u2014 a decoupling lane. CLOSED 2026-09-13 on its own stated condition: zero files under `images/` import `memory-fs` or `sharedfs-vendor`, down from 36. What closing does NOT mean: gap 21 is still open (a legacy image's standalone lazy file is re-exported as a zero-length ordinary file, pinned by an `it.fails` test), and the shipped base images have NOT yet been rebuilt through the Rust producer, which is what makes the seal real rather than inert. Both are tracked in the master plan; neither is measured by this surface, which is a decoupling measure and says only that the builders no longer reach the format through the TypeScript filesystem."
+      "why": "Goal V3, and a hard prerequisite for lane V. The Y1 census found the Rust side already covers nearly the whole builder contract across sffs_write.rs, sffs.rs and sffs_deferred.rs; the gaps are six image-level operations and three policy assertions, not a filesystem. Not a line-reduction lane — a decoupling lane. CLOSED 2026-09-13 on its own stated condition: zero files under `images/` import `memory-fs` or `sharedfs-vendor`, down from 36. What closing does NOT mean: gap 21 is still open (a legacy image's standalone lazy file is re-exported as a zero-length ordinary file, pinned by an `it.fails` test), and the shipped base images have NOT yet been rebuilt through the Rust producer, which is what makes the seal real rather than inert. Both are tracked in the master plan; neither is measured by this surface, which is a decoupling measure and says only that the builders no longer reach the format through the TypeScript filesystem."
     },
     "W": {
       "title": "web-libs session contracts a new host consumes",
@@ -424,7 +424,7 @@
           "atMost": 0
         }
       ],
-      "why": "Goals V1 and V2. The W1 census found three populations, not two: the host contract, the browser product surface that stays, and a third the lane missed \u2014 hand-written parsers of kernel-emitted /proc formats plus a hand-maintained syscall table that is 96 entries short of the generated one and disagrees with it on two names."
+      "why": "Goals V1 and V2. The W1 census found three populations, not two: the host contract, the browser product surface that stays, and a third the lane missed — hand-written parsers of kernel-emitted /proc formats plus a hand-maintained syscall table that is 96 entries short of the generated one and disagrees with it on two names."
     },
     "U": {
       "title": "Build automation in shell and MJS",
