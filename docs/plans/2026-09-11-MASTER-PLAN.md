@@ -4081,6 +4081,68 @@ Rust export writes is now one the kernel can load back, which is what the lane
 existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
 producer side, then V9 (after lane Y) and V10. The 12,000-line finding below is NOT yet
 
+### THE HOST INTERFACE SHOULD RELAY A URI — maintainer's refinement, 2026-09-15
+
+**Their words:** *"we need to adjust the host interface to relay the address of
+the reference to the host. It could be as simple as a URI since URIs are by
+definition designed to be reusable."*
+
+**This is better than relaying the descriptor, and the reason is not brevity.**
+This lane's proposal was to pass the opaque KLZY payload the kernel already
+holds. That payload is a JSON object with a schema — so the host would have to
+PARSE a format the kernel handed it, and the two would then have to agree about
+that format forever. **A URI has no such requirement**: its meaning is defined
+outside this system, and relaying one is not interpreting it.
+
+So the courier contract is not merely preserved, it is strengthened. The kernel
+carries a string it does not read. The host still decides whether the URI may
+be fetched and still validates the digest. **Nothing new has to be agreed
+between them**, which is the property the byte-layout decision was chosen for
+elsewhere in this plan.
+
+```
+host_fetch_deferred(kind, idLo, idHi, uriPtr, uriLen,
+                    bufPtr, bufLen, offsetLo, offsetHi) -> i32
+```
+
+### WHAT IT DELETES
+
+**The host's entire lazy metadata table and everything built to produce it:**
+
+* `RootfsOverlayBaseImage.exportLazyEntries` / `exportLazyArchiveEntries` — the
+  last two methods on an interface that started at six;
+* `createBaseImageFromContainer`'s metadata half, its module-sourced fallback,
+  and the archive reconstruction added tonight;
+* **the seal-envelope unwrap**, ~40 lines that exist ONLY because the host has
+  to dig a URL out of a payload it should never have been holding;
+* the producer-divergence problem itself — a memfs-built image records the URL
+  in host JSON, a module-built one in KLZY, and **neither writes both**. If the
+  kernel relays the URI, the host never asks where it came from.
+
+**The overlay would need nothing from a filesystem at all**, which is the end
+state lane V has been approaching from the consumer side all along.
+
+### WHY IT IS NOT LANE V'S TO MAKE
+
+A host-import signature is ABI: it needs an `ABI_VERSION` bump and a
+regenerated `abi/snapshot.json`, both forbidden to this lane by name. **Lanes F
+and L own the kernel-host import surface.**
+
+Checked and rejected: carrying the URI without a signature change. The host can
+read kernel memory only at a pointer it was handed, and `host_fetch_deferred`
+is a direct import call rather than a syscall through the channel, so no
+scratch region reaches it.
+
+### THE MEASUREMENTS THAT MAKE THIS SAFE TO PICK UP
+
+* the kernel already asks by `kind` + `id` and accepts `EAGAIN` while a fetch
+  is in flight — **the retry loop exists and needs no change**;
+* the kernel already holds every descriptor, with accessors
+  (`rootfs::archive_payloads`, `rootfs::archive_payload`), and `sffs-module`
+  calls them today;
+* the URI is already inside those descriptors, so **no new data has to be
+  produced by any builder** — only relayed.
+
 ### H-24 COMPLETED ITSELF — I finished another agent's merge, 2026-09-15
 
 **What happened.** The parent-branch agent had the lane merge STAGED and
