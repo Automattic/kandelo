@@ -2281,6 +2281,31 @@ not a gap at all, and one should never be ported.**
 carrying decoder, media type, digest, ordered transports and an activation
 mode. Everything else is a call-site change or a thing that should not exist.
 
+**AND THE GAP BLOCKS ONE FILE, NOT THIRTY-SEVEN.** Measured before building
+it, which is the only reason it was not built: of the 36 pure-fixture files,
+**`registerLazyTree` is called by one** —
+`apps/browser-demos/test/package-deferred-tree-browser.spec.ts` — and
+`sealLazyAtomicGroup` by the same one. What the population actually calls is:
+
+```
+28  saveImage        16  mkdir            15  createFileWithOwner
+ 4  mkdirWithOwner    4  registerLazyArchiveFromEntries
+ 3  chmod             2  setImageMetadata
+ 1  each: sealLazyAtomicGroup, registerLazyTree, symlink, registerLazyFile
+```
+
+**Every one of those except the tree pair is on the bridge today**, the two
+owner variants having landed this afternoon. So **35 of the 36 can be
+repointed now**, and the remaining one is a browser spec about deferred trees
+— which on the sixth sizing's own criterion is not a fixture user at all, but a
+test OF the lazy-tree machinery.
+
+**Building `registerLazyTree` first would have been substantial work to unblock
+a single file while thirty-five sat ready.** That is the third time on this
+step that asking *what must a caller be able to do* has beaten asking *which
+names are missing*, and the first time the difference changed the ORDER of the
+work rather than only its size.
+
 **Twice now this lane has sized a gap by listing what the incumbent has and
 the replacement lacks**, and twice the list has been too long, because a method
 missing from the replacement is not automatically work: it can be a different
