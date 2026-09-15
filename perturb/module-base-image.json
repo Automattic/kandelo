@@ -81,11 +81,11 @@
    "replace": "          if (false) {"
   },
   {
-   "name": "members are attached to every archive rather than their own",
+   "name": "every member is filed under the first archive",
    "scope": "        for (const file of fromModule.files) {",
    "scope_end": "\n        }\n",
-   "find": "          if (file.archiveId === 0) continue;",
-   "replace": "          if (false) continue;"
+   "find": "          membersByArchive.set(file.archiveId, list);",
+   "replace": "          membersByArchive.set(1, list);"
   },
   {
    "name": "the seal envelope is read as if it were the descriptor itself",

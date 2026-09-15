@@ -4,7 +4,7 @@ import {
   RTFS_VERSION,
 } from "./support/rootfs-manifest-oracle";
 import type { FileSystemBackend } from "../src/vfs/types";
-import type { RootfsLazyInput } from "../src/vfs/rootfs-lazy-archives";
+import type { RootfsLazyInput } from "./support/rootfs-manifest-oracle";
 import {
   decodeRootfsManifest as decode,
   RTFS_KIND_LAZY_FILE as KIND_LAZY_FILE,

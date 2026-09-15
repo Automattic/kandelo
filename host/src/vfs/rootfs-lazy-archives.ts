@@ -20,7 +20,7 @@
  * output and produces, from one pass over the groups:
  *  - a `deferredProvider` closure (fed to `configureRootfsOverlay`) — the
  *    production output, and
- *  - a `RootfsLazyInput`, the linkage the host used to feed to the RTFS
+ *  - the archive fetch table (the kernel parses its own KLZY section, so
  *    manifest walker. Since the boot cutover the kernel learns which files are
  *    lazy from the image's own `KLZY` section, so this half has no production
  *    consumer left; it survives because the differential gates in
@@ -53,32 +53,11 @@ import type {
  */
 export const HOST_DEFERRED_KIND_FILE = 0;
 export const HOST_DEFERRED_KIND_ARCHIVE = 1;
-/** Where a lazy (archive-backed) file's bytes live: `archive_id` identifies
- * the archive in the trailing archive table, `sourcePath` is the member's
- * path within it. Materializing those bytes is a later increment; this
- * module only records the mapping in the manifest (`KIND_LAZY_FILE`). */
-export interface RootfsLazyFile {
-  readonly archiveId: number;
-  readonly sourcePath: string;
-}
-
 /** Total byte size of a lazy archive, recorded in the trailing archive table
  * so the kernel can validate/plan reads before the archive is fetched. */
 export interface RootfsLazyArchive {
   readonly archiveId: number;
   readonly size: number | bigint;
-}
-
-/**
- * Optional description of lazy (archive-backed) files to emit as
- * `KIND_LAZY_FILE` instead of `KIND_FILE`. Keyed by the kernel-facing
- * absolute VFS path (the same `absPath` the walker already computes), so a
- * caller can mark a subset of otherwise-ordinary regular files as lazy
- * without changing how the backend tree is walked.
- */
-export interface RootfsLazyInput {
-  readonly files: ReadonlyMap<string, RootfsLazyFile>;
-  readonly archives: readonly RootfsLazyArchive[];
 }
 
 const EAGAIN = -11;
@@ -260,7 +239,7 @@ interface ArchiveRecord {
 }
 
 /**
- * Build the `RootfsLazyInput` (manifest linkage) and the
+ * Build the
  * `host_fetch_deferred` provider from one export snapshot of
  * `MemoryFileSystem`'s lazy archive groups.
  *
@@ -282,7 +261,6 @@ export function buildRootfsLazyWiring(
     dest: Uint8Array,
   ) => number,
 ): {
-  lazyInput: RootfsLazyInput;
   deferredProvider: (
     kind: number,
     id: bigint,
@@ -290,20 +268,16 @@ export function buildRootfsLazyWiring(
     dest: Uint8Array,
   ) => number;
 } {
-  const files = new Map<string, RootfsLazyFile>();
-  const archives: RootfsLazyArchive[] = [];
+  // NO `lazyInput`. This used to also return a RootfsLazyInput — a lazy
+  // manifest of files and archives — and nothing in production ever read it:
+  // the kernel parses the image's own KLZY section and does not want a
+  // manifest from the host. What the host is genuinely for here is FETCHING,
+  // so the only state built is the fetch table.
   const records = new Map<number, ArchiveRecord>();
 
   for (const group of reduceLazyArchiveGroups(entries)) {
     const { archiveId, archiveBytes: size, transports } = group;
-    archives.push({ archiveId, size });
     records.set(archiveId, { transports, size, state: "idle" });
-    for (const member of group.members) {
-      files.set(member.vfsPath, {
-        archiveId,
-        sourcePath: member.sourcePath,
-      });
-    }
   }
 
   const archiveProvider = (
@@ -361,7 +335,7 @@ export function buildRootfsLazyWiring(
     return ENOSYS;
   };
 
-  return { lazyInput: { files, archives }, deferredProvider };
+  return { deferredProvider };
 }
 
 /** Try each transport in order; on the first successful fetch whose length
