@@ -388,6 +388,64 @@ Writing them caught one error worth repeating: **lane I's target is 2100 code
 lines, not the 1200 that still appears in older prose here.** 1200 is a
 whole-line figure predating the unit change. Read gates from the budget.
 
+## B41 — `setuidLazyWithoutDigest` can be closed without fixing anything
+
+OPEN, and this entry exists to stop a fix that would make the defect INVISIBLE
+rather than absent.
+
+The budget surface reads, in `host/test/surface-budget.test.ts`:
+
+```js
+if (/lazy_sha256=|lazy_digest=/.test(emitter)) return 0;
+```
+
+where `emitter` is `scripts/generate-rootfs-package-manifest.mjs`. So the
+measure returns 0 — defect closed, target met — as soon as that **string
+appears in that file**. Nothing checks that the digest reaches an image, or
+that any reader can act on it.
+
+Adding `lazy_sha256=` to the emitter is a four-line change. Everything needed
+is already there: `resolved.sha256` is validated at line 491 and is the
+identity the lazy reference itself embeds, and the other branch already opens
+the artifact to `statSync` it. The parser and `tools/mkrootfs/src/builder.ts`
+are one hop each. It would have closed the surface this afternoon.
+
+**It would also have changed nothing about sudo.** Measured:
+
+* `tools/mkrootfs/src/builder.ts` imports `MemoryFileSystem` — the legacy
+  TypeScript writer — and calls `registerLazyFile` on it.
+* `MemoryFileSystem` emits `KLZY` and no `SDEF`: the whole file mentions
+  `sffs_deferred` exactly once, in a comment.
+* `KLZY`'s file record is `{ ino, size, archive_id, source_path }`. There is no
+  digest field and no address field, and there never was.
+
+So the rootfs image — the one sudo and sudo-lite ship in — **cannot carry a
+digest the kernel can read**, whatever the manifest says. The digest would be
+recorded in the manifest, passed to a writer with nowhere to put it, and
+dropped. The kernel's new verification would go on never firing for the exact
+binaries the budget's `why` is about, while the budget reported 0.
+
+That is the platform-values contract's named failure: *"Do not shape terminal
+output, preset behavior, UI state, wrappers, or package scripts to create the
+appearance of correctness when the underlying platform is wrong or
+incomplete."* A surface measured by grepping a producer for a string can be
+satisfied by writing the string.
+
+**What actually closes it.** `tools/mkrootfs` has to build the rootfs image
+with the Rust writer (`SffsImageFs`), which emits `SDEF` — the format that has
+carried a typed address and digest since v5, and the one the kernel verifies
+against. That is lane Y's central migration, not a four-line change, so it is
+the maintainer's call rather than something to slip in beside a format commit.
+
+**The measure should move too**, whoever takes it: from "the emitter contains a
+digest field" to something that fails while a setuid lazy binary reaches a
+kernel that cannot verify it. The current form cannot distinguish a fix from a
+string.
+
+The staged four-hop patch was discarded rather than landed, and this is written
+down instead so the next person to find the surface at 2 does not spend the
+afternoon re-deriving why the obvious fix is the wrong one.
+
 ## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
 
 OPEN, and it blocks **all six browser products** exactly as B39 did.
