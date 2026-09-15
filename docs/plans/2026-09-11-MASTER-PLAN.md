@@ -390,8 +390,29 @@ whole-line figure predating the unit change. Read gates from the budget.
 
 ## B41 — `setuidLazyWithoutDigest` can be closed without fixing anything
 
-OPEN, and this entry exists to stop a fix that would make the defect INVISIBLE
-rather than absent.
+**CLOSED the same day, and honestly.** The migration of `tools/mkrootfs` to the
+Rust writer removed the reason the fix could not work, so the same four-hop
+change landed for real hours after this entry was written. **Proven on the
+artifact rather than inferred:** building `host/wasm/rootfs.vfs` and reading it
+back through the kernel's own loader shows `SDEF` and no `KLZY`, 65 of 65
+deferred files carrying an address, and 65 of 65 carrying a digest —
+`/usr/bin/sudo` among them, which before carried neither.
+
+**The gate moved too**, which is what this entry asked for. It named four
+layers now, one per place the chain can break: the producer records a digest,
+the format carries it as a typed field, the kernel checks arriving bytes
+against it, and the kernel demotes set-ID on bytes it could not check. Removing
+any one puts the count back up, where before a single string in a single file
+satisfied it.
+
+Lane S is **closed**, both clauses of its end state: deferred bytes are
+verified against a digest recorded with the reference, and the setuid bit is
+not honoured on unverified bytes.
+
+The analysis below stands as written, because it was right when written and
+because the trap it describes is the reason the fix was not landed blind.
+
+
 
 The budget surface reads, in `host/test/surface-budget.test.ts`:
 
