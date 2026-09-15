@@ -197,13 +197,14 @@ rules on. The baseline file says it itself: *"This list should only ever
 SHRINK. Every entry removed is a file the cluster port brought back."* It is
 the lane's debt made countable, and draining it is the close-out.
 
-**Where it stands: 184 failing files of 456.** 3,785 tests pass, 349 fail.
+**Where it stands: 136 failing files of 456** (184 before C1 closed). 3,934
+tests pass, 200 fail.
 Grouped by first cause (`suite-baseline.mjs` output, clustered on the error
 text; files appear under more than one cause):
 
 | # | Cause | Files | What it is |
 |---|---|---|---|
-| C1 | `missing valid process-owned fork unwind tag` | 52 | worker-main's NO-fork-instrumentation branch calls `processForkUnwindTag()`, which only an instrumented worker can answer. A program without fork instrumentation cannot start at all. |
+| C1 | `missing valid process-owned fork unwind tag` | 52 | **CLOSED 2026-09-15.** worker-main's NO-fork-instrumentation branch called `processForkUnwindTag()`, which only an instrumented worker's fork module can answer, so a program that does not fork could not START. Both binders bind `env.__wpk_fork_unwind` only when the guest declares it, so the branch passes `undefined`. **48 baseline files came back**; 184 -> 136. |
 | C2 | `fm_set_activation_imports failed with errno 22` | 41 | the module refuses the KFIG/KFIT seed. Four EINVAL sources: bad space, out-of-range section, a section that fails to decode, or a RE-SEEDED activation. |
 | C3 | unresolved attic import | 28 | test files that import a set-aside module directly. These test deleted implementations; each is a port-or-delete decision, not a bug. |
 | C4 | `borrowed vfork workspace consumed 0 prefix bytes` | 6 | the vfork/borrowed-child prefix reservation. |

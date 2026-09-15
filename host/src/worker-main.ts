@@ -5411,7 +5411,14 @@ export async function centralizedWorkerMain(
         processCppExceptionTag,
         undefined,
         `pid=${pid}: main artifact has no fork activation coordinator`,
-        processForkUnwindTag(),
+        // NO unwind tag on this branch, and that is the point of the branch.
+        // The tag is the fork-module's export, and this program has no fork
+        // instrumentation, so no module was built -- asking for it throws
+        // "missing valid process-owned fork unwind tag" before the program has
+        // run a single instruction. It is not needed either: both binders bind
+        // `env.__wpk_fork_unwind` only when the guest DECLARES that import, and
+        // an uninstrumented guest declares nothing of the kind.
+        undefined,
         undefined,
         undefined,
         pid,
@@ -5428,7 +5435,7 @@ export async function centralizedWorkerMain(
         ptrWidth,
         processLongjmpTag,
         processCppExceptionTag,
-        processForkUnwindTag(),
+        undefined, // no fork instrumentation: see above
         (timedOutPtr, vmInterruptPtr, seconds) => {
           port.postMessage({
             type: "vm_interrupt_timer",
