@@ -909,6 +909,56 @@ describe("the binding records the module assembles at capture", () => {
     };
   }
 
+  it("survives what a COW child inherits: seeds re-seed, the phase resets", () => {
+    // A COW fork child's memory is a CLONE of its parent's, and this module's
+    // statics live in that memory at `__memory_base` (the PIC placement). BSS is
+    // not re-zeroed when the child instantiates its own fork-module, so the
+    // child reads the PARENT's values out of three places at once:
+    //
+    //   - the KFIG/KFIT seed table, so its own seeding looked like a re-seed;
+    //   - the activation template-id table, the same way;
+    //   - `PHASE`, cloned MID-CAPTURE, so every child-install entry answered
+    //     EBUSY.
+    //
+    // All three were `errno 22` or `errno 16` on real programs. This drives the
+    // inherited shape directly rather than through a fork. Census D9 C2.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    expect(f.errno(), "the first template-id seed").toBe(0);
+    seedTemplateId(f, 0, 2048);
+    expect(f.errno(), "and an IDENTICAL re-seed is a no-op").toBe(0);
+    // A different id under the same activation is two modules claiming one
+    // coordinate, and stays loud.
+    new Uint8Array(f.memory.buffer, 3072, 32).fill(0xab);
+    seedTemplateId(f, 0, 3072);
+    expect(f.errno(), "a CONFLICTING template id is refused").toBe(22);
+
+    seedSections(f);
+    seedSections(f);
+    expect(f.errno(), "identical KFIG/KFIT bytes re-seed as a no-op").toBe(0);
+    const seed = f.x.fm_set_activation_imports as (
+      space: number,
+      activation: number,
+      ptr: number,
+      len: number,
+    ) => void;
+    const other = kfigOne(2, 0, GLOBAL_TYPE_I32);
+    new Uint8Array(f.memory.buffer, 9216, other.length).set(other);
+    seed(SPACE_GLOBAL, 0, 9216, other.length);
+    expect(f.errno(), "CONFLICTING KFIG bytes are refused").toBe(22);
+
+    // And the phase: open a capture, then do what a fresh worker does.
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect((f.x.fm_phase as () => number)(), "mid-capture").toBe(PHASE_CAPTURE);
+    (f.x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
+    expect(f.errno(), "the format seed is accepted").toBe(0);
+    expect(
+      (f.x.fm_phase as () => number)(),
+      "a worker that has just seeded its format has no fork in flight",
+    ).toBe(PHASE_IDLE);
+  });
+
   it("elects the activation that OWNS a shared global, not one that imports it", () => {
     // Activation 0 imports the global and, like every instrumented activation,
     // exports a catalog entry for it. Activation 9 declares it. Identity alone

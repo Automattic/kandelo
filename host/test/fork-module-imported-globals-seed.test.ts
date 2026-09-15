@@ -80,6 +80,29 @@ function place(memory: WebAssembly.Memory, at: number, bytes: Uint8Array): numbe
 }
 
 /** A valid, empty KFIT section: 16-byte header, zero records. */
+/** A valid `KFIG` section with ONE record -- different bytes from `emptySection`. */
+function oneGlobalSection(): Uint8Array {
+  const moduleName = new TextEncoder().encode("env");
+  const importName = new TextEncoder().encode("g");
+  const recordSize = 24 + moduleName.length + importName.length;
+  const bytes = new Uint8Array(16 + recordSize);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4b, 0x46, 0x49, 0x47], 0); // "KFIG"
+  view.setUint16(4, 1, true); // version
+  view.setUint16(6, 16, true); // header size
+  view.setUint32(8, 1, true); // one record
+  view.setUint32(16, recordSize, true);
+  view.setUint32(20, 1, true); // owner id
+  bytes[24] = 1; // i32
+  bytes[25] = 1; // mutable
+  view.setUint32(28, moduleName.length, true);
+  view.setUint32(32, importName.length, true);
+  view.setUint32(36, 0, true); // import ordinal
+  bytes.set(moduleName, 40);
+  bytes.set(importName, 40 + moduleName.length);
+  return bytes;
+}
+
 function emptyTableSection(): Uint8Array {
   const bytes = new Uint8Array(16);
   const view = new DataView(bytes.buffer);
@@ -112,16 +135,35 @@ describe("imported-global section seeding", () => {
     expect(f.errno()).toBe(EINVAL);
   });
 
-  it("refuses a second section for an activation it already knows", () => {
-    // Two sections for one activation means the host has confused two
+  it("refuses a DIFFERENT second section, and ignores an identical one", () => {
+    // Two DIFFERENT sections for one activation means the host has confused two
     // activations, and quietly keeping either one binds a child's imports
-    // against the wrong module's declarations.
+    // against the wrong module's declarations. That is what this refuses.
+    //
+    // An IDENTICAL re-seed is a no-op instead, and the reason is a COW fork
+    // child: this module's statics live in the guest's memory at
+    // `__memory_base`, the child's memory is a clone of its parent's, and BSS
+    // is not re-zeroed when the child instantiates its own fork-module. So the
+    // child reads the PARENT's seed table and its own seeding -- of the same
+    // guest module, hence the same bytes -- looked like a confusion and was
+    // refused. That was `errno 22` on 41 test files. Idempotence rather than a
+    // reset in `fm_set_format`, for the reason recorded beside the GC codec
+    // there: a host is free to RE-SEED a child or to let it INHERIT, and only
+    // idempotence is correct under both. Census D9 C2.
     const f = fixture();
     const section = emptySection();
     f.seed(SPACE_GLOBAL, 0, place(f.memory, 4096, section), section.length);
     expect(f.errno()).toBe(0);
     f.seed(SPACE_GLOBAL, 0, place(f.memory, 8192, section), section.length);
-    expect(f.errno()).toBe(EINVAL);
+    expect(f.errno(), "identical bytes are the same declarations").toBe(0);
+    // A VALID section that differs, not a malformed one: a malformed section is
+    // refused by the DECODER before the conflict check is reached, so asserting
+    // on it proves nothing about the check. Perturbing the check to accept
+    // every re-seed left that version of this assertion passing.
+    const other = oneGlobalSection();
+    f.seed(SPACE_GLOBAL, 0, place(f.memory, 12288, other), other.length);
+    expect(f.errno(), "different bytes are two modules, and are refused")
+      .toBe(EINVAL);
   });
 
   it("refuses a section that runs off the end of memory", () => {
@@ -233,7 +275,7 @@ describe("one seed surface over two import spaces", () => {
     f.seed(SPACE_TABLE, 0, place(f.memory, 8192, tables), tables.length);
     expect(f.errno(), "a table section is not a re-seed").toBe(0);
     f.seed(SPACE_TABLE, 0, place(f.memory, 12288, tables), tables.length);
-    expect(f.errno(), "but a second table section is").toBe(EINVAL);
+    expect(f.errno(), "and an identical table re-seed is a no-op").toBe(0);
   });
 
   it("decodes each space against its own section format", () => {

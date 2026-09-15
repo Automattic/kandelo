@@ -6849,6 +6849,16 @@ export async function centralizedThreadWorkerMain(
         threadModuleUnwindTag,
         `pid=${pid} tid=${tid}: fork unwind`,
       );
+    // The two import binders below take `threadModuleUnwindTag` RAW rather than
+    // through the asserting accessor above, and that is the whole fix for an
+    // uninstrumented pthread replica. The tag is the fork-module's export,
+    // assigned only inside `hasForkInstrumentation`; the accessor is right
+    // where a fork path needs it and wrong at the binders, which run for EVERY
+    // replica -- so an uninstrumented one threw "missing valid process-owned
+    // fork unwind tag" before its guest ran a single instruction. Both binders
+    // bind `env.__wpk_fork_unwind` only when the guest DECLARES that import,
+    // and an uninstrumented guest declares nothing of the kind. The process
+    // worker had the same defect and the same fix.
     const replicaActivationOwner =
       hasDylinkForkRole &&
       threadActivationRegistry &&
@@ -6922,7 +6932,7 @@ export async function centralizedThreadWorkerMain(
       hasDylinkForkRole
         ? undefined
         : `pid=${pid} tid=${tid}: main artifact lacks the dylink fork role capability`,
-      threadForkUnwindTag(),
+      threadModuleUnwindTag,
       (table, firstIndex, length) => {
         threadForkTables.markTableMutation(table, firstIndex, length);
       },
@@ -7042,7 +7052,7 @@ export async function centralizedThreadWorkerMain(
       ptrWidth,
       threadLongjmpTag,
       threadCppExceptionTag,
-      threadForkUnwindTag(),
+      threadModuleUnwindTag,
       (timedOutPtr, vmInterruptPtr, seconds) => {
         port.postMessage({
           type: "vm_interrupt_timer",

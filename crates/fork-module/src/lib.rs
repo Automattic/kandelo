@@ -918,9 +918,36 @@ mod wasm {
         let used = ACT_KFIG_BYTES_USED.load(Ordering::Relaxed) as usize;
         // SAFETY: single-threaded per worker.
         let index = unsafe { &mut *ACT_KFIG_INDEX.0.get() };
+        let arena_ro = unsafe { &*ACT_KFIG_BYTES.0.get() };
         for entry in index.iter().take(act_count) {
             if entry[0] == space && entry[1] == activation_id {
-                return Err(Errno::EINVAL); // re-seeded activation
+                // IDENTICAL re-seed is a no-op; a CONFLICTING one is `EINVAL`.
+                //
+                // A COW fork child's memory is a clone of its parent's, and this
+                // module's statics live in that memory at `__memory_base` (the
+                // PIC placement). BSS is not re-zeroed when the child
+                // instantiates its own fork-module, so the child sees the
+                // PARENT's seed table -- and its own seeding, which happens
+                // before it instantiates anything, looked like a re-seed and was
+                // refused. That was `errno 22` on 41 test files: every program
+                // whose guest carries a `KFIG`/`KFIT` section and forks.
+                //
+                // Idempotence rather than a reset in `fm_set_format`, where the
+                // other inherited catalogs are cleared, for the reason recorded
+                // beside the GC codec there: a host is free to RE-SEED a child
+                // or to let it INHERIT, and only idempotence is correct under
+                // both. The bytes are the guest module's own custom section, so
+                // a child re-seeding one activation presents the same bytes by
+                // construction. Different bytes under one activation id is the
+                // corruption this check exists for, and stays loud.
+                let at = entry[2] as usize;
+                let stored = arena_ro
+                    .get(at..at + entry[3] as usize)
+                    .ok_or(Errno::EINVAL)?;
+                if stored == incoming {
+                    return Ok(());
+                }
+                return Err(Errno::EINVAL); // conflicting re-seed
             }
         }
         if act_count >= ACT_KFIG_MAX_ACTS {
@@ -1026,6 +1053,15 @@ mod wasm {
         let table = unsafe { &mut *ACT_TEMPLATE_IDS.0.get() };
         for entry in table.iter().take(count) {
             if entry.0 == activation_id {
+                // Idempotent on an identical re-seed, for the reason recorded in
+                // `set_activation_imports_impl`: a COW child inherits this table
+                // through the memory clone and re-seeds it with the SAME
+                // template id, because the id is a hash of the same module's
+                // bytes. A DIFFERENT id under one activation is two modules
+                // claiming one coordinate, which is what this refuses.
+                if entry.1 == bytes {
+                    return Ok(());
+                }
                 return Err(Errno::EINVAL);
             }
         }
@@ -2835,6 +2871,22 @@ mod wasm {
         CHANNEL_BASE.store(channel_base, Ordering::Relaxed);
         ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
         ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
+        // THE PHASE ITSELF is inherited too, and it is the worst of them.
+        //
+        // A COW child's memory is cloned while its parent is MID-CAPTURE, so the
+        // child's fresh fork-module instance reads `PHASE == PHASE_CAPTURE` out
+        // of the inherited BSS. Every child-install entry requires
+        // `PHASE_IDLE`, so `fm_child_seed` answered `EBUSY` and the child died
+        // before replay -- which is what a re-forking COW child (a shell's
+        // nested command substitution) hit.
+        //
+        // A worker that has just seeded its format has no fork in flight by
+        // definition: `fm_set_format` is called ONCE, at worker setup, before
+        // any capture or install. Anything else in this static is the previous
+        // owner's. A BORROWED vfork child is unaffected either way -- it
+        // instantiates its own module into a FRESH region, whose BSS starts
+        // zeroed, and `PHASE_IDLE` is 0.
+        enter_phase(PHASE_IDLE);
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
         FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
         Ok(())

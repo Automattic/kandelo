@@ -197,17 +197,17 @@ rules on. The baseline file says it itself: *"This list should only ever
 SHRINK. Every entry removed is a file the cluster port brought back."* It is
 the lane's debt made countable, and draining it is the close-out.
 
-**Where it stands: 136 failing files of 456** (184 before C1 closed). 3,934
-tests pass, 200 fail.
+**Where it stands: 116 failing files of 456** (184 before C1, 136 before C2).
+3,989 tests pass, 146 fail.
 Grouped by first cause (`suite-baseline.mjs` output, clustered on the error
 text; files appear under more than one cause):
 
 | # | Cause | Files | What it is |
 |---|---|---|---|
 | C1 | `missing valid process-owned fork unwind tag` | 52 | **CLOSED 2026-09-15.** worker-main's NO-fork-instrumentation branch called `processForkUnwindTag()`, which only an instrumented worker's fork module can answer, so a program that does not fork could not START. Both binders bind `env.__wpk_fork_unwind` only when the guest declares it, so the branch passes `undefined`. **48 baseline files came back**; 184 -> 136. |
-| C2 | `fm_set_activation_imports failed with errno 22` | 41 | the module refuses the KFIG/KFIT seed. Four EINVAL sources: bad space, out-of-range section, a section that fails to decode, or a RE-SEEDED activation. |
+| C2 | `fm_set_activation_imports failed with errno 22` | 41 | **CLOSED 2026-09-15.** A COW child inherits the module's statics through the memory clone -- BSS lives in the guest's memory at `__memory_base` and is not re-zeroed on instantiation -- so the child read the PARENT's KFIG/KFIT seed table, its template-id table, and `PHASE` (cloned MID-CAPTURE, so every child-install entry answered EBUSY). The two seeds this lane added are idempotent on identical bytes now; `fm_set_format` clears the phase. **20 more files came back**; 136 -> 116. |
 | C3 | unresolved attic import | 28 | test files that import a set-aside module directly. These test deleted implementations; each is a port-or-delete decision, not a bug. |
-| C4 | `borrowed vfork workspace consumed 0 prefix bytes` | 6 | the vfork/borrowed-child prefix reservation. |
+| C4 | `borrowed vfork workspace consumed 0 prefix bytes` | 7 | the vfork/borrowed child install was NEVER WIRED: `fm_child_seed_borrowed` and `fm_attach_borrowed_child` have no backend method and no host caller, and `reservePrefix` in `vfork-workspace.ts` has no caller either, so a borrowed child runs the COW path, gets no private prefix, and `assertAttachComplete` catches the accounting honestly. |
 | C5 | everything else | remainder | to be grouped once C1-C4 are down; the count is currently dominated by them. |
 
 Reproduce the grouping:
@@ -227,7 +227,15 @@ Then, and only then, the rest:
 
 1. **C1** — 52 files.
 2. **C2** — 41 files.
-3. **C4** — 6 files.
+3. **C4** -- 7 files, and a DESIGN decision rather than a fix. The obvious move
+   -- a `childSeedBorrowed` backend method -- costs host surface on a ceiling the
+   maintainer has just ruled should next FALL, and it keeps the per-activation
+   private-prefix carving in JavaScript. The better shape is the opposite: seed
+   the admitted workspace region to the module ONCE and let it carve each
+   activation's prefix itself, which deletes the prefix half of
+   `vfork-workspace.ts` (158 code lines) along with `reservePrefix` and
+   `assertAttachComplete`. The host would keep only what it alone knows: the
+   region the kernel admitted. Size it before writing it.
 4. **C3** — 28 files: port or delete, one argument each.
 5. **C5** — regroup and drain.
 6. **D7** — nothing drives `__wpk_fork_ref_exn_clear`/`_abort`. A drive slot,
