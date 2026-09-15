@@ -6445,6 +6445,43 @@ mod tests {
         image
     }
 
+    /// An image that DECLARES lazy archives and carries none is refused.
+    ///
+    /// The guard exists — `container_flags` is read once, right here — and
+    /// nothing exercised it: the test module referenced neither
+    /// `container_flags` nor `VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES` at all.
+    ///
+    /// Its own comment says what it prevents, and it is not a formality: a
+    /// stale artifact whose archives were dropped turns a 4,096-byte binary
+    /// into an empty file, the load reports SUCCESS, and a build derived from
+    /// it ships the emptiness. The declaration is the only evidence that
+    /// something is missing, so refusing on it is the difference between a
+    /// loud failure and a wrong tree that looks like a right one.
+    #[test]
+    fn load_image_refuses_an_image_that_declares_lazy_archives_and_carries_none() {
+        let _guard = TestGuard::acquire();
+        // A well-formed image with an EMPTY archive table ...
+        let mut image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        // ... whose header says it has lazy archives.
+        let flags = u32::from_le_bytes([image[8], image[9], image[10], image[11]]);
+        let declared = flags | crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES;
+        image[8..12].copy_from_slice(&declared.to_le_bytes());
+
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).err(),
+            Some(Errno::EINVAL),
+            "an image declaring archives it does not carry must fail loudly",
+        );
+
+        // The same image without the declaration loads, so the refusal is
+        // about the MISMATCH rather than about anything else in the fixture.
+        let honest = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        assert!(
+            load_image(honest.len() as u64, image_host(&honest)).is_ok(),
+            "an image that declares nothing it lacks still loads",
+        );
+    }
+
     #[test]
     fn load_image_builds_the_base_tree_from_a_real_vfs_image() {
         let _guard = TestGuard::acquire();
