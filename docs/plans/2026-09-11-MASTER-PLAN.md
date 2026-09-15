@@ -625,6 +625,31 @@ were measured rather than imagined, and both were wrong. That is the signal to
 stop hypothesising: the remaining question is not *where might the flags come
 from* but *what command is actually run*.
 
+**THE CAUSE IS FOUND, 2026-09-15.** `mach build -v` gives the failing link:
+
+    /usr/bin/cc -isysroot .../MacOSX.sdk --target=arm64-apple-darwin \
+      -o nsinstall_real  -fuse-ld=lld  host_nsinstall.o host_pathsub.o
+
+Apple's `cc`, the right SDK, the right target — and **`-fuse-ld=lld`**, which
+sends the link to the nix `ld64.lld` on PATH. That linker does not know Apple's
+default library search paths, so no libSystem is supplied and every libc symbol
+is undefined. The compile step is fine; only the link is wrong.
+
+**The flag is GENERATED, not inherited.** It appears in neither the dev shell
+(`LDFLAGS` is unset), nor the recipe, nor `scripts/`. It is mozbuild's own
+configure, which detects `lld` on PATH and prefers it for host programs. That
+is exactly why hypothesis 1 failed: `HOST_LDFLAGS=""` cannot clear a flag that
+does not come from `HOST_LDFLAGS`.
+
+**Direction for the fix:** stop mozbuild choosing lld for the HOST link, or
+append a later `-fuse-ld` that overrides it — clang honours the last one. A run
+with `HOST_LDFLAGS=-fuse-ld=/usr/bin/ld` was started and **killed before it
+finished**, so its result is unknown and must not be read as either confirmation
+or refutation. Whatever is chosen must leave the TARGET link on `wasm-ld`.
+
+**Superseded:** the instruction below to capture the invocation first. It has
+been captured; it is quoted above.
+
 **What the next person should do FIRST:** capture the actual link invocation —
 `mach build -v`, or the `.mozbuild` command log — and read which linker binary
 and which library paths `host_nsinstall` is given. Everything above is
