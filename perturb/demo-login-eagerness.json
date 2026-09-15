@@ -1,0 +1,21 @@
+{
+ "_comment": "The demo-login policy predicate. Its own spec because a spec mutates ONE file and this guard lives in images/vfs/lib/demo-login.ts. The behaviour it protects is that a login program which is DEFERRED must not read as configured -- and the failure mode that motivated it was silent: a missing method threw, the caller's try swallowed it, and the predicate reported policy instead of reporting that it could not tell.",
+ "file": "images/vfs/lib/demo-login.ts",
+ "verify": "cd host && npx vitest run test/demo-login-image.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a deferred login program still reads as eagerly staged",
+   "scope": "function isDeferredEitherWay(",
+   "scope_end": "\n}\n",
+   "find": "  if (fs.isPathDeferred(path)) return true;",
+   "replace": "  if (false) return true;"
+  },
+  {
+   "name": "the per-file lazy registration half of the union is dropped",
+   "scope": "function isDeferredEitherWay(",
+   "scope_end": "\n}\n",
+   "find": "  return typeof perFile === \"function\" && perFile.call(fs, path) !== null;",
+   "replace": "  return false;"
+  }
+ ]
+}
