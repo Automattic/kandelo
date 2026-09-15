@@ -139,7 +139,6 @@
     "test/fork-module-drive-r1-trace.test.ts",
     "test/fork-module-drive-shim.test.ts",
     "test/fork-module-host-obligation.test.ts",
-    "test/fork-module-multi-activation-funcref-replay.test.ts",
     "test/fork-module-reconstruction.test.ts",
     "test/fork-module-state.test.ts",
     "test/fork-module-trampoline.test.ts",

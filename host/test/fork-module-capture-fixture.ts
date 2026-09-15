@@ -330,6 +330,83 @@ export const INTERN_KIND_I31 = 3;
 export const INTERN_KIND_STATIC_ROOT = 4;
 
 /**
+ * Options shared by the two capture entry points.
+ */
+export interface CaptureOptions {
+  /**
+   * SIDE activation ids, as a dlopen fork has: activation 0 is the main
+   * module, each id here a side module added to the SAME capture. Each gets
+   * its own template id, its own drive slots, and its own `Module` record in
+   * the arena -- so a reference naming it decodes against its own activation
+   * rather than activation 0's.
+   */
+  readonly sideActivations?: readonly number[];
+}
+
+/**
+ * Seed every activation the capture will declare, then open the capture.
+ *
+ * Activation 0 is always present. A side activation reaches the module as an
+ * `(id, fixedPrefix)` u32 pair in the sides vector `fm_parent_begin_capture`
+ * reads -- the same 8-byte record the child seed reads back.
+ */
+function openCapture(f: Fixture, sides: readonly number[]): void {
+  seedTemplateId(f, 0, 2048);
+  expect(f.errno(), "template id for activation 0").toBe(0);
+  sides.forEach((activation, index) => {
+    // A real dlopen fork's side module hashes to its OWN template id; write
+    // distinct bytes so the arena's Module records are distinguishable rather
+    // than two activations claiming one id -- a state production cannot
+    // produce. NOTHING GATES THIS TODAY: filling these 32 bytes with zeros,
+    // which makes every activation's id identical, leaves every caller of this
+    // fixture passing. It is here because a fixture that produces an
+    // impossible state teaches the next reader the wrong thing, not because a
+    // test would catch its removal.
+    const at = 2048 + (index + 1) * 64;
+    new Uint8Array(f.memory.buffer, at, 32).fill(0xb0 + index);
+    seedTemplateId(f, activation, at);
+    expect(f.errno(), `template id for activation ${activation}`).toBe(0);
+  });
+
+  for (const activation of [0, ...sides]) {
+    const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    if (f.instance.driveTable.length < needed) {
+      f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+    }
+    for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
+      f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
+    }
+    f.instance.driveTable.set(
+      base + DRIVE_SLOT_UNWIND_END,
+      voidSlotThunk(() => {}) as never,
+    );
+  }
+
+  // Low scratch, beside the template ids: the responder bump-allocates its
+  // mmaps upward from `MMAP_FLOOR`, so staging there would be handed out from
+  // under this vector by the capture's own arena allocation.
+  let sidesPtr = 0;
+  if (sides.length > 0) {
+    sidesPtr = 4096;
+    const view = new DataView(f.memory.buffer);
+    sides.forEach((activation, index) => {
+      view.setUint32(sidesPtr + index * 8, activation, true);
+      view.setUint32(sidesPtr + index * 8 + 4, 0, true);
+    });
+  }
+
+  (f.x.fm_capture_begin as () => void)();
+  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+    CHANNEL_BASE,
+    0,
+    sidesPtr,
+    sides.length,
+  );
+  expect(f.errno(), "the capture opens").toBe(0);
+}
+
+/**
  * Capture a sealed arena THROUGH THE MODULE and return its root.
  *
  * The alternative -- which eight `fork-module-*.test.ts` files still do -- is to
@@ -345,25 +422,9 @@ export const INTERN_KIND_STATIC_ROOT = 4;
 export function captureArena(
   f: Fixture,
   interned: readonly (readonly [kind: number, a: number, b: number])[],
+  options: CaptureOptions = {},
 ): { root: number; recipes: number[] } {
-  seedTemplateId(f, 0, 2048);
-  expect(f.errno(), "template id seeds").toBe(0);
-  const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
-  const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
-  if (f.instance.driveTable.length < needed) {
-    f.instance.driveTable.grow(needed - f.instance.driveTable.length);
-  }
-  for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
-    f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
-  }
-  f.instance.driveTable.set(
-    base + DRIVE_SLOT_UNWIND_END,
-    voidSlotThunk(() => {}) as never,
-  );
-
-  (f.x.fm_capture_begin as () => void)();
-  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
-  expect(f.errno(), "the capture opens").toBe(0);
+  openCapture(f, options.sideActivations ?? []);
   const intern = f.x.fm_capture_intern as (k: number, a: number, b: number) => number;
   const recipes = interned.map(([kind, a, b]) => {
     const id = intern(kind, a, b);
@@ -421,26 +482,9 @@ export function captureGraph(
   f: Fixture,
   leaves: readonly (readonly [kind: number, a: number, b: number])[],
   aggregates: readonly CapturedAggregate[] = [],
-  options: { readonly scalarStagingBase?: number } = {},
+  options: CaptureOptions & { readonly scalarStagingBase?: number } = {},
 ): { root: number; recipes: number[]; aggregateRecipes: number[] } {
-  seedTemplateId(f, 0, 2048);
-  expect(f.errno(), "template id seeds").toBe(0);
-  const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
-  const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
-  if (f.instance.driveTable.length < needed) {
-    f.instance.driveTable.grow(needed - f.instance.driveTable.length);
-  }
-  for (const slot of [DRIVE_SLOT_MODULE_STATE_SAVE, DRIVE_SLOT_UNWIND_BEGIN]) {
-    f.instance.driveTable.set(base + slot, saveSlotThunk(() => {}) as never);
-  }
-  f.instance.driveTable.set(
-    base + DRIVE_SLOT_UNWIND_END,
-    voidSlotThunk(() => {}) as never,
-  );
-
-  (f.x.fm_capture_begin as () => void)();
-  (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
-  expect(f.errno(), "the capture opens").toBe(0);
+  openCapture(f, options.sideActivations ?? []);
 
   const intern = f.x.fm_capture_intern as (k: number, a: number, b: number) => number;
   const recipes = leaves.map(([kind, a, b]) => {
