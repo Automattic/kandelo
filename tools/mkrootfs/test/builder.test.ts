@@ -13,6 +13,7 @@ import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
+import { refuseImageThisReaderCannotSee } from "../src/cli/sdef-reader-guard.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
@@ -905,6 +906,74 @@ describe("image builder — round-trip", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("refuses to let a KLZY-only reader answer about an SDEF image", async () => {
+    // The builder writes `SDEF`; `MemoryFileSystem` reads `KLZY`. Handed one of
+    // these images it finds NO deferred files and reports each as a
+    // zero-length ordinary file — which `inspect` would print, `extract` would
+    // write to disk, and `add` would save back, turning a rootfs full of lazy
+    // binaries into an image with none. Every one of those is a wrong answer
+    // indistinguishable from a right one.
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-sdef-guard-"));
+    try {
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(
+        manifest,
+        [
+          "/ d 0755 0 0",
+          "/bin d 0755 0 0",
+          "/bin/tool f 0755 0 0 lazy_url=binaries/tool.wasm lazy_size=4242",
+          "",
+        ].join("\n"),
+      );
+      const image = await buildImage({ sourceTree: tmp, manifest, repoRoot: tmp });
+
+      // The reader that cannot see them says there are none...
+      const blind = MemoryFileSystem.fromImage(image);
+      expect(blind.exportLazyEntries()).toHaveLength(0);
+      // ...and the reader that can says otherwise, which is the whole disagreement.
+      const truth = SffsImageFs.create();
+      truth.loadImage(image);
+      expect(truth.lazyEntries().files).toHaveLength(1);
+
+      expect(() => refuseImageThisReaderCannotSee(image, blind))
+        .toThrow(/deferred file\(s\) in a section this reader does not understand/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("lets a KLZY-only reader answer about an image with nothing deferred", async () => {
+    // The control. Without it the guard could be refusing every image and the
+    // test above would read exactly the same.
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-sdef-guard-ok-"));
+    try {
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(manifest, "/ d 0755 0 0\n/plain.txt f 0644 0 0 src=plain.txt\n");
+      writeFileSync(join(tmp, "plain.txt"), "hi");
+      const image = await buildImage({ sourceTree: tmp, manifest, repoRoot: tmp });
+      const blind = MemoryFileSystem.fromImage(image);
+      expect(() => refuseImageThisReaderCannotSee(image, blind)).not.toThrow();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("lets a KLZY reader answer about a KLZY image it CAN see", async () => {
+    // The other control, and the one that matters most. `SffsImageFs` reads
+    // `KLZY` too, so a guard that skipped the "does this reader already see
+    // them?" check would consult the truth reader, find deferred files, and
+    // refuse an image the caller reads perfectly well — breaking every
+    // memfs-written image instead of catching the unreadable ones.
+    const memfs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    memfs.mkdirWithOwner("/bin", 0o755, 0, 0);
+    memfs.registerLazyFile("/bin/tool", "https://example.invalid/tool.wasm", 4242, 0o755);
+    const image = await memfs.saveImage();
+
+    const reader = MemoryFileSystem.fromImage(image);
+    expect(reader.exportLazyEntries().length).toBeGreaterThan(0);
+    expect(() => refuseImageThisReaderCannotSee(image, reader)).not.toThrow();
   });
 
   it("stamps the declared capacity into the image it emits", async () => {

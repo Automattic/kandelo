@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { refuseImageThisReaderCannotSee } from "./sdef-reader-guard.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs add <image> <vfs-path> [options]
 
@@ -261,6 +262,7 @@ export async function runAdd(args: string[]): Promise<number> {
     mfs = MemoryFileSystem.fromImage(imageBytes);
     // WHY: authenticate before source reads, namespace mutation, or image writes.
     await mfs.verifyImportedLazyAtomicGroupSeals();
+    refuseImageThisReaderCannotSee(imageBytes, mfs);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(
