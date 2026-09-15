@@ -2360,6 +2360,58 @@ image actually has and say so when it has neither.
 **What must NOT happen is an image that carries both**, with two producers
 writing the same URL into two places that can disagree. The courier contract
 says whoever fetches decides; it does not say the URL may be recorded twice.
+### WHICH TESTS GO TO RUST — the criterion, after the maintainer asked twice
+
+**The criterion is the maintainer's own: a test belongs where the code under
+test lives.** Applied properly it splits the corpus cleanly, and the split is
+not the one this lane proposed in the morning.
+
+**Go to Rust — the ~26 that assert on the filesystem.**
+`sharedfs-positioned-io`, `sharedfs-uid-gid`, `sharedfs-safety`,
+`host-file-offset`, `lazy-tree`, `vfs-image-*`. They assert filesystem
+behaviour, that behaviour is now Rust, and a TypeScript test of it is a test of
+a bridge to the thing it means to check.
+
+**Stay TypeScript — the ~35 "pure fixture" files, and NOT because porting them
+is inconvenient.** They are host-runtime and kernel INTEGRATION tests that need
+a disk to boot from:
+
+* `fork-continuation.spec.ts` asks whether **Chromium** reconstructs Wasm GC
+  state across a fork;
+* `opcache-prewarm` asks whether PHP's opcache writes cache files a later
+  process can consume, through the kernel;
+* `binary-resolver` asks which artifact tier wins;
+* `sudo-lite` and `secure-exec` ask whether setuid exec survives the host.
+
+The code under test is `kernel.ts`, `kernel-worker.ts`, `process-lifecycle.ts`
+— TypeScript — plus, for the browser specs, a real browser. **"Does Chromium do
+X" has no Rust unit test.** Porting these would mean porting the host, which is
+lanes F and L. What moves is the FIXTURE they build their disk with, and that
+is the repoint.
+
+**Why this is not the argument the maintainer already refused.** The morning's
+version said *these check what the builder wrote, so keep them in TypeScript* —
+refuted in one line, because the builder is Rust. This version names a
+different thing under test, and it is checkable: open the file and see what the
+assertions mention. Where they mention a browser, a kernel, or a resolver, the
+test is where it belongs.
+
+### THE CENSUS UNDER-COUNTS, AND THE REPOINT IS THE MEASUREMENT
+
+**"35 ready" is optimistic and the first batch proved it twice.**
+
+* **`node-kernel-init-seal`** reaches `registerLazyTree` through
+  `lazy-atomic-seal-fixture.ts`. A census attributing methods to the variable
+  they are called on cannot see a method called inside a helper, so **every
+  file that builds its fixture through a helper is under-counted.**
+* **`reusable-kernel-export-stack`** hands the filesystem to the kernel as a
+  **live mount backend** and needs `statfs`. It is not a fixture user at all;
+  the classifier saw only builder calls because the mount is what consumes it.
+
+**So the working method is: repoint, run, revert what fails, and let the
+failure re-classify the file.** That is slower than a census and it is the only
+one that cannot be wrong — six sizings by inspection have each been wrong in a
+different direction, and a file that boots is not a file that was counted.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
