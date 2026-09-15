@@ -2634,6 +2634,48 @@ table — transports per archive, URL per inode. Three shapes could supply it:
 **Option 3 looks right and is not this lane's to choose alone**, because it adds
 a kernel→host question and touches the ABI surface lanes F and L own. Recorded
 for the maintainer rather than started.
+### A TEST CAN BE DELETED WITHOUT REMOVING A LINE — 2026-09-15
+
+Adding a Rust test to `rootfs.rs` anchored on `fn chmod_chown_and_symlink_creation(` —
+**which is below the `#[test]` that makes it a test.** The insertion landed
+between the attribute and its function, so the new test absorbed the attribute
+and `chmod_chown_and_symlink_creation` silently stopped running.
+
+**It still looked like a test**: same indentation, same body, same assertions,
+same `#[cfg(test)]` module, `TestGuard::acquire()` on the first line. Only
+`cargo test <its name>` reveals it, reporting *running 0 tests*, and nobody
+types the name of a test they are not thinking about.
+
+**No green signal could see it.** The full suite stayed at 2177 passing,
+because the new test replaced the one it displaced — a one-in, one-out that
+nets to zero in every count anyone looks at.
+
+**Mutation testing is what caught it.** The trial *"symlink is created with
+something other than 0o777"* had existed and been killed for weeks. It started
+SURVIVING, because the only assertion covering it lived in the function that
+had stopped running. **A surviving mutant is not always a thin test — sometimes
+it is a test that does not run**, and that widens a rule this campaign had
+written down too narrowly ("treat a survivor as your test being wrong rather
+than the trial being unfair").
+
+**The audit that followed is clean.** Every zero-argument function inside a
+`#[cfg(test)]` module across `crates/**` that asserts or takes a `TestGuard`
+but carries no attribute: five hits, all named setup helpers — `reset`,
+`fresh`, `reset_mice_state`, `build_lazy_tree`, `fresh_tree`. **No other test
+has been detached.**
+
+### THE GATE THIS SUGGESTS, AND WHY IT IS NOT BUILT HERE
+
+Counting `#[test]` occurrences would NOT have caught it: the attribute was
+still in the file, attached to the wrong function. What catches it is the
+count of **functions carrying `#[test]`**, with a FLOOR.
+
+That is the opposite direction from every existing surface. `docs/surface-budget.json`
+is a set of ceilings — *this must not grow* — plus a banking rule for
+reductions. A test count needs *this must not fall*, which is a new assertion
+shape on shared infrastructure that every lane's tests would answer to.
+**Recorded for the maintainer rather than added**, on the same reasoning that
+kept the two new surfaces out of lane V's closure.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
