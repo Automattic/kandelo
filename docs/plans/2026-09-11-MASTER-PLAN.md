@@ -2458,6 +2458,57 @@ instead of a test that silently executed nothing.
 **The ordering this implies:** finish the module-sourced archive reconstruction
 FIRST, then repoint the lazy-carrying tests, then delete `memory-fs.ts`. Doing
 it in any other order means either a silent breakage or a revert.
+### THE HOST BUILT A KERNEL MANIFEST NOTHING READ — removed 2026-09-14, with
+### two of this lane's own claims retracted on the way
+
+**The maintainer asked, mid-session: "is your work still moving things into
+rust? be careful not to build or restore more typescript."** The honest answer
+was no — the archive reconstruction landed an hour earlier was ~90 lines of
+host TypeScript that PARSES a platform format, which this campaign's own note
+calls a port target rather than a thing to patch.
+
+Chasing the port produced a better answer than the port.
+
+**`buildRootfsLazyWiring` returned a `RootfsLazyInput` — a lazy manifest of
+every file and archive — and nothing in production ever read it.** The single
+call site destructures `deferredProvider` and drops the rest, because the
+kernel parses the image's own KLZY section. **The host was computing a second
+copy of what the image already carries, and throwing it away.**
+
+So the manifest is deleted rather than ported: porting it would have moved dead
+scaffolding into the module and made the module carry host-only metadata, which
+is the wrong direction wearing the right clothes. What remains is the fetch
+table — archive id to transports and size — and fetching is genuinely the
+host's, because CORS, a service worker, or no network at all are host facts the
+kernel cannot know.
+
+### RETRACTION 1 — "a wrong mount prefix gives a wrong manifest that still loads"
+
+Written in a commit message this evening and false. `sffs_deferred.rs:65` says
+the opposite in the code's own words: *"[`crate::klzy`] also carries a
+`mount_prefix` per archive. **This does not**, because the kernel never reads
+it — measured, not assumed: the only thing in the tree that touches
+`mount_prefix` is a test fixture BUILDING a KLZY section."*
+
+The field is inert to the kernel. A host-side validator in
+`package-deferred-tree.ts` does read it, so it is not unused — but the danger
+this lane attributed to it does not exist.
+
+### RETRACTION 2 — "the fix is to port the reconstruction into Rust"
+
+Told to the maintainer as a recommendation, and they approved it. It was wrong:
+the consumer should not exist. **A recommendation that survives a maintainer's
+approval is not thereby correct**, and the check that found this was reading
+what the kernel does with the data — the same check that should have preceded
+the recommendation.
+
+### WHAT THIS MAKES DELETABLE NEXT
+
+`host/src/vfs/kernel-lazy-section.ts` is **437 lines of TypeScript that WRITES
+the KLZY binary wire format**, and `crates/runtime-core/src/klzy.rs` already
+decodes it. Its only production writer-caller is `memory-fs.ts`. That makes it
+the largest remaining piece of TypeScript that owns a filesystem format, and a
+clean port target the moment the worker flip lands.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
