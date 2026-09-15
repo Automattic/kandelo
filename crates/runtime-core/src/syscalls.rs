@@ -31828,6 +31828,56 @@ mod tests {
         assert_eq!(result, Err(Errno::ESPIPE));
     }
 
+    /// The defining property of positioned I/O: it does not move the shared
+    /// file offset.
+    ///
+    /// `sys_pread` and `sys_pwrite` are correct here by CONSTRUCTION -- neither
+    /// touches the OFD's offset -- and nothing asserted it, so the construction
+    /// was the only thing holding. Two processes sharing a description through
+    /// `fork` or `dup` share that offset, so a positioned read that advanced it
+    /// would move a file pointer in a process that never asked for one, and
+    /// the symptom would appear in the OTHER process.
+    ///
+    /// Moved here from `host/test/vfs/sharedfs-positioned-io.test.ts`, which
+    /// asserted it of the TypeScript filesystem. The offset lives in the
+    /// fd/OFD layer, not in a filesystem, so this is where it belongs.
+    #[test]
+    fn positioned_io_leaves_the_shared_offset_alone() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/f", O_RDWR | O_CREAT, 0o644).unwrap();
+        sys_write(&mut proc, &mut host, fd, b"abcdefgh").unwrap();
+
+        // Park the shared offset somewhere findable.
+        let parked = sys_lseek(&mut proc, &mut host, fd, 3, SEEK_SET).unwrap();
+        assert_eq!(parked, 3);
+
+        let mut buf = [0u8; 2];
+        sys_pread(&mut proc, &mut host, fd, &mut buf, 6).unwrap();
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR).unwrap(),
+            3,
+            "pread moved the shared offset",
+        );
+
+        sys_pwrite(&mut proc, &mut host, fd, b"ZZ", 0).unwrap();
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR).unwrap(),
+            3,
+            "pwrite moved the shared offset",
+        );
+
+        // And an ordinary read DOES move it, so the assertions above are about
+        // positioned I/O rather than about an offset nothing ever advances.
+        let mut scalar = [0u8; 2];
+        sys_read(&mut proc, &mut host, fd, &mut scalar).unwrap();
+        assert_eq!(
+            sys_lseek(&mut proc, &mut host, fd, 0, SEEK_CUR).unwrap(),
+            5,
+            "a scalar read is supposed to advance the offset",
+        );
+    }
+
     #[test]
     fn test_pread_einval_on_negative_offset() {
         let mut proc = Process::new(1);
