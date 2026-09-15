@@ -529,7 +529,7 @@ trusted"* — was retired with an argument that reads correctly: unreachable by
 construction, the check stays annotated, and a trial that cannot fail is
 removed rather than left green. That half needs nothing.
 
-## B40 — bash's source pin resolves to a 404, blocking `build-rootfs.sh`
+## B40 — a dead mirror stopped the build — RESOLVED `8e5dbfc26`, 2026-09-15
 
 OPEN, **maintainer decision**. `packages/registry/bash/package.toml` pins
 `https://ftpmirror.gnu.org/bash/bash-5.2.37.tar.gz`. That redirector currently
@@ -561,6 +561,43 @@ costs nothing in integrity. The work is lifting an existing, proven pattern
 into the shared helper and the `[source]` schema, not inventing one.
 
 This is the last thing between the campaign and browser validation.
+
+**RESOLVED 2026-09-15, maintainer chose to lift the pattern into the shared
+helper rather than repin one package.** `[source]` gains an optional `mirrors`
+array; `kandelo_package_stage_verified_source` tries the primary and then each
+mirror, failing loudly and naming the package when every host is exhausted.
+All fourteen ftpmirror-pinned packages declare the canonical `ftp.gnu.org`
+archive as fallback, and each of those fourteen URLs was fetched and returned
+200 before being declared.
+
+The mechanism was not invented: `cpython`, `less` and `libxml2` had each grown
+their own `DOWNLOAD_URLS` loop. It was proven, and in the wrong place three
+times over.
+
+**Evidence, from real infrastructure rather than injected failure.**
+`scripts/build-rootfs.sh` now exits 0 where it had been failing, and the
+fallback is visible in that run:
+
+    ==> Staging verified gawk 5.3.0 source...
+    gawk: source host failed, trying the next: https://ftpmirror.gnu.org/gawk/gawk-5.3.0.tar.xz
+
+The failure half was observed in the run before, when gawk still had no
+mirrors: *"ERROR: gawk could not fetch its source from any configured host"*.
+`cargo test -p xtask`: 688 passed, 0 failed with all fourteen manifests
+carrying the field.
+
+**H-25 — a perturbation that cannot reach the code proves nothing.** Two
+earlier attempts to prove this change broke a package's URL and ran
+`./run.sh setup`, which succeeded; that was read as the fallback working. It
+was not. Setup runs under `source-only-v1`, and that branch of the helper
+returns BEFORE the download — the resolver supplies the archive — so the
+edited code never executed. The path that downloads is `build-rootfs.sh`,
+which is where B40 manifested in the first place.
+
+This is the same shape as B42 and as the two inert ratchets found the same
+day: **a green result says nothing until you know the thing you changed
+actually ran.** Before believing a perturbation, confirm the mutated code is
+on the path the verifier exercises.
 
 
 ## Release readiness for #1350 — a known, unclosed gap
