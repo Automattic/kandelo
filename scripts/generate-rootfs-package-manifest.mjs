@@ -632,6 +632,16 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
         // several ship mode 4755 — so bytes of the same length from a
         // substituting host, a poisoned cache or a network position executed as
         // root inside the guest.
+        //
+        // The digest is only correct if this file is the file the host later
+        // SERVES, and it is — by construction rather than by convention, which
+        // is worth stating because nothing else states it. `resolveBinary`
+        // returns either the staging root this generator filled with
+        // `copyFileSync` (byte-for-byte), or `binaries/`, whose entries are
+        // symlinks into the immutable xtask cache the runtime resolves from.
+        // Both readings reach the same bytes. If that ever stops being true,
+        // every lazy binary fails its digest at first use — loudly, which is
+        // the right failure, but the cause will not be obvious from here.
         const contents = readFileSync(resolvedBinary);
         lines.push(
           `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${contents.byteLength} lazy_sha256=${createHash("sha256").update(contents).digest("hex")}`,

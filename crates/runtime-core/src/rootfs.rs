@@ -1656,6 +1656,12 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
             });
         }
     }
+    // The v3 manifest has NO digest field, so every deferred file it places is
+    // unverifiable by construction. Without this the same setuid-root lazy
+    // binary keeps its bits loaded through `load_manifest` and loses them
+    // through `load_image` — one security question with two answers, decided
+    // by which loader the host happened to call.
+    demote_unverifiable_setid();
     Ok(count)
 }
 
@@ -5377,6 +5383,43 @@ mod tests {
         image.extend_from_slice(&body);
         image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
         image
+    }
+
+    #[test]
+    fn a_v3_manifests_setuid_lazy_member_is_demoted_too() {
+        let _g = TestGuard::acquire();
+        // Both loaders have to answer the same security question the same way,
+        // or which one the host happened to call decides whether a binary runs
+        // as root. The v3 manifest has no digest field at all, so every lazy
+        // member it places is unverifiable by construction.
+        //
+        // A base file from this manifest is NOT covered, and deliberately: a
+        // host-walked tree is host storage rather than a lazy reference, which
+        // is the distinction `deferred_base` draws and the one lane S is about.
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
+        m.extend_from_slice(&3u32.to_le_bytes());
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
+        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, 0, 0, b"/bin", b"");
+        // Kind 4 with set-user-ID and set-group-ID, the shape lane S names.
+        enc_entry(&mut m, 4, 0o6755, 0, 0, 3, 0, 4_242, 0, 0, b"/bin/sudo", b"");
+        m.extend_from_slice(&7u32.to_le_bytes()); // archive_id
+        m.extend_from_slice(&8u32.to_le_bytes()); // source_path_len
+        m.extend_from_slice(b"bin/sudo");
+        m.extend_from_slice(&1u32.to_le_bytes()); // archive table: one entry
+        m.extend_from_slice(&7u32.to_le_bytes());
+        m.extend_from_slice(&4096u64.to_le_bytes());
+
+        assert_eq!(load_manifest(&m).unwrap(), 3);
+        assert_eq!(
+            lstat(b"/bin/sudo").unwrap().st_mode & 0o7777,
+            0o0755,
+            "a manifest that cannot describe a digest cannot vouch for root",
+        );
+        // Still there, still deferred, still its real size: demoted, not
+        // refused.
+        assert_eq!(lstat(b"/bin/sudo").unwrap().st_size, 4_242);
     }
 
     #[test]

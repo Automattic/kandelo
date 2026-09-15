@@ -234,6 +234,41 @@ describe("shell VFS base composition", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("gives every lazy shell binary the digest of the artifact it resolved", () => {
+    // The shell image's half of lane S. `populateLazyBinaries` already opened
+    // each artifact to `statSync` its size; it hashes the same bytes now, and
+    // without that these binaries ship fetched by URL with their LENGTH as the
+    // only check — which is what `setuidLazyWithoutDigest` was about.
+    //
+    // Driven through the exported entry with an injected resolver, the way the
+    // strict-dependency test above does, because `populateLazyBinaries` is
+    // internal and a test that reached past the entry point would not be
+    // exercising what the builder runs.
+    const root = mkdtempSync(join(tmpdir(), "kandelo-shell-lazy-digest-"));
+    const artifact = join(root, "program.wasm");
+    writeFileSync(artifact, "the bytes this binary really is");
+    const expected = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+
+    const fs = productFs(64 * MiB);
+    try {
+      populateShellEnvironment(fs, { resolveArtifact: () => artifact });
+    } catch {
+      // Populating the whole environment needs artifacts this fixture does not
+      // synthesise (archives, terminfo). The lazy binaries are registered
+      // before any of that, so what they carry is already decided and asserted
+      // below; failing here would test the fixture rather than the builder.
+    }
+
+    const lazy = fs.lazyEntries().files.filter((f) => f.archiveId === 0);
+    expect(lazy.length).toBeGreaterThan(0);
+    for (const file of lazy) {
+      const hex = Array.from(file.digest, (b) => b.toString(16).padStart(2, "0")).join("");
+      expect(hex, `${file.path} must carry the digest of its artifact`).toBe(expected);
+    }
+    // And the address, because a digest with nothing to fetch verifies nothing.
+    expect(lazy.every((f) => f.uri !== "")).toBe(true);
+  });
+
   it("never replaces a missing strict dependency with ambient magic data", () => {
     const root = mkdtempSync(join(tmpdir(), "kandelo-strict-shell-resolver-"));
     const genericArtifact = join(root, "program.wasm");
