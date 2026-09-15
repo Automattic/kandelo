@@ -3344,6 +3344,27 @@ and swaps the operator: `typeof process !== "undefined" || process.platform`.
 **The same polarity trap caught this lane twice — writing the guard, and
 writing its trial.**
 
+### VERIFYING NEW TRIALS WITHOUT RE-RUNNING A WHOLE SPEC — 2026-09-15
+
+`xtask perturb` takes `<spec.json> | --validate` and has **no trial filter**, so
+adding five trials to a 41-trial spec costs a full re-run — 25 minutes for
+`bridge.json`, because every trial re-runs vitest and its global setup
+regenerates the program package index at ~35s a trial.
+
+`run()` reads `args[0]` as a path and nothing requires it to live under
+`perturb/`. So a temporary spec carrying only the new trials, written outside
+that directory and deleted afterwards, verifies them in minutes:
+
+```
+cp perturb/<spec>.json /tmp/new-trials.json   # then trim to the new trials
+bash scripts/xtask.sh perturb /tmp/new-trials.json
+```
+
+Outside `perturb/` on purpose: `validate_all` walks that directory, so a
+scratch spec left there becomes a permanent entry nobody meant to add. The full
+spec still has to run before the work is called done — this is for the edit
+loop, not for the evidence.
+
 ### A WAIT LOOP THAT MATCHES ITSELF NEVER EXITS — 2026-09-15
 
 `until ! pgrep -f "xtask.*perturb"; do sleep 30; done` **never terminates**,
