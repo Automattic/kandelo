@@ -5866,7 +5866,44 @@ parameters on an existing one do not — and the call already carries the
 archive's length and cohort declaration on exactly that argument, with the code
 comment beside it making this same case. The TypeScript builders already hold
 both values: `reduceLazyArchiveGroups` reads `group.integrity?.bytes` and
-discards `integrity.sha256` today.
+discards `integrity.sha256` today, and the one production caller
+(`images/vfs/scripts/shell-lazy-archives.ts`) already computes
+`createHash("sha256").update(bytes)` over the archive's fetched bytes — which
+is exactly what the kernel's archive digest covers. Nothing new has to be
+computed anywhere; the values exist and are thrown away.
+
+**The coupling that decides the increment's shape.** The descriptor cannot
+simply shed `url` and `sha256`, because `host/src/vfs/module-base-image.ts`
+parses them back out of it to reconstruct a module-built image's archives. So
+the typed fields have to flow OUT before the JSON can shrink, and the increment
+is six steps in one commit rather than two:
+
+1. `sm_register_lazy_file` takes the URI and digest (+3 arguments: pointer and
+   length for the address, a bare pointer for the fixed-length digest, null
+   meaning none — a length there would let a truncated hash read as a
+   short-but-present one).
+2. It routes them to `rootfs::set_archive_source` for an archive and to
+   `insert_lazy_file` for a standalone file, never both: a member is addressed
+   by its archive and the format refuses a second address on one.
+3. `rootfs::lazy_entries`/`LazyEntryView` and the archive accessor carry the
+   source out.
+4. `sm_lazy_entries` serialises it.
+5. `module-base-image.ts` reads the typed fields instead of `JSON.parse`,
+   keeping only `mountPrefix` from the descriptor — which is genuinely
+   consumer-only, since the kernel never reads a mount prefix.
+6. The descriptor JSON shrinks to `{mountPrefix}`.
+
+Step 5 is the deletion that pays for steps 1-4: a host module that parses a
+platform format stops parsing two of its three fields.
+
+**Blast radius, measured.** `registerLazyArchiveFromEntries` — the legacy
+`MemoryFileSystem` path — does not go through the module and is untouched. Of
+the fixtures that DO reach the module, every one passes a well-formed
+64-character placeholder (`"b".repeat(64)` and friends) that converts cleanly,
+and none of them fetches, so a placeholder digest covers a fetch that never
+happens. The one production caller passes a real hash. So the behaviour change
+is confined to the shell image's archives, which begin being verified — and
+that is the change, not a side effect of it.
 
 
 ## Acceptance evidence
