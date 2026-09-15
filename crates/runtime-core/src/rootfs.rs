@@ -2875,21 +2875,19 @@ where
     }
 }
 
-/// Whether the image declared a digest for `idx`'s bytes AND those bytes are
-/// still unmaterialized.
+/// Whether the image declared a digest for `idx`'s bytes.
 ///
-/// Both halves matter. Without the first, every deferred read would lose the
-/// streaming path for no gain, because an image declaring no digest has nothing
-/// to verify against. Without the second, a file already verified and installed
-/// in the overlay would be re-fetched and re-hashed on every read — and worse,
-/// a file the guest has since WRITTEN to would be checked against a digest that
-/// describes bytes it deliberately replaced.
+/// Deliberately ONLY that. It began life also asking whether the bytes were
+/// still unmaterialized, which reads like a second necessary half and is not
+/// one: [`ensure_materialized`] already answers "this is an overlay file, there
+/// is nothing to fetch" and returns without re-fetching or re-hashing. Asking
+/// it here too was a second author for one judgement — the shape this whole
+/// change exists to remove — and perturbation proved it: deleting the second
+/// half changed no observable behaviour, because the function it was
+/// second-guessing had already made the same call.
 fn declares_digest(idx: u32) -> bool {
     ROOTFS.with(|state| match state.get(idx) {
-        Some(inode) => {
-            inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE
-                && !matches!(inode.kind, InodeKind::Regular(_))
-        }
+        Some(inode) => inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE,
         None => false,
     })
 }
