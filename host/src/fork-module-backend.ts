@@ -95,7 +95,7 @@ export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
  * derives every slot from `fm_drive_table_base`, so a host that grew the table
  * by a smaller stride would leave later activations overlapping earlier ones.
  */
-export const FORK_ACTIVATION_DRIVE_SLOTS = 14;
+export const FORK_ACTIVATION_DRIVE_SLOTS = 15;
 
 /**
  * One activation's guest exports, bound into the module's drive table so the
@@ -153,6 +153,9 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   { slot: 11, name: "__wpk_fork_ref_gc_encode_slot", required: false },
   { slot: 12, name: "__wpk_fork_ref_gc_probe", required: false },
   { slot: 13, name: "wpk_fork_module_state_save", required: true },
+  // The peer-table checkpoint's save walk. Not required: a guest built
+  // without dylink support has no table state to publish.
+  { slot: 14, name: "wpk_fork_module_table_state_save", required: false },
 ] as const;
 
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
@@ -701,6 +704,18 @@ export class ForkModuleContinuationBackend {
     return this.stage(bytes, "externref handover");
   }
 
+  /**
+   * Seed the replay driver from a sealed arena and build its install plan.
+   *
+   * Distinct from `attachChild`: this appends NO guest restore/finish steps,
+   * because a peer-table install is single-phase -- there is no child being
+   * reconstructed, only this worker's tables catching up to a peer's
+   * publication.
+   */
+  restoreFromArena(moduleStateRoot: number, pid: number): number {
+    return this.call("fm_restore_from_arena", moduleStateRoot, pid);
+  }
+
   /** Make a child's decoded reference graph resident for the accessors below. */
   decodeReferenceGraph(moduleStateRoot: number): void {
     this.call("fm_decode_reference_graph", moduleStateRoot);
@@ -745,6 +760,20 @@ export class ForkModuleContinuationBackend {
    * that declared neither plans 0 imports, which is the ordinary single-module
    * case rather than an error.
    */
+  /**
+   * Capture a PEER-TABLE checkpoint into a fresh module-owned arena.
+   *
+   * Returns the arena root the dlopen loader publishes. The arena outlives this
+   * call -- peers read it -- so nothing here releases it.
+   */
+  capturePeerTables(channelBase: number): number {
+    const root = this.call("fm_capture_peer_tables", channelBase);
+    if (root === 0) {
+      throw new Error(`${this.label}: peer-table capture produced no arena`);
+    }
+    return root;
+  }
+
   childImportPlan(activation: number, moduleStateRoot: number): number {
     return this.call("fm_child_import_plan", activation, moduleStateRoot);
   }

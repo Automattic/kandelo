@@ -78,6 +78,14 @@ describe("activation drive bindings", () => {
       ["__wpk_fork_ref_gc_encode_slot", constant("DRIVE_SLOT_GC_ENCODE")],
       ["__wpk_fork_ref_gc_probe", constant("DRIVE_SLOT_GC_PROBE")],
       ["wpk_fork_module_state_save", constant("DRIVE_SLOT_MODULE_STATE_SAVE")],
+      // The peer-table checkpoint's save walk. A DIFFERENT guest export from
+      // the one above, which is why it needs a slot of its own: that one walks
+      // globals, tables and the reference graph, and driving it for a table
+      // checkpoint would publish far more than a checkpoint means.
+      [
+        "wpk_fork_module_table_state_save",
+        constant("DRIVE_SLOT_MODULE_TABLE_STATE_SAVE"),
+      ],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {

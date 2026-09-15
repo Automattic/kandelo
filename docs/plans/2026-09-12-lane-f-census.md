@@ -153,6 +153,38 @@ not in this lane's nine-import stride, and it must not be closed by having the
 host call the export directly — that would add host surface to work around a
 missing slot.
 
+### D8 — SCHEDULED ACCEPTANCE: the peer-table port's real test already exists
+
+The peer-table checkpoint (`fm_capture_peer_tables` plus the host restore) is
+landed on module-side tests and stubbed host tests. Asked what stopped me
+writing a real one, the answer turned out to be that **one is already written**:
+
+`host/test/fork-dlopen-replay-e2e.test.ts`, the case
+**"replays pthread-hosted dlopen table state into a fresh fork child"** (line
+505). It compiles a real side library with a relocated function pointer, dlopens
+it from a pthread, publishes that thread's dlopen table state, and forks a child
+that must call through the replayed pointer. That is exactly the path this port
+replaces, end to end, with a real guest.
+
+It cannot run yet for the reason everything else cannot: the file is in
+`host/test/expected-failures.json` because `worker-main.ts` still fails to
+resolve its attic imports. It is also `artifactGate`d on the musl sysroot and
+`local-binaries/kernel.wasm`.
+
+**THE ACCEPTANCE, to be run and reported, not assumed:**
+
+1. When `forkAtticImports` reaches 0, build what the gate needs
+   (`scripts/build-musl.sh`, then the kernel) and run
+   `npx vitest run test/fork-dlopen-replay-e2e.test.ts` **on its own**, so a
+   skip cannot hide inside a 452-file summary.
+2. Confirm the file is not SKIPPED -- the gate makes a skip look like a pass to
+   the baseline ratchet, which is the trap `suite-baseline.mjs` warns about.
+3. Bank its `expected-failures.json` entry in the same commit that makes it
+   pass, or report exactly which of its six cases still fail and why.
+
+Until that is done, the peer-table port's joined path is UNPROVEN and every
+report of it must say so.
+
 ### D6 — Ledger: provisional ceiling raises awaiting a ruling
 
 All made 2026-09-14, reasons beside each number in `docs/surface-budget.json`.
@@ -8863,3 +8895,51 @@ Nobody ran `cargo test -p fork-module-inject`. That is also how a constant
 marked "MUST equal" came to disagree by one: this crate's tests are in the
 workspace run, so the drift was catchable the whole time and the suite was
 already red when it happened.
+
+---
+
+## §179 -- Zero. What the last six imports actually were
+
+`worker-main.ts` imports nothing from `attic/fork-typescript-do-not-use/`.
+`forkAtticImports` is banked at 0, `workerMainTypeScript` fell 248 in the same
+commit, and the host typechecks with 0 errors where this stride started at 54.
+
+**The six, and what each turned out to be.**
+
+| import | attic lines | what replaced it |
+|---|---|---|
+| `fork-module-state` | 3,825 | three guest-section readers (165 lines) and nothing else: the KFMS arena was already the module's |
+| `fork-activation-registry` | 2,098 | `ForkTables` (250) plus bookkeeping that moved into `ForkActivations`; the rest had no reader |
+| `fork-early-reference-provider` | 1,619 | `ForkChildReferences`, 110 lines |
+| `fork-imported-globals` | 1,229 | `fork_codec::child_import_plan` and `ForkChildImports` |
+| `fork-table-snapshot` | 380 | `fm_capture_peer_tables` and a host-sequenced restore |
+| `fork-gc-codec` | -- | nothing. Its provider was only ever passed on to two things that are gone |
+
+**Three findings worth keeping.**
+
+*The registry was not a thing that needed porting.* Fourteen methods: five were
+already dead (`registerActivation`, `unregisterActivation`, `setCaptureModule`,
+`currentReferences`, `takeUnsupportedReferenceKind` -- the module refuses an
+unadmitted kind at the call that meets it, so a latched flag has no reader);
+four were one-line wrappers over `ForkAnyrefTransitTable`, which is already host
+code; three were the table methods; one was a static-root lookup. The peer-table
+pair was the only genuinely unported work in 2,098 lines.
+
+*The host arena was the ownership split census 133 named, still standing.* The
+module mapped the KFMS chunks and the host freed them, by walking the linked
+chunk list back out of guest memory to rediscover addresses it never held. Both
+factories are gone, and with them the cycle check, the chain-length bound, the
+per-chunk validation and the publish-only-after-validation ordering that existed
+to keep a malformed arena from steering a `munmap`.
+
+*A file name put 165 lines on the wrong surface, and the budget caught it.*
+`fork-module-sections.ts` matched the `fork-module-*.ts` glob -- the CO-RESIDENT
+module's namespace -- so guest-section reading was filed as module-facing host
+code. Renamed `fork-guest-sections.ts`, which is also what it is: "module" there
+means the wasm module behind an activation, not the fork-module.
+
+**What is unproven, stated plainly.** The peer-table checkpoint's two halves
+have never run together. Census D8 names the test that will exercise them
+(`fork-dlopen-replay-e2e`, "replays pthread-hosted dlopen table state into a
+fresh fork child") and the steps to run it now that the loader resolves.
+

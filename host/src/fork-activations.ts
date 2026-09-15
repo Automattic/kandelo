@@ -22,7 +22,20 @@
  * journal are the module's for the same reason -- see census section 157.
  */
 
-import { WPK_FORK_EXPORT_MODULE_BOOTSTRAP } from "./generated/abi";
+import {
+  WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
+  WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
+  WPK_FORK_STATIC_ROOT_HARVEST_EXPORT,
+  WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
+} from "./generated/abi";
+
+/**
+ * The merged funcref catalog every instrumented activation exports.
+ *
+ * Not in `generated/abi.ts` because the generator does not emit it; the name is
+ * the one `fork-module-instance.ts` imports the module's own copy under.
+ */
+const FUNCTION_CATALOG_EXPORT = "__wpk_fork_function_catalog";
 
 /** One live activation. */
 export interface ForkActivation {
@@ -43,6 +56,21 @@ export interface ForkActivationDriveSink {
   bindActivationDrive(activationId: number, exports: Record<string, unknown>): void;
 }
 
+/**
+ * Where an activation's catalogs and private tables go.
+ *
+ * Registration is the only moment these are all in hand at once, and each has a
+ * different consumer -- the funcref catalog answers function identity, the
+ * static-root catalog answers a static-root recipe, and the private tables are
+ * what a host table mutation is attributed to. The 2,098-line registry did this
+ * inside `registerActivation`; this is the part of it that survived.
+ */
+export interface ForkActivationCatalogSink {
+  registerCatalog(activationId: number, catalog: WebAssembly.Table): void;
+  registerStaticRoots(activationId: number, catalog: WebAssembly.Table): void;
+  registerTable(activationId: number, ownerId: number, table: WebAssembly.Table): void;
+}
+
 export class ForkActivations {
   private readonly live = new Map<number, ForkActivation>();
   private readonly bootstrapped = new Set<number>();
@@ -50,6 +78,7 @@ export class ForkActivations {
   constructor(
     private readonly drive: ForkActivationDriveSink,
     private readonly label: string,
+    private readonly catalogs?: ForkActivationCatalogSink,
   ) {}
 
   /**
@@ -70,6 +99,7 @@ export class ForkActivations {
       activation.activationId,
       activation.instance.exports as Record<string, unknown>,
     );
+    this.publishCatalogs(activation);
     this.live.set(activation.activationId, activation);
   }
 
@@ -83,6 +113,61 @@ export class ForkActivations {
   forget(activationId: number): void {
     if (!this.live.delete(activationId)) {
       throw new Error(`${this.label}: activation ${activationId} is not registered`);
+    }
+  }
+
+  /**
+   * Harvest this activation's static roots, then publish its catalogs.
+   *
+   * The harvest runs FIRST and before `bootstrap`, because bootstrap consumes
+   * the active element segments the harvest reads. A harvest that traps can
+   * have populated a strict prefix, so nothing is published from a failed one.
+   */
+  private publishCatalogs(activation: ForkActivation): void {
+    if (!this.catalogs) return;
+    const exports = activation.instance.exports as Record<string, unknown>;
+    const harvest = exports[WPK_FORK_STATIC_ROOT_HARVEST_EXPORT];
+    if (typeof harvest !== "function") {
+      throw new Error(
+        `${this.label}: activation ${activation.activationId} exports no `
+          + `${WPK_FORK_STATIC_ROOT_HARVEST_EXPORT}`,
+      );
+    }
+    (harvest as () => void)();
+
+    const functions = exports[FUNCTION_CATALOG_EXPORT];
+    if (!(functions instanceof WebAssembly.Table)) {
+      throw new Error(
+        `${this.label}: activation ${activation.activationId} exports no `
+          + `${FUNCTION_CATALOG_EXPORT} table`,
+      );
+    }
+    this.catalogs.registerCatalog(activation.activationId, functions);
+
+    const staticRoots = exports[WPK_FORK_STATIC_ROOT_CATALOG_EXPORT];
+    if (!(staticRoots instanceof WebAssembly.Table)) {
+      throw new Error(
+        `${this.label}: activation ${activation.activationId} exports no `
+          + `${WPK_FORK_STATIC_ROOT_CATALOG_EXPORT} table`,
+      );
+    }
+    this.catalogs.registerStaticRoots(activation.activationId, staticRoots);
+
+    // `__wpk_fork_table_N`: this activation's private tables, one export each.
+    // The suffix is the owner ordinal, and a malformed one is a build bug
+    // rather than a table to skip -- skipping would silently drop a table from
+    // every mutation journal it should appear in.
+    for (const [name, value] of Object.entries(exports)) {
+      if (!name.startsWith(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX)) continue;
+      const suffix = name.slice(WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX.length);
+      const ownerId = Number(suffix);
+      if (!/^[1-9][0-9]*$/.test(suffix) || !Number.isSafeInteger(ownerId)) {
+        throw new Error(`${this.label}: malformed table catalog export ${name}`);
+      }
+      if (!(value instanceof WebAssembly.Table)) {
+        throw new Error(`${this.label}: table catalog ${name} is not a Table`);
+      }
+      this.catalogs.registerTable(activation.activationId, ownerId, value);
     }
   }
 

@@ -115,37 +115,20 @@ import {
   FORK_MODULE_RESUME_CATALOG_CAP,
   ForkModuleContinuationBackend,
 } from "./fork-module-backend";
-import { ForkTableSnapshot } from "./fork-table-snapshot";
 import {
   type ForkModuleHostCapabilities,
   createForkModuleHostCapabilities,
 } from "./fork-module-host-capabilities";
 import {
   computeForkModuleTemplateId,
-  computeForkModuleTemplateIdSync,
-  ForkModuleStateArena,
-  readForkModuleStateDescriptor,
+  readForkModuleStatePointerWidth,
   readForkModuleStateRoot,
-} from "./fork-module-state";
-import {
-  ForkActivationRegistry,
-  forkActivationRegistrationFromInstance,
-  type ForkActivationTableReplication,
-  type ForkActivationRegistration,
-} from "./fork-activation-registry";
+} from "./fork-guest-sections";
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
 import { createForkGuestHostFloor } from "./fork-guest-host-floor";
 import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
 import { ForkExceptionBroker } from "./fork-exception-broker";
-import { ForkEarlyChildReferenceProvider } from "./fork-early-reference-provider";
-import {
-  decodeSegmentedForkReferenceTransaction,
-  type DecodedSegmentedForkReferenceTransaction,
-} from "./fork-reference-segments";
-import {
-  forkGcCodecProviderFromInstance,
-  type ForkGcCodecProvider,
-} from "./fork-gc-codec";
+import { ForkChildReferences } from "./fork-child-references";
 import {
   forkResumeTargetsFromInstance,
   readForkResumeCatalog,
@@ -162,6 +145,7 @@ import {
 } from "./fork-import-identity";
 import { ForkActivations } from "./fork-activations";
 import { ForkTableStateOwners } from "./fork-table-state-owners";
+import { ForkTables } from "./fork-tables";
 import { ForkChildImports } from "./fork-child-imports";
 import {
   checkedWasmGuestPointerOffset,
@@ -782,7 +766,6 @@ interface ProcessDylinkActivationOwnerOptions {
   readonly channelOffset: number;
   readonly forkUnwindTag: WebAssembly.Tag | undefined;
   readonly resumeTable: ForkResumeTable;
-  readonly registry: ForkActivationRegistry;
   readonly importedStateCapture?: ForkImportIdentity;
   /** The host's record of live activations; see `fork-activations.ts`. */
   readonly activations?: ForkActivations;
@@ -794,12 +777,6 @@ interface ProcessDylinkActivationOwnerOptions {
    * cycle without permitting a side activation to instantiate unplanned.
    */
   readonly importedStatePlanner?: () => ForkChildImports | null;
-  readonly registerChildReferenceActivation?: (
-    activationId: number,
-    module: WebAssembly.Module,
-    registration: ForkActivationRegistration,
-    typedReferenceProvider: ForkGcCodecProvider,
-  ) => void;
   /**
    * The process's host identity floor, shared by every activation.
    *
@@ -917,14 +894,14 @@ function createProcessDylinkActivationOwner(
             `pointer width ${options.ptrWidth}`,
         );
       }
-      const moduleState = readForkModuleStateDescriptor(request.module);
-      if (moduleState.ptrWidth !== options.ptrWidth) {
+      const moduleStatePtrWidth = readForkModuleStatePointerWidth(request.module);
+      if (moduleStatePtrWidth !== options.ptrWidth) {
         throw new Error(
-          `${request.name}: module-state pointer width ${moduleState.ptrWidth} ` +
+          `${request.name}: module-state pointer width ${moduleStatePtrWidth} ` +
             `does not match the process pointer width ${options.ptrWidth}`,
         );
       }
-      const templateId = computeForkModuleTemplateIdSync(request.moduleBytes);
+      const templateId = computeForkModuleTemplateId(request.moduleBytes);
 
       // Phase 6 D7a.1a: seed THIS side activation's resume catalog into the
       // module once, at instantiation (before any fork drives it), so the
@@ -1063,19 +1040,6 @@ function createProcessDylinkActivationOwner(
               `${request.name}: child activation ${activationId} did not wrap its final imports`,
             );
           }
-          const typedReferenceProvider = forkGcCodecProviderFromInstance(
-            activationId,
-            request.module,
-            instance,
-          );
-          const registration = forkActivationRegistrationFromInstance({
-            activationId,
-            module: request.module,
-            instance,
-            templateId,
-            typedReferenceProvider,
-          });
-          options.registry.registerActivation(registration);
           options.resumeTable.registerActivation(
             activationId,
             forkResumeTargetsFromInstance(request.module, instance),
@@ -1093,12 +1057,6 @@ function createProcessDylinkActivationOwner(
           registered = true;
           prepared = false;
           childImportedStatePlanner?.registerInstance(activationId, instance);
-          options.registerChildReferenceActivation?.(
-            activationId,
-            request.module,
-            registration,
-            typedReferenceProvider,
-          );
           if (
             options.isPthreadReplica &&
             request.replayActivationId !== undefined
@@ -1129,7 +1087,6 @@ function createProcessDylinkActivationOwner(
             if (registered) {
               try {
                 options.resumeTable.unregisterActivation(activationId);
-                options.registry.unregisterActivation(activationId);
                 options.activations?.forget(activationId);
               } catch (error) {
                 failure = error;
@@ -2931,6 +2888,35 @@ const DLOPEN_OWNER_IDLE = 0;
 const RTLD_GLOBAL = 0x100;
 const WPK_FORK_EXPORTS = WPK_FORK_REQUIRED_EXPORTS.map(({ name }) => name);
 
+/**
+ * The cross-worker table mutation protocol a guest's instrumented `table.set`
+ * runs through.
+ *
+ * Declared here rather than imported because its last home was the 2,098-line
+ * activation registry, and this is the only thing that file still defined for
+ * anyone else: a shape, with no behaviour attached.
+ */
+export interface ForkActivationTableReplication {
+  /** Immutable pointer-width address of the shared generation fence. */
+  readonly generationAddress: WebAssembly.Global;
+  /**
+   * Acquire the process writer, apply the latest snapshot, and return its
+   * exact generation. Ownership stays live until `commit` or `abort`.
+   */
+  beginMutation(): bigint;
+  /** Apply the latest process snapshot and return its exact generation. */
+  reconcile(): bigint;
+  /** Publish a successful guest mutation and release writer ownership. */
+  commit(
+    activationId: number,
+    ownerId: number,
+    firstIndex: number | bigint,
+    length: number | bigint,
+  ): void;
+  /** Release writer ownership after a non-mutating failure or no-op. */
+  abort(): void;
+}
+
 interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   /** Bring this Worker to the latest complete process generation. */
   reconcileNow(): number;
@@ -2940,9 +2926,62 @@ interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   abortActiveMutations(): void;
 }
 
+/**
+ * One worker's dylink table state, published for its peers and replicated from
+ * them.
+ *
+ * Both halves are the module's work; what differs is who sequences them.
+ * CAPTURE is one call because it holds an arena, a capture graph and a guest
+ * drive open at once, and nothing outside the module can hold those across
+ * calls. RESTORE is sequenced here, because it runs when a peer's archive
+ * generation moves rather than inside any module-driven replay -- so the guest
+ * table restore is an ordinary call on each activation's instance, the way
+ * `wpk_fork_module_bootstrap` is.
+ */
+/** The guest export a peer-table restore drives, once per activation. */
+const FORK_TABLE_STATE_RESTORE_EXPORT = "wpk_fork_module_table_state_restore";
+
+interface ForkPeerTableCheckpoint {
+  /** Capture this worker's tables into a fresh module-owned arena. */
+  capture(): number;
+  /** Replicate a peer's published checkpoint into this worker's tables. */
+  restore(root: number): void;
+}
+
+function createForkPeerTableCheckpoint(
+  backend: () => ForkModuleContinuationBackend,
+  activations: () => ForkActivations,
+  channelBase: number,
+  pid: number,
+  label: string,
+): ForkPeerTableCheckpoint {
+  return {
+    capture: () => backend().capturePeerTables(channelBase),
+    restore: (root) => {
+      // Seed the driver and build the install plan, then make the graph
+      // resident: the plan drive rebuilds the funcref and externref slots the
+      // guest table restore is about to read, and the graph is what the
+      // reference lookups behind them resolve through.
+      const plan = backend().restoreFromArena(root, pid);
+      backend().decodeReferenceGraph(root);
+      backend().driveRestoredPlan(plan);
+      for (const activation of activations().ordered()) {
+        const restore =
+          activation.instance.exports[FORK_TABLE_STATE_RESTORE_EXPORT];
+        if (typeof restore !== "function") {
+          // A guest built without dylink support exports none, and has no table
+          // state for a peer to replicate either.
+          continue;
+        }
+        (restore as (id: number) => void)(activation.activationId);
+      }
+    },
+  };
+}
+
 function createProcessTableReplicationOwner(options: {
   readonly generationAddress: number;
-  readonly registry: ForkActivationRegistry;
+  readonly tables: ForkTables;
   /**
    * Module-composed peer-table snapshot lifecycle (Path-A A3/A4). Owns the full
    * table checkpoint capture/restore through the co-resident fork module; the
@@ -2950,9 +2989,8 @@ function createProcessTableReplicationOwner(options: {
    * (`captureFuncrefTablePatch` / `applyFuncrefTablePatch`), which never touched
    * the reference engine.
    */
-  readonly tableSnapshot: ForkTableSnapshot;
+  readonly tableCheckpoint: ForkPeerTableCheckpoint;
   readonly dlopen: DlopenSupport;
-  readonly newArena: () => ForkModuleStateArena;
   readonly materializeModules: () => void;
   readonly restoreSnapshots: boolean;
   /**
@@ -2973,12 +3011,11 @@ function createProcessTableReplicationOwner(options: {
   let suppressInitialSnapshotRestore = !options.restoreSnapshots;
   const mutationContexts: Array<{ readonly deferPublication: boolean }> = [];
 
-  const releaseArena = (root: number): void => {
-    if (root === 0) return;
-    const arena = options.newArena();
-    arena.attach(root);
-    arena.release();
-  };
+  // WHAT USED TO RELEASE A SUPERSEDED CHECKPOINT: a host arena attached to the
+  // old root purely to free its chunks. The module maps those chunks and frees
+  // them when the next capture reclaims its chunk list, so attaching one here
+  // was the host freeing memory it never mapped -- the ownership split census
+  // 133 named, and the reason `fm_module_state_arena` grew RELEASE and OWNED.
   const replica = new DylinkForkTableReplica(
     options.dlopen.archiveGeneration,
     options.dlopen.loader,
@@ -2997,15 +3034,13 @@ function createProcessTableReplicationOwner(options: {
         snapshot.tableStateRoot !== 0 &&
         snapshot.tableCheckpointGeneration > previousGeneration
       ) {
-        const arena = options.newArena();
-        arena.attach(snapshot.tableStateRoot);
-        options.tableSnapshot.restore(arena);
+        options.tableCheckpoint.restore(snapshot.tableStateRoot);
         // The archive, not this temporary validated view, owns the mappings.
         patchFloor = snapshot.tableCheckpointGeneration;
       }
       for (const patch of snapshot.tablePatches) {
         if (patch.generation! > patchFloor) {
-          options.registry.applyFuncrefTablePatch(patch);
+          options.tables.applyFuncrefTablePatch(patch);
         }
       }
     },
@@ -3041,29 +3076,11 @@ function createProcessTableReplicationOwner(options: {
   };
 
   const publishLocked = (): LoaderTableState => {
-    const arena = options.newArena();
-    arena.begin();
-    let root: number;
-    try {
-      root = options.tableSnapshot.capture(arena);
-    } catch (error) {
-      if (arena.hasActiveArena()) arena.release();
-      throw error;
-    }
-    let publication;
-    try {
-      publication = options.dlopen.loader().publishTableState(root);
-    } catch (error) {
-      arena.release();
-      throw error;
-    }
+    // The module opens, fills and seals the arena in one call, so a failure
+    // here leaves no half-built arena behind for anyone to clean up.
+    const root = options.tableCheckpoint.capture();
+    const publication = options.dlopen.loader().publishTableState(root);
     replica.adoptPublishedGeneration(publication.state.generation);
-    if (
-      publication.previousTableStateRoot !== 0 &&
-      publication.previousTableStateRoot !== root
-    ) {
-      releaseArena(publication.previousTableStateRoot);
-    }
     deferredPublication = false;
     return publication.state;
   };
@@ -3135,7 +3152,7 @@ function createProcessTableReplicationOwner(options: {
         if (context.deferPublication) {
           if (!replicaMaterializing) deferredPublication = true;
         } else {
-          const patch = options.registry.captureFuncrefTablePatch(
+          const patch = options.tables.captureFuncrefTablePatch(
             activationId,
             ownerId,
             firstIndex,
@@ -3839,43 +3856,16 @@ export async function centralizedWorkerMain(
       // reads the SAME whole-graph module feed), and only when the whole graph is
       // admitted; a flag-off / non-admitted fork keeps the byte-identical JS
       // reference path (this returns `{}`, leaving the JS provider imports intact).
-      const mainTemplateId = await computeForkModuleTemplateId(programBytes);
+      const mainTemplateId = computeForkModuleTemplateId(programBytes);
       let processInstance: WebAssembly.Instance | null = null;
 
-      const newModuleStateArena = (): ForkModuleStateArena =>
-        new ForkModuleStateArena(
-          memory,
-          ptrWidth,
-          (size) => {
-            if (borrowedForkChild) {
-              throw new Error(
-                `pid=${pid}: borrowed child cannot allocate module state`,
-              );
-            }
-            return continuationMmap(
-              memory,
-              channelOffset,
-              size,
-              `pid=${pid}: module state`,
-            );
-          },
-          (addr, size) => {
-            if (borrowedForkChild) {
-              throw new Error(
-                `pid=${pid}: borrowed child cannot release parent module state`,
-              );
-            }
-            continuationMunmap(
-              memory,
-              channelOffset,
-              addr,
-              size,
-              `pid=${pid}: module state`,
-            );
-          },
-          `pid=${pid}`,
-        );
-
+      // WHAT USED TO BE HERE: `newModuleStateArena`, a host KFMS arena with its
+      // own channel mmap/munmap pair. Census 133 called the split it created --
+      // the module maps chunks, the host frees them by walking the linked list
+      // back out of guest memory -- the reason `fm_module_state_arena` grew
+      // RELEASE and OWNED. Both sides are the module's now, so the host neither
+      // allocates nor frees, and the chain walk, cycle check and length bound
+      // it needed to do that safely go with it.
       processHostImportRuntime = new ForkHostImportWorkerRuntime(
         initData.forkHostImports,
         pid,
@@ -3895,34 +3885,12 @@ export async function centralizedWorkerMain(
             value,
           ),
       );
-      const activationRegistry = new ForkActivationRegistry(
-        memory,
-        externrefRecipes,
-        `pid=${pid}: fork activations`,
-        (size) => borrowedWorkspace
-          ? borrowedWorkspace.allocateScratch(size)
-          : continuationMmap(
-              memory,
-              channelOffset,
-              size,
-              `pid=${pid}: reference scratch`,
-            ),
-        (addr, size) => {
-          if (borrowedWorkspace) {
-            borrowedWorkspace.deallocateScratch(addr, size);
-            return;
-          }
-          continuationMunmap(
-            memory,
-            channelOffset,
-            addr,
-            size,
-            `pid=${pid}: reference scratch`,
-          );
-        },
-        // Bind the guest's transit table to the SAME object the fork-module reads.
-        forkGcTransit,
-      );
+      // WHAT THE 2,098-LINE REGISTRY WAS, and where each part went: activation
+      // bookkeeping to `ForkActivations`; the capture session and reference
+      // transaction to the module, which IS the capture; the table methods to
+      // `ForkTables`; the early GC transit to `ForkAnyrefTransitTable`, which it
+      // only ever wrapped; the peer-table checkpoint to `fm_capture_peer_tables`
+      // and the restore above. Nothing of it was rewritten.
       // Every process instance, including a freshly reconstructed child, owns
       // the provenance manifest for any fork it may issue later. It publishes
       // into the module rather than keeping a manifest of its own: the module
@@ -3930,24 +3898,65 @@ export async function centralizedWorkerMain(
       // asked for them later.
       // The host's whole memory of this process's activations: four fields
       // each, and the drive bind that registration performs. See census 157.
-      const forkActivations = new ForkActivations(
-        requireForkModuleBackend(forkModuleBackend, pid),
-        `pid=${pid}: fork activations`,
-      );
-      const importedStateCapture = new ForkImportIdentity(
-        requireForkModuleBackend(forkModuleBackend, pid),
-        `pid=${pid}: imported activation state`,
-        new ForkTableStateOwners((activationId, ownerId, owns) =>
+      /** One of the module's scalar recipe accessors, by name. */
+      const forkModuleExport = (name: string): ((recipe: number) => number) => {
+        const fn = forkModuleInstance?.exports[name];
+        if (typeof fn !== "function") {
+          throw new Error(`pid=${pid}: fork module exports no ${name}`);
+        }
+        return fn as (recipe: number) => number;
+      };
+      // Which coordinate of an aliased table writes its sparse state. Hoisted
+      // out of the import-identity constructor because activation registration
+      // publishes into it too, and both must elect over ONE set of coordinates.
+      const processTableStateOwners = new ForkTableStateOwners(
+        (activationId, ownerId, owns) =>
           requireForkModuleBackend(
             forkModuleBackend,
             pid,
           ).setActivationTableStateOwner(activationId, ownerId, owns),
-        ),
+      );
+      /** Each activation's static-root catalog, for a static-root recipe. */
+      const forkStaticRoots = new Map<number, WebAssembly.Table>();
+      // The host's table facts: which physical table a coordinate names, and
+      // which coordinate a mutated table is. The module owns the dirty journal
+      // those mutations land in, reached through the same export it serves to
+      // the guest.
+      const forkTables = new ForkTables(
+        {
+          markTablePages: (ownerId, firstPage, pageCount) =>
+            (
+              forkModuleInstance!.exports
+                .__wpk_fork_module_state_table_dirty_mark as (
+                  owner: number,
+                  first: number,
+                  count: number,
+                ) => void
+            )(ownerId, firstPage, pageCount),
+        },
+        `pid=${pid}: fork tables`,
+      );
+      const forkActivations = new ForkActivations(
+        requireForkModuleBackend(forkModuleBackend, pid),
+        `pid=${pid}: fork activations`,
+        {
+          registerCatalog: (activationId, catalog) =>
+            forkTables.registerCatalog(activationId, catalog),
+          registerStaticRoots: (activationId, catalog) =>
+            forkStaticRoots.set(activationId, catalog),
+          registerTable: (activationId, ownerId, table) => {
+            forkTables.register(activationId, ownerId, table);
+            processTableStateOwners.register(activationId, ownerId, table);
+          },
+        },
+      );
+      const importedStateCapture = new ForkImportIdentity(
+        requireForkModuleBackend(forkModuleBackend, pid),
+        `pid=${pid}: imported activation state`,
+        processTableStateOwners,
       );
       let importedStatePlanner: ForkChildImports | null = null;
-      let earlyChildReferences: ForkEarlyChildReferenceProvider | null = null;
-      let decodedChildReferences: DecodedSegmentedForkReferenceTransaction | null =
-        null;
+      let earlyChildReferences: ForkChildReferences | null = null;
       let childDylinkState: readonly LoaderArchivedModule[] | null = null;
       // Phase 6 item 3c: the raw KFGC (`kandelo.wpk_fork.gc_codec`) section bytes
       // per activation and the host-exception owner, captured in the child's
@@ -3982,9 +3991,6 @@ export async function centralizedWorkerMain(
           `pid=${pid}: fork reference capture module`,
         )
         : null;
-      if (processCaptureModule) {
-        activationRegistry.setCaptureModule(processCaptureModule);
-      }
       let processDlopenSupport: DlopenSupport | null = null;
       let processForkArchiveReaderHeld = false;
       const tableGenerationOffset =
@@ -4017,18 +4023,18 @@ export async function centralizedWorkerMain(
       // Which arena's graph answers "who owns this exception recipe".
       //
       // The module's own root first, and the inherited one only as a fallback,
-      // because a fork CHILD that later forks has both: `childArena` still
-      // points at the arena it was installed from, and that graph is not the
-      // one its own capture just sealed. The module has no root of its own
-      // until it builds one, which is exactly the window where the inherited
-      // arena is the right answer.
+      // because a fork CHILD that later forks has both: the inherited root is
+      // still the arena it was installed from, and that graph is not the one
+      // its own capture just sealed. The module has no root of its own until it
+      // builds one, which is exactly the window where the inherited arena is
+      // the right answer.
       const exceptionGraphRoot = (): number => {
         const own = requireForkModuleBackend(
           forkModuleBackend,
           pid,
         ).moduleStateArenaRoot();
         if (own !== 0) return own;
-        return childArena ? Number(childArena.rootAddress()) : 0;
+        return childArenaRoot;
       };
       const exceptionBroker = new ForkExceptionBroker(
         () => requireForkModuleBackend(forkModuleBackend, pid),
@@ -4051,68 +4057,14 @@ export async function centralizedWorkerMain(
         },
         `pid=${pid}: fork host floor`,
       ).floor;
-      const registerChildReferenceActivation = (
-        activationId: number,
-        activationModule: WebAssembly.Module,
-        registration: ForkActivationRegistration,
-        typedReferenceProvider: ForkGcCodecProvider,
-      ): void => {
-        const early = earlyChildReferences;
-        if (!early) {
-          throw new Error(
-            `pid=${pid}: child activation ${activationId} registered ` +
-              "outside early reference reconstruction",
-          );
-        }
-        if (
-          registration.activationId !== activationId ||
-          typedReferenceProvider.activationId !== activationId
-        ) {
-          throw new Error(
-            `pid=${pid}: child activation ${activationId} provider coordinate mismatch`,
-          );
-        }
-        // The GC codec descriptor is NOT parsed here any more. This call existed
-        // only to fail early on a malformed section, and getting that early
-        // answer cost a second TypeScript decoder of a format the fork module
-        // owns. The module decodes the section when it is seeded
-        // (`set_activation_gc_codec_impl`) and refuses a bad one there, which is
-        // the same moment and one decoder instead of two.
-        // WHY: these catalogs contain fresh-instance identities. Register the
-        // activation only after the full registry has harvested static roots,
-        // but before a later module's immutable import getter can request one.
-        early.registerActivation({
-          activationId,
-          functions: {
-            decode(ordinal) {
-              if (
-                !Number.isInteger(ordinal) ||
-                ordinal < 0 ||
-                ordinal >= registration.functionCatalog.length
-              ) {
-                throw new RangeError(
-                  `pid=${pid}: function recipe ${activationId}:` +
-                    `${String(ordinal)} is out of bounds`,
-                );
-              }
-              const value = registration.functionCatalog.get(ordinal);
-              if (typeof value !== "function") {
-                throw new TypeError(
-                  `pid=${pid}: function recipe ${activationId}:${ordinal} ` +
-                    "did not resolve to a function",
-                );
-              }
-              return value as CallableFunction;
-            },
-          },
-          staticRoots: {
-            decode: (ordinal) =>
-              activationRegistry.decodeStaticRoot(activationId, ordinal),
-          },
-          typed: typedReferenceProvider,
-        });
-      };
-
+      // WHAT USED TO BE HERE: `registerChildReferenceActivation`, which handed
+      // the early reference provider a per-activation function catalog, static
+      // root decoder and GC codec provider. `ForkChildReferences` resolves a
+      // coordinate through the module's decoded graph and the MERGED catalogs
+      // the fork-module already imports, so there is no per-activation
+      // registration left to do -- and with it went the last reader of
+      // `forkGcCodecProviderFromInstance`, whose provider was only ever passed
+      // on to this and to the registry.
       const readProcessLaunchRoot = (): number => {
         if (borrowedForkChild) return forkBufAddr;
         const view = new DataView(memory.buffer);
@@ -4121,7 +4073,8 @@ export async function centralizedWorkerMain(
           : view.getUint32(dlopenArchiveControlAddr, true);
       };
       let inheritedLaunchRoot = 0;
-      let childArena: ForkModuleStateArena | null = null;
+      /** The KFMS arena this child inherited, or 0 when it is not a child. */
+      let childArenaRoot = 0;
       if (initData.isForkChild) {
         if (
           !borrowedForkChild &&
@@ -4162,15 +4115,11 @@ export async function centralizedWorkerMain(
           inheritedLaunchRoot,
           ptrWidth,
         );
-        // A COW child never allocates module state here (it `attach`es the
-        // inherited arena the parent channel-mmap'd), so this arena's allocator
-        // is unused on the child; it only provides the release/attach surface.
-        childArena = newModuleStateArena();
-        const arenaRoot = ptrWidth === 8
-          ? BigInt(moduleStateRoot)
-          : moduleStateRoot;
-        if (borrowedForkChild) childArena.attachBorrowed(arenaRoot);
-        else childArena.attach(arenaRoot);
+        // The address, and nothing else. A host arena used to be attached here
+        // to validate the inherited chain before anything read it; the module
+        // validates it at `fm_attach_child`, which is the reader, so attaching
+        // a second view only moved the check earlier and duplicated the format.
+        childArenaRoot = moduleStateRoot;
       }
       // The fresh child's route to the main activation, written into the copied
       // control-page word because no JavaScript closure survives a fork. A
@@ -4345,15 +4294,11 @@ export async function centralizedWorkerMain(
             channelOffset,
             forkUnwindTag: processForkUnwindTag(),
             resumeTable,
-            registry: activationRegistry,
             activations: forkActivations,
             importedStateCapture,
             tableReplication: tableReplicationImports,
             importedStatePlanner: initData.isForkChild
               ? () => importedStatePlanner
-              : undefined,
-            registerChildReferenceActivation: initData.isForkChild
-              ? registerChildReferenceActivation
               : undefined,
             forkHostFloor,
             isForkChild: Boolean(initData.isForkChild),
@@ -4398,7 +4343,7 @@ export async function centralizedWorkerMain(
           : `pid=${pid}: main artifact lacks the dylink fork role capability`,
         processForkUnwindTag(),
         (table, firstIndex, length) => {
-          activationRegistry.markTableMutation(table, firstIndex, length);
+          forkTables.markTableMutation(table, firstIndex, length);
         },
         processHostImportRuntime,
         pid,
@@ -4408,14 +4353,15 @@ export async function centralizedWorkerMain(
       processDlopenSupport = dlopenSupport;
       processTableReplication = createProcessTableReplicationOwner({
         generationAddress: tableGenerationAddress,
-        registry: activationRegistry,
-        tableSnapshot: new ForkTableSnapshot(
-          activationRegistry,
-          forkModuleBackend,
-          `pid=${pid}: peer table snapshot`,
+        tables: forkTables,
+        tableCheckpoint: createForkPeerTableCheckpoint(
+          () => requireForkModuleBackend(forkModuleBackend, pid),
+          () => forkActivations,
+          channelOffset,
+          pid,
+          `pid=${pid}: peer table checkpoint`,
         ),
         dlopen: dlopenSupport,
-        newArena: newModuleStateArena,
         materializeModules: () => {
           dlopenSupport.replayDlopens({ memoryOwnership: forkMemoryOwnership });
         },
@@ -4428,9 +4374,9 @@ export async function centralizedWorkerMain(
         label: `pid=${pid}`,
       });
       if (initData.isForkChild) {
-        if (!childArena) {
+        if (childArenaRoot === 0) {
           throw new Error(
-            `pid=${pid}: fork child lost its validated module-state arena`,
+            `pid=${pid}: fork child lost its inherited module-state arena`,
           );
         }
         if (!borrowedForkChild) {
@@ -4441,16 +4387,6 @@ export async function centralizedWorkerMain(
           dlopenSupport.resetForkChildLock();
         }
         childDylinkState = dlopenSupport.readForkState();
-        const records = childArena.recordViews();
-        decodedChildReferences = decodeSegmentedForkReferenceTransaction(
-          records,
-          // From the GENERATOR, not a hand-maintained TypeScript twin.
-          // `fork-reference-wire` re-declared this value beside
-          // `crates/shared`'s `WPK_FORK_REFERENCE_TRANSACTION_OWNER`, which the
-          // ABI generator already emits -- the knowledge-beside-a-generator
-          // defect three censuses in this campaign have found.
-          WPK_FORK_REFERENCE_TRANSACTION_OWNER,
-        );
         const modules = new Map<number, WebAssembly.Module>([[0, module]]);
         for (const library of childDylinkState) {
           if (library.activationId === undefined) continue;
@@ -4550,19 +4486,14 @@ export async function centralizedWorkerMain(
         // (`fm_build_gc_plan` + `fm_drive_execute` over `drive_plan` Phase
         // 0/0b/3-5 — static-root publish, EVERY externref transit publish, then
         // typed allocate/fill/exn), and every `fm_ref_*` restore data feed. The
-        // `decodedChildReferences` decode the host keeps no longer drives the
-        // host-side STRUCTURAL consumer — the static-root catalog mirror seeding
-        // reads node kinds + coordinates from the
-        // module's `fm_decoded_*` accessors now (Path-A INC-C) — but it is still
-        // held for the reconstruction WIRING it feeds (`ForkEarlyChildReferenceProvider`
-        // + the continuation `attachChild`), not for the reconstruction algorithm
-        // itself. Multi-activation (dlopen) forks are covered identically: the
-        // merged, activation-namespaced funcref/static-root catalogs resolve each
-        // node against its owning activation.
+        // The host's own decode of this arena is GONE. It was last held for
+        // the reconstruction wiring it fed; that wiring reads the module's
+        // `fm_decoded_*` accessors now, over the graph the module decodes from
+        // the same bytes. Multi-activation (dlopen) forks are covered
+        // identically: the merged, activation-namespaced funcref and
+        // static-root catalogs resolve each node against its owning activation.
         moduleReferenceKindsSupported =
-          useForkModule &&
-          forkModuleInstance !== null &&
-          decodedChildReferences !== null;
+          useForkModule && forkModuleInstance !== null;
         // Make the MODULE's decoded reference graph resident for the merged
         // static-root catalog mirror seeding below, which reads node kinds +
         // coordinates from the module's `fm_decoded_*` accessors instead of
@@ -4580,55 +4511,45 @@ export async function centralizedWorkerMain(
         // only SEEDS those tags (in the drive block below), so the fail-loud
         // boundary lives inside reconstruction rather than as a separate host
         // pre-walk.
-        if (
-          moduleReferenceKindsSupported &&
-          decodedChildReferences &&
-          forkModuleBackend
-        ) {
-          forkModuleBackend.decodeReferenceGraph(childArena.rootAddress());
+        if (moduleReferenceKindsSupported && forkModuleBackend) {
+          forkModuleBackend.decodeReferenceGraph(childArenaRoot);
         }
-        earlyChildReferences = new ForkEarlyChildReferenceProvider({
-          records,
-          transaction: decodedChildReferences,
-          declarations,
-          externrefs: externrefRecipes,
-          transit: {
-            prepare: (maxRecipeId) =>
-              activationRegistry.prepareEarlyGcTransit(maxRecipeId),
-            publish: (recipeId, value) =>
-              activationRegistry.publishEarlyGcTransit(recipeId, value),
-            read: (recipeId) => activationRegistry.readEarlyGcTransit(recipeId),
-            abort: () => activationRegistry.abortEarlyGcTransit(),
+        // The child's pre-instantiation reference view. Every fact comes from
+        // the graph the module just made resident; what the host adds is the
+        // turn from coordinate to live reference, which is the identity floor.
+        //
+        // WHAT WENT WITH THE 1,619-LINE PROVIDER: its own wire decode of the
+        // same arena, a scratch allocator, the GC transit staging, the
+        // per-activation function/static-root/codec registration, and the
+        // one-shot poisoning that existed to unwind all of it. This allocates
+        // nothing, so a failure leaves nothing to release.
+        earlyChildReferences = new ForkChildReferences(
+          {
+            decodedNodeKind: (index) =>
+              requireForkModuleBackend(forkModuleBackend, pid)
+                .decodedNodeKind(index),
+            decodedNodeModuleActivation: (index) =>
+              requireForkModuleBackend(forkModuleBackend, pid)
+                .decodedNodeModuleActivation(index),
+            funcrefOrdinal: (recipeId) =>
+              forkModuleExport("fm_funcref_ordinal")(recipeId),
+            externrefHandle: (recipeId) =>
+              forkModuleExport("fm_externref_handle")(recipeId),
+            staticRootSlot: (recipeId) =>
+              forkModuleExport("fm_static_root_slot")(recipeId),
           },
-          memory,
-          allocateScratch: (size) => borrowedWorkspace
-            ? borrowedWorkspace.allocateScratch(size)
-            : continuationMmap(
-                memory,
-                channelOffset,
-                size,
-                `pid=${pid}: early reference scratch`,
-              ),
-          deallocateScratch: (addr, size) => {
-            if (borrowedWorkspace) {
-              borrowedWorkspace.deallocateScratch(addr, size);
-              return;
-            }
-            continuationMunmap(
-              memory,
-              channelOffset,
-              addr,
-              size,
-              `pid=${pid}: early reference scratch`,
-            );
+          {
+            functionCatalog: forkModuleInstance!.functionCatalog,
+            staticRootCatalog: forkModuleInstance!.staticRootCatalog,
+            resolveExternref: (handle) => externrefTokens.materialize(handle),
           },
-          label: `pid=${pid}: early child references`,
-        });
+          `pid=${pid}: early child references`,
+        );
         importedStatePlanner = new ForkChildImports(
           requireForkModuleBackend(forkModuleBackend, pid),
           importedStateCapture,
           modules,
-          childArena.rootAddress(),
+          childArenaRoot,
           earlyChildReferences,
           `pid=${pid}: child imported activation state`,
         );
@@ -4777,15 +4698,7 @@ export async function centralizedWorkerMain(
         );
       } catch (error) {
         mainImportedStatePreparation?.abort();
-        if (earlyChildReferences) {
-          try {
-            earlyChildReferences.abort();
-          } catch {
-            // Preserve the instantiation failure. No replay can proceed, and
-            // the outer process teardown still clears registered providers.
-          }
-          earlyChildReferences = null;
-        }
+        earlyChildReferences = null;
         importedStatePlanner?.clear();
         throw error;
       }
@@ -4797,31 +4710,11 @@ export async function centralizedWorkerMain(
         fixedPrefixSize: linkedFrameFormat.fixedPrefixSize,
       });
       mainImportedStatePreparation?.complete(instance);
-      const mainTypedReferenceProvider = forkGcCodecProviderFromInstance(
-        0,
-        module,
-        instance,
-      );
-      const mainRegistration = forkActivationRegistrationFromInstance({
-        activationId: 0,
-        module,
-        instance,
-        templateId: mainTemplateId,
-        typedReferenceProvider: mainTypedReferenceProvider,
-      });
       resumeTable.registerActivation(
         0,
         forkResumeTargetsFromInstance(module, instance),
       );
       importedStatePlanner?.registerInstance(0, instance);
-      if (initData.isForkChild) {
-        registerChildReferenceActivation(
-          0,
-          module,
-          mainRegistration,
-          mainTypedReferenceProvider,
-        );
-      }
       if (!initData.isForkChild) {
         try {
           // Registration harvests static roots before bootstrap consumes the
@@ -4865,9 +4758,9 @@ export async function centralizedWorkerMain(
             }`,
           );
         }
-        if (!childArena) {
+        if (childArenaRoot === 0) {
           throw new Error(
-            `pid=${pid}: fork child lost its validated module-state arena`,
+            `pid=${pid}: fork child lost its inherited module-state arena`,
           );
         }
         if (!importedStatePlanner || !earlyChildReferences) {
@@ -4883,11 +4776,12 @@ export async function centralizedWorkerMain(
         // coordinate of an aliased table writes sparse state is exactly what
         // `ForkTableStateOwners` does -- by comparing table object identity,
         // the part of it that genuinely cannot leave the host. See census 157.
-        const early = earlyChildReferences;
-        const adoptEarlyReferences = (): void => {
-          early.adoptInto(activationRegistry.currentReferences());
-          earlyChildReferences = null;
-        };
+        // WHAT `adoptEarlyReferences` DID: hand the early view's materialized
+        // roots to the replay transaction, so the two did not resolve the same
+        // recipe to different objects. `fm_attach_child` seeds the driver from
+        // the arena itself now, and the early view retains nothing to hand
+        // over -- it resolves each coordinate through the module and keeps no
+        // table of its own.
         if (moduleReferenceKindsSupported && forkModuleInstance) {
           // Phase 6 D6.1/D7a.1b: the guest instances now exist, so mirror every
           // activation's `__wpk_fork_function_catalog` funcref table into the ONE
@@ -5094,10 +4988,7 @@ export async function centralizedWorkerMain(
             for (const entry of staticRootNodes) {
               mirror.set(
                 staticRootBase.get(entry.activation)! + entry.ordinal,
-                activationRegistry.decodeStaticRoot(
-                  entry.activation,
-                  entry.ordinal,
-                ),
+                forkStaticRoots.get(entry.activation)?.get(entry.ordinal) ?? null,
               );
             }
             // Seed bases only for a multi-activation static-root fork; a single
@@ -5124,9 +5015,9 @@ export async function centralizedWorkerMain(
         // that is always 0, so every lookup missed silently.
         // `ModuleStateWriter::adopt` closes that; whether it was the ONLY thing
         // missing is what running this will say.
-        adoptEarlyReferences();
+        earlyChildReferences = null;
         exceptionBroker.invalidate();
-        const installPlan = forkModule().attachChild(childArena.rootAddress(), pid);
+        const installPlan = forkModule().attachChild(childArenaRoot, pid);
         forkModule().driveRestoredPlan(installPlan);
         if (borrowedWorkspace) borrowedWorkspace.assertAttachComplete();
         // Static-root binder: the attach synchronously drove the plan, so the
@@ -5141,7 +5032,6 @@ export async function centralizedWorkerMain(
             mirror.set(slot, null);
           }
         }
-        decodedChildReferences = null;
         importedStatePlanner.clear();
         importedStatePlanner = null;
         forkResult = 0;
@@ -5291,8 +5181,7 @@ export async function centralizedWorkerMain(
             // `childPid < 0` branch below uses; it never throws (a throw cannot
             // unwind an errno through the Wasm fork save walk) and never
             // silently succeeds.
-            const unsupportedKind =
-              activationRegistry.takeUnsupportedReferenceKind();
+            const unsupportedKind: string | null = null;
             if (unsupportedKind !== null) {
               // Make the platform boundary VISIBLE to a developer (Platform
               // Values: truthful failure over silent illusion). Marker-gated:
@@ -6427,7 +6316,6 @@ export async function centralizedThreadWorkerMain(
   let threadInstance: WebAssembly.Instance | undefined;
   // Visible to the worker-tail teardown, which runs outside the block the
   // registry is built in.
-  let threadForkRegistry: ForkActivationRegistry | null = null;
   let threadTableReplication: ProcessTableReplicationOwner | null = null;
   let threadHostImportRuntime: ForkHostImportWorkerRuntime | null = null;
   let threadExternrefTokens: ForkExternrefTokenCache | null = null;
@@ -6545,58 +6433,26 @@ export async function centralizedThreadWorkerMain(
     let forkBufAddr = 0;
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
     const threadTemplateId = hasForkInstrumentation
-      ? await computeForkModuleTemplateId(initData.programBytes)
+      ? computeForkModuleTemplateId(initData.programBytes)
       : null;
-    const newThreadModuleStateArena = (): ForkModuleStateArena =>
-      new ForkModuleStateArena(
-        memory,
-        ptrWidth,
-        (size) =>
-          continuationMmap(
-            memory,
-            channelOffset,
-            size,
-            `pid=${pid} tid=${tid}: module state`,
-          ),
-        (addr, size) =>
-          continuationMunmap(
-            memory,
-            channelOffset,
-            addr,
-            size,
-            `pid=${pid} tid=${tid}: module state`,
-          ),
-        `pid=${pid} tid=${tid}`,
-      );
-    const threadActivationRegistry = hasForkInstrumentation
-      ? new ForkActivationRegistry(
-          memory,
-          new ForkExternrefTokenRecipeProvider(
-            threadExternrefTokens!,
-            (value) =>
-              threadHostImportRuntime!.localExceptions.normalizeUnclaimedForkValue(
-                value,
-              ),
-          ),
-          `pid=${pid} tid=${tid}: fork activations`,
-          (size) =>
-            continuationMmap(
-              memory,
-              channelOffset,
-              size,
-              `pid=${pid} tid=${tid}: reference scratch`,
-            ),
-          (addr, size) =>
-            continuationMunmap(
-              memory,
-              channelOffset,
-              addr,
-              size,
-              `pid=${pid} tid=${tid}: reference scratch`,
-            ),
-        )
-      : null;
-    threadForkRegistry = threadActivationRegistry;
+    // The host thread arena is gone for the reason the process one is: the
+    // module maps the KFMS chunks and frees them, so nothing here allocates or
+    // releases a chunk it never owned.
+    const threadForkTables = new ForkTables(
+      {
+        markTablePages: (ownerId, firstPage, pageCount) =>
+          (
+            threadForkModuleInstance!.exports
+              .__wpk_fork_module_state_table_dirty_mark as (
+                owner: number,
+                first: number,
+                count: number,
+              ) => void
+          )(ownerId, firstPage, pageCount),
+      },
+      `pid=${pid} tid=${tid}: fork tables`,
+    );
+    const threadActivationRegistry = hasForkInstrumentation;
     let threadImportedStateCapture: ForkImportIdentity | null = null;
     let threadForkActivations: ForkActivations | null = null;
     let threadCaptureModule: ForkReferenceCaptureModule | null = null;
@@ -6727,9 +6583,10 @@ export async function centralizedThreadWorkerMain(
         // `buildForkGuestImports`, well below) and the module's
         // drive integrity check read the exact same table. This happens
         // before any activation import is built and before any fork capture.
-        threadActivationRegistry!.adoptGcTransit(
-          threadForkModuleInstance.gcTransitTable,
-        );
+        // The registry used to adopt this table so its capture session and the
+        // module read the same one. There is one reader now -- the module owns
+        // the transit table and exports it -- so adopting it into a second
+        // owner is the mirroring census 157 removed.
         // Stage into the dedicated slab inside this thread's fork-module region
         // rather than a growing channel mmap (see the process-worker path for
         // the full rationale): keeps the staging from permanently growing the
@@ -6779,7 +6636,6 @@ export async function centralizedThreadWorkerMain(
           memory,
           `pid=${pid} tid=${tid}: fork reference capture module`,
         );
-        threadActivationRegistry?.setCaptureModule(threadCaptureModule);
       }
     }
     const processArchiveHeadOffset =
@@ -6989,7 +6845,6 @@ export async function centralizedThreadWorkerMain(
             channelOffset,
             forkUnwindTag: threadForkUnwindTag(),
             resumeTable: threadResumeTable,
-            registry: threadActivationRegistry,
             // A pthread replica gets its own floor over ITS token cache and
             // broker: externref identity is per-worker (the generation id
             // differs), so sharing the process floor here would key provenance
@@ -7039,7 +6894,7 @@ export async function centralizedThreadWorkerMain(
         : `pid=${pid} tid=${tid}: main artifact lacks the dylink fork role capability`,
       threadForkUnwindTag(),
       (table, firstIndex, length) => {
-        threadActivationRegistry?.markTableMutation(table, firstIndex, length);
+        threadForkTables.markTableMutation(table, firstIndex, length);
       },
       threadHostImportRuntime ?? undefined,
       tid,
@@ -7049,14 +6904,23 @@ export async function centralizedThreadWorkerMain(
     if (threadActivationRegistry) {
       threadTableReplication = createProcessTableReplicationOwner({
         generationAddress: processGenerationAddress,
-        registry: threadActivationRegistry,
-        tableSnapshot: new ForkTableSnapshot(
-          threadActivationRegistry,
-          threadForkModuleBackend,
-          `pid=${pid} tid=${tid}: peer table snapshot`,
+        tables: threadForkTables,
+        tableCheckpoint: createForkPeerTableCheckpoint(
+          () => requireForkModuleBackend(threadForkModuleBackend, pid),
+          () => {
+            if (!threadForkActivations) {
+              throw new Error(
+                `pid=${pid} tid=${tid}: peer table checkpoint ran before this ` +
+                  `thread registered any activation`,
+              );
+            }
+            return threadForkActivations;
+          },
+          channelOffset,
+          pid,
+          `pid=${pid} tid=${tid}: peer table checkpoint`,
         ),
         dlopen: threadDlopenSupport,
-        newArena: newThreadModuleStateArena,
         materializeModules: () => {
           threadDlopenSupport.replayDlopens();
         },
@@ -7190,14 +7054,6 @@ export async function centralizedThreadWorkerMain(
           `pid=${pid} tid=${tid}: fork module is missing thread bootstrap`,
         );
       }
-      threadActivationRegistry.registerActivation(
-        forkActivationRegistrationFromInstance({
-          activationId: 0,
-          module,
-          instance,
-          templateId: threadTemplateId,
-        }),
-      );
       threadResumeTable.registerActivation(
         0,
         forkResumeTargetsFromInstance(module, instance),
@@ -7216,7 +7072,6 @@ export async function centralizedThreadWorkerMain(
       } catch (error) {
         threadTableReplication?.abortActiveMutations();
         threadResumeTable.unregisterActivation(0);
-        threadActivationRegistry.unregisterActivation(0);
         threadForkActivations?.forget(0);
         throw error;
       }
@@ -7360,8 +7215,10 @@ export async function centralizedThreadWorkerMain(
           // marked an unsupported reference kind, instead of launching a child.
           // The guest fork() re-enters in `abort-replay` and returns
           // `-EOPNOTSUPP`.
-          const unsupportedKind =
-            threadActivationRegistry?.takeUnsupportedReferenceKind() ?? null;
+          // The capture-side marker the registry latched. The module refuses an
+          // unadmitted reference kind with `EOPNOTSUPP` at the call that meets
+          // it, so the signal is the errno rather than a flag read afterwards.
+          const unsupportedKind: string | null = null;
           if (unsupportedKind !== null) {
             // Make the platform boundary VISIBLE to a developer (Platform
             // Values: truthful failure over silent illusion). Marker-gated:
@@ -7435,7 +7292,6 @@ export async function centralizedThreadWorkerMain(
     // import above. Keep normal-return cleanup defensive so an unexpected
     // execution exit cannot strand the process-wide writer lock.
     releasePthreadForkLock();
-    threadActivationRegistry?.clear();
     threadExternrefTokens?.clear();
     threadHostImportRuntime?.clear();
 
@@ -7477,12 +7333,9 @@ export async function centralizedThreadWorkerMain(
   } catch (err) {
     threadTableReplication?.abortActiveMutations();
     releasePthreadForkLock();
-    try {
-      threadForkRegistry?.clear();
-    } catch {
-      // Preserve the original worker failure after making transaction roots
-      // unreachable as far as the coordinator can.
-    }
+    // The registry's `clear()` released its capture transaction's roots here.
+    // The module holds them now and reclaims them with its bump heap on the
+    // next fork, so there is no host-side transaction left to unwind.
     threadExternrefTokens?.clear();
     threadHostImportRuntime?.clear();
     if (err instanceof ExecRetirement) {

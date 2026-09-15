@@ -8694,6 +8694,168 @@ mod wasm {
         Ok(count)
     }
 
+    // -- Peer-table checkpoint (cross-worker dylink table replication) -------
+    //
+    // NOT a fork. A worker that loads a side module publishes its table state so
+    // its peers can replicate it, and a peer whose archive generation moves
+    // restores from that publication. The two halves are asymmetric on purpose:
+    //
+    //   - CAPTURE has to be one module call, because it opens an arena and a
+    //     capture graph, drives the guest's table save into them, and seals --
+    //     and nothing outside the module can hold those three open across calls.
+    //   - RESTORE is already host-sequenced (it runs when a peer's generation
+    //     changes, not inside a module-driven replay), so it needs no entry:
+    //     `fm_restore_from_arena` seeds the driver, and the host calls each
+    //     activation's `wpk_fork_module_table_state_restore` on its instance the
+    //     way it calls `wpk_fork_module_bootstrap`.
+    //
+    // This is what the 2,098-line `ForkActivationRegistry`'s `captureTableState`
+    // did, minus everything that was bookkeeping: the JS built a function
+    // catalog, opened a `ForkCaptureSession`, appended `Module` records, looped
+    // `saveTables` per activation and sealed into a host-owned arena.
+
+    fn capture_peer_tables_impl(channel_base: u64) -> Result<u64, Errno> {
+        if channel_base == 0 || channel_base % PAGE != 0 {
+            return Err(Errno::EINVAL); // the syscall channel is page-aligned
+        }
+        // The format must be seeded; a peer-table capture reads the same
+        // pointer width and chunk geometry a fork does.
+        let fmt = format()?;
+        let _ = fmt;
+
+        // The activation set is the SEEDED one, not a fork's. There is no fork
+        // here, so `state().activations` (which `begin_unwind_impl` fills) is
+        // empty and stays empty -- this path allocates no frames at all.
+        let activations: Vec<u32> = {
+            let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
+            // SAFETY: single-threaded per worker.
+            let table = unsafe { &*ACT_TEMPLATE_IDS.0.get() };
+            let mut ids: Vec<u32> = table.iter().take(count).map(|e| e.0).collect();
+            ids.sort_unstable();
+            ids
+        };
+        if activations.is_empty() {
+            return Err(Errno::EINVAL); // nothing to check point
+        }
+
+        // A fresh bump for the capture builder, exactly as `fm_capture_begin`
+        // does and for the same reason: the previous fork's builder lives in
+        // memory the reset reclaims, so it is abandoned before rather than
+        // dropped after.
+        reset_bump_heap();
+        let module = ForkModule {
+            activations: BTreeMap::new(),
+            channel_base,
+            extra_chunks: Vec::new(),
+            journal_image_ptr: 0,
+            journal_image_len: 0,
+            module_state: ModuleStateWriter::new(module_state_format()?),
+            module_state_chunks: ForkChunkList::new_channel(channel_base),
+            journal: ReplayEventJournal::new(),
+            table: ResumeSlotTable::new(),
+            replay_events: Vec::new(),
+            in_abort: false,
+        };
+        *state() = Some(module);
+        *capture_state() = Some(ReferenceGraphBuilder::begin());
+        CAPTURE_ARMED.store(1, Ordering::Relaxed);
+        reset_captured_externrefs();
+
+        // The arena the publication names. Module-owned, so the module frees
+        // exactly what it mapped -- and NOT freed here: the root is handed to
+        // the dlopen loader and outlives this call.
+        let arena_root = {
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            module_state.begin(module_state_chunks, mem)?
+        };
+
+        // One `Module` record per activation, before anything writes records:
+        // the arena has no activation set without them, and a restore filters
+        // on exactly this kind to decide which activations to drive.
+        let payload_size = u64::from(abi::WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE);
+        for id in &activations {
+            let template_id = activation_template_id(*id).ok_or(Errno::EINVAL)?;
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            let payload = module_state.reserve(
+                module_state_chunks,
+                mem,
+                abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE,
+                *id,
+                0,
+                payload_size,
+            )?;
+            let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+            let end = start
+                .checked_add(payload_size as usize)
+                .ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let out: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::hint::black_box(start) as *mut u8,
+                    payload_size as usize,
+                )
+            };
+            fork_codec::encode_module_record(
+                out,
+                &fork_codec::ModuleDescriptor {
+                    template_id,
+                    flags: 0,
+                },
+            )?;
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            st.module_state.commit(mem, payload)?;
+        }
+
+        // Drive the guest's TABLE save, which reserves its records through the
+        // module's own record-reserve import into the arena opened above.
+        let mut steps = Vec::new();
+        drive_plan::append_table_state_save_steps(&mut steps, &activations);
+        let plan = serialize_and_store_plan(&steps)?;
+        drive_plan_via_injector(plan, activations.len() as u32);
+
+        // Seal: the references the save interned become the `KFRS`/`KFRV`
+        // segments a restore decodes. Without this the publication carries
+        // tables whose funcref and externref slots name nothing.
+        capture_builder()?.validate()?;
+        write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
+        Ok(arena_root)
+    }
+
+    /// Capture a PEER-TABLE checkpoint into a fresh module-owned arena and
+    /// return its root (`> 0`), or 0 with the reason in `fm_last_errno`.
+    ///
+    /// Legal only at idle: this opens a capture graph of its own, and doing that
+    /// mid-fork would discard the fork's. Every activation the host has seeded a
+    /// template id for is included -- that seeded set, not a fork's activation
+    /// list, is what a peer-table checkpoint means by "this worker's modules".
+    ///
+    /// The returned arena is NOT released here. Its root goes to the dlopen
+    /// loader as a publication that peers read long after this call returns; the
+    /// module frees it when the next capture reclaims the chunk list.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_capture_peer_tables(channel_base: usize) -> usize {
+        match require_phase(PHASE_IDLE)
+            .and_then(|()| capture_peer_tables_impl(channel_base as u64))
+        {
+            Ok(root) => {
+                set_ok();
+                root as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
     /// Build the import plan for ONE activation of the child rooted at
     /// `module_state_root`, and return how many entries it has (`>= 0`), or `-1`
     /// with the reason in `fm_last_errno`.

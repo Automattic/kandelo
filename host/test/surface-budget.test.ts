@@ -218,6 +218,9 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-activations.ts",
       "host/src/fork-exception-broker.ts",
       "host/src/fork-child-imports.ts",
+      "host/src/fork-child-references.ts",
+      "host/src/fork-guest-sections.ts",
+      "host/src/fork-tables.ts",
     ]),
   // Host floor restored from the attic: everything the `fork-*.ts` sweep took by
   // FILENAME that turned out to be process lifecycle, cross-worker transport or
@@ -238,6 +241,9 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-activations.ts",
       "host/src/fork-exception-broker.ts",
       "host/src/fork-child-imports.ts",
+      "host/src/fork-child-references.ts",
+      "host/src/fork-guest-sections.ts",
+      "host/src/fork-tables.ts",
     ]),
   workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
   sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),

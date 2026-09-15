@@ -232,7 +232,7 @@ pub const DRIVE_OP_ABORT_END: u32 = 13;
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 14;
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 15;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -308,6 +308,24 @@ pub const DRIVE_SLOT_GC_PROBE: u32 = 12;
 /// (that is why `DRIVE_SLOT_RESTORE` is 3 while `DRIVE_OP_RESTORE` is 5), so a
 /// new slot costs a wider stride and renumbers nothing.
 pub const DRIVE_SLOT_MODULE_STATE_SAVE: u32 = 13;
+
+/// Drive-table slot the host binds the guest's
+/// `wpk_fork_module_table_state_save` into.
+///
+/// A PEER-TABLE checkpoint, not a fork: a worker publishing its dylink table
+/// state to its peers saves only the tables, and does it outside any fork. It
+/// needs its own slot because it is a different guest export from
+/// `wpk_fork_module_state_save` -- that one walks globals, tables and the
+/// reference graph, and using it here would publish far more than a table
+/// checkpoint means.
+///
+/// There is deliberately NO matching restore slot. A peer-table RESTORE is
+/// host-sequenced already (it runs when a peer's archive generation changes,
+/// not inside a module-driven replay), so the host calls each activation's
+/// `wpk_fork_module_table_state_restore` on its instance directly, the way it
+/// calls `wpk_fork_module_bootstrap`. A slot would buy nothing: there is no
+/// module-owned control flow for it to sit inside.
+pub const DRIVE_SLOT_MODULE_TABLE_STATE_SAVE: u32 = 14;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -772,6 +790,23 @@ pub fn append_module_state_save_steps(steps: &mut Vec<DriveStep>, activations: &
     }
 }
 
+/// The peer-table checkpoint's save walk: one step per activation, driving
+/// `wpk_fork_module_table_state_save` rather than the full save.
+///
+/// Same op as the full save -- the op says "call a `(i32) -> ()` guest entry
+/// with this activation id", and the SLOT says which one. Adding an op would
+/// mean two names for one shape.
+pub fn append_table_state_save_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) {
+    for &activation in activations {
+        steps.push(DriveStep {
+            op: DRIVE_OP_MODULE_STATE_SAVE,
+            slot: drive_table_base(activation) + DRIVE_SLOT_MODULE_TABLE_STATE_SAVE,
+            recipe: 0,
+            arg: activation,
+        });
+    }
+}
+
 pub fn append_attach_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) {
     for &activation in activations {
         steps.push(DriveStep {
@@ -939,6 +974,7 @@ mod tests {
             ("GC_ENCODE", DRIVE_SLOT_GC_ENCODE),
             ("GC_PROBE", DRIVE_SLOT_GC_PROBE),
             ("MODULE_STATE_SAVE", DRIVE_SLOT_MODULE_STATE_SAVE),
+            ("MODULE_TABLE_STATE_SAVE", DRIVE_SLOT_MODULE_TABLE_STATE_SAVE),
         ];
         for (name, offset) in slots {
             assert!(
@@ -961,13 +997,21 @@ mod tests {
 
     #[test]
     fn drive_table_base_reserves_slots_per_activation() {
-        // Fourteen slots per activation (ALLOC, FILL, EXN, RESTORE,
+        // Fifteen slots per activation (ALLOC, FILL, EXN, RESTORE,
         // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,
-        // ABORT_END, UNWIND_BEGIN, GC_ENCODE, GC_PROBE, MODULE_STATE_SAVE).
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 14);
+        // ABORT_END, UNWIND_BEGIN, GC_ENCODE, GC_PROBE, MODULE_STATE_SAVE,
+        // MODULE_TABLE_STATE_SAVE).
+        //
+        // The bases are spelled as literals rather than computed from the
+        // constant, so that widening the stride cannot quietly agree with
+        // itself: this test is one of the three readers of the geometry, and
+        // the other two (the host's `bindActivationDrive` and the injector's
+        // emitted thunks) are what it stands in for. Census 178 is the drift
+        // that happened when one of them kept its own copy.
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 15);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 14);
-        assert_eq!(drive_table_base(3), 42);
+        assert_eq!(drive_table_base(1), 15);
+        assert_eq!(drive_table_base(3), 45);
     }
 
     #[test]

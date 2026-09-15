@@ -944,6 +944,109 @@ describe("the binding records the module assembles at capture", () => {
     return out;
   }
 
+  /** The KFMS record kind a `Module` declaration uses. */
+  const RECORD_KIND_MODULE = 1;
+  /** `DRIVE_SLOT_MODULE_TABLE_STATE_SAVE`. */
+  const DRIVE_SLOT_TABLE_STATE_SAVE = 14;
+
+  it("captures a peer-table checkpoint into a fresh module-owned arena", () => {
+    // A PEER-TABLE checkpoint is not a fork: no frames, no unwind, no journal.
+    // What it must produce is an arena that names this worker's activations and
+    // carries the table records the guest's table-save walk wrote, sealed with
+    // the reference segments a peer needs to rebuild the funcref slots.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    const saved: number[] = [];
+    const reserve = f.x.__wpk_fork_module_state_record_reserve as (
+      kind: number,
+      activation: number,
+      owner: number,
+      size: number,
+    ) => number;
+    const commit = f.x.__wpk_fork_module_state_record_commit as (p: number) => void;
+    const base = (f.x.fm_drive_table_base as (a: number) => number)(0);
+    // The fixture's drive table is sized for the slots its own harness binds;
+    // this slot is past them, so grow to the full per-activation stride the way
+    // `bindActivationDrive` does.
+    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    if (f.instance.driveTable.length < needed) {
+      f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+    }
+    f.instance.driveTable.set(
+      base + DRIVE_SLOT_TABLE_STATE_SAVE,
+      saveSlotThunk((activation) => {
+        saved.push(activation);
+        const payload = reserve(RECORD_KIND_MUTABLE_GLOBAL, activation, 1, 12);
+        if (payload === 0) throw new Error("table snapshot reserve failed");
+        const view = new DataView(f.memory.buffer);
+        view.setUint8(payload, GLOBAL_TYPE_I32);
+        view.setUint8(payload + 1, 4);
+        view.setUint16(payload + 2, 0, true);
+        view.setUint32(payload + 4, 0, true);
+        view.setUint32(payload + 8, 0x5a, true);
+        commit(payload);
+      }) as never,
+    );
+
+    const root = (f.x.fm_capture_peer_tables as (c: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "the checkpoint captures").toBe(0);
+    expect(root, "into an arena of its own").toBeGreaterThan(0);
+    expect(saved, "and drove the guest's TABLE save, by activation").toEqual([0]);
+
+    const records = arenaRecords(f.memory, root);
+    expect(
+      records.some((r) => r.kind === RECORD_KIND_MODULE),
+      "the arena declares the activation set",
+    ).toBe(true);
+    expect(
+      records.some((r) => r.kind === RECORD_KIND_MUTABLE_GLOBAL),
+      "and carries what the save walk wrote",
+    ).toBe(true);
+  });
+
+  it("refuses a peer-table checkpoint it cannot make honestly", () => {
+    // Three refusals, each naming a different missing precondition. A
+    // checkpoint that silently published an empty arena would leave every peer
+    // replicating nothing, which looks exactly like a worker with no tables.
+    const f = fixture();
+    expect(
+      (f.x.fm_capture_peer_tables as (c: number) => number)(CHANNEL_BASE),
+      "no activation has been seeded",
+    ).toBe(0);
+    expect(f.errno()).toBe(22);
+
+    seedTemplateId(f, 0, 2048);
+    expect(
+      (f.x.fm_capture_peer_tables as (c: number) => number)(0),
+      "no syscall channel to allocate through",
+    ).toBe(0);
+    expect(f.errno()).toBe(22);
+    expect(
+      (f.x.fm_capture_peer_tables as (c: number) => number)(CHANNEL_BASE + 1),
+      "an unaligned channel",
+    ).toBe(0);
+    expect(f.errno()).toBe(22);
+  });
+
+  it("refuses a peer-table checkpoint in the middle of a fork", () => {
+    // It opens a capture graph of its own; doing that mid-fork would discard
+    // the fork's, and the fork would seal an arena with no references in it.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { provenance } = publish(f);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "a fork is open").toBe(0);
+    expect(
+      (f.x.fm_capture_peer_tables as (c: number) => number)(CHANNEL_BASE),
+      "and the checkpoint is refused",
+    ).toBe(0);
+    expect(f.errno(), "as a phase error, not an argument one").toBe(16);
+  });
+
   it("strides the drive table by the geometry every reader must agree on", () => {
     // Three readers compute a drive-table index: this module, the host's
     // `bindActivationDrive`, and the INJECTED thunks inside the module's own
