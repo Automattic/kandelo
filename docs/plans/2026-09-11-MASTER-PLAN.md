@@ -550,11 +550,28 @@ SDEF v5 carries the address, the kernel verifies the digest, every production
 producer emits both, and `tools/mkrootfs` writes the rootfs image with the Rust
 writer. The relay re-applies onto whichever answer comes back.
 
-## B43 — the mkrootfs migration breaks the canonical Node mount path
+## B43 — the host's lazy table is empty for an SDEF image (SCOPE CORRECTED)
 
-**OPEN, and it means `brandonpayton/lane-y-image-writer` must not merge as it
-stands.** Found by looking for the validation the migration did not have, and
-proven by controlled measurement rather than reasoning.
+**CORRECTED 2026-09-15, twice, and the correction matters more than the
+entry.** This was first filed as "the migration breaks the canonical Node mount
+path, the branch must not merge". **That claim was not established, and the
+evidence offered for it was invalid.**
+
+* The first boot test passed no `rootfsImage`, which means
+  `NodeKernelHost` uses raw `NodePlatformIO` where *"every host path is
+  reachable"*. The guest was reading the MACHINE's `/bin` — the giveaway was
+  `/bin/launchctl` and `/bin/csh` in the listing. The `Exec format error` was
+  the wasm kernel exec'ing a Mach-O binary. It said nothing about SDEF.
+* With the image actually loaded, an A/B against the pre-migration KLZY image
+  shows **both** images failing to run a lazy binary — KLZY with `I/O error`
+  (126), SDEF with `not found` (127). A harness that fails on the baseline
+  cannot demonstrate a regression; this one does not configure lazy transport
+  at all.
+* And the kernel reads SDEF correctly at runtime: `/bin/coreutils` is
+  `COREUTILS_NONEMPTY` on the SDEF image, so the kernel sees the deferred
+  file's real size.
+
+**What IS established**, by direct measurement of the image files:
 
 `DEFAULT_MOUNT_SPEC` — documented as *"Canonical mount layout"* — declares
 `{ path: "/", source: "image" }`. `node-kernel-worker-entry.ts:773` passes it to
@@ -569,10 +586,19 @@ restores the rootfs image into a **`MemoryFileSystem` backend for `/`**.
 | pre-migration (`KLZY`, built 11:47) | size 2,107,300, mode 4755 | **65** |
 | post-migration (`SDEF`) | **size 0**, mode 4755 | **0** |
 
-So every one of the 65 lazy binaries reads as an empty file through that
-backend. A Node boot confirms the consequence end to end:
-`/bin/sh: 1: /bin/ls: Exec format error`, exit 126 — the signature of executing
-an empty file.
+So every one of the 65 lazy binaries is invisible to THAT reader. What that
+reader's view feeds is the host's id→URL table — `configureRootfsOverlay` hands
+the kernel `imageBytes` (so the kernel loads and parses the image itself) while
+`baseImage.exportLazyEntries()` supplies the table that turns a
+`host_fetch_deferred(kind, id)` back into a URL. For an SDEF image that table
+is empty.
+
+**So the risk is in the FETCH path, not the mount path**, and it is the same
+defect B42 is about: the host keeping its own id→URL table. The URI relay
+removes the table, which removes this. Whether production breaks today is
+UNPROVEN either way — it needs a harness that configures lazy transport the way
+the real hosts do (`rootfsLazyAssets` / `rootfsLazyUrlBase`), which is the next
+measurement, not a conclusion.
 
 **Why no suite caught it.** Both Node runtime tests build their fixtures with
 `MemoryFileSystem`, so they exercise `KLZY` images only:
