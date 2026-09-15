@@ -588,6 +588,53 @@ comments that document their own deletion. The direction was reported backwards.
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+### THE URI IS THE ADDRESS — maintainer's correction, and an error of mine it
+### exposes, 2026-09-15
+
+**Their words:** *"The URI should be the only way any lazy reference is
+addressed, whether a lazy file or archive."*
+
+**This lane argued the opposite an hour earlier** — that relaying "the URI"
+would force the kernel to parse the archive's JSON descriptor, so the kernel
+should relay the blob opaquely instead. **That accepted the JSON as a
+constraint when it is the defect.**
+
+**What the formats actually carry, measured:**
+
+| record | fields |
+|---|---|
+| `KernelLazyArchive` (KLZY) | `archive_id`, `archive_bytes`, `mount_prefix` |
+| `DeferredArchive` (SDEF) | `archive_id`, `bytes` |
+| `KernelLazyFile` | `ino`, `size`, `archive_id`, `source_path` |
+
+**Not one of them carries a URI.** The formats record the STRUCTURE — ids,
+sizes, member paths, the mount prefix — and the ADDRESS exists only inside an
+opaque blob. So the fix is a URI field on the lazy records, uniform for files
+and archives, with the kernel relaying it. **No JSON in the addressing path at
+all**, and no kernel-side parsing to argue about.
+
+### THE ERROR THIS EXPOSES, COMMITTED HOURS EARLIER
+
+To let the host reconstruct archive records from module metadata, this lane
+**added `mountPrefix` and `bytes` to the archive descriptor** — a JSON blob —
+**while `KernelLazyArchive` already carries `mount_prefix` and `archive_bytes`
+as fields.** The commit message even argued the prefix "cannot be inferred from
+member paths", which is true and beside the point: it did not need inferring,
+because the format already had it.
+
+**It is the same defect the maintainer is naming, committed by this lane a few
+hours before being told about it.** The reconstruction could not read those
+fields because the HOST does not parse KLZY — so the fix for that was never a
+richer descriptor; it was the URI change.
+
+### WHAT STILL NEEDS A DECISION
+
+`sha256` is in **neither** struct. It lives only in the descriptor, so if the
+URI becomes the sole addressing, the integrity digest needs a home: its own
+field on the lazy record, or folded into the URI itself. **That is a format
+decision with a security property attached and is recorded as the maintainer's,
+not taken here.**
+
 ### THE CENSUS, WALKED — which leads paid and which did not, 2026-09-15
 
 The per-file census (`pub fn` with no call in its own `#[cfg(test)]` module)
