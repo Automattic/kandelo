@@ -45,7 +45,6 @@ import type {
   LazyFileEntry,
   SerializedLazyArchiveEntry,
 } from "./memory-fs";
-import { VFS_IMAGE_HEADER_SIZE } from "./vfs-image-transport";
 
 /**
  * Which deferred resource a `host_fetch_deferred` call is about. Mirrors
@@ -105,33 +104,7 @@ export interface RootfsOverlayBaseImage {
   // NOT `imageBodyBytes()`. A backend holding the whole CONTAINER cannot
   // answer that — it would be off by the header and carry the trailing
   // sections — so the reader is supplied alongside this by whoever knows which
-  // backend they have. `imageReadFromBody` adapts a body-holding one.
-
-}
-
-/**
- * Adapt a body-holding backend to the CONTAINER-offset reader the kernel's
- * rootfs image provider asks for.
- *
- * The subtraction is a fact about the backend, not about the kernel: a
- * `SharedFS` buffer is the bare body, so container offset `at` is body offset
- * `at - VFS_IMAGE_HEADER_SIZE`. A backend that holds the whole container
- * answers the same question without subtracting, which is exactly why the
- * question is asked in container coordinates — and why this adapter lives
- * here, in a file that survives, rather than as a method on the filesystem
- * being deleted.
- */
-export function imageReadFromBody(
-  backend: { imageBodyBytes(): Uint8Array },
-): (at: number, dest: Uint8Array) => number {
-  return (at, dest) => {
-    const body = backend.imageBodyBytes();
-    const start = at - VFS_IMAGE_HEADER_SIZE;
-    if (start >= body.byteLength) return 0; // end of image
-    const n = Math.min(dest.byteLength, body.byteLength - start);
-    dest.set(body.subarray(start, start + n));
-    return n;
-  };
+  // backend they have.
 }
 
 /**

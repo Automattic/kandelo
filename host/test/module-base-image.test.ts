@@ -4,10 +4,28 @@ import { resolveLazyUrl } from "../src/vfs/lazy-url";
 import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
 import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { createBaseImageFromContainer } from "../src/vfs/module-base-image";
-import {
-  imageReadFromBody,
-  imageReadFromContainer,
-} from "../src/vfs/rootfs-lazy-archives";
+import { imageReadFromContainer } from "../src/vfs/rootfs-lazy-archives";
+
+/**
+ * The body-offset oracle, written HERE rather than imported.
+ *
+ * A `SharedFS` buffer is the bare image body, so container offset `at` is body
+ * offset `at - 16`. This lived in the production module until its last
+ * production caller went, when the overlay started reading the container
+ * directly — and a parity test that imports its oracle from the module it is
+ * checking compares that module against itself. An oracle the test owns cannot
+ * drift with the implementation.
+ */
+function bodyWindowOracle(backend: { imageBodyBytes(): Uint8Array }) {
+  return (at: number, dest: Uint8Array): number => {
+    const body = backend.imageBodyBytes();
+    const start = at - 16;
+    if (start >= body.byteLength) return 0;
+    const n = Math.min(dest.byteLength, body.byteLength - start);
+    dest.set(body.subarray(start, start + n));
+    return n;
+  };
+}
 
 /**
  * PARITY tests, deliberately, against the incumbent rather than against the
@@ -51,7 +69,7 @@ describe("a module-backed base image", () => {
     const container = await source.saveImage();
 
     const restored = MemoryFileSystem.fromImage(container);
-    const incumbent = imageReadFromBody(restored);
+    const incumbent = bodyWindowOracle(restored);
 
     const module = SffsImageFs.create();
     module.loadImage(container);
@@ -176,6 +194,70 @@ describe("a module-backed base image", () => {
       "/kandelo/mirrors/tree.zip",
     ]);
     expect(derived.url).toBe("/kandelo/archives/tree.zip");
+  });
+
+  it("reads a module-built image's deferred URLs, which its sections do not carry", async () => {
+    // A bridge-built image: the URL lives in the KLZY descriptor and there are
+    // no host-side JSON sections at all. Reading only the sections would give
+    // an empty list for an image that has a deferred file, which is a load
+    // failure reported as a successful load of nothing.
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerLazyFile("/opt/one.bin", "assets/one.bin", 11, 0o644);
+    const container = await module.saveImage();
+
+    const blind = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+    );
+    // Without the module source, the sections are genuinely empty. This is the
+    // state step 5 would have shipped.
+    expect(blind.baseImage.exportLazyEntries()).toEqual([]);
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      "/kandelo/",
+      () => reader.lazyEntries(),
+    );
+    const entries = baseImage.exportLazyEntries();
+    expect(entries.length).toBe(1);
+    expect(entries[0].path).toBe("/opt/one.bin");
+    expect(entries[0].size).toBe(11);
+    // The deployment base applies to a module-sourced URL exactly as it does
+    // to a section-sourced one.
+    expect(entries[0].url).toBe("/kandelo/assets/one.bin");
+  });
+
+  it("refuses a module-built image whose archives it cannot reconstruct", async () => {
+    const module = SffsImageFs.create();
+    module.mkdir("/opt", 0o755);
+    module.registerArchiveMember({
+      path: "/opt/member",
+      archiveId: 1,
+      sourcePath: "member",
+      size: 1,
+      mode: 0o644,
+      ino: 4242,
+      archiveBytes: 99,
+      archiveDescriptor: new TextEncoder().encode('{"url":"archives/a.zip"}'),
+    });
+    const container = await module.saveImage();
+
+    const reader = SffsImageFs.create();
+    reader.loadImage(container);
+    const { baseImage } = createBaseImageFromContainer(
+      container,
+      imageReadFromContainer(container),
+      undefined,
+      () => reader.lazyEntries(),
+    );
+    // Refused, not half-answered. Returning [] here would mount an image whose
+    // archives silently never activate.
+    expect(() => baseImage.exportLazyArchiveEntries())
+      .toThrow(/cannot yet reconstruct/);
   });
 
   it("leaves every URL untouched when no deployment base is given", async () => {

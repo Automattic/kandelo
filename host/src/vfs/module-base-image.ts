@@ -32,6 +32,19 @@ import type {
 import { resolveLazyUrl } from "./lazy-url";
 import type { RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
 
+/** What `SffsImageFs.lazyEntries()` answers, named so this file need not import it. */
+export interface ModuleLazyEntries {
+  files: readonly {
+    path: string;
+    ino: bigint;
+    size: number;
+    archiveId: number;
+    sourcePath: string;
+    descriptor: Uint8Array;
+  }[];
+  archives: readonly { archiveId: number; bytes: number; descriptor: Uint8Array }[];
+}
+
 function decodeSection(bytes: Uint8Array | null, label: string): unknown {
   if (bytes === null) return null;
   try {
@@ -67,6 +80,23 @@ export function createBaseImageFromContainer(
    * mirrors after sealing"*, so no digest covers the string being changed.
    */
   lazyUrlBase?: string,
+  /**
+   * Where the lazy metadata lives when the container's JSON sections do not
+   * carry it.
+   *
+   * **The two producers do not agree, and this is not a style difference.**
+   * Measured: a `MemoryFileSystem`-built image records a deferred URL in the
+   * host-side JSON sections and leaves the KLZY descriptor empty; an image
+   * built through the module records it in the KLZY descriptor and writes no
+   * JSON sections at all. Neither writes both.
+   *
+   * Today's production images are the first kind, so the sections are present
+   * and this is unused. It exists because deleting `memory-fs.ts` makes every
+   * image the second kind, and then reading only the sections would return an
+   * empty list for an image full of deferred files — a load failure reported
+   * as a successful load of nothing.
+   */
+  moduleLazyEntries?: () => ModuleLazyEntries,
 ): { baseImage: RootfsOverlayBaseImage; imageRead: (at: number, dest: Uint8Array) => number } {
   const parsed = parseImageHeader(container);
   const sections = sectionOffsetAfterArchives(
@@ -83,6 +113,12 @@ export function createBaseImageFromContainer(
     archiveSectionBytes(parsed, sections),
     "VFS image lazy archive metadata",
   );
+
+  // Sections absent and a module to ask: the image was built through the
+  // module, which kept the URLs the sections would have carried.
+  const fromModule = lazy === null && archives === null && moduleLazyEntries !== undefined
+    ? moduleLazyEntries()
+    : undefined;
 
   // No open/read/close. The overlay used to pull deferred bytes THROUGH this
   // object; it now fetches them itself, so what remains is the metadata the
@@ -110,13 +146,47 @@ export function createBaseImageFromContainer(
   };
 
   const baseImage: RootfsOverlayBaseImage = {
-    exportLazyEntries: () =>
-      (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>
+    exportLazyEntries: () => {
+      if (fromModule !== undefined) {
+        // `archiveId === 0` is the STANDALONE registration: no archive behind
+        // it, and the descriptor is the whole of what says where the bytes
+        // are — written as the raw URL, not as JSON.
+        return fromModule.files
+          .filter((file) => file.archiveId === 0)
+          .map((file) => ({
+            ino: Number(file.ino),
+            generation: 1,
+            dataSequence: 1,
+            path: file.path,
+            paths: [file.path],
+            url: rebaseUrl(new TextDecoder().decode(file.descriptor)),
+            size: file.size,
+          })) as LazyFileEntry[];
+      }
+      return (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>
         lazyUrlBase === undefined ? entry : { ...entry, url: rebaseUrl(entry.url) },
-      ),
-    exportLazyArchiveEntries: () =>
-      (Array.isArray(archives) ? (archives as SerializedLazyArchiveEntry[]) : [])
-        .map(rebaseArchive),
+      );
+    },
+    exportLazyArchiveEntries: () => {
+      if (fromModule !== undefined) {
+        if (fromModule.archives.length !== 0) {
+          // Refused rather than half-answered. A `SerializedLazyArchiveEntry`
+          // needs the kind, mount prefix and per-member inventory that this
+          // reconstruction does not yet derive, and an archive returned
+          // without them would activate wrongly instead of not at all. The
+          // empty list is the dangerous answer here, not the exception.
+          throw new Error(
+            `VFS image carries ${fromModule.archives.length} lazy archive(s) in `
+              + "module metadata, which this reader cannot yet reconstruct. "
+              + "Rebuild the image with the host-side sections, or extend "
+              + "createBaseImageFromContainer to derive archives from the module.",
+          );
+        }
+        return [];
+      }
+      return (Array.isArray(archives) ? (archives as SerializedLazyArchiveEntry[]) : [])
+        .map(rebaseArchive);
+    },
   };
 
   return { baseImage, imageRead };
