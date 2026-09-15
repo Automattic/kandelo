@@ -379,6 +379,20 @@
    "scope_end": "\n}\n",
    "find": "    if let Err(e) = rootfs::set_export_timestamp(normalized) {\n        return err(e);\n    }",
    "replace": ""
+  },
+  {
+   "name": "a deferred file reports itself as resident",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(deferred),",
+   "replace": "        u64::from(false),"
+  },
+  {
+   "name": "an archive member forgets which archive backs it",
+   "scope": "    let fields: [u64; 8] = [",
+   "scope_end": "\n    ];\n",
+   "find": "        u64::from(archive_id),",
+   "replace": "        0u64,"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
