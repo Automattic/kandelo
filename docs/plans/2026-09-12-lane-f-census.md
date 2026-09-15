@@ -276,6 +276,14 @@ Then, and only then, the rest:
    helper in `host/test/` serves all eight, costs no measured surface (the
    budgets measure `host/src`), and tests through the live path rather than a
    second implementation of it.
+4b. **C6 -- the sixteen REAL forks that carry a reference** (§188). NEW and
+   FIRST in this list as of 2026-09-15: every one of them passed before the
+   attic move, they are the capability the lane set out to rebuild, and a
+   drained baseline that leaves them red would be a deletion banked as
+   progress. The externref case is traced to one missing seam -- externref ->
+   broker handle, the reverse of `resolve_externref` -- in §188, together with
+   the shape that closes it and a second defect (the seal-failure abort replays
+   from the wrong phase) found on the way.
 5. **C5** — regroup and drain.
 6. **D7** — nothing drives `__wpk_fork_ref_exn_clear`/`_abort`. A drive slot,
    not a host call. Still open.
@@ -9576,3 +9584,126 @@ taking the first. Take the restore baseline from git, never from the working
 tree. And treat a surviving mutant as "prove it was applied" before "prove the
 guard is vacuous" -- the build key is a two-second check and it was in the
 output the whole time.
+
+## §188 -- The baseline was hiding the lane's real debt: sixteen REAL forks
+
+Four more ported files came back today (`fork-module-exnref-replay`,
+`fork-module-multi-activation-funcref-replay`,
+`fork-module-decode-scan-restore`, `fork-module-decoded-structure`), and the
+baseline went 105 -> 101. Then I grouped what is LEFT by cause instead of by
+count, and the grouping says something the count never could.
+
+Of 101 banked files, only **12** fail on an unresolved attic import. 28 are
+fork-related. The other 16 fork files fail for a reason that is not an import
+at all:
+
+| File | First error |
+|---|---|
+| `externref-fork-module-worker` | `fm_parent_replay failed with errno 16` |
+| `externref-gated-fork-module-worker` | the same |
+| `exnref-local-fork-fresh-worker` | `exnref fork exited unexpectedly` |
+| `funcref-fork-module-worker` | `flag-on funcref fork exited unexpectedly` |
+| `gc-reference-cycle-fresh-worker` | `GC cycle fork exited unexpectedly` |
+| `gc-reference-state-fresh-worker` | `GC fork exited unexpectedly` |
+| `static-root-local-fork-fresh-worker` | `static-root fork exited unexpectedly` |
+| `static-root-bare-local-fork-fresh-worker` | the same, bare |
+| `catch-ref-fresh-worker` | stdout mismatch |
+| `fork-nested-command-substitution` | `expected '' to contain 'hi'` |
+| `fork-pipeline-command-substitution` | `expected '' to contain 'b'` |
+| `fork-instrument-coverage` | `c_02_fork_in_catch.wasm exited unexpectedly` |
+| `fork-host-import-runtime` | `wa_read_facts: malformed type section` |
+| `fork-module-host-obligation` | an obligation list off by one |
+| `fork-module-drive-shim` | the module exports no `__wpk_fork_ref_gc_transit` |
+| `fork-replay-events` / `fork-transit-relocation` | attic import (in the 12) |
+
+**Every one of them passed before the attic move.** Checked, not assumed:
+
+    git show 49d7f65744~1:host/test/expected-failures.json | grep <file>
+
+returns nothing for each. These are REAL forks of REAL programs -- a shell
+command substitution, a GC cycle, a caught exception, a host externref held
+across `fork()` -- and they are the capability this lane set out to rebuild.
+Plain forks still work (`fork-dlopen-replay-e2e`, `fork-from-thread`,
+`malloc-deep-fork`, every `vfork-*` file passes), so what is broken is
+specifically a fork that CARRIES A REFERENCE.
+
+A drained baseline that leaves these red would be a lane that deleted a
+capability and banked the deletion. They come first now.
+
+### What the externref fork actually hits, traced end to end
+
+One test, six probes, each answering the previous one's question.
+
+1. `fm_parent_replay failed with errno 16`. EBUSY is a phase refusal and the
+   message did not say which phase, so a reader had six to guess between. The
+   backend now names it -- the one change from this trace that stays.
+2. **Phase 1 = CAPTURE**, and the call was `fm_parent_replay(1)`: an ABORT
+   replay. So the fork was already failing; this was the failure's cleanup
+   failing too.
+3. A call trail through `ForkModuleContinuationBackend.call` showed
+   `fm_parent_begin_capture` followed IMMEDIATELY by `fm_parent_replay(1)` --
+   nothing in between, because `sealCaptureAndSerialize` calls the seal export
+   directly rather than through `call`. **The seal is what failed**, with
+   EINVAL, and the catch turned it into an abort replay the module could not
+   perform.
+4. Tagging each `?` in `seal_capture_impl` with a DISTINCT errno (EPERM,
+   ESRCH, EIO, ENXIO, ENOEXEC, EBADF, ECHILD -- a throwaway build, reverted)
+   put the failure at `capture_builder().validate()`.
+5. Tagging validate's seven refusals the same way put it at **"a reference
+   vector was never finished"**.
+6. Borrowing a stats counter to record the numbers: the guest declared a
+   **1-slot vector and appended 0**, and the single `__wpk_fork_ref_vector_append`
+   call carried recipe id **0xFFFFFFFF** -- `-1`, the failure sentinel.
+
+So the guest's externref encode returned -1. Its path is fixed by
+`crates/fork-instrument`: `__wpk_fork_ref_encode_externref(x)` is
+`encode_anyref(any.convert_extern(x))`, and `encode_anyref` tests the value
+against i31 and then each of the activation's own GC layouts. A live HOST
+externref matches none of them, so it falls to
+`__wpk_fork_ref_gc_broker_encode`, whose module implementation probes every
+registered activation's codec and, when none claims the value, refuses with
+`EOPNOTSUPP` and `-1`.
+
+**That refusal is correct for what it knows and wrong for what happened.** The
+value is not an unclaimed GC object; it is a host externref with a broker
+handle already recorded at its production site by
+`__wpk_fork_ref_provenance_externref`. Nothing in the module can reach that
+handle: the fork-module's host imports are `resolve_externref` (handle ->
+externref), `__wpk_fork_host_ref_identity` and `__wpk_fork_host_func_identity`.
+**The reverse direction -- externref -> broker handle -- has no seam.** It is
+the same floor as `resolve_externref`, in the other direction, and the capture
+cannot be module-owned without it.
+
+The shape that closes it, for the record before it is built:
+
+- one host import, `externref -> i32 handle` (0 = not a broker externref),
+  bound to the process externref owner's provenance map -- the WeakMap the
+  floor already keeps;
+- an injected fallback in `__wpk_fork_ref_gc_broker_encode`:
+  `extern.convert_any(transit[slot])` -> that import -> on a nonzero handle,
+  `fm_capture_intern(INTERN_KIND_EXTERNREF, handle, 0)`;
+- no guest ABI change: the guest's import list is untouched, and the new import
+  is the fork-module's own, exactly like `resolve_externref`.
+
+### A second defect, found on the way and not yet fixed
+
+When `fm_parent_seal_capture` fails, the module stays in **CAPTURE** -- the
+phase advance is on the success arm. The host's seal-failure catch then calls
+`fm_parent_replay(1)`, which requires SEALED_PARENT. It always answers EBUSY,
+so the parent that was supposed to survive with `fork()` returning `-errno`
+takes down its worker instead, and the errno a reader sees is 16 rather than
+the one that actually failed.
+
+The mid-unwind reserve==0 path gets this right: `parentAbortSeal()` first,
+which requires CAPTURE and moves to SEALED_PARENT, and only then the abort
+replay. The seal-failure path needs the same -- with one question to settle
+first, because `seal_capture_impl` calls `finish_unwind_impl` BEFORE the steps
+that can fail, and `fm_parent_abort_seal` calls it again. Whether that second
+finish is idempotent decides whether the fix is one host line or a module
+change.
+
+**Artifact discipline.** Every probe above was a real rebuild:
+`2f505be4…` before, four distinct keys during, and `2f505be4…` again after the
+revert -- so the module this lane ships is byte-identical to the one it
+started the trace with, and "ARTIFACT UNCHANGED" is a checked fact rather than
+an assumption.

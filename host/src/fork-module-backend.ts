@@ -229,7 +229,14 @@ export class ForkModuleContinuationBackend {
     const result = fn(...args);
     const errno = this.lastErrno();
     if (errno !== 0) {
-      throw new Error(`${this.label}: ${name} failed with errno ${errno}`);
+      // EBUSY (16) from a phase entry means the module was in a DIFFERENT phase
+      // than the entry requires, and WHICH phase is the whole diagnosis --
+      // "errno 16" alone leaves a reader six to guess between, which cost an
+      // afternoon on the externref fork (census section 188). The module
+      // answers it, so say it. Written as one expression deliberately: this
+      // surface's ceiling equals its target, so a diagnostic pays for itself
+      // in lines or it does not land.
+      throw new Error(`${this.label}: ${name} failed with errno ${errno}${errno === 16 ? ` in module phase ${(this.exports.fm_phase as () => number)()}` : ""}`);
     }
     return result;
   }
