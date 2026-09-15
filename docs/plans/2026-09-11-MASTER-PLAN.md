@@ -484,6 +484,42 @@ of which are real and landed. Its sibling guard
 `perturb/browser-worker-node-imports.json` was re-run here and is healthy —
 1 trial, 0 survived.
 
+## B42 — a survivor declared observable is still surviving
+
+OPEN, found 2026-09-15 while validating the lane Y/V second-tranche merge by
+running its trials rather than reading its numbers.
+
+`perturb/module-base-image.json` reports **13 trials, 1 survived**. The
+survivor is *"members are attached to every archive rather than their own"*,
+which mutates `if (file.archiveId === 0) continue;` to `if (false) continue;`
+in `host/src/vfs/module-base-image.ts`.
+
+The lane's own commit `e0cb9406e`, *"Make one survivor observable, and admit
+the other cannot be"*, says this one was fixed: *"The new case registers two
+archives plus a standalone file and asserts each archive keeps its own member
+and neither takes the standalone."*
+
+**The case exists and does not catch the mutation.**
+`host/test/module-base-image.test.ts:339` is that test. Applying the mutation
+by hand and running the file directly — independently of the perturb harness —
+gives **Tests 12 passed (12)**. The harness is right; the claim is not.
+
+The likely reason the commit believed otherwise: its evidence line is *"Test
+Files 2 passed (2), Tests 97 passed (97)"* — a test run, not a trial re-run.
+Adding a case and re-running the SUITE says the case passes. Only re-running
+the TRIAL says the case kills the mutant. That distinction is the whole point
+of the corpus, and it is easy to lose at exactly the moment a survivor is
+being closed out.
+
+**This is lane V's to fix, not the merge's to block.** The mutation is caught
+by nothing, so the grouping behaviour it names is untested; it is not a
+regression the merge introduced, and the merge is otherwise clean.
+
+The second survivor in that commit — *"a descriptor longer than its payload is
+trusted"* — was retired with an argument that reads correctly: unreachable by
+construction, the check stays annotated, and a trial that cannot fail is
+removed rather than left green. That half needs nothing.
+
 ## B40 — bash's source pin resolves to a 404, blocking `build-rootfs.sh`
 
 OPEN, **maintainer decision**. `packages/registry/bash/package.toml` pins
