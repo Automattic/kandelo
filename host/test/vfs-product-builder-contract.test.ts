@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openVfsProductBuild } from "../../images/vfs/scripts/vfs-product-builder-contract";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 
 const SNAPSHOT_SHA256 = "b".repeat(64);
 const cleanupDirectories = new Set<string>();
@@ -452,7 +452,7 @@ async function createFixture(
   const inputsPath = join(directory, "resolved-inputs.json");
   writeFileSync(inputsPath, canonicalJson(inputs));
 
-  const vfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  const vfs = SffsImageFs.create();
   const outputBytes = await vfs.saveImage({
     metadata: {
       version: 1,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import {
   ensureDirRecursive,
@@ -32,7 +32,7 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
     delete process.env.KANDELO_NO_OPCACHE_PREWARM;
 
     try {
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(64 * 1024 * 1024));
+      const fs = SffsImageFs.create();
       for (const dir of [
         "/tmp",
         "/var/www",
@@ -106,8 +106,8 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
   }, 60_000);
 });
 
-function createPrewarmFs(): MemoryFileSystem {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(64 * 1024 * 1024));
+function createPrewarmFs(): SffsImageFs {
+  const fs = SffsImageFs.create();
   for (const dir of [
     "/tmp",
     "/var/www",

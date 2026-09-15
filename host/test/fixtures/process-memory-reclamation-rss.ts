@@ -3,7 +3,7 @@ import process from "node:process";
 
 import { resolveBinary } from "../../src/binary-resolver";
 import { NodeKernelHost } from "../../src/node-kernel-host";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -45,7 +45,7 @@ async function rootfsWithChurnProgram(
 ): Promise<Uint8Array> {
   const bytes = new Uint8Array(program);
   const capacity = Math.max(4 * MIB, bytes.byteLength + MIB);
-  const rootfs = MemoryFileSystem.create(new SharedArrayBuffer(capacity));
+  const rootfs = SffsImageFs.create();
   ensureDirRecursive(rootfs, "/bin");
   writeVfsBinary(rootfs, childPath, bytes, 0o755);
   return await rootfs.saveImage();
