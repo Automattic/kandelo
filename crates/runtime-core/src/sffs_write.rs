@@ -2203,6 +2203,24 @@ mod tests {
             }
         }
         assert_eq!(last.err(), Some(Errno::ENOSPC));
+
+        // "rather than corrupting" is the half of this test's own name that
+        // nothing asserted. A writer that runs out of blocks mid-tree must
+        // leave what it already wrote intact and MOUNTABLE -- an image that
+        // reports ENOSPC and then cannot be read is worse than one that
+        // refuses at the start, because the failure moves to whoever loads it.
+        let image = w.finish().expect("a full filesystem still finishes");
+        let content = NoContent;
+        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+            .expect("a full filesystem is still a mountable one");
+        let root = fs.stat_ino(ROOT_INO).expect("root survives the failed write");
+        assert_eq!(root.mode & 0xf000, 0x4000);
+
+        // The first file written is still there, with its exact bytes.
+        let first = fs.resolve(b"/f0", true).expect("the first file survives");
+        let mut buf = [0u8; 8];
+        let n = fs.read_at(first, 0, &mut buf).expect("read the first file");
+        assert_eq!(&buf[..n], &[7u8; 8], "a survivor's bytes are its own");
     }
 
     #[test]
