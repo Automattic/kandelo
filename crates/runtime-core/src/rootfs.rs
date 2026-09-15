@@ -5422,6 +5422,45 @@ mod tests {
         );
     }
 
+    /// `fchown` through an open handle, which had NO test caller at all.
+    ///
+    /// The function was written, exported and never exercised — `grep` for
+    /// `fchown(` in this file found the definition and nothing else. It is the
+    /// path `sys_fchown` takes for a rootfs file, so an image whose ownership
+    /// is set through a descriptor rather than a path was resting on an
+    /// unasserted function.
+    ///
+    /// Asserted against `chown`'s behaviour rather than independently: the two
+    /// differ only in how they name the inode, and a difference in what they DO
+    /// to it would be a bug in whichever one a caller did not use.
+    #[test]
+    fn fchown_matches_chown_through_an_open_handle() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+
+        // O_RDWR == 2.
+        let handle = open(b"/usr/bin/hello", 2, 0, 0, 0).expect("open");
+        fchown(handle, 31, 32, false).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (31, 32), "the handle names the same inode as the path");
+
+        // -1 leaves a field alone, exactly as the path form does.
+        fchown(handle, u32::MAX, 41, false).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (31, 41), "u32::MAX is the unchanged sentinel");
+
+        // And it clears set-user-ID on request, so a descriptor is not a way
+        // around the rule a path is held to.
+        chmod(b"/usr/bin/hello", 0o4755).unwrap();
+        fchown(handle, 1, 1, true).unwrap();
+        assert_eq!(
+            lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777,
+            0o0755,
+            "set-user-ID survives an fchown that asked to clear it",
+        );
+        release_handle(handle);
+    }
+
     #[test]
     fn chmod_chown_and_symlink_creation() {
         let _g = TestGuard::acquire();
