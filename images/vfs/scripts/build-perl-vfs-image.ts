@@ -158,7 +158,7 @@ export async function buildPerlVfsImage(
     }
   }
 
-  // Create a 16MB SharedArrayBuffer + MemoryFileSystem
+  // Create the image tree with the Rust writer
   const fs = SffsImageFs.create();
   // The declared capacity the product's publication gate checks the artifact
   // against. The SharedArrayBuffer it used to come from was never anything but

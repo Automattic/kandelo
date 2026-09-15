@@ -23,7 +23,6 @@ import {
   sep,
 } from "node:path";
 import type { MountConfig } from "./types";
-import { MemoryFileSystem } from "./memory-fs";
 import {
   createSessionOwnedHostFileSystem,
   HostFileSystem,
