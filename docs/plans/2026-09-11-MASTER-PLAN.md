@@ -429,6 +429,38 @@ configure behind `[ ! -f <artifact> ]` and interpolate a `$*_PREFIX` into
 compiler flags, then check which of those keep their source tree inside
 `packages/registry/<pkg>/`.
 
+## B43 — the Xcode licence blocks spidermonkey, and only the maintainer can clear it
+
+OPEN, **needs the maintainer at a terminal**, found 2026-09-15.
+
+`spidermonkey/wasm32` fails, which blocks `spidermonkey-node`, `node` and the
+`browser-node` product, so `./run.sh setup` reports `"outcome":"failed"` and
+the browser suite cannot be run to completion.
+
+The cause is not in this repository. SpiderMonkey's `mach` build shells out to
+`/usr/bin/cc` for a host-side endianness probe, and macOS refuses:
+
+    You have not agreed to the Xcode license agreements.
+    Please run 'sudo xcodebuild -license' ...
+
+Reproduced directly rather than inferred: compiling a two-line C file with
+`/usr/bin/cc` fails with the same message.
+
+**It is new today and is not caused by any campaign change.** spidermonkey
+built successfully in this worktree earlier the same day — `setup-offline.log`
+and `less-fix.log` both show zero spidermonkey failures — and began failing
+partway through, which is the signature of an Xcode update resetting the
+licence agreement.
+
+**The fix needs `sudo` and a human**, so no agent can clear it:
+
+    sudo xcodebuild -license accept
+
+Until then, treat a spidermonkey/node/browser-node failure in `run.sh setup`
+as this and not as a regression. Everything upstream of it still builds: the
+package graph reached every other node, and `scripts/build-rootfs.sh` exits 0
+since B40 was fixed.
+
 ## B41 — three perturb trials stopped anchoring when the graph moved under them
 
 OPEN, found 2026-09-14 while re-running lane Y's trials rather than taking
