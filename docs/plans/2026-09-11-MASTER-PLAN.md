@@ -388,6 +388,56 @@ Writing them caught one error worth repeating: **lane I's target is 2100 code
 lines, not the 1200 that still appears in older prose here.** 1200 is a
 whole-line figure predating the unit change. Read gates from the budget.
 
+## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
+
+OPEN, and it blocks **all six browser products** exactly as B39 did.
+
+`./run.sh setup` fails at `spidermonkey/wasm32` while linking
+`config/nsinstall_real` — a NATIVE macOS host tool, not a wasm artifact. The
+visible failure is a wall of undefined symbols (`__stack_chk_fail`,
+`__stack_chk_guard`, `getgrnam`, `getpwnam`, …), which reads like a missing
+libc and is not. The real error is the line above them:
+
+```
+ld64.lld: error: could not load TAPI file at
+  /Applications/Xcode.app/…/MacOSX.sdk/usr/lib/libSystem.tbd: malformed file
+libSystem.tbd:4:20: error: unknown architecture
+                   arm64e.x1-macos, arm64e.x1-maccatalyst ]
+```
+
+The installed Xcode SDK declares an architecture (`arm64e.x1`) that the
+repo's pinned `ld64.lld` does not know, so `libSystem.tbd` fails to load and
+EVERY symbol it would have provided is then undefined. The undefined-symbol
+list is a consequence; chasing it leads to musl, the sysroot, or the overlay,
+all of which are innocent.
+
+**Not caused by any source change.** It is a toolchain-versus-SDK mismatch:
+the machine's Xcode moved forward past the pinned linker. Any package that
+links a native host tool with the bundled lld is exposed; spidermonkey is
+simply the first in the graph to do it.
+
+**Why it surfaced now, which is B38.** Spidermonkey had built here as recently
+as 2026-09-14 and was being served from cache. A `crates/runtime-core` edit
+republishes kernel and rootfs mid-run and moves downstream cache keys (B38), so
+the next `setup` rebuilt spidermonkey from source and met a break that had been
+latent behind the cache. Same relationship B39 has to B38: B38 is the churn
+source, and the churn turns a dormant toolchain defect into a blocking one.
+This is the second time a cache-key move has been misread as a code failure.
+
+**Blast radius, measured from the run's own report.** `spidermonkey` failed
+(exit 1); `spidermonkey-node`, `node`, `node-vfs`, `node-browser-bundle`,
+`shell`, `wordpress`, `nginx-vfs`, `nginx-php-vfs` and `lamp` blocked, along
+with products `browser-main-shell`, `browser-node`, `browser-wordpress`,
+`browser-nginx`, `browser-nginx-php` and `browser-lamp`. Everything else
+succeeded, including `kernel`, `rootfs`, `sudo` and `sudo-lite` — so a lane
+touching the kernel and the VFS image can still be validated on Node, which is
+what lane V did rather than reporting a browser number it could not measure.
+
+**Where to start.** Either the host-tool link stops using the bundled lld (a
+native host tool has no reason to), or the pinned LLVM moves forward enough to
+parse the current TAPI format. The first is smaller and is the one that matches
+"host tools are the host's".
+
 ## B39 — vim configured against an ncurses tree that no longer existed
 
 FIXED `74548fe10`. `build-vim.sh` only configured when `src/auto/config.mk`
