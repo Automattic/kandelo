@@ -2509,6 +2509,53 @@ the KLZY binary wire format**, and `crates/runtime-core/src/klzy.rs` already
 decodes it. Its only production writer-caller is `memory-fs.ts`. That makes it
 the largest remaining piece of TypeScript that owns a filesystem format, and a
 clean port target the moment the worker flip lands.
+### THE WORKER FLIP IS BLOCKED, AND THE MAINTAINER'S APPROVAL DOES NOT CARRY
+
+**Approved 2026-09-14:** construct an `SffsImageFs` in both worker entries and
+hand it to the overlay as the metadata source. **Blocked by something found
+after the approval**, so the approval does not cover it.
+
+**`images/vfs/lib/sffs-image-fs.ts` imports `node:fs` and `node:path` at module
+scope.** Importing it from the browser worker would pull Node builtins into the
+browser bundle — the exact defect `host/test/browser-worker-node-globals.test.ts`
+exists to catch, and the one that took 103 of 184 fast specs down earlier in
+this campaign.
+
+**The Node usage is two lines** (`defaultModuleBytes`, reading
+`local-binaries/sffs_module32.wasm`) against **100 call sites** that use
+`SffsImageFs.create()` with no arguments. So the cheap-looking fixes are not
+cheap:
+
+* an injected default needs a Node-only module imported at all 100 sites;
+* a split file needs all 100 repointed;
+* a lazy `node:fs` that a bundler cannot follow is hard to do SYNCHRONOUSLY,
+  and `create()` is synchronous.
+
+**Landing only the Node half is not available either**, and not because it is
+hard: the host-runtime contract says *"Do not land Node-first or browser-later
+host changes."* Half a flip is the thing that rule names.
+
+### AND THE DESIGN QUESTION UNDERNEATH IS BIGGER THAN THE BUNDLING ONE
+
+**The browser worker already runs the kernel wasm, which already parses KLZY.**
+Instantiating a SECOND wasm module beside it, purely to re-read lazy metadata
+the kernel has in hand, is duplication that the bundling problem is only the
+first symptom of.
+
+What the host actually needs from that metadata is small and specific: a FETCH
+table — transports per archive, URL per inode. Three shapes could supply it:
+
+1. **the container's JSON sections** — today's answer, and it disappears with
+   `memory-fs.ts`;
+2. **a module instance in the worker** — the approved flip, which needs the
+   bundling problem solved and puts two copies of the filesystem in one worker;
+3. **the kernel, which has already parsed KLZY**, answering "what must you
+   fetch?" — kernel to host, which is the direction this campaign is going, and
+   which needs no second module anywhere.
+
+**Option 3 looks right and is not this lane's to choose alone**, because it adds
+a kernel→host question and touches the ABI surface lanes F and L own. Recorded
+for the maintainer rather than started.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
