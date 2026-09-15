@@ -2226,6 +2226,51 @@ mod tests {
         assert_eq!(&buf[..n], b"kept", "a survivor's bytes are its own");
     }
 
+    /// A producer that DECLARES it describes its deferred files must emit the
+    /// section even with none to describe.
+    ///
+    /// The distinction is between "this image says it has no deferred files"
+    /// and "this image says nothing", and only the first is safe for a loader
+    /// to trust. `rootfs::build_export_image` declares it; a writer driven by
+    /// a host that keeps its lazy manifest in JSON beside the image must not,
+    /// because for that image no section IS the truth.
+    ///
+    /// Nothing covered it: deleting `!self.declares_deferred` from the emit
+    /// guard left the whole suite green, so a declaring producer could fall
+    /// silent and no test would notice.
+    #[test]
+    fn a_declaring_producer_emits_the_section_even_with_nothing_to_declare() {
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"plain", 0o644, Content::Bytes(b"no deferred files here"))
+            .expect("create");
+        w.declare_deferred_section();
+
+        let image = w.finish().expect("finish");
+        let content = NoContent;
+        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+            .expect("mount");
+        assert_ne!(
+            fs.geometry().deferred_inode,
+            0,
+            "a declaring producer emitted NO deferred section, which a loader \
+             cannot tell from an image that never described its deferred files",
+        );
+
+        // And a producer that does not declare stays silent, so the assertion
+        // above is about the declaration rather than about a section this
+        // writer always emits.
+        let mut quiet = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let quiet_root = quiet.root();
+        quiet
+            .create_file(quiet_root, b"plain", 0o644, Content::Bytes(b"same tree"))
+            .expect("create");
+        let quiet_image = quiet.finish().expect("finish");
+        let quiet_fs = Sffs::mount(SffsImageSource { image: &quiet_image, content: &content })
+            .expect("mount");
+        assert_eq!(quiet_fs.geometry().deferred_inode, 0);
+    }
+
     #[test]
     fn a_full_filesystem_reports_enospc_rather_than_corrupting() {
         // Truthful failure: a writer that ran out of blocks must say so.
