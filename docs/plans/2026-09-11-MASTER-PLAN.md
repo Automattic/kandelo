@@ -2863,16 +2863,33 @@ Three attempts failed, each teaching something:
    mode/type check on what `registerLazyFile` produces, before eagerness is
    ever consulted.
 
-**So the honest state is: the fix is right, the branch is untested, and the
-spec says so on every run.** A spec reporting a known survivor is a visible,
-accurate statement that a behaviour is uncovered. Deleting the trials to get a
-clean run would convert that statement into silence, which is the thing this
-campaign exists to stop.
+**RESOLVED, and the conclusion above was wrong.** The branch IS covered; the
+TRIALS were wrong.
 
-**What the next person needs**: find what `MemoryFileSystem.registerLazyFile`
-gives a stub for mode, type, uid and gid, and make the deferred fixture
-identical to the eager one in all of them. Then eagerness is the only
-difference and the trials die.
+Measured instead of reasoned about: `registerLazyFile` leaves a stub identical
+to an eager file in every field the predicate checks — type `S_IFREG`, mode
+`0o4755`, uid 0, gid 0 — so the fixture was never the problem. Then the
+mutation was applied BY HAND and the suite still passed, which located the
+fault exactly: **`isPathDeferred` and `getLazyEntry` are REDUNDANT against
+`MemoryFileSystem`.** A lazily registered file answers yes to both, so a trial
+disabling either half alone cannot fail, no matter how good the test is.
+
+**That is a third kind of survivor**, and it reads identically to the other two:
+
+1. the test is thin;
+2. the test does not run (the detached `#[test]`);
+3. **the mutation removes one of two redundant paths.**
+
+The union is not pointless — it exists because the module bridge has only the
+first half — so the trial that means something removes the WHOLE union, leaving
+a predicate that genuinely cannot tell a deferred login program from an eager
+one. **One trial, 0 survived.**
+
+**Three rounds were spent rewriting the TEST, and the test was never the
+problem.** The rule "treat a survivor as your test being wrong rather than the
+trial being unfair" is right about where to look FIRST and wrong as a stopping
+point: when rewriting the test does not move the result, apply the mutation by
+hand and watch. That is one command, and it ends the guessing.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
