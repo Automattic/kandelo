@@ -39,7 +39,8 @@ import {
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
-import { resolveLazyUrl } from "./vfs/lazy-url";
+import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { createBaseImageFromContainer } from "./vfs/module-base-image";
 import { BrowserTimeProvider } from "./vfs/time";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
@@ -209,15 +210,8 @@ const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook();
 let defaultEnv: string[] = [];
 
-type LazyRegistrationMessage = Extract<
-  MainToKernelMessage,
-  { type: "register_lazy_files" | "register_lazy_archives" }
->;
-
 let initReady = false;
 let initFailure: string | null = null;
-const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
-let lazyRegistrationTail: Promise<void> = Promise.resolve();
 let vforkMechanismTraceEnabled = false;
 let injectVforkWorkerStartFailure = false;
 let injectedVforkWorkerStartFailure = false;
@@ -605,102 +599,7 @@ function resetBridgePendingRequests(): void {
 }
 
 
-function respondIfRequested(
-  msg: { requestId?: number },
-  result: unknown,
-): void {
-  if (typeof msg.requestId === "number") {
-    respond(msg.requestId, result);
-  }
-}
 
-function respondErrorIfRequested(
-  msg: { requestId?: number },
-  error: string,
-): void {
-  if (typeof msg.requestId === "number") {
-    respondError(msg.requestId, error);
-  }
-}
-
-
-async function applyLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
-  if (msg.type === "register_lazy_files") {
-    memfs.importLazyEntries(msg.entries);
-  } else {
-    await memfs.importVerifiedLazyArchiveEntries(msg.entries);
-  }
-  respondIfRequested(msg, true);
-}
-
-function failPendingLazyRegistrations(error: string): void {
-  const pending = pendingLazyRegistrationMessages.splice(0);
-  for (const msg of pending) {
-    respondErrorIfRequested(msg, error);
-  }
-}
-
-function scheduleLazyRegistration(
-  msg: LazyRegistrationMessage,
-): Promise<void> {
-  // WHY: worker message handlers may overlap after an await. Serialize trust
-  // checks so two registrations cannot both authenticate against an obsolete
-  // view and then publish in a different order.
-  const scheduled = lazyRegistrationTail.then(async () => {
-    const releaseMutation = rootfsSnapshotGate.beginMutation(
-      "register lazy rootfs entries",
-    );
-    try {
-      await applyLazyRegistration(msg);
-    } finally {
-      releaseMutation();
-    }
-  });
-  lazyRegistrationTail = scheduled.catch(() => {});
-  return scheduled;
-}
-
-function reportLazyRegistrationFailure(
-  msg: LazyRegistrationMessage,
-  err: unknown,
-): void {
-  const error = formatError(err);
-  respondErrorIfRequested(msg, error);
-  reportWorkerProtocolError(`${msg.type} failed: ${error}`);
-}
-
-async function flushPendingLazyRegistrations(): Promise<void> {
-  // Keep init closed while draining. Messages delivered while a digest yields
-  // join this queue and must be authenticated before the worker reports ready.
-  while (pendingLazyRegistrationMessages.length !== 0) {
-    const msg = pendingLazyRegistrationMessages.shift()!;
-    try {
-      await scheduleLazyRegistration(msg);
-    } catch (err) {
-      reportLazyRegistrationFailure(msg, err);
-      throw err;
-    }
-  }
-}
-
-async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<void> {
-  if (initFailure) {
-    respondErrorIfRequested(msg, initFailure);
-    reportWorkerProtocolError(
-      `${msg.type} rejected because kernel worker init failed: ${initFailure}`,
-    );
-    return;
-  }
-  if (!initReady) {
-    pendingLazyRegistrationMessages.push(msg);
-    return;
-  }
-  try {
-    await scheduleLazyRegistration(msg);
-  } catch (err) {
-    reportLazyRegistrationFailure(msg, err);
-  }
-}
 
 
 
@@ -771,10 +670,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   const rootMount = specMounts.find((m) => m.mountPoint === "/");
   if (!rootMount) throw new Error("rootfs mount spec missing / mount");
   memfs = rootMount.backend as MemoryFileSystem;
-  if (msg.lazyUrlBase) {
-    memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-    memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
-  }
+  // No rewriteLazy*Urls here any more. The deployment base is applied when the
+  // overlay reads its metadata out of the container, so nothing mutates a
+  // stored record to say where bytes live.
   // Captured for the rootfs overlay's archive provider below (Phase 5
   // 3b-wiring.3): the SAME fetcher object installed on memfs, so the
   // in-kernel LazyMember path fetches raw archives over the identical
@@ -795,10 +693,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // in-kernel tmpfs, which already serves every other scratch prefix, so a
   // host backend for it would be a second authority the kernel never consults.
   const mounts: MountConfig[] = [...specMounts];
-  memfs.subscribeLazyDownloads((event) => {
-    post({ type: "lazy_download", event });
-  });
-  // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
+    // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole
   // `/` authority, so the host `/` mount is always dropped from the
   // guest-facing VirtualPlatformIO. Guest syscalls route non-tmpfs `/` paths
   // through the overlay (`rootfs::claims_path`), and host-initiated exec-byte
@@ -869,8 +764,21 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // provider before init applies them. The `/` MemoryFileSystem is reachable
   // only here in the entry.
   if (memfs) {
+    // The overlay's metadata and bytes both come from the container the kernel
+    // is itself handed, not from the host's filesystem. `memfs` is no longer
+    // asked anything here.
+    const { baseImage, imageRead } = createBaseImageFromContainer(
+      msg.vfsImage,
+      imageReadFromContainer(msg.vfsImage),
+      msg.lazyUrlBase,
+    );
     configureRootfsOverlayFromImage({
-      baseImage: memfs,
+      baseImage,
+      imageRead,
+      // Progress now comes from the PIPE rather than from the
+      // filesystem's own fetch, and it covers archives as well as
+      // files — archives reported nothing before.
+      onLazyProgress: (event) => post({ type: "lazy_download", event }),
       imageBytes: msg.vfsImage,
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootMount?.nosuid === true,
@@ -1037,7 +945,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
-  await flushPendingLazyRegistrations();
   // No await separates the final queue check from opening init, so a message
   // cannot slip past both the pending queue and the serialized live path.
   initReady = true;
@@ -1446,7 +1353,6 @@ async function performDestroy() {
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
-  failPendingLazyRegistrations(initFailure);
   gracefulDetachComplete = settleDestroyedRealmAllocator(gracefulDetachComplete);
   return kernelRealmDestroyResult(gracefulDetachComplete);
 }
@@ -1618,7 +1524,6 @@ sw.onmessage = (e: MessageEvent) => {
         const error = formatError(err);
         initReady = false;
         initFailure = error;
-        failPendingLazyRegistrations(error);
         console.error("[kernel-worker] init failed:", err);
         post({ type: "init_error", error });
       });
@@ -1651,8 +1556,6 @@ sw.onmessage = (e: MessageEvent) => {
     case "pick_listener_target": handlePickListenerTarget(msg); break;
     case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": void handleDestroy(msg); break;
-    case "register_lazy_files": void handleLazyRegistration(msg); break;
-    case "register_lazy_archives": void handleLazyRegistration(msg); break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for
       // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the

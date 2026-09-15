@@ -41,10 +41,8 @@ import {
 } from "../src/generated/abi";
 import { resetWasmArtifactModuleForTesting } from "../src/wasm-artifact-driver";
 import { useNodeWasmArtifactModule } from "../src/wasm-artifact-module-node";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../src/vfs/memory-fs";
+import type { VfsImageMetadata } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import {
   resolvePolicyBoundVfsWasmArtifact,
   tryResolveVfsArtifact,
@@ -255,7 +253,12 @@ async function vfsImage(
   metadata: VfsImageMetadata | null | undefined,
   compressed: boolean,
 ): Promise<Uint8Array> {
-  const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  // The Rust writer, not the TypeScript one. This file's 77 assertions are
+  // package-resolution policy; its filesystem is a fixture factory that calls
+  // exactly one method on it, so which implementation produced the bytes is
+  // not something any assertion here is about — and the TypeScript one is
+  // being deleted.
+  const mfs = SffsImageFs.create();
   const image = await mfs.saveImage(
     metadata === undefined ? undefined : { metadata },
   );

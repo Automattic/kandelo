@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MemoryFileSystem } from "../../src/vfs/memory-fs";
+import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
 import { runCentralizedProgram } from "../centralized-test-helper";
 import { buildVforkSideModuleFixture } from "../vfork-side-module-fixture";
 
@@ -46,9 +46,7 @@ if (ordinary.exitCode !== 0) {
 const sideFixture = buildVforkSideModuleFixture();
 try {
   const sideBytes = new Uint8Array(readFileSync(sideFixture.libraryPath));
-  const imageOwner = MemoryFileSystem.create(
-    new SharedArrayBuffer(Math.max(2 * 1024 * 1024, sideBytes.length * 4)),
-  );
+  const imageOwner = SffsImageFs.create();
   imageOwner.mkdir("/lib", 0o755);
   imageOwner.createFileWithOwner(
     "/lib/libvfork-side.so",

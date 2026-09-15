@@ -234,6 +234,37 @@ export class SffsImageFs {
         this.check(this.exports.sm_write_file(p, pl, mode, c, cl), "write", path)));
   }
 
+  /**
+   * Create a file owned by `uid`/`gid`, the way the image builders do.
+   *
+   * `MemoryFileSystem.createFileWithOwner` re-applies the mode after the
+   * chown, and this does not. **That is a real difference between the two
+   * filesystems, not a simplification:** measured, `MemoryFileSystem.chown`
+   * clears set-user-ID unconditionally — `0o4755` becomes `0o755` — while the
+   * module leaves it, because `sm_chown` takes the POSIX clearing as an
+   * explicit flag and this bridge does not set it. So the incumbent NEEDS the
+   * re-chmod to end up where it meant to, and here it would be dead code.
+   *
+   * Written the incumbent's way first, with the re-chmod, a perturbation that
+   * swapped chown and chmod survived — which is how the divergence was found
+   * rather than assumed.
+   */
+  createFileWithOwner(
+    path: string,
+    mode: number,
+    uid: number,
+    gid: number,
+    content: Uint8Array,
+  ): void {
+    this.writeFile(path, content, mode);
+    this.chown(path, uid, gid);
+  }
+
+  /** The directory peer of {@link createFileWithOwner}. */
+  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {
+    this.mkdir(path, mode, uid, gid);
+  }
+
   lstat(path: string): SffsStat {
     // `out_len === 0` is the module's one size-probe convention, shared with
     // `sm_read_dir` and `sm_check_headroom`. Queried rather than hardcoded, so
@@ -587,9 +618,20 @@ export class SffsImageFs {
     // The archive's own fetch description. Opaque to the kernel, which carries
     // it and never parses it; whoever fetches decides whether the URL may be
     // fetched and validates the digest.
+    //
+    // `mountPrefix` and `bytes` are here because the CONSUMER needs them and
+    // the kernel does not read this. Rebuilding the kernel's lazy manifest
+    // from an image requires the mount prefix — it is encoded into the manifest
+    // record — and the module's own metadata does not carry one. Writing it in
+    // the descriptor keeps the reconstruction exact instead of inferring a
+    // prefix from member paths, which would be inventing data and would be
+    // wrong for any archive whose members do not share one.
     const descriptor = encoder.encode(JSON.stringify({
       url: args.url,
-      ...(args.integrity ? { sha256: args.integrity.sha256 } : {}),
+      mountPrefix: args.mountPrefix,
+      ...(args.integrity
+        ? { sha256: args.integrity.sha256, bytes: args.integrity.bytes }
+        : {}),
     }));
     const archiveBytes = args.integrity?.bytes ?? 0;
 

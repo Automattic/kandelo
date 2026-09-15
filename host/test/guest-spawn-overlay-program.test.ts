@@ -36,7 +36,7 @@ import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -65,9 +65,7 @@ describe.runIf(havePrereqs)(
         // in the overlay-owned `/` tree — the child is deliberately absent from
         // any host execPrograms map, so SYS_SPAWN must resolve it through the
         // overlay (kernelWorker.rootfsReadFile) to launch it.
-        const fs = MemoryFileSystem.create(
-          new SharedArrayBuffer(32 * 1024 * 1024),
-        );
+        const fs = SffsImageFs.create();
         ensureDirRecursive(fs, "/bin");
         writeVfsBinary(
           fs,

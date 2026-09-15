@@ -28,6 +28,10 @@ inputs = [
   "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/experimental-terminal-session.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",
+  "host/src/binary-tiers.ts",
+  "host/src/wasm-artifact-driver.ts",
+  "host/src/wasm-artifact-module-registry.ts",
+  "images/vfs/lib/sffs-image-fs.ts",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"

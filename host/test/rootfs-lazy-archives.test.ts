@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildRootfsLazyWiring,
-  createDeferredFileReader,
+  createDeferredUrlReader,
   HOST_DEFERRED_KIND_ARCHIVE,
   HOST_DEFERRED_KIND_FILE,
 } from "../src/vfs/rootfs-lazy-archives";
@@ -9,7 +9,6 @@ import type {
   LazyFileEntry,
   SerializedLazyArchiveEntry,
 } from "../src/vfs/memory-fs";
-import type { FileSystemBackend } from "../src/vfs/types";
 
 /** Let an in-flight async archive fetch (and its chained `.then`s) settle
  * before making assertions. A macrotask tick is used rather than a fixed
@@ -338,14 +337,6 @@ describe("the deferred provider routes by kind, not by id range", () => {
     fileReads: Array<{ ino: number; offset: bigint }>;
   } {
     const fileReads: Array<{ ino: number; offset: bigint }> = [];
-    const backend = {
-      open: () => 1,
-      read: (_h: number, dest: Uint8Array) => {
-        dest.set([0x01, 0x02]);
-        return 2;
-      },
-      close: () => 0,
-    } as unknown as FileSystemBackend;
     const lazyEntries: LazyFileEntry[] = [
       {
         ino: 1,
@@ -359,7 +350,9 @@ describe("the deferred provider routes by kind, not by id range", () => {
         size: 2,
       },
     ];
-    const reader = createDeferredFileReader(backend, lazyEntries, (p) => p);
+    const reader = createDeferredUrlReader(lazyEntries, async () =>
+      new Uint8Array([0x01, 0x02]),
+    );
     const { deferredProvider } = buildRootfsLazyWiring(
       [
         makeGroup({
@@ -389,18 +382,30 @@ describe("the deferred provider routes by kind, not by id range", () => {
     return { deferredProvider, fileReads };
   }
 
-  it("serves id 1 as a lazy FILE and id 1 as an ARCHIVE, differently", () => {
+  it("serves id 1 as a lazy FILE and id 1 as an ARCHIVE, differently", async () => {
     const { deferredProvider, fileReads } = wiringWithBothKinds();
 
     const fileDest = new Uint8Array(4);
+    // Both kinds start their transfer on the first ask and answer EAGAIN, so
+    // the ONE thing this test is about — that id 1 means two different objects
+    // depending on kind — has to be read from where each ask was routed, not
+    // from the first return value.
+    expect(deferredProvider(HOST_DEFERRED_KIND_FILE, 1n, 0n, fileDest)).toBe(-11);
+    await Promise.resolve();
+    await Promise.resolve();
+
     expect(deferredProvider(HOST_DEFERRED_KIND_FILE, 1n, 0n, fileDest)).toBe(2);
     expect(fileDest.subarray(0, 2)).toEqual(new Uint8Array([0x01, 0x02]));
-    expect(fileReads).toEqual([{ ino: 1, offset: 0n }]);
+    // The file half saw both asks; the archive half saw neither.
+    expect(fileReads).toEqual([
+      { ino: 1, offset: 0n },
+      { ino: 1, offset: 0n },
+    ]);
 
     // Same id, other kind: the archive fetch, which starts out in flight.
     expect(deferredProvider(HOST_DEFERRED_KIND_ARCHIVE, 1n, 0n, new Uint8Array(4)))
       .toBe(-11); // EAGAIN
-    expect(fileReads).toHaveLength(1);
+    expect(fileReads).toHaveLength(2);
   });
 
   it("reports ENOSYS for a lazy FILE read when no file reader was wired", () => {
@@ -414,5 +419,89 @@ describe("the deferred provider routes by kind, not by id range", () => {
     const { deferredProvider } = wiringWithBothKinds();
 
     expect(deferredProvider(99, 1n, 0n, new Uint8Array(4))).toBe(-38);
+  });
+});
+
+describe("the deferred reader as a dumb bytes pipe", () => {
+  const entry = (ino: number, url: string) =>
+    ({ ino, path: `/lazy/${ino}`, url, size: 4 }) as LazyFileEntry;
+
+  it("answers EAGAIN while a fetch is in flight and bytes once it lands", async () => {
+    let release!: (b: Uint8Array) => void;
+    const pending = new Promise<Uint8Array>((r) => { release = r; });
+    const read = createDeferredUrlReader([entry(7, "https://x/a")], () => pending);
+    const dest = new Uint8Array(8);
+
+    // First ask starts the fetch and reports "not yet" — the same answer the
+    // kernel's own byte source gives, which its retry loop is built for.
+    expect(read(7, 0n, dest)).toBe(-11); // EAGAIN
+    expect(read(7, 0n, dest)).toBe(-11);
+
+    release(new Uint8Array([1, 2, 3, 4]));
+    await pending;
+    await Promise.resolve();
+
+    expect(read(7, 0n, dest)).toBe(4);
+    expect(Array.from(dest.subarray(0, 4))).toEqual([1, 2, 3, 4]);
+    // Offsets and end-of-file, so the kernel can walk a file in pieces.
+    expect(read(7, 2n, dest)).toBe(2);
+    expect(read(7, 4n, dest)).toBe(0);
+  });
+
+  it("reports a failed fetch once and stays failed", async () => {
+    const read = createDeferredUrlReader(
+      [entry(9, "https://x/gone")],
+      () => Promise.reject(new Error("404")),
+    );
+    const dest = new Uint8Array(4);
+    expect(read(9, 0n, dest)).toBe(-11); // EAGAIN: the attempt started
+    await Promise.resolve();
+    await Promise.resolve();
+    // EIO, and it does not return to EAGAIN. A pipe that retries forever is a
+    // hang, not a failure, and the guest would spin on it.
+    expect(read(9, 0n, dest)).toBe(-5);
+    expect(read(9, 0n, dest)).toBe(-5);
+  });
+
+  it("reports the transfer while staying silent about materialization", async () => {
+    // Progress is a property of the FETCH, which is the host's job. Whether the
+    // file is materialized is the kernel's, and the pipe says nothing about it.
+    const events: { status: string; loadedBytes: number; totalBytes?: number }[] = [];
+    let release!: (b: Uint8Array) => void;
+    const pending = new Promise<Uint8Array>((r) => { release = r; });
+    const read = createDeferredUrlReader(
+      [entry(3, "https://x/big")],
+      () => pending,
+      (e) => events.push({ status: e.status, loadedBytes: e.loadedBytes, totalBytes: e.totalBytes }),
+    );
+
+    expect(read(3, 0n, new Uint8Array(4))).toBe(-11);
+    expect(events.map((e) => e.status)).toEqual(["started"]);
+    expect(events[0].totalBytes).toBe(4); // the declared size, before any byte lands
+
+    release(new Uint8Array([9, 9, 9, 9]));
+    await pending;
+    await Promise.resolve();
+    expect(events.map((e) => e.status)).toEqual(["started", "complete"]);
+    expect(events[1].loadedBytes).toBe(4);
+  });
+
+  it("reports a failed transfer with its reason", async () => {
+    const events: { status: string; error?: string }[] = [];
+    const read = createDeferredUrlReader(
+      [entry(5, "https://x/gone")],
+      () => Promise.reject(new Error("404 Not Found")),
+      (e) => events.push({ status: e.status, error: e.error }),
+    );
+    read(5, 0n, new Uint8Array(4));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events.map((e) => e.status)).toEqual(["started", "error"]);
+    expect(events[1].error).toContain("404");
+  });
+
+  it("refuses an inode the image never declared", () => {
+    const read = createDeferredUrlReader([entry(7, "https://x/a")], async () => new Uint8Array());
+    expect(read(999, 0n, new Uint8Array(4))).toBe(-2); // ENOENT
   });
 });

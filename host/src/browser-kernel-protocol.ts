@@ -84,10 +84,7 @@ import type {
  * lifecycle. The main thread is a thin UI proxy that sends messages here.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type {
-  LazyDownloadEvent,
-  SerializedLazyArchiveEntry,
-} from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import type {
   ForkModuleProofMessage,
   HostDiagnostic,
@@ -262,12 +259,6 @@ export interface RegisterPtyOutputMessage {
   pid: number;
 }
 
-export interface RegisterLazyFilesMessage {
-  type: "register_lazy_files";
-  requestId?: number;
-  entries: Array<{ ino: number; path: string; url: string; size: number }>;
-}
-
 /**
  * Main-thread → kernel-worker mouse injection. The main thread captures
  * canvas mouse events and forwards them here; the worker calls
@@ -294,12 +285,6 @@ export interface AudioDrainMessage {
   type: "audio_drain";
   requestId: number;
   maxBytes: number;
-}
-
-export interface RegisterLazyArchivesMessage {
-  type: "register_lazy_archives";
-  requestId?: number;
-  entries: SerializedLazyArchiveEntry[];
 }
 
 /**
@@ -338,8 +323,6 @@ export type MainToKernelMessage =
   | PickListenerTargetMessage
   | DestroyMessage
   | RegisterPtyOutputMessage
-  | RegisterLazyFilesMessage
-  | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetSpawnScratchCapacityRequestMessage

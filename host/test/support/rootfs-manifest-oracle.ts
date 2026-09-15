@@ -41,7 +41,15 @@
  */
 
 import type { FileSystemBackend } from "../../src/vfs/types";
-import type { ToBackendPath } from "../../src/vfs/rootfs-lazy-archives";
+/**
+ * Convert a kernel-facing absolute path (e.g. "/usr/bin") to the string the
+ * backend's own methods expect (mount-relative).
+ *
+ * This was a production export until the deferred-file reader that needed it
+ * was deleted. It survives here because this oracle walks a backend by path
+ * and nothing else does.
+ */
+export type ToBackendPath = (absolutePath: string) => string;
 import type {
   RootfsLazyFile,
   RootfsLazyInput,

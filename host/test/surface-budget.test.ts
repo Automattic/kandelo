@@ -360,6 +360,20 @@ const MEASURED: Record<string, () => number> = {
   },
   kernelHostImportTypeScript: () =>
     lineCount(MEASURED_GLOBS.kernelHostImportTypeScript!),
+  // The worker entries: where host-side sequencing accumulates, and unmeasured
+  // until 2026-09-14, when three deletions in them moved no campaign number.
+  workerEntryTypeScript: () =>
+    lineCount([
+      "host/src/browser-kernel-worker-entry.ts",
+      "host/src/node-kernel-worker-entry.ts",
+      "host/src/browser-kernel-protocol.ts",
+    ]),
+  // The rest of host/src/vfs. memory-fs.ts and sharedfs-vendor.ts are excluded
+  // because memoryFsTypeScript and sffsTypeScript already count them, and a
+  // line counted twice is banked twice.
+  hostVfsTypeScript: () =>
+    lineCount(["host/src/vfs/*.ts"])
+      - lineCount(["host/src/vfs/memory-fs.ts", "host/src/vfs/sharedfs-vendor.ts"]),
   hostKernelPlumbingTypeScript: () =>
     lineCount(MEASURED_GLOBS.hostKernelPlumbingTypeScript!),
   // Declaration names present in BOTH halves of a browser-/node- pair.

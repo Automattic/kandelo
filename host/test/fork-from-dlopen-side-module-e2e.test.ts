@@ -20,7 +20,7 @@ import {
   makeHostScratchTempRoot,
   runCentralizedProgram,
 } from "./centralized-test-helper";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -289,9 +289,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
-      const imageOwner = MemoryFileSystem.create(
-        new SharedArrayBuffer(Math.max(2 * 1024 * 1024, libraryBytes.length * 4)),
-      );
+      const imageOwner = SffsImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
       imageOwner.createFileWithOwner(
         "/lib/libvforkinside.so",
@@ -324,9 +322,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
-      const imageOwner = MemoryFileSystem.create(
-        new SharedArrayBuffer(Math.max(2 * 1024 * 1024, libraryBytes.length * 4)),
-      );
+      const imageOwner = SffsImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
       imageOwner.createFileWithOwner(
         "/lib/libvforkinside.so",

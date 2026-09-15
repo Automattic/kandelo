@@ -297,3 +297,67 @@ export function sectionOffsetAfterArchives(
 
   return { lazyLen, archiveOffset, metadataOffset };
 }
+
+/**
+ * The bytes of the container's two host-side JSON sections, or `null` when the
+ * flags say a section is absent.
+ *
+ * These sections are the fetch descriptions — lazy file URLs, archive URLs and
+ * digests — and the courier contract keeps them host-side: the kernel carries
+ * `KLZY` and never parses these. A parity test proved the consequence the hard
+ * way, that a module-backed filesystem cannot supply a lazy file's URL at all,
+ * because `KLZY` does not carry one. **Whatever reads the container reads
+ * these**, which is why the slicing lives with the format rather than inside
+ * one of the format's readers.
+ *
+ * Returns raw bytes rather than parsed values deliberately: `memory-fs.ts`
+ * needs them PRISTINE, because it re-derives the binary `KLZY` section from
+ * them and compares, and that comparison must not be perturbed by anything a
+ * decoder or importer does to the values.
+ */
+export function lazySectionBytes(
+  parsed: ParsedImageHeader,
+  sections: { lazyLen: number },
+): Uint8Array | null {
+  if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_LAZY) || sections.lazyLen === 0) {
+    return null;
+  }
+  const at = VFS_IMAGE_HEADER_SIZE + parsed.sabLen;
+  return parsed.image.subarray(at + 4, at + 4 + sections.lazyLen);
+}
+
+/** The archive half of {@link lazySectionBytes}. */
+export function archiveSectionBytes(
+  parsed: ParsedImageHeader,
+  sections: { archiveOffset: number },
+): Uint8Array | null {
+  if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)) return null;
+  const at = sections.archiveOffset;
+  const len = parsed.view.getUint32(at, true);
+  if (len === 0) return null;
+  return parsed.image.subarray(at + 4, at + 4 + len);
+}
+
+/**
+ * Refuse a container whose section flags disagree with its sections.
+ *
+ * A format-consistency question, not a filesystem one: metadata present without
+ * the flag that declares it, or typed archive metadata without the archive flag
+ * it depends on, is a malformed container however it arose.
+ */
+export function assertSectionFlagsConsistent(
+  flags: number,
+  sections: { lazyLen: number },
+): void {
+  if (!(flags & VFS_IMAGE_FLAG_HAS_LAZY) && sections.lazyLen !== 0) {
+    throw new Error("VFS image has lazy metadata without its format flag");
+  }
+  if (
+    (flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES) &&
+    !(flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)
+  ) {
+    throw new Error(
+      "VFS image has typed lazy-archive metadata without its archive flag",
+    );
+  }
+}
