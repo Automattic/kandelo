@@ -1513,6 +1513,7 @@ name = "runtime-core"
 version = "0.1.0"
 dependencies = [
  "miniz_oxide",
+ "sha2",
  "spin",
  "wasm-artifact",
  "wasm-posix-shared",

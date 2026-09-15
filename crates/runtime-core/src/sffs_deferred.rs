@@ -321,6 +321,31 @@ fn r_u64(bytes: &[u8], offset: usize) -> Result<u64, Errno> {
     Ok(u64::from_le_bytes(buf))
 }
 
+/// The SHA-256 of `bytes`, in the form a record's `digest` field holds.
+pub fn digest_of(bytes: &[u8]) -> [u8; DIGEST_LEN] {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(bytes);
+    let out = hasher.finalize();
+    let mut digest = [0u8; DIGEST_LEN];
+    digest.copy_from_slice(&out);
+    digest
+}
+
+/// Whether `bytes` may be accepted for a record declaring `expected`.
+///
+/// [`DIGEST_NONE`] accepts anything, because the producer declared nothing to
+/// check against. That is deliberately a decision this function makes ONCE
+/// rather than one every caller re-derives: "no digest declared" and "digest
+/// matched" must reach a caller as the same answer, or the caller acquires a
+/// third branch it will eventually get wrong in the permissive direction.
+///
+/// Whether an image is ALLOWED to declare nothing is a different question, and
+/// not this function's — it belongs to whoever decides an image may be loaded.
+pub fn digest_accepts(expected: &[u8; DIGEST_LEN], bytes: &[u8]) -> bool {
+    *expected == DIGEST_NONE || digest_of(bytes) == *expected
+}
+
 /// Take a caller-supplied digest: empty (the producer declared none) or
 /// exactly [`DIGEST_LEN`] bytes. Any other length is a caller bug — a
 /// truncated or over-long hash is not a hash — and is refused rather than

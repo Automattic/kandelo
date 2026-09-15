@@ -2472,6 +2472,9 @@ where
         Plan::Member(bytes) => return Ok(bytes),
         Plan::NeedRaw { size, raw_present } => (size, raw_present),
     };
+    let expected = ROOTFS
+        .with(|state| state.archives.get(&archive_id).map(|entry| entry.digest))
+        .ok_or(Errno::ENOENT)?;
 
     if !raw_present {
         let mut data = alloc::vec![0u8; size as usize];
@@ -2490,6 +2493,20 @@ where
             filled += n;
         }
         data.truncate(filled);
+        // Check BEFORE anything is stored, and drop the buffer on a mismatch.
+        // Bytes that fail their digest are not "bytes we should retry parsing"
+        // — they are bytes we were not supposed to receive — so caching them
+        // would make one bad fetch permanent for the life of the kernel, and
+        // every later member of this archive would be extracted from it.
+        // Dropping them restarts the fetch from scratch on the next touch,
+        // which is the same idempotent restart a short read already gets.
+        //
+        // A short read lands here too: `filled < size` cannot hash to a digest
+        // taken over the whole archive, so a truncated fetch stops being a
+        // silently truncated archive and becomes EIO.
+        if !crate::sffs_deferred::digest_accepts(&expected, &data) {
+            return Err(Errno::EIO);
+        }
         ROOTFS.with(|state| {
             if let Some(entry) = state.archives.get_mut(&archive_id) {
                 // Re-check: another touch of this archive may have already
@@ -2556,6 +2573,11 @@ where
         ImageRegular(u32, u64),
         LazyMember(u32, Vec<u8>),
     }
+    // Read under the same lock as the kind, so the digest cannot belong to a
+    // different inode than the bytes about to be fetched for it.
+    let expected = ROOTFS
+        .with(|state| state.get(idx).map(|inode| inode.deferred_digest))
+        .unwrap_or(crate::sffs_deferred::DIGEST_NONE);
     let base = ROOTFS.with(|state| match state.get(idx) {
         Some(inode) => match &inode.kind {
             InodeKind::BaseRegular {
@@ -2597,6 +2619,13 @@ where
                 filled += n;
             }
             data.truncate(filled);
+            // The bytes a standalone deferred file's URI served. Checked here,
+            // before they become this inode's contents, for the same reason the
+            // archive's are: accepting them stores them, and a stored wrong
+            // answer is indistinguishable from a right one afterwards.
+            if !crate::sffs_deferred::digest_accepts(&expected, &data) {
+                return Err(Errno::EIO);
+            }
             ROOTFS.with(|state| {
                 if let Some(inode) = state.get_mut(idx) {
                     // Re-check: only convert if still a base file (no
@@ -2631,6 +2660,16 @@ where
         }
         Base::LazyMember(archive_id, source_path) => {
             let bytes = ensure_archive_member(archive_id, &source_path, byte_source)?;
+            // The member's own digest covers the INFLATED bytes, which the
+            // archive's cannot: that one covers the archive, and an archive
+            // that hashes correctly can still be unpacked wrongly — a zip entry
+            // naming the wrong offsets, a decompressor disagreeing with the one
+            // that packed it. Checked here rather than in
+            // `ensure_archive_member`, because that function also serves
+            // callers with no inode to take a digest from.
+            if !crate::sffs_deferred::digest_accepts(&expected, &bytes) {
+                return Err(Errno::EIO);
+            }
             ROOTFS.with(|state| {
                 if let Some(inode) = state.get_mut(idx) {
                     // Re-check: only convert if still a lazy member.
@@ -2744,6 +2783,21 @@ where
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
+    // A file whose image declared a digest cannot be served in WINDOWS. A
+    // digest covers a whole object, so a single positioned read has nothing to
+    // check itself against, and serving it would hand out unverified bytes
+    // while the kernel reported that it verifies. Materializing first is what
+    // makes the check possible at all: `ensure_materialized` fetches the whole
+    // file, verifies it, and either installs it as this inode's contents or
+    // fails without keeping any of it — after which the plan below finds a
+    // `Regular` file and serves it from the overlay.
+    //
+    // This is the cost of declaring a digest, stated plainly: the file's full
+    // length in memory on first read, instead of one window at a time. A file
+    // declaring none keeps the streaming path exactly as it was.
+    if declares_digest(idx) {
+        ensure_materialized(idx, &mut byte_source)?;
+    }
     // An overlay (Regular) file is copied under the lock; a base file yields
     // its (blob_id, size), and a lazy member its (archive_id, source_path,
     // size), so the host/archive byte fetch runs after the lock is released.
@@ -2819,6 +2873,25 @@ where
             Ok(n)
         }
     }
+}
+
+/// Whether the image declared a digest for `idx`'s bytes AND those bytes are
+/// still unmaterialized.
+///
+/// Both halves matter. Without the first, every deferred read would lose the
+/// streaming path for no gain, because an image declaring no digest has nothing
+/// to verify against. Without the second, a file already verified and installed
+/// in the overlay would be re-fetched and re-hashed on every read — and worse,
+/// a file the guest has since WRITTEN to would be checked against a digest that
+/// describes bytes it deliberately replaced.
+fn declares_digest(idx: u32) -> bool {
+    ROOTFS.with(|state| match state.get(idx) {
+        Some(inode) => {
+            inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE
+                && !matches!(inode.kind, InodeKind::Regular(_))
+        }
+        None => false,
+    })
 }
 
 /// Current size of an open rootfs file (for `SEEK_END`).
@@ -6434,6 +6507,153 @@ mod tests {
 
     /// Two DIFFERENT members of the SAME archive: the whole-archive fetch is
     /// amortized across both, not repeated per member.
+    /// Set archive `archive_id`'s expected digest, as a v5 SDEF section would.
+    fn set_archive_digest(archive_id: u32, digest: [u8; crate::sffs_deferred::DIGEST_LEN]) {
+        ROOTFS.with(|state| {
+            if let Some(entry) = state.archives.get_mut(&archive_id) {
+                entry.digest = digest;
+            }
+        });
+    }
+
+    #[test]
+    fn an_archive_whose_bytes_fail_their_digest_is_refused_and_not_cached() {
+        let _g = TestGuard::acquire();
+        build_lazy_tree();
+        // The image says the archive hashes to this. The host is about to serve
+        // something else — a substituted, corrupted or truncated fetch, which
+        // before v5 reached the filesystem as file contents nobody questioned.
+        set_archive_digest(7, crate::sffs_deferred::digest_of(TINY_ZIP));
+
+        let mut tampered = TINY_ZIP.to_vec();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        let (mut bad, bad_calls) =
+            make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, tampered)]);
+
+        let h = open(b"/lazy/f", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 4096];
+        assert_eq!(
+            read(h, 0, &mut buf, &mut bad),
+            Err(Errno::EIO),
+            "bytes that fail their digest are an I/O error, not contents",
+        );
+        assert_eq!(bad_calls.get(), 1, "it did fetch, and then rejected");
+        // Nothing was retained: not the raw archive, not a parsed directory,
+        // not a member. A cached bad archive would make one bad fetch permanent
+        // and serve every later member of it out of the same bytes.
+        ROOTFS.with(|state| {
+            let entry = state.archives.get(&7).expect("still declared");
+            assert!(entry.raw.is_none(), "the failing archive was not cached");
+            assert!(entry.directory.is_none(), "nor its parsed directory");
+            assert!(entry.members.is_empty(), "nor any member of it");
+        });
+        // And the file is still lazy rather than a half-materialized regular
+        // file, so the retry below is a real retry.
+        assert!(lazy_info(b"/lazy/f").expect("still described").0);
+
+        // The proof that only the digest rejected it: the SAME read against a
+        // host serving the right bytes now succeeds. Without this the test
+        // could pass because the fetch path was broken in some other way.
+        let (mut good, good_calls) =
+            make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let n = read(h, 0, &mut buf, &mut good).expect("the right bytes are accepted");
+        assert_eq!(n, 4096);
+        assert!(buf.iter().all(|&b| b == b'a'));
+        assert_eq!(
+            good_calls.get(),
+            1,
+            "the refused fetch left nothing behind, so this one had to happen"
+        );
+        release_handle(h);
+    }
+
+    #[test]
+    fn an_archive_that_declares_no_digest_is_still_served() {
+        let _g = TestGuard::acquire();
+        // Every image in existence before v5 declares none, and `KLZY` has no
+        // field for one at all. Refusing those would not be a stricter kernel,
+        // it would be a kernel that cannot boot the images we ship — so "no
+        // digest declared" accepts, and whether an image may declare none is a
+        // question for whoever decides it may be loaded.
+        build_lazy_tree();
+        let (mut fetch, _) =
+            make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let h = open(b"/lazy/f", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 4096];
+        assert_eq!(read(h, 0, &mut buf, &mut fetch), Ok(4096));
+        release_handle(h);
+    }
+
+    #[test]
+    fn a_member_whose_inflated_bytes_fail_their_digest_is_refused() {
+        let _g = TestGuard::acquire();
+        // The archive is exactly what the image described; the MEMBER is not.
+        // The archive's digest cannot catch this — it covers the archive — so
+        // without the per-record digest an archive that hashes correctly but
+        // unpacks wrongly would be accepted in full.
+        build_lazy_tree();
+        set_archive_digest(7, crate::sffs_deferred::digest_of(TINY_ZIP));
+        set_deferred_source(b"/lazy/f", b"", &[0x11u8; crate::sffs_deferred::DIGEST_LEN])
+            .expect("declare a digest the member's bytes will not match");
+
+        let (mut fetch, calls) =
+            make_byte_source(alloc::vec::Vec::new(), alloc::vec![(7u32, TINY_ZIP.to_vec())]);
+        let h = open(b"/lazy/f", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 4096];
+        assert_eq!(read(h, 0, &mut buf, &mut fetch), Err(Errno::EIO));
+        assert_eq!(calls.get(), 1, "the archive itself passed and was fetched");
+        // The file stays deferred: a member that failed its digest must not
+        // become this inode's contents.
+        assert!(lazy_info(b"/lazy/f").expect("still described").0);
+        release_handle(h);
+    }
+
+    #[test]
+    fn a_standalone_file_whose_bytes_fail_their_digest_is_refused() {
+        let _g = TestGuard::acquire();
+        // The other kind of deferred file: no archive, one URI, and a digest
+        // over the bytes that URI serves.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        let real: &[u8] = b"the bytes the image described";
+        insert_base_file(b"/fetched.bin", 9, real.len() as u64, 0o644, 0, 0, 9).unwrap();
+        mark_deferred_base(b"/fetched.bin").unwrap();
+        set_deferred_source(
+            b"/fetched.bin",
+            b"https://example.invalid/fetched.bin",
+            &crate::sffs_deferred::digest_of(real),
+        )
+        .expect("declare where it is and what it must be");
+
+        let (mut bad, _) = make_byte_source(
+            alloc::vec![(9u64, b"the bytes something else served".to_vec())],
+            alloc::vec::Vec::new(),
+        );
+        let h = open(b"/fetched.bin", O_RDONLY, 0, 0, 0).unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(read(h, 0, &mut buf, &mut bad), Err(Errno::EIO));
+        // Not materialized, so the wrong bytes are not this file's contents and
+        // a later read re-fetches rather than serving them from the overlay.
+        assert!(lazy_info(b"/fetched.bin").expect("still described").0);
+
+        // A WINDOW of it is refused too, which is the case the whole-file
+        // materialization gate exists for: a digest covers the whole object, so
+        // a four-byte read has nothing to check itself against and must not be
+        // the one read that escapes verification.
+        let (mut bad_window, _) = make_byte_source(
+            alloc::vec![(9u64, b"the bytes something else served".to_vec())],
+            alloc::vec::Vec::new(),
+        );
+        let mut window = [0u8; 4];
+        assert_eq!(read(h, 5, &mut window, &mut bad_window), Err(Errno::EIO));
+
+        let (mut good, _) =
+            make_byte_source(alloc::vec![(9u64, real.to_vec())], alloc::vec::Vec::new());
+        let n = read(h, 0, &mut buf, &mut good).expect("the right bytes are accepted");
+        assert_eq!(&buf[..n], real);
+        release_handle(h);
+    }
+
     #[test]
     fn lazy_member_second_different_member_reuses_archive_fetch() {
         let _g = TestGuard::acquire();
