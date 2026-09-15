@@ -3647,6 +3647,16 @@ Worth recording because it is the question a reviewer should ask about this
 change, and because "same bytes" here rests on a symlink rather than on a
 convention anyone wrote down.
 
+**Found while here, and left alone because it is another lane's file.**
+`assertShellLazyUrlsResolved` (`apps/browser-demos/lib/init/shell-lazy-url-contract.ts`)
+has **no production caller**: `live-setup.ts` binds image-owned runtime URLs
+instead, and `host/test/node-image-runtime.test.ts:111` pins that the old call
+is gone. Its only callers are its own tests, and those construct
+`MemoryFileSystem` fixtures — so it checks a pre-boot contract on a filesystem
+class the image producers have all left. That is H-1's shape (a floor whose
+callers are its tests), and it belongs to whoever owns the browser-demo init
+path, not to Y or V.
+
 **Not run: the browser suite** (B40). The pinned `ld64.lld` cannot parse this
 Xcode's `libSystem.tbd`, which blocks six products. Everything here stands on
 Node evidence: runtime-core 2197, sffs-module 80, tools/mkrootfs 184, host VFS
