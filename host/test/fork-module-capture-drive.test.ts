@@ -1,237 +1,37 @@
-import { readFileSync } from "node:fs";
-import { Worker } from "node:worker_threads";
-import { afterAll, describe, expect, it } from "vitest";
-import { resolveBinary } from "../src/binary-resolver";
-import { instantiateForkModule } from "../src/fork-module-instance";
+import { describe, expect, it } from "vitest";
 import {
   FORK_ACTIVATION_DRIVE_SLOTS,
   ForkModuleContinuationBackend,
 } from "../src/fork-module-backend";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { FAITHFUL_GUEST_BYTES } from "./fork-module-faithful-guest";
-
-/**
- * The first test that reaches `begin_capture_impl`.
- *
- * Every path in that function was unreachable from this suite, because opening a
- * capture allocates its arena with `SYS_MMAP` over the guest syscall channel and
- * nothing here serviced it -- the module would block rather than fail, which is
- * why `crates/fork-module/tests/harness-capture.mjs` says twice that its success
- * paths are out of reach. Two defects landed in that function in a single day and
- * both were found by re-reading, not by anything running:
- *
- *   - a record write through `mem.get_mut` on the ill-formed whole-memory slice
- *     (census section 141), which would have failed EINVAL on the first capture;
- *   - reserving Module records into an arena the module did not own, which
- *     silently started a SECOND arena nothing reads (section 142).
- *
- * This test exists so the next one fails here instead. What makes it possible is
- * a channel responder: a worker that answers the module's `SYS_MMAP` by handing
- * back addresses from a region this test reserved.
- */
-
-const PAGE = 65536;
-// Channel header layout, mirrored from `crates/shared/src/lib.rs` (`channel`).
-const STATUS_OFFSET = 0;
-const SYSCALL_OFFSET = 4;
-const ARGS_OFFSET = 8;
-const ARG_SIZE = 8;
-const RETURN_OFFSET = ARGS_OFFSET + 6 * ARG_SIZE;
-const ERRNO_OFFSET = RETURN_OFFSET + 8;
-const STATUS_IDLE = 0;
-const STATUS_PENDING = 1;
-const STATUS_COMPLETE = 2;
-const SYS_MMAP = 46;
-const SYS_MUNMAP = 47;
-
-// Drive-table slots the capture plan drives, from `fork_codec::drive_plan`.
-const DRIVE_SLOT_REWIND_BEGIN = 5;
-const DRIVE_SLOT_ABORT_BEGIN = 6;
-const DRIVE_SLOT_UNWIND_END = 7;
-const DRIVE_SLOT_REWIND_END = 8;
-const DRIVE_SLOT_ABORT_END = 9;
-const DRIVE_SLOT_UNWIND_BEGIN = 10;
-const DRIVE_SLOT_MODULE_STATE_SAVE = 13;
-
-// `fm_module_state_arena` operations.
-const ARENA_ROOT = 0;
-const ARENA_OWNED = 3;
-
-/** `fm_phase` values, from the PHASE_* constants in crates/fork-module. */
-const PHASE_IDLE = 0;
-const PHASE_CAPTURE = 1;
-const PHASE_SEALED_PARENT = 2;
-const PHASE_PARENT_REPLAY = 3;
-const PHASE_CHILD_REPLAY = 4;
-const PHASE_ABORT_REPLAY = 5;
-
-/** `fm_borrowed_replay_workspace` fields. */
-const WORKSPACE_PREFIX = 0;
-const WORKSPACE_SCRATCH = 1;
-
-const EBUSY = 16;
-
-const CHANNEL_BASE = 4 * PAGE;
-const MODULE_BASE = 8 * 1024 * 1024;
-/** Where the responder hands out mappings from: above everything else in use. */
-const MMAP_FLOOR = 12 * 1024 * 1024;
-/** Where a CHILD worker's own module instance sits in the shared memory. */
-const CHILD_MODULE_BASE = 20 * 1024 * 1024;
-
-/**
- * A worker that answers the module's channel syscalls.
- *
- * The module publishes a request, stores PENDING and blocks in
- * `memory.atomic.wait32`. Nothing else can answer it: the calling thread is
- * inside the wasm call. So the responder runs on its own thread, bump-allocates
- * for `SYS_MMAP`, accepts `SYS_MUNMAP`, and refuses anything else with EINVAL
- * rather than inventing a plausible answer.
- */
-const RESPONDER = `
-const { parentPort, workerData } = require("node:worker_threads");
-const { sab, channelBase, floor } = workerData;
-const i32 = new Int32Array(sab);
-const dv = new DataView(sab);
-const statusIndex = (channelBase + ${STATUS_OFFSET}) / 4;
-let next = floor;
-let stop = false;
-parentPort.on("message", (m) => { if (m === "stop") stop = true; });
-while (!stop) {
-  if (Atomics.load(i32, statusIndex) !== ${STATUS_PENDING}) {
-    Atomics.wait(i32, statusIndex, ${STATUS_IDLE}, 20);
-    continue;
-  }
-  const nr = dv.getUint32(channelBase + ${SYSCALL_OFFSET}, true);
-  const size = Number(dv.getBigInt64(channelBase + ${ARGS_OFFSET} + ${ARG_SIZE}, true));
-  let ret = -1n, errno = 22;
-  if (nr === ${SYS_MMAP}) {
-    const addr = next;
-    next += Math.ceil(size / ${PAGE}) * ${PAGE};
-    ret = BigInt(addr); errno = 0;
-  } else if (nr === ${SYS_MUNMAP}) {
-    ret = 0n; errno = 0;
-  }
-  dv.setBigInt64(channelBase + ${RETURN_OFFSET}, ret, true);
-  dv.setUint32(channelBase + ${ERRNO_OFFSET}, errno, true);
-  Atomics.store(i32, statusIndex, ${STATUS_COMPLETE});
-  Atomics.notify(i32, statusIndex);
-}
-`;
-
-/**
- * A module exporting one `() -> ()` function, for the no-argument drive band.
- *
- * The guest double's exports are all `(i32) -> ()` or `() -> i32`, and neither
- * is callable where the shim `call_indirect`s a `() -> ()` — a type mismatch
- * traps rather than mis-calling, which is the right failure but not a usable
- * stub. Twenty-four bytes is cheaper than another double.
- */
-// prettier-ignore
-const NOP_MODULE_BYTES = new Uint8Array([
-  0,97,115,109,1,0,0,0,      // magic + version
-  1,4,1,0x60,0,0,            // type: () -> ()
-  3,2,1,0,                   // func: one, type 0
-  7,7,1,3,110,111,112,0,0,   // export "nop" = func 0
-  10,4,1,2,0,0x0b,           // code: empty body
-]);
-
-interface Fixture {
-  x: Record<string, unknown>;
-  instance: ReturnType<typeof instantiateForkModule>;
-  memory: WebAssembly.Memory;
-  errno: () => number;
-  arena: (op: number, arg?: number) => number;
-  worker: Worker;
-}
-
-const live: Worker[] = [];
-afterAll(() => {
-  for (const w of live) {
-    w.postMessage("stop");
-    void w.terminate();
-  }
-});
-
-function fixture(): Fixture {
-  const memory = new WebAssembly.Memory({
-    initial: 256,
-    maximum: 16384,
-    shared: true,
-  });
-  const fm = instantiateForkModule({
-    module: new WebAssembly.Module(readFileSync(resolveBinary("fork_module32.wasm"))),
-    memory,
-    ptrWidth: 4,
-    reserve: () => MODULE_BASE,
-    label: "capture drive",
-  });
-  const x = fm.exports as Record<string, unknown>;
-
-  // Callable stubs for the slots the capture plan drives. Both are `(i32) -> ()`
-  // on wasm32, so the guest double's recorded-call exports stand in for the
-  // guest's own save and unwind-begin.
-  const guest = new WebAssembly.Instance(
-    new WebAssembly.Module(FAITHFUL_GUEST_BYTES),
-    { env: { __wpk_fork_publish: () => {} } },
-  ).exports as Record<string, CallableFunction>;
-
-  const worker = new Worker(RESPONDER, {
-    eval: true,
-    workerData: { sab: memory.buffer, channelBase: CHANNEL_BASE, floor: MMAP_FLOOR },
-  });
-  live.push(worker);
-
-  (x.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
-  const base = (x.fm_drive_table_base as (a: number) => number)(0);
-  const table = fm.driveTable;
-  if (table.length < base + 14) table.grow(base + 14 - table.length);
-  // Every slot the parent lifecycle drives. The guest double's three exports
-  // are all `(i32) -> ()`, which is the signature of both the activation-argument
-  // band and, on wasm32, the pointer band -- so they stand in for each. The
-  // no-argument band (unwind/rewind/abort end) is driven as `() -> ()`, and a
-  // `(i32) -> ()` entry is NOT callable there, so those slots take the double's
-  // zero-argument export instead.
-  for (const slot of [
-    DRIVE_SLOT_MODULE_STATE_SAVE,
-    DRIVE_SLOT_UNWIND_BEGIN,
-    DRIVE_SLOT_REWIND_BEGIN,
-    DRIVE_SLOT_ABORT_BEGIN,
-  ]) {
-    table.set(base + slot, guest.gc_allocate as never);
-  }
-  const nop = (
-    new WebAssembly.Instance(new WebAssembly.Module(NOP_MODULE_BYTES))
-      .exports as Record<string, CallableFunction>
-  ).nop;
-  for (const slot of [
-    DRIVE_SLOT_UNWIND_END,
-    DRIVE_SLOT_REWIND_END,
-    DRIVE_SLOT_ABORT_END,
-  ]) {
-    table.set(base + slot, nop as never);
-  }
-
-  const call = x.fm_module_state_arena as (o: number, a: number) => bigint;
-  return {
-    x,
-    instance: fm,
-    memory,
-    errno: () => (x.fm_last_errno as () => number)(),
-    arena: (op, arg = 0) => Number(call(op, arg)),
-    worker,
-  };
-}
-
-/** Put a template id for `activation` in guest memory and seed it. */
-function seedTemplateId(f: Fixture, activation: number, at: number): void {
-  (f.x.fm_set_activation_template_id as (a: number, p: number) => void)(
-    activation,
-    at,
-  );
-}
+import {
+  ARENA_OWNED,
+  ARENA_ROOT,
+  CHANNEL_BASE,
+  DRIVE_SLOT_ABORT_BEGIN,
+  DRIVE_SLOT_ABORT_END,
+  DRIVE_SLOT_MODULE_STATE_SAVE,
+  DRIVE_SLOT_REWIND_BEGIN,
+  DRIVE_SLOT_REWIND_END,
+  DRIVE_SLOT_UNWIND_BEGIN,
+  DRIVE_SLOT_UNWIND_END,
+  EBUSY,
+  MMAP_FLOOR,
+  PAGE,
+  PHASE_ABORT_REPLAY,
+  PHASE_CAPTURE,
+  PHASE_CHILD_REPLAY,
+  PHASE_IDLE,
+  PHASE_PARENT_REPLAY,
+  PHASE_SEALED_PARENT,
+  WORKSPACE_PREFIX,
+  WORKSPACE_SCRATCH,
+  childModule,
+  fixture,
+  saveSlotThunk,
+  seedTemplateId,
+  voidSlotThunk,
+  type Fixture,
+} from "./fork-module-capture-fixture";
 
 describe("capture begin, driven through a serviced channel", () => {
   it("allocates its own arena and declares the activation set into it", () => {
@@ -780,48 +580,6 @@ function kfitOne(ownerId: number, ordinal: number): Uint8Array {
  * JavaScript that writes the snapshot cannot be bound directly. This is the
  * smallest thing that bridges the two.
  */
-function saveSlotThunk(body: (activation: number) => void): CallableFunction {
-  const directory = mkdtempSync(join(tmpdir(), "fork-save-slot-"));
-  try {
-    const watPath = join(directory, "save.wat");
-    const wasmPath = join(directory, "save.wasm");
-    writeFileSync(
-      watPath,
-      '(module (import "env" "save" (func $s (param i32)))' +
-        ' (func (export "save") (param i32) (local.get 0) (call $s)))',
-    );
-    execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
-    const instance = new WebAssembly.Instance(
-      new WebAssembly.Module(readFileSync(wasmPath)),
-      { env: { save: body } },
-    );
-    return instance.exports.save as CallableFunction;
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
-
-/** A `() -> ()` wasm function, for drive slots called with no argument. */
-function voidSlotThunk(body: () => void): CallableFunction {
-  const directory = mkdtempSync(join(tmpdir(), "fork-void-slot-"));
-  try {
-    const watPath = join(directory, "v.wat");
-    const wasmPath = join(directory, "v.wasm");
-    writeFileSync(
-      watPath,
-      '(module (import "env" "v" (func $v)) (func (export "v") (call $v)))',
-    );
-    execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
-    const instance = new WebAssembly.Instance(
-      new WebAssembly.Module(readFileSync(wasmPath)),
-      { env: { v: body } },
-    );
-    return instance.exports.v as CallableFunction;
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
-
 describe("the binding records the module assembles at capture", () => {
   /**
    * Stand in for the guest's module-state save: write the one `MutableGlobal`
@@ -1086,24 +844,6 @@ describe("the binding records the module assembles at capture", () => {
    * parent mapped. One module cannot stand in for both: attach demands the idle
    * phase, and a finish releases the arena.
    */
-  function childModule(f: Fixture): Record<string, unknown> {
-    const needed = CHILD_MODULE_BASE + 8 * 1024 * 1024;
-    if (f.memory.buffer.byteLength < needed) {
-      f.memory.grow(Math.ceil((needed - f.memory.buffer.byteLength) / PAGE));
-    }
-    const child = instantiateForkModule({
-      module: new WebAssembly.Module(
-        readFileSync(resolveBinary("fork_module32.wasm")),
-      ),
-      memory: f.memory,
-      ptrWidth: 4,
-      reserve: () => CHILD_MODULE_BASE,
-      label: "child module",
-    });
-    const cx = child.exports as Record<string, unknown>;
-    (cx.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, CHANNEL_BASE);
-    return cx;
-  }
 
   it("hands a child an arena it can actually attach", () => {
     // The whole point of a sealed arena, and the first test in this lane to

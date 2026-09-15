@@ -63,7 +63,14 @@
     "`process-table-replication` used three attic types only in `as unknown as`",
     "casts that nothing checks against. Census D9 calls this group C3, and the",
     "distinction that matters is: a test OF a set-aside module goes with it, a test",
-    "of something LIVE gets repointed."
+    "of something LIVE gets repointed.",
+    "",
+    "2026-09-15: the first of the eight `fork-module-*` replay tests is ported off",
+    "the set-aside arena encoders. It no longer BUILDS a sealed KFMS arena in",
+    "TypeScript; a parent module interns and seals, a child reads what it sealed.",
+    "That is the shape a real fork has, and the only one that can catch a",
+    "capture/replay disagreement at all. `fork-module-capture-fixture.ts` holds the",
+    "shared machinery; seven files to go."
   ],
   "expectedFailures": [
     "../packages/registry/bash/test/bash.test.ts",
@@ -128,7 +135,6 @@
     "test/fork-module-drive-r1-trace.test.ts",
     "test/fork-module-drive-shim.test.ts",
     "test/fork-module-exnref-replay.test.ts",
-    "test/fork-module-externref-replay.test.ts",
     "test/fork-module-funcref-replay.test.ts",
     "test/fork-module-gc-replay.test.ts",
     "test/fork-module-host-obligation.test.ts",
