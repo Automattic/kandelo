@@ -446,6 +446,17 @@ The staged four-hop patch was discarded rather than landed, and this is written
 down instead so the next person to find the surface at 2 does not spend the
 afternoon re-deriving why the obvious fix is the wrong one.
 
+**Lane S got here first.** Its S1 increment is recorded as *"Built, reverted,
+NOT landed … landing it alone drives the gate to 0 while nothing checks the
+digest, which is H-2 exactly"*, and its acceptance section already says *"the
+gate itself has to move"*. This entry is a rediscovery, not a discovery, and
+that is worth knowing: two agents arriving independently at the same trap is
+evidence the trap is easy to fall into, and the measure is what makes it so.
+What is new here is the MEASURED reason the fix cannot work today — that
+`tools/mkrootfs` builds with `MemoryFileSystem`, which emits `KLZY`, whose file
+record has no digest field — rather than the judgement that it should not be
+landed alone.
+
 ## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
 
 OPEN, and it blocks **all six browser products** exactly as B39 did.
@@ -5161,6 +5172,37 @@ the setuid bit is not honoured on unverified bytes.
   The other two are ordinary work: a sha256 in the kernel (none exists in
   `kernel`, `runtime-core` or `shared`; `sha2` is already a transitive dep),
   and recording the digest in `SffsWriter::create_deferred_file`.
+
+  **DELIVERED by V5 on 2026-09-15 — all four, plus both hazards.** Checked
+  against this list rather than claimed:
+
+  1. *The digest cannot stay inside the opaque payload.* Promoted to a typed
+     field on BOTH `DeferredRecord` and `DeferredArchive` in SDEF v5 — the
+     first of the two options this entry names, and the one it prefers. The
+     courier contract is kept by the rule it was always stated as: a field is
+     typed when the kernel ACTS on it, and the kernel now verifies against
+     this one.
+  2. *A whole-file sha256 does not compose with a positioned read.* Resolved
+     by buffering: `rootfs::read` materializes a file that declares a digest
+     before serving any window of it, because a digest covers a whole object
+     and a single window has nothing to check itself against. That is the
+     option this entry measured as costing ~10 MiB transient and being cheaper
+     than a Merkle layout — arrived at independently and matching.
+  3. *A sha256 in the kernel.* `sha2` is a direct dependency of `runtime-core`
+     now, with `digest_of` and `digest_accepts` in `sffs_deferred`.
+  4. *Recording the digest in `SffsWriter::create_deferred_file`.* Done, and on
+     `declare_lazy_archive` too, since an archive needs one as much as a file.
+
+  Both hazards are honoured. Verification runs on the bytes that ARRIVED, at
+  the three materialization points, before anything is stored. The refusal is
+  **`EIO`**, never `EAGAIN`, so a file failing verification fails its reader
+  rather than parking it forever.
+
+  **What lane S still needs, and from whom.** The set-ID demotion half — its
+  own work — plus a rootfs image that can CARRY a digest, which is B41: the
+  image sudo ships in is written by `MemoryFileSystem` into `KLZY`, which has
+  no digest field, so the kernel's verification cannot fire for the two setuid
+  binaries until `tools/mkrootfs` builds with the Rust writer.
 
   **The useful negative: the set-ID half depends only on the first decision.**
   It needs the digest's *presence* visible in the record — not the
