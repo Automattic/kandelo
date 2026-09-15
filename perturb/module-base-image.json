@@ -12,10 +12,10 @@
   },
   {
    "name": "the lazy entries come back empty instead of from the container",
-   "scope": "    exportLazyEntries: () =>",
-   "scope_end": "      ),\n",
-   "find": "      (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>",
-   "replace": "      ([] as LazyFileEntry[]).map((entry) =>"
+   "scope": "    exportLazyEntries: () => {",
+   "scope_end": "\n    },\n",
+   "find": "      return (Array.isArray(lazy) ? (lazy as LazyFileEntry[]) : []).map((entry) =>",
+   "replace": "      return ([] as LazyFileEntry[]).map((entry) =>"
   },
   {
    "name": "the lazy half is read from the archive section",
