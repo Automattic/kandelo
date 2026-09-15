@@ -3315,6 +3315,26 @@ causes, and they are indistinguishable from the report:
    fewer path from the worker to a Node-only module, and it is exactly the kind
    of good news that disarms a guard without touching it.
 
+**A SIXTH, found 2026-09-15: the guard is redundant, so the test cannot cover
+it.** Three survivors in one session had this cause, and it reads exactly like
+cause 1 until you apply the mutation by hand:
+
+* `declares_digest` also asked "is it already materialized?" — but
+  `ensure_materialized` already returns immediately for an overlay file;
+* `sm_register_lazy_file` null-checked a digest pointer — but `slice()` already
+  returns empty for a null pointer;
+* mkrootfs compared `stat(path).size` against what it had just written to catch
+  a short write — but the Rust writer stores the whole content or throws, so a
+  short write is not representable.
+
+The tell is that **you cannot write a test that fails**, because no input
+reaches the branch. The fix is not a better test: it is to DELETE the guard,
+keep whatever test documents the behaviour, and retire the trial in the spec
+with the reasoning beside it. A guard that cannot fail is a guard that lies
+about being one, and asking a question something else already answered is the
+second-author defect in miniature — which is the same defect the URI and digest
+work exists to remove, appearing one layer down.
+
 **A fifth, which is not the spec's fault or the test's: the trial does not
 express the defect it names.** The repointed `||` trial wrote
 `typeof process === "undefined" || process.platform`, which short-circuits
