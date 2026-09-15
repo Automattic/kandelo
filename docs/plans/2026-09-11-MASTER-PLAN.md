@@ -3039,6 +3039,42 @@ valid result on the first try.
 **One more datum for B38**: `./run.sh setup` converged on the FIRST pass this
 time, where earlier tonight it needed two. Consistent with the declared build
 inputs doing their job. One observation is not a proof and B38 stays filed.
+### THE UNTESTED-FUNCTION CENSUS, AND WHAT IT FOUND — 2026-09-15
+
+A census that asks, per file, **which `pub fn` has no call anywhere in its own
+`#[cfg(test)]` module**:
+
+```
+rootfs.rs  66 pub fns, 16 uncalled      tmpfs.rs  36 / 7      sffs.rs  8 / 5
+```
+
+It under-reports — a function tested from `syscalls.rs` or `sffs-module` counts
+as uncalled here — so it is a **lead generator, not a verdict**. Two leads paid
+out tonight:
+
+* **`fchown`** — no caller anywhere in the tree. It is the path `sys_fchown`
+  takes for a rootfs file.
+* **`is_nosuid`** — exactly ONE reader in the whole tree, the `f_flags` field
+  `statfs` builds, and nothing asserted it. **Setter, getter, and the field
+  they exist for were all covered by nothing.**
+
+**The nosuid one is the night's most security-relevant find.** A mount that
+claims it permits set-user-ID when it does not is an answer a program uses to
+decide whether to trust a binary, and `ST_NOSUID` is how it asks. It is also
+precisely what the four browser tests blocked behind `mount(2)` cover for a
+HOST-side filesystem — **so asserting it in the kernel means the platform's own
+answer does not depend on those tests surviving the deletion of the filesystem
+they run against.** That is the shape of this lane's risk, stated as a test.
+
+**Both directions are perturbed** — claim `ST_NOSUID` on a permissive mount,
+drop it on a restricted one — and the second is the dangerous one. 18 trials,
+0 survived.
+
+**Why this census is worth repeating rather than recording as done**: it finds
+functions whose absence of coverage is invisible to every other signal. A
+passing suite says nothing about a function nobody calls, and a line-coverage
+number would have counted `is_nosuid` as covered — it RUNS, on every `statfs`.
+What it never did was matter to an assertion.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
