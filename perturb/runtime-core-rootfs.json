@@ -99,6 +99,20 @@
    "scope_end": "\n}\n",
    "find": "        if uid != u32::MAX {",
    "replace": "        if uid != u32::MAX && !matches!(inode.kind, InodeKind::Symlink(_)) {"
+  },
+  {
+   "name": "fchown ignores the unchanged sentinel and writes u32::MAX as an owner",
+   "scope": "pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        if uid != u32::MAX {\n            inode.uid = uid;\n        }",
+   "replace": "        inode.uid = uid;"
+  },
+  {
+   "name": "fchown leaves set-user-ID alone, so a descriptor evades the path rule",
+   "scope": "pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "            inode.mode &= !S_ISUID;",
+   "replace": "            inode.mode |= 0;"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
