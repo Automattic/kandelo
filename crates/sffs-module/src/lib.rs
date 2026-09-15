@@ -1985,6 +1985,38 @@ mod tests {
         unsafe { sm_load_image(ptr, image.len()) }
     }
 
+    /// `sm_image_read` serves the loaded image's own bytes, in container
+    /// coordinates, and says so at the end rather than reading past it.
+    ///
+    /// This entry point was granted as a DEBT and had no Rust test at all --
+    /// it was exercised only through the TypeScript bridge, which means the
+    /// only thing checking the module's twenty-second entry point was a test
+    /// in the language this lane is deleting.
+    #[test]
+    fn sm_image_read_serves_the_loaded_container_and_stops_at_its_end() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let image = drain_export();
+        assert!(image.len() > 32, "an exported container is not empty");
+
+        assert!(load_image_bytes(&image) >= 0, "the module loads what it wrote");
+
+        // A window from the middle, compared against the container itself.
+        let at = 16usize;
+        let mut out = [0u8; 24];
+        let n = unsafe { sm_image_read(at as i64, out.as_mut_ptr() as usize, out.len()) };
+        assert_eq!(n, out.len() as i32, "a full window inside the image");
+        assert_eq!(&out[..], &image[at..at + out.len()], "container coordinates, no header offset");
+
+        // At the end: zero, which is end-of-image and not an error. A reader
+        // that returned an errno here would make every last-block read fail.
+        let n = unsafe { sm_image_read(image.len() as i64, out.as_mut_ptr() as usize, out.len()) };
+        assert_eq!(n, 0, "reading at the end is end-of-image");
+
+        // A negative offset is refused rather than wrapped into a huge u64.
+        let n = unsafe { sm_image_read(-1, out.as_mut_ptr() as usize, out.len()) };
+        assert!(n < 0, "a negative offset is an error, not a wrap");
+    }
+
     #[test]
     fn an_image_this_module_exported_is_one_it_can_load_back() {
         // The round trip is the whole claim of the bridge: a builder writes a
