@@ -2290,6 +2290,51 @@ DO", not "which names are absent".** What is left after that is the 26 that asse
 filesystem plus the 13 that call non-builder methods, and those need reading
 rather than counting — but they are 39 files, not 76, and the corpus has been
 scoped by measurement rather than by name for the first time.
+### THE TWO PRODUCERS WRITE THE DEFERRED URL IN DIFFERENT PLACES, AND NEITHER
+### WRITES BOTH — measured 2026-09-14, and it is step 5's real blocker
+
+Registering one lazy file with one URL, then reading it back four ways:
+
+| image built by | via the host JSON sections | via `sm_lazy_entries` |
+|---|---|---|
+| **the bridge** (`SffsImageFs`) | **0 entries — the sections are absent** | 1, descriptor = `https://example.test/one` |
+| **`MemoryFileSystem`** | 1, url present | 1, descriptor = **empty** |
+
+**Each producer records the URL in exactly one place, and they are different
+places.** A memfs-built image carries it in the host-side JSON only; a
+bridge-built image carries it in the KLZY descriptor only.
+
+**This corrects an earlier finding of this lane.** The plan recorded that "the
+module returns an EMPTY descriptor for lazy files loaded from an image (KLZY
+carries no URL)" and treated that as a property of the FORMAT. It is not. It
+was measured on a memfs-built image, and generalised. **KLZY carries the URL
+perfectly well when the producer writes one** — the bridge does, and it
+survives save and reload through the module.
+
+### Why this matters, and why step 3 is nevertheless correct
+
+**Step 3 is fine today** and the green browser suite is not a coincidence:
+production images are memfs-built, so the host JSON sections
+`createBaseImageFromContainer` reads are present and carry the URLs.
+
+**Step 5 is where it breaks.** Deleting `memory-fs.ts` makes every image
+bridge-built. The host JSON sections then do not exist, the overlay's
+`exportLazyEntries()` returns `[]`, and **every deferred file becomes
+unreachable** — not with an error, but with an empty list, which is the failure
+mode this campaign keeps naming: a load failure reported as a successful load of
+nothing.
+
+**The fix is known and cheap, and it is a step-5 prerequisite rather than a
+discovery to make during step 5:** the overlay should take its lazy metadata
+from `sm_lazy_entries()`, which the module answers for bridge-built images with
+the URL in the descriptor. `createBaseImageFromContainer` already takes its byte
+reader as a parameter for exactly this reason — the metadata source should
+become a parameter the same way, so the transition can read whichever half the
+image actually has and say so when it has neither.
+
+**What must NOT happen is an image that carries both**, with two producers
+writing the same URL into two places that can disagree. The courier contract
+says whoever fetches decides; it does not say the URL may be recorded twice.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
