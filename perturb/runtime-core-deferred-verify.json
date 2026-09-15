@@ -79,6 +79,13 @@
       "scope_end": "\n    }\n",
       "find": "        self.mode &= !(S_ISUID | S_ISGID);",
       "replace": "        self.mode &= !S_ISUID;"
+    },
+    {
+      "name": "the manifest loader never demotes, so a v3 setuid lazy member keeps root",
+      "scope": "    // The v3 manifest has NO digest field, so every deferred file it places is",
+      "scope_end": "\n}\n",
+      "find": "    demote_unverifiable_setid();",
+      "replace": ""
     }
   ],
   "retired": [
