@@ -9074,3 +9074,58 @@ BUILT WASM being left over from the last bisect iteration while the source had
 been restored. Same lesson as mutating the tree mid-validation, one layer down:
 the artifact is part of the tree.
 
+---
+
+## §182 -- The child install trap, narrowed to one guest function
+
+Capture works. The child worker launches. It traps during the install drive, and
+this is exactly where it traps and exactly what has been ruled out -- written
+down because the next person to look at it should not repeat any of it.
+
+**The trap.**
+
+```
+RuntimeError: unreachable
+    at wpk_fork_module_state_finish_restore (wasm://wasm/00059f2a:wasm-function[87])
+    at ForkModuleContinuationBackend.driveRestoredPlan
+```
+
+A GUEST function, driven by the module's install plan.
+
+**What the install looks like, probed from the host.** The plan, the drive table
+and the activation set are all correct:
+
+```
+plan count=4: op=5 slot=3 arg=0 | op=5 slot=18 arg=1
+            | op=6 slot=4 arg=0 | op=6 slot=19 arg=1
+drive table length=30  3=function 4=function 18=function 19=function
+activations=0,1
+```
+
+Two activations, restore (op 5) before finish-restore (op 6) for each, slots
+matching `drive_table_base(activation) + DRIVE_SLOT_*` at the stride of 15, and
+every slot bound.
+
+**Driving the plan step by step from the host says which one.** Step 0
+(activation 0 restore) OK. Step 1 (activation 1 restore) OK. **Step 2
+(activation 0 FINISH-restore) traps.**
+
+**Two hypotheses tested and DISPROVEN, so nobody retests them:**
+
+1. *`bootstrap_done` is 0 in a fresh child instance.* `emit_finish_restore_helper`
+   traps immediately when that global is 0, and a child re-instantiates the
+   guest, so this looked certain. But `emit_restore_helper` sets the flag as its
+   last act (line 2232), and step 0 succeeded. Tested directly anyway by calling
+   `wpk_fork_module_thread_bootstrap` -- the side-effect-free flavour that also
+   sets the flag -- for BOTH activations before driving: **still traps**.
+2. *The plan is missing its restore steps.* A capture-drive test now asserts the
+   install plan carries at least a restore and a finish-restore, and it passes.
+
+**So the trap is NOT the bootstrap assertion**, which is the only explicit
+`unreachable` in `emit_finish_restore_helper`. What remains in that function is
+`emit_restore_table` (the sparse table overlay, reapplied once per physical
+table under `table_state_owned`) and two `emit_restore_segments` calls (element
+and data segment drop state). One of those traps inside the reference codecs it
+calls. That is the next thing to look at, and it is guest-codegen territory
+rather than host or module.
+

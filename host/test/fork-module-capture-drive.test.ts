@@ -1378,6 +1378,30 @@ describe("the binding records the module assembles at capture", () => {
     ).toBe(22);
   });
 
+  it("puts a restore AND a finish-restore in the child's install plan", () => {
+    // The guest's `finish_restore` TRAPS when `bootstrap_done` is 0, and the
+    // only thing that sets it in a child is the guest's own `restore` -- so the
+    // plan must carry both, in that order, for every activation the arena
+    // declares. A plan missing the restores traps inside the guest with no
+    // errno to read, which is what the dlopen e2e hit (census 182).
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "seal").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    const child = childModule(f);
+    (child.fm_attach_child as (r: number, pid: number) => number)(root, 1);
+    expect((child.fm_last_errno as () => number)(), "the child attaches").toBe(0);
+    const steps = (child.fm_gc_plan_count as () => number)();
+    expect(
+      steps,
+      "one activation: a restore and a finish-restore at least",
+    ).toBeGreaterThanOrEqual(2);
+  });
+
   it("lets the PARENT decode its own sealed graph, for the replay lookups", () => {
     // Whether a parent can ask its own sealed arena which activation owns an
     // exnref recipe. It is the question census 159 turns on: if it can, the
