@@ -46,18 +46,17 @@
       "replace": ""
     },
     {
-      "name": "a file the guest has written is re-verified against the image's digest",
-      "scope": "fn declares_digest(",
-      "scope_end": "\n}\n",
-      "find": "            inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE\n                && !matches!(inode.kind, InodeKind::Regular(_))",
-      "replace": "            inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE"
-    },
-    {
       "name": "the loader drops the address and digest the image gave it",
       "scope": "                        Some(lazy) => {",
       "scope_end": "                        // Not deferred at all",
       "find": "                                    set_deferred_source(&abs, &record.uri, &record.digest)?;",
       "replace": ""
+    }
+  ],
+  "retired": [
+    {
+      "name": "a file the guest has written is re-verified against the image's digest",
+      "why": "Unfalsifiable by construction. The trial deleted the `!matches!(Regular)` half of `declares_digest`, but `ensure_materialized` already returns immediately for an overlay file, so the mutant fetched nothing, hashed nothing, and behaved identically. The survivor was not a missing test — it was a redundant guard, and the guard was removed instead."
     }
   ]
 }
