@@ -452,9 +452,34 @@ and `less-fix.log` both show zero spidermonkey failures — and began failing
 partway through, which is the signature of an Xcode update resetting the
 licence agreement.
 
+**The precise cause is a version mismatch, not a missing agreement.** Measured
+2026-09-15:
+
+    active developer dir : /Applications/Xcode.app/Contents/Developer
+    installed Xcode      : 27.0 (27A266a)
+    licence agreed for   : 26.5
+
+`/Library/Preferences/com.apple.dt.Xcode`'s
+`IDEXcodeVersionForAgreedToGMLicense` still reads **26.5** while 27.0 is
+installed, so the machine-wide record was never updated for the new version.
+Accepting without `sudo`, or agreeing through the Xcode GUI, updates the
+per-user record and leaves this one untouched — which is why an acceptance can
+appear to have worked while `/usr/bin/cc` still refuses.
+
 **The fix needs `sudo` and a human**, so no agent can clear it:
 
     sudo xcodebuild -license accept
+
+Verify it took, rather than assuming — this is the whole reason the entry
+exists:
+
+    defaults read /Library/Preferences/com.apple.dt.Xcode \
+        IDEXcodeVersionForAgreedToGMLicense    # must print 27.0, not 26.5
+
+**Xcode moved 26.5 -> 27.0 under the campaign today.** That is a real toolchain
+change, not merely a licence prompt. The first full rebuild after the licence
+clears is where any behavioural difference would surface, and it should be read
+as a possible cause before a campaign change is blamed.
 
 Until then, treat a spidermonkey/node/browser-node failure in `run.sh setup`
 as this and not as a regression. Everything upstream of it still builds: the
