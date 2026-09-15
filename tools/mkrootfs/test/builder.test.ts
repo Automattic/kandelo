@@ -227,7 +227,8 @@ describe("image builder — pass 2: regular files", () => {
         [
           "/usr d 0755 0 0",
           "/usr/bin d 0755 0 0",
-          "/usr/bin/find f 0755 0 0 lazy_url=binaries/programs/wasm32/findutils/find.wasm lazy_size=12345",
+          "/usr/bin/find f 0755 0 0 lazy_url=binaries/programs/wasm32/findutils/find.wasm lazy_size=12345"
+            + " lazy_sha256=" + "a".repeat(64),
           "",
         ].join("\n"),
       );
@@ -261,6 +262,12 @@ describe("image builder — pass 2: regular files", () => {
       // are. This is the field the kernel relays; the descriptor beside it
       // stays opaque.
       expect(files[0].uri).toBe("binaries/programs/wasm32/findutils/find.wasm");
+      // And the digest, which is what the kernel checks the fetched bytes
+      // against. Without this assertion the builder could drop it on the way to
+      // the writer and every test would still pass — which is how a lazy
+      // setuid binary ends up fetched with its length as the only check.
+      expect(Array.from(files[0].digest, (b) => b.toString(16).padStart(2, "0")).join(""))
+        .toBe("a".repeat(64));
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
