@@ -7613,6 +7613,28 @@ The discarded alternative, recorded so it is not re-proposed: teach the
 TypeScript writer SDEF first so both sides match, then repoint. That builds a
 new feature into the file the campaign is deleting.
 
+### V5 HAS ITS PRODUCTION CALLER — measured on the artifact, 2026-09-15
+
+`tools/mkrootfs` now builds the rootfs image with `SffsImageFs`, which is what
+this section says gives V5 one. Verified by building `host/wasm/rootfs.vfs` and
+reading it back through the kernel's own loader rather than by inspecting the
+code that wrote it:
+
+* the image contains `SDEF` and **no `KLZY`**;
+* **65 of 65** deferred files carry an address;
+* **65 of 65** carry a digest, `/usr/bin/sudo` included — which closed lane S.
+
+The image is byte-identical in size before and after digests appeared, because
+the `SDEF` record has a fixed 32-byte digest field that was previously
+zero-filled. Worth stating, because "the artifact did not change size" is the
+kind of observation that otherwise reads as "the change did not land".
+
+So the hazard this section names — *"Until that happens V5 is Rust that ships
+no image — hazard H-1's exact shape"* — is closed. The TypeScript writer still
+exists and still emits `KLZY` for the callers that remain (`memory-fs` is still
+live as a runtime filesystem, with 34 importers), so `kernel-lazy-section.ts`
+is **not** dead yet: its encoder's only non-test caller is `memory-fs.saveImage`.
+
 **CORRECTION 2026-09-12, same day, by measurement.** An earlier version of
 this section said "a half-migrated corpus still boots … both readers are live",
 citing `sffs_deferred::decode` via `sffs.rs:528`. **That was wrong, and wrong in
