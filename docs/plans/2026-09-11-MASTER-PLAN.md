@@ -2755,6 +2755,40 @@ the category most likely to have no test, because a reviewer scanning for
 untested guards finds nothing to scan.
 
 **2 trials, 0 survived.** Running total across every spec: **311 anchoring.**
+### A THIRD DISPOSITION — the file stays, one parameterised case goes
+
+`host/test/host-file-offset.test.ts` is in the "asserts on the filesystem"
+population and **is not a filesystem test at all.** It imports
+`NativePositionedWriteHandles`, `NodePlatformIO` and `HostFileSystem`, and its
+assertions are about Node's `fs`: *"fails before a bigint position could be
+silently lost by `writeSync`"*, *"closes the Linux companion together with the
+primary descriptor"*, *"rejects externally mutable append before writing any
+bytes"*.
+
+**That is the host floor**, which this plan already fixed in writing: *"the host
+must read bytes from host-backed mounts (Node `fs`, OPFS), because those
+filesystems are its own."* It does not port to Rust, because the thing under
+test is Node.
+
+`MemoryFileSystem` appears once, as **one row of an `it.each` over "number-only
+VFS backends"** — the other row is `OpfsFileSystem`. So the disposition is
+neither "port" nor "delete":
+
+> **The file stays; the `MemoryFileSystem` row is removed and `OpfsFileSystem`
+> keeps the case.**
+
+**Three dispositions now, not two**, and the third was invisible to every
+sizing because a census counts FILES:
+
+1. **port** — the assertion is filesystem behaviour that is now Rust;
+2. **delete** — the assertion describes the incumbent's own internals (its fd
+   table, its `SharedArrayBuffer` locking);
+3. **trim** — the file tests something else entirely and merely enumerates
+   `MemoryFileSystem` among backends.
+
+**A file-level census cannot see the third**, which is how "76 files binding a
+MemoryFileSystem" overstated the work every time it was counted. The unit that
+moves is an assertion, sometimes a row in a table, not a file.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
