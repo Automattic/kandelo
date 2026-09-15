@@ -1,0 +1,63 @@
+{
+  "file": "crates/runtime-core/src/rootfs.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" rootfs:: >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [
+    {
+      "name": "a fetched archive is never checked against its digest",
+      "scope": "fn ensure_archive_member<F>(",
+      "scope_end": "\n}\n",
+      "find": "        if !crate::sffs_deferred::digest_accepts(&expected, &data) {\n            return Err(Errno::EIO);\n        }",
+      "replace": ""
+    },
+    {
+      "name": "the archive is cached first and judged afterwards",
+      "scope": "fn ensure_archive_member<F>(",
+      "scope_end": "\n}\n",
+      "find": "        if !crate::sffs_deferred::digest_accepts(&expected, &data) {\n            return Err(Errno::EIO);\n        }\n        ROOTFS.with(|state| {\n            if let Some(entry) = state.archives.get_mut(&archive_id) {\n                // Re-check: another touch of this archive may have already\n                // stored `raw` (no reentrancy in the single-threaded kernel,\n                // but keep the store the source of truth).\n                if entry.raw.is_none() {\n                    entry.raw = Some(data);\n                }\n            }\n        });",
+      "replace": "        let accepted = crate::sffs_deferred::digest_accepts(&expected, &data);\n        ROOTFS.with(|state| {\n            if let Some(entry) = state.archives.get_mut(&archive_id) {\n                if entry.raw.is_none() {\n                    entry.raw = Some(data);\n                }\n            }\n        });\n        if !accepted {\n            return Err(Errno::EIO);\n        }"
+    },
+    {
+      "name": "the expected archive digest is read from a different archive",
+      "scope": "fn ensure_archive_member<F>(",
+      "scope_end": "\n}\n",
+      "find": "    let expected = ROOTFS\n        .with(|state| state.archives.get(&archive_id).map(|entry| entry.digest))\n        .ok_or(Errno::ENOENT)?;",
+      "replace": "    let expected = crate::sffs_deferred::DIGEST_NONE;"
+    },
+    {
+      "name": "an inflated member is never checked against its own digest",
+      "scope": "        Base::LazyMember(archive_id, source_path) => {",
+      "scope_end": "\n        }\n",
+      "find": "            if !crate::sffs_deferred::digest_accepts(&expected, &bytes) {\n                return Err(Errno::EIO);\n            }",
+      "replace": ""
+    },
+    {
+      "name": "a standalone file's fetched bytes are never checked",
+      "scope": "        Base::BaseRegular(blob_id, size) => {",
+      "scope_end": "\n        }\n",
+      "find": "            if !crate::sffs_deferred::digest_accepts(&expected, &data) {\n                return Err(Errno::EIO);\n            }",
+      "replace": ""
+    },
+    {
+      "name": "a windowed read escapes verification entirely",
+      "scope": "pub fn read<F>(",
+      "scope_end": "\n}\n",
+      "find": "    if declares_digest(idx) {\n        ensure_materialized(idx, &mut byte_source)?;\n    }",
+      "replace": ""
+    },
+    {
+      "name": "a file the guest has written is re-verified against the image's digest",
+      "scope": "fn declares_digest(",
+      "scope_end": "\n}\n",
+      "find": "            inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE\n                && !matches!(inode.kind, InodeKind::Regular(_))",
+      "replace": "            inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE"
+    },
+    {
+      "name": "the loader drops the address and digest the image gave it",
+      "scope": "                        Some(lazy) => {",
+      "scope_end": "                        // Not deferred at all",
+      "find": "                                    set_deferred_source(&abs, &record.uri, &record.digest)?;",
+      "replace": ""
+    }
+  ]
+}
