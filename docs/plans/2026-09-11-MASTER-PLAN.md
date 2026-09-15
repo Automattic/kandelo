@@ -2890,6 +2890,46 @@ problem.** The rule "treat a survivor as your test being wrong rather than the
 trial being unfair" is right about where to look FIRST and wrong as a stopping
 point: when rewriting the test does not move the result, apply the mutation by
 hand and watch. That is one command, and it ends the guessing.
+### A SURVIVING MUTANT HAS THREE CAUSES, NOT ONE — 2026-09-15
+
+The campaign's standing rule is *"treat a survivor as your test being wrong
+rather than the trial being unfair."* It is right about where to look FIRST and
+wrong as a stopping point. Four survivors in one night had three different
+causes, and they are indistinguishable from the report:
+
+1. **The test is thin.** The rule's case. Two examples tonight: an archive
+   rebase with only one archive in the image, and a module-built image with no
+   standalone file beside its members. Fix the test.
+2. **The test does not run.** `chmod_chown_and_symlink_creation` lost its
+   `#[test]` to an insertion that anchored on `fn name(` — below the attribute.
+   The suite stayed green at 2177 because the new test replaced the one it
+   displaced. **No count anyone reads could see it.**
+3. **The mutation changes nothing observable.** Three cases: a bounds check the
+   module's own writer cannot violate; one half of a union that is redundant
+   against `MemoryFileSystem`; and an `ok_or(ENOSPC)` behind a size pre-check
+   that refuses first. **Rewriting the test cannot fix any of them.**
+
+### THE ONE COMMAND THAT SEPARATES THEM
+
+**Apply the mutation by hand and run the test.**
+
+Three rounds went into rewriting a demo-login test that was never the problem;
+the hand-check took one command and located the redundancy immediately. It then
+found a real kernel gap the same way: a block-zero mutation left every
+assertion passing, which is how it emerged that
+`a_full_filesystem_reports_enospc_rather_than_corrupting` **exhausts inodes,
+not blocks** — the block allocator's out-of-space path had no test reaching it
+at all.
+
+**So the rule, amended:** a survivor means look at the test first. If rewriting
+the test does not move the result, stop rewriting and apply the mutation by
+hand. The answer is one command away, and the alternative is an evening spent
+improving a test that was already adequate.
+
+**And when a trial cannot fail, remove it and record why in the spec.** Leaving
+it green-less is a permanent false signal; deleting it silently invites the next
+person to add it back. `runtime-core-sffs-write.json` now carries the absence
+and its reason in its own comment.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
