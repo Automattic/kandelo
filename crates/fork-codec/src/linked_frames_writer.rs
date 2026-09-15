@@ -151,7 +151,7 @@ fn checked_end(addr: u64, size: u64) -> Result<u64, Errno> {
 /// `--pie` wasm side module under release LLVM (the returned slice's fat pointer
 /// is corrupted across the multi-value return), so each caller re-derives its
 /// own slice locally right after the allocating call instead.
-fn resliced<'m, A: ChunkAllocator>(alloc: &A, mem: &'m mut [u8]) -> &'m mut [u8] {
+pub(crate) fn resliced<'m, A: ChunkAllocator>(alloc: &A, mem: &'m mut [u8]) -> &'m mut [u8] {
     match alloc.current_memory() {
         // SAFETY: the allocator reports the current base + byte length of the
         // whole guest linear memory it just (possibly) grew; the writer only

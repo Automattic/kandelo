@@ -9004,3 +9004,73 @@ run mid-session reported three regressions that were artifacts of my editing the
 tree while it ran. All three pass on a quiet tree. "Never mutate the tree
 mid-validation" is in the memory for exactly this, and I broke it.
 
+---
+
+## §181 -- Capture was refusing every fork, and a bisect found where
+
+`fm_parent_begin_capture failed with errno 22` was not a dlopen problem. It was
+every fork-instrumented program, and the reason was one lookup.
+
+**How it was found, because the method is the reusable part.** The module has
+294 `Errno::EINVAL` sites and the host reports only the number. Replacing all of
+them with one distinctive code answered "is it in the module at all?" (yes).
+Then nine builds of a binary search over the sites -- first half `ENOMSG`,
+second half `EIDRM`, follow whichever fires -- isolated index 72:
+
+```rust
+let owner = by_ordinal.iter()
+    .find(|(a, o, _)| *a == e.consumer_activation && *o == e.import_ordinal)
+    .map(|(_, _, owner)| *owner)
+    .ok_or(Errno::EINVAL)?;
+```
+
+The host had published import provenance for an ordinal `KFIG` does not declare.
+
+**What a probe of a real instrumented guest showed.**
+
+```
+imports: 20: global env.__channel_base
+         23: table  env.__wpk_fork_ref_gc_transit
+         24: global env.__wpk_fork_module_activation
+         59: table  env.__wpk_fork_resume_table
+         72: global env.__wpk_fork_module_state_table_generation_addr
+KFIG: 0 record(s)
+```
+
+Five `env` global/table imports, provenance published for all five, and KFIG
+declaring none of them -- because none of them is an APPLICATION import. Four
+are the fork runtime's own, bound by the host from the module and its floor; a
+child gets them the same way its parent did and there is nothing to
+reconstruct. The fifth is the syscall channel.
+
+So the earlier `__channel_base` exclusion (section 180) was one case of a rule,
+and the rule is the `__wpk_fork_` namespace -- the same boundary
+`buildForkGuestImports` needed in the same session, for the same reason.
+
+**A stale linear-memory view in `ModuleStateWriter`, found on the way.** This is
+shared Rust and affects the whole campaign. `chunk_with_room` calls
+`alloc.allocate(capacity)` -- a channel `SYS_MMAP` that GROWS guest memory --
+and then writes the chunk header through the `mem` slice it was handed BEFORE
+the grow. A chunk mapped above the old length is outside that slice, `slot`
+refuses it, and the arena fails. `LinkedFrameWriter` has re-derived after every
+allocating call since the identical defect was found there, and the helper for
+it (`resliced`) was already written; this writer never called it. `reserve` had
+the same hazard one level up. Both re-derives are now perturbed to failure
+against a growing-arena test mirroring the one that already existed next door.
+
+**And the e2e harness was calling a deleted method.**
+`forkGenerationFromContinuation` became `forkGenerationFromCapturedHandles` when
+the externref-handle scan moved to the parent worker;
+`centralized-test-helper.ts` still called the old name. Stale since that rename,
+unreachable because no fork had got that far.
+
+**Where it stands.** Parent capture succeeds. The child worker launches. The
+child traps (`unreachable`) during its replay install, which is further than
+this path has run in this lane and is the next thing to chase.
+
+**A repeat of the process failure in 180, worth naming twice.** A suite run
+reported three regressions in the fork-module tests that were an artifact of the
+BUILT WASM being left over from the last bisect iteration while the source had
+been restored. Same lesson as mutating the tree mid-validation, one layer down:
+the artifact is part of the tree.
+

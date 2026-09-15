@@ -35,7 +35,7 @@
 use wasm_posix_shared::abi;
 use wasm_posix_shared::Errno;
 
-use crate::linked_frames_writer::ChunkAllocator;
+use crate::linked_frames_writer::{resliced, ChunkAllocator};
 use crate::module_state::ModuleStateFormat;
 
 const PAGE_SIZE: u64 = 65_536;
@@ -227,6 +227,11 @@ impl ModuleStateWriter {
         let total = align_up(checked_end(RECORD_HEADER_SIZE, payload_size)?, RECORD_ALIGNMENT)?;
 
         let chunk = self.chunk_with_room(alloc, mem, total, header, pw)?;
+        // Same hazard as inside `chunk_with_room`: that call may have mapped a
+        // fresh chunk and GROWN guest memory, and every read and write below is
+        // through this slice. A record reserved into a just-mapped chunk is
+        // precisely the case where `chunk` lies above the old length.
+        let mem = resliced(alloc, mem);
         let used = r_ptr(mem, chunk + chunk_field(4, pw), self.format.pointer_width)?;
         let addr = checked_end(chunk, used)?;
 
@@ -289,6 +294,19 @@ impl ModuleStateWriter {
         }
         let capacity = align_up(checked_end(header, total)?, PAGE_SIZE)?;
         let addr = alloc.allocate(capacity)?;
+        // THE ALLOCATE MAY HAVE GROWN GUEST MEMORY, and every write below is
+        // through `mem` -- a slice formed BEFORE it. A channel-mmap allocator
+        // maps the new chunk at the top of the grown region, so without this
+        // the header write lands outside the old slice and `slot` refuses it:
+        // `chunk_with_room` returned EINVAL, `fm_parent_begin_capture` reported
+        // 22, and the only forks that survived were the ones whose arena
+        // happened to fit in memory that already existed.
+        //
+        // `LinkedFrameWriter` has re-derived after every allocating call since
+        // the same defect was found there; this writer never did. See census
+        // 181 and `resliced`, which is a free function for the miscompile
+        // reason its own doc comment states.
+        let mem = resliced(alloc, mem);
         if addr == 0 || !addr.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
@@ -348,9 +366,9 @@ mod tests {
     impl ChunkAllocator for TestChunks {
         fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
             let addr = self.next;
-            let end = addr.checked_add(capacity).ok_or(Errno::ENOMEM)?;
+            let end = addr.checked_add(capacity).ok_or(Errno::EINVAL)?;
             if end > self.limit {
-                return Err(Errno::ENOMEM);
+                return Err(Errno::EINVAL);
             }
             self.next = end;
             Ok(addr)
@@ -367,6 +385,86 @@ mod tests {
 
     fn format() -> ModuleStateFormat {
         ModuleStateFormat { pointer_width: 4, chunk_header_size: 40 }
+    }
+
+    // -- memory grows mid-arena (census 181) --------------------------------
+
+    /// A growing allocator: the addressable length only reaches the end of the
+    /// chunk it just handed out, which is the shape of the module's channel
+    /// `SYS_MMAP`. Mirrors `LinkedFrameWriter`'s `GrowingArena`, because this
+    /// writer had the same defect and no equivalent test.
+    struct GrowingChunks {
+        base: *mut u8,
+        total: u64,
+        reported: core::cell::Cell<usize>,
+        next: u64,
+    }
+
+    impl ChunkAllocator for GrowingChunks {
+        fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
+            let addr = self.next;
+            let end = addr.checked_add(capacity).ok_or(Errno::EINVAL)?;
+            if end > self.total {
+                return Err(Errno::EINVAL);
+            }
+            self.next = end;
+            self.reported.set(end as usize);
+            Ok(addr)
+        }
+
+        fn current_memory(&self) -> Option<(*mut u8, usize)> {
+            Some((self.base, self.reported.get()))
+        }
+    }
+
+    /// THE DEFECT THIS EXISTS FOR. `chunk_with_room` allocated -- which grows
+    /// guest memory -- and then wrote the chunk header through the slice it was
+    /// handed BEFORE the grow. Every write landed outside that slice, `slot`
+    /// refused it, and `fm_parent_begin_capture` reported EINVAL. The only forks
+    /// that survived were the ones whose arena happened to fit inside memory
+    /// that already existed; a dlopen fork, with more memory already in use,
+    /// never did.
+    #[test]
+    fn re_derives_the_slice_after_an_allocate_grows_memory() {
+        const TOTAL: u64 = 4 * 1024 * 1024;
+        let mut backing = alloc::vec![0u8; TOTAL as usize];
+        let base = backing.as_mut_ptr();
+        // The window starts at ONE page: shorter than any chunk this hands out.
+        let initial = PAGE_SIZE as usize;
+        let mut arena = GrowingChunks {
+            base,
+            total: TOTAL,
+            reported: core::cell::Cell::new(initial),
+            next: PAGE_SIZE,
+        };
+        let mut w = ModuleStateWriter::new(format());
+        // SAFETY: `base` is the live backing buffer; the initial view is a page.
+        let mem: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(base, initial) };
+
+        let root = w.begin(&mut arena, mem).expect("the arena opens");
+        assert!(root >= PAGE_SIZE, "the root chunk is above the initial window");
+
+        // Now a record that does NOT fit the root chunk, so `reserve` allocates
+        // a second one mid-call. The slice handed in is correct for the memory
+        // that exists at the call, and stale by the time the record header is
+        // written -- which is the half of this defect the caller cannot fix.
+        let before = arena.next;
+        let mem: &mut [u8] =
+            unsafe { core::slice::from_raw_parts_mut(base, arena.reported.get()) };
+        let payload = w
+            .reserve(&mut arena, mem, KIND_GLOBAL, 1, 1, PAGE_SIZE)
+            .expect("a record reserves into a chunk allocated mid-call");
+        assert!(
+            arena.next > before,
+            "the reserve had to map a second chunk, which is the point",
+        );
+        assert!(
+            payload >= before,
+            "and the record landed in it, above everything that existed before",
+        );
+        let mem: &mut [u8] =
+            unsafe { core::slice::from_raw_parts_mut(base, arena.reported.get()) };
+        w.commit(mem, payload).expect("and commits");
     }
 
     // -- adopt: the child half of the arena (census sections 128 and 133) ----

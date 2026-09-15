@@ -126,7 +126,6 @@
     "test/fork-module-funcref-replay.test.ts",
     "test/fork-module-gc-replay.test.ts",
     "test/fork-module-host-obligation.test.ts",
-    "test/fork-module-kernel-abort.test.ts",
     "test/fork-module-multi-activation-funcref-replay.test.ts",
     "test/fork-module-reconstruction.test.ts",
     "test/fork-module-state.test.ts",

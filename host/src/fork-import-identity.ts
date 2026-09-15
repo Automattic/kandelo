@@ -99,15 +99,28 @@ function catalogOwner(name: string, prefix: string, label: string): number | nul
 }
 
 /**
- * `env.__channel_base`, keyed the way `byKey` keys an import.
+ * Imports the FORK RUNTIME binds itself, which have no application provenance.
  *
- * Paired by NAME with `imported_global_is_child_binding` in the instrumenter,
- * because the two sides cannot share a constant: the exclusion lives in the
- * wasm transform, and `crates/shared` names this global only in
- * `PROCESS_EXPECTED_GLOBALS`, which is a different list with a different
- * meaning.
+ * Two kinds, and both are excluded for the same reason: `KFIG`/`KFIT` describe
+ * an activation's own imported globals and tables, and neither of these is one.
+ * Publishing provenance for them gave the module a record with no declaration
+ * to match, and it refused the whole capture -- which is what
+ * `fm_parent_begin_capture failed with errno 22` was, for every fork-
+ * instrumented program.
+ *
+ *  - `env.__channel_base`: the process's syscall channel, rebound per worker
+ *    rather than reconstructed. The instrumenter excludes it by this exact name
+ *    (`imported_global_is_child_binding`), and the two sides cannot share a
+ *    constant because the exclusion lives in a wasm transform.
+ *  - Everything under `__wpk_fork_`: the resume table, the anyref transit
+ *    table, the activation id, the table-generation address. The host binds
+ *    each of them from the fork module or its own floor, so a child gets them
+ *    the same way its parent did and there is nothing to record.
  */
-const CHILD_BOUND_IMPORT_KEY = "env\u0000__channel_base";
+function forkRuntimeBindsItself(moduleName: string, name: string): boolean {
+  if (moduleName !== "env") return false;
+  return name === "__channel_base" || name.startsWith("__wpk_fork_");
+}
 
 export class ForkImportIdentity {
   /**
@@ -289,7 +302,8 @@ export class ForkImportIdentity {
       // the KFIG-derived table and found nothing. A capture that refuses is
       // better than one that binds a child's channel base from its parent, so
       // the module's refusal stays; this stops asking it the question.
-      if (key === CHILD_BOUND_IMPORT_KEY) continue;
+      const [moduleName = "", name = ""] = key.split("\u0000");
+      if (forkRuntimeBindsItself(moduleName, name)) continue;
       for (const { ordinal, space } of declarations) {
         if (space === null) continue;
         if (!values.has(ordinal)) {
