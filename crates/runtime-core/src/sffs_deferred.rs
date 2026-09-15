@@ -1135,6 +1135,14 @@ mod tests {
         section.extend_from_slice(&3u32.to_le_bytes()); // archive_id
         section.extend_from_slice(&1u64.to_le_bytes()); // bytes
         section.extend_from_slice(&payload_len.to_le_bytes());
+        // Written explicitly, not left to the `resize` fill below. When v5 gave
+        // the entry these two fields, the fill made `uri_len` read as 0x78787878
+        // and the ADDRESS cap rejected the section first -- so deleting the
+        // descriptor cap changed no outcome and the trial that removes it began
+        // surviving. Third time in this file that an entry gaining a field put a
+        // hand-built fixture onto the wrong rule.
+        section.extend_from_slice(&0u32.to_le_bytes()); // uri_len
+        section.extend_from_slice(&DIGEST_NONE);
         section.resize(HEADER_SIZE as usize + entry_size as usize, b'x');
         assert_eq!(
             section.len(),
@@ -1142,6 +1150,25 @@ mod tests {
             "the entry is fully present, not truncated",
         );
         assert_eq!(decode(&section), Err(Errno::EINVAL));
+
+        // The proof that only the cap rejected it: the same entry with a legal
+        // descriptor length decodes.
+        let legal_len = MAX_PAYLOAD_LEN;
+        let legal_size = (ARCHIVE_ENTRY_SIZE + legal_len).next_multiple_of(4);
+        let mut legal = section[..HEADER_SIZE as usize].to_vec();
+        legal.extend_from_slice(&legal_size.to_le_bytes());
+        legal.extend_from_slice(&3u32.to_le_bytes());
+        legal.extend_from_slice(&1u64.to_le_bytes());
+        legal.extend_from_slice(&legal_len.to_le_bytes());
+        legal.extend_from_slice(&0u32.to_le_bytes());
+        legal.extend_from_slice(&DIGEST_NONE);
+        legal.resize(HEADER_SIZE as usize + legal_size as usize, b'x');
+        assert_eq!(
+            decode(&legal).expect("only the cap was wrong").archives[0]
+                .payload
+                .len(),
+            legal_len as usize,
+        );
     }
 
     #[test]
@@ -1407,23 +1434,52 @@ mod tests {
         m.uri = b"https://example.invalid/elsewhere".to_vec();
         assert_eq!(enc(&[m]), Err(Errno::EINVAL));
 
-        // Built by hand, because the encoder will not emit one: a legal section
-        // in every other respect, whose single fault is the member's address.
-        let legal = enc(&[member(2, 10, 3, b"usr/bin/php")]).expect("encodes");
-        assert!(decode(&legal).is_ok(), "the base section is legal");
-        let at = records_at(&legal);
-        let mut hostile = legal.clone();
-        // Grow the record by the URI, and say so in both length fields.
-        let extra: &[u8] = b"http://x/";
-        let old_size =
-            u32::from_le_bytes(hostile[at..at + 4].try_into().expect("4 bytes")) as usize;
-        let new_size = (old_size + extra.len()).next_multiple_of(4);
-        hostile[at..at + 4].copy_from_slice(&(new_size as u32).to_le_bytes());
-        hostile[at + URI_LEN_AT..at + URI_LEN_AT + 4]
-            .copy_from_slice(&(extra.len() as u32).to_le_bytes());
-        hostile.splice(at + old_size..at + old_size, extra.iter().copied());
-        hostile.resize(at + new_size, 0);
-        assert_eq!(decode(&hostile), Err(Errno::EINVAL));
+        // Built by hand, because the encoder will not emit one. Assembled from
+        // scratch rather than spliced out of a legal section: an earlier version
+        // grew a record and patched two length fields, and the framing check
+        // rejected the result before the address rule was ever reached -- so
+        // deleting that rule changed no outcome and its trial survived.
+        let source_path: &[u8] = b"a";
+        let uri: &[u8] = b"http://x/";
+        let build = |uri: &[u8]| -> Vec<u8> {
+            let record_size = (RECORD_HEADER_SIZE + source_path.len() as u32 + uri.len() as u32)
+                .next_multiple_of(4);
+            let mut out = Vec::new();
+            out.extend_from_slice(&MAGIC);
+            out.extend_from_slice(&VERSION.to_le_bytes());
+            out.extend_from_slice(&HEADER_SIZE.to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes()); // one record
+            out.extend_from_slice(&1u32.to_le_bytes()); // one archive
+            // The archive the member names, declared with a length, so the
+            // dangling-reference rule cannot be the one that rejects.
+            out.extend_from_slice(&ARCHIVE_ENTRY_SIZE.to_le_bytes());
+            out.extend_from_slice(&3u32.to_le_bytes());
+            out.extend_from_slice(&4096u64.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes()); // payload_len
+            out.extend_from_slice(&0u32.to_le_bytes()); // uri_len
+            out.extend_from_slice(&DIGEST_NONE);
+            let records_start = out.len();
+            out.extend_from_slice(&record_size.to_le_bytes());
+            out.extend_from_slice(&2u32.to_le_bytes()); // ino
+            out.extend_from_slice(&10u64.to_le_bytes()); // size
+            out.extend_from_slice(&3u32.to_le_bytes()); // the declared archive
+            out.extend_from_slice(&(source_path.len() as u32).to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes()); // payload_len
+            out.extend_from_slice(&(uri.len() as u32).to_le_bytes());
+            out.extend_from_slice(&DIGEST_NONE);
+            out.extend_from_slice(source_path);
+            out.extend_from_slice(uri);
+            out.resize(records_start + record_size as usize, 0);
+            out
+        };
+        assert_eq!(decode(&build(uri)), Err(Errno::EINVAL));
+        // The control: the identical section with no address on the member
+        // decodes, so the refusal above is the address rule and not framing,
+        // padding, the archive linkage, or the archive table.
+        assert_eq!(
+            decode(&build(b"")).expect("legal without the member's address").records[0].archive_id,
+            3
+        );
     }
 
     #[test]
@@ -1434,6 +1490,34 @@ mod tests {
         let mut over = record(2, 1, b"");
         over.uri = vec![b'u'; MAX_URI_LEN as usize + 1];
         assert_eq!(enc(&[over]), Err(Errno::EINVAL));
+
+        // An ARCHIVE's address has its own cap and its own check. The record's
+        // covered neither: `encode` validates archives in a separate loop, so a
+        // test that only oversizes a record's address leaves the archive half
+        // entirely unexercised.
+        let over_archive = vec![DeferredArchive {
+            archive_id: 3,
+            bytes: 1,
+            uri: vec![b'u'; MAX_URI_LEN as usize + 1],
+            digest: DIGEST_NONE,
+            payload: Vec::new(),
+        }];
+        assert_eq!(encode(&over_archive, &[]), Err(Errno::EINVAL));
+        let at_cap_archive = vec![DeferredArchive {
+            archive_id: 3,
+            bytes: 1,
+            uri: vec![b'u'; MAX_URI_LEN as usize],
+            digest: DIGEST_NONE,
+            payload: Vec::new(),
+        }];
+        assert_eq!(
+            decode(&encode(&at_cap_archive, &[]).expect("the cap is inclusive"))
+                .expect("decodes")
+                .archives[0]
+                .uri
+                .len(),
+            MAX_URI_LEN as usize
+        );
 
         // At the cap it is accepted, so the refusal is the cap and not an
         // off-by-one turning away a legal address.
@@ -1480,6 +1564,38 @@ mod tests {
         // Empty is the one short length that means something: no digest.
         assert_eq!(digest_from(b""), Ok(DIGEST_NONE));
         assert_eq!(digest_from(&[7u8; DIGEST_LEN]), Ok([7u8; DIGEST_LEN]));
+    }
+
+    #[test]
+    fn a_declared_digest_accepts_only_the_bytes_it_names() {
+        // The predicate every verifying caller asks. Covered HERE, beside the
+        // function, rather than only through the kernel's fetch paths: a
+        // mutation that made it return `true` unconditionally survived this
+        // module's own suite, because nothing in it had ever called the
+        // function. A verifier that reports success having checked nothing is
+        // the one failure this whole change exists to prevent, so it is not
+        // covered only somewhere else.
+        let bytes: &[u8] = b"the bytes the image described";
+        let declared = digest_of(bytes);
+        assert!(digest_accepts(&declared, bytes));
+        assert!(!digest_accepts(&declared, b"something else entirely"));
+        assert!(
+            !digest_accepts(&declared, b"the bytes the image described "),
+            "one trailing byte is a different object"
+        );
+        // Declaring nothing accepts anything: that is the sentinel, and it must
+        // reach a caller as the same answer a match does.
+        assert!(digest_accepts(&DIGEST_NONE, b"anything at all"));
+        // And the algorithm is the one the format names, not whatever this
+        // build happens to link: SHA-256 of the empty input, spelled out.
+        assert_eq!(
+            digest_of(b""),
+            [
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
+            ],
+        );
     }
 
     #[test]
