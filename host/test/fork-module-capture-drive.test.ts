@@ -892,6 +892,187 @@ describe("the binding records the module assembles at capture", () => {
     expect(plan, "and gets an install plan").toBeGreaterThan(0);
   });
 
+  /** `fm_child_import_plan_field` selectors, in the module's match order. */
+  const PLAN_ORDINAL = 0;
+  const PLAN_SPACE = 1;
+  const PLAN_KIND = 2;
+  const PLAN_TYPE_CODE = 3;
+  const PLAN_FLAGS = 4;
+  const PLAN_BITS = 5;
+  const PLAN_SOURCE_ACTIVATION = 6;
+  const PLAN_SOURCE_OWNER = 7;
+  const PLAN_FLAG_SAVED = 1;
+
+  /** Build the plan for one activation and read it back as plain objects. */
+  function readPlan(
+    x: Record<string, unknown>,
+    errno: () => number,
+    activation: number,
+    root: number,
+  ): {
+    ordinal: number;
+    space: number;
+    kind: number;
+    typeCode: number;
+    flags: number;
+    bits: bigint;
+    sourceActivation: number;
+    sourceOwner: number;
+  }[] {
+    const count = (x.fm_child_import_plan as (a: number, r: number) => number)(
+      activation,
+      root,
+    );
+    expect(errno(), "fm_child_import_plan").toBe(0);
+    const field = x.fm_child_import_plan_field as (i: number, f: number) => bigint;
+    const out = [];
+    for (let index = 0; index < count; index += 1) {
+      out.push({
+        ordinal: Number(field(index, PLAN_ORDINAL)),
+        space: Number(field(index, PLAN_SPACE)),
+        kind: Number(field(index, PLAN_KIND)),
+        typeCode: Number(field(index, PLAN_TYPE_CODE)),
+        flags: Number(field(index, PLAN_FLAGS)),
+        bits: field(index, PLAN_BITS),
+        sourceActivation: Number(field(index, PLAN_SOURCE_ACTIVATION)),
+        sourceOwner: Number(field(index, PLAN_SOURCE_OWNER)),
+      });
+    }
+    return out;
+  }
+
+  it("plans a child's imports from the arena, ordered by import ordinal", () => {
+    // The whole point of the two entries: the host asks WHAT TO DO with each
+    // import, not for the binding rows to reason about itself. The global is
+    // provided by the activation the election chose; the table likewise; and
+    // they come back in import-section order, which is the order the host
+    // walks `WebAssembly.Module.imports()` in.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { identity, provenance } = publish(f);
+    identity(SPACE_GLOBAL, 0, 1, 7);
+    identity(SPACE_GLOBAL, 9, 5, 7);
+    identity(SPACE_TABLE, 0, 1, 99);
+    identity(SPACE_TABLE, 9, 5, 99);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 7, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 99, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture").toBe(0);
+    const root = f.arena(ARENA_ROOT);
+
+    const plan = readPlan(f.x, () => f.errno(), 0, root);
+    expect(plan.length, "one global and one table").toBe(2);
+    expect(plan[0]!.ordinal).toBe(0);
+    expect(plan[0]!.space, "the global comes first").toBe(SPACE_GLOBAL);
+    expect(plan[0]!.kind).toBe(KIND_ACTIVATION_GLOBAL);
+    expect(plan[0]!.typeCode).toBe(GLOBAL_TYPE_I32);
+    expect(plan[0]!.sourceActivation, "the elected owner").toBe(9);
+    expect(plan[0]!.sourceOwner).toBe(5);
+    expect(plan[1]!.ordinal).toBe(1);
+    expect(plan[1]!.space, "the table second").toBe(SPACE_TABLE);
+    expect(plan[1]!.kind).toBe(KIND_ACTIVATION_TABLE);
+    expect(plan[1]!.sourceActivation).toBe(9);
+  });
+
+  it("hands back the saved scalar behind a base import, flagged", () => {
+    // A group nothing owns elects BASE_IMPORT: the child must NOT override the
+    // import, but the parent's saved contents are still authoritative. The flag
+    // is what distinguishes a saved zero from nothing saved.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { provenance } = publish(f);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture").toBe(0);
+
+    const plan = readPlan(f.x, () => f.errno(), 0, f.arena(ARENA_ROOT));
+    expect(plan[0]!.kind, "nothing owns the group").toBe(KIND_BASE_IMPORT);
+    expect(plan[0]!.flags & PLAN_FLAG_SAVED, "the snapshot travels").toBe(
+      PLAN_FLAG_SAVED,
+    );
+    expect(plan[0]!.bits, "the value the save walk wrote").toBe(42n);
+  });
+
+  it("plans nothing for an activation that declared no imports", () => {
+    // The ordinary single-module case. An empty plan, not a refusal: the KFIG
+    // section is emitted only when there is something to describe.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { provenance } = publish(f);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    expect(f.errno(), "capture").toBe(0);
+    expect(
+      (f.x.fm_child_import_plan as (a: number, r: number) => number)(
+        4,
+        f.arena(ARENA_ROOT),
+      ),
+      "activation 4 seeded no sections",
+    ).toBe(0);
+    expect(f.errno(), "and that is not an error").toBe(0);
+  });
+
+  it("refuses a field read with no resident plan, a bad index and a bad field", () => {
+    const f = fixture();
+    const field = f.x.fm_child_import_plan_field as (i: number, f: number) => bigint;
+    expect(field(0, PLAN_ORDINAL), "nothing built yet").toBe(-1n);
+    expect(f.errno(), "and says why").toBe(22);
+
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { provenance } = publish(f);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    const count = (f.x.fm_child_import_plan as (a: number, r: number) => number)(
+      0,
+      f.arena(ARENA_ROOT),
+    );
+    expect(f.errno(), "the plan builds").toBe(0);
+    expect(field(count, PLAN_ORDINAL), "one past the end").toBe(-1n);
+    expect(f.errno()).toBe(22);
+    expect(field(0, 99), "a field the module does not have").toBe(-1n);
+    expect(f.errno()).toBe(22);
+    // And the plan is still readable after a refusal: a bad read must not
+    // discard the plan the next good read needs.
+    expect(Number(field(0, PLAN_ORDINAL))).toBe(0);
+    expect(f.errno()).toBe(0);
+  });
+
+  it("refuses to plan from an arena whose binding record is corrupt", () => {
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedSections(f);
+    const { provenance } = publish(f);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    provenance(SPACE_TABLE, 0, 1, KIND_ACTIVATION_TABLE, 0, 0n);
+    saveWrites(f, 0, 1);
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(CHANNEL_BASE, 0, 0, 0);
+    const root = f.arena(ARENA_ROOT);
+    const ok = (f.x.fm_child_import_plan as (a: number, r: number) => number)(0, root);
+    expect(ok, "the intact arena plans").toBeGreaterThan(0);
+
+    const bindings = arenaRecords(f.memory, root).find(
+      (r) => r.kind === RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+    );
+    expect(bindings, "a KFBG record to corrupt").toBeDefined();
+    bindings!.payload.setUint8(24 + 32, 99); // a kind no child could materialise
+    expect(
+      (f.x.fm_child_import_plan as (a: number, r: number) => number)(0, root),
+      "the corrupt record is refused",
+    ).toBe(-1);
+    expect(f.errno()).toBe(22);
+  });
+
   it("refuses a child install whose inherited binding record is corrupt", () => {
     // The same arena, one byte apart. The intact case attaches; flipping a
     // binding's kind to one no child could materialise is refused, before the

@@ -149,7 +149,8 @@ mod wasm {
     use fork_codec::{
         decode_journal_image, decode_module_state, decode_replay_events_image,
         decode_segmented_reference_transaction,
-        build_imported_global_bindings, drive_plan, encode_imported_global_bindings,
+        build_child_import_plan, build_imported_global_bindings, drive_plan,
+        encode_imported_global_bindings,
         encode_journal_image, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
         GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
@@ -2488,6 +2489,23 @@ mod wasm {
         unsafe { &mut *DECODED_GRAPH.0.get() }
     }
 
+    // -- Resident child import plan -----------------------------------------
+    //
+    // One activation's plan at a time, exactly like the decoded graph above and
+    // for the same reason: the host builds it, walks it, and moves on to the
+    // next activation. Holding several would mean the module deciding when a
+    // plan stops being interesting, which it cannot know.
+    struct ImportPlanCell(UnsafeCell<Option<Vec<fork_codec::ImportPlanEntry>>>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ImportPlanCell {}
+    static IMPORT_PLAN: ImportPlanCell = ImportPlanCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn import_plan() -> &'static mut Option<Vec<fork_codec::ImportPlanEntry>> {
+        // SAFETY: single-threaded per worker; one host drives build/read.
+        unsafe { &mut *IMPORT_PLAN.0.get() }
+    }
+
     // Monotonic count of reference graphs the module has DECODED from a KFMS
     // arena since worker start. Proof-of-use for the decode flip: after the host
     // routes wire-graph decode through `fm_decode_reference_graph` this has
@@ -3027,6 +3045,9 @@ mod wasm {
             abandon_resident(&mut *CAPTURE_SERIALIZED.0.get());
             abandon_resident(&mut *DRIVE_PLAN.0.get());
         }
+        // Bump-backed like the two above. Reading a plan built before the reset
+        // would read bytes the next allocation has overwritten.
+        abandon_resident(import_plan());
         ALLOC.reset();
     }
 
@@ -8569,6 +8590,185 @@ mod wasm {
                 -1
             }
         }
+    }
+
+    // -- Child import plan (what a fresh child puts in each import object) ---
+    //
+    // The two entries census 175 argues for, and the argument in one line: the
+    // host's irreducible act at child instantiation is assembling a JavaScript
+    // import object, NOT deciding what belongs in it. Everything that decides
+    // -- matching each KFIG/KFIT declaration to the binding record the parent
+    // sealed, cross-checking their types, finding the saved scalar behind a
+    // base import, refusing the combinations a child cannot reconstruct -- is a
+    // decision over byte images, and it lives in
+    // `fork_codec::child_import_plan`. These expose its result.
+
+    /// Read one arena record's payload as a slice of guest memory.
+    fn record_payload(record: &fork_codec::ModuleStateRecord) -> Result<&'static [u8], Errno> {
+        let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+        let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        if size == 0 {
+            return Ok(&[]);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        Ok(unsafe {
+            core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+        })
+    }
+
+    fn build_child_import_plan_impl(activation: u32, module_state_root: u64) -> Result<u32, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL); // no format seeded, so no arena to read
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+
+        // An activation with no KFIG/KFIT section imports no global or table.
+        // That is the ordinary case for a program that never dlopens, and an
+        // EMPTY CATALOG rather than a refusal: the section is emitted only when
+        // there is something to describe.
+        let globals = match activation_imports(IMPORT_SPACE_GLOBAL, activation) {
+            Some(bytes) => fork_codec::imported_globals::decode_imported_globals(bytes)?,
+            None => fork_codec::ImportedGlobals { globals: Vec::new() },
+        };
+        let tables = match activation_imports(IMPORT_SPACE_TABLE, activation) {
+            Some(bytes) => fork_codec::imported_tables::decode_imported_tables(bytes)?,
+            None => fork_codec::ImportedTables { tables: Vec::new() },
+        };
+
+        let mut global_bindings = Vec::new();
+        let mut table_bindings = Vec::new();
+        let mut snapshots = Vec::new();
+        for record in &module_state.records {
+            if record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS {
+                global_bindings
+                    .extend(fork_codec::decode_imported_global_bindings(record_payload(record)?)?);
+            } else if record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS
+            {
+                table_bindings
+                    .extend(fork_codec::decode_imported_table_bindings(record_payload(record)?)?);
+            } else if record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL
+                && record.activation_id == activation
+            {
+                snapshots.push((
+                    record.activation_id,
+                    record.owner_id,
+                    fork_codec::decode_mutable_global(record_payload(record)?)?,
+                ));
+            }
+        }
+        let snapshot_view: Vec<fork_codec::PlanSnapshot<'_>> = snapshots
+            .iter()
+            .map(|(activation, owner, snapshot)| fork_codec::PlanSnapshot {
+                activation: *activation,
+                owner: *owner,
+                snapshot,
+            })
+            .collect();
+
+        let plan = build_child_import_plan(
+            activation,
+            &globals,
+            &tables,
+            &global_bindings,
+            &table_bindings,
+            &snapshot_view,
+        )?;
+        let count = u32::try_from(plan.len()).map_err(|_| Errno::EINVAL)?;
+        // Abandoned rather than dropped, for the reason `reset_bump_heap`
+        // states: a previous plan's `Vec` lives in bump memory a fork may
+        // already have reclaimed, and walking it to drop it is the trap.
+        abandon_resident(import_plan());
+        *import_plan() = Some(plan);
+        Ok(count)
+    }
+
+    /// Build the import plan for ONE activation of the child rooted at
+    /// `module_state_root`, and return how many entries it has (`>= 0`), or `-1`
+    /// with the reason in `fm_last_errno`.
+    ///
+    /// Building and counting are one entry rather than two because the count is
+    /// not a fact about the arena until the plan exists -- the same shape
+    /// `fm_decode_reference_graph` has, which also returns the node count of the
+    /// graph it just made resident. The plan stays resident for
+    /// `fm_child_import_plan_field` until the next build or bump reset.
+    ///
+    /// The activation's `KFIG`/`KFIT` sections must already be seeded through
+    /// `fm_set_activation_imports`; an activation with neither imports no global
+    /// or table, which is the ordinary single-module case rather than an error.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_import_plan(activation: u32, module_state_root: usize) -> i32 {
+        match build_child_import_plan_impl(activation, module_state_root as u64) {
+            Ok(count) => match i32::try_from(count) {
+                Ok(count) => {
+                    set_ok();
+                    count
+                }
+                Err(_) => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            },
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
+    /// One field of the resident import plan's entry at `index`:
+    ///
+    /// - `0` IMPORT_ORDINAL     -- position in the activation's whole import section
+    /// - `1` SPACE              -- 0 globals, 1 tables
+    /// - `2` KIND               -- a binding kind, read UNDER `space`: the two
+    ///   numberings overlap, so `kind` alone names two different things
+    /// - `3` TYPE_CODE          -- declared value type (globals) or element type (tables)
+    /// - `4` FLAGS              -- `IMPORT_PLAN_FLAG_SAVED` when `BITS` is a saved scalar
+    /// - `5` BITS               -- a BIT PATTERN, not a magnitude: raw global bits,
+    ///   a recipe id, or the saved scalar. All 64 bits are meaningful and `-1`
+    ///   is a legal value here, so a caller must read `fm_last_errno` rather
+    ///   than test the result
+    /// - `6` SOURCE_ACTIVATION  -- provider activation for the `ACTIVATION_*` kinds
+    /// - `7` SOURCE_OWNER       -- provider catalog ordinal for those kinds
+    ///
+    /// `EINVAL` with `-1` for an unknown field, an out-of-range index, or no
+    /// resident plan.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_import_plan_field(index: usize, field: u32) -> i64 {
+        let entry = match import_plan().as_ref().and_then(|plan| plan.get(index)) {
+            Some(entry) => *entry,
+            None => {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+        };
+        let value = match field {
+            0 => i64::from(entry.import_ordinal),
+            1 => i64::from(entry.space),
+            2 => i64::from(entry.kind),
+            3 => i64::from(entry.type_code),
+            4 => i64::from(entry.flags),
+            5 => entry.bits as i64,
+            6 => i64::from(entry.source_activation),
+            7 => i64::from(entry.source_owner),
+            _ => {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+        };
+        set_ok();
+        value
     }
 
     /// Shared tail for the `u32`-valued `fm_decoded_node_field` selectors: a

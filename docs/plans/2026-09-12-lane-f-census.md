@@ -8660,3 +8660,50 @@ where the child's compiled `modules` map is already in hand. That is a host
 sequencing change, not a new entry, and it is the first thing the module-side
 increment will have to do.
 
+---
+
+## §176 -- The two entries, and what a field-indexed read costs
+
+`fm_child_import_plan(activation, module_state_root)` builds one activation's
+plan and returns its entry count; `fm_child_import_plan_field(index, field)`
+reads it. That is the shape the maintainer approved, and building and counting
+are ONE entry rather than two for a reason worth stating: the count is not a
+fact about the arena until the plan exists. `fm_decode_reference_graph` already
+does exactly this -- it returns the node count of the graph it just made
+resident -- so this is the established pattern rather than a fold for the sake
+of the budget.
+
+**Only one plan is resident at a time**, like the decoded graph and for the same
+reason: the host builds a plan, walks it, and moves to the next activation.
+Holding several would mean the module deciding when a plan stops being
+interesting, which it cannot know. The slot is abandoned rather than dropped on
+a rebuild and in `reset_bump_heap`, because its `Vec` lives in bump memory a
+fork reclaims -- walking it to drop it is the trap census 142 documented.
+
+**`BITS` is a bit pattern, not a magnitude,** and that is the one sharp edge in
+this pair. All 64 bits are meaningful -- raw global bits, a recipe id, or a
+saved scalar -- so `-1` is a LEGAL value there and a caller cannot test the
+result to detect failure. It has to read `fm_last_errno`. The host wrapper does
+that for every field read anyway (`ForkModuleContinuationBackend.call` throws on
+a nonzero errno), so the edge is documented and contained rather than load
+bearing.
+
+**An empty plan is not a refusal.** An activation with no `KFIG`/`KFIT` section
+imports no global and no table, which is the ordinary single-module case. The
+module answers 0 with no error rather than `EINVAL`, and there is a test that
+says so -- because the opposite choice would make every non-dlopen program's
+child install fail at the plan.
+
+**Still no production caller.** These are reached by five capture-drive tests
+and nothing else until the host planner is cut over, which is the next
+increment. `forkModuleHostEntries` rises 56 -> 58 for them, argued in the ledger
+and citing the approval rather than claiming a fresh one.
+
+**`plan_provider_dependencies` also has no caller yet**, and it has two
+candidates rather than one: the host can derive instantiation order from the
+plan's `KIND` and `SOURCE_ACTIVATION` fields directly, or the MODULE can take
+over the whole-activation-set cycle check the TypeScript planner did, which is
+the better home but needs every activation's sections seeded at attach. The
+host-planner increment picks one and deletes the loser -- shipping an unused
+function past that point would be exactly the dead surface this lane removes.
+
