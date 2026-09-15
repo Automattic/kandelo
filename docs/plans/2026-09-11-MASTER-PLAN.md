@@ -4081,6 +4081,49 @@ Rust export writes is now one the kernel can load back, which is what the lane
 existed to make possible. V6, V7, V8 done and V-D1 closed. Remaining: V5's
 producer side, then V9 (after lane Y) and V10. The 12,000-line finding below is NOT yet
 
+### THE CENSUS, WALKED — which leads paid and which did not, 2026-09-15
+
+The per-file census (`pub fn` with no call in its own `#[cfg(test)]` module)
+produced 28 leads. **Three were real gaps; the rest are covered from another
+file.** Recorded so the next person does not re-walk them.
+
+**Paid out — a real hole, now closed and perturbed:**
+
+| function | what was missing |
+|---|---|
+| `fchown` | **no caller anywhere in the tree.** The path `sys_fchown` takes for a rootfs file. |
+| `is_nosuid` | exactly ONE reader — `statfs`'s `f_flags` — and no assertion. A mount could misreport `ST_NOSUID` and nothing would notice. |
+| `container_flags` | ONE caller, the refusal for an image declaring lazy archives it does not carry. **Zero references to the function or the flag in the test module.** |
+
+**Did not pay — covered from another file, which is the census
+under-reporting by construction:**
+
+* `check_export_headroom`, `export_capacity_bytes` — reached through
+  `sm_check_headroom`, which `sffs-module`'s own tests exercise;
+* `fchmod` — four callers, `syscalls.rs` has `test_fchmod`;
+* `statfs` (rootfs and tmpfs) — seven callers, and now directly asserted by the
+  nosuid test above;
+* `file_type`, `sffs_span`, `metadata_span` — many callers through the load
+  path, exercised by every `load_image` test.
+
+**Still open, and small:** `lazy_info` backs the module's deferred reporting in
+`lstat` and is exercised only from a TYPESCRIPT test
+(`sffs-image-fs.test.ts`'s `isPathDeferred`). That is the same shape
+`sm_image_read` had before it got a Rust test — coverage that disappears with
+the language this lane is deleting. Worth a Rust test; not urgent, because
+`isPathDeferred` itself is asserted.
+
+### WHAT MAKES THE CENSUS WORTH REPEATING
+
+**A line-coverage number would have called all three of the paid leads
+covered.** `is_nosuid` RUNS on every `statfs`; `container_flags` RUNS on every
+image load; `fchown` compiles and ships. What none of them did was **matter to
+an assertion**, and no green suite, coverage percentage or review of a passing
+diff can see that difference.
+
+The cost is one command and a few minutes of reading. **Three for twenty-eight
+is a good rate** for finding guards that exist and have never been run.
+
 ### HANDOFF — `mount(2)` GOES TO A KERNEL LANE
 
 **Assigned by the maintainer 2026-09-15**, choosing *"implement it"* over
