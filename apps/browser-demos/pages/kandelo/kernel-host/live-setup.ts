@@ -43,7 +43,10 @@ import {
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
+import {
+  opfsMountsFromDescriptor,
+  validateBootDescriptor,
+} from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import {
   genericDemoPresentation,
   resolveDemoAssets,
@@ -296,12 +299,14 @@ const DINIT_NGINX_ARGV = [
 
 const LIVE_DEMO_IDS = [
   "shell",
+  "shell-persist",
   "node",
   "nginx",
   "nginx-php",
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "doom-persist",
   "modeset",
 ] as const;
 
@@ -316,6 +321,9 @@ async function settleAfterBootResourcesReleased(): Promise<void> {
 
 const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
   shell: {
+    image: "shell",
+  },
+  "shell-persist": {
     image: "shell",
   },
   node: {
@@ -394,6 +402,10 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
     },
   },
   doom: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  "doom-persist": {
     image: "shell",
     features: ["framebuffer"],
   },
@@ -1266,6 +1278,18 @@ async function bootProfile(
   const vfsImageBytes = await finalizeKernelOwnedImage(buildFs);
   assertCurrent();
 
+  // Browser-storage mounts are claimed by the host before the kernel worker
+  // exists, so a workspace it cannot take fails this boot instead of quietly
+  // producing a memory-only machine.
+  const opfsMounts = opfsMountsFromDescriptor(requestedDescriptor);
+  if (opfsMounts.length > 0) {
+    tick(
+      `requesting browser-storage mounts: ${
+        opfsMounts.map((m) => `${m.path} (workspace ${m.name})`).join(", ")
+      }`,
+    );
+  }
+
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
@@ -1329,6 +1353,7 @@ async function bootProfile(
       ? {
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
+        ...(opfsMounts.length === 0 ? {} : { opfsMounts }),
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,
@@ -2015,6 +2040,9 @@ function descriptorFor(id: string): BootDescriptor {
         readonly: false,
       },
       { path: "/tmp", source: "scratch", ephemeral: true },
+      // Machine-declared extra mounts (e.g. a persistent opfs workspace)
+      // must survive the URL-boot path, not only in-app gallery applies.
+      ...(item.mounts ?? []),
     ],
     boot: {
       argv: item.bootCommand,
@@ -2037,6 +2065,7 @@ function liveGalleryItems(): GalleryItem[] {
     bootCommand: p.bootCommand,
     vfsImageUrl: vfsImageUrlForPreset(p.id),
     resolveVfsImageUrl: vfsImageUrlResolverForPreset(p.id),
+    mounts: p.mounts,
     accent: p.accent,
     glyph: p.glyph,
     estimatedUrlBytes: p.estimatedUrlBytes,

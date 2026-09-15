@@ -349,10 +349,12 @@ export class OpfsFileSystem implements FileSystemBackend {
     this.channel.setArg(0, handle);
     const rc = this.call(OpfsOpcode.READDIR);
     if (rc === 1) return null; // end of directory
-    // Entry data is in data section: name string + type byte
+    // Entry data is in data section: name string + type byte. Chrome
+    // rejects SharedArrayBuffer-backed views in TextDecoder.decode(), so
+    // copy the name bytes out of the channel before decoding.
     const nameLen = this.channel.result2;
     const data = this.channel.dataBuffer;
-    const name = new TextDecoder().decode(data.subarray(0, nameLen));
+    const name = new TextDecoder().decode(data.slice(0, nameLen));
     const dtype = data[nameLen];
     return { name, type: dtype, ino: 0 };
   }

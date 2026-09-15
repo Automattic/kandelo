@@ -221,7 +221,23 @@ const MountsTab: React.FC<TabPropsBase> = ({ draft, setDraft }) => {
               />
               <select
                 value={m.source}
-                onChange={(e) => update(i, { source: e.target.value as MountSource })}
+                onChange={(e) => {
+                  const source = e.target.value as MountSource;
+                  // Each source owns different fields (ref, data, name, url,
+                  // bytes). Drop the previous source's values so the text box
+                  // does not keep showing a hash while edits go to a workspace
+                  // name, and never carry the scratch ephemeral flag onto a
+                  // persistent workspace.
+                  update(i, {
+                    source,
+                    ref: undefined,
+                    data: undefined,
+                    name: undefined,
+                    url: undefined,
+                    bytes: undefined,
+                    ephemeral: source === "opfs" ? undefined : m.ephemeral,
+                  });
+                }}
               >
                 {MOUNT_SOURCES.map((s) => (
                   <option key={s} value={s}>{s}</option>

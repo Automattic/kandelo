@@ -1,4 +1,5 @@
 import { ABI_VERSION } from "../../../../host/src/generated/abi";
+import type { DescriptorMount } from "../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface Preset {
   id: string;
@@ -10,6 +11,8 @@ export interface Preset {
   glyph: string;
   bootCommand: string[];
   estimatedUrlBytes: number;
+  /** Extra descriptor mounts beyond the root image (e.g. an opfs workspace). */
+  mounts?: DescriptorMount[];
 }
 
 const SHELL_BASE = `kandelo:shell@abi${ABI_VERSION}`;
@@ -34,6 +37,27 @@ export const PRESET_LIBRARY: Preset[] = [
     glyph: "sh",
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 312,
+  },
+  {
+    id: "shell-persist",
+    title: "Persistent shell",
+    summary: "The shell image plus /persist, a browser-storage-backed mount whose files survive reboots and page reloads on this device.",
+    base: SHELL_BASE,
+    packages: [
+      "bash@local",
+      "dash@local",
+      "coreutils@local",
+      "grep@local",
+      "sed@local",
+      "curl@local",
+      "git@local",
+      "nano@local",
+    ],
+    accent: "#0f766e",
+    glyph: "sh+",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 356,
+    mounts: [{ path: "/persist", source: "opfs", name: "shell-persist" }],
   },
   {
     id: "node",
@@ -116,6 +140,22 @@ export const PRESET_LIBRARY: Preset[] = [
     glyph: "D",
     bootCommand: ["/usr/games/fbdoom"],
     estimatedUrlBytes: 1018,
+  },
+  {
+    id: "doom-persist",
+    title: "fbDOOM (persistent saves)",
+    summary: "DOOM with browser-storage-backed saves: save in game, close the tab, come back and load. One tab at a time. Careful: this port quits on Backspace.",
+    base: SHELL_BASE,
+    packages: ["fbdoom@local", "doom-shareware@local", "bash@local", "coreutils@local"],
+    accent: "#e0552f",
+    glyph: "D+",
+    bootCommand: ["/usr/games/fbdoom"],
+    estimatedUrlBytes: 1060,
+    // This fbdoom build derives its config/save home from $HOME, so the
+    // persistent workspace mounts exactly there; the surrounding /home/maker
+    // scratch mount stays ephemeral. The path must track DEMO_HOME in
+    // kernel-host/live-setup.ts, or saves silently land on scratch.
+    mounts: [{ path: "/home/maker/.fdoom.tar", source: "opfs", name: "doom-saves" }],
   },
   {
     id: "modeset",

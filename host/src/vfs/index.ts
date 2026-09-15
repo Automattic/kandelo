@@ -98,6 +98,7 @@ export type { PathconfValue } from "../types";
 export {
   DEFAULT_MOUNT_SPEC,
   ensureMountParentDirectories,
+  ensureMountPointDirectories,
   resolveForBrowser,
 } from "./default-mounts";
 export type { MountSpec, BrowserResolverOptions } from "./default-mounts";

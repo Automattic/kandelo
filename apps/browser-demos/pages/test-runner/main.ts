@@ -90,6 +90,8 @@ declare global {
         env?: string[];
         ptyInput?: PtyInput;
         corsProxy?: BrowserCorsProxyConfig;
+        /** Browser-storage-backed mounts (persistent OPFS workspaces). */
+        opfsMounts?: Array<{ path: string; name: string }>;
       },
     ) => Promise<{
       exitCode: number;
@@ -377,6 +379,7 @@ async function init() {
       env?: string[];
       ptyInput?: PtyInput;
       corsProxy?: BrowserCorsProxyConfig;
+      opfsMounts?: Array<{ path: string; name: string }>;
     },
   ) => {
     let stdout = "";
@@ -436,7 +439,11 @@ async function init() {
     });
 
     try {
-      await kernel.initFromImage({ kernelWasm: kernelWasmBytes!, vfsImage });
+      await kernel.initFromImage({
+        kernelWasm: kernelWasmBytes!,
+        vfsImage,
+        opfsMounts: options?.opfsMounts,
+      });
 
       // Run the test with a timeout
       const cwd = options?.cwd;

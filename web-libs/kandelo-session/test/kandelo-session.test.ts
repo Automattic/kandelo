@@ -41,6 +41,7 @@ import {
   decodeBootDescriptor,
   encodeBootDescriptor,
   HARD_CAPS,
+  opfsMountsFromDescriptor,
   validateBootDescriptor,
 } from "../src/boot-descriptor";
 
@@ -229,6 +230,81 @@ describe("BootDescriptor: package-layer validation", () => {
       ...DUMMY_DESCRIPTOR,
       mounts: [packageLayerMount()],
     })).toThrow(/require a root image mount/);
+  });
+});
+
+describe("BootDescriptor: opfs workspace mounts", () => {
+  const opfsDescriptor: BootDescriptor = {
+    ...DUMMY_DESCRIPTOR,
+    id: "persistent",
+    mounts: [
+      ...DUMMY_DESCRIPTOR.mounts,
+      { path: "/persist", source: "opfs", name: "proto-test" },
+    ],
+  };
+
+  it("accepts a named origin-scoped workspace mount", () => {
+    expect(() => validateBootDescriptor(opfsDescriptor)).not.toThrow();
+  });
+
+  it("preserves the workspace mount across a URL round trip", async () => {
+    const encoded = await encodeBootDescriptor(opfsDescriptor);
+    await expect(decodeBootDescriptor(encoded.fragment)).resolves.toEqual(opfsDescriptor);
+  });
+
+  it("rejects a workspace mount marked ephemeral", () => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [
+        ...DUMMY_DESCRIPTOR.mounts,
+        { path: "/persist", source: "opfs", name: "proto-test", ephemeral: true },
+      ],
+    })).toThrow(/cannot also be ephemeral/);
+  });
+
+  it("rejects a workspace mount with no name", () => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [...DUMMY_DESCRIPTOR.mounts, { path: "/persist", source: "opfs" }],
+    })).toThrow(/requires an origin-scoped workspace name/);
+  });
+
+  it.each([
+    "",
+    ".hidden",
+    "-leading",
+    "has/slash",
+    "has space",
+    "a".repeat(65),
+  ])("rejects malformed workspace name %j", (name) => {
+    expect(() => validateBootDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [...DUMMY_DESCRIPTOR.mounts, { path: "/persist", source: "opfs", name }],
+    })).toThrow(/requires an origin-scoped workspace name/);
+  });
+
+  it("projects only opfs mounts, in descriptor order", () => {
+    expect(opfsMountsFromDescriptor({
+      ...opfsDescriptor,
+      mounts: [
+        ...opfsDescriptor.mounts,
+        { path: "/persist2", source: "opfs", name: "second_ws.1" },
+      ],
+    })).toEqual([
+      { path: "/persist", name: "proto-test" },
+      { path: "/persist2", name: "second_ws.1" },
+    ]);
+  });
+
+  it("returns no mounts for a descriptor without persistence", () => {
+    expect(opfsMountsFromDescriptor(DUMMY_DESCRIPTOR)).toEqual([]);
+  });
+
+  it("refuses to project an unvalidated workspace mount instead of dropping it", () => {
+    expect(() => opfsMountsFromDescriptor({
+      ...DUMMY_DESCRIPTOR,
+      mounts: [...DUMMY_DESCRIPTOR.mounts, { path: "/persist", source: "opfs" }],
+    })).toThrow(/was not validated/);
   });
 });
 

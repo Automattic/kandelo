@@ -599,6 +599,13 @@ export interface GalleryItem {
    * is for in-process providers whose Vite asset may not be materialized.
    */
   resolveVfsImageUrl?: () => Promise<string>;
+  /**
+   * Extra descriptor mounts this machine adds beyond the root image (for
+   * example a persistent `opfs` workspace). Applied on launch after the
+   * previous machine's non-image mounts are dropped, so mounts never leak
+   * across gallery switches.
+   */
+  mounts?: DescriptorMount[];
   accent: string;
   glyph: string;
   estimatedUrlBytes: number;

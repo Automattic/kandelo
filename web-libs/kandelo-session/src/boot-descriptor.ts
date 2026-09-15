@@ -49,6 +49,12 @@ const PACKAGE_LAYER_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const PACKAGE_LAYER_REF_RE = /^sha256:[0-9a-f]{64}$/;
 const MAX_PACKAGE_LAYER_URL_CHARS = 8192;
 
+// Mirrors OPFS_WORKSPACE_NAME_PATTERN in host/src/vfs/default-mounts.ts.
+// kandelo-session stays free of host/src imports (kernel-host.ts redeclares
+// host-owned shapes structurally for the same reason), so the pattern is
+// duplicated rather than imported. The host re-checks it before mounting.
+const OPFS_WORKSPACE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 // ── Tier classification ────────────────────────────────────────────────────
 
 export type UrlTier = "tiny" | "shareable" | "power-user" | "extended";
@@ -141,6 +147,10 @@ function canonicalAbsolutePath(value: string): boolean {
   return !value.slice(1).split("/").some(
     (component) => component === "" || component === "." || component === "..",
   );
+}
+
+function isOpfsWorkspaceName(value: unknown): value is string {
+  return typeof value === "string" && OPFS_WORKSPACE_NAME_RE.test(value);
 }
 
 function unauthenticatedHttpsUrl(value: string): boolean {
@@ -237,6 +247,25 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       concreteMountPaths.add(m.path);
     }
     if (m.source === "image" && m.path === "/") hasRootImage = true;
+    if (m.source === "opfs" && !isOpfsWorkspaceName(m.name)) {
+      // A descriptor that asks for persistence must name the workspace it
+      // wants. Booting without one would hand back an in-memory machine that
+      // silently drops every write the link promised to keep.
+      throw new BootDescriptorError(
+        "E_OPFS_WORKSPACE_NAME",
+        `opfs mount ${index} requires an origin-scoped workspace name ` +
+          `matching ${OPFS_WORKSPACE_NAME_RE.source}: ${JSON.stringify(m.name)}`,
+      );
+    }
+    if (m.source === "opfs" && m.ephemeral) {
+      // A mount cannot be both persistent browser storage and boot-scoped.
+      // Accepting the pair would mislabel real durability in every surface
+      // that renders the descriptor.
+      throw new BootDescriptorError(
+        "E_OPFS_EPHEMERAL_CONFLICT",
+        `opfs mount ${index} cannot also be ephemeral`,
+      );
+    }
     if (m.source === "package-layer") {
       packageLayerCount += 1;
       if (packageLayerCount > HARD_CAPS.maxPackageLayers) {
@@ -355,6 +384,44 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
       throw new BootDescriptorError("E_BOOT_USER", `boot.${field} must be an integer from 0 to 65535`);
     }
   }
+}
+
+// ── Browser-storage mount projection ───────────────────────────────────────
+
+/** One `opfs` mount request projected out of a validated descriptor. */
+export interface DescriptorOpfsMount {
+  /** Absolute VFS mount point, e.g. "/persist". */
+  path: string;
+  /** Origin-scoped browser-storage workspace name. */
+  name: string;
+}
+
+/**
+ * Project a descriptor's `opfs` mount surface into the host's mount-request
+ * shape, in descriptor order. Callers must validate the whole descriptor
+ * first; a mount that reaches here unnamed is a validation escape, not a
+ * mount to skip, so it throws rather than degrading the boot to memory-only
+ * storage.
+ *
+ * The host owns everything past this projection: workspace uniqueness, the
+ * per-origin exclusive lock, mount-point collisions with the canonical mount
+ * layout, and whether browser storage is available at all.
+ */
+export function opfsMountsFromDescriptor(
+  descriptor: BootDescriptor,
+): DescriptorOpfsMount[] {
+  return descriptor.mounts
+    .filter((mount) => mount.source === "opfs")
+    .map((mount) => {
+      if (!isOpfsWorkspaceName(mount.name)) {
+        throw new BootDescriptorError(
+          "E_OPFS_WORKSPACE_NAME",
+          `opfs mount ${mount.path} was not validated: workspace name ` +
+            `${JSON.stringify(mount.name)} is missing or malformed`,
+        );
+      }
+      return { path: mount.path, name: mount.name };
+    });
 }
 
 // ── Encode / decode ────────────────────────────────────────────────────────
