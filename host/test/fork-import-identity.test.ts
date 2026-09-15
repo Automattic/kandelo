@@ -278,6 +278,41 @@ describe("what only JavaScript can see about an activation's imports", () => {
     expect(bitsFor(ORDINAL_BIG)).toBe(9n);
   });
 
+  it("publishes nothing for the channel base the instrumenter excludes", () => {
+    // `env.__channel_base` is the process's syscall channel, rebound per worker
+    // rather than reconstructed from a parent's value, and the instrumenter
+    // leaves it OUT of KFIG (`imported_global_is_child_binding`). The module
+    // matches provenance against KFIG, so publishing this one made it refuse
+    // the whole capture with EINVAL -- which is what every dlopen guest hit.
+    const { seeds, sink } = recordingSink();
+    const identity = new ForkImportIdentity(sink, "test");
+    const wat = WAT.replace(
+      '(import "env" "dup" (global (mut i32)))',
+      '(import "env" "__channel_base" (global i32))\n'
+      + '  (import "env" "dup" (global (mut i32)))',
+    );
+    const channelBase = new WebAssembly.Global({ value: "i32", mutable: false }, 64);
+    const { preparation, instance } = prepared(
+      identity,
+      0,
+      compile(wat),
+      importsFor(mutableI32(1), mutableI32(2), { __channel_base: channelBase }),
+    );
+    preparation.complete(instance);
+
+    // Ordinal 0 is now `__channel_base`; nothing may be published for it.
+    expect(
+      seeds.filter((s) => s.call === "provenance" && s.args[2] === 0),
+      "no provenance for the channel base",
+    ).toEqual([]);
+    // And the imports AFTER it still get theirs, at their shifted ordinals --
+    // a blanket skip would have taken them too.
+    expect(
+      seeds.some((s) => s.call === "provenance" && s.args[2] === ORDINAL_NUM + 1),
+      "the imports after it are still published",
+    ).toBe(true);
+  });
+
   it("seeds a section it finds and stays silent about one it does not", () => {
     // The module cannot reach a guest's `WebAssembly.Module` at all, so a
     // section it is not handed does not exist as far as the capture is

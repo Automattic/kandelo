@@ -26,9 +26,17 @@ import type {
 } from "./dylink-planner-wire";
 import { WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT } from "./generated/abi";
 
-/** The module's dirty-page set, reached through its guest-facing export. */
+/**
+ * The module's dirty-page set, reached through its guest-facing export.
+ *
+ * The page arguments are `bigint`, not `number`, and that is the export's
+ * shape rather than a preference: `__wpk_fork_module_state_table_dirty_mark`
+ * takes `u64` page numbers, which are `i64` in wasm on BOTH pointer widths, so
+ * JavaScript must hand them BigInts. Passing a `number` throws "Cannot convert
+ * 0 to a BigInt" from inside `dlopen`, which is where this was found.
+ */
 export interface ForkTableDirtySink {
-  markTablePages(ownerId: number, firstPage: number, pageCount: number): void;
+  markTablePages(ownerId: number, firstPage: bigint, pageCount: bigint): void;
 }
 
 interface Coordinate {
@@ -109,11 +117,7 @@ export class ForkTables {
     const shift = BigInt(WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT);
     const firstPage = firstIndex >> shift;
     const pageCount = ((end - 1n) >> shift) - firstPage + 1n;
-    this.dirty.markTablePages(
-      coordinates[0]!.ownerId,
-      Number(firstPage),
-      Number(pageCount),
-    );
+    this.dirty.markTablePages(coordinates[0]!.ownerId, firstPage, pageCount);
   }
 
   /**

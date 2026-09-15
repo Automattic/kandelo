@@ -43,6 +43,14 @@ export interface ForkActivation {
   readonly module: WebAssembly.Module;
   readonly instance: WebAssembly.Instance;
   readonly fixedPrefixSize: number;
+  /**
+   * The 32-byte hash of this activation's module bytes.
+   *
+   * Here because the MODULE needs it and cannot compute it: it writes one
+   * `Module` record per activation into the capture arena, and that record is
+   * what makes the arena's activation set. Only the host holds the bytes.
+   */
+  readonly templateId: Uint8Array;
 }
 
 /** One side activation, as `fm_parent_begin_capture` reads them. */
@@ -54,6 +62,7 @@ export interface ForkSideActivation {
 /** The module entry registration publishes through. */
 export interface ForkActivationDriveSink {
   bindActivationDrive(activationId: number, exports: Record<string, unknown>): void;
+  setActivationTemplateId(activationId: number, templateId: Uint8Array): void;
 }
 
 /**
@@ -98,6 +107,13 @@ export class ForkActivations {
     this.drive.bindActivationDrive(
       activation.activationId,
       activation.instance.exports as Record<string, unknown>,
+    );
+    // Before any capture: the module refuses one for an activation whose
+    // template id it was never given, because the `Module` record it would
+    // write is what a child reads to know this activation exists.
+    this.drive.setActivationTemplateId(
+      activation.activationId,
+      activation.templateId,
     );
     this.publishCatalogs(activation);
     this.live.set(activation.activationId, activation);

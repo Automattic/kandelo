@@ -876,7 +876,6 @@ function createProcessDylinkActivationOwner(
       // Its writer-acquire hook first adopts every published activation, so
       // the same monotonic allocator safely claims the next process-wide ID.
       const activationId = claimActivationId(request.replayActivationId);
-      let prepared = false;
       let registered = false;
       let released = false;
       let importedStatePreparation: PreparedForkParentActivation | null = null;
@@ -1020,10 +1019,20 @@ function createProcessDylinkActivationOwner(
           return importedStatePreparation.imports as unknown as WebAssembly.Imports;
         },
         register(instance) {
-          if (released || registered || !prepared) {
+          // `importsWrapped`, NOT a `prepared` flag. There was one, set by the
+          // coordinator's `prepareActivation`; `18762e9cb` deleted the
+          // coordinator and left the flag permanently false, so this refused
+          // EVERY dlopen side module from that commit until the suite could run
+          // again. Nothing caught it because nothing ran.
+          //
+          // The precondition it was standing in for is real and is this one: an
+          // activation whose imports were never wrapped has no recorded import
+          // provenance, so a later capture would have nothing to say about what
+          // it imported.
+          if (released || registered || !importsWrapped) {
             throw new Error(
               `${request.name}: side-module activation ${activationId} ` +
-                "cannot be registered in its current state",
+                "cannot be registered before its imports are wrapped",
             );
           }
           if (options.importedStateCapture) {
@@ -1053,9 +1062,9 @@ function createProcessDylinkActivationOwner(
             module: request.module,
             instance,
             fixedPrefixSize: format.fixedPrefixSize,
+            templateId,
           });
           registered = true;
-          prepared = false;
           childImportedStatePlanner?.registerInstance(activationId, instance);
           if (
             options.isPthreadReplica &&
@@ -1101,7 +1110,6 @@ function createProcessDylinkActivationOwner(
             }
           } finally {
             registered = false;
-            prepared = false;
             importedStatePreparation = null;
             childImportedStatePlanner = null;
             importedStateRegistered = false;
@@ -3929,8 +3937,8 @@ export async function centralizedWorkerMain(
               forkModuleInstance!.exports
                 .__wpk_fork_module_state_table_dirty_mark as (
                   owner: number,
-                  first: number,
-                  count: number,
+                  first: bigint,
+                  count: bigint,
                 ) => void
             )(ownerId, firstPage, pageCount),
         },
@@ -4708,6 +4716,7 @@ export async function centralizedWorkerMain(
         module,
         instance,
         fixedPrefixSize: linkedFrameFormat.fixedPrefixSize,
+        templateId: mainTemplateId,
       });
       mainImportedStatePreparation?.complete(instance);
       resumeTable.registerActivation(
@@ -6445,8 +6454,8 @@ export async function centralizedThreadWorkerMain(
             threadForkModuleInstance!.exports
               .__wpk_fork_module_state_table_dirty_mark as (
                 owner: number,
-                first: number,
-                count: number,
+                first: bigint,
+                count: bigint,
               ) => void
           )(ownerId, firstPage, pageCount),
       },
@@ -7063,6 +7072,7 @@ export async function centralizedThreadWorkerMain(
         module,
         instance,
         fixedPrefixSize: threadFixedPrefixSize,
+        templateId: threadTemplateId!,
       });
       try {
         // The pthread bootstrap consumes passive element segments, so static

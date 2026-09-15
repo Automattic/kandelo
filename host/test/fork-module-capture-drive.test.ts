@@ -253,6 +253,66 @@ describe("capture begin, driven through a serviced channel", () => {
     expect(f.arena(ARENA_OWNED)).toBe(1);
   });
 
+  it("captures a fork with a SIDE activation, the way a dlopen fork does", () => {
+    // The multi-activation capture path, which nothing exercised until the
+    // dlopen e2e suite could run again. A side activation is added to the SAME
+    // capture from a host-staged `(id, fixed_prefix)` list, and every step that
+    // follows -- the arena, the Module records, the guest save drive -- has to
+    // cover both activations or the child rebuilds only one.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedTemplateId(f, 1, 2048);
+    expect(f.errno(), "both template ids seed").toBe(0);
+
+    // The sides list: one `(id, fixedPrefix)` pair, as `fm_parent_begin_capture`
+    // reads it.
+    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sides = new DataView(f.memory.buffer);
+    sides.setUint32(sidesPtr, 1, true);
+    sides.setUint32(sidesPtr + 4, 0, true);
+
+    // Both activations' drive slots, the way `bindActivationDrive` binds them.
+    // Without activation 1's the capture `call_indirect`s past the end of the
+    // table -- which is what a host that registers an activation and forgets to
+    // grow the table would do.
+    const driven: number[] = [];
+    for (const activation of [0, 1]) {
+      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+      if (f.instance.driveTable.length < needed) {
+        f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+      }
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_MODULE_STATE_SAVE,
+        saveSlotThunk((id) => driven.push(id)) as never,
+      );
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_UNWIND_BEGIN,
+        saveSlotThunk(() => {}) as never,
+      );
+    }
+
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+      sidesPtr,
+      1,
+    );
+    expect(f.errno(), "a two-activation capture begins").toBe(0);
+    expect(driven.sort(), "the save walk covers BOTH activations").toEqual([0, 1]);
+
+    const root = f.arena(ARENA_ROOT);
+    expect(root, "into an arena of its own").toBeGreaterThan(0);
+    const modules = arenaRecords(f.memory, root).filter(
+      (r) => r.kind === RECORD_KIND_MODULE,
+    );
+    expect(
+      modules.map((r) => r.activation).sort(),
+      "one Module record per activation, or the child installs only one",
+    ).toEqual([0, 1]);
+  });
+
   it("does not build an arena when the caller supplies one", () => {
     // The section 142 bug, now reachable. Reserving into a rootless writer does
     // not fail -- it starts a second arena on the same channel that nothing
@@ -526,6 +586,8 @@ describe("imported-global bindings, assembled by the module at capture", () => {
 
 const RECORD_HEADER_SIZE = 24;
 const CHUNK_HEADER_SIZE_32 = 40;
+/** The KFMS record kind a `Module` declaration uses. */
+const RECORD_KIND_MODULE = 1;
 const RECORD_KIND_IMPORTED_GLOBAL_BINDINGS = 9;
 const RECORD_KIND_IMPORTED_TABLE_BINDINGS = 11;
 const RECORD_KIND_MUTABLE_GLOBAL = 3;
@@ -659,6 +721,26 @@ describe("the binding records the module assembles at capture", () => {
    * snapshot a global binding needs, through the module's own record-reserve
    * export -- the same one a real guest's save walk calls.
    */
+  /** Write one `MutableGlobal` snapshot, as a guest's save walk would. */
+  function saveOneGlobal(f: Fixture, activation: number, owner: number): void {
+    const reserve = f.x.__wpk_fork_module_state_record_reserve as (
+      kind: number,
+      activation: number,
+      owner: number,
+      size: number,
+    ) => number;
+    const commit = f.x.__wpk_fork_module_state_record_commit as (p: number) => void;
+    const payload = reserve(RECORD_KIND_MUTABLE_GLOBAL, activation, owner, 12);
+    if (payload === 0) throw new Error("snapshot reserve failed");
+    const view = new DataView(f.memory.buffer);
+    view.setUint8(payload, GLOBAL_TYPE_I32);
+    view.setUint8(payload + 1, 4);
+    view.setUint16(payload + 2, 0, true);
+    view.setUint32(payload + 4, 0, true);
+    view.setUint32(payload + 8, 0x2a, true);
+    commit(payload);
+  }
+
   function saveWrites(f: Fixture, activation: number, owner: number): void {
     const reserve = f.x.__wpk_fork_module_state_record_reserve as (
       kind: number,
@@ -944,8 +1026,6 @@ describe("the binding records the module assembles at capture", () => {
     return out;
   }
 
-  /** The KFMS record kind a `Module` declaration uses. */
-  const RECORD_KIND_MODULE = 1;
   /** `DRIVE_SLOT_MODULE_TABLE_STATE_SAVE`. */
   const DRIVE_SLOT_TABLE_STATE_SAVE = 14;
 
@@ -1100,6 +1180,71 @@ describe("the binding records the module assembles at capture", () => {
     expect(plan[1]!.space, "the table second").toBe(SPACE_TABLE);
     expect(plan[1]!.kind).toBe(KIND_ACTIVATION_TABLE);
     expect(plan[1]!.sourceActivation).toBe(9);
+  });
+
+  it("assembles binding records when a SIDE activation imports a global too", () => {
+    // The dlopen shape: both activations declare an imported global and both
+    // publish provenance for it. Nothing exercised this until the dlopen e2e
+    // could run, and `write_imported_global_bindings` walks EVERY activation in
+    // the fork -- so a side activation whose declarations or snapshots are
+    // missing refuses the whole capture rather than its own record.
+    const f = fixture();
+    seedTemplateId(f, 0, 2048);
+    seedTemplateId(f, 1, 2048);
+    const seed = f.x.fm_set_activation_imports as (
+      space: number,
+      activation: number,
+      ptr: number,
+      len: number,
+    ) => void;
+    for (const [activation, at] of [[0, 6144], [1, 7168]] as const) {
+      const kfig = kfigOne(1, 0, GLOBAL_TYPE_I32);
+      new Uint8Array(f.memory.buffer, at, kfig.length).set(kfig);
+      seed(SPACE_GLOBAL, activation, at, kfig.length);
+      expect(f.errno(), `KFIG seed for activation ${activation}`).toBe(0);
+    }
+    const { provenance } = publish(f);
+    provenance(SPACE_GLOBAL, 0, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+    provenance(SPACE_GLOBAL, 1, 0, KIND_ACTIVATION_GLOBAL, 0, 0n);
+
+    const driven: number[] = [];
+    for (const activation of [0, 1]) {
+      const base = (f.x.fm_drive_table_base as (a: number) => number)(activation);
+      const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+      if (f.instance.driveTable.length < needed) {
+        f.instance.driveTable.grow(needed - f.instance.driveTable.length);
+      }
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_MODULE_STATE_SAVE,
+        saveSlotThunk((id) => {
+          driven.push(id);
+          saveOneGlobal(f, id, 1);
+        }) as never,
+      );
+      f.instance.driveTable.set(
+        base + DRIVE_SLOT_UNWIND_BEGIN,
+        saveSlotThunk(() => {}) as never,
+      );
+    }
+
+    const sidesPtr = MMAP_FLOOR + 3 * PAGE;
+    const sides = new DataView(f.memory.buffer);
+    sides.setUint32(sidesPtr, 1, true);
+    sides.setUint32(sidesPtr + 4, 0, true);
+    (f.x.fm_capture_begin as () => void)();
+    (f.x.fm_parent_begin_capture as (...a: number[]) => number)(
+      CHANNEL_BASE,
+      0,
+      sidesPtr,
+      1,
+    );
+    expect(f.errno(), "a two-activation capture with imports begins").toBe(0);
+    expect(driven.sort(), "both saves ran").toEqual([0, 1]);
+
+    const bindings = arenaRecords(f.memory, f.arena(ARENA_ROOT)).filter(
+      (r) => r.kind === RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+    );
+    expect(bindings.length, "one binding record for the whole fork").toBe(1);
   });
 
   it("hands back the saved scalar behind a base import, flagged", () => {

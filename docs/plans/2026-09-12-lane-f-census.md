@@ -8943,3 +8943,64 @@ have never run together. Census D8 names the test that will exercise them
 (`fork-dlopen-replay-e2e`, "replays pthread-hosted dlopen table state into a
 fresh fork child") and the steps to run it now that the loader resolves.
 
+---
+
+## §180 -- D8 ran, and found four defects behind each other
+
+`fork-dlopen-replay-e2e` is not skipped: the gate's artifacts are present, it
+compiles a real side library and runs. It has not passed yet, and each thing it
+found was invisible because nothing could reach it.
+
+**1. `buildForkGuestImports` refused every dlopen guest.** Its completeness
+sweep read `WebAssembly.Module.imports(guestModule)` and demanded THIS builder
+satisfy every `env` import -- including `memory`, `__channel_base` and the whole
+`__wasm_dl*` family, which the caller that merges this result binds. Seven
+"missing fork imports", not one of them a fork import. All 46 required functions
+and both required tables are `__wpk_fork_*`, so the sweep is bounded to that
+namespace and loses no coverage.
+
+**2. `prepared` was never set to `true`, and this lane did it.** Commit
+`18762e9cb` ("Delete the fork coordinator, the first of the nine to go") removed
+`options.coordinator.prepareActivation(...)`, and with it the single
+`prepared = true`. From that commit until now, `register()` refused EVERY dlopen
+side module. The precondition it stood for is real -- an activation whose
+imports were never wrapped has no recorded provenance -- and `importsWrapped`
+already tracks exactly that.
+
+**3. `fm_set_activation_template_id` had NO PRODUCTION CALLER.** The module
+writes one `Module` record per activation and that record carries the template
+id, so a capture refuses for any activation the host never seeded. The entry has
+existed since the arena port; the host never started calling it because the
+registry was still writing those records itself. Now `ForkActivations.register`
+seeds it, which is the moment the id and the activation are both in hand.
+
+**4. The host published provenance for `env.__channel_base`.** The instrumenter
+deliberately leaves it out of KFIG (`imported_global_is_child_binding`): it is
+the syscall channel base, rebound per worker rather than reconstructed. The
+module matches provenance against KFIG, so the record had no declaration and the
+capture refused. Paired by name, because the exclusion lives in a wasm transform
+and cannot share a constant.
+
+Also: `__wpk_fork_module_state_table_dirty_mark` takes `u64` pages, which is
+`i64` on both pointer widths, so JavaScript must pass BigInts. Passing numbers
+threw "Cannot convert 0 to a BigInt" from inside `dlopen`.
+
+**Where the hunt stands.** The e2e now reaches `fm_parent_begin_capture` and
+gets `EINVAL`. Instrumenting every refusal in `begin_capture_impl` and its four
+module-side callees with distinct errnos showed NONE of them fires, so it comes
+from `fork-codec`. The obvious candidate -- `build_imported_global_bindings`
+requiring a snapshot per provenance entry -- is DISPROVEN: a two-activation
+capture where both activations declare an imported global, publish provenance
+and write snapshots passes in the capture-drive harness. The next candidate is
+the encoder's "unsorted or duplicated consumer" refusal, which fires when two
+import ordinals map to one KFIG owner.
+
+**Two capture-drive tests came out of this** and stay regardless: a fork with a
+side activation (Module records for both, both saves driven) and the same with
+imported globals on both. Multi-activation capture had no test before.
+
+**A process failure, recorded because the rule exists for a reason.** A suite
+run mid-session reported three regressions that were artifacts of my editing the
+tree while it ran. All three pass on a quiet tree. "Never mutate the tree
+mid-validation" is in the memory for exactly this, and I broke it.
+

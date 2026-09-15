@@ -52,6 +52,16 @@ import {
  * it already calls guest exports through its drive table, and it already serves
  * this family's third import, `__wpk_fork_ref_exn_broker_encode`.
  */
+/**
+ * The namespace this builder owns inside the guest's `env`.
+ *
+ * Not a heuristic: every name in `WPK_FORK_REQUIRED_IMPORTS` and
+ * `WPK_FORK_REQUIRED_TABLE_IMPORTS` carries it. Anything in `env` without it
+ * belongs to another contract -- the memory, the syscall channel, the dynamic
+ * loader -- and is bound by whoever merges this result.
+ */
+const FORK_IMPORT_PREFIX = "__wpk_fork_";
+
 export interface ForkGuestHostFloor {
   readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;
   readonly __wpk_fork_ref_exn_ingress_throw: (recipe: number) => void;
@@ -195,9 +205,20 @@ export function buildForkGuestImports(
   // two generated lists do not enumerate. Reported with the kind, because
   // "nobody bound this global" and "nobody bound this function" are fixed in
   // different places.
+  //
+  // BOUNDED TO THE FORK NAMESPACE, and that bound is load-bearing. A guest's
+  // `env` also carries imports nobody here supplies or should: `memory`, the
+  // syscall channel's `__channel_base`, and a dlopen guest's whole
+  // `__wasm_dl*` family, all bound by the caller that MERGES this result into
+  // the full import object. Sweeping them made this refuse to build imports
+  // for any dlopen guest -- five cases of `fork-dlopen-replay-e2e` failed on
+  // seven "missing" imports, not one of which is a fork import. Every one of
+  // the 46 required functions and both required tables is `__wpk_fork_*`, so
+  // the prefix loses no coverage: it is exactly this builder's contract.
   if (options.guestModule !== undefined) {
     for (const required of WebAssembly.Module.imports(options.guestModule)) {
       if (required.module !== "env") continue;
+      if (!required.name.startsWith(FORK_IMPORT_PREFIX)) continue;
       if (required.name in env) continue;
       if (missing.some((entry) => entry.startsWith(required.name))) continue;
       missing.push(`${required.name} (a ${required.kind})`);

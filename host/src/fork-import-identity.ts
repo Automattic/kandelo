@@ -98,6 +98,17 @@ function catalogOwner(name: string, prefix: string, label: string): number | nul
   return Number(text);
 }
 
+/**
+ * `env.__channel_base`, keyed the way `byKey` keys an import.
+ *
+ * Paired by NAME with `imported_global_is_child_binding` in the instrumenter,
+ * because the two sides cannot share a constant: the exclusion lives in the
+ * wasm transform, and `crates/shared` names this global only in
+ * `PROCESS_EXPECTED_GLOBALS`, which is a different list with a different
+ * meaning.
+ */
+const CHILD_BOUND_IMPORT_KEY = "env\u0000__channel_base";
+
 export class ForkImportIdentity {
   /**
    * Group id per distinct object, across every activation.
@@ -265,7 +276,20 @@ export class ForkImportIdentity {
     byKey: ReadonlyMap<string, Declaration[]>,
     values: ReadonlyMap<number, unknown>,
   ): void {
-    for (const declarations of byKey.values()) {
+    for (const [key, declarations] of byKey) {
+      // The one import the instrumenter deliberately leaves OUT of KFIG, so
+      // the module has no declaration to match provenance against.
+      // `imported_global_is_child_binding` in
+      // `crates/fork-instrument/src/module_state.rs` excludes it by the same
+      // name: it is the process's syscall channel base, rebound per worker
+      // rather than reconstructed from a parent's value.
+      //
+      // Publishing it anyway is what made `fm_parent_begin_capture` answer
+      // EINVAL for every dlopen guest -- the module looked its ordinal up in
+      // the KFIG-derived table and found nothing. A capture that refuses is
+      // better than one that binds a child's channel base from its parent, so
+      // the module's refusal stays; this stops asking it the question.
+      if (key === CHILD_BOUND_IMPORT_KEY) continue;
       for (const { ordinal, space } of declarations) {
         if (space === null) continue;
         if (!values.has(ordinal)) {

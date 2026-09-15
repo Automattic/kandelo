@@ -13,11 +13,21 @@ import {
  * test here starts asserting anything about those, the split has moved back.
  */
 
-function recordingDrive(): { bound: number[]; sink: ForkActivationDriveSink } {
+function recordingDrive(): {
+  bound: number[];
+  seeded: [number, Uint8Array][];
+  sink: ForkActivationDriveSink;
+} {
   const bound: number[] = [];
+  const seeded: [number, Uint8Array][] = [];
   return {
     bound,
-    sink: { bindActivationDrive: (activationId) => void bound.push(activationId) },
+    seeded,
+    sink: {
+      bindActivationDrive: (activationId) => void bound.push(activationId),
+      setActivationTemplateId: (activationId, templateId) =>
+        void seeded.push([activationId, templateId]),
+    },
   };
 }
 
@@ -32,6 +42,8 @@ function activation(
     module: {} as WebAssembly.Module,
     instance: { exports } as unknown as WebAssembly.Instance,
     fixedPrefixSize,
+    // Distinct per activation, so a test can tell whose id was seeded.
+    templateId: new Uint8Array(32).fill(activationId),
   };
 }
 
@@ -50,6 +62,21 @@ function bootstrapping(activationId: number): {
 }
 
 describe("the host's record of live activations", () => {
+  it("seeds each activation's template id when it registers", () => {
+    // Not incidental: the module writes one `Module` record per activation into
+    // the capture arena and that record carries this id, so an activation that
+    // registers without it makes `fm_parent_begin_capture` refuse with EINVAL.
+    // Nothing called the seeding entry at all until the dlopen e2e ran.
+    const { seeded, sink } = recordingDrive();
+    const activations = new ForkActivations(sink, "test");
+    activations.register(activation(0));
+    activations.register(activation(4));
+    expect(seeded.map(([id]) => id)).toEqual([0, 4]);
+    expect(seeded[1]![1], "each activation's own id, not a shared buffer").toEqual(
+      new Uint8Array(32).fill(4),
+    );
+  });
+
   it("binds an activation's drive slots when it registers, not at capture", () => {
     // An unbound slot is a `call_indirect` on null inside the module, so it
     // surfaces as a trap mid-unwind rather than as a missing feature here.

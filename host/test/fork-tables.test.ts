@@ -36,10 +36,17 @@ function table(length: number): WebAssembly.Table {
 }
 
 function build() {
-  const marks: [number, number, number][] = [];
+  const marks: [number, bigint, bigint][] = [];
   const tables = new ForkTables(
     {
-      markTablePages: (owner, first, count) => marks.push([owner, first, count]),
+      markTablePages: (owner, first, count) => {
+        // The real export takes `u64` pages, so anything but a BigInt throws
+        // "Cannot convert 0 to a BigInt" from inside the module. Asserting the
+        // TYPE here is what a stub sink can still check.
+        expect(typeof first, "first page is a BigInt").toBe("bigint");
+        expect(typeof count, "page count is a BigInt").toBe("bigint");
+        marks.push([owner, first, count]);
+      },
     },
     "test fork tables",
   );
@@ -56,7 +63,7 @@ describe("fork tables", () => {
     tables.register(1, 2, shared); // the lower coordinate: canonical
     tables.markTableMutation(shared, 1023, 2);
     // Page shift is 10, so indices 1023 and 1024 straddle pages 0 and 1.
-    expect(marks).toEqual([[2, 0, 2]]);
+    expect(marks).toEqual([[2, 0n, 2n]]);
   });
 
   it("marks nothing for an empty range", () => {
@@ -147,7 +154,7 @@ describe("fork tables", () => {
     expect(t.get(1)).toBe(FUNCS[1]);
     expect(t.get(2)).toBe(FUNCS[1]);
     expect(t.get(3)).toBeNull();
-    expect(marks, "applying is itself a mutation to journal").toEqual([[1, 0, 1]]);
+    expect(marks, "applying is itself a mutation to journal").toEqual([[1, 0n, 1n]]);
   });
 
   it("grows a shorter local table using a value the patch supplies", () => {

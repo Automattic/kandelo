@@ -312,6 +312,26 @@ export class ForkModuleContinuationBackend {
     return { prefixBytes: read(0), scratchBytes: read(1) };
   }
 
+  /**
+   * Seed one activation's 32-byte module template id.
+   *
+   * The module writes a `Module` record per activation into the capture arena,
+   * and that record carries this id -- so without the seed a capture refuses
+   * with `EINVAL` rather than writing a record with a zero id. The bytes are
+   * a hash of the module the host holds, which is why they are seeded rather
+   * than computed.
+   */
+  setActivationTemplateId(activationId: number, templateId: Uint8Array): void {
+    if (templateId.byteLength !== 32) {
+      throw new Error(
+        `${this.label}: activation ${activationId} template id has ` +
+          `${templateId.byteLength} bytes, expected 32`,
+      );
+    }
+    const at = this.stage(templateId, "activation template id");
+    this.call("fm_set_activation_template_id", activationId, at);
+  }
+
   setActivationCatalogBase(activationId: number, base: number): void {
     this.call("fm_set_activation_catalog_base", activationId, base);
   }
