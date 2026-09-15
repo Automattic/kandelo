@@ -92,6 +92,13 @@
    "scope_end": "\n}\n",
    "find": "                            InodeKind::LazyMember { size, .. } => *size > 0,",
    "replace": "                            InodeKind::LazyMember { .. } => return Err(Errno::ENOSYS),"
+  },
+  {
+   "name": "chown skips a symlink, leaving image-builder ownership silently unapplied",
+   "scope": "pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        if uid != u32::MAX {",
+   "replace": "        if uid != u32::MAX && !matches!(inode.kind, InodeKind::Symlink(_)) {"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
