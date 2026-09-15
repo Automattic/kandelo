@@ -3003,6 +3003,42 @@ spec of N trials pays that N times.
 many trials** — which is a change to the perturb harness rather than to any
 spec, and is recorded here rather than started because the harness is shared
 infrastructure every lane's specs run through.
+### THE BROWSER IS VERIFIED AGAINST A NAME-LEVEL BASELINE — 164/14, 2026-09-15
+
+**164 passed / 14 failed** in chromium against a recorded baseline of 163/15,
+and the diff is exact: **`vite-binary-cache-boundary` — "Vite serves an
+approved bottle member without exposing its cache" — moved from failing to
+passing**, and the other thirteen are identical character for character.
+
+That test is about artifact TIER boundaries, which is what the 74 undeclared
+`build.toml` inputs were breaking. The fix and the test that reports it are
+about the same thing.
+
+**So all eight browser specs repointed tonight run green through the Rust
+writer**, with no regression anywhere in the suite. That is a page BUILDING a
+VFS image with the Rust filesystem and booting a kernel from it — vfork, exec,
+signal delivery, login lifecycle, setuid startup, sudo, and two fork-module
+reconstruction paths.
+
+**Recording failure NAMES is what made this readable.** Counts alone would have
+said "15 became 14" and left the reason unknown; the diff names the test and
+the reason follows from it.
+
+### H-23 CAUGHT ME AFTER I DOCUMENTED IT
+
+The first attempt reported **50 failures**. Not a regression: tonight's changes
+to `runtime-core` and `sffs-module` invalidate their closure keys, so the
+browser booted a **stale kernel**. The suite reports that as fifty ordinary
+test failures with no hint of a build.
+
+**This lane documented H-23 and then walked into it**, which is worth writing
+down as a fact about sequencing rather than about knowledge. The correct order
+is: rebuild the module, re-run `setup`, THEN the browser — and it produced a
+valid result on the first try.
+
+**One more datum for B38**: `./run.sh setup` converged on the FIRST pass this
+time, where earlier tonight it needed two. Consistent with the declared build
+inputs doing their job. One observation is not a proof and B38 stays filed.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
