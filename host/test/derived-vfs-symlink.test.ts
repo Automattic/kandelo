@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { symlinkWithParentDirectories } from "../../images/vfs/scripts/derived-vfs-symlink";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { writeVfsFile } from "../src/vfs/image-helpers";
 
 const S_IFMT = 0o170000;
@@ -8,7 +8,7 @@ const S_IFDIR = 0o040000;
 
 describe("derived VFS symlink installation", () => {
   it("creates every missing parent owned by the derived image", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = SffsImageFs.create();
 
     symlinkWithParentDirectories(
       fs,
@@ -23,7 +23,7 @@ describe("derived VFS symlink installation", () => {
   });
 
   it("does not hide an invalid parent owned by the derived image", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = SffsImageFs.create();
     writeVfsFile(fs, "/usr", "not a directory");
 
     expect(() =>
