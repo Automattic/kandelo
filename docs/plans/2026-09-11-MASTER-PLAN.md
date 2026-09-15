@@ -3593,6 +3593,48 @@ not loaded` — and the node still reports SUCCEEDED. **A prewarm that fails
 fatally and succeeds anyway is the platform-values contract's "convenient
 illusion"**, whoever owns it.
 
+## LANE Y/V — WHAT LANDED 2026-09-15, and the one thing held
+
+**Ready to merge, and it closes lane S.** Fourteen commits on
+`brandonpayton/lane-y-image-writer`, each perturbed.
+
+**The address and the digest became things the kernel acts on.** SDEF v5 gives
+both record kinds a typed URI and a typed SHA-256, out of the payload the
+kernel promised never to read. The format's rule did not change — a field is
+typed when the kernel ACTS on it — and these two crossed that line because the
+kernel now relays the address and checks arriving bytes against the digest.
+Verification runs at three materialization points, before anything is stored,
+and a mismatch is `EIO` with the buffer dropped: caching bytes that failed
+their digest would make one bad fetch permanent for the life of the kernel. A
+declared digest also forces whole-file materialization, because a digest covers
+a whole object and a single window has nothing to check itself against.
+
+**`tools/mkrootfs` writes the rootfs image with the Rust writer**, which is
+what this plan says gives V5 a production caller. Measured on the artifact, not
+the code: the built `rootfs.vfs` carries `SDEF` and no `KLZY`, 65 of 65
+deferred files carry an address, and 65 of 65 carry a digest. The migration
+also deleted the `SharedArrayBuffer` plumbing, and turned the capacity
+guarantee from an allocation accident — the memfs backing store ran out, so a
+file came up short — into a stated check on the emitted artifact.
+
+**Lane S closed, both clauses.** The digest reaches sudo, and
+`demote_unverifiable_setid` drops set-user-ID and set-group-ID from any
+deferred file whose image declared none, so the setuid bit is not honoured on
+bytes nothing can verify. **The gate moved too**, which lane S asked for: the
+measure named one string in one file, satisfiable while the image had nowhere
+to put a digest; it names four layers now, one per place the chain can break.
+
+**Held: the URI relay** (B42). Its kernel half is built and green on
+`brandonpayton/lane-y-uri-relay-wip`, blocked on `crates/host-native`, whose v3
+manifest has no field for an address. Three ways out, each costing something
+only the maintainer should spend — see B42.
+
+**Not run: the browser suite** (B40). The pinned `ld64.lld` cannot parse this
+Xcode's `libSystem.tbd`, which blocks six products. Everything here stands on
+Node evidence: runtime-core 2197, sffs-module 80, tools/mkrootfs 184, host VFS
+suites, surface budget 85, wasm32 release clean, and 361 perturb trials with
+`--validate` clean.
+
 ## LANE Y/V MERGE POINT — `brandonpayton/lane-y-image-writer` @ `5fe08d499`, 2026-09-14
 
 **Ready to merge. Do NOT wait for V to finish: what is complete is the
