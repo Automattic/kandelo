@@ -588,6 +588,64 @@ comments that document their own deletion. The direction was reported backwards.
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+### HANDOFF — `mount(2)` GOES TO A KERNEL LANE
+
+**Assigned by the maintainer 2026-09-15**, choosing *"implement it"* over
+documenting a boundary or keeping `memory-fs.ts` alive for four tests.
+
+### WHAT IS ACTUALLY BLOCKED, AND IT IS NOT WHAT WAS RECORDED
+
+The plan carried this as a step-5 concern. **Measured, it gates step 4 too.**
+Four tests hand the filesystem to the kernel as a **live mount backend**, not as
+a fixture, and every one fails the same way when repointed:
+
+```
+TypeError: backend.statfs is not a function
+```
+
+```
+host/test/nosuid-exec.test.ts                 host/test/login.test.ts
+host/test/sudo-lite.test.ts                   host/test/reusable-kernel-export-stack.test.ts
+```
+
+**They are invisible to a census that asks "does this test assert on the
+filesystem?"**, because a mount backend is never asserted on — the kernel
+consumes it. That is why six sizings put them with the fixtures.
+
+### WHAT THEY NEED, IN ONE LINE EACH
+
+`nosuid-exec` is the clearest statement of the requirement:
+
+```ts
+[{ mountPoint: "/normal",  backend },
+ { mountPoint: "/scratch", backend, nosuid: true }]
+```
+
+**Two mounts of an in-memory filesystem at caller-chosen prefixes, one of them
+`nosuid`.** The kernel HAS an in-memory filesystem — `tmpfs.rs` — and cannot be
+asked to place it at `/normal`. The mount table is the compile-time
+`SCRATCH_MOUNTS` constant plus whatever the host supplies at boot.
+
+### THE DECISION THIS RESOLVES
+
+`docs/posix-status.md` discusses resolution across mounts, `nosuid` on mounts,
+and mount flags through `statfs(2)` at length, and **there is no `SYS_MOUNT` in
+the syscall set and no handler in `syscalls.rs`** — so the gap is undocumented
+as well as unimplemented. The host-side `MemoryFileSystem` is not meeting a need
+the kernel cannot meet; **it is compensating for an unimplemented syscall**,
+which the platform-values contract names exactly: a workaround must document
+the boundary it belongs to and must not hide a platform defect.
+
+### WHAT LANE V HAS ALREADY DONE TOWARDS IT
+
+**`ST_NOSUID` is now asserted in the kernel** (`statfs_reports_nosuid_exactly_when_the_mount_is_nosuid`,
+perturbed both directions). `is_nosuid()` had exactly one reader in the tree and
+no assertion at all — so the mount-level nosuid property these four tests cover
+host-side **now has a kernel-side guard that does not depend on them surviving.**
+
+That is the piece worth knowing before starting: whoever implements `mount(2)`
+inherits a tested `ST_NOSUID` report rather than an unasserted one.
+
 ### THE HOST INTERFACE SHOULD RELAY A URI — maintainer's refinement, 2026-09-15
 
 **Their words:** *"we need to adjust the host interface to relay the address of
