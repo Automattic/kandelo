@@ -2676,6 +2676,44 @@ reductions. A test count needs *this must not fall*, which is a new assertion
 shape on shared infrastructure that every lane's tests would answer to.
 **Recorded for the maintainer rather than added**, on the same reasoning that
 kept the two new surfaces out of lane V's closure.
+### THE FIRST OF THE 26 IS FULLY MAPPED — `sharedfs-uid-gid.test.ts`, 2026-09-15
+
+Twenty assertions, mapped one at a time against the Rust filesystem rather than
+ported wholesale. **Most were already covered**, which is the result the sixth
+sizing predicted and the first four sizings would have missed.
+
+| TS assertion | where it lives in Rust |
+|---|---|
+| chown changes uid/gid; `-1` leaves a field alone | `chmod_chown_and_symlink_creation` |
+| chown-family clears set-ID on regular files | same, plus `setid_clears_only_on_real_modification…` |
+| invalidates set-ID after a qualifying mutation | `write_clears_setuid_bit`, `setid_clears_only…` |
+| lchown changes a link, not its target | **`chown_does_not_follow_a_final_symlink` (new)** |
+| fchown changes uid/gid via fd | **`fchown_matches_chown_through_an_open_handle` (new)** |
+| symlinkWithOwner sets uid/gid at creation | already asserted in `chmod_chown_and_symlink_creation` |
+| createFileWithOwner / mkdirWithOwner set uid/gid | the bridge's own parity tests |
+
+**Two genuine gaps, both closed.** `fchown` had **no test caller at all** —
+`grep` found its definition and nothing else, and it is the path `sys_fchown`
+takes for a rootfs file. And nothing pinned what `chown` does to a symlink,
+which matters because a VFS image builder calls `rootfs::chown` directly with
+no syscall layer in front.
+
+**Four assertions are NOT filesystem behaviour and do not port.** "releases the
+lowest reservation once after every pre-publish failure", "keeps a reentrant
+observer from seeing a reserved descriptor", "leaves an armed file unchanged
+when O_TRUNC cannot reserve a descriptor", "accepts `O_RDONLY | O_TRUNC` and
+keeps the descriptor read-only" — these are the **TypeScript implementation's
+own fd table**. The kernel has its own, tested in `syscalls.rs`. Porting them
+would be porting an implementation detail of the thing being deleted.
+
+**So this file can go with `memory-fs.ts` and nothing is lost**, which is the
+first of the 26 that can be said about with a mapping rather than a hope.
+
+**The method that produced this**: read each assertion, find or write its Rust
+equivalent, and be willing to conclude that an assertion describes the
+incumbent rather than the platform. Two of twenty were real gaps. A wholesale
+port would have written eighteen duplicates and four tests of a deleted fd
+table.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the
