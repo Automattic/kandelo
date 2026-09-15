@@ -9432,6 +9432,39 @@ binary and confirm it reads as undeclared.
 Real, characterized enough to act on, too small to be lanes — recorded here so
 they are not lost the way five dead Rust floors were.
 
+- **B39 — the two filesystems disagree about whether `chown` clears
+  set-user-ID, and an explicit re-`chmod` is all that hides it.** Measured
+  2026-09-14 on the same operations:
+
+  ```
+  MemoryFileSystem: chmod 0o4755, chown 1000:1000  ->  0o755   (cleared)
+  SffsImageFs:      write  0o4755, chown 1000:1000  ->  0o4755  (kept)
+  ```
+
+  `MemoryFileSystem.chown` clears unconditionally, which is why
+  `createFileWithOwner` re-applies the mode afterwards. The module's
+  `sm_chown` takes POSIX clearing as an explicit `clear_setid` flag, and the
+  TypeScript bridge does not set it.
+
+  **Found by a surviving mutant, not by reading.** The bridge's new
+  `createFileWithOwner` was written the incumbent's way, re-chmod included, and
+  a trial that swapped `chown` and `chmod` survived — because on that
+  filesystem the order genuinely does not matter. An implementation written
+  directly from the module's behaviour would have been correct and would have
+  taught nothing.
+
+  **Not fixed here, and the reason is a real question rather than caution:**
+  POSIX clears set-user-ID on `chown` when the caller is unprivileged, and an
+  image builder constructing `/usr/bin/sudo` as root:root is not obviously the
+  unprivileged case. Clearing would make every builder re-apply the mode;
+  keeping it makes a guest-visible `chown` diverge from POSIX unless the flag
+  is set at that call site instead. **Which is right depends on where the
+  boundary between building an image and running inside one is drawn**, which
+  is lane S's subject (setuid integrity) and not lane V's.
+
+  Whoever takes it should note the two are already reachable side by side:
+  `host/test/sffs-image-fs.test.ts` drives both on identical operations.
+
 - **B37 — `lamp/wasm32`'s opcache prewarm fails FATALLY and the node reports
   SUCCEEDED.** Found 2026-09-14 in a `./run.sh setup` log while diagnosing an
   unrelated failure. The build emits
