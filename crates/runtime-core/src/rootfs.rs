@@ -5386,6 +5386,120 @@ mod tests {
         assert_eq!(fs.stat_ino(hello).unwrap().mode, S_IFREG | 0o4711);
     }
 
+    /// `chown` here does NOT follow a final symlink, and the syscall layer
+    /// depends on that.
+    ///
+    /// `MemoryFileSystem` answered symlink ownership with two operations --
+    /// `chown` followed the link, `lchown` did not. This filesystem has one,
+    /// and the reason it needs only one is the layering: `sys_chown` resolves
+    /// with `PathResolveOptions::FOLLOW` and hands down an ALREADY-RESOLVED
+    /// path, so following again here would be a second traversal of a link the
+    /// caller already walked. POSIX is satisfied above, not here.
+    ///
+    /// Nothing asserted it, and it is not a detail: a VFS image builder creates
+    /// symlinks in bulk -- the shipped shell image carries thousands -- and it
+    /// calls this function directly, without a syscall layer in front. Whether
+    /// ownership lands on the link or its target is a difference that ships.
+    #[test]
+    fn chown_does_not_follow_a_final_symlink() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+
+        chown(b"/usr/bin/hello", 11, 12, false).unwrap();
+        symlink(b"hello", b"/usr/bin/hello-link", 0, 0).unwrap();
+
+        chown(b"/usr/bin/hello-link", 21, 22, false).unwrap();
+
+        let link = lstat(b"/usr/bin/hello-link").unwrap();
+        let target = lstat(b"/usr/bin/hello").unwrap();
+        // The link moved; the target kept the ownership it was given.
+        assert_eq!(
+            (link.st_uid, link.st_gid, target.st_uid, target.st_gid),
+            (21, 22, 11, 12),
+            "chown followed the symlink instead of owning it: link={:?} target={:?}",
+            (link.st_uid, link.st_gid),
+            (target.st_uid, target.st_gid),
+        );
+    }
+
+    /// `fchown` through an open handle, which had NO test caller at all.
+    ///
+    /// The function was written, exported and never exercised — `grep` for
+    /// `fchown(` in this file found the definition and nothing else. It is the
+    /// path `sys_fchown` takes for a rootfs file, so an image whose ownership
+    /// is set through a descriptor rather than a path was resting on an
+    /// unasserted function.
+    ///
+    /// Asserted against `chown`'s behaviour rather than independently: the two
+    /// differ only in how they name the inode, and a difference in what they DO
+    /// to it would be a bug in whichever one a caller did not use.
+    #[test]
+    fn fchown_matches_chown_through_an_open_handle() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+
+        // O_RDWR == 2.
+        let handle = open(b"/usr/bin/hello", 2, 0, 0, 0).expect("open");
+        fchown(handle, 31, 32, false).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (31, 32), "the handle names the same inode as the path");
+
+        // -1 leaves a field alone, exactly as the path form does.
+        fchown(handle, u32::MAX, 41, false).unwrap();
+        let st = lstat(b"/usr/bin/hello").unwrap();
+        assert_eq!((st.st_uid, st.st_gid), (31, 41), "u32::MAX is the unchanged sentinel");
+
+        // And it clears set-user-ID on request, so a descriptor is not a way
+        // around the rule a path is held to.
+        chmod(b"/usr/bin/hello", 0o4755).unwrap();
+        fchown(handle, 1, 1, true).unwrap();
+        assert_eq!(
+            lstat(b"/usr/bin/hello").unwrap().st_mode & 0o7777,
+            0o0755,
+            "set-user-ID survives an fchown that asked to clear it",
+        );
+        release_handle(handle);
+    }
+
+    /// `statfs` reports `ST_NOSUID` when the `/` mount is nosuid, and nothing
+    /// asserted it.
+    ///
+    /// `is_nosuid()` has exactly one reader in the whole tree — the `f_flags`
+    /// field built here — so an unasserted flag means the setter, the getter
+    /// and the field they exist for were all covered by nothing. A mount that
+    /// reports itself as permitting set-user-ID when it does not is the kind
+    /// of answer a program uses to decide whether to trust a binary.
+    ///
+    /// This is the property the four browser tests blocked behind `mount(2)`
+    /// cover for a HOST-side filesystem. Asserting it here means the kernel's
+    /// own answer does not depend on those tests surviving.
+    #[test]
+    fn statfs_reports_nosuid_exactly_when_the_mount_is_nosuid() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let previous = is_nosuid();
+
+        set_nosuid(false);
+        let permissive = statfs(b"/").expect("statfs");
+        assert_eq!(
+            permissive.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID,
+            0,
+            "a permissive mount must not claim ST_NOSUID",
+        );
+
+        set_nosuid(true);
+        let restricted = statfs(b"/").expect("statfs");
+        assert_eq!(
+            restricted.f_flags & wasm_posix_shared::statfs_flags::ST_NOSUID,
+            wasm_posix_shared::statfs_flags::ST_NOSUID,
+            "a nosuid mount must say so: a program asks this before trusting a setuid binary",
+        );
+
+        // The setter reports what it replaced, which is how a caller restores
+        // the previous state rather than guessing at it.
+        assert!(set_nosuid(previous), "set_nosuid returns the prior value");
+    }
+
     #[test]
     fn chmod_chown_and_symlink_creation() {
         let _g = TestGuard::acquire();

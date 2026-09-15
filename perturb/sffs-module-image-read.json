@@ -1,6 +1,6 @@
 {
  "file": "crates/sffs-module/src/lib.rs",
- "verify": "scripts/dev-shell.sh bash crates/sffs-module/build-wasm.sh >/dev/null 2>&1 && cd host && npx vitest run test/sffs-image-fs.test.ts >/dev/null 2>&1",
+ "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "trials": [
   {
    "name": "a read past the end of the image is an error instead of zero",
@@ -23,5 +23,6 @@
    "find": "    if out_ptr == 0 || offset < 0 {",
    "replace": "    if out_ptr == 0 {"
   }
- ]
+ ],
+ "_comment": "The image-window reader. Verified by the Rust test rather than by rebuilding the wasm and running the TypeScript bridge: the trials mutate Rust, the Rust test asserts the same three properties, and a rebuild per trial cost ten minutes a run. The bridge's parity test still runs in the ordinary suite; it is not this spec's verifier."
 }

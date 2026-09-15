@@ -9,9 +9,16 @@ const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const sffsImageFsModulePath = resolve(
   repoRoot,
-  "host/src/vfs/memory-fs.ts",
+  "images/vfs/lib/sffs-image-fs.ts",
+);
+const sffsModuleWasmPath = resolve(
+  repoRoot,
+  "local-binaries/sffs_module32.wasm",
 );
 const forkExecWasmPath = resolve(
   repoRoot,
@@ -45,15 +52,16 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
     async ({
       churnIterations,
       browserKernelUrl,
-      memoryFsUrl,
+      sffsImageFsUrl,
+      sffsModuleBytes,
       forkExecBytes,
       execChildBytes,
     }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
+      const { SffsImageFs } = await import(
+        /* @vite-ignore */ sffsImageFsUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -80,9 +88,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       });
 
       try {
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(2 * 1024 * 1024),
-        );
+        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
         imageOwner.mkdir("/bin", 0o755);
         imageOwner.createFileWithOwner(
           "/bin/exec-child",
@@ -113,7 +119,8 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
         `/@fs/${browserKernelModulePath}`,
         baseURL,
       ).href,
-      memoryFsUrl: new URL(`/@fs/${memoryFsModulePath}`, baseURL).href,
+      sffsImageFsUrl: new URL(`/@fs/${sffsImageFsModulePath}`, baseURL).href,
+      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
       forkExecBytes: Array.from(readFileSync(forkExecWasmPath)),
       execChildBytes: Array.from(readFileSync(execChildWasmPath)),
     },

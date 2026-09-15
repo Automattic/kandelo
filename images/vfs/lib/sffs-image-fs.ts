@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { maybeDecompressImage } from "../../../host/src/vfs/vfs-image-transport";
 import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
@@ -1351,7 +1349,34 @@ const STAT_FIELD = {
   ARCHIVE_ID: 7,
 } as const;
 
+/**
+ * The module bytes a Node caller gets when it passes none.
+ *
+ * Reached through `process.getBuiltinModule` rather than a top-level
+ * `import ... from "node:fs"`, and that is not a style choice. This file is
+ * imported INSIDE THE BROWSER — the demo specs load it in the page, and the
+ * worker entries will — so a static Node-builtin import puts one in the
+ * browser's module graph. That exact defect took 103 of 184 fast specs down
+ * earlier in this campaign, and
+ * `host/test/browser-worker-node-globals.test.ts` exists to catch it.
+ *
+ * `getBuiltinModule` is synchronous, needs no import, and takes a runtime
+ * string a bundler cannot follow. A browser reaching here gets a clear
+ * instruction instead of a missing-module crash three frames deeper.
+ */
 function defaultModuleBytes(): Uint8Array {
-  const root = join(import.meta.dirname, "..", "..", "..");
-  return new Uint8Array(readFileSync(join(root, "local-binaries", "sffs_module32.wasm")));
+  const runtime = (globalThis as {
+    process?: { getBuiltinModule?: (id: string) => unknown };
+  }).process;
+  const nodeFs = runtime?.getBuiltinModule?.("node:" + "fs") as
+    | { readFileSync(path: string): Uint8Array }
+    | undefined;
+  if (nodeFs === undefined) {
+    throw new Error(
+      "SffsImageFs.create() cannot read sffs_module32.wasm outside Node. "
+        + "Pass the module bytes explicitly: SffsImageFs.create(moduleBytes).",
+    );
+  }
+  const root = `${import.meta.dirname}/../../..`;
+  return new Uint8Array(nodeFs.readFileSync(`${root}/local-binaries/sffs_module32.wasm`));
 }

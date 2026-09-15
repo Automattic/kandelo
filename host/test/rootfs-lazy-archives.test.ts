@@ -5,10 +5,35 @@ import {
   HOST_DEFERRED_KIND_ARCHIVE,
   HOST_DEFERRED_KIND_FILE,
 } from "../src/vfs/rootfs-lazy-archives";
+import { reduceLazyArchiveGroups } from "../src/vfs/kernel-lazy-section";
 import type {
   LazyFileEntry,
   SerializedLazyArchiveEntry,
 } from "../src/vfs/memory-fs";
+
+/**
+ * The lazy manifest `buildRootfsLazyWiring` used to return and nothing read.
+ *
+ * It is gone from production: the kernel parses the image's own KLZY section,
+ * so the host builds only a fetch table. The member reduction it exercised is
+ * still real — `encodeKernelLazySection` writes those members — so these
+ * assertions now go straight at `reduceLazyArchiveGroups`, which is where that
+ * behaviour lives, instead of through a wiring call that no longer reports it.
+ */
+function lazyManifest(entries: SerializedLazyArchiveEntry[]) {
+  const files = new Map<string, { archiveId: number; sourcePath: string }>();
+  const archives: { archiveId: number; size: number }[] = [];
+  for (const group of reduceLazyArchiveGroups(entries)) {
+    archives.push({ archiveId: group.archiveId, size: group.archiveBytes });
+    for (const member of group.members) {
+      files.set(member.vfsPath, {
+        archiveId: group.archiveId,
+        sourcePath: member.sourcePath,
+      });
+    }
+  }
+  return { files, archives };
+}
 
 /** Let an in-flight async archive fetch (and its chained `.then`s) settle
  * before making assertions. A macrotask tick is used rather than a fixed
@@ -155,8 +180,7 @@ describe("buildRootfsLazyWiring", () => {
   }
 
   it("(a) includes only the live file member with correct mapping", () => {
-    const { fetcher } = makeFetcher();
-    const { lazyInput } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const lazyInput = lazyManifest(buildEntries());
 
     expect(lazyInput.files.size).toBe(1);
     expect(lazyInput.files.get("/a/f")).toEqual({
@@ -170,15 +194,13 @@ describe("buildRootfsLazyWiring", () => {
   });
 
   it("(b) archives table has one entry with the minted id and raw size", () => {
-    const { fetcher } = makeFetcher();
-    const { lazyInput } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const lazyInput = lazyManifest(buildEntries());
 
     expect(lazyInput.archives).toEqual([{ archiveId: 1, size: ARCHIVE_SIZE }]);
   });
 
   it("(g) a group missing content.bytes and integrity.bytes is skipped, and the surviving group still gets a stable id", () => {
-    const { fetcher } = makeFetcher();
-    const { lazyInput } = buildRootfsLazyWiring(buildEntries(), fetcher);
+    const lazyInput = lazyManifest(buildEntries());
 
     expect(lazyInput.files.has("/b/should-not-appear")).toBe(false);
     // Only one archive-table entry total (the skipped group contributed none).
@@ -274,7 +296,7 @@ describe("buildRootfsLazyWiring", () => {
     });
 
     const wiring = buildRootfsLazyWiring([group], fetcher);
-    const { lazyInput } = wiring;
+    const lazyInput = lazyManifest(buildEntries());
     const archiveProvider = archiveReaderOf(wiring);
     expect(lazyInput.archives).toEqual([{ archiveId: 1, size: ARCHIVE_SIZE }]);
 

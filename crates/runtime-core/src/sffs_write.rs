@@ -2189,6 +2189,88 @@ mod tests {
         );
     }
 
+    /// Running out of BLOCKS, which is a different exhaustion from running out
+    /// of inodes and was not covered.
+    ///
+    /// The test below is named for a full filesystem and fills it with 4096
+    /// tiny files, which exhausts the INODE table first -- measured by handing
+    /// `block_alloc` a mutation that returns block zero on its out-of-space
+    /// path and watching every assertion still pass. The block allocator's
+    /// ENOSPC was reachable only through code no test ran.
+    ///
+    /// One file larger than the filesystem reaches it directly.
+    #[test]
+    fn exhausting_blocks_reports_enospc_and_leaves_a_mountable_image() {
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"small", 0o644, Content::Bytes(b"kept"))
+            .expect("a small file fits");
+
+        // Larger than the whole filesystem: this cannot be satisfied by any
+        // number of blocks the configuration allows.
+        let huge = alloc::vec![9u8; 256 * 1024];
+        assert_eq!(
+            w.create_file(root, b"huge", 0o644, Content::Bytes(&huge)).err(),
+            Some(Errno::ENOSPC),
+            "a file larger than the filesystem must be refused, not truncated",
+        );
+
+        // And the refusal leaves what was already written readable.
+        let image = w.finish().expect("finish after a refused write");
+        let content = NoContent;
+        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+            .expect("a refused write leaves a mountable image");
+        let small = fs.resolve(b"/small", true).expect("the earlier file survives");
+        let mut buf = [0u8; 8];
+        let n = fs.read_at(small, 0, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"kept", "a survivor's bytes are its own");
+    }
+
+    /// A producer that DECLARES it describes its deferred files must emit the
+    /// section even with none to describe.
+    ///
+    /// The distinction is between "this image says it has no deferred files"
+    /// and "this image says nothing", and only the first is safe for a loader
+    /// to trust. `rootfs::build_export_image` declares it; a writer driven by
+    /// a host that keeps its lazy manifest in JSON beside the image must not,
+    /// because for that image no section IS the truth.
+    ///
+    /// Nothing covered it: deleting `!self.declares_deferred` from the emit
+    /// guard left the whole suite green, so a declaring producer could fall
+    /// silent and no test would notice.
+    #[test]
+    fn a_declaring_producer_emits_the_section_even_with_nothing_to_declare() {
+        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let root = w.root();
+        w.create_file(root, b"plain", 0o644, Content::Bytes(b"no deferred files here"))
+            .expect("create");
+        w.declare_deferred_section();
+
+        let image = w.finish().expect("finish");
+        let content = NoContent;
+        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+            .expect("mount");
+        assert_ne!(
+            fs.geometry().deferred_inode,
+            0,
+            "a declaring producer emitted NO deferred section, which a loader \
+             cannot tell from an image that never described its deferred files",
+        );
+
+        // And a producer that does not declare stays silent, so the assertion
+        // above is about the declaration rather than about a section this
+        // writer always emits.
+        let mut quiet = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let quiet_root = quiet.root();
+        quiet
+            .create_file(quiet_root, b"plain", 0o644, Content::Bytes(b"same tree"))
+            .expect("create");
+        let quiet_image = quiet.finish().expect("finish");
+        let quiet_fs = Sffs::mount(SffsImageSource { image: &quiet_image, content: &content })
+            .expect("mount");
+        assert_eq!(quiet_fs.geometry().deferred_inode, 0);
+    }
+
     #[test]
     fn a_full_filesystem_reports_enospc_rather_than_corrupting() {
         // Truthful failure: a writer that ran out of blocks must say so.
@@ -2203,6 +2285,24 @@ mod tests {
             }
         }
         assert_eq!(last.err(), Some(Errno::ENOSPC));
+
+        // "rather than corrupting" is the half of this test's own name that
+        // nothing asserted. A writer that runs out of blocks mid-tree must
+        // leave what it already wrote intact and MOUNTABLE -- an image that
+        // reports ENOSPC and then cannot be read is worse than one that
+        // refuses at the start, because the failure moves to whoever loads it.
+        let image = w.finish().expect("a full filesystem still finishes");
+        let content = NoContent;
+        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+            .expect("a full filesystem is still a mountable one");
+        let root = fs.stat_ino(ROOT_INO).expect("root survives the failed write");
+        assert_eq!(root.mode & 0xf000, 0x4000);
+
+        // The first file written is still there, with its exact bytes.
+        let first = fs.resolve(b"/f0", true).expect("the first file survives");
+        let mut buf = [0u8; 8];
+        let n = fs.read_at(first, 0, &mut buf).expect("read the first file");
+        assert_eq!(&buf[..n], &[7u8; 8], "a survivor's bytes are its own");
     }
 
     #[test]

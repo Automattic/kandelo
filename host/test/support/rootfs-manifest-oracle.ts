@@ -50,11 +50,29 @@ import type { FileSystemBackend } from "../../src/vfs/types";
  * and nothing else does.
  */
 export type ToBackendPath = (absolutePath: string) => string;
-import type {
-  RootfsLazyFile,
-  RootfsLazyInput,
-} from "../../src/vfs/rootfs-lazy-archives";
 
+/**
+ * The lazy linkage this oracle writes into an RTFS manifest.
+ *
+ * These were production exports until the host stopped building a lazy
+ * manifest at all: `buildRootfsLazyWiring` returned one and nothing ever read
+ * it, because the kernel parses the image's own KLZY section. They survive
+ * here because this oracle still emits the RTFS format for comparison.
+ */
+export interface RootfsLazyFile {
+  readonly archiveId: number;
+  readonly sourcePath: string;
+}
+
+export interface RootfsLazyArchive {
+  readonly archiveId: number;
+  readonly size: number;
+}
+
+export interface RootfsLazyInput {
+  readonly files: ReadonlyMap<string, RootfsLazyFile>;
+  readonly archives: readonly RootfsLazyArchive[];
+}
 export const RTFS_MAGIC = 0x5346_5452; // "RTFS" little-endian
 export const RTFS_VERSION = 3;
 

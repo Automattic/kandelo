@@ -92,6 +92,41 @@
    "scope_end": "\n}\n",
    "find": "                            InodeKind::LazyMember { size, .. } => *size > 0,",
    "replace": "                            InodeKind::LazyMember { .. } => return Err(Errno::ENOSYS),"
+  },
+  {
+   "name": "chown skips a symlink, leaving image-builder ownership silently unapplied",
+   "scope": "pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        if uid != u32::MAX {",
+   "replace": "        if uid != u32::MAX && !matches!(inode.kind, InodeKind::Symlink(_)) {"
+  },
+  {
+   "name": "fchown ignores the unchanged sentinel and writes u32::MAX as an owner",
+   "scope": "pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        if uid != u32::MAX {\n            inode.uid = uid;\n        }",
+   "replace": "        inode.uid = uid;"
+  },
+  {
+   "name": "fchown leaves set-user-ID alone, so a descriptor evades the path rule",
+   "scope": "pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {",
+   "scope_end": "\n}\n",
+   "find": "            inode.mode &= !S_ISUID;",
+   "replace": "            inode.mode |= 0;"
+  },
+  {
+   "name": "statfs reports a permissive mount as nosuid",
+   "scope": "pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        f_flags: if is_nosuid() {",
+   "replace": "        f_flags: if true {"
+  },
+  {
+   "name": "a nosuid mount reports itself as permitting set-user-ID",
+   "scope": "pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {",
+   "scope_end": "\n}\n",
+   "find": "        f_flags: if is_nosuid() {",
+   "replace": "        f_flags: if false {"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"

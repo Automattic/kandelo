@@ -1,0 +1,14 @@
+{
+ "_comment": "The demo-login policy predicate. Its own spec because a spec mutates ONE file. NOTE ON SHAPE: the predicate is a UNION of two questions that are REDUNDANT against MemoryFileSystem -- a lazily registered file answers yes to both -- so a trial disabling either half alone cannot fail, and two such trials survived until that was measured rather than assumed. The union exists for the module bridge, which has only the first half. So the trial that means anything removes the WHOLE union.",
+ "file": "images/vfs/lib/demo-login.ts",
+ "verify": "cd host && npx vitest run test/demo-login-image.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the predicate cannot tell a deferred login program from an eager one",
+   "scope": "function isDeferredEitherWay(",
+   "scope_end": "\n}\n",
+   "find": "  if (fs.isPathDeferred(path)) return true;",
+   "replace": "  if (false) return true;\n  return false;"
+  }
+ ]
+}

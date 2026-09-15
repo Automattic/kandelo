@@ -1,63 +1,64 @@
 {
-  "file": "crates/runtime-core/src/sffs_write.rs",
-  "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" sffs_write >/dev/null 2>&1",
-  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
-  "trials": [
-    {
-      "name": "the writer accepts a half-specified archive linkage",
-      "scope": "pub fn create_deferred_file(",
-      "scope_end": "\n    }\n",
-      "find": "        if (archive_id == 0) != source_path.is_empty() {\n            return Err(Errno::EINVAL);\n        }",
-      "replace": ""
-    },
-    {
-      "name": "the writer drops the member-path cap",
-      "scope": "pub fn create_deferred_file(",
-      "scope_end": "\n    }\n",
-      "find": "        if source_path.len() > crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
-      "replace": ""
-    },
-    {
-      "name": "the record forgets which archive backs the file",
-      "scope": "pub fn create_deferred_file(",
-      "scope_end": "\n    }\n",
-      "find": "            archive_id,\n            source_path: source_path.to_vec(),",
-      "replace": "            archive_id: 0,\n            source_path: Vec::new(),"
-    },
-    {
-      "name": "one archive may be declared twice with different lengths",
-      "scope": "pub fn declare_lazy_archive",
-      "scope_end": "\n    }\n",
-      "find": "        if self\n            .deferred_archives\n            .iter()\n            .any(|a| a.archive_id == archive_id)\n        {\n            return Err(Errno::EINVAL);\n        }",
-      "replace": ""
-    },
-    {
-      "name": "archive id zero, the no-archive sentinel, may be declared",
-      "scope": "pub fn declare_lazy_archive",
-      "scope_end": "\n    }\n",
-      "find": "        if archive_id == 0 {\n            return Err(Errno::EINVAL);\n        }",
-      "replace": ""
-    },
-    {
-      "name": "the emitted section drops the archive table",
-      "scope": "fn emit_deferred_section",
-      "scope_end": "\n    }\n",
-      "find": "        let mut archives = core::mem::take(&mut self.deferred_archives);\n        archives.sort_by_key(|archive| archive.archive_id);\n        let section = crate::sffs_deferred::encode(&archives, &records)?;",
-      "replace": "        self.deferred_archives.clear();\n        let section = crate::sffs_deferred::encode(&[], &records)?;"
-    },
-    {
-      "name": "an image that declares its deferred files stays silent when it has none",
-      "scope": "    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {",
-      "scope_end": "\n        let mut records",
-      "find": "        if self.deferred.is_empty() && !self.declares_deferred {",
-      "replace": "        if self.deferred.is_empty() {"
-    },
-    {
-      "name": "every writer declares the section, byte-identity with the TypeScript writer be damned",
-      "scope": "    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {",
-      "scope_end": "\n        let mut records",
-      "find": "        if self.deferred.is_empty() && !self.declares_deferred {\n            return Ok(0);\n        }",
-      "replace": "        if false {\n            return Ok(0);\n        }"
-    }
-  ]
+ "file": "crates/runtime-core/src/sffs_write.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" sffs_write >/dev/null 2>&1",
+ "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the writer accepts a half-specified archive linkage",
+   "scope": "pub fn create_deferred_file(",
+   "scope_end": "\n    }\n",
+   "find": "        if (archive_id == 0) != source_path.is_empty() {\n            return Err(Errno::EINVAL);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "the writer drops the member-path cap",
+   "scope": "pub fn create_deferred_file(",
+   "scope_end": "\n    }\n",
+   "find": "        if source_path.len() > crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "the record forgets which archive backs the file",
+   "scope": "pub fn create_deferred_file(",
+   "scope_end": "\n    }\n",
+   "find": "            archive_id,\n            source_path: source_path.to_vec(),",
+   "replace": "            archive_id: 0,\n            source_path: Vec::new(),"
+  },
+  {
+   "name": "one archive may be declared twice with different lengths",
+   "scope": "pub fn declare_lazy_archive",
+   "scope_end": "\n    }\n",
+   "find": "        if self\n            .deferred_archives\n            .iter()\n            .any(|a| a.archive_id == archive_id)\n        {\n            return Err(Errno::EINVAL);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "archive id zero, the no-archive sentinel, may be declared",
+   "scope": "pub fn declare_lazy_archive",
+   "scope_end": "\n    }\n",
+   "find": "        if archive_id == 0 {\n            return Err(Errno::EINVAL);\n        }",
+   "replace": ""
+  },
+  {
+   "name": "the emitted section drops the archive table",
+   "scope": "fn emit_deferred_section",
+   "scope_end": "\n    }\n",
+   "find": "        let mut archives = core::mem::take(&mut self.deferred_archives);\n        archives.sort_by_key(|archive| archive.archive_id);\n        let section = crate::sffs_deferred::encode(&archives, &records)?;",
+   "replace": "        self.deferred_archives.clear();\n        let section = crate::sffs_deferred::encode(&[], &records)?;"
+  },
+  {
+   "name": "an image that declares its deferred files stays silent when it has none",
+   "scope": "    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {",
+   "scope_end": "\n        let mut records",
+   "find": "        if self.deferred.is_empty() && !self.declares_deferred {",
+   "replace": "        if self.deferred.is_empty() {"
+  },
+  {
+   "name": "every writer declares the section, byte-identity with the TypeScript writer be damned",
+   "scope": "    fn emit_deferred_section(&mut self) -> Result<u32, Errno> {",
+   "scope_end": "\n        let mut records",
+   "find": "        if self.deferred.is_empty() && !self.declares_deferred {\n            return Ok(0);\n        }",
+   "replace": "        if false {\n            return Ok(0);\n        }"
+  }
+ ],
+ "_comment": "NOT PRESENT, deliberately: a trial making block_alloc hand back block zero on its out-of-space path. It survives every test, because create_file refuses an oversized write on a size pre-check before block_alloc is reached -- so that ok_or(ENOSPC) is defensive depth rather than the path taken, and a trial against it cannot fail. Removed rather than left surviving: a trial that cannot fail is a green line proving nothing."
 }

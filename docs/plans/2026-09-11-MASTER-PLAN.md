@@ -3075,6 +3075,69 @@ functions whose absence of coverage is invisible to every other signal. A
 passing suite says nothing about a function nobody calls, and a line-coverage
 number would have counted `is_nosuid` as covered — it RUNS, on every `statfs`.
 What it never did was matter to an assertion.
+### HANDOFF — `host_fetch_deferred` SHOULD CARRY THE DESCRIPTOR
+
+**Decided with the maintainer 2026-09-15**, from their question: *"Why does the
+host need to ask about deferred descriptors? Isn't this just a kernel concern?
+The host can just fetch the bytes addressed by deferred descriptors when the
+kernel asks."*
+
+**That is right, and it is not what happens today.** The import is
+
+```
+host_fetch_deferred(kind, idLo, idHi, bufPtr, bufLen, offsetLo, offsetHi) -> i32
+```
+
+The kernel says *"bytes for archive 3, at offset N, into this buffer"* and
+never says where archive 3 lives. **The host must already know** — which is the
+entire reason it builds a lazy metadata table at boot, and the reason step 5
+breaks when `memory-fs.ts` stops providing one.
+
+**The change**: two more parameters, `descPtr` and `descLen`, carrying the
+opaque descriptor the kernel ALREADY holds (`rootfs::archive_payloads`,
+`rootfs::archive_payload` — both exist and are called by `sffs-module` today).
+
+**What it does NOT change is the courier contract.** The kernel still never
+parses a URL; it hands over bytes it already carries. The host still decides
+whether the URL may be fetched and validates the digest, exactly as
+`sffs_deferred` requires.
+
+**What it deletes, host-side**: the lazy metadata table and everything built to
+produce it — `createBaseImageFromContainer`'s metadata half, its module-sourced
+fallback and archive reconstruction, the seal-envelope unwrap, and the
+`exportLazyEntries` / `exportLazyArchiveEntries` pair on
+`RootfsOverlayBaseImage`. **The overlay would need nothing from a filesystem at
+all**, which is the end state this lane has been approaching from the other
+side.
+
+### WHY IT IS NOT LANE V'S TO MAKE
+
+A host-import signature is ABI. It needs an `ABI_VERSION` bump and a
+regenerated `abi/snapshot.json`, both of which lane V is explicitly forbidden.
+**Lanes F and L own the kernel-host import surface.**
+
+**Checked and rejected: carrying the descriptor without a signature change.**
+The host can read kernel memory only at a pointer it was handed, so the pointer
+must be a parameter. A scratch region does not help — `host_fetch_deferred` is
+a direct import call, not a syscall through the channel.
+
+### THE ALTERNATIVE, IF THE ABI CHANGE IS DECLINED
+
+An `SffsImageFs` in each worker entry reading `sm_lazy_entries`. **Built and
+tested tonight** — the bridge is browser-safe, the module answers with
+descriptors, and `createBaseImageFromContainer` reconstructs archives from
+them. It works. It also puts **two filesystems in one worker**: the kernel wasm
+that already parsed the image, and a second module re-reading its metadata.
+
+### MEASUREMENTS THE NEXT PERSON DOES NOT HAVE TO REDO
+
+* the kernel already asks by `kind` + `id` and takes `EAGAIN` while a fetch is
+  in flight — the retry loop exists and needs nothing;
+* the kernel already holds every descriptor, with accessors;
+* a `MemoryFileSystem`-built image records the URL in the host-side JSON and
+  leaves the KLZY descriptor EMPTY; a module-built image does the opposite.
+  **Neither writes both**, which is why the table cannot simply be read from
+  the image after the cutover.
 ### STEP 1'S VERIFICATION IS BLOCKED ON A BUILD FAILURE THAT IS NOT THIS LANE'S
 
 **2026-09-14.** The browser suite cannot run: `./run.sh setup` exits 1, so the

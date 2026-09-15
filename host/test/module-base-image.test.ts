@@ -325,15 +325,20 @@ describe("a module-backed base image", () => {
     expect(archive.entries[0].sourcePath).toBe("bin/vim");
     expect(archive.entries[0].vfsPath).toBe("/opt/bin/vim");
 
-    // And the whole point: the consumer's reducer accepts it and mints a group
-    // with the transports and members the deferred provider will serve from.
-    const { buildRootfsLazyWiring } = await import("../src/vfs/rootfs-lazy-archives");
-    const { lazyInput } = buildRootfsLazyWiring(
+    // And the whole point: the consumer accepts it. The wiring no longer
+    // reports a manifest -- the kernel parses its own KLZY section -- so the
+    // observable result is that the deferred provider recognises the archive
+    // and starts fetching it rather than refusing an unknown id.
+    const { buildRootfsLazyWiring, HOST_DEFERRED_KIND_ARCHIVE } =
+      await import("../src/vfs/rootfs-lazy-archives");
+    const { deferredProvider } = buildRootfsLazyWiring(
       baseImage.exportLazyArchiveEntries(),
-      async () => new Uint8Array(),
+      async () => new Uint8Array(4242),
     );
-    expect(lazyInput.archives.length).toBe(1);
-    expect(lazyInput.archives[0].size).toBe(4242);
+    // -11 is EAGAIN: the id was known and a fetch began. -5 would mean the
+    // reconstruction produced an archive the provider never minted.
+    expect(deferredProvider(HOST_DEFERRED_KIND_ARCHIVE, 1n, 0n, new Uint8Array(8)))
+      .toBe(-11);
   });
 
   it("keeps each archive's members its own, and standalone files out of both", async () => {
