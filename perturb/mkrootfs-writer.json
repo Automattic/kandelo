@@ -34,15 +34,22 @@
       "name": "a lazy file loses the address that says where its bytes are",
       "scope": "  for (const f of files) {",
       "scope_end": "\n  }\n",
-      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);",
-      "replace": "      mfs.registerLazyFile(f.path, \"\", f.lazySize ?? 0, f.mode);"
+      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);",
+      "replace": "      mfs.registerLazyFile(f.path, \"\", f.lazySize ?? 0, f.mode, f.lazyDigest);"
     },
     {
       "name": "a lazy file reports the stub's length instead of its real one",
       "scope": "  for (const f of files) {",
       "scope_end": "\n  }\n",
-      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);",
-      "replace": "      mfs.registerLazyFile(f.path, f.lazyUrl, 0, f.mode);"
+      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);",
+      "replace": "      mfs.registerLazyFile(f.path, f.lazyUrl, 0, f.mode, f.lazyDigest);"
+    },
+    {
+      "name": "a lazy file is registered without the digest the manifest carried",
+      "scope": "  for (const f of files) {",
+      "scope_end": "\n  }\n",
+      "find": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode, f.lazyDigest);",
+      "replace": "      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);"
     }
   ],
   "retired": [
