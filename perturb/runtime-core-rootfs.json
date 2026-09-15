@@ -127,6 +127,13 @@
    "scope_end": "\n}\n",
    "find": "        f_flags: if is_nosuid() {",
    "replace": "        f_flags: if false {"
+  },
+  {
+   "name": "an image declaring archives it does not carry is loaded anyway",
+   "scope": "    let declared_flags = crate::sffs::container_flags(&source)?;",
+   "scope_end": "\n    }\n",
+   "find": "    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {",
+   "replace": "    if false {"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
