@@ -9,7 +9,8 @@ the one thing that reopened it — `crates/host-native` — is repaired here for
 the damage this lane did and handed to **Lane N (native fork reconstruction)**
 for the subsystem underneath, by maintainer decision. What remains for the
 maintainer is listed at the end: three standing provisional ceiling raises, a
-two-file budget-ledger conflict with the parent, and two target restatements.
+two-file budget-ledger conflict with the parent, two target restatements, and
+one provisioning defect that keeps this worktree's suite red.
 
 ## What the lane was for
 
@@ -292,6 +293,53 @@ that found all of this.
    reachable only by diluting; ~8 is realistic once the follow-up lands.
 4. **`workerMainForkTypeScript`'s target of 1200**, labelled a proposal in the
    budget because nobody has built the thing that would reveal the real floor.
+5. **The lane's cache root defeats the SDK's pkg-config allowlist, and that is
+   why this worktree's suite cannot go green.** Needs a decision because both
+   remedies are someone else's call.
+
+   The symptom is six package tests -- `bzip2`, `gzip`, `unzip`, `xz`, `zip`,
+   `zstd` -- failing at IMPORT time with "Package artifact closure is
+   incomplete". The source-only tier's projection authority is absent, and
+   `local-build` retracts that authority whenever a build does not complete
+   (`package_projection_is_eligible` requires every selected package node to
+   have succeeded). So the six are collateral: nothing is wrong with them.
+
+   The build does not complete because `php/wasm32` fails its `configure` on
+   `No package 'icu-uc' found`, and the chain to the cause is four layers long:
+
+   - The icu artifact is COMPLETE. All three `.pc` files are present at
+     `$ICU_PREFIX/lib/pkgconfig`, and `build-php.sh` puts that directory on
+     `PKG_CONFIG_PATH` itself.
+   - `sdk/kandelo/bin/wasm32posix-pkg-config` then FILTERS `PKG_CONFIG_PATH`,
+     keeping only entries matching `/usr/wasm32posix/*`, `*/kandelo/*`, or the
+     sysroot's own pkgconfig dirs. The filter is deliberate and load-bearing:
+     `sdk/test/pkg-config.test.ts` shows it exists to drop host Nix-store `.pc`
+     paths, which otherwise make libcurl link host openssl.
+   - The lane's prescribed cache root is
+     `/Users/brandon/.cache/kandelo-lane-f/source-only`. Its path segment is
+     `kandelo-lane-f`, not `kandelo`, so `*/kandelo/*` does not match and every
+     dependency's pkgconfig directory is dropped. `PKG_CONFIG_PATH` arrives at
+     `configure` EMPTY. Verified by running the wrapper's own `case` statement
+     against the real icu path: filtered; against
+     `/Users/brandon/.cache/kandelo/...`: kept.
+   - It bites exactly one package. Deps that live in the sysroot resolve
+     through `PKG_CONFIG_LIBDIR` and are unaffected, which is why 41 packages
+     built and `sdl2-mixer-playwave` passed. `php` is the one that hard-requires
+     a `.pc` from the cache root. `cpython` and `ruby` also set
+     `PKG_CONFIG_PATH` and never got to run, so they are likely the same.
+
+   Two remedies, and the choice is a judgment about the filter's threat model:
+
+   - **Move the cache root** to `/Users/brandon/.cache/kandelo/lane-f/...`. No
+     code change; satisfies the existing namespace rule as written. But the
+     lane cache roots are a standing instruction, so changing them is yours.
+   - **Widen the allowlist.** `*/kandelo*/*` would admit `kandelo-lane-f` --
+     and also `/tmp/kandelo-evil/`. Whether that is acceptable is a question
+     about what the filter is defending against, which `pkg-config.test.ts`
+     answers only for the Nix-store case.
+
+   Recorded rather than fixed: it is outside this lane, the filter is
+   security-shaped, and its tests encode intent I should not overrule.
 
 ## The follow-up
 
