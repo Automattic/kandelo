@@ -3153,7 +3153,35 @@ packaging decision and it is the maintainer's, not this lane's.
 
 Four stages: the Rust side (`5e9fabc24`), the TypeScript bridge (`28d6e305d`),
 the crate and artifact (`5dbafed68`), and the four magic bytes (`db6bb4e51`).
-`SFFS` is gone from the format, the code and the `statfs(2)` `f_type`.
+`SFFS` is gone from the format and from the `statfs(2)` `f_type`.
+
+**"COMPLETE" WAS OVERSTATED, and measuring it is what found that.** This
+section said `SFFS` was gone from "the code" too, and it is not. Counted
+2026-09-16, excluding comments and fixture bytes, **67 identifier occurrences
+survive** across eight names:
+
+| name | occurrences | where |
+|---|---|---|
+| `SffsImageSource` | 19 | `kandelo_image_write.rs`, the block source a writer's output is read back through |
+| `SffsImage` | 15 | same file — the finished image a writer `finish()`es into |
+| `parent_sffs` | 11 | `rootfs.rs` export walk |
+| `sffs_ino` | 8 | `rootfs.rs` export walk |
+| `SffsStat`, `SffsDirent` | 7 | `kandelo_image_fs.rs` return types |
+| `root_sffs` | 4 | `rootfs.rs` |
+| `SFFS_MODULE_CLOSURE_CRATES` | 3 | `crates/kandelo-image-module/build-wasm.sh` |
+
+Plus three assertion messages that say the filesystem "reports itself as SFFS"
+while asserting `KANDELO_IMAGE_SUPER_MAGIC`, which is now a message that
+contradicts its own check.
+
+**What must NOT be renamed, for the reason this lane already learned once:**
+`b"hello sffs\n"` is fixture CONTENT, six occurrences, and an over-broad
+`\bsffs\b` rewrite of it was caught earlier only by a byte-for-byte writer
+comparison. The `sffs-small.sffs.deflate` fixture names are the same case.
+
+The honest status is **the format is renamed and the code is two thirds
+renamed.** The claim is corrected here rather than in a footnote because a plan
+that says "complete" is what a later reader trusts instead of counting.
 
 **The byte order, which `SFFS` had been hiding.** The magic is read as a
 little-endian `u32`, so the LOW byte is the first character. `SFFS` is a
@@ -3182,7 +3210,9 @@ rootfs images carry `KIFS` and zero `SFFS`. `./run.sh setup` reports
 
 Three stages, each green and pushed: the Rust side (`5e9fabc24`), the
 TypeScript bridge (`28d6e305d`), and the crate, artifact and last stragglers
-(`5dbafed68`). **Every name a human reads now says what the thing is.**
+(`5dbafed68`). **Most names a human reads now say what the thing is** — the
+sixty-seven counted above are the remainder, and the sentence that stood here
+claimed all of them.
 `KandeloImageFs`, `KandeloImageWriter`, `KandeloImageError`,
 `kandelo_image_fs.rs`, `kandelo-image-module`, `kandelo_image_module32.wasm`.
 
