@@ -5004,12 +5004,26 @@ correct and they record different values for the same fact — the exact shape
 the lane has hit at the errno signs, at the set-ID clearing, and at
 `open`'s mode.
 
-**The fix is one line in the bridge** — normalize the prefix before it goes in
-the descriptor, so both producers record what the consumer was written
-against — and it is the next thing to land once the browser run releases the
-worktree. It also removes the `.replace(/\/$/, "")` from the repointed test,
-which would otherwise have been a fixture quietly papering over a producer
-difference.
+**HOW FAR IT REACHES, TRACED RATHER THAN ASSUMED — and it is narrower than the
+paragraph above implies.** `rebaseArchive` passes `mountPrefix` through
+untouched (it rewrites URLs only), so the divergent value does reach a
+reconstructed manifest. But the live consumer does not use it:
+`buildRootfsLazyWiring` keys its transport policy by ADDRESS —
+`policy.set(address, …)` — and never reads a prefix. So **today the difference
+is not observable in production**. It is observable in a test assertion, in the
+legacy `KLZY` encoder, and in any future consumer that compares one producer's
+prefix with the other's.
+
+That is worth saying plainly rather than letting "producer divergence" imply a
+live defect. What it is: **two producers recording different values for one
+fact, with nothing yet depending on which** — which is precisely the state the
+errno-sign bug was in until something read it.
+
+**The fix is still one line** — normalize the prefix before it goes in the
+descriptor, so both producers record what the consumer was written against —
+and it lands once the browser run releases the worktree. It also removes the
+`.replace(/\/$/, "")` from the repointed test, which would otherwise be a
+fixture papering over a producer difference rather than asserting anything.
 
 **Two of those were already done and the table did not know.** Re-measured
 2026-09-16: `derived-vfs-symlink.test.ts` and `wordpress-source-layout.test.ts`
