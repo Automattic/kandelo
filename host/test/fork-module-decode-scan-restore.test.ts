@@ -31,6 +31,15 @@ import {
   fixture,
 } from "./fork-module-capture-fixture";
 
+/**
+ * `fm_decoded_node_field` selector 3: the resident graph's node count.
+ *
+ * It had its own export, `fm_decoded_node_count`, until that entry folded into
+ * this one -- a property of the same resident graph, asked the same way, with
+ * the index ignored. Census 202.
+ */
+const DECODED_FIELD_COUNT = 3;
+
 const PID = 4242;
 const EINVAL = 22;
 // Distinct durable broker handles this fork's externrefs name (a canonical
@@ -51,7 +60,6 @@ const EXTERNREFS_RESOLVED = FORK_MODULE_STATS.indexOf("externrefsResolved");
 
 interface ForkModuleExports {
   fm_decode_reference_graph: (root: number) => number;
-  fm_decoded_node_count: () => number;
   fm_restore_from_arena: (root: number, pid: number) => number;
   fm_begin_reference_replay: (root: number, pid: number) => void;
   fm_build_gc_plan: (pid: number) => number;
@@ -110,7 +118,7 @@ describe("fork-module decode / captured-externrefs / restore (orchestration migr
     expect(x.fm_last_errno()).toBe(0);
     // One canonical null + one node per distinct externref handle.
     expect(nodeCount).toBe(1 + HANDLES.length);
-    expect(x.fm_decoded_node_count()).toBe(1 + HANDLES.length);
+    expect(x.fm_decoded_node_field(0, DECODED_FIELD_COUNT)).toBe(1 + HANDLES.length);
     expect(Number(x.fm_stats(GRAPHS_DECODED)) - before).toBe(1);
 
     // A second decode makes the graph resident again and advances the counter.
@@ -144,7 +152,7 @@ describe("fork-module decode / captured-externrefs / restore (orchestration migr
     expect(x.fm_decode_reference_graph(NOT_AN_ARENA)).toBe(-1);
     expect(x.fm_last_errno()).toBe(EINVAL);
     // A failed decode leaves no resident graph.
-    expect(x.fm_decoded_node_count()).toBe(-1);
+    expect(x.fm_decoded_node_field(0, DECODED_FIELD_COUNT)).toBe(-1);
   });
 
   it("fm_restore_from_arena seeds the driver and builds a plan identical to begin + build", () => {

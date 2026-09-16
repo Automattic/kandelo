@@ -37,6 +37,15 @@ import {
   fixture,
 } from "./fork-module-capture-fixture";
 
+/**
+ * `fm_decoded_node_field` selector 3: the resident graph's node count.
+ *
+ * It had its own export, `fm_decoded_node_count`, until that entry folded into
+ * this one -- a property of the same resident graph, asked the same way, with
+ * the index ignored. Census 202.
+ */
+const DECODED_FIELD_COUNT = 3;
+
 const EINVAL = 22;
 const EXTERNREF_HANDLE = 0xabcd;
 /** Side modules this fork dlopen'd: a node naming one of these would read back
@@ -62,7 +71,6 @@ const FIELD_ORDINAL = 2;
 
 interface StructureExports {
   fm_decode_reference_graph: (root: number) => number;
-  fm_decoded_node_count: () => number;
   fm_decoded_node_field: (index: number, field: number) => number;
   fm_last_errno: () => number;
 }
@@ -168,7 +176,7 @@ describe("fork-module decoded-graph structure readout (orchestration migration i
     const { root, expected } = captureInto(f);
     const x = decodedChild(f, root, "decoded-structure-child");
 
-    expect(x.fm_decoded_node_count()).toBe(expected.size);
+    expect(x.fm_decoded_node_field(0, DECODED_FIELD_COUNT)).toBe(expected.size);
 
     for (const [index, want] of expected) {
       expect(
@@ -207,7 +215,7 @@ describe("fork-module decoded-graph structure readout (orchestration migration i
     const exnrefs: { activation: number; tagOrdinal: number }[] = [];
     // The static-root mirror seeding collects {activation, staticRootOrdinal}.
     const staticRoots: { activation: number; staticRootOrdinal: number }[] = [];
-    for (let i = 0; i < x.fm_decoded_node_count(); i++) {
+    for (let i = 0; i < x.fm_decoded_node_field(0, DECODED_FIELD_COUNT); i++) {
       const kind = x.fm_decoded_node_field(i, FIELD_KIND);
       if (kind === WIRE_KIND.exnref) {
         exnrefs.push({

@@ -168,7 +168,6 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
 const DECODED_FIELD_KIND = 0;
 const DECODED_FIELD_MODULE_ACTIVATION = 1;
-const DECODED_FIELD_ORDINAL = 2;
 
 export interface ForkModuleBackendOptions {
   readonly instance: ForkModuleInstance;
@@ -837,9 +836,13 @@ export class ForkModuleContinuationBackend {
     return this.call("fm_resume_slots", 1, activationId, 0);
   }
 
-  decodedNodeCount(): number {
-    return this.call("fm_decoded_node_count");
-  }
+  // WHAT USED TO BE HERE: `decodedNodeCount` and `decodedNodeOrdinal`. Their
+  // only caller was the child-install path's second merged static-root base
+  // map, which walked every node to find the static roots and took each
+  // activation's maximum ordinal. That layout is settled once at registration
+  // now (census 201), so nothing counts nodes or reads an ordinal from the
+  // host any more. `fm_decoded_node_field` is still reached, for kind and
+  // module_activation, by `ForkChildReferences`.
 
   decodedNodeKind(index: number): number {
     return this.call("fm_decoded_node_field", index, DECODED_FIELD_KIND);
@@ -899,10 +902,6 @@ export class ForkModuleContinuationBackend {
       );
     }
     return value;
-  }
-
-  decodedNodeOrdinal(index: number): number {
-    return this.call("fm_decoded_node_field", index, DECODED_FIELD_ORDINAL);
   }
 
   /**

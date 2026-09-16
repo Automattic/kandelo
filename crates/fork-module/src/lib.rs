@@ -5612,16 +5612,20 @@ mod wasm {
     // -- Module-owned decoded-graph STRUCTURE readout (orchestration migration
     //    increment C) -----------------------------------------------------------
     //
-    // The host's fork wiring (`worker-main.ts`) keeps a `decodedChildReferences`
-    // decode ONLY for two structural consumers that the count/handle-scan
-    // surface above cannot serve: the HOST-owned exnref tag-validity admission
-    // gate (`assertForkModuleExnrefTagsDeclared`, needs each exnref node's
-    // `moduleActivation` + `tagOrdinal`) and the merged static-root catalog
-    // mirror seeding (needs each static-root node's `moduleActivation` +
-    // `staticRootOrdinal`, plus the per-activation max ordinal it derives from
-    // them). These per-node accessors expose exactly that decoded structure over
-    // the resident graph (`fm_decode_reference_graph`), so a later increment can
-    // retire the JS `decodeSegmentedForkReferenceTransaction` structural decode.
+    // BOTH CONSUMERS THIS COMMENT USED TO NAME ARE GONE, and it named them as
+    // reasons these accessors exist -- so read the list below, not the history.
+    // The exnref tag-validity gate moved INTO this module (see the tag catalog
+    // above, which supersedes `assertForkModuleExnrefTagsDeclared`), and the
+    // merged static-root mirror seeding stopped walking nodes when that layout
+    // became a single map settled at registration (census 201). A comment that
+    // justifies a surface by its callers outlives them by default; this one
+    // did, in the same file that elsewhere says the gate is the module's.
+    //
+    // THE LIVE CONSUMER is `ForkChildReferences`, which asks a recipe's KIND
+    // and its MODULE_ACTIVATION -- the ordinal selector and the node count have
+    // no host caller left. They stay exported because the wire format is frozen
+    // and a reader is cheap; nothing here should be read as a claim that
+    // something calls them.
     // The wire format is FROZEN and no new algorithm is introduced: they read
     // the SAME decoded `ReferenceRecipeNode` the shared `reference_segments.rs`
     // decode already produced.
@@ -9638,7 +9642,7 @@ mod wasm {
     /// Decode the sealed KFMS module-state arena rooted at `module_state_root`
     /// into the module-owned decoded reference graph. Returns the graph's node
     /// count (`>= 0`) or `-1` (reason in `fm_last_errno`). The decoded graph
-    /// stays resident for `fm_decoded_node_count` / `fm_decoded_node_*`
+    /// stays resident for the `fm_decoded_node_field` selectors
     /// until the next decode or replay. See `decode_reference_graph_impl`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_decode_reference_graph(module_state_root: usize) -> i32 {
@@ -9658,11 +9662,13 @@ mod wasm {
         }
     }
 
-    /// The node count of the resident decoded graph (`fm_decode_reference_graph`
-    /// result), or `-1` if none is resident. Lets the host size a per-node
-    /// readout buffer without re-decoding.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decoded_node_count() -> i32 {
+    /// The node count of the resident decoded graph, or `-1` with no graph.
+    ///
+    /// WAS `fm_decoded_node_count`, its own export. It is a field of the
+    /// resident graph like the three below it, and `fm_decoded_node_field`
+    /// already dispatches over them -- so it is a selector there now, and the
+    /// contract is one entry shorter. Census 202.
+    fn decoded_node_count_impl() -> i32 {
         match decoded_graph().as_ref() {
             Some(t) => match i32::try_from(t.nodes.len()) {
                 Ok(n) => {
@@ -9730,6 +9736,11 @@ mod wasm {
             },
             1 => clamp_decoded_u32(decoded_node_module_activation_impl(index)),
             2 => clamp_decoded_u32(decoded_node_ordinal_impl(index)),
+            // The graph's own node count, which takes no index -- a property of
+            // the resident graph rather than of a node, but the same question
+            // asked of the same resident thing, and it had its own export for
+            // no better reason than that it was written first.
+            3 => decoded_node_count_impl(),
             _ => {
                 set_err(Errno::EINVAL);
                 -1

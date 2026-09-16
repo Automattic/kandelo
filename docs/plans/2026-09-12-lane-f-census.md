@@ -10711,3 +10711,47 @@ test before. Two mutations, both caught:
 And the module's refusal of a second base is pinned, because that refusal is
 what makes a second map unrepresentable rather than merely absent. If it ever
 became idempotent, two maps could quietly coexist again.
+
+## §202 -- Which folds dilute and which do not, settled by contrast
+
+Deleting the second static-root base map (§201) left two host methods with no
+caller — `decodedNodeCount` and `decodedNodeOrdinal`, whose only consumer had
+been that block's node walk. Deleting them then left `fm_decoded_node_count`
+with no production caller, which pushed
+`forkModuleEntriesWithoutProductionCaller` from 2 to 3.
+
+**Raising that ceiling would have been the wrong answer**, and so would keeping
+dead host code to hold the number down. The entry is a property of the resident
+decoded graph, and `fm_decoded_node_field` already answers three such
+properties — so it is selector 3 there now, and the contract is one entry
+shorter. `fm_decoded_node_count` is deleted rather than orphaned, so the
+no-caller count returns to 2 with no ceiling moved anywhere.
+
+### The rule this establishes, by contrast with §195
+
+Tonight produced one fold that was built and reverted and one that landed. The
+difference is worth stating as a test, because "fold entries to hit the target"
+is otherwise indistinguishable between them:
+
+**`fm_seed(kind, a0..a4)` — REJECTED.** Thirteen unrelated facts, thirteen
+different meanings for the same five argument slots, and an order the caller
+still had to know. A host's knowledge was unchanged and its type checking was
+worse. The count moved; nothing else did.
+
+**`fm_decoded_node_count` into `fm_decoded_node_field` — LANDED.** One question
+(*what does the resident graph say?*) about one thing, asked the way three
+sibling selectors are already asked, by a caller that already had to know the
+selector numbering. Nothing about what a host must know changed.
+
+> **A fold is safe when the collapsed operations answer one question about one
+> thing, and the caller already had to know the selector. It dilutes when the
+> selector is the only thing telling heterogeneous operations apart.**
+
+`fm_stats` was considered first and rejected for a different reason worth
+keeping: it reads a table of `AtomicU64` counters, built that way deliberately
+because a `match` over distinct statics **miscompiled after fork-module
+injection** — arms returned stale zeros while the counters had advanced. A node
+count is not a counter, and putting it there would have meant either lying
+about its type or breaking the structure that exists because of a real
+codegen bug. `fm_decoded_node_field` dispatches over distinct *functions*,
+which its own comment records as the safe shape.
