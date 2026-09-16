@@ -208,7 +208,6 @@ const MEASURED: Record<string, () => number> = {
   forkPlatformTypeScript: () =>
     codeLineCount([
       "host/src/fork-guest-imports.ts",
-      "host/src/fork-guest-host-floor.ts",
       "host/src/fork-mechanism-trace.ts",
       "host/src/fork-anyref-transit.ts",
       "host/src/fork-table-state-owners.ts",
@@ -216,7 +215,6 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-phase.ts",
       "host/src/fork-import-identity.ts",
       "host/src/fork-activations.ts",
-      "host/src/fork-exception-broker.ts",
       "host/src/fork-child-imports.ts",
       "host/src/fork-child-references.ts",
       "host/src/fork-guest-sections.ts",
@@ -232,7 +230,6 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-module-*.ts",
       "host/src/fork-reference-capture-module.ts",
       "host/src/fork-guest-imports.ts",
-      "host/src/fork-guest-host-floor.ts",
       "host/src/fork-mechanism-trace.ts",
       "host/src/fork-anyref-transit.ts",
       "host/src/fork-table-state-owners.ts",
@@ -240,7 +237,6 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-phase.ts",
       "host/src/fork-import-identity.ts",
       "host/src/fork-activations.ts",
-      "host/src/fork-exception-broker.ts",
       "host/src/fork-child-imports.ts",
       "host/src/fork-child-references.ts",
       "host/src/fork-guest-sections.ts",

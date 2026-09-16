@@ -95,6 +95,13 @@ const DRIVE_SLOT_GC_PROBE: i32 = fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE as 
 const CAPTURE_PROBE_THUNK_IMPORT: &str = "__wpk_fork_capture_probe";
 /// Encode-from-transit placeholder: the cross-activation broker's second step.
 const CAPTURE_ENCODE_THUNK_IMPORT: &str = "__wpk_fork_capture_encode";
+/// See [`DRIVE_SLOT_GC_ENCODE`].
+const DRIVE_SLOT_EXN_THROW_RECIPE: i32 =
+    fork_codec::drive_plan::DRIVE_SLOT_EXN_THROW_RECIPE as i32;
+/// The cross-activation exception throw placeholder: the module asks the
+/// activation that OWNS a tag to raise the exception, because only that
+/// activation can raise it with the right tag.
+const EXN_THROW_THUNK_IMPORT: &str = "__wpk_fork_exn_throw";
 /// The per-activation stride of the drive table. See [`DRIVE_SLOT_GC_ENCODE`]
 /// for why this is read rather than copied.
 const DRIVE_SLOTS_PER_ACTIVATION: i32 =
@@ -1458,6 +1465,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_probe into a thunk")?;
     inject_capture_encode_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_encode into a thunk")?;
+    inject_exn_throw_thunk(&mut module)
+        .context("rewriting __wpk_fork_exn_throw into a thunk")?;
     inject_externref_handle_thunk(&mut module)
         .context("rewriting __wpk_fork_externref_handle into a thunk")?;
     inject_provenance_externref(&mut module)
@@ -1766,15 +1775,16 @@ fn inject_gc_claim(module: &mut Module) -> Result<()> {
 /// Rewrite a `(activation, slot)` placeholder into a local thunk that forwards
 /// `slot` and `call_indirect`s `drive_table[activation * SLOTS + offset]`.
 ///
-/// Shared by the probe and encode thunks, which differ only in the drive slot
-/// and the callee's result type. Keeping one emitter means the index arithmetic
+/// Shared by the probe, encode and exception-throw thunks, which differ only in
+/// the drive slot and the callee's results (the throw has none -- it does not
+/// come back). Keeping one emitter means the index arithmetic
 /// — the part that silently calls the wrong guest function when wrong — exists
 /// once.
 fn inject_forwarding_drive_thunk(
     module: &mut Module,
     import_name: &str,
     drive_slot: i32,
-    result: ValType,
+    results: &[ValType],
 ) -> Result<()> {
     let import_fn = module.imports.iter().find_map(|import| {
         if import.module != IMPORT_MODULE || import.name != import_name {
@@ -1789,7 +1799,7 @@ fn inject_forwarding_drive_thunk(
         return Ok(());
     };
     let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
-    let callee_ty = module.types.add(&[ValType::I32], &[result]);
+    let callee_ty = module.types.add(&[ValType::I32], results);
     module
         .replace_imported_func(import_fn, |(body, args)| {
             let activation = args[0];
@@ -1814,7 +1824,7 @@ fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
         module,
         CAPTURE_PROBE_THUNK_IMPORT,
         DRIVE_SLOT_GC_PROBE,
-        ValType::I64,
+        &[ValType::I64],
     )
 }
 
@@ -1824,8 +1834,28 @@ fn inject_capture_encode_thunk(module: &mut Module) -> Result<()> {
         module,
         CAPTURE_ENCODE_THUNK_IMPORT,
         DRIVE_SLOT_GC_ENCODE,
-        ValType::I32,
+        &[ValType::I32],
     )
+}
+
+/// Rewrite `__wpk_fork_exn_throw(activation, recipe)` into a local thunk that
+/// `call_indirect`s the OWNING activation's `__wpk_fork_ref_exn_throw_recipe`.
+///
+/// Same emitter as the probe and encode thunks, and the one that does not come
+/// back: the callee raises a wasm exception, so it has no results and no caller
+/// of this thunk gets a value.
+///
+/// # Why the throw has to happen there
+///
+/// A replay reconstructing an `exnref` must re-enter wasm THROWING, with the
+/// tag the capturing activation's codec declared. The module has no such tag,
+/// and a JavaScript import cannot raise one either -- a JS `throw` crosses back
+/// as a foreign exception with the wrong tag. Only the owning activation's own
+/// exported thrower raises the right exception, and this is how the module
+/// reaches it. Which activation owns the recipe is read from the module's own
+/// decoded graph; see `__wpk_fork_ref_exn_broker_throw_recipe` in `lib.rs`.
+fn inject_exn_throw_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(module, EXN_THROW_THUNK_IMPORT, DRIVE_SLOT_EXN_THROW_RECIPE, &[])
 }
 
 fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
@@ -2581,6 +2611,11 @@ mod tests {
                 CAPTURE_ENCODE_THUNK_IMPORT,
                 fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE as i32,
                 inject_capture_encode_thunk as Inject,
+            ),
+            (
+                EXN_THROW_THUNK_IMPORT,
+                fork_codec::drive_plan::DRIVE_SLOT_EXN_THROW_RECIPE as i32,
+                inject_exn_throw_thunk as Inject,
             ),
         ] {
             let (mut module, func) = drive_thunk_fixture(import_name);

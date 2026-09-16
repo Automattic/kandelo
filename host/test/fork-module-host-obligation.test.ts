@@ -299,6 +299,44 @@ describe("fork-module host obligation", () => {
       }
     });
 
+    it("serves the guest's cross-activation throw, and refuses truthfully", () => {
+      // `__wpk_fork_ref_exn_broker_throw_recipe` was the LAST member of the
+      // host floor. The host implementation answered one question -- which
+      // activation owns this exception recipe -- and then called that
+      // activation's exported thrower, because only a guest can raise an
+      // exception with its own tag. The module answers the same question from
+      // the graph IT decoded and reaches the same thrower through a drive slot.
+      // Census section 192.
+      //
+      // What this can assert without a fork: the export exists, and the
+      // refusals are truthful. The SUCCESSFUL cross-activation throw needs a
+      // sealed graph and a second activation, which no fixture in this suite
+      // builds -- the census records that as owed. Its routing is gated in
+      // `fork-module-inject`, which checks the emitted `activation * stride +
+      // slot` arithmetic exhaustively.
+      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const instance = instantiate({ ...caps.imports, ...moduleTables() });
+      const throwRecipe = instance.exports[
+        "__wpk_fork_ref_exn_broker_throw_recipe"
+      ] as (recipe: number) => void;
+      const lastErrno = instance.exports.fm_last_errno as () => number;
+      expect(typeof throwRecipe, "the module must export the guest's import").toBe(
+        "function",
+      );
+      // Node 0 is never a recipe: the encoders return >= 1. EINVAL (22).
+      expect(() => throwRecipe(0)).toThrow(WebAssembly.RuntimeError);
+      expect(lastErrno()).toBe(22);
+      // A poisoned recipe from a refusing encoder is -1, which arrives as a
+      // u32 above i32::MAX. It must fail the same bound rather than read some
+      // other node's owner.
+      expect(() => throwRecipe(-1)).toThrow(WebAssembly.RuntimeError);
+      expect(lastErrno()).toBe(22);
+      // A plausible recipe with no replay behind it: there is no graph to ask
+      // who owns it, which is EINVAL and not a guessed activation.
+      expect(() => throwRecipe(1)).toThrow(WebAssembly.RuntimeError);
+      expect(lastErrno()).toBe(22);
+    });
+
     it("serves the guest's ingress throw by refusing it, with an errno", () => {
       // `__wpk_fork_ref_exn_ingress_throw` was a `fork-guest-host-floor` member
       // whose body threw an `Error` saying no ingress token exists. That is

@@ -5,13 +5,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { describeWasmArtifactPolicyFailures } from "../src/constants";
-import {
-  buildForkGuestImports,
-  FORK_GUEST_HOST_FLOOR_NAMES,
-} from "../src/fork-guest-imports";
-import { createForkGuestHostFloor } from "../src/fork-guest-host-floor";
+import { buildForkGuestImports } from "../src/fork-guest-imports";
 import { ForkResumeTable } from "../src/fork-resume-table";
-import { ForkTableStateOwners } from "../src/fork-table-state-owners";
 
 /**
  * The pieces of the thin layer, composed against a REAL instrumented artifact.
@@ -64,16 +59,12 @@ afterAll(() => {
 
 /** Everything the co-resident module would serve, stubbed by name. */
 function moduleExportsFor(guest: WebAssembly.Module): Record<string, unknown> {
-  // Driven off the exported list, not a copy of it. A hand-kept copy is the
-  // same defect as a hand-kept import list: it stops matching the moment an
-  // entry leaves the floor, and then this test stubs a module export for
-  // something the module already serves -- passing while proving nothing.
-  const floorNames = new Set<string>(FORK_GUEST_HOST_FLOOR_NAMES);
+  // Every `env` function the guest declares: there is no floor left to
+  // subtract. The real module serves all of them.
   const exports: Record<string, unknown> = {};
   for (const imported of WebAssembly.Module.imports(guest)) {
     if (imported.module !== "env") continue;
     if (imported.kind !== "function") continue;
-    if (floorNames.has(imported.name)) continue;
     exports[imported.name] = () => 0;
   }
   // The two non-function imports the real module OWNS and exports. A host does
@@ -91,15 +82,10 @@ describe("the thin layer composed against a real instrumented guest", () => {
   const guard = guest === null ? it.skip : it;
 
   guard("binds every single thing the artifact imports from env", () => {
-    const owners = new ForkTableStateOwners();
     const resume = new ForkResumeTable();
-    const { floor } = createForkGuestHostFloor({
-      ownsTableState: (owner) => owners.ownsState(0, owner),
-    });
 
     const env = buildForkGuestImports({
       moduleExports: moduleExportsFor(guest!),
-      floor,
       // Only THREE entries: the resume table the host owns, and the two
       // per-process globals. The transit table and the unwind tag are not here
       // -- the module exports them and the binder takes them from there.
@@ -142,9 +128,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
     try {
       buildForkGuestImports({
         moduleExports: moduleExportsFor(guest!),
-        floor: createForkGuestHostFloor({
-          ownsTableState: () => false,
-        }).floor,
         extras: { __wpk_fork_resume_table: new ForkResumeTable().table },
         guestModule: guest!,
         label: "composition test",
@@ -240,9 +223,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
     const moduleExports = moduleExportsFor(guest!);
     const env = buildForkGuestImports({
       moduleExports,
-      floor: createForkGuestHostFloor({
-        ownsTableState: () => false,
-      }).floor,
       extras: {
         __wpk_fork_resume_table: new ForkResumeTable().table,
         __wpk_fork_module_activation: new WebAssembly.Global(

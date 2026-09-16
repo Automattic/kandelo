@@ -94,7 +94,6 @@ import {
   forkActivationFrameImports,
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
   FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
-  type ForkGuestHostFloor,
   forkUnwindTagFrom,
   FORK_GUEST_RESUME_TABLE_IMPORT,
   isForkUnwindException,
@@ -125,9 +124,7 @@ import {
   readForkModuleStateRoot,
 } from "./fork-guest-sections";
 import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
-import { createForkGuestHostFloor } from "./fork-guest-host-floor";
 import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
-import { ForkExceptionBroker } from "./fork-exception-broker";
 import { ForkChildReferences } from "./fork-child-references";
 import {
   forkResumeTargetsFromInstance,
@@ -785,7 +782,6 @@ interface ProcessDylinkActivationOwnerOptions {
    * externref provenance map is keyed by object identity across the whole
    * capture, and the exception throwers route by owner inside the broker.
    */
-  readonly forkHostFloor: ForkGuestHostFloor;
   readonly isForkChild: boolean;
   /**
    * A pthread owns a separate instance graph but adopts the process archive's
@@ -930,7 +926,6 @@ function createProcessDylinkActivationOwner(
       const activationLabel = `${request.name}: fork activation`;
       const guestImports = buildForkGuestImports({
           moduleExports: options.forkModuleFrameFlip.moduleExports,
-          floor: options.forkHostFloor,
           // What a JS host genuinely supplies, and only that. Everything else
           // the guest imports comes from the module, and anything neither side
           // provides fails here BY NAME rather than as a LinkError naming a type.
@@ -4057,40 +4052,17 @@ export async function centralizedWorkerMain(
           processTableReplication?.abort();
         },
       };
-      // Which arena's graph answers "who owns this exception recipe".
+      // WHAT USED TO BE HERE: the exception broker and the host identity floor.
       //
-      // The module's own root first, and the inherited one only as a fallback,
-      // because a fork CHILD that later forks has both: the inherited root is
-      // still the arena it was installed from, and that graph is not the one
-      // its own capture just sealed. The module has no root of its own until it
-      // builds one, which is exactly the window where the inherited arena is
-      // the right answer.
-      const exceptionGraphRoot = (): number => {
-        const own = requireForkModuleBackend(
-          forkModuleBackend,
-          pid,
-        ).moduleStateArenaRoot();
-        if (own !== 0) return own;
-        return childArenaRoot;
-      };
-      const exceptionBroker = new ForkExceptionBroker(
-        () => requireForkModuleBackend(forkModuleBackend, pid),
-        () => forkActivations,
-        exceptionGraphRoot,
-        `pid=${pid}: exception broker`,
-      );
+      // The broker answered one question -- which activation owns this
+      // exception recipe -- and then called that activation's exported thrower,
+      // because only a guest can raise an exception with its own tag. The
+      // module answers the same question from the graph IT decoded, and reaches
+      // the same thrower through a drive slot, which is how it already drives
+      // allocate, fill and materialize. The host held the root and the
+      // invalidation on the module's behalf; it holds neither now. See census
+      // section 192.
 
-      // The process's host identity floor: the two things a JS host must do
-      // itself. Built once and shared by every activation, because both are
-      // process-scoped -- the broker routes a throw to its owner.
-      const forkHostFloor = createForkGuestHostFloor(
-        {
-          // Re-enter wasm by calling the guest's exported thrower; a JavaScript
-          // throw would reach the guest with the wrong tag. See census 109.
-          exceptionThrower: () => exceptionBroker,
-        },
-        `pid=${pid}: fork host floor`,
-      ).floor;
       // WHAT USED TO BE HERE: `registerChildReferenceActivation`, which handed
       // the early reference provider a per-activation function catalog, static
       // root decoder and GC codec provider. `ForkChildReferences` resolves a
@@ -4337,7 +4309,6 @@ export async function centralizedWorkerMain(
             importedStatePlanner: initData.isForkChild
               ? () => importedStatePlanner
               : undefined,
-            forkHostFloor,
             isForkChild: Boolean(initData.isForkChild),
             invokeProcessFork: () => {
               const fork = processInstance?.exports.fork;
@@ -4617,12 +4588,11 @@ export async function centralizedWorkerMain(
         );
       }
       const forkEnvImports: Record<string, WebAssembly.ImportValue> = {
-        // Everything the module serves plus the host floor, with the three
-        // object imports a JS host genuinely supplies. Anything neither side
-        // provides fails HERE by name instead of as a LinkError naming a type.
+        // Everything the module serves, plus the three object imports a JS
+        // host genuinely supplies. An unbound name fails HERE, by name, instead
+        // of as a LinkError naming a type.
         ...(buildForkGuestImports({
           moduleExports: forkModuleInstance.exports as Record<string, unknown>,
-          floor: forkHostFloor,
           extras: {
             // `continuationImports` contributes only the host-owned
             // `__wpk_fork_resume_table` funcref table the module's
@@ -5015,7 +4985,6 @@ export async function centralizedWorkerMain(
         // `ModuleStateWriter::adopt` closes that; whether it was the ONLY thing
         // missing is what running this will say.
         earlyChildReferences = null;
-        exceptionBroker.invalidate();
         // Seed the child's module state BEFORE attaching. Without it the module
         // has no state at all, so every `record_find` the guest's restore makes
         // answers 0 and the guest traps reading a page header from address 0.
@@ -5154,11 +5123,6 @@ export async function centralizedWorkerMain(
               // demands. The returned image location is no longer the host's to
               // carry anywhere.
               forkModule().sealCaptureAndSerialize();
-              // The parent's own graph is now the one that answers an exnref
-              // recipe's owner during the replay below. Cheap: it only marks
-              // the broker's cached decode stale, so a fork that throws no
-              // exception decodes nothing.
-              exceptionBroker.invalidate();
             } catch (sealError) {
               // SEAL-TIME TRUTHFUL FAILURE (Phase 2 carry / Phase 4): the unwind
               // completed but the module could not channel-mmap the
@@ -6506,31 +6470,12 @@ export async function centralizedThreadWorkerMain(
     // The frame format is read where the fork-module is built, which is a
     // narrower block than the registration below.
     let threadFixedPrefixSize = 0;
-    // Keyed on fork instrumentation rather than on the activation registry:
-    // that was always the real predicate (the registry is built from the same
-    // flag), and the broker no longer reads the registry for anything.
-    const threadExceptionBroker = hasForkInstrumentation
-      ? new ForkExceptionBroker(
-          () => requireForkModuleBackend(threadForkModuleBackend, pid),
-          () => {
-            if (!threadForkActivations) {
-              throw new Error(
-                `pid=${pid} tid=${tid}: exception broker ran before this ` +
-                  `thread registered any activation`,
-              );
-            }
-            return threadForkActivations;
-          },
-          // A pthread worker never installs a fork child, so its module's own
-          // arena is the only one it can be asked about.
-          () =>
-            requireForkModuleBackend(
-              threadForkModuleBackend,
-              pid,
-            ).moduleStateArenaRoot(),
-          `pid=${pid} tid=${tid}: exception broker`,
-        )
-      : null;
+    // WHAT USED TO BE HERE: this worker's exception broker. It resolved an
+    // exception recipe's owning activation and called that activation's
+    // exported thrower. The module does both now -- the owner comes out of the
+    // graph it decoded, the thrower through a drive slot -- so a pthread worker
+    // supplies nothing for exceptions at all. Census section 192.
+
     // The fork-from-thread launch anchor, as two plain functions. They were
     // options on `prepareActivation`, whose other argument -- the continuation
     // whose entry points the module drives -- has no reader left.
@@ -6911,24 +6856,13 @@ export async function centralizedThreadWorkerMain(
     const replicaActivationOwner =
       hasDylinkForkRole &&
       threadActivationRegistry &&
-      threadActivationRegistry &&
-      threadExceptionBroker
+      hasForkInstrumentation
         ? createProcessDylinkActivationOwner({
             memory,
             ptrWidth,
             channelOffset,
             forkUnwindTag: threadForkUnwindTag(),
             resumeTable: threadResumeTable,
-            // A pthread replica gets its own floor over ITS token cache and
-            // broker: externref identity is per-worker (the generation id
-            // differs), so sharing the process floor here would route a throw
-            // against tokens this worker never minted.
-            forkHostFloor: createForkGuestHostFloor(
-              {
-                exceptionThrower: () => threadExceptionBroker,
-              },
-              `pid=${pid} tid=${tid}: fork host floor`,
-            ).floor,
             importedStateCapture: threadImportedStateCapture ?? undefined,
             activations: threadForkActivations ?? undefined,
             tableReplication: threadTableReplicationImports,
@@ -7016,23 +6950,17 @@ export async function centralizedThreadWorkerMain(
       });
     }
     const threadForkEnvImports =
-      threadActivationRegistry && threadExceptionBroker
+      threadActivationRegistry && hasForkInstrumentation
         ? {
-            // Everything the module serves plus this worker's floor, with the
-            // three object imports a JS host supplies. Fails by NAME here if
-            // anything is unbound, rather than as an opaque LinkError.
+            // Everything the module serves, plus the three object imports a JS
+            // host supplies. Fails by NAME here if anything is unbound, rather
+            // than as an opaque LinkError.
             ...(threadForkModuleInstance
               ? (buildForkGuestImports({
                   moduleExports: threadForkModuleInstance.exports as Record<
                     string,
                     unknown
                   >,
-                  floor: createForkGuestHostFloor(
-                    {
-                      exceptionThrower: () => threadExceptionBroker,
-                    },
-                    `pid=${pid} tid=${tid}: fork host floor`,
-                  ).floor,
                   extras: {
                     [FORK_GUEST_RESUME_TABLE_IMPORT]:
                       threadResumeTable.table as unknown as WebAssembly.ImportValue,
@@ -7279,7 +7207,6 @@ export async function centralizedThreadWorkerMain(
             // module-built arena needs no separate seal, because every chunk is
             // born SEALED and the first born ROOT.
             threadForkModule().sealCaptureAndSerialize();
-            threadExceptionBroker?.invalidate();
           } catch (sealError) {
             // SEAL-TIME TRUTHFUL FAILURE (fork-from-thread mirror of the main
             // run loop): the unwind completed but the module could not

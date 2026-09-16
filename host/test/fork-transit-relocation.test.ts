@@ -20,7 +20,6 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { buildForkGuestImports } from "../src/fork-guest-imports";
-import { createForkGuestHostFloor } from "../src/fork-guest-host-floor";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT } from "../src/generated/abi";
 
@@ -40,12 +39,6 @@ function forkModule(): ReturnType<typeof instantiateForkModule> {
   });
 }
 
-/** The one thing the host must answer for itself, and nothing here exercises. */
-const floor = createForkGuestHostFloor(
-  {},
-  "transit relocation floor",
-).floor;
-
 describe("the GC transit table is relocated into the fork-module", () => {
   it("shares ONE table across the module export, the host wrapper, and the guest import", () => {
     const fm = forkModule();
@@ -58,7 +51,6 @@ describe("the GC transit table is relocated into the fork-module", () => {
     // production uses -- not by anything this test arranged.
     const imports = buildForkGuestImports({
       moduleExports: fm.exports as Record<string, unknown>,
-      floor,
       // The resume table is the host's (it holds the guest's own resume
       // targets), so the builder requires it and this supplies an empty one.
       // It is not the subject: the assertion below is about the table the

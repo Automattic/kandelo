@@ -210,6 +210,11 @@ mod wasm {
         /// a `call_indirect` through the drive table.
         fn __wpk_fork_capture_encode(activation: u32, slot: u32) -> i32;
 
+        /// Raise the exception `recipe` names inside `activation`, with that
+        /// activation's own tag. Injector-rewritten to a `call_indirect`
+        /// through the drive table. NEVER RETURNS -- the callee throws.
+        fn __wpk_fork_exn_throw(activation: u32, recipe: u32);
+
         /// Write one funcref table slot during a reconcile: set
         /// `__indirect_function_table[dest]` from `__wpk_fork_function_catalog[
         /// catalog_slot]`, or to null when `clear` is non-zero.
@@ -371,6 +376,17 @@ mod wasm {
         // `drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE]`. Both tables and
         // the drive slot are module-known; the guest export owns its own failure.
         unsafe { __wpk_fork_capture_witness(activation, witness_slot) }
+    }
+
+    /// Safe wrapper over the injector-wired cross-activation throw.
+    ///
+    /// Returns only if the guest's thrower did NOT throw, which is a defect --
+    /// see the caller.
+    fn exn_throw_via_injector(activation: u32, recipe: u32) {
+        // SAFETY: after injection this is a local thunk that `call_indirect`s
+        // `drive_table[base(activation) + DRIVE_SLOT_EXN_THROW_RECIPE]` with
+        // `recipe`. The slot is module-known; the guest export owns the throw.
+        unsafe { __wpk_fork_exn_throw(activation, recipe) }
     }
 
     /// Safe wrapper over the injector-wired drive placeholder. Isolated so the
@@ -5201,7 +5217,35 @@ mod wasm {
         decode_segmented_reference_transaction(&records, abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER)
     }
 
+    /// The sealed module-state arena root of the most recent reference replay.
+    ///
+    /// Remembered ONLY so `__wpk_fork_ref_exn_broker_throw_recipe` can decode
+    /// the graph on demand. The throw path needs to know which activation owns
+    /// a recipe, which is a field of the decoded graph -- and the graph is
+    /// NOT a by-product of replay: `begin_reference_replay_impl` moves its
+    /// decoded transaction into the driver rather than leaving it resident.
+    ///
+    /// Decoding eagerly per fork would charge every fork for a path most never
+    /// take (it walks the arena and abandons the previous resident graph), so
+    /// the root is kept and the decode happens on the first throw. That is the
+    /// same laziness the host broker had, with the host no longer holding the
+    /// root on the module's behalf.
+    static LAST_REPLAY_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    /// The arena root the currently resident decoded graph was decoded from.
+    ///
+    /// The staleness check, and the reason it is a comparison rather than an
+    /// invalidation. The host used to hold this: `ForkExceptionBroker` had an
+    /// `invalidate()` the fork path called at the two moments a new graph
+    /// exists. Abandoning the graph here instead would be wrong -- the host
+    /// decodes it for its OWN admission gates and reads node fields back
+    /// through `fm_decoded_node_field`, so dropping one it is still using would
+    /// turn its reads into `EINVAL`. Comparing roots notices the same staleness
+    /// without touching anything the host owns.
+    static DECODED_GRAPH_ROOT: AtomicU64 = AtomicU64::new(0);
+
     fn begin_reference_replay_impl(module_state_root: u64, _pid: u32) -> Result<(), Errno> {
+        LAST_REPLAY_ROOT.store(module_state_root, Ordering::Relaxed);
         // Reclaim any prior fork's reference state WITHOUT running Drop: a COW
         // child inherits these statics (each owning a `SegmentedReferenceTransaction`
         // or replay feed whose `Vec`/`BTreeMap` interiors point into the parent's
@@ -5323,6 +5367,10 @@ mod wasm {
         let transaction = decode_reference_transaction_from_arena(module_state_root)?;
         let node_count = u32::try_from(transaction.nodes.len()).map_err(|_| Errno::EINVAL)?;
         *decoded_graph() = Some(transaction);
+        // Which arena this graph describes. Read by the exception throw path to
+        // notice a graph that belongs to a PREVIOUS fork -- see
+        // `make_replay_graph_resident`.
+        DECODED_GRAPH_ROOT.store(module_state_root, Ordering::Relaxed);
         REFERENCE_GRAPHS_DECODED.fetch_add(1, Ordering::Relaxed);
         Ok(node_count)
     }
@@ -7904,6 +7952,109 @@ mod wasm {
     pub extern "C" fn __wpk_fork_ref_exn_ingress_throw(_token: u32) -> () {
         set_err(Errno::EOPNOTSUPP);
         wasm_intr::unreachable()
+    }
+
+    /// The activation id the wire format reserves for an exception no
+    /// activation's codec claimed. Above `i32::MAX` on purpose, so a host
+    /// reading it through `fm_decoded_node_field` gets a refusal rather than a
+    /// plausible activation number.
+    const HOST_EXCEPTION_ACTIVATION_ID: u32 =
+        fork_codec::drive_plan_hints::FORK_HOST_EXCEPTION_ACTIVATION_ID;
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_broker_throw_recipe(recipe)`.
+    ///
+    /// Raise the exception `recipe` names, with the tag of whichever activation
+    /// captured it -- which is not, in general, the activation asking.
+    ///
+    /// # Why this cannot be done here, and is done anyway
+    ///
+    /// Re-entering wasm THROWING is the one thing neither this module nor a
+    /// JavaScript import can do for another module. The module has no tag of
+    /// its own to raise, and a JS `throw` crosses back as a foreign exception
+    /// with the WRONG tag, which the guest's `try_table` then fails to catch
+    /// (census section 109). Only the owning activation's exported
+    /// `__wpk_fork_ref_exn_throw_recipe` raises the right exception.
+    ///
+    /// So the module does not throw: it CALLS the activation that can. That is
+    /// the same act the host floor performed, moved to the side of the boundary
+    /// that already knows the answer. The owner is `module_activation` on the
+    /// recipe's node in the graph this module decoded; the host had to read it
+    /// back out through `fm_decoded_node_field` to do the same job.
+    ///
+    /// The call goes through the drive table, at
+    /// `base(owner) + DRIVE_SLOT_EXN_THROW_RECIPE` -- the same mechanism that
+    /// drives allocate, fill and materialize, with one more slot. The raised
+    /// exception propagates out through this frame to the calling guest exactly
+    /// as it propagated through the JavaScript import frame before.
+    ///
+    /// # Every failure traps, and states why first
+    ///
+    /// `fork-instrument` emits `unreachable` after this call: the import is
+    /// declared never to return. So there is no error value to return and no
+    /// caller to read one. Each refusal sets the sticky errno and traps, which
+    /// is what `fm_last_errno()` is for.
+    ///
+    ///   * not a recipe id, or a node of the wrong kind -> `EINVAL`
+    ///   * owned by `HOST_EXCEPTION_ACTIVATION_ID` -> `EOPNOTSUPP`:
+    ///     materializing one needs that node's externref payload edge, which no
+    ///     module entry exposes. The host said the same thing and could do no
+    ///     better.
+    ///   * no graph to ask, or the owner's slot is unbound -> `EINVAL`
+    ///   * the thrower RETURNED -> `EINVAL`. A replay continuing past an
+    ///     exception it never delivered is silent corruption.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_broker_throw_recipe(recipe: u32) -> () {
+        let errno = throw_recipe_impl(recipe).unwrap_err();
+        set_err(errno);
+        wasm_intr::unreachable()
+    }
+
+    /// The body, written to return only on failure so every path above traps.
+    fn throw_recipe_impl(recipe: u32) -> Result<core::convert::Infallible, Errno> {
+        // Node 0 is never a recipe (the encoders return `>= 1`), and a poisoned
+        // recipe from a refusing encoder is negative -- which arrives here as a
+        // u32 above `i32::MAX` and fails this same check rather than reading
+        // some other node's owner.
+        if recipe == 0 || recipe > i32::MAX as u32 {
+            return Err(Errno::EINVAL);
+        }
+        make_replay_graph_resident()?;
+        let index = recipe as usize;
+        // Checked BEFORE the owner, because a kind that carries no activation
+        // is a truthful `EINVAL` from the accessor too -- and "not an
+        // exception" and "a host-owned exception" must not arrive as one error.
+        if decoded_node_kind_impl(index)? != WIRE_NODE_KIND_EXNREF {
+            return Err(Errno::EINVAL);
+        }
+        let owner = decoded_node_module_activation_impl(index)?;
+        if owner == HOST_EXCEPTION_ACTIVATION_ID {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        exn_throw_via_injector(owner, recipe);
+        // Reached only if the guest's thrower returned without throwing.
+        Err(Errno::EINVAL)
+    }
+
+    /// `wire_node_kind`'s discriminant for `Exnref`.
+    const WIRE_NODE_KIND_EXNREF: u8 = 3;
+
+    /// Make the graph of the most recent replay resident, if it is not already.
+    ///
+    /// Lazy for the reason `LAST_REPLAY_ROOT` records: decoding walks the arena
+    /// and abandons the previous resident graph, so a fork that throws nothing
+    /// should pay nothing. Already-resident FOR THIS REPLAY'S ROOT is the
+    /// ordinary case in a child -- the host decodes the same arena during child
+    /// setup for its own admission gates -- so this usually does nothing.
+    fn make_replay_graph_resident() -> Result<(), Errno> {
+        let root = LAST_REPLAY_ROOT.load(Ordering::Relaxed);
+        if root == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if decoded_graph().is_some() && DECODED_GRAPH_ROOT.load(Ordering::Relaxed) == root {
+            return Ok(());
+        }
+        decode_reference_graph_impl(root)?;
+        Ok(())
     }
 
     /// Intern every witness this layout recorded, newest-first ordinal order,

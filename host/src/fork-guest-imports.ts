@@ -12,12 +12,16 @@
  *
  * # What the host actually supplies
  *
- * Almost everything comes from the co-resident fork module's exports. What is
- * left is the FLOOR: the handful of imports that cannot be served from inside
- * wasm because they need to look inside a reference or compare two of them.
- * See `docs/plans/2026-09-12-lane-f-census.md` section 50. As the module takes
- * more of them over, entries leave `ForkGuestHostFloor` and nothing else here
- * changes.
+ * NOTHING. Every one of the guest's fork imports now comes from the co-resident
+ * fork module's exports, so this builder's whole job is to bind them by name
+ * and refuse loudly when one is missing.
+ *
+ * It used to take a `floor` -- a host object implementing the imports wasm was
+ * said to be unable to serve. That set went 6 -> 4 -> 3 -> 2 -> 1 -> 0 over
+ * this lane, and the last entry left the way the others did: not because the
+ * capability appeared, but because the reason for each one turned out to name a
+ * thing the module could reach. See `docs/plans/2026-09-12-lane-f-census.md`
+ * sections 50, 109, 174 and 191.
  */
 
 import {
@@ -25,45 +29,6 @@ import {
   WPK_FORK_REQUIRED_TABLE_IMPORTS,
 } from "./generated/abi";
 
-/**
- * The imports a JS host must implement itself, because wasm cannot.
- *
- * `provenance_externref` used to be here, to key a `WeakMap` by object
- * identity at the value's production site. Nothing ever read that map. The
- * capture asks the host for a handle directly, through
- * `__wpk_fork_host_externref_handle`, at the moment it needs one -- so the
- * recording had no reader and the import had no work to do. The injector now
- * serves it as the identity function it always was, which is the one thing
- * Rust cannot write and injected wasm can.
- *
- * `table_state_owned` used to be here for a related reason and is not any more.
- * The host still ELECTS which coordinate owns a physical table -- that compares
- * `WebAssembly.Table` object identity, which wasm cannot do -- but it now SEEDS
- * the answer through `fm_set_activation_table_state_owner` instead of answering
- * a callback per call, so the module serves the import itself. Electing and
- * answering were two jobs in one function; only the first needs JavaScript.
- *
- * `encode_funcref` and `table_mutation_commit` used to be here and are not any
- * more: the module serves both, given the one host capability they needed
- * (`__wpk_fork_host_func_identity`).
- *
- * `exn_ingress_throw` used to be here and is not any more. Its host body threw
- * an `Error` saying no ingress token exists, because the only minter of one is
- * `__wpk_fork_ref_exn_broker_encode`, which the module refuses with
- * `EOPNOTSUPP`. A refusal is not host work: the module states the same bound
- * itself, sets the errno, and traps where the instrumenter's `unreachable`
- * would have trapped one instruction later anyway.
- *
- * The remaining `exn_*` throw is here for a different reason again, and it is
- * NOT a capability limit. It must re-enter wasm throwing a tagged exception, and a
- * JS `throw` cannot do that -- it crosses back as a foreign exception with the
- * wrong tag. But the host import does not have to throw: it can call a guest
- * EXPORT that throws, which is how `fork-exception-broker.ts` implements it.
- * It sits here because the maintainer deferred it to last. Census sections
- * 109 and 174 record that, and that the module could serve them the same way --
- * it already calls guest exports through its drive table, and it already serves
- * this family's third import, `__wpk_fork_ref_exn_broker_encode`.
- */
 /**
  * The namespace this builder owns inside the guest's `env`.
  *
@@ -73,15 +38,6 @@ import {
  * loader -- and is bound by whoever merges this result.
  */
 const FORK_IMPORT_PREFIX = "__wpk_fork_";
-
-export interface ForkGuestHostFloor {
-  readonly __wpk_fork_ref_exn_broker_throw_recipe: (recipe: number) => void;
-}
-
-/** The floor's member names, for callers that need to reason about the set. */
-export const FORK_GUEST_HOST_FLOOR_NAMES = [
-  "__wpk_fork_ref_exn_broker_throw_recipe",
-] as const;
 
 /**
  * The `env` imports a JS host must supply that are NOT functions, with the
@@ -120,8 +76,6 @@ export const FORK_GUEST_HOST_OBJECT_IMPORTS = [
 export interface ForkGuestImportOptions {
   /** The co-resident fork module's exports, after injection. */
   readonly moduleExports: Record<string, unknown>;
-  /** The host's implementations of what the module cannot serve. */
-  readonly floor: ForkGuestHostFloor;
   /**
    * Non-function imports (tables, globals, the unwind tag).
    *
@@ -159,7 +113,7 @@ export interface ForkGuestImportOptions {
 export function buildForkGuestImports(
   options: ForkGuestImportOptions,
 ): Record<string, unknown> {
-  const { moduleExports, floor, extras } = options;
+  const { moduleExports, extras } = options;
   const label = options.label ?? "fork guest imports";
   const env: Record<string, unknown> = { ...extras };
   const missing: string[] = [];
@@ -192,13 +146,6 @@ export function buildForkGuestImports(
     const fromModule = moduleExports[required.name];
     if (typeof fromModule === "function") {
       env[required.name] = fromModule;
-      continue;
-    }
-    const fromFloor = (floor as unknown as Record<string, unknown>)[
-      required.name
-    ];
-    if (typeof fromFloor === "function") {
-      env[required.name] = fromFloor;
       continue;
     }
     missing.push(required.name);
@@ -235,7 +182,7 @@ export function buildForkGuestImports(
   if (missing.length > 0) {
     throw new Error(
       `${label}: ${missing.length} fork import(s) have no implementation, ` +
-        `neither in the fork module nor in the host floor: ${missing.join(", ")}`,
+        `not exported by the fork module: ${missing.join(", ")}`,
     );
   }
   return env;

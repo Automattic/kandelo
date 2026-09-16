@@ -86,6 +86,14 @@ describe("activation drive bindings", () => {
         "wpk_fork_module_table_state_save",
         constant("DRIVE_SLOT_MODULE_TABLE_STATE_SAVE"),
       ],
+      // The activation's own tagged thrower. The module calls this one
+      // DIRECTLY rather than from a plan step: a guest asking to re-raise a
+      // recipe whose tag it does not own arrives mid-replay, not at a moment a
+      // plan could have scheduled. Census 192.
+      [
+        "__wpk_fork_ref_exn_throw_recipe",
+        constant("DRIVE_SLOT_EXN_THROW_RECIPE"),
+      ],
     ]);
     expect(FORK_ACTIVATION_DRIVE_BINDINGS.length).toBe(expected.size);
     for (const { slot, name } of FORK_ACTIVATION_DRIVE_BINDINGS) {

@@ -10014,3 +10014,89 @@ host import is still unexercised. That is a fixture gap older than this
 change -- it predates the hook moving into the module and would have been just
 as unexercised with the host implementation -- but it is the one path where
 this shim's identity matters in production, and it should get a fixture.
+
+## §192 -- The floor reaches zero, and none of it was ever a capability
+
+`buildForkGuestImports` no longer takes a `floor`. `ForkGuestHostFloor`,
+`FORK_GUEST_HOST_FLOOR_NAMES`, `host/src/fork-guest-host-floor.ts` and
+`host/src/fork-exception-broker.ts` are deleted. Every one of the guest's 46
+fork imports is served by the co-resident module.
+
+The set went **6 -> 4 -> 3 -> 2 -> 1 -> 0** across this lane, and the thing
+worth recording is that **not one entry left because a new WebAssembly
+capability appeared.** Each time, the stated reason the entry needed JavaScript
+turned out to name something the module could already reach:
+
+| entry | the reason given | what was actually true |
+|---|---|---|
+| `encode_funcref`, `table_mutation_commit` | wasm cannot compare two funcrefs | true, and the host only had to answer THAT -- `__wpk_fork_host_func_identity` -- while the scan moved into an injected shim |
+| `table_state_owned` | the host elects which coordinate owns a physical table | true, and electing is not answering: it seeds the answer once through `fm_set_activation_table_state_owner` |
+| `provenance_externref` | provenance must be recorded at the production site | the recording had no reader; what was left was `|v| v` (§191) |
+| `exn_ingress_throw` | it must re-enter wasm with a tagged exception | nothing can mint an ingress token, so it only ever stated a refusal the module states itself |
+| `exn_broker_throw_recipe` | same | **the honest one**, and the subject below |
+
+### The last entry, and why "impossible" was the wrong word twice
+
+Re-entering wasm RAISING a tagged exception genuinely cannot be done by a
+JavaScript import -- a JS `throw` crosses back as a foreign exception with the
+wrong tag -- and it cannot be done by the module either, which has no tag of its
+own. §109 records writing that impossibility claim into a file whose job is to
+hold arguments, then reading it back later as evidence.
+
+The resolution is that **neither has to throw.** Both can CALL a guest export
+that throws, and wasm raising its own tagged exception is exactly right. The
+host did that through `ForkExceptionBroker`; the module does it through a drive
+slot -- `DRIVE_SLOT_EXN_THROW_RECIPE`, the sixteenth -- reaching each
+activation's `__wpk_fork_ref_exn_throw_recipe` by `call_indirect`, which is how
+it already drives allocate, fill and materialize. The raised exception
+propagates out through the module's frame to the calling guest exactly as it
+propagated through the JavaScript import frame.
+
+Which activation owns a recipe was never the host's to remember either: it is
+`module_activation` on that node of the graph **the module decoded**. The host
+was reading it back out through `fm_decoded_node_field` to answer a question the
+module could answer without leaving.
+
+### What the host stopped holding
+
+- **The root.** The broker took a `graphRoot` thunk because the module had no
+  root of its own until it built one. `LAST_REPLAY_ROOT` in the module records
+  the arena of its most recent replay, which is the same arena by construction.
+  `moduleStateArenaRoot()` lost its only callers with the broker and is deleted.
+- **The invalidation.** The broker had an `invalidate()` the fork path called at
+  the two moments a new graph exists. The module compares roots instead --
+  `DECODED_GRAPH_ROOT` against `LAST_REPLAY_ROOT` -- which notices the same
+  staleness without dropping a graph the host may still be reading through
+  `fm_decoded_node_field` for its own admission gates. Abandoning it there
+  would have turned the host's reads into `EINVAL`.
+- **Two construction sites and a thread-worker branch.** A pthread worker
+  supplies nothing for exceptions at all now.
+
+No new `fm_*` entry: 56 stays 56, as §174 predicted. The cost was one drive slot
+and one injector thunk, and `DRIVE_SLOTS_PER_ACTIVATION` 15 -> 16 is an
+ephemeral runtime binding contract, not a wire format -- growing it is additive
+and needs no ABI bump.
+
+### Every failure traps, and says why first
+
+`fork-instrument` emits `unreachable` after the call: the import is declared
+never to return, so there is no error value to return and no caller to read one.
+Each refusal sets the sticky errno and traps -- not a recipe id, wrong node
+kind, no graph, or a thrower that RETURNED all give `EINVAL`; a recipe owned by
+`FORK_HOST_EXCEPTION_ACTIVATION_ID` gives `EOPNOTSUPP`, because materializing
+one needs that node's externref payload edge and no module entry exposes it.
+The host said the same thing and could do no better.
+
+### Owed
+
+**The successful cross-activation throw is unexercised.** Nothing in the suite
+builds a sealed graph with a second activation owning an exnref recipe, so the
+path that matters -- owner lookup, slot arithmetic, the guest raising the
+exception, the module's frame propagating it -- has no end-to-end test. That gap
+is older than this change: the host broker's own tests were unit tests over
+mocks, so the JavaScript version was equally unexercised. What IS gated: the
+refusals, against the real artifact (`fork-module-host-obligation.test.ts`), and
+the slot arithmetic exhaustively over every activation a trampoline table can
+address (`fork-module-inject`'s emitted-arithmetic test). The missing piece is a
+two-activation dlopen fixture that throws across the boundary, and it belongs
+with the other owed fixture §191 names.

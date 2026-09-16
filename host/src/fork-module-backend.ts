@@ -98,7 +98,7 @@ export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
  * derives every slot from `fm_drive_table_base`, so a host that grew the table
  * by a smaller stride would leave later activations overlapping earlier ones.
  */
-export const FORK_ACTIVATION_DRIVE_SLOTS = 15;
+export const FORK_ACTIVATION_DRIVE_SLOTS = 16;
 
 /**
  * One activation's guest exports, bound into the module's drive table so the
@@ -159,6 +159,10 @@ export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding
   // The peer-table checkpoint's save walk. Not required: a guest built
   // without dylink support has no table state to publish.
   { slot: 14, name: "wpk_fork_module_table_state_save", required: false },
+  // The activation's own tagged thrower, so the MODULE can ask whichever
+  // activation owns an exception recipe to raise it. Not required: a guest with
+  // no exception codec has no tags to raise and exports no thrower.
+  { slot: 15, name: "__wpk_fork_ref_exn_throw_recipe", required: false },
 ] as const;
 
 /** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
@@ -806,21 +810,13 @@ export class ForkModuleContinuationBackend {
     this.call("fm_decode_reference_graph", moduleStateRoot);
   }
 
-  /**
-   * The root of the KFMS arena THIS module built, or 0 when it built none.
-   *
-   * `fm_module_state_arena` operation 0 (ROOT). Zero is the ordinary answer on
-   * a fork child before its own first capture: the arena it reads was mapped by
-   * its parent and adopted by nobody, so the module has no root of its own and
-   * the caller must use the inherited one.
-   */
-  moduleStateArenaRoot(): number {
-    const read = this.exports.fm_module_state_arena as
-      (op: number, arg: number) => bigint;
-    const root = Number(read(0, 0));
-    if (root < 0) throw new Error(`${this.label}: arena refused ROOT`);
-    return root;
-  }
+  // WHAT USED TO BE HERE: `moduleStateArenaRoot`, which read
+  // `fm_module_state_arena` operation 0 so the host could tell the exception
+  // broker which arena's graph answers "who owns this recipe" -- the module's
+  // own root first, the inherited one as a fallback. The module makes that
+  // choice itself now: it remembers the root of its most recent replay, which
+  // is the same arena by construction. Its last caller went with the broker
+  // (census 192), and a method the host keeps for nobody is host surface.
 
   decodedNodeCount(): number {
     return this.call("fm_decoded_node_count");

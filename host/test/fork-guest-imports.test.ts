@@ -11,30 +11,16 @@ import {
   buildForkGuestImports,
   FORK_ACTIVATION_TRAMPOLINE_SLOTS,
   forkActivationFrameImports,
-  FORK_GUEST_HOST_FLOOR_NAMES,
   forkUnwindTagFrom,
   isForkUnwindException,
   requireForkUnwindTag,
-  type ForkGuestHostFloor,
 } from "../src/fork-guest-imports";
 
-/** A floor whose members exist but are never meant to be called here. */
-function stubFloor(): ForkGuestHostFloor {
-  const floor: Record<string, unknown> = {};
-  for (const name of FORK_GUEST_HOST_FLOOR_NAMES) {
-    floor[name] = () => {
-      throw new Error(`${name} was called by a binding test`);
-    };
-  }
-  return floor as unknown as ForkGuestHostFloor;
-}
-
-/** Module exports covering everything the floor does not. */
+/** Module exports covering every `env` function the contract requires. */
 function stubModuleExports(): Record<string, unknown> {
   const exports: Record<string, unknown> = {};
-  const floorNames = new Set<string>(FORK_GUEST_HOST_FLOOR_NAMES);
   for (const required of WPK_FORK_REQUIRED_IMPORTS) {
-    if (required.module !== "env" || floorNames.has(required.name)) continue;
+    if (required.module !== "env") continue;
     exports[required.name] = () => undefined;
   }
   return exports;
@@ -60,7 +46,6 @@ describe("fork guest imports", () => {
   it("binds every import the generated contract requires", () => {
     const env = buildForkGuestImports({
       moduleExports: stubModuleExports(),
-      floor: stubFloor(),
       extras: requiredTables(),
     });
     // Driven off the same table the binder reads, so a contract change cannot
@@ -80,7 +65,6 @@ describe("fork guest imports", () => {
     try {
       buildForkGuestImports({
         moduleExports: exports,
-        floor: stubFloor(),
         extras: requiredTables(),
       });
     } catch (error) {
@@ -92,17 +76,19 @@ describe("fork guest imports", () => {
     expect(message).toContain("3 fork import(s)");
   });
 
-  it("prefers the fork module over the host floor", () => {
-    // The floor is a fallback, not an override. If a host implementation won,
-    // an entry the module had taken over would keep running in TypeScript and
-    // the surface budget would never see the reduction.
+  it("binds the module's own function for a required import", () => {
+    // This used to say "prefers the fork module over the host floor", and the
+    // preference mattered while a floor existed: a host implementation winning
+    // would keep an entry the module had taken over running in TypeScript, and
+    // the surface budget would never see the reduction. There is no other
+    // source now, so what is left to assert is that the module's function is
+    // bound by identity rather than wrapped.
     const moduleImpl = () => 7;
     const env = buildForkGuestImports({
       moduleExports: {
         ...stubModuleExports(),
         __wpk_fork_ref_encode_funcref: moduleImpl,
       },
-      floor: stubFloor(),
       extras: requiredTables(),
     });
     expect(env.__wpk_fork_ref_encode_funcref).toBe(moduleImpl);
@@ -112,7 +98,6 @@ describe("fork guest imports", () => {
     const table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
     const env = buildForkGuestImports({
       moduleExports: stubModuleExports(),
-      floor: stubFloor(),
       extras: { ...requiredTables(), __wpk_fork_resume_table: table },
     });
     expect(env.__wpk_fork_resume_table).toBe(table);
@@ -127,46 +112,16 @@ describe("fork guest imports", () => {
     expect(() =>
       buildForkGuestImports({
         moduleExports: stubModuleExports(),
-        floor: stubFloor(),
         extras: tables,
       }),
     ).toThrow(dropped);
   });
 
-  it("keeps the floor exactly as large as the module's unserved set", () => {
-    // The floor list and the fork module's coverage are two descriptions of one
-    // split. If the module starts serving an entry and the floor keeps its
-    // implementation, the host keeps running TypeScript nobody needs -- and
-    // `forkGuestImportsUnserved` in docs/surface-budget.json would disagree with
-    // this file. That is the drift this pins.
-    // ONE, and it is not a capability floor: it is the `exn_*` recipe throw
-    // the maintainer deferred, and census section 174 records the drive-slot
-    // shape that would serve it from the module. Its ingress twin left at two:
-    // that half only ever said "no ingress token exists, because the module
-    // refuses the encode that would mint one", and stating a refusal is not
-    // host work -- the module sets the errno and traps where the guest's own
-    // `unreachable` would have trapped one instruction later.
-    //
-    // It was six until the module took over encode_funcref and
-    // table_mutation_commit, and four until table_state_owned moved -- the host
-    // still ELECTS which coordinate owns a physical table, but it seeds that
-    // answer once instead of answering a callback, so the module serves the
-    // import. The last genuine capability entry, provenance_externref, left at
-    // three: its host body recorded a `WeakMap` nothing read, so once that was
-    // gone the import was `|value| value` -- and an identity function over an
-    // externref is something the injector emits and Rust cannot (section 191).
-    // This number falling is what the lane's progress looks like.
-    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(1);
-    expect([...FORK_GUEST_HOST_FLOOR_NAMES]).toEqual(
-      [...FORK_GUEST_HOST_FLOOR_NAMES].sort(),
-    );
-    for (const name of FORK_GUEST_HOST_FLOOR_NAMES) {
-      expect(
-        envImports.some((i) => i.name === name),
-        `${name} must be a real required import`,
-      ).toBe(true);
-    }
-  });
+  // WHAT USED TO BE HERE: a test pinning the floor's size, which fell 6 -> 4 ->
+  // 3 -> 2 -> 1 -> 0 over this lane and is now gone with the concept. Its job
+  // is done by `binds every import the generated contract requires` above: with
+  // no floor to fall back to, a name the module does not export is an unbound
+  // name, and that test fails on it. Census sections 50, 109, 174, 191 and 192.
 });
 
 describe("the artifact's own import list", () => {
@@ -205,7 +160,6 @@ describe("the artifact's own import list", () => {
     try {
       buildForkGuestImports({
         moduleExports: stubModuleExports(),
-        floor: stubFloor(),
         extras: requiredTables(),
         guestModule: moduleImportingGlobal(name),
       });
@@ -223,7 +177,6 @@ describe("the artifact's own import list", () => {
     const name = "__wpk_fork_module_state_table_generation_addr";
     const env = buildForkGuestImports({
       moduleExports: stubModuleExports(),
-      floor: stubFloor(),
       extras: {
         ...requiredTables(),
         [name]: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
@@ -244,7 +197,6 @@ describe("the artifact's own import list", () => {
     try {
       buildForkGuestImports({
         moduleExports: stubModuleExports(),
-        floor: stubFloor(),
         extras: tables,
         guestModule: moduleImportingGlobal(first!),
       });
@@ -261,7 +213,6 @@ describe("the artifact's own import list", () => {
     // fork imports nobody supplied.
     const env = buildForkGuestImports({
       moduleExports: stubModuleExports(),
-      floor: stubFloor(),
       extras: requiredTables(),
       guestModule: moduleImportingGlobal("clock_time_get", "wasi_snapshot_preview1"),
     });
@@ -271,7 +222,6 @@ describe("the artifact's own import list", () => {
   it("is optional, so a caller without the artifact still binds", () => {
     const env = buildForkGuestImports({
       moduleExports: stubModuleExports(),
-      floor: stubFloor(),
       extras: requiredTables(),
     });
     expect(Object.keys(env).length).toBeGreaterThan(0);
