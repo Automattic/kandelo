@@ -3510,6 +3510,59 @@ So the only cohort-seal verification a browser boot performs today is
 `vfs-import-seal-boundary` asserts, and exactly what deleting the class
 removes.
 
+### THE COVERAGE THE DELETION COSTS — filed 2026-09-16, before deleting
+
+The maintainer chose "delete now, file the coverage loss". This is the filing,
+written before the deletion so it cannot be reconstructed afterwards from what
+is missing.
+
+**What goes: 2,317 lines.**
+
+| file | lines |
+|---|---|
+| `host/src/vfs/package-deferred-tree.ts` | 892 |
+| `host/src/vfs/package-deferred-tree-contract.ts` | 250 |
+| `host/test/package-deferred-tree.test.ts` | 453 |
+| `apps/browser-demos/test/package-deferred-tree-browser.spec.ts` | 564 |
+| `apps/browser-demos/test/fixtures/package-deferred-tree-worker.ts` | 158 |
+
+**The loss is bigger than "three chromium tests", and the difference matters.**
+`scripts/ci-run-test-suite.sh:900` runs a *cross-browser contract smoke suite*
+on **chromium, firefox and webkit**, and its six members are
+`boot-current-boundary`, `coi`, **`package-deferred-tree-browser`**,
+`vfs-import-seal-boundary`, `wasm-gc-reference-transport` and
+`wasm-trap-signal`. So this removes a sixth of that set — **nine test
+executions across three engines**, not three — and it is the only one of the
+six exercising deferred-tree fetch, integrity and activation.
+
+**The three guarantees, and where each stands after the deletion:**
+
+1. **Transient retry before EIO** — lost in the browser. The kernel-path
+   equivalent is orphaned (its harness went with Homebrew), so nothing browser
+   side covers it until that harness is rebuilt. `host/test` still covers the
+   retry logic on Node.
+2. **Digest failure without mutation** — lost in the browser, same reason. The
+   KERNEL still refuses deferred bytes whose SHA-256 does not match the `SDEF`
+   record, and that refusal is covered in Rust; what goes is the browser's
+   end-to-end proof of it.
+3. **Seals verified before atomic activation** — not lost so much as RETIRED,
+   under the boundary decided above: verification is builder-time, a boot
+   trusts the artifact. `seal.rs`'s seventeen trials and
+   `a_load_refuses_an_image_whose_seals_do_not_authenticate` keep covering the
+   algorithm and its wiring.
+
+**What does NOT go, deliberately.** `lazy-archive-runtime.spec.ts` keeps four
+of its five tests even though the file cannot run: they are the written
+specification of what a rebuilt acceptance harness must prove, and deleting
+them would throw away the only record of the kernel-path coverage Homebrew's
+removal took. Only its `packageTreeImages` fixture and the one test using it go
+with the module.
+
+**And the CI configuration goes with the files.** `ci-run-test-suite.sh`'s
+suite list and `ci-vitest-evidence-classes.tsv`'s `source-only` row both name
+deleted specs. Leaving either behind is how a suite quietly stops covering what
+its own config claims it covers.
+
 ### DECIDED BY THE MAINTAINER, 2026-09-16 — a documented boundary, not an accident
 
 **Seal verification is BUILDER-TIME ONLY. A boot trusts the artifact.**
