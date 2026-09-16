@@ -3476,8 +3476,58 @@ init SURFACES the refusal instead of starting the worker**
 already passes; it runs on a legacy-built image only because the forgery helper
 is written against the legacy metadata section.
 
-**Guarantee three's port is therefore: rebuild ONE forgery helper against
-`seal.rs`'s encoding.** No Rust, no new browser assertion, no design decision.
+**GUARANTEE THREE CANNOT BE PORTED, BECAUSE THE BOOT PATH DOES NOT HAVE IT.**
+Traced to the bottom this time:
+
+* `verify_cohorts` has **one** caller — `sm_load_image` in
+  `crates/kandelo-image-module/src/lib.rs:246`.
+* **The kernel never checks.** `crates/runtime-core` mentions atomic-group
+  seals only in prose: `sdef.rs:66` says the seal is *"never inspected"* by the
+  kernel, and `rootfs.rs:3954` documents it as carried, not verified.
+* **The browser boot never instantiates the module.**
+  `browser-kernel-worker-entry.ts:795` calls
+  `createBaseImageFromContainer(vfsImage, imageRead, lazyUrlBase)` — three
+  arguments. The fourth, `moduleLazyEntries`, is what routes reads through the
+  module, and it is not passed.
+
+So the only cohort-seal verification a browser boot performs today is
+`memory-fs.ts`'s own, during worker init — which is exactly what
+`vfs-import-seal-boundary` asserts, and exactly what deleting the class
+removes.
+
+### DECIDED BY THE MAINTAINER, 2026-09-16 — a documented boundary, not an accident
+
+**Seal verification is BUILDER-TIME ONLY. A boot trusts the artifact.**
+
+Put to the maintainer with the evidence above and four options; they chose
+"accept the gap and delete anyway", on the condition that it be written down
+explicitly rather than arrived at by deletion. This is that record.
+
+**What the boundary means in practice.** The image module verifies every
+cohort when IT loads an image — during a build, and in any consumer that reads
+through `sm_load_image` — and refuses an image whose seals do not authenticate,
+resetting the tree rather than leaving it mounted. What no longer happens once
+`memory-fs.ts` goes is a re-verification at BOOT: a machine booting an image
+accepts the cohort seals that image carries.
+
+**Why that is defensible, stated so a reader can disagree with it.** The seal
+answers "were these archives sealed together by one producer", which is a claim
+about how the artifact was BUILT. The producer checks it at the moment it can
+be checked cheaply and unforgeably, and an artifact that reaches a boot has
+already passed. The defences a boot still has are the ones that matter against
+a substituted archive at RUNTIME: the kernel refuses deferred bytes whose
+SHA-256 does not match the digest in the image's own `SDEF` record, and refuses
+set-user-ID deferred bytes that declare no digest at all.
+
+**What this does NOT cover, said plainly.** An attacker who can rewrite the
+IMAGE — not the archives it points at — can rewrite the seals with it, and a
+boot will not notice. That is the gap being accepted. Closing it later means
+either routing boot reads through `sm_load_image` (machinery that exists and is
+tested, at the cost of a second filesystem in the worker) or moving
+`verify_cohorts` into `runtime-core`, which `sdef.rs` currently documents the
+opposite of.
+
+
 
 **Three revisions of one paragraph, each after reading one layer deeper, is
 itself the finding.** The rule written after the second — read the thing being
