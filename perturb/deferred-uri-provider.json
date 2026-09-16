@@ -43,6 +43,20 @@
       "scope_end": "\n}\n",
       "find": "  const transports = known?.transports ?? [uri];",
       "replace": "  const transports = known?.transports ?? [];"
+    },
+    {
+      "name": "the transfer is reported per ASK rather than per address, so a retry announces a new download",
+      "scope": "  const deferredProvider = (",
+      "scope_end": "\n  };\n",
+      "find": "      report(onProgress, { ...base, status: \"started\", loadedBytes: 0 });",
+      "replace": "      report(onProgress, { ...base, status: \"started\", loadedBytes: 0 });\n      report(onProgress, { ...base, status: \"started\", loadedBytes: 0 });"
+    },
+    {
+      "name": "the kind is invented rather than read from what the host knows",
+      "scope": "  const deferredProvider = (",
+      "scope_end": "\n  };\n",
+      "find": "        kind: (known === undefined ? \"file\" : \"archive\") as \"file\" | \"archive\",",
+      "replace": "        kind: \"archive\" as \"file\" | \"archive\","
     }
   ]
 }
