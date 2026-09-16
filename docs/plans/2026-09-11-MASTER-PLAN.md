@@ -3144,10 +3144,59 @@ decision rather than on effort.**
   `rootDir` during its dts emit, and enforced for a good reason: the host
   runtime shipping the image BUILDER is the coupling this lane exists to remove.
 
-**So the question that actually gates deleting `memory-fs.ts` is: where is the
-image reader allowed to live?** Either it becomes something `host/src` may
-depend on, or `binary-resolver`'s ABI gate moves out of `host/src`. That is a
-packaging decision and it is the maintainer's, not this lane's.
+### THE GATING QUESTION WAS THE WRONG QUESTION — answered 2026-09-16
+
+It was recorded as "where is the image reader allowed to live?", a packaging
+decision. Asked the maintainer, who asked back what `binary-resolver.ts` is
+FOR, and answering that honestly dissolved most of it.
+
+**What it is for.** 4,020 lines that, given a relative path like
+`programs/wasm32/php.wasm` or `rootfs.vfs`, decide WHICH COPY to use —
+`local-binaries/` built locally, `binaries/` fetched — and refuse a candidate
+that fails artifact policy. The image coupling is ONE call in those 4,020
+lines (`binary-resolver.ts:2993`): for a `.vfs`/`.vfs.zst` candidate it reads
+the image's declared `kernelAbi` and refuses a mismatch, fail-closed. It needs
+no filesystem, no tree, no writer — a ~40-byte header parse.
+
+**So the gate moved to the kernel** (`2af5c7921`), which owns the ABI contract
+and already holds the metadata bytes at load. `image_policy::check_declared_abi`
+compares the declaration against `ABI_VERSION`; `rootfs::load_image` refuses a
+mismatch with **EPROTO, not EINVAL** — the image is not malformed, it speaks a
+different version of the contract, and a caller that cannot tell those apart
+reports a rebuildable artifact as a corrupt one. An image declaring nothing
+still loads: refusing it would be refusing the absence of evidence.
+
+**The obstacle found on the way, and why it did not stop the work.**
+`metadata_span` deliberately hands the section back as OPAQUE bytes, with a
+comment arguing two things: the JSON has an open shape, so parse-and-reserialize
+would silently drop unknown fields; and a parser's attack surface to read three
+fields the kernel "does not act on" buys nothing. The first still stands. The
+second turns on *does not act on* — which is precisely what changed. So the
+kernel reads the one field it acts on with a bounded scan that allocates
+nothing and cannot run past its input, and a malformed section declares no ABI
+rather than failing the machine. Six trials, all killed.
+
+**AND THE HOST CHECK STILL CANNOT GO, for a reason neither of us had on the
+table.** It is not only a refusal — it is a SELECTION input. `binary-resolver`
+uses it to pick BETWEEN two candidate files: `host/test/binary-resolver.test.ts`
+has *"skips a stale local `.vfs.zst` when a fetched ABI-matching candidate
+exists"* and its `.vfs` twin. The kernel's gate refuses whatever it is handed;
+it cannot hand back a different file. Deleting the host check would silently
+change which artifact resolves.
+
+**Which relocates the blocker rather than removing it, and that is progress.**
+Step 5 is no longer waiting on a packaging decision about where a reader may
+live. It is waiting on the REMOTE TIER: with one tier there is nothing to
+select between, the check collapses to a refusal, and the kernel already does
+that. The maintainer has parked the remote tier as out of this lane ("not now"),
+so the honest statement is: **`memory-fs.ts` cannot be deleted until the
+second binary tier goes, and that is a build-lane decision.**
+
+Measured while asking: `binaries/` in this worktree holds **10 files, all
+`shadowed-*.wasm` test fixtures, and zero `.vfs`**. Every VFS image lives under
+`local-binaries/source-only-v1/`. So for images the second tier is already
+empty in practice — which is evidence for the removal, not a licence to assume
+it.
 
 ## V-NAME — COMPLETE, 2026-09-16
 
@@ -3214,6 +3263,45 @@ pair, which `overlay` / `parent_sffs` never did.
 **`b"hello sffs\n"` and the `sffs-*.deflate` fixture names stay**, and the
 rename must be done name-by-name rather than by a `\bsffs\b` sweep, which is
 exactly how the fixture content was damaged the first time.
+
+### V-NAME IS ACTUALLY COMPLETE NOW — 2026-09-16, and the sweep was deeper than the count
+
+Landed in two commits (`01b3d4e3b`, `4b13017b1`). The 67 counted identifiers
+went as planned. **Asked whether a deeper sweep was coming, the honest answer
+was that the count had itself been too narrow** — it covered `crates/`,
+`host/src` and `images/` and stopped there. What it had missed:
+
+| what | where |
+|---|---|
+| `browserSffsModule32ModuleSpecifier` | the vite alias CONTRACT, its config, and the CI browser-asset check |
+| `SFFS_MODULE32` | `apps/browser-demos/vite.config.ts` |
+| `sffsImageFsModulePath`/`Url`, `sffsModuleWasmPath`, `sffsModuleBytes`, `sffsModuleUrl` | twelve Playwright specs and the kernel-owned boot path |
+| `sffsTypeScript` | a LIVE budget key, in `docs/surface-budget.json` and the test that reads it |
+| stale FILE references | `sffs_deferred.rs` is `sdef.rs`; `sffs.rs` is `kandelo_image_fs.rs` |
+
+Checked one-to-one per file that no two old names collapsed into one new one,
+and that no new name already existed in that file — `secure-exec-startup.spec.ts`
+already had an `imageFs`, which is the kind of thing that makes a rename quietly
+wrong.
+
+**Four comment lines in `host/src/kernel-worker.ts`** were changed with explicit
+approval, the brief's off-limits file. Comments only. Recorded because the
+boundary matters more than the diff.
+
+**docs/ went to the reference docs and no further** — `abi-versioning.md` and
+the budget. `docs/plans/` and `docs/superpowers/plans/` keep the old names,
+because rewriting a record of what happened damages it; the mapping table above
+is how a reader decodes them.
+
+**`packages/registry/vim` has two `sffs` hits and they are not ours** — a vim
+PostScript hardcopy routine. A sweep that had trusted the pattern instead of
+reading the hits would have edited a vendored upstream file.
+
+**Three perturb trials rotted on the rename** (`runtime-core-rootfs-export`,
+`runtime-core-rootfs`) and were repointed; `--validate` caught all three before
+a run. That is the second time in one session that validate-first paid for
+itself, and the failure mode it prevents is the quiet one: a trial that matches
+nothing does not run, and reads exactly like one that ran and was killed.
 
 **The byte order, which `SFFS` had been hiding.** The magic is read as a
 little-endian `u32`, so the LOW byte is the first character. `SFFS` is a
