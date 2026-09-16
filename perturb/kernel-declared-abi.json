@@ -24,25 +24,46 @@
       "replace": "    const KEY: &[u8] = b\"kernelAbi\";"
     },
     {
-      "name": "a value too large for a u32 is clamped instead of refused",
+      "name": "the key is matched at any depth, so a base image's declaration can win",
       "scope": "pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {",
       "scope_end": "\n}\n",
-      "find": "            value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;",
-      "replace": "            value = value.saturating_mul(10).saturating_add(u32::from(byte - b'0'));"
+      "find": "                if depth == 1 && metadata[at..].starts_with(KEY) {",
+      "replace": "                if metadata[at..].starts_with(KEY) {"
+    },
+    {
+      "name": "an escape is not honoured, so a quoted quote ends the string early",
+      "scope": "pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {",
+      "scope_end": "\n}\n",
+      "find": "            } else if byte == b'\\\\' {\n                escaped = true;",
+      "replace": "            } else if false {\n                escaped = true;"
+    },
+    {
+      "name": "a closing quote does not close the string, so nothing is ever structural again",
+      "scope": "pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {",
+      "scope_end": "\n}\n",
+      "find": "            } else if byte == b'\"' {\n                in_string = false;\n            }",
+      "replace": "            } else if byte == b'\"' {\n                in_string = true;\n            }"
+    },
+    {
+      "name": "a value too large for a u32 is clamped instead of refused",
+      "scope": "fn read_number_after_key(",
+      "scope_end": "\n}\n",
+      "find": "        value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;",
+      "replace": "        value = value.saturating_mul(10).saturating_add(u32::from(byte - b'0'));"
     },
     {
       "name": "a key with no digits after it reports zero rather than nothing",
-      "scope": "pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {",
+      "scope": "fn read_number_after_key(",
       "scope_end": "\n}\n",
-      "find": "        if cursor == start {\n            at += 1;\n            continue;\n        }",
-      "replace": "        if false {\n            at += 1;\n            continue;\n        }"
+      "find": "    if cursor == start {\n        return None;\n    }",
+      "replace": "    if false {\n        return None;\n    }"
     },
     {
-      "name": "whitespace around the colon is not skipped, so a pretty-printed image declares nothing",
-      "scope": "pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {",
+      "name": "whitespace before the colon is not skipped, so a pretty-printed image declares nothing",
+      "scope": "fn read_number_after_key(",
       "scope_end": "\n}\n",
-      "find": "        let mut cursor = at + KEY.len();\n        while matches!(metadata.get(cursor), Some(b' ' | b'\\t' | b'\\n' | b'\\r')) {\n            cursor += 1;\n        }",
-      "replace": "        let mut cursor = at + KEY.len();"
+      "find": "    let mut cursor = from;\n    skip_space(&mut cursor);",
+      "replace": "    let mut cursor = from;"
     }
   ]
 }
