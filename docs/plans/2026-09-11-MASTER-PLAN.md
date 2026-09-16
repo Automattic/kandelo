@@ -9393,6 +9393,32 @@ new trials run, 0 survived, 0 invalid. Surface budget: 101 passed, and it
 REFUSED a ceiling raise twice — once repaid by deleting a dead parameter, once
 by inlining a single-use indirection. `./run.sh setup`: `"outcome":"succeeded"`.
 
+**BROWSER RE-MEASURED 2026-09-16, after the ABI gate and the rename** —
+`--grep-invert @slow --project=chromium --workers=1`, `Running 194 tests using
+1 worker`, on a tree provisioned by `./run.sh prepare-browser` (7/7 products):
+
+| | documented baseline | this run |
+|---|---|---|
+| passed | 164 | **168** |
+| failed | 14 | 14 |
+| skipped | 6 | 6 |
+| did not run | 10 | **6** |
+
+**The failing SET is the recorded fourteen, member for member, with one
+documented substitution.** Thirteen names match exactly. The fourteenth is the
+`kandelo-merge-gate` alternation this section already records — item 6, *"shell
+demo runs bash, vim, and NetHack"*, now PASSES, and its sibling *"Node.js demo
+evaluates JavaScript in the terminal"* reports instead. Both fail on the parent
+in isolation.
+
+So the branch introduces no browser failure the baseline does not have, and
+four tests that previously never ran now run and pass.
+
+**This is a BEFORE measurement, not the closing one.** The `mountPrefix`
+normalization landed after it and touches `images/`, which moves closure cache
+keys (B38), so one further run closes the claim — see the rule above and the
+batching decision beside it.
+
 **Browser: 165 passed / 19 failed**, from 81 failures at the start of the night.
 **The bar IS met, and the earlier entry saying otherwise was wrong** — corrected
 by measuring the parent rather than reasoning about a count. See *"The browser
