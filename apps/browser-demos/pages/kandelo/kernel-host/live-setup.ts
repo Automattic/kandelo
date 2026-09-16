@@ -1160,6 +1160,16 @@ async function bootProfile(
     `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
   );
   const fetchedVfsImageBytes = new Uint8Array(loadedVfs.imageBytes);
+  // BEFORE the first use of the bridge, not before the first WRITE to it.
+  // `readImageMetadata` and `readImageCapacity` look like pure readers and are
+  // not: each instantiates the module to read the image, because the module is
+  // what knows the layout. Installing after them left the flagship demos
+  // failing to boot with "SffsImageFs.create() has no module bytes", which
+  // reads as a missing artifact and is a missing await.
+  //
+  // `node-image-runtime.test.ts` asserts this ordering, so moving a bridge call
+  // above this line fails a test rather than a demo.
+  await ensureImageWriterInstalled();
   const vfsMetadata = SffsImageFs.readImageMetadata(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
     // `byteLength` is the image as fetched; `maxByteLength` is what it
@@ -1196,7 +1206,6 @@ async function bootProfile(
   //
   // Same reader and writer the image was BUILT with now, so what it says
   // survives being read and written again.
-  await ensureImageWriterInstalled();
   const buildFs = SffsImageFs.create();
   buildFs.loadImage(fetchedVfsImageBytes);
   buildFs.setImageCapacity(profile.maxVfsByteLength);

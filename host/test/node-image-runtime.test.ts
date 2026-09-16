@@ -126,6 +126,41 @@ describe("image-owned Node demo runtime", () => {
     // And the mapping it replaced is computed, so this is a MOVE rather than a
     // deletion: the addresses still reach the deployment, beside the image.
     expect(liveSetup).toContain("imageOwnedRuntimeUrlTable(loadedVfs.lazyAssets)");
+
+    // The image writer is installed BEFORE the first use of the bridge.
+    //
+    // This is an ordering rule, and an ordering rule nobody checks is how the
+    // flagship demos spent a browser cycle failing to boot with
+    // "SffsImageFs.create() has no module bytes". The install was present and
+    // sat 36 lines too late, because `readImageMetadata` and
+    // `readImageCapacity` look like pure readers and each instantiates the
+    // module to read the image.
+    //
+    // Asserted on the source text because the cheap alternative — trusting a
+    // comment — is exactly what failed. A bridge call added above the install
+    // now fails here, in milliseconds, instead of in a 90-minute browser cycle.
+    // Line-by-line, skipping comments: the explanation above the install in
+    // live-setup QUOTES the error text, so a naive text search finds the prose
+    // that documents the rule and reports it as the rule being broken.
+    const codeLines = liveSetup.split("\n").map((line, index) => ({ line, index }))
+      .filter(({ line }) => {
+        const t = line.trim();
+        return t.length > 0 && !t.startsWith("//") && !t.startsWith("*")
+          && !t.startsWith("/*");
+      });
+    const installLine = codeLines.find(({ line }) =>
+      line.includes("await ensureImageWriterInstalled()")
+    );
+    const firstCallLine = codeLines.find(({ line }) =>
+      /SffsImageFs\.(create|readImage[A-Za-z]+)\(/.test(line)
+    );
+    expect(installLine, "live-setup must install the image writer").toBeDefined();
+    expect(firstCallLine, "live-setup must call the bridge at all").toBeDefined();
+    expect(
+      installLine!.index,
+      "ensureImageWriterInstalled() must precede the first SffsImageFs call; "
+        + "readImageMetadata and readImageCapacity instantiate the module too",
+    ).toBeLessThan(firstCallLine!.index);
   });
 });
 
