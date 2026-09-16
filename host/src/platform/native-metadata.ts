@@ -86,7 +86,13 @@ export function modeAfterRegularFileMutation(
  * a genuine host-level read-only file still fails its write at the native fs
  * layer. Guest `chmod`/`chown` continue to override through the overlay.
  */
-const SYNTHESIZE_POSIX_MODE = process.platform === "win32";
+// GUARDED because this module is evaluated in the BROWSER: the shared
+// lifecycle imports `./vfs`, which reaches here, and a bare `process` read
+// at module scope threw `ReferenceError: process is not defined` before the
+// browser kernel worker could start -- every fork spec failing at init with
+// no hint of where. There is no Windows in a browser, so the answer is no.
+const SYNTHESIZE_POSIX_MODE = typeof process !== "undefined"
+  && process.platform === "win32";
 
 export function synthesizePosixMode(nativeMode: number): number {
   const type = nativeMode & S_IFMT;

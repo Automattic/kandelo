@@ -2,13 +2,13 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../src/binary-resolver";
 import { detectPtrWidth } from "../src/constants";
-import { FORK_ANYREF_TRANSIT_IMPORT } from "../src/fork-anyref-transit";
 import { FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT as FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT }
   from "../src/fork-guest-imports";
 import { WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME }
   from "../src/generated/abi";
 import {
   WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+  WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
   WPK_FORK_RESUME_IMPORT_TABLE,
 } from "../src/generated/abi";
 
@@ -175,7 +175,7 @@ describe("ABI version marker", () => {
       } else if (imp.kind === "table") {
         // WHY: ABI 43's GC transit table has `(ref null any)` element type and
         // cannot be replaced by the legacy `anyfunc` resume table.
-        if (imp.name === FORK_ANYREF_TRANSIT_IMPORT) {
+        if (imp.name === WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT) {
           target[imp.name] = gcTransitTable;
         } else if (imp.name === WPK_FORK_RESUME_IMPORT_TABLE) {
           target[imp.name] = resumeTable;

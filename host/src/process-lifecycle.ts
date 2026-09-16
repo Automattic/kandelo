@@ -64,7 +64,13 @@ import {
   retryKernelEntryResult,
   retryKernelEntryResultForGeneration,
 } from "./kernel-entry-retry";
-import { readPreparedPlatformFile } from "./vfs";
+// PAST THE BARREL, deliberately. `./vfs`'s index re-exports `HostFileSystem`
+// and the Node mount resolver, which import `node:fs` -- and this module is
+// shared with the BROWSER kernel worker, where that import is fatal at load:
+// the worker died with `Module "node:fs" has been externalized` before it
+// could start, so every browser fork spec failed at init. One name is needed
+// here; take it from the file that defines it.
+import { readPreparedPlatformFile } from "./vfs/vfs";
 import type { PlatformIO } from "./types";
 import {
   describeWasmArtifactPolicyFailures,

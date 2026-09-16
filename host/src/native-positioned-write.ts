@@ -248,7 +248,10 @@ function openExactNativeCompanion(
   nativeFlags: number,
   purpose: string,
 ): number {
-  const candidates = process.platform === "linux"
+  // Guarded for the same reason as `native-metadata`: this file is reachable
+  // from the shared lifecycle, and a browser has no `process`. It also has
+  // no `/proc`, so the non-Linux branch is the right answer there.
+  const candidates = typeof process !== "undefined" && process.platform === "linux"
     ? [
         { path: `/proc/self/fd/${primary}`, mayFallback: true },
         { path: nativePath, mayFallback: false },
