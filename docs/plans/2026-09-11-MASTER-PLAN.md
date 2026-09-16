@@ -3025,7 +3025,58 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
-## V-NAME — give `SFFS` a name that means something
+## V-NAME — LANDED except the magic, 2026-09-16
+
+Three stages, each green and pushed: the Rust side (`5e9fabc24`), the
+TypeScript bridge (`28d6e305d`), and the crate, artifact and last stragglers
+(`5dbafed68`). **Every name a human reads now says what the thing is.**
+`KandeloImageFs`, `KandeloImageWriter`, `KandeloImageError`,
+`kandelo_image_fs.rs`, `kandelo-image-module`, `kandelo_image_module32.wasm`.
+
+**Two files moved to names that were never the filesystem's**, which was most
+of the value: `sffs_container.rs` held the `VFSI` CONTAINER and is
+`vfsi_container.rs`; `sffs_deferred.rs` held the `SDEF` section and is
+`sdef.rs`.
+
+**The rename found a real defect, which is the argument for doing renames at
+all.** `ImageGeometry` carried `image_len` for the CONTAINER and `sffs_len` for
+the filesystem inside it. Renaming the second to match made the struct take the
+container's length twice and stopped compiling — two different lengths had been
+sharing one concept name, and only the collision said so. They are `image_len`
+and `fs_len` now.
+
+**And it found a thing renames must not do.** `b"hello sffs\n"` and its
+siblings are fixture CONTENT, baked into the committed `.deflate` files and
+into the TypeScript writer's output that
+`small_tree_matches_the_typescript_writer_byte_for_byte` compares against. An
+over-broad rewrite treated data as a name; the byte comparison caught it, in
+bytes. They stay.
+
+### What is left: the four bytes, and why they waited
+
+`KANDELO_IMAGE_MAGIC` is still `0x5346_4653`. Everything is enumerated and
+ready; the reason to stop was judgement about WHEN, not whether.
+
+* it invalidates every built image, so it lands as "rename + rebuild" and wants
+  someone watching the rebuild rather than a 3am one;
+* it is **guest-observable**, which the first survey missed.
+  `host/src/statfs.ts`'s `SFFS_SUPER_MAGIC` is the `f_type` that `statfs(2)`
+  reports, set to the same bytes by the Linux convention. Changing the
+  filesystem's identity changes what a guest program sees, so the two must move
+  together and the change is not purely internal;
+* both WRITERS must change in the same commit — `kandelo_image_write.rs` and
+  `sharedfs-vendor.ts`'s `MAGIC` — or the byte-for-byte comparison between them
+  fails;
+* the four `.deflate` fixtures then need regenerating through
+  `host/scripts/gen-kandelo-image-{rust,writer}-fixture.mts`;
+* and it would land on top of a browser suite at 19 failures that are not yet
+  fully explained, making a new failure harder to attribute.
+
+Sites: `kandelo_image_fs.rs:304`, `:387`, the assertion at `:954`,
+`sharedfs-vendor.ts:44`, `statfs.ts:6`. **Checked: the magic does not reach
+`abi/snapshot.json`.**
+
+## The name, as decided
 
 **Maintainer-requested, 2026-09-15.** `SFFS` is documented as
 *"SharedFileSystem"* (`crates/runtime-core/src/sffs.rs:1`), and that name is
