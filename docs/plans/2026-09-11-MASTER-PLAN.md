@@ -8263,6 +8263,47 @@ one that may hold a stale symlink.
 
 # LANE Y — VFS image builders write the image format in TypeScript
 
+## STATE ON 2026-09-16 — read this first
+
+**Landed and pushed to `brandonpayton/lane-y-image-writer`.** Every commit
+below is green on its own evidence and the branch is pushed after each.
+
+| what | commits |
+|---|---|
+| **B42** URI relay — kernel + host, the host's id→URL table gone | `66e3cb3cf` |
+| **B43** closed as a side effect; its `it.fails` pin is a plain `it` again | (same) |
+| Set-ID on unvouched bytes refused in BOTH producers | `8758ffede` |
+| Double-report fix, seam contract test, lane L's citations re-anchored | `ce7892be2` |
+| Two untested guards on the set-ID path, found by writing the trials | `63b7d8776` |
+| **B45** filed, measured on the real artifact, pinned on Node | `73b7930ed` |
+| **B45** fixed — steps 1 and 2, plus three browser defects it exposed | `83d3e052c` `812521b23` `b7711b91a` `27855cf5f` `a8a8d3cff` `b3f6567ff` |
+| **V-NAME** renamed, all but the four magic bytes | `5e9fabc24` `28d6e305d` `5dbafed68` |
+
+**Evidence.** Rust: runtime-core 2198, kandelo-image-module 80, host-native 74,
+wasm32 release clean. `xtask perturb --validate`: 376 trials, all anchoring; 14
+new trials run, 0 survived, 0 invalid. Surface budget: 101 passed, and it
+REFUSED a ceiling raise twice — once repaid by deleting a dead parameter, once
+by inlining a single-use indirection. `./run.sh setup`: `"outcome":"succeeded"`.
+
+**Browser: 165 passed / 19 failed**, from 81 failures at the start of the night.
+The bar was "no new failures against the fourteen named ones" and **it was not
+met** — see *"Where the browser actually stands"* under B45 for the reconciliation
+and for which four failures are image-adjacent and uncleared.
+
+**The one thing I would want a second opinion on**: three lines in
+`host/src/kernel-worker.ts`, a file the brief says to stay out of. They are a
+type annotation on a parameter that file stores and forwards without ever
+calling — `(kind: number, id: bigint, ...)` became `(uri: string, ...)` when the
+seam's contract changed. No logic, one line fewer. The alternative was weakening
+the type to dodge the rule.
+
+**Open, in the order I would take them**: the four magic bytes (V-NAME's last
+step, deliberately left — see its section); the four image-adjacent browser
+failures; a true Node baseline, which is still owed because every claim about
+the host suite's remaining failures rests on inspection rather than a
+before-and-after.
+
+
 > **2026-09-15 — the lane's Node work is landed, and the browser is not.**
 > `tools/mkrootfs` writes the rootfs with the Rust writer, the URI relay landed
 > (B42), the host's id->URL table is gone, and B43 closed as a side effect. Then
