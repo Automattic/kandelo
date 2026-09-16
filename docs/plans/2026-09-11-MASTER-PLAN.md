@@ -8800,6 +8800,27 @@ below is green on its own evidence and the branch is pushed after each.
 | **B45** filed, measured on the real artifact, pinned on Node | `73b7930ed` |
 | **B45** fixed — steps 1 and 2, plus three browser defects it exposed | `83d3e052c` `812521b23` `b7711b91a` `27855cf5f` `a8a8d3cff` `b3f6567ff` |
 | **V-NAME** renamed, all but the four magic bytes | `5e9fabc24` `28d6e305d` `5dbafed68` |
+| **V-NAME** the four magic bytes — `KIFS`, `0x5346_494B` | `db6bb4e51` |
+| `hasConfiguredDemoLogin` stops answering "not configured" for "I could not ask" | `5db1c46f5` |
+| `open`'s mode is spent on CREATION only; `demo-login-image` repointed and green | `ca7d70b52` `a53f6f9a0` |
+| `/home/maker` is the kernel's tmpfs; `node-demo-workspace` ported off a shadowed host mount | `347dc544d` |
+| **V-NAME finished for real** — 67 identifiers, the vite alias contract, a live budget key | `01b3d4e3b` `4b13017b1` `e7570b373` |
+| An image declaring another kernel's ABI is refused AT LOAD, in the kernel | `2af5c7921` `055bce31e` |
+
+**Perturb corpus: 397 trials, all anchoring.** Fifteen new trials this session
+(`demo-login-not-found` 4, `image-open-create-mode` 5, `kernel-declared-abi` 6),
+every one killed. Four pre-existing trials rotted as the code moved under them
+and were repointed — all four caught by `--validate` before a run.
+
+**Still open, and NOT in a lane section so they survive this one closing:** see
+*"CARRIED OPEN ITEMS"* — O-1 (`opcache-prewarm`'s two red tests, measured to be
+outside this lane) and O-2 (the second binary tier, which is now what blocks
+lane V step 5).
+
+**Browser validation is OWED.** Everything since `db6bb4e51` touches
+`crates/runtime-core`, which moves closure cache keys (H-23/B38), so the last
+browser measurement no longer describes this branch. The maintainer's standing
+sequence is Node first, then browser; the Node side is green above.
 
 **Both suites now match the parent, measured after the magic change.**
 
