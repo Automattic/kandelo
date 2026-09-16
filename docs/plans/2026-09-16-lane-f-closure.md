@@ -171,10 +171,40 @@ takes 30 seconds, not 370. It answered `13` on the first try, naming
 `capture_builder()` exactly. The instrumentation was reverted immediately and
 the artifact verified back to its committed bytes.
 
-**The next problem, identified but not diagnosed:** the eight remaining
-failures hang rather than erroring. The child process is created and neither
-side finishes. Nothing in an errno will explain that; it needs tracing the
-child's replay, which is its own piece of work.
+### The remaining 8, diagnosed: native reference reconstruction faults
+
+Traced with the same technique — milestone prints, one 30-second test — and
+the answer is not where the symptom pointed. The child is fine: it enters,
+seeds, replays references and reconstructs, every step. **The PARENT's own
+resume traps**, with `wasm 'unreachable' instruction executed` inside
+`wpk_fork_resume_start` -> `__wpk_fork_resume_1` -> the guest's own frames.
+That is the guest's assertion firing on a reference that did not come back
+right, on a host whose reference reconstruction is the fine-grained
+`fm_begin_reference_replay` + `fm_build_gc_plan` + `fm_drive_execute`
+sequence rather than the coarse `fm_attach_child` the JavaScript hosts use.
+
+**Comparing against a passing test is what found it.** In
+`smoke_fork_parent_child` (now green) the resumed guest NEVER RETURNS — it runs
+to process exit, which is correct. In the failing tests it returns with an
+error. One trace of each, side by side, and the difference is a single line.
+
+### And the reason it looked like a hang
+
+`run_fork_capable_entry`'s `match result` treats a `wasm unreachable` trap as
+this host's own exit path — which it legitimately is, because the kernel
+commits the exit status and then traps via `kernel_exit`'s `unreachable`. So a
+genuine reconstruction fault and a clean process exit arrive as the same value,
+and the fault is swallowed: no message, no failure, just a pump that waits 30
+seconds for a process that already gave up.
+
+**That is worth fixing on its own**, independent of the reconstruction work: a
+host that cannot tell "the guest exited" from "the guest faulted" will hide the
+next one of these too. The JavaScript hosts distinguish them because the kernel
+records the exit before the trap; host-native has the same information and does
+not check it here.
+
+Both are native-host work of their own, not a sixth instance of the five fixed
+above.
 
 ## Still the maintainer's
 
