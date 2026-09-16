@@ -3130,7 +3130,36 @@ image reader allowed to live?** Either it becomes something `host/src` may
 depend on, or `binary-resolver`'s ABI gate moves out of `host/src`. That is a
 packaging decision and it is the maintainer's, not this lane's.
 
-## V-NAME — LANDED except the magic, 2026-09-16
+## V-NAME — COMPLETE, 2026-09-16
+
+Four stages: the Rust side (`5e9fabc24`), the TypeScript bridge (`28d6e305d`),
+the crate and artifact (`5dbafed68`), and the four magic bytes (`db6bb4e51`).
+`SFFS` is gone from the format, the code and the `statfs(2)` `f_type`.
+
+**The byte order, which `SFFS` had been hiding.** The magic is read as a
+little-endian `u32`, so the LOW byte is the first character. `SFFS` is a
+byte-palindrome — `53 46 46 53` — so the old constant read correctly whichever
+way you thought about it. `KIFS` is not: the first attempt wrote
+`0x4B49_4653` and produced `SFIK` in the file. The constant is `0x5346_494B`.
+The fixtures caught it in bytes, immediately, which is the only way this kind
+of error announces itself.
+
+**`tiny.vfs` is PATCHED, not regenerated, and that distinction is the whole
+lesson of the step.** Its job is to be an image that PREDATES the kernel-lazy
+section: three tests assert a reader reports "not declared" rather than
+inventing one out of the bytes that follow. Regenerating it produced a CURRENT
+image carrying a `KLZY` section, which changed what the fixture MEANS and broke
+those tests. A fixture is not always a sample of today's output — sometimes it
+is a sample of a specific yesterday, and regenerating it destroys the only copy
+of that. Only its four magic bytes moved.
+
+The four `.deflate` fixtures ARE regenerated, because they are compared
+byte-for-byte against the TypeScript writer and both writers moved together.
+
+**Verified in the artifact rather than inferred from a green build**: both built
+rootfs images carry `KIFS` and zero `SFFS`. `./run.sh setup` reports
+`"outcome":"succeeded"`; runtime-core 2198, kandelo-image-module 80, host-native
+74, wasm32 clean, 382 perturb trials anchoring, 175 image tests passing.
 
 Three stages, each green and pushed: the Rust side (`5e9fabc24`), the
 TypeScript bridge (`28d6e305d`), and the crate, artifact and last stragglers
