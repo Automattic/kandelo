@@ -86,20 +86,55 @@ mutation that had passed the entire fork suite now fails on the first call.
 
 ## Validation
 
-- **Host suite**: matched its baseline — 64 expected failures, nothing new,
-  nothing unbanked — for every commit up to the staging-slab fix. It does NOT
-  match as of the final run, and the reason is item 5 in the maintainer list
-  below, not this lane's code: six package tests regress because the
-  source-only projection authority is retracted, which happens whenever a
-  package build does not complete, and `php/wasm32` cannot build in a worktree
-  whose cache root the SDK's pkg-config filter rejects. They fail at import
-  time, before a test body runs, in files that never import anything this lane
-  touched.
+- **Host suite**: `host/test/expected-failures.json` lists **64** failing
+  files:
+
+      jq '.expectedFailures|length' host/test/expected-failures.json
+
+  An earlier draft of this bullet said the suite matched that baseline
+  "throughout". It did not: runs during this lane reported 185 and then 101
+  expected failures against earlier baselines, as the lane restored coverage.
+  "Throughout" was never one number and is not a claim this doc can support.
+
+  One run late in the lane reported six package tests regressing — `bzip2`,
+  `gzip`, `unzip`, `xz`, `zip`, `zstd` — and the account of that in
+  `c23de3fa6` was WRONG, in a way worth recording because the corrected
+  version is the useful one.
+
+  What that run's error actually said was that BOTH routes to a program
+  artifact refused: the `source-only-v1` tier for an absent program projection
+  authority, and `local-binaries` as "local mirror targets are not one direct
+  immutable local generation". I built a causal chain on the first refusal
+  alone — projection retracted, retraction needs a complete build, php blocks
+  the build — wrote it into this doc and a commit message, and never tested
+  whether clearing the SECOND refusal would fix it.
+
+  It does. A partial `local-build` (41 built, 19 already cached, stopped at
+  php) gave `local-binaries` a fresh generation; `programs/wasm32/gzip.wasm`
+  now resolves from `local-binaries/.kandelo-local-generations/...` and **all
+  six tests pass, with the projection still absent**. The precise semantics of
+  the local-generation refusal are NOT established here: what is verified is
+  the before, the intervention, and the after.
+
+  The lesson is the cheap one. The failure named two refusals and I acted on
+  one without ruling out the other. The final run at
+  `56020b54a` is GREEN: "host suite matches its baseline: 64 expected
+  failures, nothing new, nothing unbanked", exit 0, 64 failed / 378 passed /
+  4 skipped of 446 files.
 - **Browser**: 18/18 fork specs in Chromium at `9bc5309e1`, re-verified after
-  each change to the module up to that point. NOT re-run for `a5e101770`, which
-  changes `host/src/fork-module-backend.ts` — shared host TypeScript the
-  browser kernel worker loads, not module-only. Under the host-runtime parity
-  contract that makes this line evidence about `9bc5309e1`, not about HEAD.
+  each change to the module up to that point. **The 18 are these six files**,
+  named because "18/18" with no file list is a number nobody can refute:
+  `fork-continuation` (5), `vfork-lifecycle` (9),
+  `fork-module-worker-instantiation` (1), `funcref-fork-module-worker` (1),
+  `gc-reference-cycle-fork-module-worker` (1) and
+  `wasm-gc-reference-transport` (1) — the last of which does not have "fork" in
+  its name, so a grep for fork specs misses it and lands on 17.
+
+  NOT re-run for `a5e101770`, which changes `host/src/fork-module-backend.ts` —
+  shared host TypeScript the browser kernel worker loads, not module-only.
+  Under the host-runtime parity contract that makes this line evidence about
+  `9bc5309e1`, not about HEAD. Re-running that set is the one obligation still
+  open on `a5e101770`.
 - **Surface budget**: 99 checks pass. TWO ceilings were RAISED. The second is
   `forkTypeScript` 886 → 890, four lines for the staging-slab rewind (census
   204), taken after a check for something to bank found every method in
@@ -349,52 +384,61 @@ that found all of this.
    reachable only by diluting; ~8 is realistic once the follow-up lands.
 4. **`workerMainForkTypeScript`'s target of 1200**, labelled a proposal in the
    budget because nobody has built the thing that would reveal the real floor.
-5. **The lane's cache root defeats the SDK's pkg-config allowlist, and that is
-   why this worktree's suite cannot go green.** Needs a decision because both
-   remedies are someone else's call.
+5. **The lane's cache root defeats the SDK's pkg-config allowlist.** A real
+   defect and still the maintainer's call — but read the scope carefully,
+   because an earlier version of this item (and commit `c23de3fa6`) got it
+   wrong in both directions.
 
-   The symptom is six package tests -- `bzip2`, `gzip`, `unzip`, `xz`, `zip`,
-   `zstd` -- failing at IMPORT time with "Package artifact closure is
-   incomplete". The source-only tier's projection authority is absent, and
-   `local-build` retracts that authority whenever a build does not complete
-   (`package_projection_is_eligible` requires every selected package node to
-   have succeeded). So the six are collateral: nothing is wrong with them.
+   **Known symptom, new reason.** Census §90 already recorded, earlier in this
+   same lane, that `php` cannot find icu in this worktree, that packages were
+   blocked behind it, and that the projection never materialised. It even gave
+   a narrow command (`local-build run ... --product kernel`) that refreshes the
+   co-resident side modules without touching the failing package. What §90 did
+   NOT have is WHY php cannot find icu, and that is the part worth keeping:
 
-   The build does not complete because `php/wasm32` fails its `configure` on
-   `No package 'icu-uc' found`, and the chain to the cause is four layers long:
+   `sdk/kandelo/bin/wasm32posix-pkg-config` filters `PKG_CONFIG_PATH` to a
+   `kandelo` namespace — deliberately, per `sdk/test/pkg-config.test.ts`, so a
+   Nix shell's host `.pc` paths cannot make libcurl link host openssl. It
+   matches the path SEGMENT `kandelo`. The lane's prescribed cache root is
+   `/Users/brandon/.cache/kandelo-lane-f/source-only`, whose segment is
+   `kandelo-lane-f`, so nothing matches and `configure` gets an empty
+   `PKG_CONFIG_PATH` although the icu artifact is complete and all three `.pc`
+   files sit exactly where `build-php.sh` points. Verified by running the
+   wrapper's own `case` statement against the real icu path (filtered) and
+   against a `/Users/brandon/.cache/kandelo/...` path (kept).
 
-   - The icu artifact is COMPLETE. All three `.pc` files are present at
-     `$ICU_PREFIX/lib/pkgconfig`, and `build-php.sh` puts that directory on
-     `PKG_CONFIG_PATH` itself.
-   - `sdk/kandelo/bin/wasm32posix-pkg-config` then FILTERS `PKG_CONFIG_PATH`,
-     keeping only entries matching `/usr/wasm32posix/*`, `*/kandelo/*`, or the
-     sysroot's own pkgconfig dirs. The filter is deliberate and load-bearing:
-     `sdk/test/pkg-config.test.ts` shows it exists to drop host Nix-store `.pc`
-     paths, which otherwise make libcurl link host openssl.
-   - The lane's prescribed cache root is
-     `/Users/brandon/.cache/kandelo-lane-f/source-only`. Its path segment is
-     `kandelo-lane-f`, not `kandelo`, so `*/kandelo/*` does not match and every
-     dependency's pkgconfig directory is dropped. `PKG_CONFIG_PATH` arrives at
-     `configure` EMPTY. Verified by running the wrapper's own `case` statement
-     against the real icu path: filtered; against
-     `/Users/brandon/.cache/kandelo/...`: kept.
-   - It bites exactly one package. Deps that live in the sysroot resolve
-     through `PKG_CONFIG_LIBDIR` and are unaffected, which is why 41 packages
-     built and `sdl2-mixer-playwave` passed. `php` is the one that hard-requires
-     a `.pc` from the cache root. `cpython` and `ruby` also set
-     `PKG_CONFIG_PATH` and never got to run, so they are likely the same.
+   **What it blocks, measured.** `php/wasm32` is the ONLY package that fails a
+   full `local-build` here; it blocks six php-dependent nodes (`wordpress`,
+   `lamp`, `nginx-php-vfs` and three browser products). §90's second failing
+   package, `coreutils-docs`, no longer fails — that part of §90 is itself
+   stale. An incomplete build cannot republish the source-only program
+   projection authority, because `package_projection_is_eligible` requires
+   every selected package node to have succeeded.
+
+   **What fixing it would buy, measured.** Eleven of the 64 baselined expected
+   failures are php-dependent — the `php/*` tests plus `nginx`, and the
+   `wordpress` suite, which the final run shows as `(0 test)` files. That is
+   the real cost of this defect and the real return on closing it: eleven test
+   files come back. It is a better number to weigh a remedy against than "the
+   suite is red".
+
+   **What it does NOT block, contrary to what this doc first said.** The six
+   compression package tests. See the Validation section: the six that
+   regressed did so because BOTH program-serving routes refused at that moment,
+   and a partial rebuild restored one of them. They pass with the projection
+   still absent, and the final suite run is green.
 
    Two remedies, and the choice is a judgment about the filter's threat model:
 
-   - **Move the cache root** to `/Users/brandon/.cache/kandelo/lane-f/...`. No
-     code change; satisfies the existing namespace rule as written. But the
-     lane cache roots are a standing instruction, so changing them is yours.
-   - **Widen the allowlist.** `*/kandelo*/*` would admit `kandelo-lane-f` --
-     and also `/tmp/kandelo-evil/`. Whether that is acceptable is a question
-     about what the filter is defending against, which `pkg-config.test.ts`
-     answers only for the Nix-store case.
+   - **Move the cache root** under a `kandelo` segment. No code change;
+     satisfies the rule as written. But the lane cache roots are a standing
+     instruction, so changing them is yours.
+   - **Widen the allowlist** to `*/kandelo*/*`, which also admits
+     `/tmp/kandelo-evil/`. Whether that is acceptable is a question about what
+     the filter defends against, which `pkg-config.test.ts` answers only for
+     the Nix-store case.
 
-   Recorded rather than fixed: it is outside this lane, the filter is
+   Recorded rather than fixed: outside this lane, the filter is
    security-shaped, and its tests encode intent I should not overrule.
 
 ## The follow-up

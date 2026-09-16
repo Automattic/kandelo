@@ -10944,3 +10944,40 @@ called, `perForkMark` would still be `null`, the first mark would be taken
 ABOVE those bytes, and they would be stranded once rather than reclaimed --
 harmless, and not silent corruption. The flag makes the failure mode of a
 wrong ordering a bounded waste rather than a reused address.
+
+### The vfork borrowed child shares this slab — an argument, not a test
+
+Checked while making the rewind fix, and recorded because the next person to
+touch `stage()` will wonder about it.
+
+A vfork child takes `forkMemoryOwnership === "borrowed"`
+(`worker-main.ts:3357`) and runs in the PARENT's linear memory. It is a
+separate worker, so it builds its own `ForkModuleContinuationBackend` with
+`staged = 0` and calls `setup()` unconditionally (`worker-main.ts:3781`). It
+therefore re-stages the per-worker seeds from slab offset 0 — over bytes the
+suspended parent's module still holds pointers into.
+
+**The argument that this is benign:** at vfork the child IS the parent's image.
+Same guest module, same activations, same catalog ordinals, same template ids,
+and the slab offsets are derived the same way from the same `stagingBase`. The
+re-staged bytes are therefore byte-identical to what they replace. The child
+cannot introduce a difference before it leaves, because vfork permits only
+`exec` and `_exit` — a `dlopen` that registered a new activation is exactly
+what would break the argument, and is exactly what vfork forbids.
+
+**Evidence, short of a test:** nothing vfork is in
+`host/test/expected-failures.json` — `jq '.expectedFailures[]|select(test("vfork"))'`
+returns nothing — so `host/test/vfork-fork-module.test.ts` passes, as do the
+nine browser `vfork-lifecycle` cases. Borrowed children are exercised and the
+sharing does not break them. That is consistent with the argument above without
+confirming its reasoning: the tests would also pass if the bytes happened to
+match for a reason other than the one given.
+
+**The argument itself was reasoned, not tested,** and the day this is being
+written has three separate instances of my reasoning being wrong where a
+one-minute check would have said so. Treat it accordingly. What would falsify it: a vfork child whose
+staged seeds differ from its parent's at the same offsets — instrument
+`stage()` to hash `(offset, bytes)` per worker and compare a vfork pair.
+
+The rewind does not make it worse either way: the parent's mark is taken before
+the child runs, and the parent resumes to re-stage its per-fork bytes above it.
