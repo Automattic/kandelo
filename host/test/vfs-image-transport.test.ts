@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { zstdCompressSync } from "node:zlib";
+import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
 
 import {
   VFS_IMAGE_HEADER_SIZE,
@@ -64,43 +64,73 @@ function header(
 
 describe("VFS image transport", () => {
   describe("decompression bound", () => {
-    it("refuses a frame that DECLARES more than the bound, before decompressing", () => {
+    it("refuses a single-segment WINDOW larger than the bound", () => {
       // Thirteen bytes announcing two gigabytes. Nothing here can produce that
       // payload, so a reader that decompressed first and measured afterwards
       // would have already allocated it.
+      //
+      // A single-segment frame's window IS its content size, so this is the
+      // window check speaking. Naming which check refuses matters: a trial
+      // that disabled the content-size check survived a looser assertion here,
+      // because the window check answers first and both messages end in
+      // "bound".
       expect(() => maybeDecompressImage(frameDeclaring(2n * 1024n * 1024n * 1024n)))
-        .toThrow(/zstd.*decompressed.*bound/i);
+        .toThrow(/exceeds its decompressed window bound/);
+    });
+
+    it("refuses a declared CONTENT size larger than the bound, window or no window", () => {
+      // Not single-segment, so the window comes from its own descriptor and is
+      // a kilobyte -- well inside any bound. Only the content-size check can
+      // refuse this, which is what makes it the trial's target rather than a
+      // second way of reaching the window check.
+      const frame = new Uint8Array(14);
+      frame.set([0x28, 0xb5, 0x2f, 0xfd], 0);
+      frame[4] = 0xc0; // Frame_Content_Size_flag = 3, Single_Segment_flag clear
+      frame[5] = 0x00; // Window_Descriptor: exponent 10, so 1 KiB
+      new DataView(frame.buffer).setBigUint64(6, 2n * 1024n * 1024n * 1024n, true);
+      expect(() => maybeDecompressImage(frame))
+        .toThrow(/exceeds its decompressed byte bound/);
     });
 
     it("sums CONCATENATED frames rather than judging each alone", () => {
-      // A `.vfs.zst` is not always one frame. Each of these is a quarter of
-      // the payload and every one of them is far inside the bound; only the
-      // SUM crosses it. A walk that reset its running total per frame would
-      // take the whole thing.
-      const payload = new Uint8Array(64 * 1024);
+      // The fixture has to make the PRE-decompression walk the only thing that
+      // can refuse, or the trial for this survives: compressing a payload and
+      // slicing it into frames is refused by the post-decompression check too,
+      // with the same message, so "it threw" cannot tell a summing walk from a
+      // resetting one. Found exactly that way -- the first fixture here was
+      // green against both.
+      //
+      // A COMPRESSED block is the seam. It may expand to 128 KiB whatever its
+      // wire size, so the walk must charge the maximum while these frames are
+      // thirty-four bytes and expand to four kilobytes. Dropping the frame's
+      // declared content size is what makes the walk fall back to that
+      // pessimistic charge; with the size declared it would use the true
+      // figure and there would be no gap to observe.
+      const payload = new Uint8Array(4096);
       for (let index = 0; index < payload.length; index++) {
-        payload[index] = (index * 31 + (index >>> 7)) & 0xff;
+        payload[index] = index % 17;
       }
-      const chunk = 16 * 1024;
-      const frames: Uint8Array[] = [];
-      for (let at = 0; at < payload.length; at += chunk) {
-        frames.push(new Uint8Array(zstdCompressSync(payload.subarray(at, at + chunk))));
-      }
-      expect(frames.length).toBe(4);
-      const joined = new Uint8Array(
-        frames.reduce((total, frame) => total + frame.byteLength, 0),
-      );
-      let at = 0;
-      for (const frame of frames) {
-        joined.set(frame, at);
-        at += frame.byteLength;
-      }
+      const frame = new Uint8Array(zstdCompressSync(payload, {
+        params: { [zlibConstants.ZSTD_c_contentSizeFlag]: 0 },
+      }));
+      const joined = new Uint8Array(frame.byteLength * 3);
+      joined.set(frame, 0);
+      joined.set(frame, frame.byteLength);
+      joined.set(frame, frame.byteLength * 2);
 
-      // Accepted at exactly the sum, refused one byte below it -- with every
-      // individual frame a quarter of that either way.
-      expect(maybeDecompressImage(joined, payload.byteLength)).toEqual(payload);
-      expect(() => maybeDecompressImage(joined, payload.byteLength - 1))
-        .toThrow(/zstd.*decompressed.*bound/i);
+      // Each frame is charged 128 KiB against a 300,000-byte bound: one fits,
+      // two fit, three do not. A walk that reset its running total per frame
+      // would never reach the ceiling, and the real twelve kilobytes of output
+      // would sail past the post-decompression check behind it.
+      expect(() => maybeDecompressImage(joined, 300_000))
+        .toThrow(/exceeds its decompressed byte bound/);
+
+      // The control, and the reason the refusal above is about the SUM rather
+      // than about a fixture built wrong: the same bytes decompress to exactly
+      // three copies once the bound admits their pessimistic charge.
+      const out = maybeDecompressImage(joined, 500_000);
+      expect(out.byteLength).toBe(payload.byteLength * 3);
+      expect(out.subarray(0, payload.byteLength)).toEqual(payload);
     });
 
     it("honours a narrower caller-owned bound, and accepts the exact size", () => {
