@@ -10,8 +10,24 @@ Branch `brandonpayton/lane-n-native-fork`, cut from
 
 ## Why this is a lane and not a bug
 
-`cargo test -p host-native` fails **8 of 68**, every one a fork test. The cause
-is not a missing call. It is that **`crates/host-native` still keeps its own
+`cargo test -p host-native --target aarch64-apple-darwin` is **56 passed /
+8 failed / 4 ignored** of 68, every failure a fork test. Measured at
+`56020b54a`, 286s. (56 + 8 is 64: the other four are `ignored`.) The eight, so
+you can start on one rather than on the suite:
+
+```
+tests::smoke_fork_externref_reconstructs
+tests::smoke_fork_gated_externref_parent_survives
+tests::smoke_fork_gc_array_reconstructs
+tests::smoke_fork_gc_struct_reconstructs
+tests::smoke_fork_gc_two_object_cycle
+tests::smoke_fork_reconstructs_references
+tests::smoke_fork_static_root_reconstructs
+tests::smoke_vfork_execve_releases_parent
+```
+
+Seven are reference reconstruction; `smoke_vfork_execve_releases_parent` is the
+odd one and may not share the cause. The cause below is not a missing call. It is that **`crates/host-native` still keeps its own
 reference graph**:
 
 ```rust
@@ -87,8 +103,20 @@ Five host-native fixes landed there, taking the suite 52/12 to 56/8:
   `tests/package-system`, `examples/dlopen`. A green host suite says nothing
   about this lane. `cargo test -p host-native` is the gate; `cargo check` is a
   compile check, not a behaviour one.
+- **`cargo test -p host-native` ALONE RUNS NOTHING, and says so with an exit
+  code you will not see.** `.cargo/config.toml` sets
+  `[build] target = "wasm32-unknown-unknown"` for the whole repo, so the bare
+  command tries to build the test binary for wasm32, dies in `errno` and
+  `zstd-sys` (`The target OS is "unknown" or "none"`, and clang rejecting
+  `-fzero-call-used-regs` for that target), runs **zero tests** and exits 101.
+  Pass the host triple: `cargo test -p host-native --target aarch64-apple-darwin`.
+  Worth stating because of how it fails: a wall of `cargo:warning=` lines
+  scrolls past, there is no `running N tests` line to miss, and if your command
+  ends in a pipe or a `tail` the shell reports 0. That is a green run of
+  nothing — the same shape as the sortix `Discovered 0 tests` above, in a
+  different tool.
 - **One test is 30 seconds; the suite is 370.** `cargo test -p host-native
-  <test_name>` — use it. Four hypotheses were burned at six minutes each before
+  --target aarch64-apple-darwin <test_name>` — use it. Four hypotheses were burned at six minutes each before
   anyone noticed.
 - **Instrument, do not guess.** Giving every fallible step in
   `seal_capture_impl` a DISTINCT errno found the real cause on the first try

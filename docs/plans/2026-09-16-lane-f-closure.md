@@ -86,11 +86,24 @@ mutation that had passed the entire fork suite now fails on the first call.
 
 ## Validation
 
-- **Host suite**: matches its baseline throughout — 64 expected failures,
-  nothing new, nothing unbanked. Run after every commit that touched code.
-- **Browser**: 18/18 fork specs in Chromium, re-verified after each change to
-  the module.
-- **Surface budget**: 99 checks pass. One ceiling was RAISED —
+- **Host suite**: matched its baseline — 64 expected failures, nothing new,
+  nothing unbanked — for every commit up to the staging-slab fix. It does NOT
+  match as of the final run, and the reason is item 5 in the maintainer list
+  below, not this lane's code: six package tests regress because the
+  source-only projection authority is retracted, which happens whenever a
+  package build does not complete, and `php/wasm32` cannot build in a worktree
+  whose cache root the SDK's pkg-config filter rejects. They fail at import
+  time, before a test body runs, in files that never import anything this lane
+  touched.
+- **Browser**: 18/18 fork specs in Chromium at `9bc5309e1`, re-verified after
+  each change to the module up to that point. NOT re-run for `a5e101770`, which
+  changes `host/src/fork-module-backend.ts` — shared host TypeScript the
+  browser kernel worker loads, not module-only. Under the host-runtime parity
+  contract that makes this line evidence about `9bc5309e1`, not about HEAD.
+- **Surface budget**: 99 checks pass. TWO ceilings were RAISED. The second is
+  `forkTypeScript` 886 → 890, four lines for the staging-slab rewind (census
+  204), taken after a check for something to bank found every method in
+  `fork-module-*.ts` still has a caller. The first is
   `forkModuleHostImports` 6 → 7 — and it records a true growth discovered late
   rather than growth introduced now. **How it was late is worth reading:** that
   measure reads a hand-maintained constant out of `crates/host-native`, kept
@@ -109,7 +122,12 @@ is process lifecycle, which is exactly what the validation contract says not to
 stop short of — so a closure report resting on the baseline alone would have
 been claiming more than it ran.
 
-Run against this branch:
+Run at `9bc5309e1`, the lane head before the staging-slab fix. Pinned to a
+commit rather than "this branch", because the lane head has moved since and one
+of the commits that moved it (`a5e101770`) changes fork host code these suites
+exercise. Nobody
+re-ran them; treat the table as evidence about `9bc5309e1` and re-run if that
+distinction matters to you.
 
 | suite | result |
 |---|---|
@@ -136,13 +154,22 @@ Lane F repairs what it broke; the subsystem underneath goes to
 
 `cargo test -p host-native` was **52 passed / 12 failed**, every failure a fork
 test, and this lane caused it. The host suite does not build host-native, which
-is why it went unseen. It is **56 / 8** now.
+is why it went unseen. It is **56 passed / 8 failed / 4 ignored of 68** now.
 
-`cargo test -p host-native` fails **11 of 68**, every one a fork test, and this
-lane caused it. The host suite does not build host-native, which is why it went
-unseen for days.
+Re-measured at `56020b54a` rather than quoted:
+`cargo test -p host-native --target aarch64-apple-darwin`, 286s, exit 101.
+**The `--target` is not optional** — `.cargo/config.toml` sets
+`[build] target = "wasm32-unknown-unknown"` repo-wide, so the bare command
+fails to build `errno`/`zstd-sys`, runs ZERO tests and exits 101 behind a wall
+of `cargo:warning=` lines. Lane N's charter now carries that trap.
 
-Three fixes landed, each independently correct:
+An earlier draft of this section said "fails **11 of 68**" directly beneath the
+line above, contradicting it. That was a stale paragraph left behind by an
+edit, not a second measurement, and it is deleted. Note also that 56 + 8 is 64,
+not 68: four tests are `ignored`, which is what makes the two figures look
+irreconcilable at a glance.
+
+Five fixes landed, each independently correct:
 
 1. **The drive table bound 3 of 16 slots, gated on the guest having a typed-GC
    codec** — so a plain fork bound NOTHING. The module began driving the
@@ -265,11 +292,19 @@ that found all of this.
 
 ## Still the maintainer's
 
-1. **Provisional ceiling raises.** `docs/surface-budget.json` carries **27**
-   `PROVISIONAL RAISE` markers across the whole lane, of which 3 have an
-   explicit `RULED` marker from 2026-09-15. **Five are from this session**,
-   each with its reason and what it bought. An earlier report of this said
-   "thirteen"; that was a miscount of this session's, corrected here.
+1. **Provisional ceiling raises.** `docs/surface-budget.json` carries **44**
+   provisional markers across the whole lane — 37 reading `PROVISIONAL RAISE`
+   and 7 reading `PROVISIONALLY` — of which 3 carry an explicit `RULED` marker
+   from 2026-09-15. Counted with
+   `grep -o 'PROVISIONAL RAISE' docs/surface-budget.json | wc -l` and the same
+   for the other two words; the command is written down so the next reader can
+   refute the number in one step instead of trusting it.
+
+   Earlier versions of this line said "thirteen" and then "27". The first was a
+   miscount of this session's raises. The second was simply wrong when written
+   and was not stale: the literal count was 37 before this session's last three
+   commits and 37 after. **Five are from this session**, each with its reason
+   and what it bought.
 
    Read them by where the surface NOW STANDS, not by the delta taken, because
    later banks in the same session repaid three of them:

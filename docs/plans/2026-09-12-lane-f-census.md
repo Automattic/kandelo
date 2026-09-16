@@ -10898,7 +10898,15 @@ lifetime this fix introduces, and says so in its own comment: a dedicated page
 
 Reset at the START of every fork, durable data kept elsewhere. That is the same
 two rules, reached independently, by the host this lane spent its last day
-repairing. The JS host had the distinction in `stage()`'s doc comment -- "seeded
+repairing.
+
+And it is enforced, not merely described -- checked rather than taken from the
+comment, because taking a claim from a comment is what this whole section is
+about. `NativeReferenceCapture::reset` sets `scratch_cursor = 0`
+(`guest.rs:5284`), and it is called at two sites, both named
+`capture_for_fork` (`guest.rs:7080`, `guest.rs:10458`). Two fork entry points
+with the rewind wired at each -- which is the same count and the same shape as
+the two `parentBeginCapture` callers this fix marks on the JS side. The JS host had the distinction in `stage()`'s doc comment -- "seeded
 once per worker and must outlive the call" -- and nowhere in its code.
 
 Which is the general shape worth keeping: when one derivation states an
