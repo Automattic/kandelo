@@ -3055,10 +3055,16 @@ it means the commit is "rename + rebuild" and not "rename".
 Everything moves: the magic, module and file names (`sffs.rs`, `sffs_write.rs`,
 `sffs_deferred.rs`, `images/vfs/lib/sffs-image-fs.ts`), types (`Sffs`,
 `SffsWriter`, `SffsConfig`, `SffsImageFs`, `SffsImageError`), the `sffs-module`
-crate, and the prose. Check whether the magic reaches `abi/snapshot.json`
-before starting — if it does, that is a snapshot regeneration, which the
-maintainer has already said is fine ("rebuilding the snapshot is fine") but
-which is off-limits to a lane that has been told not to touch it.
+crate, and the prose.
+
+**CHECKED 2026-09-16: the magic does NOT reach `abi/snapshot.json`** — zero
+occurrences of either the constant or the string. So this rename needs no
+snapshot regeneration and does not collide with the standing guardrail against
+touching that file. That was the one thing that could have blocked it, and it
+does not.
+
+The magic itself is `0x5346_4653` at two sites in `sffs.rs` (304 and 387) plus
+one test assertion (954), becoming `0x4B49_4653`.
 
 ### The rename's actual inventory, enumerated 2026-09-15
 
