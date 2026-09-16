@@ -1562,69 +1562,18 @@ describe("binary resolver artifact policy", () => {
     expect(findRepoRoot(installedModule)).toBe(consumer);
   });
 
-  it("skips a stale local .vfs.zst when a fetched ABI-matching candidate exists", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const staleLocal = await vfsImage(
-      { version: 1, kernelAbi: ABI_VERSION - 1 },
-      true,
-    );
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    writeCandidate(localBinariesDir(), relPath, staleLocal);
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
-
-  it("skips a stale local .vfs when a fetched ABI-matching candidate exists", async () => {
-    const relPath = fixtureRelPath(".vfs");
-    const staleLocal = await vfsImage(
-      { version: 1, kernelAbi: ABI_VERSION - 1 },
-      false,
-    );
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, false);
-
-    writeCandidate(localBinariesDir(), relPath, staleLocal);
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
-
-  it("selects a matching local .vfs.zst before the fetched candidate", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const local = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    const localPath = writeCandidate(localBinariesDir(), relPath, local);
-    writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(localPath);
-  });
-
-  it("accepts a VFS image with metadata but no kernelAbi declaration", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const local = await vfsImage({ version: 1 }, true);
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    const localPath = writeCandidate(localBinariesDir(), relPath, local);
-    writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(localPath);
-  });
-
-  it("skips an uninspectable local VFS image for a valid fetched candidate", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    writeCandidate(
-      localBinariesDir(),
-      relPath,
-      new TextEncoder().encode("not a VFS image"),
-    );
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
+  // FIVE `.vfs` TESTS LIVED HERE, and they tested the resolver choosing
+  // between a stale local image and a fetched ABI-matching one. The choice is
+  // gone: the resolver no longer reads an image's declared ABI, because the
+  // KERNEL refuses an image built for another ABI at load
+  // (`image_policy::check_declared_abi`, `2af5c7921`) and that is the layer
+  // owning the contract.
+  //
+  // The maintainer removed them deliberately. What they described -- a second
+  // provenance tier holding a better copy -- is machinery this project no
+  // longer uses: `binaries/` holds ten `shadowed-*.wasm` fixtures and zero
+  // `.vfs`. The `.wasm` tier tests below are untouched, because Wasm artifact
+  // policy is still the resolver's.
 
   it("keeps skipping a stale local .wasm when a fetched ABI-matching candidate exists", () => {
     const relPath = fixtureRelPath(".wasm");
