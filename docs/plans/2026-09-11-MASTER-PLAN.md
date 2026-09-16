@@ -922,6 +922,34 @@ same place the set-ID digest refusal just went: a lazy reference outside the
 known grammar is a build-time defect, so the image builder should refuse to
 write one.
 
+### B45 is pinned on Node, and its fix is proven before being written
+
+`host/test/image-build-round-trip.test.ts` (2026-09-15) makes this a property
+the suite re-checks rather than a script someone ran once. Three assertions
+about what a HOST does to an image before handing it to the kernel:
+
+1. the shipped image has deferred files and every one carries both fields the
+   kernel acts on — not a fixed count, since the rootfs grows, but there must be
+   some or the rest of the file tests nothing;
+2. **a mutate-and-re-save through the Rust writer preserves all of them**,
+   addresses and digests intact, with the mutations landing. This is step (2)'s
+   central claim, gathered as evidence BEFORE committing to it;
+3. the legacy writer destroys them — asserted as a property of that WRITER, not
+   as a browser symptom, since the browser cannot be reached from a Node suite
+   and this is the half that loses the data. It checks the SHAPE of the loss and
+   not only the count: the file still exists, keeps its executable bits, reports
+   zero length, and is marked NOT deferred.
+
+The third is marked for deletion WITH `memory-fs.ts`. It is not describing
+something to fix in that writer; it records why nothing may route an image
+through it.
+
+**Setup is green on this branch, so the browser is reachable.** `./run.sh setup`
+reports `"outcome":"succeeded"` with every node succeeded, `spidermonkey`
+included, and all six browser products built. B40 is resolved here — the
+spidermonkey host-tools fix (`190ef09337`, merged `a228ea4932`) came in with the
+earlier rebase.
+
 **A guard belongs here either way**, and it already exists one directory over:
 `refuseImageThisReaderCannotSee`. Whatever reads an image and answers questions
 about it must refuse an image whose deferred half it cannot see. Had the browser
