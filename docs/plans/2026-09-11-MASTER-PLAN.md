@@ -5053,9 +5053,12 @@ list rather than by reading every assertion. Across the 26:
 |---|---|---|---|
 | **host floor** | **4** | `advisory-lock-kernel`, `host-file-offset`, `node-host-mounts`, `vfs` | **TRIM** — they import `NodePlatformIO` / `HostFileSystem` / `OpfsFileSystem` and test the host's own filesystems. `MemoryFileSystem` is one row among backends. |
 | **lazy/deferred** | **12** | `lazy-tree`, `lazy-archive`, `package-deferred-tree`, the `vfs-image-*` family, … | **BLOCKED** — an image carrying lazy entries stays on `MemoryFileSystem` until the overlay reads module metadata, which is the worker-flip decision. |
-| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `vfs/image-helpers` ✅, `shell-lazy-archive-inputs` ⛔ | **PORT or DELETE**, assertion by assertion. **Seven done; the eighth is blocked, see below.** |
+| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `vfs/image-helpers` ✅, `shell-lazy-archive-inputs` ✅ | **PORT or DELETE**, assertion by assertion. **EIGHT OF EIGHT — the row is closed.** |
 
-**`shell-lazy-archive-inputs` was tried and reverted, and the blocker is a
+**`shell-lazy-archive-inputs` IS DONE (`50f723c93`)**, and the record below is
+kept because the diagnosis is the reusable part.
+
+**It was tried, reverted, then landed once the blocker was named as a
 VOCABULARY rather than a capability.** The repoint itself is trivial — the
 function under test, `registerDeclaredShellLazyArchive`, already takes
 `VfsImageFilesystem` and already PREFERS `fs.registerLazyArchive`, the bridge's
@@ -5070,14 +5073,24 @@ module's own vocabulary (`path`, `ino`, `size`, `archiveId`, `sourcePath`,
 `descriptor`, `uri`, `digest`). The FACT being asserted is identical: this
 archive was registered at this URL under this prefix with these members.
 
-So the work is rewriting those assertions in the new vocabulary, not adding a
-method. **That matters**, because `exportLazyArchiveEntries` is the plan's own
-"needs surface that does not exist" row, and the honest reading is that it does
-not need to exist — the surface it names is a SHAPE the tests assert in, and
-the bridge already answers the question in its own.
+So the work was rewriting those assertions in the new vocabulary, not adding a
+method. **That matters**, because `exportLazyArchiveEntries` was the plan's own
+"needs surface that does not exist" row, and it is now RETIRED: the surface it
+names is a SHAPE the tests asserted in, and the bridge already answers the
+question in its own. One local helper reads `lazyEntries().archives`, unwraps
+the seal envelope the way `module-base-image.ts` does, and returns
+`{ url, mountPrefix }` — the same pair the legacy method returned.
 
-Reverted rather than half-landed, because a file where some fixtures are built
-by one producer and some by another is worse than either.
+**One assertion changed meaning, deliberately.** It compared the recorded
+prefix against `spec.mountPrefix.replace(/\/$/, "")`. That strip existed to
+paper over the producer difference closed in `f20d51f4e`; with both producers
+normalizing, the comparison is against `/usr` with no strip, and the test
+records why. A fixture that hides a producer disagreement is worse than one
+that fails.
+
+It was reverted on the first attempt rather than half-landed, because a file
+where some fixtures are built by one producer and some by another is worse than
+either.
 
 **And chasing that one assertion found a PRODUCER DIVERGENCE, which is where
 this migration's defects live.** The test asserts
