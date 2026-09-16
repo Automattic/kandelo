@@ -70,6 +70,26 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
       ).toThrow(/no lazy_sha256=/);
     });
 
+    // Refused rather than ignored, and until now untested. A malformed digest
+    // silently becoming "no digest" would turn a typo into an unverified
+    // binary, and the whole value of the field is that its ABSENCE is
+    // deliberate. Uppercase hex is the case worth naming: it looks correct to
+    // a reader and is not the value the kernel will compare against.
+    it("refuses a lazy_sha256= that is not 64 lowercase hex characters", () => {
+      const line = (digest: string) =>
+        `/usr/bin/find  f  0755  0  0  lazy_url=binaries/find.wasm  lazy_size=12345  lazy_sha256=${digest}\n`;
+      for (const bad of [
+        "abc",
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(64),
+        "g".repeat(64),
+      ]) {
+        expect(() => parseManifest(line(bad)), `"${bad.slice(0, 8)}…" must be refused`)
+          .toThrow(/64 lowercase hex/);
+      }
+    });
+
     it("accepts a set-user-ID lazy file once it declares one", () => {
       const [node] = parseManifest(
         "/usr/bin/sudo  f  4755  0  0  lazy_url=binaries/sudo.wasm  lazy_size=12345  lazy_sha256="

@@ -974,6 +974,32 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
       .toThrow(/set-user-ID and set-group-ID/);
   });
 
+  // The length check, which had no test. Its whole purpose is that a hash
+  // which is nearly right cannot read as absent: `sha256HexToBytes` produces
+  // 32 bytes, so anything else reached this call another way, and accepting it
+  // would mean the kernel later compares against a truncated expectation.
+  // Registered WITHOUT set-ID bits, so the refusal under test is the length
+  // one and not the set-ID one that follows it.
+  it("refuses a digest that is not exactly 32 bytes, rather than treating it as none", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    for (const length of [16, 31, 33, 64]) {
+      expect(() =>
+        fs.registerArchiveMember({
+          path: `/usr/bin/tool${length}`,
+          archiveId: 0,
+          sourcePath: "",
+          size: 10,
+          mode: 0o755,
+          ino: 5000 + length,
+          archiveBytes: 0,
+          archiveUri: "https://example.invalid/tool.wasm",
+          archiveDigest: new Uint8Array(length).fill(0xcd),
+        }), `a ${length}-byte digest must be refused`).toThrow(/32 bytes/);
+    }
+  });
+
   it("accepts the same registration once a digest is declared", () => {
     const fs = SffsImageFs.create();
     fs.mkdir("/usr", 0o755);
