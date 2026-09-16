@@ -48,7 +48,7 @@
       "name": "close accepts a handle it never issued",
       "scope": "  close(handle: number): void {",
       "scope_end": "\n  }\n",
-      "find": "    if (!this.openFiles.delete(handle)) {\n      throw new Error(`sffs-module: bad file handle ${handle}`);\n    }",
+      "find": "    if (!this.openFiles.delete(handle)) {\n      throw new Error(`kandelo-image-module: bad file handle ${handle}`);\n    }",
       "replace": "    this.openFiles.delete(handle);"
     },
     {

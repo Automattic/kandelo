@@ -13,7 +13,7 @@ const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
   browserKernel: resolve(repoRoot, "host/src/browser-kernel-host.ts"),
   sffsImageFs: resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts"),
-  sffsModuleWasm: resolve(repoRoot, "local-binaries/sffs_module32.wasm"),
+  sffsModuleWasm: resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm"),
   experimentalTerminalSession: resolve(
     repoRoot,
     "web-libs/kandelo-session/src/experimental-terminal-session.ts",

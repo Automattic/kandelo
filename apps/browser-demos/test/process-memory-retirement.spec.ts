@@ -18,7 +18,7 @@ const sffsImageFsModulePath = resolve(
 );
 const sffsModuleWasmPath = resolve(
   repoRoot,
-  "local-binaries/sffs_module32.wasm",
+  "local-binaries/kandelo_image_module32.wasm",
 );
 const forkExecWasmPath = resolve(
   repoRoot,

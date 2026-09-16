@@ -373,11 +373,12 @@ struct RootfsState {
 struct ImageGeometry {
     /// Length of the whole VFSI container, as the host declared it at load.
     image_len: u64,
-    /// Byte offset of the SFFS filesystem within the container.
-    sffs_offset: u64,
-    /// Byte length of the SFFS filesystem.
-    sffs_len: u64,
-    image: crate::kandelo_image_fs::SffsGeometry,
+    /// Byte offset of the KIFS filesystem within the container.
+    fs_offset: u64,
+    /// Byte length of the KIFS filesystem. NOT `image_len` above, which is the
+    /// whole container — the two differ by the header and every other section.
+    fs_len: u64,
+    image: crate::kandelo_image_fs::KandeloImageGeometry,
 }
 
 /// Registry entry for one lazy archive: manifest-authoritative `size`, plus a
@@ -1753,7 +1754,7 @@ where
 
 /// A window onto part of a [`crate::kandelo_image_fs::BlockSource`].
 ///
-/// The VFSI container wraps the SFFS filesystem at a non-zero offset, and
+/// The VFSI container wraps the KIFS filesystem at a non-zero offset, and
 /// `KandeloImageFs::mount` addresses blocks from the filesystem's own byte 0. Rebasing
 /// here keeps that offset out of every `KandeloImageFs` call site.
 struct SubSource<'a, S> {
@@ -1806,8 +1807,8 @@ where
     let filesystem = crate::kandelo_image_fs::KandeloImageFs::from_geometry(
         SubSource {
             inner: &source,
-            offset: geometry.sffs_offset,
-            len: geometry.sffs_len,
+            offset: geometry.fs_offset,
+            len: geometry.image_len,
         },
         geometry.image,
     );
@@ -1903,11 +1904,15 @@ where
     // (`kernel_lazy_span` returns `None` vs `EINVAL`).
     let klzy_span = crate::kandelo_image_fs::kernel_lazy_span(&source)?;
 
-    let (sffs_offset, sffs_len) = crate::kandelo_image_fs::kandelo_image_span(&source)?;
+    // `fs_len`, not `image_len`: the span is the FILESYSTEM's, and `image_len`
+    // above is the whole container's. They differ by the header and every
+    // other section, and naming both the same is how a rename briefly made one
+    // struct take the container's length twice.
+    let (fs_offset, fs_len) = crate::kandelo_image_fs::kandelo_image_span(&source)?;
     let filesystem = KandeloImageFs::mount(SubSource {
         inner: &source,
-        offset: sffs_offset,
-        len: sffs_len,
+        offset: fs_offset,
+        len: fs_len,
     })?;
 
     // Remember where the filesystem is, and what `mount` just validated about
@@ -1918,8 +1923,8 @@ where
     // `reset()` on any error below drops it again.
     let image_geometry = ImageGeometry {
         image_len,
-        sffs_offset,
-        sffs_len,
+        fs_offset,
+        fs_len,
         image: filesystem.geometry(),
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));

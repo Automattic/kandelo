@@ -1598,7 +1598,7 @@ mod tests {
     /// The cross-language fixtures: the RAW SFFS body the TypeScript writer
     /// in `host/src/vfs/sharedfs-vendor.ts` produced for the same tree,
     /// raw-deflated. Regenerate with
-    /// `host/scripts/gen-sffs-writer-fixture.mts`.
+    /// `host/scripts/gen-kandelo-image-writer-fixture.mts`.
     const SMALL_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-small.deflate");
     const WIDE_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-wide.deflate");
     const SLOTS_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-slots.deflate");
@@ -1655,7 +1655,7 @@ mod tests {
         }
     }
 
-    /// Builds the tree the `sffs-small` fixture describes. `hello_mode` is a
+    /// Builds the tree the `kandelo-image-small` fixture describes. `hello_mode` is a
     /// parameter only so the sensitivity test can perturb exactly one bit and
     /// still go through the real writer rather than patching bytes.
     fn build_small_with(hello_mode: u32) -> (SffsImage, Slices) {
@@ -1863,7 +1863,7 @@ mod tests {
 
     #[test]
     fn directory_index_free_slot_choice_matches_the_typescript_writer() {
-        // Pins which remembered free record the index reuses. `sffs-wide`
+        // Pins which remembered free record the index reuses. `kandelo-image-wide`
         // cannot distinguish a last-first scan from a first-found one — its
         // free list only ever held two slots of different sizes, and the one
         // reuse needed more than the smaller of them, so both directions

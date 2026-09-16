@@ -46,7 +46,7 @@ inodeBlockMap: fb 0..9 direct; 10..1033 single-indirect via INDIRECT; 1034..1048
 ### Task 1: Committed tiny SFFS fixture + generator
 
 **Files:**
-- Create: `host/scripts/gen-sffs-rust-fixture.mts` (Node generator)
+- Create: `host/scripts/gen-kandelo-image-rust-fixture.mts` (Node generator)
 - Create (generated, committed): `crates/runtime-core/src/testdata/tiny.vfs`
 - Modify: none
 
@@ -60,7 +60,7 @@ inodeBlockMap: fb 0..9 direct; 10..1033 single-indirect via INDIRECT; 1034..1048
 
 - [ ] **Step 1: Write the generator**
 
-`host/scripts/gen-sffs-rust-fixture.mts`:
+`host/scripts/gen-kandelo-image-rust-fixture.mts`:
 
 ```ts
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -105,7 +105,7 @@ console.log(`wrote ${out} (${image.byteLength} bytes)`);
 
 Run:
 ```bash
-scripts/dev-shell.sh bash -c 'cd host && npx tsx scripts/gen-sffs-rust-fixture.mts'
+scripts/dev-shell.sh bash -c 'cd host && npx tsx scripts/gen-kandelo-image-rust-fixture.mts'
 xxd -l 16 crates/runtime-core/src/testdata/tiny.vfs   # expect 49 46 53 56 (VFSI LE) ... at off0
 ```
 Expected: file written; first 4 bytes are `49 46 53 56` (0x56465349 LE = "VFSI"). If `saveImage()` or `symlink` signatures differ, fix per `memory-fs.ts` and re-run. If `tsx` is unavailable, use the repo's standard TS runner (check `host/package.json` scripts).
@@ -113,7 +113,7 @@ Expected: file written; first 4 bytes are `49 46 53 56` (0x56465349 LE = "VFSI")
 - [ ] **Step 3: Commit**
 
 ```bash
-git add host/scripts/gen-sffs-rust-fixture.mts crates/runtime-core/src/testdata/tiny.vfs
+git add host/scripts/gen-kandelo-image-rust-fixture.mts crates/runtime-core/src/testdata/tiny.vfs
 git commit -m "VFS: Add SFFS reader test fixture + generator (Phase 5 Inc 3b.1)"
 ```
 
@@ -142,7 +142,7 @@ mod tests {
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
 
     #[test]
-    fn unwrap_vfsi_returns_sffs_with_valid_magic() {
+    fn unwrap_vfsi_returns_the_image_with_valid_magic() {
         let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
         // Inner SFFS superblock magic "SFFS" (0x53464653) at byte 0, LE.
         assert_eq!(r32(sffs, 0), Some(0x5346_4653));

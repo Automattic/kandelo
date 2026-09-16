@@ -59,10 +59,10 @@ gap in the evidence rather than a pass.
 contract and are **not** accepted survivors either. They cannot be killed today
 because the export turns base files and lazy members into empty stubs without
 consulting its byte source — lane V's V4 hazard, reproduced and pinned in
-`crates/sffs-module/src/lib.rs`. When V4's identity contract lands, that source
+`crates/kandelo-image-module/src/lib.rs`. When V4's identity contract lands, that source
 becomes reachable and both trials become killable.
 
 **They are the tests that will prove V4 is finished.** Move them back into
-`sffs-module-abi.json` then. The distinction from an accepted survivor is
+`kandelo-image-module-abi.json` then. The distinction from an accepted survivor is
 worth keeping: one can never be killed, the other cannot be killed *yet*, and
 collapsing them would lose the fact that someone owes work here.

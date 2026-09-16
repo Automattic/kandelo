@@ -72,8 +72,8 @@
       "target": 40,
       "why": "V4, the primary goal: how many functions a new host must implement. Already asserted against the built artifact in crates/host-native; restated here so one file carries every surface. A raw import-ENTRY count reads 73 because env.memory is an entry -- say which you counted."
     },
-    "sffsModuleEntryPoints": {
-      "measure": "pub extern \"C\" fn sm_* declared in crates/sffs-module/src/lib.rs",
+    "kandeloImageModuleEntryPoints": {
+      "measure": "pub extern \"C\" fn sm_* declared in crates/kandelo-image-module/src/lib.rs",
       "ceiling": 22,
       "slack": 0,
       "target": 22,

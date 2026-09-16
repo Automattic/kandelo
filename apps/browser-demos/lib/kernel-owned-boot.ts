@@ -9,7 +9,7 @@
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
-import sffsModuleUrl from "@sffs-module32-wasm?url";
+import sffsModuleUrl from "@kandelo-image-module32-wasm?url";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
@@ -111,7 +111,7 @@ export async function finalizeKernelOwnedImage(buildFs: KandeloImageFs): Promise
  *
  * `KandeloImageFs.create()` is synchronous and a fetch is not, so the browser
  * cannot supply module bytes at the call the way Node can (Node reads
- * `local-binaries/sffs_module32.wasm` off disk). It installs them here first,
+ * `local-binaries/kandelo_image_module32.wasm` off disk). It installs them here first,
  * and every later create is as synchronous as Node's.
  *
  * MUST be awaited before the first `createEmptyBuildFs` or

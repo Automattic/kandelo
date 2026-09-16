@@ -19,7 +19,7 @@ import { planLazyArchiveEntries } from "../../../host/src/vfs/lazy-archive-paths
  * # The module imports nothing
  *
  * `WebAssembly.instantiate(bytes)` is called with NO import object, because
- * `crates/sffs-module` has no import section at all — not even `env.memory`.
+ * `crates/kandelo-image-module` has no import section at all — not even `env.memory`.
  * That is verified on every build of the module rather than assumed here, and
  * it is what makes this a bridge to a self-contained component rather than a
  * new host surface: goal V4 counts what a new host must implement, and a host
@@ -139,7 +139,7 @@ export class KandeloImageFs {
    *
    * For a host that cannot read a file — the browser — called once during boot
    * with bytes it fetched. Node needs this never: it reads
-   * `local-binaries/sffs_module32.wasm` itself.
+   * `local-binaries/kandelo_image_module32.wasm` itself.
    *
    * Idempotent for the same bytes and REFUSES a different module once one is
    * installed. Swapping it mid-session would mean two trees in one process
@@ -226,7 +226,7 @@ export class KandeloImageFs {
   /** Copy bytes into the module and run `fn` with the pointer, always freeing. */
   private withBytes<T>(bytes: Uint8Array, fn: (ptr: number, len: number) => T): T {
     const ptr = this.exports.sm_alloc(bytes.byteLength);
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       this.mem.set(bytes, ptr);
       return fn(ptr, bytes.byteLength);
@@ -300,7 +300,7 @@ export class KandeloImageFs {
    * to understand what `-1` means here.
    *
    * Recorded as an accepted surviving mutant, alongside the two in
-   * `crates/sffs-module/src/lib.rs`, so it is an explained result rather than
+   * `crates/kandelo-image-module/src/lib.rs`, so it is an explained result rather than
    * an unexplained red that teaches people to ignore the gate.
    */
   chown(path: string, uid: number, gid: number, clearSetid = false): void {
@@ -358,7 +358,7 @@ export class KandeloImageFs {
     // nothing here bakes in a record length the module could change.
     const size = this.exports.sm_lstat(0, 0, 0, 0);
     const out = this.exports.sm_alloc(size);
-    if (out === 0) throw new Error("sffs-module: allocation failed");
+    if (out === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       this.withPath(path, (p, pl) =>
         this.check(this.exports.sm_lstat(p, pl, out, size), "lstat", path));
@@ -382,7 +382,7 @@ export class KandeloImageFs {
   readlink(path: string): string {
     const cap = 4096;
     const out = this.exports.sm_alloc(cap);
-    if (out === 0) throw new Error("sffs-module: allocation failed");
+    if (out === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const n = this.withPath(path, (p, pl) =>
         this.check(this.exports.sm_readlink(p, pl, out, cap), "readlink", path));
@@ -396,7 +396,7 @@ export class KandeloImageFs {
     const { size } = this.lstat(path);
     if (size === 0) return new Uint8Array(0);
     const out = this.exports.sm_alloc(size);
-    if (out === 0) throw new Error("sffs-module: allocation failed");
+    if (out === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const n = this.withPath(path, (p, pl) =>
         this.check(this.exports.sm_read_file(p, pl, 0n, out, size), "read", path));
@@ -421,7 +421,7 @@ export class KandeloImageFs {
       this.check(this.exports.sm_read_dir(p, pl, 0, 0), "readdir", path));
     if (required === 0) return [];
     const out = this.exports.sm_alloc(required);
-    if (out === 0) throw new Error("sffs-module: allocation failed");
+    if (out === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const n = this.withPath(path, (p, pl) =>
         this.check(this.exports.sm_read_dir(p, pl, out, required), "readdir", path));
@@ -539,7 +539,7 @@ export class KandeloImageFs {
     length = buffer.byteLength,
   ): number {
     const open = this.openFiles.get(handle);
-    if (!open) throw new Error(`sffs-module: bad file handle ${handle}`);
+    if (!open) throw new Error(`kandelo-image-module: bad file handle ${handle}`);
     const at = position ?? open.offset;
     const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength));
 
@@ -560,13 +560,13 @@ export class KandeloImageFs {
    */
   read(handle: number, buf: Uint8Array, position: number | null, length: number): number {
     const open = this.openFiles.get(handle);
-    if (!open) throw new Error(`sffs-module: bad file handle ${handle}`);
+    if (!open) throw new Error(`kandelo-image-module: bad file handle ${handle}`);
     const at = position ?? open.offset;
     const want = Math.min(length, buf.byteLength);
     if (want === 0) return 0;
 
     const out = this.exports.sm_alloc(want);
-    if (out === 0) throw new Error("sffs-module: allocation failed");
+    if (out === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const n = this.check(
         this.exports.sm_read_file(
@@ -585,7 +585,7 @@ export class KandeloImageFs {
 
   close(handle: number): void {
     if (!this.openFiles.delete(handle)) {
-      throw new Error(`sffs-module: bad file handle ${handle}`);
+      throw new Error(`kandelo-image-module: bad file handle ${handle}`);
     }
   }
 
@@ -599,14 +599,14 @@ export class KandeloImageFs {
   /** One entry, or `null` at the end — the shape the helpers' loops expect. */
   readdir(handle: number): { name: string } | null {
     const dir = this.openDirs.get(handle);
-    if (!dir) throw new Error(`sffs-module: bad directory handle ${handle}`);
+    if (!dir) throw new Error(`kandelo-image-module: bad directory handle ${handle}`);
     if (dir.index >= dir.names.length) return null;
     return { name: dir.names[dir.index++] };
   }
 
   closedir(handle: number): void {
     if (!this.openDirs.delete(handle)) {
-      throw new Error(`sffs-module: bad directory handle ${handle}`);
+      throw new Error(`kandelo-image-module: bad directory handle ${handle}`);
     }
   }
 
@@ -619,7 +619,7 @@ export class KandeloImageFs {
   private pathArgs(path: string): [number, number] {
     const bytes = encoder.encode(path);
     const ptr = this.exports.sm_alloc(bytes.byteLength);
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     this.mem.set(bytes, ptr);
     return [ptr, bytes.byteLength];
   }
@@ -984,7 +984,7 @@ export class KandeloImageFs {
   } {
     const size = this.exports.sm_check_headroom(0n, 0n, 0, 0);
     const ptr = this.exports.sm_alloc(size);
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const rc = this.exports.sm_check_headroom(
         BigInt(minimumFreeBytes), BigInt(minimumFreeInodes), ptr, size,
@@ -1137,7 +1137,7 @@ export class KandeloImageFs {
       // the truthful answer; silently exporting a tree still full of deferred
       // stubs, under a name that promised otherwise, is not.
       throw new Error(
-        "sffs-module: materializeAll is not supported — the module carries " +
+        "kandelo-image-module: materializeAll is not supported — the module carries " +
           "deferred descriptions and does not fetch them",
       );
     }
@@ -1202,7 +1202,7 @@ export class KandeloImageFs {
     );
     if (size === 0) return null;
     const buf = this.exports.sm_alloc(size);
-    if (buf === 0) throw new Error("sffs-module: allocation failed");
+    if (buf === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const n = this.check(
         this.exports.sm_image_metadata(buf, size),
@@ -1313,7 +1313,7 @@ export class KandeloImageFs {
       options.maxDecompressedBytes,
     );
     const ptr = this.exports.sm_alloc(image.byteLength);
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       this.mem.set(image, ptr);
       const entries = this.check(
@@ -1392,7 +1392,7 @@ export class KandeloImageFs {
   } {
     const required = this.check(this.exports.sm_lazy_entries(0, 0), "lazyEntries", "");
     const ptr = this.exports.sm_alloc(Math.max(required, 1));
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       this.check(this.exports.sm_lazy_entries(ptr, required), "lazyEntries", "");
       const bytes = this.mem.slice(ptr, ptr + required);
@@ -1447,7 +1447,7 @@ export class KandeloImageFs {
         // mean this reader and that writer disagree about the record set, and
         // a reader that stops early would silently drop whatever came after.
         throw new Error(
-          `sffs-module: lazy entry record set has ${required - at} trailing bytes`,
+          `kandelo-image-module: lazy entry record set has ${required - at} trailing bytes`,
         );
       }
       return { files, archives };
@@ -1470,7 +1470,7 @@ export class KandeloImageFs {
    */
   imageRead(offset: bigint, dest: Uint8Array): number {
     const ptr = this.exports.sm_alloc(dest.length);
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const n = this.check(
         this.exports.sm_image_read(offset, ptr, dest.length),
@@ -1490,7 +1490,7 @@ export class KandeloImageFs {
 
   exportImage(chunkBytes = 1 << 20): Uint8Array {
     const ptr = this.exports.sm_alloc(chunkBytes);
-    if (ptr === 0) throw new Error("sffs-module: allocation failed");
+    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       const parts: Uint8Array[] = [];
       let total = 0;
@@ -1591,12 +1591,12 @@ function defaultModuleBytes(): Uint8Array {
   if (nodeFs === undefined) {
     throw new Error(
       "KandeloImageFs.create() has no module bytes. Outside Node it cannot read "
-        + "sffs_module32.wasm from disk, so the host must install them once at "
+        + "kandelo_image_module32.wasm from disk, so the host must install them once at "
         + "boot with KandeloImageFs.installModuleBytes(bytes) — the browser does "
         + "this in apps/browser-demos/lib/kernel-owned-boot.ts — or pass them "
         + "per call: KandeloImageFs.create(moduleBytes).",
     );
   }
   const root = `${import.meta.dirname}/../../..`;
-  return new Uint8Array(nodeFs.readFileSync(`${root}/local-binaries/sffs_module32.wasm`));
+  return new Uint8Array(nodeFs.readFileSync(`${root}/local-binaries/kandelo_image_module32.wasm`));
 }

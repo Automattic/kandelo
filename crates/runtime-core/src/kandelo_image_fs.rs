@@ -366,7 +366,7 @@ pub struct KandeloImageFs<S: BlockSource> {
 /// extra source reads and repeat validation the boot already did; carrying the
 /// validated geometry forward costs eight bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SffsGeometry {
+pub struct KandeloImageGeometry {
     pub inode_table_start: u32,
     pub total_inodes: u32,
     /// Inode holding the deferred-file section, or 0 when the image declares
@@ -427,8 +427,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
     }
 
     /// The validated superblock geometry of this mount.
-    pub fn geometry(&self) -> SffsGeometry {
-        SffsGeometry {
+    pub fn geometry(&self) -> KandeloImageGeometry {
+        KandeloImageGeometry {
             inode_table_start: self.inode_table_start,
             total_inodes: self.total_inodes,
             deferred_inode: self.deferred_inode,
@@ -443,7 +443,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// bytes. It is not a way to skip validation on an unvalidated image — the
     /// `/` image loader mounts first and only then remembers the geometry, so a
     /// corrupt superblock is still rejected at boot, loudly, exactly once.
-    pub fn from_geometry(source: S, geometry: SffsGeometry) -> KandeloImageFs<S> {
+    pub fn from_geometry(source: S, geometry: KandeloImageGeometry) -> KandeloImageFs<S> {
         KandeloImageFs {
             source,
             inode_table_start: geometry.inode_table_start,
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn unwrap_vfsi_returns_sffs_with_valid_magic() {
+    fn unwrap_vfsi_returns_the_image_with_valid_magic() {
         let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
         // Inner SFFS superblock magic "SFFS" (0x53464653) at byte 0, LE.
         assert_eq!(r32(image, 0), Some(0x5346_4653));

@@ -393,15 +393,15 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
         // a loud error pointing at the build script rather than a silent
         // fallback to a reader that cannot see an `SDEF` section (B45).
         if (sourceOnlyViteAssets !== null) {
-          return sourceOnlyViteAssets.resolve("sffs_module32.wasm");
+          return sourceOnlyViteAssets.resolve("kandelo_image_module32.wasm");
         }
-        const resolved = tryResolveBinary("sffs_module32.wasm");
+        const resolved = tryResolveBinary("kandelo_image_module32.wasm");
         if (resolved) return access.approve(resolved) + query;
-        const local = path.resolve(repoRoot, "local-binaries/sffs_module32.wasm");
-        const hosted = path.resolve(repoRoot, "host/wasm/sffs_module32.wasm");
+        const local = path.resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
+        const hosted = path.resolve(repoRoot, "host/wasm/kandelo_image_module32.wasm");
         this.error(
-          "sffs_module32.wasm not found. Run " +
-            "`scripts/dev-shell.sh bash crates/sffs-module/build-wasm.sh`.\n" +
+          "kandelo_image_module32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
         );
       }

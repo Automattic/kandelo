@@ -16,8 +16,8 @@
 //                        exercises the single-indirect block path)
 //
 // Regenerate with:
-//   cd host && npx tsx scripts/gen-sffs-rust-fixture.mts
-// (or `scripts/dev-shell.sh bash -c 'cd host && npx tsx scripts/gen-sffs-rust-fixture.mts'`
+//   cd host && npx tsx scripts/gen-kandelo-image-rust-fixture.mts
+// (or `scripts/dev-shell.sh bash -c 'cd host && npx tsx scripts/gen-kandelo-image-rust-fixture.mts'`
 // if running outside a shell that already has tsx on PATH).
 
 import { writeFileSync, mkdirSync } from "node:fs";

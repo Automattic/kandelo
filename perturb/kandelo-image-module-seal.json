@@ -1,8 +1,8 @@
 {
  "_comment": "The seal codec and cohort verifier. Its own spec because a spec mutates ONE file, and these guards live in seal.rs rather than the ABI surface in lib.rs. The verifier is the one place in this lane where a surviving mutant means a security check that does not check.",
- "file": "crates/sffs-module/src/seal.rs",
- "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
- "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "file": "crates/kandelo-image-module/src/seal.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "build": "scripts/dev-shell.sh cargo build -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "trials": [
   {
    "name": "a changed descriptor still authenticates",

@@ -67,7 +67,7 @@ function bytesToSha256Hex(digest: Uint8Array): string {
  *
  * The module wraps every archive payload as
  * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]` —
- * `seal::encode` in `crates/sffs-module/src/seal.rs`. Reading it here is the
+ * `seal::encode` in `crates/kandelo-image-module/src/seal.rs`. Reading it here is the
  * design rather than a duplication of it: the seal was deliberately split so
  * that *"the descriptor half stays whatever the producer writes ... and the
  * kernel still never parses it. The seal half is parsed by the VERIFIER, which

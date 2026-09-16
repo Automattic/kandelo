@@ -1,6 +1,6 @@
 {
-  "file": "crates/sffs-module/src/lib.rs",
-  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "file": "crates/kandelo-image-module/src/lib.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "trials": [
     {
       "name": "errno returned positive instead of negative",
@@ -437,7 +437,7 @@
       "replace": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &runtime_core::sdef::DIGEST_NONE).is_err()"
     }
   ],
-  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "build": "scripts/dev-shell.sh cargo build -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "retired": [
     {
       "name": "a null digest pointer is read as bytes anyway",

@@ -1169,6 +1169,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kandelo-image-module"
+version = "0.1.0"
+dependencies = [
+ "dlmalloc",
+ "runtime-core",
+ "sha2",
+ "wasm-posix-shared",
+]
+
+[[package]]
 name = "leb128"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1666,16 +1676,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "sffs-module"
-version = "0.1.0"
-dependencies = [
- "dlmalloc",
- "runtime-core",
- "sha2",
- "wasm-posix-shared",
 ]
 
 [[package]]

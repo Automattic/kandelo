@@ -32,7 +32,7 @@ import {
 const BROWSER_WASM_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
   [browserForkModule32ModuleSpecifier, "fork_module32.wasm"],
   [browserWasiModule32ModuleSpecifier, "wasi_module32.wasm"],
-  [browserSffsModule32ModuleSpecifier, "sffs_module32.wasm"],
+  [browserSffsModule32ModuleSpecifier, "kandelo_image_module32.wasm"],
 ];
 
 export function browserAssetImportsForPolicy(

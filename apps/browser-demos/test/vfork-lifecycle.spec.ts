@@ -33,7 +33,7 @@ const sffsImageFsModulePath = resolve(
 );
 const sffsModuleWasmPath = resolve(
   __dirname,
-  "../../../local-binaries/sffs_module32.wasm",
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 const lifecycleProgramPath = resolveBinary("programs/vfork-lifecycle.wasm");
 const threadProgramPath = resolveBinary("programs/vfork-from-thread.wasm");

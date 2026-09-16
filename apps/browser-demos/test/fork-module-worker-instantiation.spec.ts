@@ -25,7 +25,7 @@ const sffsImageFsModulePath = resolve(
 );
 const sffsModuleWasmPath = resolve(
   __dirname,
-  "../../../local-binaries/sffs_module32.wasm",
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 
 const FIXTURE = "programs/d_01_single_fork.wasm";

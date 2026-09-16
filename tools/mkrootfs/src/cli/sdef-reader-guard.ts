@@ -23,7 +23,7 @@ import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
  * This is a boundary, not a fix. The fix is for these verbs to read with
  * `KandeloImageFs` throughout — blocked because the seal verification they
  * perform has no module entry point, and adding one breaches
- * `sffsModuleEntryPoints` (ceiling 22, slack 0).
+ * `kandeloImageModuleEntryPoints` (ceiling 22, slack 0).
  */
 export function refuseImageThisReaderCannotSee(
   bytes: Uint8Array,

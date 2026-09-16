@@ -1,12 +1,12 @@
 [package]
-name = "sffs-module"
+name = "kandelo-image-module"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Standalone wasm entry point for building VFS images from a host builder"
 
 [lib]
-name = "sffs_module"
+name = "kandelo_image_module"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

@@ -9,7 +9,7 @@ const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
 const sffsImageFsPath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
-const sffsModuleWasmPath = resolve(repoRoot, "local-binaries/sffs_module32.wasm");
+const sffsModuleWasmPath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
 const fixturePaths = {
   wasm32: resolve(repoRoot, "examples/select_signal_test.wasm"),
   wasm64: resolve(repoRoot, "examples/select_signal_test.wasm64.wasm"),

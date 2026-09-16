@@ -471,7 +471,7 @@ pub unsafe extern "C" fn sm_write_file(
 /// rather than an interface.
 ///
 /// Adding `sm_lazy_info` would have answered them and made this the module's
-/// twentieth entry point, one increment after `sffsModuleEntryPoints` was
+/// twentieth entry point, one increment after `kandeloImageModuleEntryPoints` was
 /// banked at nineteen. Raising a ceiling you set yourself, immediately, is the
 /// shape the budget exists to catch — and the better design was available:
 /// whether a file's bytes are present is METADATA ABOUT THE FILE, which is
@@ -701,7 +701,7 @@ pub unsafe extern "C" fn sm_read_dir(
 ///
 /// # Why this entry point exists, given the budget it costs
 ///
-/// This is the twenty-first, and `sffsModuleEntryPoints` was banked at twenty
+/// This is the twenty-first, and `kandeloImageModuleEntryPoints` was banked at twenty
 /// with no slack. The rule is to find an export that can GO before arguing for
 /// one that must come, and that search was made and FAILED. The only plausible
 /// fold was `sm_mkdir` with `sm_mkdir_parents` behind a flag, and it is a bad
@@ -1233,7 +1233,7 @@ pub unsafe extern "C" fn sm_register_lazy_file(
 ///
 /// # Why it costs an entry point, deliberately
 ///
-/// This is the module's twentieth, against a `sffsModuleEntryPoints` budget
+/// This is the module's twentieth, against a `kandeloImageModuleEntryPoints` budget
 /// banked at nineteen. The budget's own rule is that the surface does not grow
 /// WITHOUT AN ARGUMENT, and the argument is that the host ends up doing less:
 /// a primitive and a computation in TypeScript become one verdict. It is also
@@ -2728,7 +2728,7 @@ mod tests {
         // what a normalised export writes; this asserts that
         // `sm_set_image_options` carries the request to it, which is the part
         // that lives here and which nothing in this crate covered -- a mutation
-        // deleting the call survived a full `cargo test -p sffs-module`.
+        // deleting the call survived a full `cargo test -p kandelo-image-module`.
         const FIXED: i64 = 946_684_800_000; // 2000-01-01T00:00:00Z
         fresh_tree();
         assert_eq!(with_two(b"/opt/f", b"bytes", |pp, pl, cp, cl| unsafe {

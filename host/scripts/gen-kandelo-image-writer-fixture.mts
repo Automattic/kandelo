@@ -38,7 +38,7 @@
 // `runtime-core` already depends on.
 //
 // Regenerate with:
-//   scripts/dev-shell.sh bash -c 'cd host && npx tsx scripts/gen-sffs-writer-fixture.mts'
+//   scripts/dev-shell.sh bash -c 'cd host && npx tsx scripts/gen-kandelo-image-writer-fixture.mts'
 
 import { deflateRawSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -91,7 +91,7 @@ const fixtures: FixtureSpec[] = [
     // indirect block, both symlink forms (inline at <= 40 bytes and
     // block-backed above it), a hard link, and a setuid file that only the
     // trailing chmod can produce.
-    name: "sffs-small",
+    name: "kandelo-image-small",
     sizeBytes: 128 * 1024,
     build(fs) {
       writeFile(fs, "/hello.txt", enc.encode("hello sffs\n"), 0o644);
@@ -125,7 +125,7 @@ const fixtures: FixtureSpec[] = [
     //    and the too-small-gap rec_len extensions in the first place.
     // 2. A file past 10 + 1024 blocks, which reaches the double-indirect
     //    block.
-    name: "sffs-wide",
+    name: "kandelo-image-wide",
     sizeBytes: 8 * 1024 * 1024,
     maxSizeBytes: 64 * 1024 * 1024,
     build(fs) {
@@ -142,11 +142,11 @@ const fixtures: FixtureSpec[] = [
     },
   },
   {
-    // Pins the ONE decision `sffs-wide` cannot distinguish: which remembered
+    // Pins the ONE decision `kandelo-image-wide` cannot distinguish: which remembered
     // free record the vendor's directory index reuses.
     //
     // `useDirIndexFreeSlot` scans its free list from the END, not from the
-    // start. In `sffs-wide` that choice is invisible, because the free list
+    // start. In `kandelo-image-wide` that choice is invisible, because the free list
     // only ever held two slots (12 and 24 bytes) and the single reuse needed
     // more than 12 — so a forward scan skips the small slot and lands on the
     // same record a backward scan picks. Measured, not assumed.
@@ -158,7 +158,7 @@ const fixtures: FixtureSpec[] = [
     // a padding record per block, all the same size. Phase two then adds
     // names short enough to fit ANY of them, so the first reuse lands in a
     // different place depending on the scan direction, and the images differ.
-    name: "sffs-slots",
+    name: "kandelo-image-slots",
     sizeBytes: 1024 * 1024,
     maxSizeBytes: 32 * 1024 * 1024,
     build(fs) {
@@ -190,7 +190,7 @@ const fixtures: FixtureSpec[] = [
     // runs on BOTH paths: the linear scan, which already knows the last
     // record, and the index path, which does not and has to go find it with
     // findLastDirEntryInBlock.
-    name: "sffs-tail",
+    name: "kandelo-image-tail",
     sizeBytes: 2 * 1024 * 1024,
     maxSizeBytes: 128 * 1024 * 1024,
     build(fs) {

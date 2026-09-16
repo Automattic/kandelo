@@ -1,6 +1,6 @@
 {
- "file": "crates/sffs-module/src/lib.rs",
- "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "file": "crates/kandelo-image-module/src/lib.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "trials": [
   {
    "name": "a read past the end of the image is an error instead of zero",

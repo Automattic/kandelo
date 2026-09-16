@@ -577,9 +577,9 @@ const MEASURED: Record<string, () => number> = {
       "crates/fork-module/src/lib.rs",
       /^\s*pub (unsafe )?extern "C" fn fm_/,
     ),
-  sffsModuleEntryPoints: () =>
+  kandeloImageModuleEntryPoints: () =>
     countMatches(
-      "crates/sffs-module/src/lib.rs",
+      "crates/kandelo-image-module/src/lib.rs",
       /^\s*pub (unsafe )?extern "C" fn sm_/,
     ),
 };
