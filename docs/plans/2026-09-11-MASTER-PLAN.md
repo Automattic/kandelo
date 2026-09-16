@@ -4977,6 +4977,40 @@ the bridge already answers the question in its own.
 Reverted rather than half-landed, because a file where some fixtures are built
 by one producer and some by another is worse than either.
 
+**And chasing that one assertion found a PRODUCER DIVERGENCE, which is where
+this migration's defects live.** The test asserts
+`mountPrefix: spec.mountPrefix.replace(/\/$/, "")` — it strips a trailing
+slash, because `MemoryFileSystem.exportLazyArchiveEntries` records the
+NORMALIZED prefix. `KandeloImageFs.registerLazyArchive` records the RAW one:
+
+```ts
+const descriptor = encoder.encode(JSON.stringify({
+  mountPrefix: args.mountPrefix,
+}));
+```
+
+while using `normalizeLazyArchiveMountPrefix` — which strips trailing slashes
+and maps empty to `/` — for the member paths in the same call. So the bridge
+normalizes what it builds and stores what it was given, and the two disagree
+for any prefix ending in `/`.
+
+**Every shell lazy-archive spec uses `mountPrefix: "/usr/"`.** Nine of them.
+
+The consumer is real: `module-base-image.ts` reads `described.mountPrefix`
+straight out of the descriptor and puts it into a reconstructed
+`SerializedLazyArchiveEntry`, so an image built by the bridge hands on `/usr/`
+where a legacy-built one hands on `/usr`. Both producers are individually
+correct and they record different values for the same fact — the exact shape
+the lane has hit at the errno signs, at the set-ID clearing, and at
+`open`'s mode.
+
+**The fix is one line in the bridge** — normalize the prefix before it goes in
+the descriptor, so both producers record what the consumer was written
+against — and it is the next thing to land once the browser run releases the
+worktree. It also removes the `.replace(/\/$/, "")` from the repointed test,
+which would otherwise have been a fixture quietly papering over a producer
+difference.
+
 **Two of those were already done and the table did not know.** Re-measured
 2026-09-16: `derived-vfs-symlink.test.ts` and `wordpress-source-layout.test.ts`
 both import `KandeloImageFs` and contain **zero** `MemoryFileSystem`
