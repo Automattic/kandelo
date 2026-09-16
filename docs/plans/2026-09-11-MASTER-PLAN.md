@@ -3192,6 +3192,48 @@ decision rather than on effort.**
   `rootDir` during its dts emit, and enforced for a good reason: the host
   runtime shipping the image BUILDER is the coupling this lane exists to remove.
 
+### THE NEXT REDUCTION, MEASURED 2026-09-16 — a cluster of WIRE types, not a filesystem
+
+Counted with a stated rule, because the earlier "`host/src` was six and is now
+two" is a count whose rule was not written down and cannot be reproduced.
+
+**Rule: every file under `host/src` whose text references `./memory-fs`.**
+Fourteen files. Six use `MemoryFileSystem` as a VALUE at runtime; the other
+eight import TYPES and nothing else.
+
+And the types are one cluster, all of them describing a deferred archive's
+serialized shape rather than this filesystem:
+
+| type | imported type-only by |
+|---|---|
+| `SerializedLazyArchiveEntry` (and its `SerializedLazyTree` alias) | `kernel-lazy-section`, `package-deferred-tree`, `rootfs-lazy-archives`, `module-base-image` — plus a dozen tests, a fixture helper and a generator script |
+| `LazyFileEntry` | `kernel-lazy-section`, `rootfs-lazy-archives`, `module-base-image` |
+| `LazyTreeActivation`, `LazyTreeContent`, `LazyTreeRegistrationEntry`, `LazyTreeRegistrationOwner`, `DeferredTreeMaterializationHandle` | `package-deferred-tree`, `package-deferred-tree-contract` |
+
+`SerializedLazyArchiveEntry`'s own doc comment says what it is: *"JSON-serializable
+form of LazyArchiveGroup for cross-worker transfer."* **A wire format.** It is
+the same finding as `LazyDownloadEvent`, which described a FETCH and was the
+only reason four host files imported the filesystem — moved to
+`vfs/lazy-download-event.ts` in `4a365cca6`.
+
+**One leftover from that move is still there**: `browser-kernel-host.ts` imports
+`type LazyDownloadEvent` from `memory-fs` rather than from the module it now
+lives in, and gets it through a re-export. A move is not finished while its
+consumers still reach the old address.
+
+**Three test files import memory-fs for a TYPE and nothing else**, and two of
+them name a type that has already moved: `binary-resolver.test.ts`
+(`VfsImageMetadata`, which lives in `vfs-image-filesystem.ts`),
+`node-kernel-host-diagnostic.test.ts` (`LazyDownloadEvent`, which lives in
+`lazy-download-event.ts`), and `rootfs-lazy-archives.test.ts`
+(`SerializedLazyArchiveEntry`). Repointing those is free.
+
+**What this is worth.** It does not delete `memory-fs.ts` — the value users and
+the two blockers above are what do that. It makes the remaining coupling
+HONEST: after it, every file still importing the module is one that actually
+wants the filesystem, and the count stops being inflated by a wire format that
+happens to be declared there.
+
 ### THE GATING QUESTION WAS THE WRONG QUESTION — answered 2026-09-16
 
 It was recorded as "where is the image reader allowed to live?", a packaging
