@@ -82,8 +82,14 @@ mutation that had passed the entire fork suite now fails on the first call.
   nothing new, nothing unbanked. Run after every commit that touched code.
 - **Browser**: 18/18 fork specs in Chromium, re-verified after each change to
   the module.
-- **Surface budget**: 99 checks pass. No ceiling was raised to make a check
-  pass; every reduction is banked with its reason.
+- **Surface budget**: 99 checks pass. One ceiling was RAISED —
+  `forkModuleHostImports` 6 → 7 — and it records a true growth discovered late
+  rather than growth introduced now. **How it was late is worth reading:** that
+  measure reads a hand-maintained constant out of `crates/host-native`, kept
+  honest by a Rust test that `suite-baseline.mjs` does not run. Ratchet trusts
+  a constant; constant is kept honest by a test; test never runs. A surface
+  that measures a copy is only as current as whatever checks the copy. Every
+  other movement is a bank with its reason.
 - `cargo test -p fork-codec -p fork-module-inject`; `cargo check -p host-native`.
 
 ### Conformance — and the gap that had to be closed to claim it
@@ -113,6 +119,43 @@ reported "Discovered 0 tests" and exited 0 — a green run of nothing. Point
 `KANDELO_OS_TEST_DIR` at a populated checkout of the **same commit**
 (`7e8f0082ab`) instead; that override exists for precisely this, and the runner
 keeps its build output on the repository's own filesystem.
+
+## NOT CLOSEABLE YET — `crates/host-native` (open, 2026-09-16)
+
+`cargo test -p host-native` fails **11 of 68**, every one a fork test, and this
+lane caused it. The host suite does not build host-native, which is why it went
+unseen for days.
+
+Three fixes landed, each independently correct:
+
+1. **The drive table bound 3 of 16 slots, gated on the guest having a typed-GC
+   codec** — so a plain fork bound NOTHING. The module began driving the
+   lifecycle slots during this lane (`DRIVE_SLOT_UNWIND_BEGIN` = 10, commit
+   b14077b5ba), and eleven tests trapped with `undefined element: out of bounds
+   table access` inside `__wpk_fork_unwind_transport_*`. Now every slot the
+   module drives is bound, sized to the whole stride, offsets read from
+   `fork_codec` rather than copied, required slots failing loudly.
+2. **Five guest fork imports were bound by a hand-written list** where the
+   module now serves all 46. The first the module actually drove was
+   `__wpk_fork_module_state_record_reserve`, from `wpk_fork_module_state_save`:
+   *"unknown import ... has not been defined"*, inside a fork that had already
+   committed its frames. Now a nameless loop over the artifact's own import
+   list binds whatever the module exports and nothing above it has claimed.
+3. **The obligation pin said 6; the module needs 7.**
+   `__wpk_fork_host_externref_handle` arrived in this lane.
+
+**Where it stands: 12 failures → 11, and the fork now runs its whole unwind**
+before failing at `fm_parent_seal_capture` with `errno 22`.
+
+**The next fix, identified but not made:** the seal writes a `Module` record
+per activation and requires `activation_template_id(id)`, `EINVAL` if never
+seeded — and host-native never calls `fm_set_activation_template_id`. It needs
+a SHA-256 (`sha2` is already in the workspace and `fork-codec` already depends
+on it, but host-native does not), a `TypedFunc` for the entry, and **a
+guest-memory address to write 32 bytes that nothing later overwrites**. That
+last one is a placement decision I stopped short of guessing at: `stage()`'s
+slab is the fork-module's own and `capture_scratch_base` is per-capture, so
+neither is obviously right, and a wrong choice fails only on a specific fork.
 
 ## Still the maintainer's
 

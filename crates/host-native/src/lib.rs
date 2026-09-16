@@ -234,8 +234,8 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 /// these as host surface would overstate the obligation and, worse, would make
 /// the number move for reasons that have nothing to do with fork.
 ///
-/// FIVE are the real obligation, and each is a Wasm capability floor rather
-/// than a design choice:
+/// All SEVEN are the real obligation, and each is a Wasm capability floor
+/// rather than a design choice:
 ///
 /// * `env.resolve_externref` (function) -- materializes a host reference from
 ///   a handle. Wasm cannot manufacture an externref.
@@ -243,15 +243,30 @@ pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 ///   references are the same object. `ref.eq` validates only on `eqref`, there
 ///   is no `ref.hash`, and no cast rescues a host reference into the eq
 ///   hierarchy, so the module cannot answer this for itself.
+/// * `env.__wpk_fork_host_func_identity` (function) -- the same question for
+///   `funcref`, which is a disjoint hierarchy from `anyref`, so one oracle
+///   cannot serve both.
+/// * `env.__wpk_fork_host_externref_handle` (function) -- the INVERSE of
+///   `resolve_externref`: which handle does this live reference already carry?
+///   Capture needs that direction, and only the host can look inside an
+///   externref to answer it.
 /// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`,
 ///   `env.__wpk_fork_static_root_catalog` (tables) -- reference-typed tables.
 ///   Rust cannot declare or hold one; the module reaches their contents only
 ///   through injected `table.get`/`table.set`.
 ///
-/// If any of the five is ever shown NOT to be a floor, this number and the
+/// WENT 6 -> 7 when the externref-handle import arrived. This host leaves it
+/// to `define_unknown_imports_as_traps`, exactly as it leaves
+/// `resolve_externref`: a native fork carries no host externref today, so
+/// calling either is a boundary rather than a path, and the inert-stub test
+/// asserts they are never reached. The COUNT is the obligation a new host
+/// reads, so it tracks the module whether or not this host implements each
+/// entry.
+///
+/// If any of the seven is ever shown NOT to be a floor, this number and the
 /// matching budget target should both fall. Until then they are equal, which
 /// is why this surface's target is not below its ceiling.
-pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 6;
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 7;
 
 /// The number of PIC linking imports excluded from the count above. Pinned so
 /// that a change in linking shape is visible instead of silently rebalancing
@@ -1276,6 +1291,14 @@ mod tests {
         assert_eq!(
             functions.as_slice(),
             [
+                // The INVERSE of `resolve_externref`: which handle does this
+                // live reference already carry? Capture needs that direction,
+                // and only the host can look inside an externref to answer it.
+                // Arrived with the lane-F capture work; this host leaves it to
+                // `define_unknown_imports_as_traps` exactly as it leaves
+                // `resolve_externref`, because a native fork carries no host
+                // externref today.
+                "__wpk_fork_host_externref_handle",
                 // Answers "are these the same function?" for funcref capture.
                 // Wasm cannot: `ref.eq` validates only on `eqref` and the
                 // reference hierarchies are disjoint. Maintainer-approved

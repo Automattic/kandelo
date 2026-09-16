@@ -6615,6 +6615,12 @@ fn spawn_guest_thread(
                 fork_format.as_ref().and_then(|f| f.gc_codec_descriptor.as_deref()),
             ) {
                 Ok(fm) => {
+                    // The five frame imports, bound by name because each is
+                    // the module's own entry point for a guest frame call. The
+                    // GENERAL fill-in for every other `__wpk_fork_*` function
+                    // the module serves runs at the END of this wiring block,
+                    // after the conditional bindings that have a reason for the
+                    // exact function they choose.
                     const FRAME_IMPORT_NAMES: [&str; 5] = [
                         "__wpk_fork_frame_reserve",
                         "__wpk_fork_frame_commit",
@@ -8382,6 +8388,48 @@ fn spawn_guest_thread(
                     return;
                 }
             }
+
+            // THE GENERAL FILL-IN, last, after every conditional wire above.
+            //
+            // Each binding before this point chooses a specific function for a
+            // specific reason -- a wrapped decode, a capture-scratch closure, a
+            // provenance recorder. This loop takes what is LEFT: any
+            // `__wpk_fork_*` function the guest imports that the module exports
+            // under the same name and nobody has bound yet.
+            //
+            // It replaces a hand-written list of five frame imports, which was
+            // right while the module served only those. The module now serves
+            // all 46 of the guest's fork imports -- the JavaScript hosts bind
+            // them exactly this way in `buildForkGuestImports` -- and the rest
+            // fell to `define_unknown_imports_as_traps`. The first one the
+            // module actually drove was
+            // `__wpk_fork_module_state_record_reserve`, reached from
+            // `wpk_fork_module_state_save`: "unknown import ... has not been
+            // defined", inside a fork that had already committed its frames.
+            //
+            // Driven off the ARTIFACT's own import list rather than a copy of
+            // the contract, so an import the module starts serving needs no
+            // edit here -- the defect a hand-kept list has by construction.
+            for import in module.imports() {
+                if import.module() != "env" || !import.name().starts_with("__wpk_fork_") {
+                    continue;
+                }
+                let name = import.name();
+                // Already bound above, with a reason: leave it alone.
+                if linker.get(&mut store, "env", name).is_ok() {
+                    continue;
+                }
+                // Functions only. The guest's non-function fork imports (the
+                // transit table, the unwind tag, the resume table, the
+                // per-process globals) are bound where each is created.
+                let Some(func) = fm.instance.get_func(&mut store, name) else {
+                    continue;
+                };
+                if let Err(e) = linker.define(&mut store, "env", name, func) {
+                    eprintln!("wiring fork-module export {name} into env failed: {e:#}");
+                    return;
+                }
+            }
         }
 
         // The fork-exec import set is imported but never reached on this
@@ -8532,10 +8580,30 @@ fn spawn_guest_thread(
             }
 
             // -- Drive-table bind (activation 0 only) ------------------------
-            let gc_allocate =
-                instance.get_func(&mut store, wasm_posix_shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE);
-            let gc_fill = instance.get_func(&mut store, wasm_posix_shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL);
-            if let (Some(gc_allocate), Some(gc_fill)) = (gc_allocate, gc_fill) {
+            //
+            // EVERY SLOT THE MODULE DRIVES, not just the typed-GC three.
+            //
+            // This used to bind ALLOC/FILL/EXN and size the table to
+            // `base + 3`, gated on the guest exporting `_gc_allocate` and
+            // `_gc_fill` -- so a guest with no typed-GC codec bound NOTHING,
+            // including the lifecycle slots. That was correct when the module
+            // drove only reconstruction. It stopped being correct when the
+            // module took over the unwind/rewind/abort sequence and began
+            // `call_indirect`-ing those slots itself: eleven host-native fork
+            // smoke tests trapped with `undefined element: out of bounds table
+            // access` inside `__wpk_fork_unwind_transport_*`, because slot 10
+            // was null and the table was three long.
+            //
+            // The JavaScript hosts carry the same table as
+            // `FORK_ACTIVATION_DRIVE_BINDINGS`; this is that list, in Rust,
+            // with the offsets read from `fork_codec` rather than copied. A
+            // REQUIRED slot whose export is missing is a broken artifact and
+            // says so -- the module WILL drive it, and an unbound slot is a
+            // `call_indirect` on null.
+            {
+                use fork_codec::drive_plan as slots;
+                use wasm_posix_shared::abi as fork_abi;
+
                 let base = match fm.fm_drive_table_base.call(&mut store, 0) {
                     Ok(b) => b,
                     Err(e) => {
@@ -8547,7 +8615,10 @@ fn spawn_guest_thread(
                     eprintln!("fm_drive_table_base(0) returned a negative base {base}");
                     return;
                 };
-                let needed = base + 3; // ALLOC=0, FILL=1, EXN=2.
+                // Sized to the WHOLE stride, so a slot the module derives from
+                // `fm_drive_table_base` is always addressable even when this
+                // host binds nothing into it.
+                let needed = base + u64::from(slots::DRIVE_SLOTS_PER_ACTIVATION);
                 let current = fm.drive_table.size(&mut store);
                 if needed > current {
                     if let Err(e) = fm.drive_table.grow(&mut store, needed - current, Ref::Func(None)) {
@@ -8555,25 +8626,69 @@ fn spawn_guest_thread(
                         return;
                     }
                 }
-                if let Err(e) = fm.drive_table.set(&mut store, base, Ref::Func(Some(gc_allocate))) {
-                    eprintln!("binding __wpk_fork_drive_table[{base}] (ALLOC) failed: {e:#}");
-                    return;
-                }
-                if let Err(e) = fm.drive_table.set(&mut store, base + 1, Ref::Func(Some(gc_fill))) {
-                    eprintln!("binding __wpk_fork_drive_table[{}] (FILL) failed: {e:#}", base + 1);
-                    return;
-                }
-                // The exception-materialize slot is optional: a guest with
-                // no exception codec (no captured exnref) does not export
-                // it, and the slot is simply never driven.
-                if let Some(exception_materialize) = instance
-                    .get_func(&mut store, wasm_posix_shared::abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE)
-                {
-                    if let Err(e) =
-                        fm.drive_table.set(&mut store, base + 2, Ref::Func(Some(exception_materialize)))
-                    {
-                        eprintln!("binding __wpk_fork_drive_table[{}] (EXN) failed: {e:#}", base + 2);
-                        return;
+
+                // `required`: the instrumentation runtime emits these for every
+                // fork-capable guest, so a missing one is a broken artifact.
+                // The rest are conditional on what the guest contains -- no
+                // typed-GC codec means no allocate/fill, no exception codec
+                // means no materialize or thrower -- and the module emits no
+                // step for what a guest does not have.
+                let bindings: [(u32, &str, bool); 16] = [
+                    (slots::DRIVE_OP_ALLOC, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE, false),
+                    (slots::DRIVE_OP_FILL, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL, false),
+                    (slots::DRIVE_OP_EXN, fork_abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE, false),
+                    (slots::DRIVE_SLOT_RESTORE, fork_abi::WPK_FORK_EXPORT_MODULE_STATE_RESTORE, true),
+                    (
+                        slots::DRIVE_SLOT_FINISH_RESTORE,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
+                        true,
+                    ),
+                    (slots::DRIVE_SLOT_REWIND_BEGIN, fork_abi::WPK_FORK_EXPORT_REWIND_BEGIN, true),
+                    (slots::DRIVE_SLOT_ABORT_BEGIN, fork_abi::WPK_FORK_EXPORT_ABORT_BEGIN, true),
+                    (slots::DRIVE_SLOT_UNWIND_END, fork_abi::WPK_FORK_EXPORT_UNWIND_END, true),
+                    (slots::DRIVE_SLOT_REWIND_END, fork_abi::WPK_FORK_EXPORT_REWIND_END, true),
+                    (slots::DRIVE_SLOT_ABORT_END, fork_abi::WPK_FORK_EXPORT_ABORT_END, true),
+                    (slots::DRIVE_SLOT_UNWIND_BEGIN, fork_abi::WPK_FORK_EXPORT_UNWIND_BEGIN, true),
+                    (
+                        slots::DRIVE_SLOT_GC_ENCODE,
+                        fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT,
+                        false,
+                    ),
+                    (slots::DRIVE_SLOT_GC_PROBE, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_PROBE, false),
+                    (
+                        slots::DRIVE_SLOT_MODULE_STATE_SAVE,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_STATE_SAVE,
+                        true,
+                    ),
+                    (
+                        slots::DRIVE_SLOT_MODULE_TABLE_STATE_SAVE,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
+                        false,
+                    ),
+                    (
+                        slots::DRIVE_SLOT_EXN_THROW_RECIPE,
+                        fork_abi::WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE,
+                        false,
+                    ),
+                ];
+
+                for (slot, export, required) in bindings {
+                    let at = base + u64::from(slot);
+                    match instance.get_func(&mut store, export) {
+                        Some(func) => {
+                            if let Err(e) = fm.drive_table.set(&mut store, at, Ref::Func(Some(func))) {
+                                eprintln!("binding __wpk_fork_drive_table[{at}] ({export}) failed: {e:#}");
+                                return;
+                            }
+                        }
+                        None if required => {
+                            eprintln!(
+                                "fork-instrumented guest exports no {export}; the module drives \
+                                 drive-table slot {slot} and an unbound slot is a call_indirect on null"
+                            );
+                            return;
+                        }
+                        None => {}
                     }
                 }
             }
