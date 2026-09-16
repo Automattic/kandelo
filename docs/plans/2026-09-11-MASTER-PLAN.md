@@ -8413,6 +8413,22 @@ below is green on its own evidence and the branch is pushed after each.
 | **B45** fixed — steps 1 and 2, plus three browser defects it exposed | `83d3e052c` `812521b23` `b7711b91a` `27855cf5f` `a8a8d3cff` `b3f6567ff` |
 | **V-NAME** renamed, all but the four magic bytes | `5e9fabc24` `28d6e305d` `5dbafed68` |
 
+**Both suites now match the parent, measured after the magic change.**
+
+| | parent | this branch |
+|---|---|---|
+| host suite | 93 failed / 4321 passed, **39 files** | 92 failed / **4349** passed, **39 files** |
+| chromium | 19 failed / 164 passed | 19 failed / **165** passed |
+
+The host failing SET is **identical** — 39 files, zero difference in either
+direction — with 28 more passing. The browser set is identical across the magic
+change, and against the parent differs only in which of two
+`kandelo-merge-gate` tests reports, both of which fail on the parent in
+isolation.
+
+So this branch introduces no failure the parent does not have, on either host,
+and passes more on both.
+
 **Evidence.** Rust: runtime-core 2198, kandelo-image-module 80, host-native 74,
 wasm32 release clean. `xtask perturb --validate`: 376 trials, all anchoring; 14
 new trials run, 0 survived, 0 invalid. Surface budget: 101 passed, and it
