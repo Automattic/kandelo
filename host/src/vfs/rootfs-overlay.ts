@@ -90,11 +90,21 @@ function lstatIfPresent(
  * place that has to know it — an `instanceof` check against one class silently
  * RETHROWS the other's not-found, which turns "copy this path if it is
  * missing" into a crash on the ordinary case.
+ *
+ * THE TWO USE OPPOSITE SIGNS, and this is the whole reason the function is
+ * worth reading. `vfs-errors.ts` numbers errnos NEGATIVELY — `ENOENT` is `-2`,
+ * because `SFSError` carries the code a call returned. The bridge raises
+ * `SffsImageError` with the POSITIVE errno (`2`), because it negates the
+ * return code at the boundary. Comparing one against the other is not a type
+ * error and not a runtime error; it is silently always-false. That is how the
+ * first version of this escaped its own catch and failed 59 browser tests on
+ * `/etc`, a path that is simply absent from a fresh image.
  */
 function isNotFound(error: unknown): boolean {
   if (error instanceof SFSError && error.code === ENOENT) return true;
-  return typeof error === "object" && error !== null
-    && (error as { errno?: unknown }).errno === ENOENT;
+  const errno = (error as { errno?: unknown } | null | undefined)?.errno;
+  // `-ENOENT` because ENOENT is negative here and positive there.
+  return typeof errno === "number" && errno === -ENOENT;
 }
 
 function readFile(

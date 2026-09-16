@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { overlayEtcFromRootfs } from "../src/vfs/rootfs-overlay";
 
 /**
  * What a HOST does to an image before handing it to the kernel, and whether the
@@ -114,5 +115,49 @@ describe.skipIf(!existsSync(rootfsImage))("a build-time image round trip", () =>
     expect(st.size, `${sample!.path} became an empty file`).toBe(0);
     expect(st.mode & 0o111, "and kept its executable bits, so it still looks runnable").not.toBe(0);
     expect(st.deferred, "and is marked COMPLETE, so nothing will ever fetch it").toBeFalsy();
+  });
+});
+
+describe("overlaying /etc onto a fresh image", () => {
+  // This is the browser's `createBuildFsWithEtc`, reduced to the part that
+  // broke: copy `/etc` out of the canonical rootfs into an image that does not
+  // have one yet.
+  //
+  // It failed 59 browser tests with `ENOENT: lstat /etc` — not because the
+  // path was missing, which is the ordinary and expected case, but because the
+  // "is this ENOENT?" check could never say yes. `vfs-errors.ts` numbers
+  // errnos NEGATIVELY (`ENOENT === -2`) while the bridge raises the POSITIVE
+  // errno (`2`), so the comparison was silently always-false and the ordinary
+  // case escaped its own catch.
+  //
+  // A sign mismatch is invisible to the typechecker and invisible to a reader
+  // who does not already know both conventions, so it is asserted here.
+  it("copies /etc in rather than treating a missing target path as fatal", async () => {
+    const source = SffsImageFs.create();
+    source.mkdir("/etc", 0o755);
+    source.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+    const sourceImage = await source.saveImage();
+
+    // A fresh target: `/` and nothing else, so `/etc` is absent exactly as it
+    // is on the browser's build filesystem.
+    const target = SffsImageFs.create();
+    await overlayEtcFromRootfs(target, sourceImage);
+
+    expect(target.lstat("/etc").mode & 0o7777).toBe(0o755);
+    expect(target.lstat("/etc/hostname").size).toBe(8);
+  });
+
+  it("is idempotent, because a path that IS present is the other branch", async () => {
+    const source = SffsImageFs.create();
+    source.mkdir("/etc", 0o755);
+    source.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+    const sourceImage = await source.saveImage();
+
+    const target = SffsImageFs.create();
+    await overlayEtcFromRootfs(target, sourceImage);
+    // Twice. The second pass takes the "target path exists" branch for every
+    // entry, which is the branch the broken check never reached.
+    await overlayEtcFromRootfs(target, sourceImage);
+    expect(target.lstat("/etc/hostname").size).toBe(8);
   });
 });
