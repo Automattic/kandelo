@@ -9869,10 +9869,28 @@ static-root/catch-ref specs pass in Chromium.
 **67 banked files, and every one of them was in the baseline as first pinned.**
 The lane has added nothing to it. Of those 67:
 
-- **8 are fork-related.** Four were ported tonight and came off. What remains:
-  `fork-module-drive-shim`, `fork-module-host-obligation`,
-  `fork-host-import-runtime` (a malformed type section in a legacy artifact),
-  and `fork-instrument-coverage`.
+- **8 were fork-related, and 7 are now off.** Four were ported; three more
+  followed before the night ended:
+  - `fork-module-host-obligation` asserted a two-name host obligation (it
+    predated even `__wpk_fork_host_func_identity`) and built the module's
+    indirect function table at a fixed size of 0, which fails the day the
+    module gains its first `call_indirect` target and says nothing about the
+    obligation. It names the four imports now and reads the table size out of
+    the artifact's own `dylink.0`, the way placement does.
+  - `fork-module-drive-shim` passed a TABLE to `ForkAnyrefTransitTable`, which
+    takes the module's EXPORTS -- it needs `fm_transit_grow` beside the table,
+    because growing an anyref table is the module's job.
+  - `fork-instrument-coverage` needed no repair at all: P-11 was its one real
+    failure and the ENOMEM work fixed it. It is off the baseline with the
+    load-sensitivity caveat below stated in its commit.
+
+  **`fork-host-import-runtime` is the one left, and it is NOT this lane's.**
+  It asserts that `wa_read_facts` retains shared reference types
+  (`{ code: 0x63, heapType: 0, shared: true }`) through a type section, and
+  the reader refuses them: `malformed type section: invalid value type (at
+  offset 0x1c)`. That is the wasm artifact reader's type support, in another
+  crate and another contract; the fork host-import runtime around it passes
+  six of its eight cases.
 - **`fork-instrument-coverage` is a LOAD-SENSITIVITY finding, not a defect
   list.** Run alone it passes whole (41 passed, 2 expected fail, 8 skipped).
   Run inside the full suite it fails one case (K-03, fork from a

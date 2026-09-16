@@ -92,7 +92,10 @@ function setup() {
     label: "drive-shim-test",
   });
   const x = fm.exports as unknown as DriveShimExports;
-  const transitTable = new ForkAnyrefTransitTable(fm.gcTransitTable);
+  // The wrapper takes the module's EXPORTS, not a table: it needs
+  // `fm_transit_grow` and `fm_last_errno` alongside the table, because
+  // growing an anyref table is the module's own job.
+  const transitTable = new ForkAnyrefTransitTable(fm.exports);
   return { fm, x, transitTable };
 }
 

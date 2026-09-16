@@ -51,6 +51,76 @@ function stubResolver(known: Map<number, object> = new Map()): ForkExternrefReso
 }
 
 /** The three reference-typed tables `fork-module-instance` owns. */
+/**
+ * The indirect-function-table size the artifact's `dylink.0` declares.
+ *
+ * The same subsection `host/src/fork-module-instance.ts` reads to place the
+ * module; read here rather than imported because this file loads the artifact
+ * by explicit path and must not depend on the placement path it is checking.
+ */
+function indirectTableSize(bytes: Uint8Array): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let at = 8; // magic + version
+  while (at < bytes.length) {
+    const id = bytes[at++]!;
+    let size = 0;
+    let shift = 0;
+    for (;;) {
+      const byte = bytes[at++]!;
+      size |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    const end = at + size;
+    if (id === 0) {
+      let nameLen = 0;
+      shift = 0;
+      for (;;) {
+        const byte = bytes[at++]!;
+        nameLen |= (byte & 0x7f) << shift;
+        if ((byte & 0x80) === 0) break;
+        shift += 7;
+      }
+      const name = new TextDecoder().decode(bytes.subarray(at, at + nameLen));
+      at += nameLen;
+      if (name === "dylink.0") {
+        // subsection 1 = memory info: memorySize, memoryAlign, tableSize, ...
+        while (at < end) {
+          const kind = bytes[at++]!;
+          let subSize = 0;
+          shift = 0;
+          for (;;) {
+            const byte = bytes[at++]!;
+            subSize |= (byte & 0x7f) << shift;
+            if ((byte & 0x80) === 0) break;
+            shift += 7;
+          }
+          const subEnd = at + subSize;
+          if (kind === 1) {
+            const leb = (): number => {
+              let value = 0;
+              let s = 0;
+              for (;;) {
+                const byte = bytes[at++]!;
+                value |= (byte & 0x7f) << s;
+                if ((byte & 0x80) === 0) break;
+                s += 7;
+              }
+              return value >>> 0;
+            };
+            leb();
+            leb();
+            return leb();
+          }
+          at = subEnd;
+        }
+      }
+    }
+    at = end;
+  }
+  throw new Error("the fork-module artifact declares no dylink.0 memory info");
+}
+
 function moduleTables() {
   return {
     __wpk_fork_function_catalog: new WebAssembly.Table({
@@ -81,9 +151,16 @@ function instantiate(env: Record<string, unknown>) {
   return new WebAssembly.Instance(new WebAssembly.Module(bytes), {
     env: {
       memory,
+      // SIZED FROM THE ARTIFACT, not from a constant. A PIC side module
+      // declares how many indirect-call slots its own elements need, and the
+      // injector's shims put functions there -- so a fixed 0 was a test that
+      // failed the day the module gained its first `call_indirect` target
+      // (`table import 1 is smaller than initial 2`), which says nothing about
+      // the host obligation this file is about. Production reads the same
+      // number out of `dylink.0`.
       __indirect_function_table: new WebAssembly.Table({
         element: "anyfunc",
-        initial: 0,
+        initial: indirectTableSize(bytes),
       }),
       __stack_pointer: new WebAssembly.Global(
         { value: "i32", mutable: true },
@@ -102,7 +179,14 @@ function instantiate(env: Record<string, unknown>) {
 describe("fork-module host obligation", () => {
   it("names exactly the host FUNCTIONS, so the set cannot drift silently", () => {
     const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+    // FOUR, and each is argued where it is declared: two identity imports
+    // (`any` and `func` are disjoint hierarchies, and wasm cannot compare
+    // references in either), and the externref pair -- `resolve_externref`
+    // brings a handle back to life in a child, `__wpk_fork_host_externref_handle`
+    // says which handle names a live value so a parent's capture can record it.
     expect(Object.keys(caps.imports).sort()).toEqual([
+      "__wpk_fork_host_externref_handle",
+      "__wpk_fork_host_func_identity",
       "__wpk_fork_host_ref_identity",
       "resolve_externref",
     ]);
