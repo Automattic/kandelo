@@ -3186,6 +3186,29 @@ TypeScript bridge (`28d6e305d`), and the crate, artifact and last stragglers
 `KandeloImageFs`, `KandeloImageWriter`, `KandeloImageError`,
 `kandelo_image_fs.rs`, `kandelo-image-module`, `kandelo_image_module32.wasm`.
 
+**Reading the rest of this plan after the rename.** Sections written before
+2026-09-16 name the old symbols, and they are left alone on purpose: rewriting
+them would damage the record, and one of them is a narrative about a rename
+that damaged a fixture by being too eager. `SffsImageFs` appears **49 times**
+below and in the lanes above; every one of them means today's
+`KandeloImageFs`. The rest of the mapping, once:
+
+| what an older section says | what it is called now |
+|---|---|
+| `SffsImageFs`, `SffsImageError` | `KandeloImageFs`, `KandeloImageError` |
+| `SffsWriter`, `SffsConfig` | `KandeloImageWriter`, `KandeloImageConfig` |
+| `sffs-module`, `sffs_module32.wasm` | `kandelo-image-module`, `kandelo_image_module32.wasm` |
+| `sffs_image_fs.rs` | `kandelo_image_fs.rs` |
+| `sffs_container.rs` | `vfsi_container.rs` (it held the `VFSI` CONTAINER) |
+| `sffs_deferred.rs` | `sdef.rs` (it held the `SDEF` section) |
+| `SFFS_SUPER_MAGIC` | `KANDELO_IMAGE_SUPER_MAGIC` |
+| the four magic bytes `SFFS` | `KIFS`, constant `0x5346_494B` |
+
+The `SFFS` spellings that are NOT stale are the ones naming a fixture's
+BYTES — `sffs-small.sffs.deflate` and its siblings are samples of a specific
+yesterday, and the section below says why regenerating one destroys the only
+copy of it.
+
 **Two files moved to names that were never the filesystem's**, which was most
 of the value: `sffs_container.rs` held the `VFSI` CONTAINER and is
 `vfsi_container.rs`; `sffs_deferred.rs` held the `SDEF` section and is
