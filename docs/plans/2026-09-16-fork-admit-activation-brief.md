@@ -1,99 +1,101 @@
-# Follow-up: `fm_admit_activation` — the module reads the guest's own sections
+# Follow-up: what the module can take over from the host's guest-section reading
 
 Branch `brandonpayton/lane-f-admit-activation`, cut from
 `brandonpayton/lane-f-fork-inversion`. Deferred out of lane F by the maintainer
 so it gets its own review and its own validation surface.
 
-## The goal, in the maintainer's words
+> **This brief was rewritten on 2026-09-16, hours after its first version, and
+> the first version was wrong.** It proposed
+> `fm_admit_activation(activation, module_bytes_ptr, byte_len)` — the module
+> parsing the guest's custom sections itself — and claimed it would delete
+> ~430 host code lines and take `forkModuleHostEntries` 58 → 53. Two checks
+> that should have come before writing it kill that shape outright. They are
+> §1 below. I wrote the first version by reasoning about the design instead of
+> probing it, which is the exact failure this lane spent the day documenting in
+> other people's work.
 
-> I don't want to dilute or mix abstractions. I just want to share as much of
-> the code that calls these operations as possible, so any kind of host can
-> take advantage of the flow. The result would be more wasm run by the host to
-> coordinate forking with less host-specific implementation.
+## 1. Why the module cannot read the guest's image
 
-That is the test to apply to every step here: **does a new host end up knowing
-less?** Not "is the entry count lower".
+**The image cannot enter linear memory.** `node.wasm` is **53 MB** and
+`php-fpm.wasm` **43 MB**. The fork-module's staging slab is
+`STAGING_SLAB_BYTES = 256 * 1024` with a bump cursor that is **never reset**
+("everything staged here is seeded once per worker and must outlive the call").
+Nothing about that is a tuning problem: growing guest linear memory by tens of
+megabytes to hand over an image would break the fork memory-clone invariant a
+child depends on — it must observe the parent's EXACT size — and a COW child
+would clone it.
 
-### What this is NOT
+**And there is nothing in Rust to parse it with.** `fork-codec` decodes section
+*contents* — `gc_codec`, `exception_codec`, `imported_globals`,
+`imported_tables`, `module_state` — and has no wasm-binary reader at all.
 
-Collapsing the thirteen `fm_set_*` seeders into one `fm_seed(kind, a0..a4)`.
-That was built and reverted in lane F (census 195): it takes the count 59 → 47
-while a host still needs all thirteen facts, every argument slot's meaning per
-selector, and the order — and loses the argument types the compiler was
-checking. The count moves; the knowledge does not.
+**Meanwhile locating a section costs the host two lines.** It is
+`WebAssembly.Module.customSections(module, name)`: an engine call on a
+`WebAssembly.Module` the host already holds. There is no hand-written section
+walk to delete, because there never was one.
 
-## The question that produces the right fold
+So the split is finer than "the host stops knowing those sections exist".
+**Locating is irreducibly the host's** — it owns the image, and the image stays
+out of linear memory. What can move is **decoding**, and only where the host
+does not use the decoded value.
 
-For each of the thirteen seeds, ask **where does the host GET this fact?**
+## 2. What is actually worth moving, checked rather than assumed
 
-| fact | where the host reads it | can the module read it? |
-|---|---|---|
-| linked-frame format | `kandelo.wpk_fork.linked_frames` section | **yes** |
-| resume catalog (global + per activation) | the resume-catalog section | **yes** |
-| GC codec | `kandelo.wpk_fork.gc_codec` section | **yes** — host only forwards raw bytes today |
-| exception codec | its section | **yes**, same |
-| activation template id | a section, hashed | **yes** |
-| exception tag ordinals | parsed out of the exception codec | **yes** — same bytes |
-| funcref catalog base | where the host laid this slice in the MERGED table | no — host placement |
-| static-root catalog base | same | no |
-| table-state owner | an election over `WebAssembly.Table` identity | no — wasm cannot compare tables |
-| identity group, import provenance | how the host wired this guest's imports | no |
-| host exception owner | host policy | no |
-| borrowed workspace | host memory placement | no |
+| what | host reads | host USES the value? | verdict |
+|---|---|---|---|
+| module-state ROOT | a pointer in **guest linear memory** | no — forwards it | **best candidate: needs no bytes forwarded at all.** The module is in that same memory and can read the pointer itself |
+| resume catalog ordinals | the catalog section | no — seeds them; targets come separately from the instance | **candidate**: forward located bytes, decode in the module |
+| module-state descriptor | a 24-byte section | pointer width only | marginal — 24 bytes, small decode |
+| linked-frame format | the frames section | **yes** — `ptrWidth` for a consistency check, `fixedPrefixSize` passed back at capture through `sides()` | **probably not**: moving it buys read-backs |
+| GC codec, exception codec | their sections | **no** — already forwarded as raw bytes | **already done** |
+| template id | SHA-256 over the **whole image** | no — forwards 32 bytes | **stays host**, with its hand-written TypeScript SHA-256: the thing it hashes cannot enter linear memory |
 
-Six are "parse a custom section of the guest module", and the module already
-links `fork-codec`, which parses every one of those formats. **What the host
-uniquely has is not the CONTENT — it is which bytes belong to which activation,
-and where they are in memory.**
+## 3. Honest expected effect
 
-## The shape
+Much smaller than the first version claimed, and **not** obviously an entry
+reduction at all: forwarding located bytes instead of decoded values leaves the
+same number of `fm_set_*` seeds. `forkModuleHostEntries` 58 → 53 was
+unsupported; delete that expectation rather than carry it.
 
-```
-fm_admit_activation(activation_id, module_bytes_ptr, byte_len)
-```
+The deletable host lines are the DECODERS, not the locators, and the biggest
+single item in `fork-guest-sections.ts` — the SHA-256 — is not one of them.
+Someone should measure the real total before committing to this as a PR; it may
+be closer to ~100 lines than ~430, in which case the module-state root alone
+may be the whole worth-doing part.
 
-The module extracts the format, the resume catalog, the GC codec, the exception
-codec, the tag ordinals and the template id itself. Six entries become one, and
-the host stops knowing those sections exist.
-
-The other seven keep their names and their types. They are placement, election
-and policy: genuinely the host's, and collapsing them is the rejected fold.
-
-## What it deletes rather than renames
-
-- `host/src/fork-guest-sections.ts` — 167 code lines
-- `host/src/fork-resume-catalog.ts` — 117
-- the reader half of `host/src/fork-continuation.ts` — ~152
-
-These are host re-implementations of formats Rust already parses, which is the
-"second implementation of a wire format, and both are executing" finding that
-opened the lane-F census — still standing in the one place it is easiest to
-close.
-
-## Carry this in too
+## 4. Carry this in regardless
 
 **`crates/host-native/src/guest.rs` places resume thunks with `let slot = i as
-u64 + 1;`** — a third copy of the slot rule, correct today only because that
-host has one activation and never unregisters a slot. Six lines: call
-`fm_resume_slots` op 0 per ordinal and place where it says. It is deferred to
-here precisely because this branch has to validate host-native properly and
-lane F did not. Census 194's addendum has the reasoning.
+u64 + 1;`** — a third copy of the resume-slot rule, correct today only because
+that host has one activation and never unregisters a slot. Six lines: call
+`fm_resume_slots` op 0 per ordinal and place where it says. It is deferred here
+because this branch has to validate host-native properly and lane F did not.
+Census 194's addendum has the reasoning. **This is independent of everything
+above and is worth doing on its own.**
 
-## Validation this branch needs that the host suite does not give
+## 5. Validation this branch needs that the host suite does not give
 
-`crates/host-native` is **not built by the host suite**. `cargo check -p
-host-native` is a compile check, not a behaviour one. Budget for:
+- `crates/host-native` is **not built by the host suite**; `cargo check -p
+  host-native` is a compile check, not a behaviour one.
+- `host/test/suite-baseline.mjs` does not cover `tests/posix`, `tests/libc` or
+  `tests/sortix`. For process-lifecycle work, run sortix `process` (24 tests),
+  `signal` + `io` (87), and the four `os-test-local` tests that call `fork()`.
+  `tests/sortix/os-test` is not checked out here — point `KANDELO_OS_TEST_DIR`
+  at a populated checkout of the same commit (`7e8f0082ab`), because asked for
+  a suite it cannot discover the runner prints "Discovered 0 tests" and **exits
+  0**.
+- The browser fork specs, if the guest's import set changes.
+- Perturb every new guard, recording the **build key per mutation** so
+  "artifact unchanged" cannot be read as "mutation survived".
 
-- `cargo check -p host-native` and its own tests;
-- both JS hosts through `host/test/suite-baseline.mjs`;
-- the browser fork specs (`apps/browser-demos`, chromium) — the guest's import
-  set changes, and that is exactly what the browser binds;
-- perturbation of each new guard, with the **build key recorded per mutation**
-  so "artifact unchanged" cannot be read as "mutation survived".
+## 6. The test to apply to every step
 
-## Expected effect on the budget
+The maintainer's framing, which is what rejected the first version's sibling
+(`fm_seed`, census 195) and should be applied here too:
 
-`forkModuleHostEntries` 58 → about 53 directly, and the reachable target is
-roughly 8 rather than the recorded 5 (census 195). `forkPlatformTypeScript` and
-`workerMainForkTypeScript` both fall by the deleted readers. Bank each with its
-reason; **never raise a ceiling to make a check pass.**
+> I just want to share as much of the code that calls these operations as
+> possible, so any kind of host can take advantage of the flow.
+
+**Does a new host end up knowing less?** Not "is the entry count lower". A host
+that must still locate five sections and forward five byte ranges knows exactly
+what it knew before, whichever side decodes them.
