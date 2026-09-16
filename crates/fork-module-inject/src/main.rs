@@ -134,6 +134,13 @@ const GC_LOOKUP_EXPORT: &str = "__wpk_fork_ref_gc_lookup";
 /// two Rust helpers that map it. Wasm can COMPARE references but cannot HASH
 /// one, so a reference cannot key a map inside the module; the host can.
 const HOST_REF_IDENTITY_IMPORT: &str = "__wpk_fork_host_ref_identity";
+/// The placeholder the module declares and this injector rewrites: "the broker
+/// handle for the externref staged in transit `slot`".
+const EXTERNREF_HANDLE_THUNK_IMPORT: &str = "__wpk_fork_externref_handle";
+/// Its host half -- the exact reverse of `resolve_externref`.
+const HOST_EXTERNREF_HANDLE_IMPORT: &str = "__wpk_fork_host_externref_handle";
+/// The placeholder the module declares for the emitted `fm_transit_grow`.
+const TRANSIT_GROW_THUNK_IMPORT: &str = "__wpk_fork_transit_grow";
 
 /// The host's funcref identity oracle: a stable integer per distinct function.
 ///
@@ -391,6 +398,109 @@ fn import_host_ref_identity(module: &mut Module) -> FunctionId {
         .add(&[ValType::Ref(RefType::ANYREF)], &[ValType::I32]);
     let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_REF_IDENTITY_IMPORT, ty);
     id
+}
+
+/// Find or add `env.__wpk_fork_host_externref_handle(externref) -> i32`.
+///
+/// The reverse of `resolve_externref`, and needed for the same reason in the
+/// other direction: only the host knows which broker handle names a live host
+/// reference, and only wasm can hold the reference to be asked about. 0 means
+/// "not a reference the host owns", which is a real answer, not a failure.
+fn import_host_externref_handle(module: &mut Module) -> FunctionId {
+    for import in module.imports.iter() {
+        if import.module == IMPORT_MODULE && import.name == HOST_EXTERNREF_HANDLE_IMPORT {
+            if let ImportKind::Function(id) = import.kind {
+                return id;
+            }
+        }
+    }
+    let ty = module
+        .types
+        .add(&[ValType::Ref(RefType::EXTERNREF)], &[ValType::I32]);
+    let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_EXTERNREF_HANDLE_IMPORT, ty);
+    id
+}
+
+/// Rewrite the module's `__wpk_fork_externref_handle(slot)` placeholder into
+/// the three instructions Rust cannot write:
+///
+/// ```wat
+/// (func (param $slot i32) (result i32)
+///   (local $v anyref)
+///   (local.set $v (table.get $transit (local.get $slot)))
+///   (if (ref.is_null (local.get $v)) (then (return (i32.const 0))))
+///   (call $host_externref_handle (extern.convert_any (local.get $v))))
+/// ```
+///
+/// A null slot answers 0 without calling the host: the module asks this
+/// question about values that matched no GC layout, and a cleared slot is one
+/// of the answers "no host reference here" can take.
+fn inject_externref_handle_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != EXTERNREF_HANDLE_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let host = import_host_externref_handle(module);
+    let value = module.locals.add(ValType::Ref(RefType::ANYREF));
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let slot = args[0];
+            body.local_get(slot).table_get(transit_table).local_set(value);
+            body.local_get(value).ref_is_null().if_else(
+                None,
+                |null| {
+                    null.i32_const(0).return_();
+                },
+                |_| {},
+            );
+            body.local_get(value)
+                .instr(walrus::ir::ExternConvertAny {})
+                .call(host);
+        })
+        .with_context(|| {
+            format!("rewriting {EXTERNREF_HANDLE_THUNK_IMPORT} import into a thunk")
+        })?;
+    Ok(())
+}
+
+/// Rewrite the module's `__wpk_fork_transit_grow(needed)` placeholder into a
+/// call to the emitted `fm_transit_grow` export.
+///
+/// Rust cannot emit `table.grow`, and the module owns the table -- so the
+/// growth lives here and Rust reaches it the way it reaches every other
+/// wasm-only step: a placeholder import this pass replaces. MUST run after
+/// `inject_transit_grow`, which creates the export it forwards to.
+fn inject_transit_grow_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != TRANSIT_GROW_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        return Ok(());
+    };
+    let grow = exported_function(module, TRANSIT_GROW_EXPORT)?;
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            body.local_get(args[0]).call(grow);
+        })
+        .with_context(|| format!("rewriting {TRANSIT_GROW_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
 }
 
 fn import_host_func_identity(module: &mut Module) -> FunctionId {
@@ -1305,6 +1415,10 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_probe into a thunk")?;
     inject_capture_encode_thunk(&mut module)
         .context("rewriting __wpk_fork_capture_encode into a thunk")?;
+    inject_externref_handle_thunk(&mut module)
+        .context("rewriting __wpk_fork_externref_handle into a thunk")?;
+    inject_transit_grow_thunk(&mut module)
+        .context("rewriting __wpk_fork_transit_grow into a thunk")?;
     inject_table_apply_thunk(&mut module)
         .context("rewriting __wpk_fork_table_apply into a thunk")?;
     inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;

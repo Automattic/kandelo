@@ -72,6 +72,18 @@ export interface ForkModuleHostImports {
    * the same value, so sharing one counter would only couple them.
    */
   readonly __wpk_fork_host_func_identity: (fn: unknown) => number;
+  /**
+   * `__wpk_fork_host_externref_handle(externref) -> i32`, or 0 for a value the
+   * host does not own.
+   *
+   * FLOOR, and the exact reverse of `resolve_externref`: the capture has to
+   * NAME a live host reference, and only the host knows which broker handle
+   * names it. Without it a fork carrying an externref cannot seal -- the
+   * guest's encode answers -1, the reference vector it belongs to never
+   * finishes, and the graph fails validation four layers from the cause
+   * (census section 188).
+   */
+  readonly __wpk_fork_host_externref_handle: (value: unknown) => number;
 }
 
 export interface ForkModuleHostCapabilities {
@@ -150,6 +162,7 @@ export function createForkModuleHostCapabilities(
     // disjoint hierarchies, so a function and a GC object can never be the same
     // value and one counter would only couple two independent numberings.
     __wpk_fork_host_func_identity: functionIdentity.identify,
+    __wpk_fork_host_externref_handle: (value) => tokens.encode(value) ?? 0,
   };
   return {
     imports,

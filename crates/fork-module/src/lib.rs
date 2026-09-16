@@ -215,6 +215,21 @@ mod wasm {
         /// catalog_slot]`, or to null when `clear` is non-zero.
         /// Injector-rewritten into a local thunk.
         fn __wpk_fork_table_apply(dest: u32, catalog_slot: u32, clear: u32);
+        /// The broker handle the host recorded for the EXTERNREF staged in
+        /// transit `slot`, or 0 when the value is not one the host owns.
+        ///
+        /// Injector-wired: the body is
+        /// `host_externref_handle(extern.convert_any(transit[slot]))`, which
+        /// Rust cannot write -- it cannot hold an externref, let alone convert
+        /// one. The host half is the exact reverse of `resolve_externref`, and
+        /// the capture needs both directions: one to NAME a live host
+        /// reference, the other to bring it back.
+        fn __wpk_fork_externref_handle(slot: u32) -> i32;
+        /// Grow the module-owned anyref transit table to at least `needed`
+        /// slots, answering its size or -1. Injector-wired to the emitted
+        /// `fm_transit_grow`, because `table.grow` on an anyref table needs a
+        /// `ref.null any` Rust has no type for.
+        fn __wpk_fork_transit_grow(needed: u32) -> i32;
 
         /// `memory.atomic.wait32(addr, expected, timeout_ns) -> i32`.
         /// Returns 0 "ok", 1 "not-equal", 2 "timed-out". `-1` timeout waits
@@ -284,6 +299,26 @@ mod wasm {
         // the guest's `__wpk_fork_ref_gc_encode_slot` through
         // `drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE]`.
         unsafe { __wpk_fork_capture_encode(activation, slot) }
+    }
+
+    /// Safe wrapper over the injector-wired transit-grow placeholder.
+    fn transit_grow_via_injector(needed: u32) -> i32 {
+        // SAFETY: after injection this is a call to the emitted
+        // `fm_transit_grow`, which is `table.size` + `table.grow` and nothing
+        // else.
+        unsafe { __wpk_fork_transit_grow(needed) }
+    }
+
+    /// Safe wrapper over the injector-wired externref-handle placeholder.
+    ///
+    /// Answers "is the value staged in this transit slot a host reference the
+    /// broker owns, and under which handle?" -- 0 for anything else, including
+    /// a GC value that simply matched no layout.
+    fn externref_handle_via_injector(slot: u32) -> i32 {
+        // SAFETY: after injection this is a local thunk doing one `table.get`
+        // on the module's own transit table, an `extern.convert_any`, and one
+        // host call. A null slot answers 0 without calling the host.
+        unsafe { __wpk_fork_externref_handle(slot) }
     }
 
     /// Safe wrapper over the injector-wired probe placeholder.
@@ -1689,7 +1724,49 @@ mod wasm {
     /// the `DRIVE_PLAN` cell, publish the count via `GC_PLAN_COUNT`, and return the
     /// plan's guest address for `fm_drive_execute`. Shared by every plan producer
     /// (only one plan is live at a time).
+    /// Grow the anyref transit so every RECONSTRUCTION step in `steps` has its
+    /// `recipe + 1` slot before the drive runs.
+    ///
+    /// Only the reconstruction ops are considered: an ALLOC, FILL, EXN,
+    /// STATIC_ROOT or EXTERNREF_TRANSIT step's `recipe` field is a recipe id,
+    /// and each publishes its value into the transit at `recipe + 1` -- the
+    /// injected externref publish `table.set`s there itself, and the others'
+    /// guest exports do on the way back. A frame step's `recipe` is NOT a
+    /// recipe: `pack_root` splits a continuation root across that field and
+    /// `arg`, so sizing a table from it would ask for gigabytes.
+    ///
+    /// The host used to do this -- `ForkActivationRegistry.ensureRecipeSlot`,
+    /// over the decoded graph's largest recipe id. Nothing does now, and an
+    /// ungrown table does not fail anything the module can see: it traps the
+    /// CHILD with "table index is out of bounds" at the first publish. Doing it
+    /// here covers every plan the module builds, which is the point -- the
+    /// child's install plan carries reconstruction steps too, and sizing only
+    /// the GC plan left exactly that case broken.
+    fn size_transit_for(steps: &[drive_plan::DriveStep]) -> Result<(), Errno> {
+        let max = steps
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step.op,
+                    drive_plan::DRIVE_OP_ALLOC
+                        | drive_plan::DRIVE_OP_FILL
+                        | drive_plan::DRIVE_OP_EXN
+                        | drive_plan::DRIVE_OP_STATIC_ROOT
+                        | drive_plan::DRIVE_OP_EXTERNREF_TRANSIT
+                )
+            })
+            .map(|step| step.recipe)
+            .max();
+        if let Some(max) = max {
+            if transit_grow_via_injector(max.saturating_add(2)) < 0 {
+                return Err(Errno::ENOMEM);
+            }
+        }
+        Ok(())
+    }
+
     fn serialize_and_store_plan(steps: &[drive_plan::DriveStep]) -> Result<usize, Errno> {
+        size_transit_for(steps)?;
         let mut buf = Vec::new();
         buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
         drive_plan::serialize_plan(steps, &mut buf)?;
@@ -5521,6 +5598,30 @@ mod wasm {
     }
 
     fn ref_vector_get_impl(ordinal: u32, index: u32) -> i32 {
+        // TWO SOURCES, ONE IMPORT. A CHILD reads the decoded transaction it
+        // inherited. A PARENT, resuming after its own fork, reads back a vector
+        // it interned moments ago -- the capture builder is still resident and
+        // is the only thing that HAS it: the parent never decodes its own
+        // arena, so its replay feed is empty and every read answered EINVAL and
+        // trapped the parent the instant its guest walked a saved frame's
+        // reference vector.
+        //
+        // The phase is what distinguishes them, and the module is what knows
+        // the phase. The host used to make this choice by binding the guest's
+        // import to a different function for a parent than for a child; making
+        // it here means the two workers instantiate identically and one less
+        // thing can be wired wrong.
+        if answering_from_capture() {
+            let recipe = fm_capture_vector_get(ordinal, index);
+            if recipe < 0 {
+                // Same contract as the feed path below: the guest ABI has no
+                // failure value here, so an unreadable vector is a trap rather
+                // than a recipe id the guest would then decode.
+                wasm_intr::unreachable()
+            }
+            REFERENCE_FEED_READS.fetch_add(1, Ordering::Relaxed);
+            return recipe;
+        }
         let (feed, transaction) = feed_and_transaction();
         feed_read(feed.vector_get(transaction, ordinal, index))
     }
@@ -5613,7 +5714,88 @@ mod wasm {
     /// the canonical Null reference, and TRAPS on any inconsistency (missing
     /// reference state, out-of-range recipe, non-funcref kind, or an ordinal that
     /// does not fit `i32`). Every success bumps `REFERENCES_RECONSTRUCTED`.
+    /// Whether a guest-facing reference read should answer from the resident
+    /// CAPTURE graph rather than a decoded one.
+    ///
+    /// Three callers, and the rule has to serve all three:
+    ///
+    ///   * a PARENT resuming after its own fork -- capture resident, no decoded
+    ///     graph of its own. It must read the capture, and reading a driver
+    ///     that is not there trapped it;
+    ///   * a fork CHILD -- decoded graph resident, and a capture builder too,
+    ///     because it inherited the parent's through the memory clone. That
+    ///     inherited builder is the PARENT's and must never answer, which is
+    ///     what the phase test rules out;
+    ///   * a caller that decodes an arena and replays it without a child
+    ///     install (the module's own tests, and `fm_restore_from_arena`) --
+    ///     driver resident, no capture. It reads the driver, and it is not in
+    ///     child-replay phase, so the capture test is what rules it out.
+    fn answering_from_capture() -> bool {
+        PHASE.load(Ordering::Relaxed) != PHASE_CHILD_REPLAY && capture_state().is_some()
+    }
+
+    /// One node of the resident CAPTURE graph -- the parent's side of the split
+    /// above. `None` when no capture is resident or the id is out of range.
+    fn captured_node(recipe_id: u32) -> Option<&'static ReferenceRecipeNode> {
+        capture_state()
+            .as_ref()
+            .and_then(|g| g.nodes().get(recipe_id as usize))
+    }
+
+    /// The MERGED-catalog global slot for one funcref coordinate:
+    /// `base(module_activation) + function_ordinal`.
+    ///
+    /// The base map is EMPTY for a single-activation worker, so `base` defaults
+    /// to 0 and the mapping is the byte-identical raw ordinal. A NON-empty map
+    /// missing this funcref's activation is corruption -- the host seeds a base
+    /// for every funcref activation before replay -- so it TRAPS rather than
+    /// read slot 0 or another activation's catalog.
+    fn merged_catalog_slot(module_activation: u32, function_ordinal: u32) -> i32 {
+        let base = match func_catalog_base(module_activation) {
+            Some(base) => base,
+            None if func_catalog_base_map_empty() => 0,
+            None => wasm_intr::unreachable(),
+        };
+        let slot = match base.checked_add(function_ordinal) {
+            Some(slot) => slot,
+            None => wasm_intr::unreachable(),
+        };
+        match i32::try_from(slot) {
+            Ok(ordinal) if ordinal >= 0 => {
+                REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                ordinal
+            }
+            // A global slot that does not fit a non-negative i32 cannot index
+            // the imported funcref table -- a corrupt graph, not a value.
+            _ => wasm_intr::unreachable(),
+        }
+    }
+
     fn funcref_ordinal_impl(recipe_id: u32) -> i32 {
+        // THE PARENT reads its own capture. It never decodes its arena -- the
+        // child does that -- so its replay driver is absent, and reading one
+        // here trapped every parent whose guest held a funcref across `fork()`.
+        // The recipe it asks about is one it interned moments ago, and the
+        // funcref it names is the SAME function in this same worker, so the
+        // answer comes from the builder and the catalog arithmetic below is
+        // identical.
+        if answering_from_capture() {
+            let target = match captured_node(recipe_id) {
+                Some(ReferenceRecipeNode::Null) => {
+                    REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                    return NULL_ORDINAL;
+                }
+                Some(ReferenceRecipeNode::Funcref {
+                    module_activation,
+                    function_ordinal,
+                }) => (*module_activation, *function_ordinal),
+                // No capture resident, or a recipe of another kind: the guest
+                // asked for a funcref that this graph does not hold, which is
+                // corruption rather than a value.
+                _ => wasm_intr::unreachable(),
+            };
+            return merged_catalog_slot(target.0, target.1);
+        }
         let driver = match reference_state().as_ref() {
             Some(driver) => driver,
             None => wasm_intr::unreachable(),
@@ -5631,25 +5813,7 @@ mod wasm {
                 // funcref's activation is corruption — the host gate seeds a base
                 // for every funcref activation before replay — so it TRAPS rather
                 // than read slot 0 / the wrong activation's catalog.
-                let base = match func_catalog_base(target.module_activation) {
-                    Some(base) => base,
-                    None if func_catalog_base_map_empty() => 0,
-                    None => wasm_intr::unreachable(),
-                };
-                let slot = match base.checked_add(target.function_ordinal) {
-                    Some(slot) => slot,
-                    None => wasm_intr::unreachable(),
-                };
-                match i32::try_from(slot) {
-                    Ok(ordinal) if ordinal >= 0 => {
-                        REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
-                        ordinal
-                    }
-                    // A global slot that does not fit a non-negative i32 cannot
-                    // index the imported funcref table — a corrupt graph, not a
-                    // value.
-                    _ => wasm_intr::unreachable(),
-                }
+                merged_catalog_slot(target.module_activation, target.function_ordinal)
             }
             // Out-of-range recipe or a kind D6.1 does not admit: the host gate
             // should have kept this fork on JS, so reaching here is corruption.
@@ -8204,6 +8368,41 @@ mod wasm {
             let recipe = capture_encode_via_injector(activation, slot);
             if recipe < 0 {
                 set_err(Errno::EINVAL);
+                return -1;
+            }
+            set_ok();
+            return recipe;
+        }
+        // NOT an unclaimed GC value: a live HOST externref, which is what
+        // `any.convert_extern` in the guest's `__wpk_fork_ref_encode_externref`
+        // hands this path. No activation's codec can ever claim one -- it has
+        // no type to test -- so probing them all and refusing was the wrong
+        // answer to the right question.
+        //
+        // The host owns its identity and issued its handle, and the module can
+        // now ask for it (the reverse of `resolve_externref`, which brings it
+        // back in the child). With the handle the value is an ordinary
+        // externref recipe, interned exactly as a directly-held one is.
+        //
+        // Before this, an externref reachable from a reference LOCAL made the
+        // guest append recipe -1 to its reference vector, which failed the
+        // vector's count check, which left the vector open, which failed the
+        // capture's graph validation at seal -- four layers between the cause
+        // and the errno a reader saw (census section 188).
+        let handle = externref_handle_via_injector(slot);
+        if handle > 0 {
+            let recipe = fm_capture_intern(INTERN_KIND_EXTERNREF, handle as u32, 0);
+            if recipe < 0 {
+                return recipe;
+            }
+            // The guest publishes the value into the transit at `recipe + 1` on
+            // the instruction AFTER this returns, so the table has to hold that
+            // slot first -- the same obligation `__wpk_fork_ref_gc_claim` meets
+            // for a claimed GC value, and the reason a recipe returned from
+            // here without growing traps the guest with "table index is out of
+            // bounds" rather than failing anything the module can see.
+            if transit_grow_via_injector(recipe as u32 + 2) < 0 {
+                set_err(Errno::ENOMEM);
                 return -1;
             }
             set_ok();

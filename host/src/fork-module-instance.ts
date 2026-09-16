@@ -265,6 +265,9 @@ export function instantiateForkModule(
       __wpk_fork_host_func_identity:
         resolved.__wpk_fork_host_func_identity ??
         (() => trap(label, "__wpk_fork_host_func_identity")),
+      __wpk_fork_host_externref_handle:
+        resolved.__wpk_fork_host_externref_handle ??
+        (() => trap(label, "__wpk_fork_host_externref_handle")),
   };
   // BEFORE instantiating, because after it a missing binding has already
   // surfaced as a `LinkError` naming an import INDEX. The guest side of this
