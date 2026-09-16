@@ -13138,6 +13138,48 @@ against the Rust corpus rather than counted:
   this file removes an assertion that is now wrong**, which is a different
   and much cheaper conclusion than "coverage is lost".
 
+### STEP 5 HAD A PRECONDITION NOBODY HAD NAMED — `56f708bc2`, 2026-09-16
+
+**`vfs-image.test.ts`'s sixty claims are not all about `MemoryFileSystem`.**
+Seven of them guard `host/src/vfs/vfs-image-transport.ts`, which is 363
+lines with seventeen exports and, until now, **no test of its own** — and
+which is NOT deleted with the class. `module-base-image.ts` reads a
+container's host-side sections through `parseImageHeader`, and
+`images/vfs/lib/kandelo-image-fs.ts` decompresses through
+`maybeDecompressImage`. Both survive step 5. Their guard's only evidence
+would not have.
+
+**The one that matters is a decompression bomb.** A zstd frame declares its
+own content size, so thirteen bytes can announce two gigabytes; the frame
+walk refuses that BEFORE a decompressor is asked to produce it, sums
+CONCATENATED frames rather than judging each alone, and applies the same
+ceiling to uncompressed bytes. Deleting `vfs-image.test.ts` alongside an
+unrelated class would have removed that guard's only test, and nothing about
+the deletion would have said so — the count would have gone down and the
+commit would have read like progress.
+
+`host/test/vfs-image-transport.test.ts` now carries twelve claims, moved
+rather than invented, one of them driven through `KandeloImageFs.loadImage`
+so the SURVIVING caller is the one proved to reach the bound.
+`perturb/vfs-image-transport.json` carries eight trials for them.
+
+**The first concatenation fixture was wrong in an instructive way.** Two bare
+frame headers with no blocks failed on `invalid block header` rather than on
+the bound — a test that would have passed for the wrong reason, and the
+eighth cause of a green test proving nothing: the assertion fires on an error
+the guard did not raise. It now compresses 64 KiB as four real 16 KiB frames
+and asserts both directions, accepted at exactly the sum and refused one byte
+below it, with every individual frame a quarter of that either way.
+
+**The general rule this produces, for the rest of step 5**: before deleting a
+test file with the class it exercises, ask which of its claims are about
+something ELSE that the deletion leaves standing. `vfs-image.test.ts` still
+owes that pass for its capacity, timestamp-normalisation and metadata
+claims; its SharedArrayBuffer claims genuinely die with the class, and its
+"restored filesystem is independent from original" claims describe a property
+the module deliberately does not have, since `loadImage` takes ownership
+rather than copying.
+
 ### `rewriteLazyFileUrls` AND `rewriteLazyArchiveUrls` OUTLIVED THEIR CALLERS
 
 **Censused 2026-09-16 while auditing the above.** Neither has a production
