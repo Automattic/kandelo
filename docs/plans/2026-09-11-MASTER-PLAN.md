@@ -12954,6 +12954,136 @@ ways to close it, and only one is worth doing:
 **Nothing here needs a maintainer decision.** The measurement removed the
 decision: there is no key to choose, only a producer to cut over.
 
+### THE PRODUCER CUT OVER, AND THE HOST STOPPED RECONCILING — `2af2b4c6c`, 2026-09-16
+
+**The two halves of the paragraph above are now both done, and the second one
+was only reachable because the first one finished.**
+
+Saving a machine image asked the HOST to reconstruct one:
+`host/src/vfs/rootfs-overlay-export.ts` cloned the frozen base into a writable
+`MemoryFileSystem` and replayed the in-kernel overlay onto that clone —
+deletions, copy-on-writes, runtime creates, owners, modes and timestamps — then
+saved the result. Two implementations of one reconciliation had to agree about
+every rule of the filesystem for a saved image to be correct.
+
+`rootfs::export_container_read` had done the whole job for some time and only a
+way to CALL it was missing. `kernel_rootfs_export_container_read` is that way,
+and the 346-line reconciler is deleted. `KernelWorker.rootfsExportTree()` went
+with it — it existed only to feed that reconciler — which paid for the new
+export exactly: three `kernel-scratch.ts` plumbing lines out, three in,
+`hostKernelPlumbingTypeScript` left AT its ceiling rather than over it. The
+kernel export `kernel_rootfs_export_tree` stays, because
+`rootfs-image-tree-parity.test.ts` drives it directly as a differential
+oracle.
+
+**The nine Node export tests decided it, and two of them failed first — which
+is the part worth recording.** They boot a real kernel, write through it,
+export, remount the result and reboot from the exported image. Seven passed
+unchanged. The two that failed asserted that a lazy file's URL survived the
+export, and under the kernel it did not.
+
+**The first reading was wrong and cost nothing to check.** It looked like the
+container's missing lazy TRAILER: `export_container_read` writes
+`lazy_json: b""` on purpose, because the body's own `SDEF` is the one
+description of its deferred files and emitting `KLZY` beside it would put two
+descriptions of one thing back into the artifact this lane exists to give one.
+So the assertion was repointed at `sm_lazy_entries`, the reader that
+understands `SDEF` — and it still failed, with `url: ""` beside a correct path
+and a correct size.
+
+**The real cause is the one this plan already measured two sections up, arriving
+from the other side.** The fixtures built their base images with
+`MemoryFileSystem`, which describes deferred files in `KLZY` only, and `KLZY`
+carries no address. A kernel loading such an image is told that
+`/opt/lazy-tool` is deferred and 123,456 bytes long and nothing about where its
+bytes are; it cannot then export an address it was never given. The old host
+reconciler appeared to preserve one because it copied the base image's
+host-side JSON trailer WHOLESALE, not because it knew the URL. What looked like
+a capability the kernel lacked was a fixture written in the carrier the lane is
+retiring.
+
+**Measured, not assumed, before changing the fixture.** Every image the project
+ships already carries its addresses in `SDEF`, written by lane Y's builders
+through the image module: `rootfs.vfs` has 65 of 65 deferred files addressed
+and `lamp.vfs.zst` all 9 of its archives (`shell.vfs.zst` likewise; its other
+7,467 deferred entries are archive MEMBERS, which correctly have no address of
+their own because the archive carries the transport). So the fixtures moved to
+`KandeloImageFs` — the producer that writes what the kernel reads — and the
+suite is 9/9.
+
+**One seam, found the way seams are always found.** `KandeloImageFs` does not
+create a deferred file's parent directories and `MemoryFileSystem` did, so the
+first ported fixture failed with `ENOENT: registerLazyFile /opt/lazy-tool`. A
+leniency difference, not a capability one; recorded because it is the third
+time in this lane that the two producers differed in strictness rather than in
+what they can express.
+
+**Trials.** `rootfs-export-stream-end.json`, 2 trials, 0 survived. The
+streaming loop's end condition is a ZERO read and not a short one, and both
+plausible misreadings are silent rather than loud: stopping at the first short
+chunk ends the image after its 16-byte container header, and advancing the
+offset by the buffer instead of by what was received skips the body. Both
+produce plausible-looking bytes, which is why the assertion that kills them is
+a reload of the export rather than "it did not throw".
+
+**Evidence:** node-rootfs-export 9/9; surface budget 101/101 with
+`hostVfsTypeScript` banked 7710 -> 7453; runtime-core 2211 + 6; host tsc at its
+25-diagnostic baseline; `xtask perturb --validate` 405 trials all anchoring;
+the ABI snapshot additive-compatible with no `ABI_VERSION` bump. The wasm32
+kernel came from `./run.sh setup`, which restaged the artifact the tests boot.
+`kernel-scratch-contract.test.ts` fails 2 of 8 with and without the change.
+
+**What this unblocks.** `host/src`'s production coupling to `memory-fs.ts` was
+two files; the export was one of the two things keeping `rootfsBaseImage()`
+alive in both worker entries. What remains of it there is a truthiness
+predicate — "is this kernel VFS-backed" — which does not need a filesystem to
+answer.
+
+### `host/src` OWES A FACT ABOUT `/`, NOT A FILESYSTEM — `e7f6936d2`, 2026-09-16
+
+**Three leftovers of the export cutover, each a file naming
+`MemoryFileSystem` for a reason that had stopped being true.**
+
+`rootfsBaseImage()` handed the process-lifecycle layer the frozen base
+image, because the deleted reconciler cloned it. Both surviving callers only
+ever asked whether the answer was null, so it is now
+`hasRootfsImage(): boolean` and the host protocol stops passing a filesystem
+across a seam that wanted a yes or no.
+
+The lazy fetcher was installed on the `/` `MemoryFileSystem` and then
+captured for the overlay on the very next line. Since the Phase 5 cutover
+that filesystem is not mounted — `/` is dropped from the guest-facing
+`VirtualPlatformIO` — so nothing could reach the fetcher through it. One
+install, one consumer, no second authority to drift.
+
+`LazyFetch` was declared TWICE, byte-identically, in `memory-fs.ts` and
+`browser-lazy-fetcher.ts`, and reached from three more files as
+`Parameters<MemoryFileSystem["setLazyFetcher"]>[0]` — a type-level import of
+an entire filesystem in order to name a function that takes a URL and
+returns a `Response`. It now lives beside `LazyDownloadEvent` in
+`vfs/lazy-download-event.ts`, which left `memory-fs.ts` earlier for the same
+reason. **`process-lifecycle.ts` now imports no part of `memory-fs.ts` at
+all.**
+
+**Five exports that could go, went**, found by the census the budget rule
+asks for before any growth: `validateClosedLazyAssetSources`,
+`kernelTmpfsOwnsMountPath`, `IMAGE_MEMFS_MAX_BYTES`, `KERNEL_LAZY_MAGIC` and
+`KERNEL_LAZY_VERSION` are each called only from the file that declares them.
+Checked one at a time rather than by one pattern, because a matcher that
+encodes a formatting assumption under-reports and under-reporting reads like
+a finding.
+
+**Evidence:** 12 host suites over the lazy transports, both worker entries
+and the rootfs export — 237 passed, 0 failed; surface budget 101/101 with
+`hostVfsTypeScript` banked 7453 -> 7452 and `memoryFsTypeScript` 7123 ->
+7117; host tsc at its 25-diagnostic baseline; no ceiling raised.
+
+**What is left of `memfs` in the two worker entries** is a single
+discrimination — `rootMount.backend instanceof MemoryFileSystem` — feeding
+`hasRootfsImage` and two `if (memfs)` predicates. The filesystem is still
+CONSTRUCTED, by `vfs/default-mounts.ts` through `restoreVerifiedVfsImage`;
+what the entries hold is a reference to it, not a use of it.
+
 ### Next in lane V: make the round-trip verb re-enter its own output
 
 **Scoped 2026-09-12, straight out of H-13.** `xtask vfs-image roundtrip` loads
