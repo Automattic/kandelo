@@ -8857,11 +8857,17 @@ below is green on its own evidence and the branch is pushed after each.
 | `/home/maker` is the kernel's tmpfs; `node-demo-workspace` ported off a shadowed host mount | `347dc544d` |
 | **V-NAME finished for real** — 67 identifiers, the vite alias contract, a live budget key | `01b3d4e3b` `4b13017b1` `e7570b373` |
 | An image declaring another kernel's ABI is refused AT LOAD, in the kernel | `2af5c7921` `055bce31e` |
+| The declaration is read at DEPTH 1, so a base image's does not win | `7e753ea20` |
 
-**Perturb corpus: 397 trials, all anchoring.** Fifteen new trials this session
-(`demo-login-not-found` 4, `image-open-create-mode` 5, `kernel-declared-abi` 6),
-every one killed. Four pre-existing trials rotted as the code moved under them
-and were repointed — all four caught by `--validate` before a run.
+**Perturb corpus: 400 trials, all anchoring.** Eighteen new trials this session
+(`demo-login-not-found` 4, `image-open-create-mode` 5, `kernel-declared-abi` 9),
+every one killed. Seven pre-existing trials rotted as the code moved under them
+and were repointed — every one caught by `--validate` before a run, which is
+the whole argument for validating first: a trial that matches nothing does not
+run, and its output is indistinguishable from one that ran and was killed.
+
+**`./run.sh setup` after all of it: `"outcome":"succeeded"`.** Rust:
+runtime-core **2211** passed, wasm32-unknown-unknown clean.
 
 **Still open, and NOT in a lane section so they survive this one closing:** see
 *"CARRIED OPEN ITEMS"* — O-1 (`opcache-prewarm`'s two red tests, measured to be
