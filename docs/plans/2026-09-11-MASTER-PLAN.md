@@ -414,6 +414,35 @@ Writing them caught one error worth repeating: **lane I's target is 2100 code
 lines, not the 1200 that still appears in older prose here.** 1200 is a
 whole-line figure predating the unit change. Read gates from the budget.
 
+## LEDGER COLLISION — B40 through B43 each name two different defects
+
+Found 2026-09-15. Two sessions filed defects concurrently and both started
+from B40, so **four numbers mean two things each**. Nothing is lost and no
+entry is wrong; the numbering is. Until it is resolved, cite these by TITLE,
+never by number.
+
+| number | one entry | the other |
+|---|---|---|
+| **B40** | the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd` | a dead mirror stopped the build — RESOLVED `8e5dbfc26` |
+| **B41** | `setuidLazyWithoutDigest` can be closed without fixing anything | three perturb trials stopped anchoring when the graph moved |
+| **B42** | the URI relay is built and held on one unanswered question | a survivor declared observable is still surviving |
+| **B43** | the host's lazy table is empty for an SDEF image | the Xcode licence blocked spidermonkey — RESOLVED |
+
+`B39` and `B44` are unique.
+
+**Not renumbered here, deliberately.** Both sets are cited from commit
+messages, lane briefs and other plan sections, so a renumber has to fix every
+reference or it trades a collision for a set of dangling ones. This file is
+also being edited by more than one session at a time — H-24 — so a sweeping
+rewrite of it is the operation most likely to lose someone's work. It is a
+maintainer decision: renumber the later set, or keep both and disambiguate by
+title.
+
+**Note also that one collision is a duplicate diagnosis, not just a number.**
+"B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`" and
+"B44 — spidermonkey cannot rebuild: lld cannot read Xcode 27's SDK" are the
+same root cause reached twice. B44 carries the fix.
+
 ## B41 — `setuidLazyWithoutDigest` can be closed without fixing anything
 
 **CLOSED the same day, and honestly.** The migration of `tools/mkrootfs` to the
