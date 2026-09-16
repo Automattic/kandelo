@@ -15,6 +15,7 @@ import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../src/vfs/zip";
 
@@ -85,25 +86,29 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     const unboundUrl =
       "https://github.com/example/project/releases/download/v1/unbound.zip";
 
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+    // Built by `SffsImageFs`, which writes the `SDEF` section. The format is
+    // load-bearing: under URI addressing the kernel fetches a deferred resource
+    // by the address its own image recorded, and `KLZY` — what the legacy
+    // writer emits — has no field for one. A `KLZY` fixture would make BOTH
+    // archives EIO, which would pass the unbound half for the wrong reason and
+    // fail the bound half outright.
+    const fs = SffsImageFs.create();
     // The bound archive's transport is `boundUrl`, which the closed-source
     // fetcher maps to the local `sourceUrl`; the unbound archive's transport is
     // `unboundUrl`, absent from `rootfsLazyAssetSources`, so the fetcher rejects
     // it and the read must surface EIO rather than silently succeeding.
-    fs.registerLazyArchiveFromEntries(
-      boundUrl,
-      parseZipCentralDirectory(boundArchive),
-      "/",
-      undefined,
-      integrity(boundArchive),
-    );
-    fs.registerLazyArchiveFromEntries(
-      unboundUrl,
-      parseZipCentralDirectory(unboundArchive),
-      "/",
-      undefined,
-      integrity(unboundArchive),
-    );
+    fs.registerLazyArchive({
+      url: boundUrl,
+      entries: parseZipCentralDirectory(boundArchive),
+      mountPrefix: "/",
+      integrity: integrity(boundArchive),
+    });
+    fs.registerLazyArchive({
+      url: unboundUrl,
+      entries: parseZipCentralDirectory(unboundArchive),
+      mountPrefix: "/",
+      integrity: integrity(unboundArchive),
+    });
 
     let stdout = "";
     const host = new NodeKernelHost({
@@ -180,14 +185,16 @@ describe.skipIf(!available)("Node lazy archive runtime paths", () => {
     const dataArchivePath = join(temp, "data.zip");
     writeFileSync(dataArchivePath, dataArchive);
 
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
-    fs.registerLazyArchiveFromEntries(
-      pathToFileURL(dataArchivePath).href,
-      parseZipCentralDirectory(dataArchive),
-      "/",
-      undefined,
-      integrity(dataArchive),
-    );
+    // `SffsImageFs`, for the same reason as the fixture above: the kernel
+    // fetches by the address the image recorded, and only `SDEF` has a field
+    // for one.
+    const fs = SffsImageFs.create();
+    fs.registerLazyArchive({
+      url: pathToFileURL(dataArchivePath).href,
+      entries: parseZipCentralDirectory(dataArchive),
+      mountPrefix: "/",
+      integrity: integrity(dataArchive),
+    });
     const image = await fs.saveImage();
 
     let stdout = "";
