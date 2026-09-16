@@ -11,7 +11,7 @@
 //!
 //! So the bar is that the two images DECODE to the same thing, and this is the
 //! instrument that decides it. It reads an image the way the kernel does --
-//! through `runtime_core::sffs` -- rather than reimplementing the format a
+//! through `runtime_core::image` -- rather than reimplementing the format a
 //! third time, which is the defect lane V is closing.
 //!
 //! # What "the same thing" means, concretely
@@ -31,10 +31,10 @@ use std::path::Path;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use runtime_core::sffs::{self, Sffs};
+use runtime_core::kandelo_image_fs::{self, KandeloImageFs};
 use wasm_posix_shared::Errno;
 
-/// Offset of the container flags word. `sffs_span` validates magic and
+/// Offset of the container flags word. `kandelo_image_span` validates magic and
 /// version and hands back the body span; the flags are read here because the
 /// description reports them and a changed flag word is a real difference.
 const VFSI_FLAGS_OFFSET: usize = 8;
@@ -116,7 +116,7 @@ pub struct Deferred {
 }
 
 fn kind_of(mode: u32) -> &'static str {
-    match sffs::file_type(mode) {
+    match kandelo_image_fs::file_type(mode) {
         0x8000 => "file",
         0x4000 => "dir",
         0xa000 => "symlink",
@@ -158,7 +158,7 @@ pub fn describe(path: &Path) -> Result<ImageDescription, String> {
 pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription, String> {
     let path = std::path::PathBuf::from(label);
     let path = path.as_path();
-    let (body_offset, body_len) = sffs::sffs_span(&image)
+    let (body_offset, body_len) = kandelo_image_fs::kandelo_image_span(&image)
         .map_err(|e| format!("{}: not a VFS image container: {e:?}", path.display()))?;
     let flags = u32::from_le_bytes(
         image
@@ -172,7 +172,7 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
         .get(body_offset as usize..(body_offset + body_len) as usize)
         .ok_or_else(|| format!("{}: body span outside image", path.display()))?
         .to_vec();
-    let fs = Sffs::mount(body).map_err(|e| format!("{}: mount: {e:?}", path.display()))?;
+    let fs = KandeloImageFs::mount(body).map_err(|e| format!("{}: mount: {e:?}", path.display()))?;
 
     // Deferred set first: an entry's digest depends on knowing whether it is
     // deferred, and asking the image twice would let the two answers drift.
@@ -215,7 +215,7 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
             growth_ceiling_bytes: fs
                 .growth_ceiling_bytes()
                 .map_err(|e| format!("{}: growth ceiling: {e:?}", path.display()))?,
-            metadata: sffs::metadata_section(&image)
+            metadata: kandelo_image_fs::metadata_section(&image)
                 .map_err(|e| format!("{}: metadata section: {e:?}", path.display()))?
                 .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
         },
@@ -227,8 +227,8 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
     })
 }
 
-fn fs_root<S: sffs::BlockSource>(_fs: &Sffs<S>) -> u32 {
-    // SFFS fixes the root inode at 1; `Sffs` exposes lookup from a directory
+fn fs_root<S: kandelo_image_fs::BlockSource>(_fs: &KandeloImageFs<S>) -> u32 {
+    // SFFS fixes the root inode at 1; `KandeloImageFs` exposes lookup from a directory
     // inode rather than a root accessor.
     1
 }
@@ -249,8 +249,8 @@ fn spell_source_path(bytes: &[u8]) -> String {
 /// is read otherwise. An image carrying both is not an error here -- SDEF wins
 /// and the carrier is reported, so a comparison can see the disagreement
 /// rather than having it silently resolved.
-fn read_deferred<S: sffs::BlockSource>(
-    fs: &Sffs<S>,
+fn read_deferred<S: kandelo_image_fs::BlockSource>(
+    fs: &KandeloImageFs<S>,
     image: &[u8],
 ) -> Result<(BTreeMap<u32, Deferred>, BTreeMap<u32, u64>, &'static str), String> {
     let mut out = BTreeMap::new();
@@ -279,7 +279,7 @@ fn read_deferred<S: sffs::BlockSource>(
         return Ok((out, archives, "sdef"));
     }
 
-    if let Some(section) = sffs::kernel_lazy_section(image).map_err(|e| format!("KLZY: {e:?}"))? {
+    if let Some(section) = kandelo_image_fs::kernel_lazy_section(image).map_err(|e| format!("KLZY: {e:?}"))? {
         let linkage = runtime_core::klzy::decode_kernel_lazy_linkage(section)
             .map_err(|e| format!("KLZY decode: {e:?}"))?;
         for file in &linkage.files {
@@ -310,8 +310,8 @@ fn read_deferred<S: sffs::BlockSource>(
     Ok((out, archives, "none"))
 }
 
-fn walk<S: sffs::BlockSource>(
-    fs: &Sffs<S>,
+fn walk<S: kandelo_image_fs::BlockSource>(
+    fs: &KandeloImageFs<S>,
     ino: u32,
     prefix: &str,
     entries: &mut Vec<Entry>,
@@ -369,8 +369,8 @@ fn walk<S: sffs::BlockSource>(
     Ok(())
 }
 
-fn digest_file<S: sffs::BlockSource>(
-    fs: &Sffs<S>,
+fn digest_file<S: kandelo_image_fs::BlockSource>(
+    fs: &KandeloImageFs<S>,
     ino: u32,
     size: u64,
     path: &str,
@@ -715,7 +715,7 @@ fn report_difference(a: &ImageDescription, b: &ImageDescription) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runtime_core::sffs_write::{Content, NoContent, SffsConfig, SffsWriter};
+    use runtime_core::kandelo_image_write::{Content, NoContent, KandeloImageConfig, KandeloImageWriter};
 
     /// Wrap a raw SFFS body in the minimal VFS image container.
     ///
@@ -736,7 +736,7 @@ mod tests {
 
     /// One small tree, with the two knobs the sensitivity tests turn.
     fn build(hello_mode: u32, hello_body: &[u8]) -> Vec<u8> {
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 128 * 1024,
             max_size_bytes: None,
             growable_to_bytes: 128 * 1024,
@@ -764,8 +764,8 @@ mod tests {
 
     #[test]
     fn identical_trees_describe_identically() {
-        let a = describe_ok(&build(0o644, b"hello sffs\n"));
-        let b = describe_ok(&build(0o644, b"hello sffs\n"));
+        let a = describe_ok(&build(0o644, b"hello image\n"));
+        let b = describe_ok(&build(0o644, b"hello image\n"));
         assert_eq!(as_json(&a), as_json(&b));
     }
 
@@ -778,7 +778,7 @@ mod tests {
     /// from the bar.
     #[test]
     fn the_description_carries_the_growth_ceiling() {
-        let d = describe_ok(&build(0o644, b"hello sffs\n"));
+        let d = describe_ok(&build(0o644, b"hello image\n"));
         // `build` asks for no explicit maximum, and mkfs then uses the
         // vendor's default of four times the initial size: 128 KiB -> 512 KiB.
         assert_eq!(
@@ -790,7 +790,7 @@ mod tests {
 
     #[test]
     fn reads_the_namespace_it_was_given() {
-        let d = describe_ok(&build(0o644, b"hello sffs\n"));
+        let d = describe_ok(&build(0o644, b"hello image\n"));
         let paths: Vec<&str> = d.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, vec!["/dir", "/dir/link", "/hello.txt"]);
         let link = d.entries.iter().find(|e| e.path == "/dir/link").unwrap();
@@ -804,8 +804,8 @@ mod tests {
     /// so this proves the equivalence bar is not weaker where it matters.
     #[test]
     fn one_changed_mode_bit_is_caught() {
-        let a = describe_ok(&build(0o644, b"hello sffs\n"));
-        let b = describe_ok(&build(0o645, b"hello sffs\n"));
+        let a = describe_ok(&build(0o644, b"hello image\n"));
+        let b = describe_ok(&build(0o645, b"hello image\n"));
         assert_ne!(as_json(&a), as_json(&b), "a mode bit change must be visible");
         let ma = a.entries.iter().find(|e| e.path == "/hello.txt").unwrap().mode;
         let mb = b.entries.iter().find(|e| e.path == "/hello.txt").unwrap().mode;
@@ -816,7 +816,7 @@ mod tests {
     /// makes `content_sha256` load-bearing rather than decorative.
     #[test]
     fn one_changed_content_byte_is_caught() {
-        let a = describe_ok(&build(0o644, b"hello sffs\n"));
+        let a = describe_ok(&build(0o644, b"hello image\n"));
         let b = describe_ok(&build(0o644, b"hello sffsX"));
         let da = a.entries.iter().find(|e| e.path == "/hello.txt").unwrap();
         let db = b.entries.iter().find(|e| e.path == "/hello.txt").unwrap();

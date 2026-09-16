@@ -1,6 +1,6 @@
 //! Writer for the on-disk SFFS ("SharedFileSystem") image body.
 //!
-//! `sffs.rs` is the reader this repository already trusts: it mounts the real
+//! `image.rs` is the reader this repository already trusts: it mounts the real
 //! 249 MiB `/` image and serves every base file's bytes out of it. This module
 //! is its inverse — it BUILDS that body from a tree, so the kernel can emit a
 //! VFS image without a TypeScript writer in the loop.
@@ -39,11 +39,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
-use crate::sffs::{
+use crate::kandelo_image_fs::{
     BlockSource, DIRECT_BLOCKS, DIRENT_HEADER, INLINE_SYMLINK_SIZE, INO_ATIME, INO_CTIME,
     INO_DIRECT, INO_DOUBLE_INDIRECT, INO_GENERATION, INO_GID, INO_INDIRECT, INO_LINK_COUNT,
     INO_MODE, INO_MTIME, INO_SIZE, INO_UID, INODE_SIZE, INODES_PER_BLOCK, PTRS_PER_BLOCK, ROOT_INO,
-    SFFS_MAGIC, SFFS_VERSION,
+    KANDELO_IMAGE_MAGIC, KANDELO_IMAGE_VERSION,
 };
 
 const BLOCK_SIZE: usize = 4096;
@@ -98,7 +98,7 @@ const INO_DATA_SEQUENCE: usize = 120;
 
 /// Mirrors the vendor's `DIR_INDEX_MIN_SIZE`. At and above this directory
 /// size the TypeScript writer switches to an in-process index whose free-slot
-/// policy differs from the linear scan (see [`SffsWriter::dir_add_entry`]).
+/// policy differs from the linear scan (see [`KandeloImageWriter::dir_add_entry`]).
 const DIR_INDEX_MIN_SIZE: u64 = 64 * 1024;
 
 const GROW_CHUNK_BLOCKS: u32 = 256;
@@ -176,7 +176,7 @@ struct FreeSlot {
 }
 
 /// Geometry and sizing, mirroring the vendor's `mkfs(buffer, maxSizeBytes)`.
-pub struct SffsConfig {
+pub struct KandeloImageConfig {
     /// Initial image length in bytes. Must be a multiple of `BLOCK_SIZE` and
     /// at least 16 blocks, matching the vendor's own floor.
     pub size_bytes: u64,
@@ -196,10 +196,10 @@ pub struct SffsConfig {
     pub now_ms: u64,
 }
 
-impl SffsConfig {
+impl KandeloImageConfig {
     /// A non-growable image of `size_bytes` with the vendor's default maximum.
-    pub fn fixed(size_bytes: u64) -> SffsConfig {
-        SffsConfig {
+    pub fn fixed(size_bytes: u64) -> KandeloImageConfig {
+        KandeloImageConfig {
             size_bytes,
             max_size_bytes: None,
             growable_to_bytes: size_bytes,
@@ -208,7 +208,7 @@ impl SffsConfig {
     }
 }
 
-pub struct SffsWriter {
+pub struct KandeloImageWriter {
     total_blocks: u32,
     max_blocks: u32,
     total_inodes: u32,
@@ -236,11 +236,11 @@ pub struct SffsWriter {
     /// are none. Set by [`Self::declare_deferred_section`]; see
     /// [`Self::emit_deferred_section`] for why it is not the default.
     declares_deferred: bool,
-    deferred: Vec<crate::sffs_deferred::DeferredRecord>,
+    deferred: Vec<crate::sdef::DeferredRecord>,
     /// Archives the deferred records may point at. Declared separately from the
     /// records because an archive's LENGTH is per-archive, not per-member, and
     /// because a record naming an undeclared archive must be refusable.
-    deferred_archives: Vec<crate::sffs_deferred::DeferredArchive>,
+    deferred_archives: Vec<crate::sdef::DeferredArchive>,
 }
 
 fn w32(buf: &mut [u8], off: usize, value: u32) {
@@ -269,10 +269,10 @@ fn r16(buf: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([buf[off], buf[off + 1]])
 }
 
-impl SffsWriter {
+impl KandeloImageWriter {
     /// Format an empty filesystem. Mirrors the vendor's `SharedFS.mkfs`,
     /// including its "grow the buffer if the metadata does not fit" step.
-    pub fn mkfs(config: SffsConfig) -> Result<SffsWriter, Errno> {
+    pub fn mkfs(config: KandeloImageConfig) -> Result<KandeloImageWriter, Errno> {
         let size_bytes = config.size_bytes;
         if size_bytes % BLOCK_SIZE as u64 != 0 {
             // The vendor tolerates a ragged tail because a SharedArrayBuffer
@@ -321,7 +321,7 @@ impl SffsWriter {
             total_blocks = minimum_blocks;
         }
 
-        let mut writer = SffsWriter {
+        let mut writer = KandeloImageWriter {
             total_blocks,
             max_blocks,
             total_inodes,
@@ -1064,7 +1064,7 @@ impl SffsWriter {
     /// reason the record lives here rather than in a separate section written
     /// by somebody else.
     ///
-    /// `payload` is never interpreted. See [`crate::sffs_deferred`].
+    /// `payload` is never interpreted. See [`crate::sdef`].
     /// Declare a lazy archive that deferred records may point into, with the
     /// total byte length that bounds a whole-archive fetch.
     ///
@@ -1076,7 +1076,7 @@ impl SffsWriter {
     /// transport selection and activation mode, carried opaquely exactly as a
     /// deferred file's is.
     ///
-    /// `digest` is empty or exactly [`crate::sffs_deferred::DIGEST_LEN`] bytes;
+    /// `digest` is empty or exactly [`crate::sdef::DIGEST_LEN`] bytes;
     /// empty records that the producer declared none. Empty rather than a
     /// zero-filled array so that "I have no digest" is something a caller
     /// states, not something it can arrive at by forgetting to fill a buffer.
@@ -1093,13 +1093,13 @@ impl SffsWriter {
         if archive_id == 0 {
             return Err(Errno::EINVAL);
         }
-        if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        if payload.len() > crate::sdef::MAX_PAYLOAD_LEN as usize {
             return Err(Errno::EINVAL);
         }
-        if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+        if uri.len() > crate::sdef::MAX_URI_LEN as usize {
             return Err(Errno::EINVAL);
         }
-        let digest = crate::sffs_deferred::digest_from(digest)?;
+        let digest = crate::sdef::digest_from(digest)?;
         if self
             .deferred_archives
             .iter()
@@ -1108,7 +1108,7 @@ impl SffsWriter {
             return Err(Errno::EINVAL);
         }
         self.deferred_archives
-            .push(crate::sffs_deferred::DeferredArchive {
+            .push(crate::sdef::DeferredArchive {
                 archive_id,
                 bytes,
                 uri: uri.to_vec(),
@@ -1121,13 +1121,13 @@ impl SffsWriter {
     /// `archive_id`/`source_path` are the kernel-facing linkage: which lazy
     /// archive backs the file and which member within it. Pass `0` and `b""`
     /// for a file fetched standalone, where `uri` is the only way to find the
-    /// bytes. The pair is all-or-nothing and [`crate::sffs_deferred::encode`]
+    /// bytes. The pair is all-or-nothing and [`crate::sdef::encode`]
     /// refuses a half-specified one, so a caller cannot record an archive with
     /// no member.
     ///
     /// `uri` addresses a STANDALONE file only; an archive member is addressed
     /// by its archive, and passing both is refused rather than ignored.
-    /// `digest` is empty or [`crate::sffs_deferred::DIGEST_LEN`] bytes and
+    /// `digest` is empty or [`crate::sdef::DIGEST_LEN`] bytes and
     /// covers the file's `size` bytes as they should land — the inflated
     /// member for an archive member, the fetched bytes for a standalone file.
     #[allow(clippy::too_many_arguments)]
@@ -1143,26 +1143,26 @@ impl SffsWriter {
         digest: &[u8],
         payload: &[u8],
     ) -> Result<u32, Errno> {
-        if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+        if payload.len() > crate::sdef::MAX_PAYLOAD_LEN as usize {
             return Err(Errno::EINVAL);
         }
-        if source_path.len() > crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize {
+        if source_path.len() > crate::sdef::MAX_SOURCE_PATH_LEN as usize {
             return Err(Errno::EINVAL);
         }
-        if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+        if uri.len() > crate::sdef::MAX_URI_LEN as usize {
             return Err(Errno::EINVAL);
         }
         if archive_id != 0 && !uri.is_empty() {
             return Err(Errno::EINVAL);
         }
-        let digest = crate::sffs_deferred::digest_from(digest)?;
+        let digest = crate::sdef::digest_from(digest)?;
         // Rejected at the call rather than at `finish`, so the caller that got
         // it wrong is the one that sees the error.
         if (archive_id == 0) != source_path.is_empty() {
             return Err(Errno::EINVAL);
         }
         let ino = self.create_file(parent, name, mode, Content::Bytes(b""))?;
-        self.deferred.push(crate::sffs_deferred::DeferredRecord {
+        self.deferred.push(crate::sdef::DeferredRecord {
             ino,
             size,
             archive_id,
@@ -1220,7 +1220,7 @@ impl SffsWriter {
         records.sort_by_key(|record| record.ino);
         let mut archives = core::mem::take(&mut self.deferred_archives);
         archives.sort_by_key(|archive| archive.archive_id);
-        let section = crate::sffs_deferred::encode(&archives, &records)?;
+        let section = crate::sdef::encode(&archives, &records)?;
 
         let ino = self.inode_alloc()?;
         let now = self.now_ms;
@@ -1358,8 +1358,8 @@ impl SffsWriter {
     pub fn finish(mut self) -> Result<SffsImage, Errno> {
         let deferred_inode = self.emit_deferred_section()?;
         let mut superblock = vec![0u8; BLOCK_SIZE];
-        w32(&mut superblock, SB_MAGIC, SFFS_MAGIC);
-        w32(&mut superblock, SB_VERSION, SFFS_VERSION);
+        w32(&mut superblock, SB_MAGIC, KANDELO_IMAGE_MAGIC);
+        w32(&mut superblock, SB_VERSION, KANDELO_IMAGE_VERSION);
         w32(&mut superblock, SB_BLOCK_SIZE, BLOCK_SIZE as u32);
         w32(&mut superblock, SB_TOTAL_BLOCKS, self.total_blocks);
         w32(&mut superblock, SB_TOTAL_INODES, self.total_inodes);
@@ -1557,7 +1557,7 @@ impl SffsImage {
     }
 }
 
-/// A [`BlockSource`] over a finished image, so the reader in `sffs.rs` can
+/// A [`BlockSource`] over a finished image, so the reader in `image.rs` can
 /// mount what the writer produced without the image ever being resident.
 pub struct SffsImageSource<'a, S: ContentSource + ?Sized> {
     pub image: &'a SffsImage,
@@ -1591,7 +1591,7 @@ fn get_bit(bitmap: &[u8], index: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sffs::Sffs;
+    use crate::kandelo_image_fs::KandeloImageFs;
     use alloc::format;
     use alloc::string::{String, ToString};
 
@@ -1599,10 +1599,10 @@ mod tests {
     /// in `host/src/vfs/sharedfs-vendor.ts` produced for the same tree,
     /// raw-deflated. Regenerate with
     /// `host/scripts/gen-sffs-writer-fixture.mts`.
-    const SMALL_FIXTURE: &[u8] = include_bytes!("testdata/sffs-small.sffs.deflate");
-    const WIDE_FIXTURE: &[u8] = include_bytes!("testdata/sffs-wide.sffs.deflate");
-    const SLOTS_FIXTURE: &[u8] = include_bytes!("testdata/sffs-slots.sffs.deflate");
-    const TAIL_FIXTURE: &[u8] = include_bytes!("testdata/sffs-tail.sffs.deflate");
+    const SMALL_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-small.deflate");
+    const WIDE_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-wide.deflate");
+    const SLOTS_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-slots.deflate");
+    const TAIL_FIXTURE: &[u8] = include_bytes!("testdata/kandelo-image-tail.deflate");
 
     fn inflate(packed: &[u8]) -> Vec<u8> {
         miniz_oxide::inflate::decompress_to_vec(packed).expect("fixture inflates")
@@ -1632,7 +1632,7 @@ mod tests {
     /// Only a trailing chmod can leave S_ISUID set, because both the write
     /// and the chown clear it.
     fn write_file(
-        w: &mut SffsWriter,
+        w: &mut KandeloImageWriter,
         parent: u32,
         name: &[u8],
         content: Content<'_>,
@@ -1646,8 +1646,8 @@ mod tests {
         ino
     }
 
-    fn small_config() -> SffsConfig {
-        SffsConfig {
+    fn small_config() -> KandeloImageConfig {
+        KandeloImageConfig {
             size_bytes: 128 * 1024,
             max_size_bytes: None,
             growable_to_bytes: 128 * 1024,
@@ -1662,7 +1662,7 @@ mod tests {
         let big = pattern(45000, 1);
         let content = Slices(alloc::vec![big]);
 
-        let mut w = SffsWriter::mkfs(small_config()).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(small_config()).expect("mkfs");
         let root = w.root();
 
         let hello = write_file(
@@ -1751,7 +1751,7 @@ mod tests {
         let huge_len = huge.len() as u64;
         let content = Slices(alloc::vec![huge]);
 
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 8 * 1024 * 1024,
             max_size_bytes: Some(64 * 1024 * 1024),
             growable_to_bytes: 8 * 1024 * 1024,
@@ -1828,7 +1828,7 @@ mod tests {
     }
 
     fn build_slots() -> SffsImage {
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 1024 * 1024,
             max_size_bytes: Some(32 * 1024 * 1024),
             growable_to_bytes: 1024 * 1024,
@@ -1890,7 +1890,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
         let slots = fs.resolve(b"/slots", true).expect("resolve /slots");
         let entries = fs.read_dir(slots).expect("read_dir");
         assert_eq!(entries.len(), 1700 + 40 + 2, "every record survives");
@@ -1922,7 +1922,7 @@ mod tests {
     }
 
     fn build_tail() -> SffsImage {
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 2 * 1024 * 1024,
             max_size_bytes: Some(128 * 1024 * 1024),
             growable_to_bytes: 2 * 1024 * 1024,
@@ -1965,7 +1965,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
         let tail = fs.resolve(b"/tail", true).expect("resolve /tail");
         let entries = fs.read_dir(tail).expect("read_dir");
         assert_eq!(entries.len(), 6000 + 2, "no record may be swallowed");
@@ -2006,7 +2006,7 @@ mod tests {
         // block assignment shift, so the bytes must differ. This is what
         // proves the fixture pins ALLOCATION and not merely file contents.
         let expected = inflate(SMALL_FIXTURE);
-        let mut w = SffsWriter::mkfs(small_config()).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(small_config()).expect("mkfs");
         let root = w.root();
         write_file(&mut w, root, b"empty", Content::Bytes(b""), 0o600, 0, 0);
         write_file(
@@ -2035,7 +2035,7 @@ mod tests {
             image: &image,
             content: &content,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
 
         let root = fs.stat_ino(ROOT_INO).expect("root");
         assert_eq!(root.mode & 0xf000, 0x4000);
@@ -2097,7 +2097,7 @@ mod tests {
             image: &image,
             content: &content,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
 
         let wide = fs.resolve(b"/wide", true).expect("resolve /wide");
         let entries = fs.read_dir(wide).expect("read_dir");
@@ -2181,7 +2181,7 @@ mod tests {
         // become 249 MiB of kernel memory. Assert the writer holds no
         // materialized block for the content blocks of a deferred file: they
         // must be references, not copies.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(8 * 1024 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(8 * 1024 * 1024)).expect("mkfs");
         let root = w.root();
         let len = 2 * 1024 * 1024u64;
         w.create_file(root, b"f", 0o644, Content::Deferred { id: 0, len })
@@ -2207,11 +2207,11 @@ mod tests {
     #[test]
     fn mkfs_rejects_sizes_the_vendor_would_reject() {
         assert!(
-            SffsWriter::mkfs(SffsConfig::fixed(4096 * 15)).is_err(),
+            KandeloImageWriter::mkfs(KandeloImageConfig::fixed(4096 * 15)).is_err(),
             "under 16 blocks"
         );
         assert!(
-            SffsWriter::mkfs(SffsConfig {
+            KandeloImageWriter::mkfs(KandeloImageConfig {
                 size_bytes: 128 * 1024 + 1,
                 max_size_bytes: None,
                 growable_to_bytes: 128 * 1024 + 1,
@@ -2234,7 +2234,7 @@ mod tests {
     /// One file larger than the filesystem reaches it directly.
     #[test]
     fn exhausting_blocks_reports_enospc_and_leaves_a_mountable_image() {
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).expect("mkfs");
         let root = w.root();
         w.create_file(root, b"small", 0o644, Content::Bytes(b"kept"))
             .expect("a small file fits");
@@ -2251,7 +2251,7 @@ mod tests {
         // And the refusal leaves what was already written readable.
         let image = w.finish().expect("finish after a refused write");
         let content = NoContent;
-        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+        let fs = KandeloImageFs::mount(SffsImageSource { image: &image, content: &content })
             .expect("a refused write leaves a mountable image");
         let small = fs.resolve(b"/small", true).expect("the earlier file survives");
         let mut buf = [0u8; 8];
@@ -2273,7 +2273,7 @@ mod tests {
     /// silent and no test would notice.
     #[test]
     fn a_declaring_producer_emits_the_section_even_with_nothing_to_declare() {
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).expect("mkfs");
         let root = w.root();
         w.create_file(root, b"plain", 0o644, Content::Bytes(b"no deferred files here"))
             .expect("create");
@@ -2281,7 +2281,7 @@ mod tests {
 
         let image = w.finish().expect("finish");
         let content = NoContent;
-        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+        let fs = KandeloImageFs::mount(SffsImageSource { image: &image, content: &content })
             .expect("mount");
         assert_ne!(
             fs.geometry().deferred_inode,
@@ -2293,13 +2293,13 @@ mod tests {
         // And a producer that does not declare stays silent, so the assertion
         // above is about the declaration rather than about a section this
         // writer always emits.
-        let mut quiet = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let mut quiet = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).expect("mkfs");
         let quiet_root = quiet.root();
         quiet
             .create_file(quiet_root, b"plain", 0o644, Content::Bytes(b"same tree"))
             .expect("create");
         let quiet_image = quiet.finish().expect("finish");
-        let quiet_fs = Sffs::mount(SffsImageSource { image: &quiet_image, content: &content })
+        let quiet_fs = KandeloImageFs::mount(SffsImageSource { image: &quiet_image, content: &content })
             .expect("mount");
         assert_eq!(quiet_fs.geometry().deferred_inode, 0);
     }
@@ -2307,7 +2307,7 @@ mod tests {
     #[test]
     fn a_full_filesystem_reports_enospc_rather_than_corrupting() {
         // Truthful failure: a writer that ran out of blocks must say so.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(64 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).expect("mkfs");
         let root = w.root();
         let mut last = Ok(0);
         for i in 0..4096 {
@@ -2326,7 +2326,7 @@ mod tests {
         // refuses at the start, because the failure moves to whoever loads it.
         let image = w.finish().expect("a full filesystem still finishes");
         let content = NoContent;
-        let fs = Sffs::mount(SffsImageSource { image: &image, content: &content })
+        let fs = KandeloImageFs::mount(SffsImageSource { image: &image, content: &content })
             .expect("a full filesystem is still a mountable one");
         let root = fs.stat_ino(ROOT_INO).expect("root survives the failed write");
         assert_eq!(root.mode & 0xf000, 0x4000);
@@ -2340,7 +2340,7 @@ mod tests {
 
     #[test]
     fn duplicate_names_and_bad_names_are_refused() {
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         w.mkdir(root, b"a", 0o755).expect("mkdir");
         assert_eq!(w.mkdir(root, b"a", 0o755).err(), Some(Errno::EEXIST));
@@ -2371,7 +2371,7 @@ mod tests {
         // time. An image that must grow is a different image from one sized
         // correctly up front, so the writer has to model it rather than
         // assume a caller always sizes perfectly.
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 64 * 1024,
             max_size_bytes: Some(4 * 1024 * 1024),
             growable_to_bytes: 4 * 1024 * 1024,
@@ -2399,7 +2399,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount grown image");
+        let fs = KandeloImageFs::mount(source).expect("mount grown image");
         let ino = fs.resolve(b"/big", true).expect("resolve");
         assert_eq!(fs.stat_ino(ino).unwrap().size, 200_000);
     }
@@ -2410,7 +2410,7 @@ mod tests {
         // SharedArrayBuffer, where the vendor's `buffer.grow()` throws and
         // the allocation fails. A generous `max_size_bytes` must not
         // override that.
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 64 * 1024,
             max_size_bytes: Some(4 * 1024 * 1024),
             growable_to_bytes: 64 * 1024,
@@ -2430,7 +2430,7 @@ mod tests {
         // The fixtures pin times to zero because the TypeScript writer
         // stamps `Date.now()` unconditionally. A kernel-written image needs
         // real mtimes, so the writer must be able to set them.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         let ino = w
             .create_file(root, b"f", 0o644, Content::Bytes(b"x"))
@@ -2441,7 +2441,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
         let st = fs.stat_ino(ino).expect("stat");
         assert_eq!((st.atime_ms, st.mtime_ms, st.ctime_ms), (111, 222, 333));
     }
@@ -2453,7 +2453,7 @@ mod tests {
         // One writer produces the stub and the record, in one artifact, so the
         // two cannot disagree. That is the whole reason the record lives in
         // the body instead of a separate section written by somebody else.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         let url: &[u8] = b"https://example.invalid/big.bin";
         let deferred = w
@@ -2466,7 +2466,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
 
         // The stub is a real, ordinary file in the tree.
         let ino = fs.resolve(b"/big.bin", true).expect("resolve");
@@ -2493,7 +2493,7 @@ mod tests {
         // nothing allocates no extra block and writes a zero in the superblock
         // — which is exactly what every image written before this section
         // existed already has there.
-        let mut plain = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut plain = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = plain.root();
         write_file(&mut plain, root, b"f", Content::Bytes(b"x"), 0o644, 0, 0);
         let plain = plain.finish().expect("finish");
@@ -2509,7 +2509,7 @@ mod tests {
             image: &plain,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
         assert!(fs.deferred_section().expect("no section").is_none());
     }
 
@@ -2519,7 +2519,7 @@ mod tests {
         // backs a file and which member within it, and a reader of the finished
         // image gets those back. Without this the export could emit a deferred
         // record that says a file is deferred but not where its bytes are.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         w.declare_lazy_archive(7, 8_000_000, b"", b"", b"")
             .expect("declare archive 7");
@@ -2542,7 +2542,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
         let record = fs
             .deferred_section()
             .expect("read section")
@@ -2574,7 +2574,7 @@ mod tests {
         // reference: something would have to fetch an archive without knowing
         // how much to read. Refused at `finish`, which is the first moment the
         // writer can see the whole section.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         w.create_deferred_file(
             root,
@@ -2593,7 +2593,7 @@ mod tests {
 
     #[test]
     fn one_archive_cannot_be_declared_with_two_lengths() {
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         w.declare_lazy_archive(7, 100, b"", b"", b"")
             .expect("first declaration");
         assert_eq!(
@@ -2609,9 +2609,9 @@ mod tests {
 
     #[test]
     fn an_oversized_member_path_is_refused_by_the_writer_not_by_finish() {
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
-        let too_long = alloc::vec![b'x'; crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize + 1];
+        let too_long = alloc::vec![b'x'; crate::sdef::MAX_SOURCE_PATH_LEN as usize + 1];
         assert_eq!(
             w.create_deferred_file(root, b"a", 0o644, 10, 4, &too_long, b"", b"", b""),
             Err(Errno::EINVAL)
@@ -2625,7 +2625,7 @@ mod tests {
 
     #[test]
     fn a_half_specified_archive_linkage_is_refused_at_the_call() {
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
 
         // An archive with no member to extract from it.
@@ -2652,7 +2652,7 @@ mod tests {
         // the directory tree points at it, so no path resolves to it and no
         // directory walk returns it — the superblock is the only thing that
         // names it.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"", b"", b"u")
             .expect("deferred");
@@ -2661,7 +2661,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
 
         let names: Vec<Vec<u8>> = fs
             .read_dir(ROOT_INO)
@@ -2684,7 +2684,7 @@ mod tests {
     fn many_deferred_files_keep_their_own_payloads() {
         // Records are keyed by inode and looked up by binary search, so a
         // mixed tree must not cross payloads between files.
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 1024 * 1024,
             max_size_bytes: Some(8 * 1024 * 1024),
             growable_to_bytes: 1024 * 1024,
@@ -2723,7 +2723,7 @@ mod tests {
             image: &image,
             content: &NoContent,
         };
-        let fs = Sffs::mount(source).expect("mount");
+        let fs = KandeloImageFs::mount(source).expect("mount");
         let section = fs.deferred_section().unwrap().expect("section");
         assert_eq!(section.len(), 64);
         for (ino, size, payload) in expected {
@@ -2737,7 +2737,7 @@ mod tests {
     fn a_corrupt_section_is_refused_rather_than_half_read() {
         // The section is untrusted input: an image can arrive from a shared
         // link. A damaged section must fail the read, not yield some records.
-        let mut w = SffsWriter::mkfs(SffsConfig::fixed(128 * 1024)).expect("mkfs");
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).expect("mkfs");
         let root = w.root();
         w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"", b"", b"payload")
             .expect("deferred");
@@ -2751,7 +2751,7 @@ mod tests {
             .expect("section is in the image");
         bytes[at + 8] ^= 0xff; // record count
 
-        let fs = Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         assert!(
             fs.deferred_section().is_err(),
             "a corrupt section must be refused"

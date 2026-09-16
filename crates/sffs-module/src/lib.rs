@@ -1084,7 +1084,7 @@ pub unsafe extern "C" fn sm_register_lazy_file(
     // A second check here looked necessary and was not — perturbation proved
     // it, by deleting it and changing nothing.
     let digest: &[u8] =
-        unsafe { slice(archive_digest_ptr, runtime_core::sffs_deferred::DIGEST_LEN) };
+        unsafe { slice(archive_digest_ptr, runtime_core::sdef::DIGEST_LEN) };
     // `archive_id == 0` is a file fetched STANDALONE — no archive behind it, so
     // nothing to declare, and the payload belongs to the FILE rather than to an
     // archive. That case was unreachable through this entry point until now,
@@ -1227,7 +1227,7 @@ pub unsafe extern "C" fn sm_register_lazy_file(
 /// leaving the host doing MORE work while the surface count looked better.
 ///
 /// `image_policy::check_headroom` already performs exactly this computation
-/// over `Sffs::statfs`, so what crosses the boundary is the verdict plus the
+/// over `KandeloImageFs::statfs`, so what crosses the boundary is the verdict plus the
 /// numbers behind it. The caller still formats the message, because a `no_std`
 /// policy that owned its own prose would force one wording on every host.
 ///
@@ -1762,12 +1762,12 @@ mod tests {
         // fails and unwrapping succeeds. Both directions, because "it mounts"
         // alone would also pass for a body.
         assert!(
-            runtime_core::sffs::Sffs::mount(image.clone()).is_err(),
+            runtime_core::kandelo_image_fs::KandeloImageFs::mount(image.clone()).is_err(),
             "a container is not a bare body",
         );
-        let body = runtime_core::sffs::unwrap_vfsi(&image)
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image)
             .expect("the export emits a whole VFSI container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount the body inside it");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount the body inside it");
 
         // And the tree that comes back is the tree that was built.
         let ino = fs.resolve(b"/usr/hello", true).expect("resolve /usr/hello");
@@ -1781,7 +1781,7 @@ mod tests {
         // No metadata was set, so the container declares none rather than
         // carrying an empty section nothing claims.
         assert!(
-            runtime_core::sffs::metadata_section(&image).expect("walk") .is_none(),
+            runtime_core::kandelo_image_fs::metadata_section(&image).expect("walk") .is_none(),
             "no metadata in, no metadata section out",
         );
     }
@@ -1798,7 +1798,7 @@ mod tests {
         let image = drain_export();
 
         assert_eq!(
-            runtime_core::sffs::metadata_section(&image)
+            runtime_core::kandelo_image_fs::metadata_section(&image)
                 .expect("walk")
                 .expect("the container declares a metadata section"),
             metadata,
@@ -1808,7 +1808,7 @@ mod tests {
         // Clearing it removes the section rather than leaving an empty one.
         assert_eq!(unsafe { sm_set_image_options(0, 0, 0, -1) }, 0);
         let cleared = drain_export();
-        assert!(runtime_core::sffs::metadata_section(&cleared).expect("walk").is_none());
+        assert!(runtime_core::kandelo_image_fs::metadata_section(&cleared).expect("walk").is_none());
     }
 
     /// **Driving the export over base files DESTROYS them, and this test pins
@@ -1838,8 +1838,8 @@ mod tests {
 
         let image = drain_export();
 
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount the exported image");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a real container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount the exported image");
         let ino = fs.resolve(b"/base.bin", false).expect("the path survives");
         let st = fs.stat_ino(ino).expect("stat");
 
@@ -1893,8 +1893,8 @@ mod tests {
 
         let image = drain_export();
 
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a real container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a real container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let ino = fs.resolve(b"/usr/big", false).expect("the path survives");
         assert_eq!(
             fs.stat_ino(ino).expect("stat").size,
@@ -1957,8 +1957,8 @@ mod tests {
         assert_eq!(st.st_mode & 0o7777, 0o4755);
 
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let ino = fs.resolve(b"/usr/sudo", false).expect("the path survives");
         let record = fs
             .deferred_section()
@@ -1992,8 +1992,8 @@ mod tests {
         assert_eq!(rc, 0);
 
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let section = fs.deferred_section().expect("decodes").expect("section");
         assert_eq!(section.len(), 2, "both are described");
 
@@ -2029,8 +2029,8 @@ mod tests {
         // checking it here is what makes asking the producer equivalent to
         // parsing the artifact.
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         assert_eq!(
             fs.growth_ceiling_bytes().expect("ceiling"),
             ceiling as u64,
@@ -2047,8 +2047,8 @@ mod tests {
 
         let ceiling_of = || -> u64 {
             let image = drain_export();
-            let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-            runtime_core::sffs::Sffs::mount(body)
+            let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+            runtime_core::kandelo_image_fs::KandeloImageFs::mount(body)
                 .expect("mount")
                 .growth_ceiling_bytes()
                 .expect("ceiling")
@@ -2486,8 +2486,8 @@ mod tests {
         assert_eq!(unsafe { sm_set_image_options(64 * 1024 * 1024, 0, 0, -1) }, 0);
 
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
 
         assert!(
             fs.growth_ceiling_bytes().expect("ceiling") >= 64 * 1024 * 1024,
@@ -2525,14 +2525,14 @@ mod tests {
         assert!(load_image_bytes(&original) > 0);
         let rewritten = drain_export();
 
-        let body = runtime_core::sffs::unwrap_vfsi(&rewritten).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&rewritten).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         assert!(
             fs.growth_ceiling_bytes().expect("ceiling") >= 64 * 1024 * 1024,
             "the declared capacity survived the load",
         );
         assert_eq!(
-            runtime_core::sffs::metadata_span(&rewritten.as_slice())
+            runtime_core::kandelo_image_fs::metadata_span(&rewritten.as_slice())
                 .expect("span")
                 .map(|(offset, len)| {
                     let start = offset as usize;
@@ -2736,8 +2736,8 @@ mod tests {
         }), 0);
         assert_eq!(unsafe { sm_set_image_options(0, 0, 0, FIXED) }, 0);
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("unwrap");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("unwrap");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let node = fs.resolve(b"/opt/f", true).expect("/opt/f");
         let stat = fs.stat_ino(node).expect("stat");
         assert_eq!(
@@ -2753,8 +2753,8 @@ mod tests {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("unwrap");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("unwrap");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let node = fs.resolve(b"/opt/f", true).expect("/opt/f");
         assert_ne!(
             fs.stat_ino(node).expect("stat").mtime_ms,
@@ -2769,7 +2769,7 @@ mod tests {
         archive_id: u32,
         source: &[u8],
         uri: &[u8],
-        digest: &[u8; runtime_core::sffs_deferred::DIGEST_LEN],
+        digest: &[u8; runtime_core::sdef::DIGEST_LEN],
     ) -> i32 {
         let (pp, pl) = write_path(path);
         let (sp, sl) = write_path(source);
@@ -2796,7 +2796,7 @@ mod tests {
         // could never fire.
         fresh_tree();
         let uri: &[u8] = b"https://example.invalid/tool.zip";
-        let digest = [0x7Eu8; runtime_core::sffs_deferred::DIGEST_LEN];
+        let digest = [0x7Eu8; runtime_core::sdef::DIGEST_LEN];
         assert_eq!(register_addressed(b"/opt/a", 1, b"members/a", uri, &digest), 0);
 
         // On the ARCHIVE, where a member's one answer to "where are these
@@ -2809,7 +2809,7 @@ mod tests {
         // so a registration that put it there would make an unencodable image.
         assert_eq!(
             rootfs::deferred_source(b"/opt/a").expect("the member"),
-            (alloc::vec::Vec::new(), runtime_core::sffs_deferred::DIGEST_NONE),
+            (alloc::vec::Vec::new(), runtime_core::sdef::DIGEST_NONE),
         );
     }
 
@@ -2835,7 +2835,7 @@ mod tests {
             rootfs::deferred_source(b"/opt/undeclared").expect("the file"),
             (
                 alloc::vec::Vec::new(),
-                runtime_core::sffs_deferred::DIGEST_NONE,
+                runtime_core::sdef::DIGEST_NONE,
             ),
         );
     }
@@ -2848,7 +2848,7 @@ mod tests {
         // records as fetched by URL with length as the only check.
         fresh_tree();
         let uri: &[u8] = b"https://example.invalid/sudo";
-        let digest = [0x11u8; runtime_core::sffs_deferred::DIGEST_LEN];
+        let digest = [0x11u8; runtime_core::sdef::DIGEST_LEN];
         assert_eq!(register_addressed(b"/opt/solo", 0, b"", uri, &digest), 0);
         assert_eq!(
             rootfs::deferred_source(b"/opt/solo").expect("the file"),
@@ -2874,10 +2874,10 @@ mod tests {
         // that dropped both would read exactly like one that reported them --
         // which is what a surviving mutant showed.
         const A_URI: &[u8] = b"https://example.invalid/a.zip";
-        const A_DIGEST: [u8; runtime_core::sffs_deferred::DIGEST_LEN] =
-            [0x4Au8; runtime_core::sffs_deferred::DIGEST_LEN];
-        const SOLO_DIGEST: [u8; runtime_core::sffs_deferred::DIGEST_LEN] =
-            [0x50u8; runtime_core::sffs_deferred::DIGEST_LEN];
+        const A_DIGEST: [u8; runtime_core::sdef::DIGEST_LEN] =
+            [0x4Au8; runtime_core::sdef::DIGEST_LEN];
+        const SOLO_DIGEST: [u8; runtime_core::sdef::DIGEST_LEN] =
+            [0x50u8; runtime_core::sdef::DIGEST_LEN];
         rootfs::set_archive_source(1, A_URI, &A_DIGEST).expect("describe the archive");
         rootfs::set_deferred_source(b"/opt/solo", b"https://example.invalid/solo", &SOLO_DIGEST)
             .expect("describe the standalone file");
@@ -2902,7 +2902,7 @@ mod tests {
         );
         assert_eq!(
             read_bytes(&buf, &mut at),
-            &runtime_core::sffs_deferred::DIGEST_NONE[..],
+            &runtime_core::sdef::DIGEST_NONE[..],
             "no digest was declared for this member",
         );
 
@@ -3374,8 +3374,8 @@ mod tests {
         // One byte: as small a request as can be made without clearing it.
         assert_eq!(unsafe { sm_set_image_options(1, 0, 0, -1) }, 0);
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let ceiling = fs.growth_ceiling_bytes().expect("ceiling");
 
         // `total_inodes = max_blocks / 4` is the writer's rule, so the ceiling
@@ -3455,8 +3455,8 @@ mod tests {
         // demonstrated. A build script PRINTS this, and a confident wrong
         // number is worse than none.
         let image = drain_export();
-        let body = runtime_core::sffs::unwrap_vfsi(&image).expect("a container");
-        let fs = runtime_core::sffs::Sffs::mount(body).expect("mount");
+        let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&image).expect("a container");
+        let fs = runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("mount");
         let st = fs.statfs().expect("statfs");
         let occupied = (st.f_blocks - st.f_bfree) * u64::from(st.f_frsize);
         assert_eq!(

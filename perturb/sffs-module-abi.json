@@ -357,7 +357,7 @@
       "scope": "pub unsafe extern \"C\" fn sm_lazy_entries",
       "scope_end": "\n}\n",
       "find": "    let files = rootfs::lazy_entries();",
-      "replace": "    let files = rootfs::lazy_entries();\n    let files = { let mut f = files; f.push(rootfs::LazyEntryView { path: b\"/ghost\".to_vec(), ino: 0, size: 0, archive_id: 0, source_path: alloc::vec::Vec::new(), payload: alloc::vec::Vec::new(), uri: alloc::vec::Vec::new(), digest: runtime_core::sffs_deferred::DIGEST_NONE }); f };"
+      "replace": "    let files = rootfs::lazy_entries();\n    let files = { let mut f = files; f.push(rootfs::LazyEntryView { path: b\"/ghost\".to_vec(), ino: 0, size: 0, archive_id: 0, source_path: alloc::vec::Vec::new(), payload: alloc::vec::Vec::new(), uri: alloc::vec::Vec::new(), digest: runtime_core::sdef::DIGEST_NONE }); f };"
     },
     {
       "name": "the enumeration writes into a buffer smaller than the record set",
@@ -434,7 +434,7 @@
       "scope": "pub unsafe extern \"C\" fn sm_lazy_entries(",
       "scope_end": "\n}\n",
       "find": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &entry.digest).is_err()",
-      "replace": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &runtime_core::sffs_deferred::DIGEST_NONE).is_err()"
+      "replace": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &runtime_core::sdef::DIGEST_NONE).is_err()"
     }
   ],
   "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",

@@ -49,7 +49,7 @@
 //!
 //! `crates/fork-codec/src/dylink_archive.rs` — 1,318 lines, decoder-complete,
 //! ported from `dylink-fork-archive.ts` — had **zero callers**, the same shape
-//! `sffs.rs` was in before K1. This crate consumes its
+//! `image.rs` was in before K1. This crate consumes its
 //! [`fork_codec::dylink_archive::DylinkModule`],
 //! `DylinkAllocation`, `DylinkTransaction` and `DylinkInitializationStage`
 //! records directly as its replay input rather than declaring a second set of

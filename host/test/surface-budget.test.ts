@@ -554,7 +554,7 @@ const MEASURED: Record<string, () => number> = {
       readFileSync(join(repoRoot, "scripts/generate-rootfs-package-manifest.mjs"), "utf8"),
     );
     const carries = /pub digest: \[u8; DIGEST_LEN\]/.test(
-      readFileSync(join(repoRoot, "crates/runtime-core/src/sffs_deferred.rs"), "utf8"),
+      readFileSync(join(repoRoot, "crates/runtime-core/src/sdef.rs"), "utf8"),
     );
     const verifies = /digest_accepts\(&expected, &data\)/.test(
       readFileSync(join(repoRoot, "crates/runtime-core/src/rootfs.rs"), "utf8"),

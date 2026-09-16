@@ -1,6 +1,6 @@
 {
- "file": "crates/runtime-core/src/sffs_write.rs",
- "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" sffs_write >/dev/null 2>&1",
+ "file": "crates/runtime-core/src/kandelo_image_write.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" kandelo_image_write >/dev/null 2>&1",
  "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "trials": [
   {
@@ -14,7 +14,7 @@
    "name": "the writer drops the member-path cap",
    "scope": "pub fn create_deferred_file(",
    "scope_end": "\n    }\n",
-   "find": "        if source_path.len() > crate::sffs_deferred::MAX_SOURCE_PATH_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
+   "find": "        if source_path.len() > crate::sdef::MAX_SOURCE_PATH_LEN as usize {\n            return Err(Errno::EINVAL);\n        }",
    "replace": ""
   },
   {
@@ -42,8 +42,8 @@
    "name": "the emitted section drops the archive table",
    "scope": "fn emit_deferred_section",
    "scope_end": "\n    }\n",
-   "find": "        let mut archives = core::mem::take(&mut self.deferred_archives);\n        archives.sort_by_key(|archive| archive.archive_id);\n        let section = crate::sffs_deferred::encode(&archives, &records)?;",
-   "replace": "        self.deferred_archives.clear();\n        let section = crate::sffs_deferred::encode(&[], &records)?;"
+   "find": "        let mut archives = core::mem::take(&mut self.deferred_archives);\n        archives.sort_by_key(|archive| archive.archive_id);\n        let section = crate::sdef::encode(&archives, &records)?;",
+   "replace": "        self.deferred_archives.clear();\n        let section = crate::sdef::encode(&[], &records)?;"
   },
   {
    "name": "an image that declares its deferred files stays silent when it has none",

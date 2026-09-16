@@ -1,9 +1,9 @@
 //! The archive payload's two halves: a descriptor the kernel carries, and a
 //! seal a consumer verifies.
 //!
-//! # Why this is here and not in `sffs_deferred`
+//! # Why this is here and not in `sdef`
 //!
-//! `sffs_deferred` is the FORMAT, and its contract is that the payload is
+//! `sdef` is the FORMAT, and its contract is that the payload is
 //! opaque: *"whoever fetches decides whether a URL may be fetched, validates
 //! the digest, and honours the activation mode; carrying the bytes authorises
 //! nothing."* This module is one of those "whoever"s — the builder's own
@@ -49,7 +49,7 @@ const PAYLOAD_VERSION: u32 = 1;
 
 /// Cohort-identity domain tag. Prefixing the digest input means a digest
 /// computed for one purpose can never be mistaken for one computed for another.
-const COHORT_TAG: &[u8] = b"kandelo.sffs.cohort.v1\0";
+const COHORT_TAG: &[u8] = b"kandelo.image.cohort.v1\0";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArchiveSeal {

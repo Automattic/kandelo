@@ -1,5 +1,5 @@
 {
-  "file": "crates/runtime-core/src/sffs_container.rs",
+  "file": "crates/runtime-core/src/vfsi_container.rs",
   "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" sffs_container >/dev/null 2>&1 && scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" rootfs:: >/dev/null 2>&1",
   "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "trials": [

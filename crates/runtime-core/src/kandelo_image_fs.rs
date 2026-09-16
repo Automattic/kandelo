@@ -116,7 +116,7 @@ fn container_errno(error: Errno) -> Errno {
 ///
 /// The container is `magic | version | flags | sabLen | sab[sabLen] | ...`;
 /// everything after the SAB is host-side metadata (see [`kernel_lazy_span`]).
-pub fn sffs_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
+pub fn kandelo_image_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
     if source_u32(source, 0).map_err(container_errno)? != VFSI_MAGIC {
         return Err(Errno::EINVAL);
     }
@@ -132,7 +132,7 @@ pub fn sffs_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
 }
 
 pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
-    let (offset, len) = sffs_span(&image)?;
+    let (offset, len) = kandelo_image_span(&image)?;
     let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
     let end = start
         .checked_add(usize::try_from(len).map_err(|_| Errno::EINVAL)?)
@@ -145,7 +145,7 @@ pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
 /// These are ABI: they are written by `host/src/vfs/memory-fs.ts` and read
 /// here, and a reader that disagrees about a bit walks the trailer to the
 /// wrong offset. They live together so the writer in
-/// [`crate::sffs_container`] and the readers below cannot drift; two of them
+/// [`crate::vfsi_container`] and the readers below cannot drift; two of them
 /// were previously private to this file and two existed only in TypeScript.
 ///
 /// `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY` is deliberately NOT redefined here -- it
@@ -176,7 +176,7 @@ pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
 pub fn container_flags(source: &impl BlockSource) -> Result<u32, Errno> {
     // Validates magic and version first, so a flag word is never read out of
     // bytes that are not a container.
-    sffs_span(source)?;
+    kandelo_image_span(source)?;
     source_u32(source, 8).map_err(container_errno)
 }
 
@@ -195,7 +195,7 @@ pub fn container_flags(source: &impl BlockSource) -> Result<u32, Errno> {
 /// nothing. So this hands back the bytes and lets whoever cares interpret
 /// them, exactly as the deferred section hands back an opaque payload.
 pub fn metadata_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
-    let (sab_offset, sab_len) = sffs_span(source)?;
+    let (sab_offset, sab_len) = kandelo_image_span(source)?;
     let flags = source_u32(source, 8).map_err(container_errno)?;
     if flags & VFS_IMAGE_FLAG_HAS_METADATA == 0 {
         return Ok(None);
@@ -253,7 +253,7 @@ pub fn metadata_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
 /// `u32 archiveLen | archiveJson` and `u32 metadataLen | metadataJson` when
 /// their flags are set. See [`crate::klzy`] for the section's own contents.
 pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
-    let (sab_offset, sab_len) = sffs_span(source)?;
+    let (sab_offset, sab_len) = kandelo_image_span(source)?;
     let flags = source_u32(source, 8).map_err(container_errno)?;
     if flags & wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY == 0 {
         return Ok(None);
@@ -301,8 +301,8 @@ pub fn kernel_lazy_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
     image.get(start..end).map(Some).ok_or(Errno::EINVAL)
 }
 
-pub(crate) const SFFS_MAGIC: u32 = 0x5346_4653; // "SFFS"
-pub(crate) const SFFS_VERSION: u32 = 1;
+pub(crate) const KANDELO_IMAGE_MAGIC: u32 = 0x5346_4653; // "SFFS"
+pub(crate) const KANDELO_IMAGE_VERSION: u32 = 1;
 pub(crate) const BLOCK_SIZE: usize = 4096;
 pub(crate) const SB_INODE_TABLE_START: u64 = 36;
 
@@ -349,20 +349,20 @@ pub fn file_type(mode: u32) -> u32 {
     mode & 0xf000
 }
 
-pub struct Sffs<S: BlockSource> {
+pub struct KandeloImageFs<S: BlockSource> {
     source: S,
     pub(crate) inode_table_start: u32,
     total_inodes: u32,
     deferred_inode: u32,
 }
 
-/// The superblock facts a mounted [`Sffs`] keeps, separated from the source so
+/// The superblock facts a mounted [`KandeloImageFs`] keeps, separated from the source so
 /// a caller that mounts once can re-address the same filesystem later without
 /// re-reading and re-validating the superblock.
 ///
 /// This exists because the `/` image is mounted once, at boot, but its bytes
 /// are read for the whole session: every base regular file's content is served
-/// out of it on demand. Re-running [`Sffs::mount`] per read would cost three
+/// out of it on demand. Re-running [`KandeloImageFs::mount`] per read would cost three
 /// extra source reads and repeat validation the boot already did; carrying the
 /// validated geometry forward costs eight bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,24 +384,24 @@ pub(crate) const SB_TOTAL_INODES: u64 = 16;
 /// answered it. Divergence here would be a platform-visible difference
 /// between two implementations of one filesystem, which is the defect lane V
 /// is closing.
-pub const SFFS_SUPER_MAGIC: u32 = 0x5346_4653;
+pub const KANDELO_IMAGE_SUPER_MAGIC: u32 = 0x5346_4653;
 
 pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
 pub(crate) const SB_FREE_BLOCKS: u64 = 20;
 pub(crate) const SB_FREE_INODES: u64 = 24;
 pub(crate) const SB_MAX_SIZE_BLOCKS: u64 = 68;
 /// Inode holding the deferred-file section, or 0. See
-/// [`crate::sffs_deferred`] for the section, and the writer's own
+/// [`crate::sdef`] for the section, and the writer's own
 /// `SB_DEFERRED_INODE` for why a consistency checker must read this field
 /// before judging that inode unreachable.
 const SB_DEFERRED_INODE: u64 = 76;
 
-impl<S: BlockSource> Sffs<S> {
-    pub fn mount(source: S) -> Result<Sffs<S>, Errno> {
-        if source_u32(&source, 0).map_err(container_errno)? != SFFS_MAGIC {
+impl<S: BlockSource> KandeloImageFs<S> {
+    pub fn mount(source: S) -> Result<KandeloImageFs<S>, Errno> {
+        if source_u32(&source, 0).map_err(container_errno)? != KANDELO_IMAGE_MAGIC {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 4).map_err(container_errno)? != SFFS_VERSION {
+        if source_u32(&source, 4).map_err(container_errno)? != KANDELO_IMAGE_VERSION {
             return Err(Errno::EINVAL);
         }
         if source_u32(&source, 8).map_err(container_errno)? != BLOCK_SIZE as u32 {
@@ -423,7 +423,7 @@ impl<S: BlockSource> Sffs<S> {
         // written before this field existed carries here, so an older image
         // reads as having none rather than as corrupt.
         let deferred_inode = source_u32(&source, SB_DEFERRED_INODE).map_err(container_errno)?;
-        Ok(Sffs { source, inode_table_start, total_inodes, deferred_inode })
+        Ok(KandeloImageFs { source, inode_table_start, total_inodes, deferred_inode })
     }
 
     /// The validated superblock geometry of this mount.
@@ -435,7 +435,7 @@ impl<S: BlockSource> Sffs<S> {
         }
     }
 
-    /// Re-address a filesystem whose superblock a previous [`Sffs::mount`]
+    /// Re-address a filesystem whose superblock a previous [`KandeloImageFs::mount`]
     /// already read and validated.
     ///
     /// The caller owes the same invariant `mount` establishes: `geometry` came
@@ -443,8 +443,8 @@ impl<S: BlockSource> Sffs<S> {
     /// bytes. It is not a way to skip validation on an unvalidated image — the
     /// `/` image loader mounts first and only then remembers the geometry, so a
     /// corrupt superblock is still rejected at boot, loudly, exactly once.
-    pub fn from_geometry(source: S, geometry: SffsGeometry) -> Sffs<S> {
-        Sffs {
+    pub fn from_geometry(source: S, geometry: SffsGeometry) -> KandeloImageFs<S> {
+        KandeloImageFs {
             source,
             inode_table_start: geometry.inode_table_start,
             total_inodes: geometry.total_inodes,
@@ -494,11 +494,11 @@ impl<S: BlockSource> Sffs<S> {
 
     /// `statfs` for a mounted image, read from its own superblock.
     ///
-    /// Lane Y's census listed this as derivable "from `Sffs::geometry`". It is
+    /// Lane Y's census listed this as derivable "from `KandeloImageFs::geometry`". It is
     /// not, quite: geometry carries the inode-table start, the inode count and
     /// the deferred inode, and deliberately not the FREE counts, which change
     /// as a writer fills the image. They come from the superblock, which
-    /// `SffsWriter` already maintains at `SB_FREE_BLOCKS`/`SB_FREE_INODES`.
+    /// `KandeloImageWriter` already maintains at `SB_FREE_BLOCKS`/`SB_FREE_INODES`.
     ///
     /// The caller that needs this is the image builder's headroom assertion:
     /// "this product image must still have N free bytes and M free inodes when
@@ -520,7 +520,7 @@ impl<S: BlockSource> Sffs<S> {
             return Err(Errno::EINVAL);
         }
         Ok(wasm_posix_shared::WasmStatfs {
-            f_type: SFFS_SUPER_MAGIC,
+            f_type: KANDELO_IMAGE_SUPER_MAGIC,
             f_bsize: BLOCK_SIZE as u32,
             f_blocks: total_blocks as u64,
             f_bfree: free_blocks as u64,
@@ -680,11 +680,11 @@ impl<S: BlockSource> Sffs<S> {
     ///
     /// Reads the unlinked inode the superblock names and parses it. The
     /// payload inside each record is returned untouched — see
-    /// [`crate::sffs_deferred`] for why this layer refuses to look inside it.
+    /// [`crate::sdef`] for why this layer refuses to look inside it.
     ///
     /// An image written before this section existed carries 0 in the
     /// superblock field and reads as `None`, not as corrupt.
-    pub fn deferred_section(&self) -> Result<Option<crate::sffs_deferred::DeferredSection>, Errno> {
+    pub fn deferred_section(&self) -> Result<Option<crate::sdef::DeferredSection>, Errno> {
         if self.deferred_inode == 0 {
             return Ok(None);
         }
@@ -700,7 +700,7 @@ impl<S: BlockSource> Sffs<S> {
         if read as u64 != stat.size {
             return Err(Errno::EINVAL);
         }
-        crate::sffs_deferred::decode(&buf).map(Some)
+        crate::sdef::decode(&buf).map(Some)
     }
 
     /// Reads a symlink's target. Short targets (`size <= 40`) are stored
@@ -800,7 +800,7 @@ mod tests {
     /// absent, so only the combinations expose it.
     #[test]
     fn metadata_section_round_trips_behind_every_optional_section() {
-        use crate::sffs_container::{wrap, ContainerSections};
+        use crate::vfsi_container::{wrap, ContainerSections};
         let meta: &[u8] = br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#;
         let body: &[u8] = b"body bytes, not a real filesystem";
         for archive in [None, Some(&b"[archive json]"[..])] {
@@ -830,7 +830,7 @@ mod tests {
     /// whichever bytes happen to follow.
     #[test]
     fn metadata_section_is_absent_when_the_flag_is_clear() {
-        use crate::sffs_container::{wrap, ContainerSections};
+        use crate::vfsi_container::{wrap, ContainerSections};
         let image = wrap(
             b"body",
             &ContainerSections {
@@ -853,11 +853,11 @@ mod tests {
     /// verifies only that the implementation equals itself.
     #[test]
     fn growth_ceiling_reports_the_configured_maximum() {
-        use crate::sffs_write::{NoContent, SffsConfig, SffsWriter};
+        use crate::kandelo_image_write::{NoContent, KandeloImageConfig, KandeloImageWriter};
         // The initial size must hold the metadata that max_size_bytes sizes:
         // a larger ceiling means more inodes, a bigger block bitmap and a
         // bigger inode table, and mkfs answers ENOSPC when those do not fit.
-        let w = SffsWriter::mkfs(SffsConfig {
+        let w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 2 * 1024 * 1024,
             max_size_bytes: Some(8 * 1024 * 1024),
             growable_to_bytes: 2 * 1024 * 1024,
@@ -865,7 +865,7 @@ mod tests {
         })
         .expect("mkfs");
         let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
-        let fs = Sffs::mount(body).expect("mount");
+        let fs = KandeloImageFs::mount(body).expect("mount");
         assert_eq!(
             fs.growth_ceiling_bytes().expect("ceiling"),
             8 * 1024 * 1024,
@@ -880,8 +880,8 @@ mod tests {
     /// outgrown can tell the difference.
     #[test]
     fn growth_ceiling_clamps_up_when_the_configured_maximum_is_already_exceeded() {
-        use crate::sffs_write::{NoContent, SffsConfig, SffsWriter};
-        let w = SffsWriter::mkfs(SffsConfig {
+        use crate::kandelo_image_write::{NoContent, KandeloImageConfig, KandeloImageWriter};
+        let w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 2 * 1024 * 1024,
             // 64 KiB: far below the 2 MiB body this image occupies.
             max_size_bytes: Some(64 * 1024),
@@ -891,7 +891,7 @@ mod tests {
         .expect("mkfs");
         let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
         let body_len = body.len() as u64;
-        let fs = Sffs::mount(body).expect("mount");
+        let fs = KandeloImageFs::mount(body).expect("mount");
         assert_eq!(
             fs.growth_ceiling_bytes().expect("ceiling"),
             body_len,
@@ -911,11 +911,11 @@ mod tests {
     /// different size and would be testing the fixture, not the reader.
     #[test]
     fn statfs_reports_the_images_own_geometry() {
-        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
-        let fs = Sffs::mount(sffs).expect("mount");
+        let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let fs = KandeloImageFs::mount(image).expect("mount");
         let st = fs.statfs().expect("statfs");
 
-        assert_eq!(st.f_type, SFFS_SUPER_MAGIC, "reports itself as SFFS");
+        assert_eq!(st.f_type, KANDELO_IMAGE_SUPER_MAGIC, "reports itself as SFFS");
         assert_eq!(st.f_bsize, BLOCK_SIZE as u32);
         assert_eq!(st.f_frsize, st.f_bsize, "SFFS has no fragment size distinct from its block size");
         assert_eq!(st.f_bavail, st.f_bfree, "SFFS reserves no blocks, so available == free");
@@ -939,19 +939,19 @@ mod tests {
     /// read a wildly generous free count off a damaged image and pass.
     #[test]
     fn statfs_refuses_a_superblock_claiming_impossible_free_counts() {
-        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
-        let mut owned = sffs.to_vec();
+        let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let mut owned = image.to_vec();
         let total_blocks = u32::from_le_bytes(owned[12..16].try_into().unwrap());
         owned[20..24].copy_from_slice(&(total_blocks + 1).to_le_bytes());
-        let fs = Sffs::mount(owned).expect("mount");
+        let fs = KandeloImageFs::mount(owned).expect("mount");
         assert_eq!(fs.statfs().unwrap_err(), Errno::EINVAL);
     }
 
     #[test]
     fn unwrap_vfsi_returns_sffs_with_valid_magic() {
-        let sffs = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
         // Inner SFFS superblock magic "SFFS" (0x53464653) at byte 0, LE.
-        assert_eq!(r32(sffs, 0), Some(0x5346_4653));
+        assert_eq!(r32(image, 0), Some(0x5346_4653));
     }
 
     #[test]
@@ -963,8 +963,8 @@ mod tests {
 
     #[test]
     fn mount_validates_superblock() {
-        let sffs = unwrap_vfsi(TINY_VFS).unwrap();
-        let fs = Sffs::mount(sffs).expect("mount");
+        let image = unwrap_vfsi(TINY_VFS).unwrap();
+        let fs = KandeloImageFs::mount(image).expect("mount");
         assert!(fs.inode_table_start >= 1);
     }
 
@@ -972,7 +972,7 @@ mod tests {
     fn mount_rejects_wrong_block_size() {
         let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
         bad[8] = 0; bad[9] = 0; bad[10] = 0; bad[11] = 0; // BLOCK_SIZE=0
-        assert!(Sffs::mount(bad.as_slice()).is_err());
+        assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
     }
 
     #[test]
@@ -980,13 +980,13 @@ mod tests {
         // `Vec<u8>` is a `BlockSource` too, so a caller that owns the image
         // does not have to keep a borrow alive alongside the mount.
         let owned = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
-        let fs = Sffs::mount(owned).expect("mount owned");
+        let fs = KandeloImageFs::mount(owned).expect("mount owned");
         assert_eq!(fs.stat_ino(ROOT_INO).unwrap().mode & 0xf000, 0x4000);
     }
 
     #[test]
     fn root_inode_is_a_directory() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let st = fs.stat_ino(ROOT_INO).unwrap();
         assert_eq!(st.mode & 0xf000, 0x4000, "root is S_IFDIR");
         assert!(st.nlink >= 2, "dir has >= 2 links (. and ..)");
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn block_map_direct_hole_and_beyond_max() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         // Root dir's first data block is allocated (non-zero physical block).
         assert!(fs.block_map(ROOT_INO, 0).unwrap() != 0, "root dir data block 0");
         // An unallocated direct block within range reads as a sparse hole (0).
@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn read_at_reads_root_dir_bytes_nonzero() {
         // Directory data is readable via read_at too; assert we get bytes.
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let size = fs.stat_ino(ROOT_INO).unwrap().size;
         let mut buf = [0u8; 64];
         let n = fs.read_at(ROOT_INO, 0, &mut buf).unwrap();
@@ -1021,7 +1021,7 @@ mod tests {
         // direct blocks, so a whole-file read walks the single-indirect
         // block. Under the cursor the inode is fetched once for the whole
         // read rather than once per 4 KiB chunk; the bytes must be identical.
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let ino = fs.resolve(b"/big.txt", true).unwrap();
         let size = fs.stat_ino(ino).unwrap().size as usize;
         assert_eq!(size, 45000);
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn read_dir_lists_root_entries() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let names: alloc::vec::Vec<alloc::vec::Vec<u8>> =
             fs.read_dir(ROOT_INO).unwrap().into_iter().map(|e| e.name).collect();
         for want in [b"hello.txt".as_slice(), b"dir", b"link", b"big.txt"] {
@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn lookup_finds_children_and_misses() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let dir = fs.lookup(ROOT_INO, b"dir").unwrap();
         assert_eq!(fs.stat_ino(dir).unwrap().mode & 0xf000, 0x4000);
         assert!(fs.lookup(dir, b"nested.txt").is_ok());
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn read_link_inline_target() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let link = fs.lookup(ROOT_INO, b"link").unwrap();
         assert_eq!(fs.stat_ino(link).unwrap().mode & 0xf000, 0xa000);
         assert_eq!(fs.read_link(link).unwrap(), b"hello.txt");
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[test]
     fn resolve_paths_and_symlink() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         // exact content read through a resolved path
         let ino = fs.resolve(b"/hello.txt", true).unwrap();
         let mut buf = [0u8; 32];
@@ -1103,12 +1103,12 @@ mod tests {
         // adds 16 bytes, so the field lives at absolute `.vfs` offset 32.
         let mut img = TINY_VFS.to_vec();
         img[32..36].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-        assert!(Sffs::mount(unwrap_vfsi(&img).unwrap()).is_err());
+        assert!(KandeloImageFs::mount(unwrap_vfsi(&img).unwrap()).is_err());
     }
 
     #[test]
     fn stat_ino_rejects_out_of_range_ino() {
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         // The errno is the contract, not merely that it failed: a reader
         // returning EIO here would look identical to `is_err()`.
         // `.err()` rather than `unwrap_err()`: the Ok type is `SffsStat`,
@@ -1124,14 +1124,14 @@ mod tests {
         // in-inode-table absolute offset we can compute via the crate-private
         // `inode_offset`) to a value larger than the whole image, and assert
         // `read_link` fails rather than allocating/reading garbage.
-        let fs = Sffs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         let link = fs.lookup(ROOT_INO, b"link").unwrap();
         let size_off = fs.inode_offset(link) as usize + INO_SIZE;
         drop(fs);
         let mut img = TINY_VFS.to_vec();
         let abs = VFSI_HEADER + size_off;
         img[abs..abs + 8].copy_from_slice(&u64::MAX.to_le_bytes());
-        let fs2 = Sffs::mount(unwrap_vfsi(&img).unwrap()).unwrap();
+        let fs2 = KandeloImageFs::mount(unwrap_vfsi(&img).unwrap()).unwrap();
         assert!(fs2.read_link(link).is_err());
     }
 
@@ -1174,7 +1174,7 @@ mod tests {
         let path = candidates.iter().find(|p| std::path::Path::new(p).exists());
         let Some(path) = path else { eprintln!("skip: no rootfs.vfs"); return; };
         let image = std::fs::read(path).unwrap();
-        let fs = Sffs::mount(unwrap_vfsi(&image).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(&image).unwrap()).unwrap();
         // Root lists the usual FHS dirs.
         let names: std::collections::BTreeSet<Vec<u8>> =
             fs.read_dir(ROOT_INO).unwrap().into_iter().map(|e| e.name).collect();

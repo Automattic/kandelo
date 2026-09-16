@@ -27,7 +27,7 @@
    "name": "an image may claim archives its carrier describes nowhere",
    "scope": "fn load_image_inner",
    "scope_end": "\n}\n",
-   "find": "    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {\n        return Err(Errno::EINVAL);\n    }",
+   "find": "    if declared_flags & crate::kandelo_image_fs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {\n        return Err(Errno::EINVAL);\n    }",
    "replace": ""
   },
   {
@@ -130,9 +130,9 @@
   },
   {
    "name": "an image declaring archives it does not carry is loaded anyway",
-   "scope": "    let declared_flags = crate::sffs::container_flags(&source)?;",
+   "scope": "    let declared_flags = crate::kandelo_image_fs::container_flags(&source)?;",
    "scope_end": "\n    }\n",
-   "find": "    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {",
+   "find": "    if declared_flags & crate::kandelo_image_fs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0\n        && lazy_archives.is_empty()\n    {",
    "replace": "    if false {"
   }
  ],

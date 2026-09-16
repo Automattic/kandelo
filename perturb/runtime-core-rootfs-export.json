@@ -43,7 +43,7 @@
       "scope": "    let deferred = filesystem.deferred_section()?;",
       "scope_end": "\n",
       "find": "    let deferred = filesystem.deferred_section()?;",
-      "replace": "    let deferred: Option<crate::sffs_deferred::DeferredSection> = None;"
+      "replace": "    let deferred: Option<crate::sdef::DeferredSection> = None;"
     },
     {
       "name": "the export drops the retained description and stubs the file",
@@ -85,7 +85,7 @@
       "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
       "scope_end": "\n                }\n",
       "find": "                    let (bytes, payload, uri, digest) = ROOTFS\n                        .with(|state| {\n                            state.archives.get(&archive_id).map(|entry| {\n                                (\n                                    entry.size,\n                                    entry.payload.clone(),\n                                    entry.uri.clone(),\n                                    entry.digest,\n                                )\n                            })\n                        })\n                        .ok_or(Errno::EIO)?;",
-      "replace": "                    let (bytes, payload, uri, digest) = ROOTFS\n                        .with(|state| {\n                            state.archives.get(&archive_id).map(|entry| {\n                                (\n                                    entry.size,\n                                    entry.payload.clone(),\n                                    entry.uri.clone(),\n                                    entry.digest,\n                                )\n                            })\n                        })\n                        .unwrap_or((0, alloc::vec::Vec::new(), alloc::vec::Vec::new(), crate::sffs_deferred::DIGEST_NONE));"
+      "replace": "                    let (bytes, payload, uri, digest) = ROOTFS\n                        .with(|state| {\n                            state.archives.get(&archive_id).map(|entry| {\n                                (\n                                    entry.size,\n                                    entry.payload.clone(),\n                                    entry.uri.clone(),\n                                    entry.digest,\n                                )\n                            })\n                        })\n                        .unwrap_or((0, alloc::vec::Vec::new(), alloc::vec::Vec::new(), crate::sdef::DIGEST_NONE));"
     },
     {
       "name": "the loader goes back to refusing an image described only by its body",
@@ -138,7 +138,7 @@
     },
     {
       "name": "the container declares a KLZY section it does not carry",
-      "scope": "    let sections = crate::sffs_container::ContainerSections {\n        lazy_json: b\"\",",
+      "scope": "    let sections = crate::vfsi_container::ContainerSections {\n        lazy_json: b\"\",",
       "scope_end": "\n    };\n",
       "find": "        kernel_lazy: None,",
       "replace": "        kernel_lazy: Some(b\"\"),"
@@ -203,7 +203,7 @@
       "name": "the capacity report ignores the image and guesses",
       "scope": "pub fn export_capacity_bytes()",
       "scope_end": "\n}\n",
-      "find": "    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()",
+      "find": "    crate::kandelo_image_fs::KandeloImageFs::mount(source)?.growth_ceiling_bytes()",
       "replace": "    let _ = source;\n    Ok(0)"
     },
     {

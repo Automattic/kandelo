@@ -29,7 +29,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::sffs::{file_type, BlockSource, Sffs, ROOT_INO};
+use crate::kandelo_image_fs::{file_type, BlockSource, KandeloImageFs, ROOT_INO};
 
 /// What a product image must still have free when it ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,13 +114,13 @@ impl PolicyViolation {
 /// rebuild, then telling it "you are also short on inodes" wastes the slowest
 /// loop in the project.
 pub fn check_headroom<S: BlockSource>(
-    fs: &Sffs<S>,
+    fs: &KandeloImageFs<S>,
     headroom: &Headroom,
 ) -> Result<(), PolicyViolation> {
     let st = fs.statfs().map_err(|_| PolicyViolation::Headroom {
         // A statfs that cannot be read is not "zero free": it is an image whose
         // own superblock is unreadable, and reporting it as a headroom breach
-        // is the truthful outcome for a publication gate. `Sffs::statfs`
+        // is the truthful outcome for a publication gate. `KandeloImageFs::statfs`
         // already refuses a superblock claiming more free than total, so this
         // arm cannot be reached by a merely-full image.
         free_bytes: 0,
@@ -148,7 +148,7 @@ pub fn check_headroom<S: BlockSource>(
 /// as wrong as one built smaller: the profile is the size the product was
 /// tested against, and a quietly roomier image is a difference nobody reviewed.
 pub fn check_capacity<S: BlockSource>(
-    fs: &Sffs<S>,
+    fs: &KandeloImageFs<S>,
     expected_bytes: u64,
 ) -> Result<(), PolicyViolation> {
     let actual_bytes = fs
@@ -186,12 +186,12 @@ const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 /// would either fail or, worse, inspect a zero-length stub and pronounce it
 /// fine. The TypeScript original skips them for the same reason.
 ///
-/// Deferral is read from the in-body SDEF section, which is what `SffsWriter`
+/// Deferral is read from the in-body SDEF section, which is what `KandeloImageWriter`
 /// produces. An image whose deferred files are recorded only in the trailing
 /// KLZY JSON is a TypeScript-written image, and this path does not produce
 /// one.
 pub fn check_wasm_artifacts<S: BlockSource>(
-    fs: &Sffs<S>,
+    fs: &KandeloImageFs<S>,
     kernel_abi: u32,
     declarations: &[WasmArtifactDeclaration<'_>],
 ) -> Result<(), PolicyViolation> {
@@ -320,12 +320,12 @@ pub fn check_wasm_artifacts<S: BlockSource>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sffs::unwrap_vfsi;
+    use crate::kandelo_image_fs::unwrap_vfsi;
 
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
 
-    fn mount() -> Sffs<Vec<u8>> {
-        Sffs::mount(unwrap_vfsi(TINY_VFS).expect("unwrap").to_vec()).expect("mount")
+    fn mount() -> KandeloImageFs<Vec<u8>> {
+        KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).expect("unwrap").to_vec()).expect("mount")
     }
 
     #[test]
@@ -414,15 +414,15 @@ mod tests {
         }
     }
 
-    // The ceiling's own VALUE is pinned in `sffs.rs` against literals, not
+    // The ceiling's own VALUE is pinned in `image.rs` against literals, not
     // here: a test in this module that derives its expectation from
     // `growth_ceiling_bytes` can only show the function equals itself, which
     // is exactly how two mutants of it survived the first time round.
 
     /// Build a small image containing the given (path, bytes) regular files.
-    fn image_with(files: &[(&[u8], &[u8])]) -> Sffs<Vec<u8>> {
-        use crate::sffs_write::{Content, NoContent, SffsConfig, SffsWriter};
-        let mut w = SffsWriter::mkfs(SffsConfig {
+    fn image_with(files: &[(&[u8], &[u8])]) -> KandeloImageFs<Vec<u8>> {
+        use crate::kandelo_image_write::{Content, NoContent, KandeloImageConfig, KandeloImageWriter};
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 256 * 1024,
             max_size_bytes: None,
             growable_to_bytes: 256 * 1024,
@@ -435,7 +435,7 @@ mod tests {
             w.create_file(root, leaf, 0o644, Content::Bytes(bytes)).expect("create");
         }
         let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
-        Sffs::mount(body).expect("mount")
+        KandeloImageFs::mount(body).expect("mount")
     }
 
     fn failures_of(err: &PolicyViolation) -> &[String] {
@@ -509,8 +509,8 @@ mod tests {
     /// is on its full path.
     #[test]
     fn a_stale_artifact_in_a_subdirectory_is_found() {
-        use crate::sffs_write::{Content, NoContent, SffsConfig, SffsWriter};
-        let mut w = SffsWriter::mkfs(SffsConfig {
+        use crate::kandelo_image_write::{Content, NoContent, KandeloImageConfig, KandeloImageWriter};
+        let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 256 * 1024,
             max_size_bytes: None,
             growable_to_bytes: 256 * 1024,
@@ -523,7 +523,7 @@ mod tests {
         w.create_file(bin, b"prog.wasm", 0o755, Content::Bytes(b"\0asm\x01\x00\x00\x00garbage"))
             .expect("create");
         let body = w.finish().expect("finish").to_vec(&NoContent).expect("to_vec");
-        let fs = Sffs::mount(body).expect("mount");
+        let fs = KandeloImageFs::mount(body).expect("mount");
 
         let err = check_wasm_artifacts(&fs, 44, &[]).expect_err("a stale nested artifact must fail");
         assert!(

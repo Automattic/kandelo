@@ -2,7 +2,7 @@
 //!
 //! # Why this exists
 //!
-//! `sffs.rs` reads this container and `sffs_write.rs` builds the body inside
+//! `image.rs` reads this container and `kandelo_image_write.rs` builds the body inside
 //! it, but until now nothing in Rust could WRITE the envelope. That made the
 //! Rust side unable to emit a production image however complete its body
 //! writer was: a `.vfs.zst` is not an SFFS body, it is this container holding
@@ -59,7 +59,7 @@
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
-use crate::sffs::{
+use crate::kandelo_image_fs::{
     VFSI_CONTAINER_MAGIC, VFSI_CONTAINER_VERSION, VFSI_HEADER_SIZE, VFS_IMAGE_FLAG_HAS_LAZY,
     VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES, VFS_IMAGE_FLAG_HAS_METADATA,
     VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES,
@@ -74,7 +74,7 @@ pub struct ContainerSections<'a> {
     /// Image metadata JSON (`version`, `kernelAbi`, `createdBy`).
     pub metadata_json: Option<&'a [u8]>,
     /// The kernel-facing lazy linkage, or `None` when the BODY describes the
-    /// image's deferred files instead (an `SDEF` section, [`crate::sffs_deferred`]).
+    /// image's deferred files instead (an `SDEF` section, [`crate::sdef`]).
     ///
     /// This was once required, because the loader refused any image declaring
     /// no `KLZY` — an image with no description of its deferred files loads as
@@ -174,9 +174,9 @@ pub fn wrap(body: &[u8], sections: &ContainerSections<'_>) -> Result<Vec<u8>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sffs;
+    use crate::kandelo_image_fs;
 
-    const BODY: &[u8] = b"not a real sffs body, but the container does not care";
+    const BODY: &[u8] = b"not a real image body, but the container does not care";
 
     fn sections<'a>(
         lazy: &'a [u8],
@@ -193,7 +193,7 @@ mod tests {
     }
 
     /// The readers are the specification. A container this module writes must
-    /// be one `sffs.rs` walks to the same bytes -- that is the whole contract,
+    /// be one `image.rs` walks to the same bytes -- that is the whole contract,
     /// and asserting it against our own parser would prove nothing.
     #[test]
     fn every_section_combination_round_trips_through_the_readers() {
@@ -211,14 +211,14 @@ mod tests {
         ] {
             let s = sections(lazy, archive, metadata, Some(klzy));
             let image = wrap(BODY, &s).expect("wrap");
-            let (offset, len) = sffs::sffs_span(&image.as_slice()).expect("span");
+            let (offset, len) = kandelo_image_fs::kandelo_image_span(&image.as_slice()).expect("span");
             assert_eq!(
                 &image[offset as usize..(offset + len) as usize],
                 BODY,
                 "body span must address the body"
             );
             assert_eq!(
-                sffs::kernel_lazy_section(&image).expect("klzy"),
+                kandelo_image_fs::kernel_lazy_section(&image).expect("klzy"),
                 Some(klzy),
                 "the KLZY walk must land on the section for lazy={lazy:?} archive={archive:?} metadata={metadata:?}",
             );
@@ -332,7 +332,7 @@ mod tests {
         image.extend_from_slice(&transposed);
 
         assert_eq!(
-            sffs::kernel_lazy_section(&image).expect("walk"),
+            kandelo_image_fs::kernel_lazy_section(&image).expect("walk"),
             Some(klzy),
             "documented blindness: the walk skips by length, so a transposed \
              lazy/metadata pair still leaves KLZY where it expects it",

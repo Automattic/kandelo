@@ -157,7 +157,7 @@ struct Inode {
     /// thing identifying such a file is its inode number in the image it came
     /// from — which an export renumbers. Carrying the bytes through is what
     /// lets an exported image say where a deferred file's content is without
-    /// the kernel ever parsing what it says. See [`crate::sffs_deferred`].
+    /// the kernel ever parsing what it says. See [`crate::sdef`].
     ///
     /// It lives on the inode rather than in a side table keyed by index so it
     /// dies with the inode; a freed index cannot hand a stale payload to
@@ -170,11 +170,11 @@ struct Inode {
     /// is not kept beside the file, an exported image loses the only thing that
     /// says where its bytes are.
     ///
-    /// Empty / [`crate::sffs_deferred::DIGEST_NONE`] when the image declared
+    /// Empty / [`crate::sdef::DIGEST_NONE`] when the image declared
     /// none, which every `KLZY`-described image does — it has no field for
     /// either.
     deferred_uri: Vec<u8>,
-    deferred_digest: [u8; crate::sffs_deferred::DIGEST_LEN],
+    deferred_digest: [u8; crate::sdef::DIGEST_LEN],
     /// This file's bytes are NOT in the image, whether or not the image said
     /// where they come from.
     ///
@@ -214,7 +214,7 @@ impl Inode {
             kind,
             deferred_payload: Vec::new(),
             deferred_uri: Vec::new(),
-            deferred_digest: crate::sffs_deferred::DIGEST_NONE,
+            deferred_digest: crate::sdef::DIGEST_NONE,
             deferred_base: false,
             mode,
             uid,
@@ -377,7 +377,7 @@ struct ImageGeometry {
     sffs_offset: u64,
     /// Byte length of the SFFS filesystem.
     sffs_len: u64,
-    sffs: crate::sffs::SffsGeometry,
+    image: crate::kandelo_image_fs::SffsGeometry,
 }
 
 /// Registry entry for one lazy archive: manifest-authoritative `size`, plus a
@@ -401,7 +401,7 @@ struct ArchiveEntry {
     /// as the address, and the digest is what it checks the arriving bytes
     /// against before any of them are cached.
     uri: Vec<u8>,
-    digest: [u8; crate::sffs_deferred::DIGEST_LEN],
+    digest: [u8; crate::sdef::DIGEST_LEN],
     size: u64,
     raw: Option<Vec<u8>>,
     directory: Option<Vec<crate::zip::ZipEntry>>,
@@ -1191,7 +1191,7 @@ pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
     if payload.is_empty() {
         return Ok(());
     }
-    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+    if payload.len() > crate::sdef::MAX_PAYLOAD_LEN as usize {
         return Err(Errno::EINVAL);
     }
     let comps = split_components(path);
@@ -1211,10 +1211,10 @@ pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
 /// nothing leaves whatever was there before. This one always writes what it was
 /// given, because it is also how a description is corrected.
 pub fn set_deferred_source(path: &[u8], uri: &[u8], digest: &[u8]) -> Result<(), Errno> {
-    if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+    if uri.len() > crate::sdef::MAX_URI_LEN as usize {
         return Err(Errno::EINVAL);
     }
-    let digest = crate::sffs_deferred::digest_from(digest)?;
+    let digest = crate::sdef::digest_from(digest)?;
     let comps = split_components(path);
     ROOTFS.with(|state| {
         let root = state.mount_root();
@@ -1228,11 +1228,11 @@ pub fn set_deferred_source(path: &[u8], uri: &[u8], digest: &[u8]) -> Result<(),
 
 /// Where `path`'s deferred bytes are and what they must hash to, as the image
 /// described them. `(uri, digest)`; an ordinary file yields an empty URI and
-/// [`crate::sffs_deferred::DIGEST_NONE`], the same as a deferred file the image
+/// [`crate::sdef::DIGEST_NONE`], the same as a deferred file the image
 /// described no address for.
 pub fn deferred_source(
     path: &[u8],
-) -> Result<(Vec<u8>, [u8; crate::sffs_deferred::DIGEST_LEN]), Errno> {
+) -> Result<(Vec<u8>, [u8; crate::sdef::DIGEST_LEN]), Errno> {
     let comps = split_components(path);
     ROOTFS.with(|state| {
         let root = state.mount_root();
@@ -1351,10 +1351,10 @@ pub fn insert_lazy_file(
     if (archive_id == 0) != source_path.is_empty() {
         return Err(Errno::EINVAL);
     }
-    if payload.len() > crate::sffs_deferred::MAX_PAYLOAD_LEN as usize {
+    if payload.len() > crate::sdef::MAX_PAYLOAD_LEN as usize {
         return Err(Errno::EINVAL);
     }
-    if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+    if uri.len() > crate::sdef::MAX_URI_LEN as usize {
         return Err(Errno::EINVAL);
     }
     // An archive member is addressed by its archive; a second address here
@@ -1363,7 +1363,7 @@ pub fn insert_lazy_file(
     if archive_id != 0 && !uri.is_empty() {
         return Err(Errno::EINVAL);
     }
-    let digest = crate::sffs_deferred::digest_from(digest)?;
+    let digest = crate::sdef::digest_from(digest)?;
     ROOTFS.with(|state| {
         state.bump_next_ino(ino);
         let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
@@ -1474,7 +1474,7 @@ pub fn declare_archive(archive_id: u32, bytes: u64) -> Result<(), Errno> {
                 ArchiveEntry {
                     payload: Vec::new(),
                     uri: Vec::new(),
-                    digest: crate::sffs_deferred::DIGEST_NONE,
+                    digest: crate::sdef::DIGEST_NONE,
                     size: bytes,
                     raw: None,
                     directory: None,
@@ -1646,7 +1646,7 @@ fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
                         // The v3 manifest has no field for any of the three.
                         payload: Vec::new(),
                         uri: Vec::new(),
-                        digest: crate::sffs_deferred::DIGEST_NONE,
+                        digest: crate::sdef::DIGEST_NONE,
                         size: archive_size,
                         raw: None,
                         directory: None,
@@ -1689,7 +1689,7 @@ fn set_base_times(path: &[u8], mtime_sec: u64, mtime_nsec: u32) {
 // Image-authoritative base-tree load: the kernel parses its own `/` image.
 // ---------------------------------------------------------------------------
 
-/// A [`crate::sffs::BlockSource`] backed by the host's raw image window.
+/// A [`crate::kandelo_image_fs::BlockSource`] backed by the host's raw image window.
 ///
 /// `BlockSource::read_exact_at` takes `&self` because a resident `[u8]` image
 /// needs no mutation to serve a block; a host-backed source needs `&mut` on the
@@ -1706,7 +1706,7 @@ struct HostImageSource<F> {
     len: u64,
 }
 
-impl<F> crate::sffs::BlockSource for HostImageSource<F>
+impl<F> crate::kandelo_image_fs::BlockSource for HostImageSource<F>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -1751,18 +1751,18 @@ where
     }
 }
 
-/// A window onto part of a [`crate::sffs::BlockSource`].
+/// A window onto part of a [`crate::kandelo_image_fs::BlockSource`].
 ///
 /// The VFSI container wraps the SFFS filesystem at a non-zero offset, and
-/// `Sffs::mount` addresses blocks from the filesystem's own byte 0. Rebasing
-/// here keeps that offset out of every `Sffs` call site.
+/// `KandeloImageFs::mount` addresses blocks from the filesystem's own byte 0. Rebasing
+/// here keeps that offset out of every `KandeloImageFs` call site.
 struct SubSource<'a, S> {
     inner: &'a S,
     offset: u64,
     len: u64,
 }
 
-impl<S: crate::sffs::BlockSource> crate::sffs::BlockSource for SubSource<'_, S> {
+impl<S: crate::kandelo_image_fs::BlockSource> crate::kandelo_image_fs::BlockSource for SubSource<'_, S> {
     fn len(&self) -> u64 {
         self.len
     }
@@ -1803,13 +1803,13 @@ where
         byte_source: core::cell::RefCell::new(&mut *byte_source),
         len: geometry.image_len,
     };
-    let filesystem = crate::sffs::Sffs::from_geometry(
+    let filesystem = crate::kandelo_image_fs::KandeloImageFs::from_geometry(
         SubSource {
             inner: &source,
             offset: geometry.sffs_offset,
             len: geometry.sffs_len,
         },
-        geometry.sffs,
+        geometry.image,
     );
     filesystem.read_at(ino, offset, dst)
 }
@@ -1890,7 +1890,7 @@ fn load_image_inner<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
-    use crate::sffs::{BlockSource, ROOT_INO, Sffs, file_type};
+    use crate::kandelo_image_fs::{BlockSource, ROOT_INO, KandeloImageFs, file_type};
 
     let source = HostImageSource {
         byte_source: core::cell::RefCell::new(byte_source),
@@ -1901,10 +1901,10 @@ where
     // filesystem is mounted, because both spans come from the same container
     // header and a missing section must stay distinguishable from a corrupt one
     // (`kernel_lazy_span` returns `None` vs `EINVAL`).
-    let klzy_span = crate::sffs::kernel_lazy_span(&source)?;
+    let klzy_span = crate::kandelo_image_fs::kernel_lazy_span(&source)?;
 
-    let (sffs_offset, sffs_len) = crate::sffs::sffs_span(&source)?;
-    let filesystem = Sffs::mount(SubSource {
+    let (sffs_offset, sffs_len) = crate::kandelo_image_fs::kandelo_image_span(&source)?;
+    let filesystem = KandeloImageFs::mount(SubSource {
         inner: &source,
         offset: sffs_offset,
         len: sffs_len,
@@ -1920,7 +1920,7 @@ where
         image_len,
         sffs_offset,
         sffs_len,
-        sffs: filesystem.geometry(),
+        image: filesystem.geometry(),
     };
     ROOTFS.with(|state| state.image = Some(image_geometry));
 
@@ -1935,7 +1935,7 @@ where
     // `max_blocks` while `total_blocks` stays sized to the content, so
     // restoring it costs the inode table its share and not the declared room.
     let declared_capacity = filesystem.growth_ceiling_bytes()?;
-    let declared_metadata = match crate::sffs::metadata_span(&source)? {
+    let declared_metadata = match crate::kandelo_image_fs::metadata_span(&source)? {
         Some((offset, len)) => {
             let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
             let mut bytes = Vec::new();
@@ -1983,7 +1983,7 @@ where
         u32,
         u64,
         Vec<u8>,
-        [u8; crate::sffs_deferred::DIGEST_LEN],
+        [u8; crate::sdef::DIGEST_LEN],
         Vec<u8>,
     );
     let mut lazy_archives: Vec<LazyArchiveDecl> = Vec::new();
@@ -2021,7 +2021,7 @@ where
                     archive.archive_id,
                     archive.archive_bytes,
                     Vec::new(),
-                    crate::sffs_deferred::DIGEST_NONE,
+                    crate::sdef::DIGEST_NONE,
                     Vec::new(),
                 ));
             }
@@ -2072,8 +2072,8 @@ where
     // instead of all at once. Same defect, same answer: a stale artifact fails
     // loudly and is rebuilt.
 
-    let declared_flags = crate::sffs::container_flags(&source)?;
-    if declared_flags & crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0
+    let declared_flags = crate::kandelo_image_fs::container_flags(&source)?;
+    if declared_flags & crate::kandelo_image_fs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES != 0
         && lazy_archives.is_empty()
     {
         return Err(Errno::EINVAL);
@@ -2295,7 +2295,7 @@ fn demote_unverifiable_setid() {
                         ..
                     }
                 ) && inode.deferred_base);
-            if deferred && inode.deferred_digest == crate::sffs_deferred::DIGEST_NONE {
+            if deferred && inode.deferred_digest == crate::sdef::DIGEST_NONE {
                 inode.demote_setid_unverified();
             }
         }
@@ -2608,7 +2608,7 @@ where
         // A short read lands here too: `filled < size` cannot hash to a digest
         // taken over the whole archive, so a truncated fetch stops being a
         // silently truncated archive and becomes EIO.
-        if !crate::sffs_deferred::digest_accepts(&expected, &data) {
+        if !crate::sdef::digest_accepts(&expected, &data) {
             return Err(Errno::EIO);
         }
         ROOTFS.with(|state| {
@@ -2725,7 +2725,7 @@ where
             // before they become this inode's contents, for the same reason the
             // archive's are: accepting them stores them, and a stored wrong
             // answer is indistinguishable from a right one afterwards.
-            if !crate::sffs_deferred::digest_accepts(&expected, &data) {
+            if !crate::sdef::digest_accepts(&expected, &data) {
                 return Err(Errno::EIO);
             }
             ROOTFS.with(|state| {
@@ -2769,7 +2769,7 @@ where
             // that packed it. Checked here rather than in
             // `ensure_archive_member`, because that function also serves
             // callers with no inode to take a digest from.
-            if !crate::sffs_deferred::digest_accepts(&expected, &bytes) {
+            if !crate::sdef::digest_accepts(&expected, &bytes) {
                 return Err(Errno::EIO);
             }
             ROOTFS.with(|state| {
@@ -2992,7 +2992,7 @@ where
 /// second-guessing had already made the same call.
 fn declares_digest(idx: u32) -> bool {
     ROOTFS.with(|state| match state.get(idx) {
-        Some(inode) => inode.deferred_digest != crate::sffs_deferred::DIGEST_NONE,
+        Some(inode) => inode.deferred_digest != crate::sdef::DIGEST_NONE,
         None => false,
     })
 }
@@ -3940,7 +3940,7 @@ enum ImageContent {
 
 /// A built image: its structure, plus how to resolve each content reference.
 pub struct ExportPlan {
-    image: crate::sffs_write::SffsImage,
+    image: crate::kandelo_image_write::SffsImage,
     contents: Vec<ImageContent>,
     /// Sockets and FIFOs have no representation in a `/` image. The base-image
     /// builder skips them too, so they are counted and reported rather than
@@ -3964,7 +3964,7 @@ struct ExportContentSource<'a, F> {
     byte_source: core::cell::RefCell<&'a mut F>,
 }
 
-impl<F> crate::sffs_write::ContentSource for ExportContentSource<'_, F>
+impl<F> crate::kandelo_image_write::ContentSource for ExportContentSource<'_, F>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -4026,7 +4026,7 @@ enum ExportNode {
         /// archive member carries no address of its own -- its archive's is the
         /// one and only answer -- so `uri` is empty for one.
         uri: Vec<u8>,
-        digest: [u8; crate::sffs_deferred::DIGEST_LEN],
+        digest: [u8; crate::sdef::DIGEST_LEN],
     },
     /// A host-backed base file the loaded image DID describe: the description
     /// was retained verbatim at load, and is re-emitted here under the inode
@@ -4035,7 +4035,7 @@ enum ExportNode {
         size: u64,
         payload: Vec<u8>,
         uri: Vec<u8>,
-        digest: [u8; crate::sffs_deferred::DIGEST_LEN],
+        digest: [u8; crate::sdef::DIGEST_LEN],
     },
     /// A host-backed base file with no retained description. The kernel has
     /// nothing that says where its bytes are: the blob id is the SOURCE image's
@@ -4048,7 +4048,7 @@ enum ExportNode {
     Special,
 }
 
-/// The `data_start` `SffsWriter::mkfs` will derive from `max_blocks`.
+/// The `data_start` `KandeloImageWriter::mkfs` will derive from `max_blocks`.
 ///
 /// Duplicated here, deliberately and narrowly, because the image's LENGTH has
 /// to be chosen before `mkfs` runs. Sizing it at `max_blocks` would emit a
@@ -4113,7 +4113,7 @@ fn push_export_children(
 /// the same ordering the image builders use. Timestamps go last, because every
 /// mutation before them stamps ctime.
 fn apply_export_metadata(
-    writer: &mut crate::sffs_write::SffsWriter,
+    writer: &mut crate::kandelo_image_write::KandeloImageWriter,
     overlay: u32,
     sffs_ino: u32,
 ) -> Result<(), Errno> {
@@ -4150,7 +4150,7 @@ fn apply_export_metadata(
 /// kernel has no guard page under its shadow stack. `export_tree`'s walk
 /// recurses because it predates that rule; a new walk should not adopt it.
 pub fn build_export_image() -> Result<ExportPlan, Errno> {
-    use crate::sffs_write::{Content, SffsConfig, SffsWriter};
+    use crate::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter};
 
     // Pass one: size the image, under a single borrow so the tree cannot be
     // observed in two states.
@@ -4230,7 +4230,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     );
     let total_blocks = core::cmp::max(total_blocks, 16);
 
-    let mut writer = SffsWriter::mkfs(SffsConfig {
+    let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
         size_bytes: u64::from(total_blocks) * 4096,
         max_size_bytes: Some(u64::from(max_blocks) * 4096),
         // The kernel chooses this image's length; nothing caps growth but the
@@ -4597,8 +4597,8 @@ pub struct LazyEntryView {
     /// is addressed by its archive.
     pub uri: Vec<u8>,
     /// What the file's bytes must hash to, or
-    /// [`crate::sffs_deferred::DIGEST_NONE`] when the image declared none.
-    pub digest: [u8; crate::sffs_deferred::DIGEST_LEN],
+    /// [`crate::sdef::DIGEST_NONE`] when the image declared none.
+    pub digest: [u8; crate::sdef::DIGEST_LEN],
 }
 
 fn lazy_walk(state: &RootfsState, idx: u32, abs_path: &[u8], out: &mut Vec<LazyEntryView>) {
@@ -4700,7 +4700,7 @@ pub fn archive_payloads() -> Vec<(u32, Vec<u8>)> {
 /// reading the URL and the digest by PARSING them back out of the opaque
 /// payload — the format's one rule, broken by the layer above it — and could
 /// not stop until the typed fields had a way out.
-pub fn archive_descriptions() -> Vec<(u32, u64, Vec<u8>, [u8; crate::sffs_deferred::DIGEST_LEN], Vec<u8>)> {
+pub fn archive_descriptions() -> Vec<(u32, u64, Vec<u8>, [u8; crate::sdef::DIGEST_LEN], Vec<u8>)> {
     ROOTFS.with(|state| {
         state
             .archives
@@ -4736,7 +4736,7 @@ pub fn archive_payload(archive_id: u32) -> Option<Vec<u8>> {
 /// them out of the payload is that they are not the same kind of thing.
 pub fn archive_source(
     archive_id: u32,
-) -> Option<(Vec<u8>, [u8; crate::sffs_deferred::DIGEST_LEN])> {
+) -> Option<(Vec<u8>, [u8; crate::sdef::DIGEST_LEN])> {
     ROOTFS.with(|state| {
         state
             .archives
@@ -4753,10 +4753,10 @@ pub fn archive_source(
 /// until the last member is registered. Folding them into one setter would mean
 /// every seal rewrite restating an address it has no business restating.
 pub fn set_archive_source(archive_id: u32, uri: &[u8], digest: &[u8]) -> Result<(), Errno> {
-    if uri.len() > crate::sffs_deferred::MAX_URI_LEN as usize {
+    if uri.len() > crate::sdef::MAX_URI_LEN as usize {
         return Err(Errno::EINVAL);
     }
-    let digest = crate::sffs_deferred::digest_from(digest)?;
+    let digest = crate::sdef::digest_from(digest)?;
     ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
         Some(entry) => {
             entry.uri = uri.to_vec();
@@ -4795,7 +4795,7 @@ pub fn image_metadata() -> Option<Vec<u8>> {
 }
 
 pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
-    let len = crate::sffs_container::MAX_SECTION_LEN as usize;
+    let len = crate::vfsi_container::MAX_SECTION_LEN as usize;
     if metadata.len() > len {
         return Err(Errno::EINVAL);
     }
@@ -4838,13 +4838,13 @@ where
     // be written, so it is built up front rather than streamed. The BODY is
     // what can be 249 MiB, and that is still never held.
     let metadata = ROOTFS.with(|state| state.image_metadata.clone());
-    let sections = crate::sffs_container::ContainerSections {
+    let sections = crate::vfsi_container::ContainerSections {
         lazy_json: b"",
         archive_json: None,
         metadata_json: metadata.as_deref(),
         kernel_lazy: None,
     };
-    let trailer = crate::sffs_container::trailer(&sections)?;
+    let trailer = crate::vfsi_container::trailer(&sections)?;
 
     // Building the plan is what `export_image_read(0, ..)` does; asking for the
     // body length has to happen first, and that is the call that does it.
@@ -4855,7 +4855,7 @@ where
         Ok(slot.as_ref().map(|plan| plan.len()).unwrap_or(0))
     })?;
 
-    let head = crate::sffs_container::header(
+    let head = crate::vfsi_container::header(
         usize::try_from(body_len).map_err(|_| Errno::EINVAL)?,
         sections.flags(),
     )?;
@@ -4901,11 +4901,11 @@ pub fn check_export_headroom(
     headroom: &crate::image_policy::Headroom,
 ) -> Result<crate::image_policy::PolicyOutcome, Errno> {
     let plan = build_export_image()?;
-    let source = crate::sffs_write::SffsImageSource {
+    let source = crate::kandelo_image_write::SffsImageSource {
         image: &plan.image,
-        content: &crate::sffs_write::NoContent,
+        content: &crate::kandelo_image_write::NoContent,
     };
-    let fs = crate::sffs::Sffs::mount(source)?;
+    let fs = crate::kandelo_image_fs::KandeloImageFs::mount(source)?;
     let st = fs.statfs()?;
 
     // **Room to GROW, not free blocks in the current allocation.**
@@ -4949,11 +4949,11 @@ pub fn check_export_headroom(
 /// a boundary to answer a question about its own header.
 pub fn export_capacity_bytes() -> Result<u64, Errno> {
     let plan = build_export_image()?;
-    let source = crate::sffs_write::SffsImageSource {
+    let source = crate::kandelo_image_write::SffsImageSource {
         image: &plan.image,
-        content: &crate::sffs_write::NoContent,
+        content: &crate::kandelo_image_write::NoContent,
     };
-    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()
+    crate::kandelo_image_fs::KandeloImageFs::mount(source)?.growth_ceiling_bytes()
 }
 
 /// Discard any in-progress export. Called by [`reset`] so a fresh store never
@@ -5115,7 +5115,7 @@ mod tests {
                 ArchiveEntry {
                     payload: Vec::new(),
                     uri: archive_uri(archive_id),
-                    digest: crate::sffs_deferred::DIGEST_NONE,
+                    digest: crate::sdef::DIGEST_NONE,
                     size,
                     raw: None,
                     directory: None,
@@ -5431,7 +5431,7 @@ mod tests {
     /// emits.
     fn setuid_deferred_image(digest: &[u8]) -> alloc::vec::Vec<u8> {
         let mut w =
-            crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(128 * 1024))
+            crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(128 * 1024))
                 .expect("mkfs");
         let root = w.root();
         w.create_deferred_file(
@@ -5449,19 +5449,19 @@ mod tests {
         let body = w
             .finish()
             .expect("finish")
-            .to_vec(&crate::sffs_write::NoContent)
+            .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
-        let sections = crate::sffs_container::ContainerSections {
+        let sections = crate::vfsi_container::ContainerSections {
             lazy_json: b"",
             archive_json: None,
             metadata_json: None,
             kernel_lazy: None,
         };
-        let mut image = crate::sffs_container::header(body.len(), sections.flags())
+        let mut image = crate::vfsi_container::header(body.len(), sections.flags())
             .expect("header")
             .to_vec();
         image.extend_from_slice(&body);
-        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
+        image.extend_from_slice(&crate::vfsi_container::trailer(&sections).expect("trailer"));
         image
     }
 
@@ -5530,7 +5530,7 @@ mod tests {
         // VERIFIABILITY rather than about being deferred. Without this the
         // demotion could be stripping set-ID from every lazy file and the test
         // above would read the same.
-        let image = setuid_deferred_image(&[0x5Au8; crate::sffs_deferred::DIGEST_LEN]);
+        let image = setuid_deferred_image(&[0x5Au8; crate::sdef::DIGEST_LEN]);
         load_image(image.len() as u64, image_host(&image)).expect("load image");
         assert_eq!(
             lstat(b"/sudo").expect("stat").st_mode & 0o7777,
@@ -5549,7 +5549,7 @@ mod tests {
         // test above), which would mask the modification behaviour this test is
         // named for. The address is the blob's, because under URI relay a
         // deferred file with no address is EIO before any digest is consulted.
-        set_deferred_source(b"/suid", &blob_uri(7), &crate::sffs_deferred::digest_of(b"abc"))
+        set_deferred_source(b"/suid", &blob_uri(7), &crate::sdef::digest_of(b"abc"))
             .expect("declare it");
         let (mut blob, _) =
             make_byte_source(alloc::vec![(7u64, b"abc".to_vec())], alloc::vec::Vec::new());
@@ -5834,7 +5834,7 @@ mod tests {
         // which keys every downstream cache on the wall clock.
         set_export_timestamp(Some(FIXED)).expect("normalise");
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
 
         // THE ROOT ESPECIALLY. `mkfs` creates it before the walk begins, so the
         // walk never re-stamps it: normalising only the walk leaves an artifact
@@ -5873,7 +5873,7 @@ mod tests {
         // reproducibility.
         set_base_times_from_ms(b"/etc/passwd", 1_700_000_000_000);
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         let passwd = fs.resolve(b"/etc/passwd", true).expect("/etc/passwd");
         assert_eq!(
             fs.stat_ino(passwd).expect("stat").mtime_ms,
@@ -5935,7 +5935,7 @@ mod tests {
         // so that is where an unmasked mode becomes a file whose recorded type
         // says directory and regular at once.
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         let hello = fs.resolve(b"/usr/bin/hello", true).expect("/usr/bin/hello");
         assert_eq!(
             fs.stat_ino(hello).unwrap().mode,
@@ -5950,7 +5950,7 @@ mod tests {
         // so it can never notice a chmod that dropped it first.
         chmod(b"/usr/bin/hello", 0o4711).unwrap();
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         let hello = fs.resolve(b"/usr/bin/hello", true).expect("/usr/bin/hello");
         assert_eq!(fs.stat_ino(hello).unwrap().mode, S_IFREG | 0o4711);
     }
@@ -6816,7 +6816,7 @@ mod tests {
     /// Two DIFFERENT members of the SAME archive: the whole-archive fetch is
     /// amortized across both, not repeated per member.
     /// Set archive `archive_id`'s expected digest, as a v5 SDEF section would.
-    fn set_archive_digest(archive_id: u32, digest: [u8; crate::sffs_deferred::DIGEST_LEN]) {
+    fn set_archive_digest(archive_id: u32, digest: [u8; crate::sdef::DIGEST_LEN]) {
         ROOTFS.with(|state| {
             if let Some(entry) = state.archives.get_mut(&archive_id) {
                 entry.digest = digest;
@@ -6831,7 +6831,7 @@ mod tests {
         // The image says the archive hashes to this. The host is about to serve
         // something else — a substituted, corrupted or truncated fetch, which
         // before v5 reached the filesystem as file contents nobody questioned.
-        set_archive_digest(7, crate::sffs_deferred::digest_of(TINY_ZIP));
+        set_archive_digest(7, crate::sdef::digest_of(TINY_ZIP));
 
         let mut tampered = TINY_ZIP.to_vec();
         let last = tampered.len() - 1;
@@ -6890,7 +6890,7 @@ mod tests {
         set_deferred_source(
             b"/fetched.bin",
             &blob_uri(9),
-            &crate::sffs_deferred::digest_of(real),
+            &crate::sdef::digest_of(real),
         )
         .expect("declare it");
 
@@ -6934,8 +6934,8 @@ mod tests {
         // without the per-record digest an archive that hashes correctly but
         // unpacks wrongly would be accepted in full.
         build_lazy_tree();
-        set_archive_digest(7, crate::sffs_deferred::digest_of(TINY_ZIP));
-        set_deferred_source(b"/lazy/f", b"", &[0x11u8; crate::sffs_deferred::DIGEST_LEN])
+        set_archive_digest(7, crate::sdef::digest_of(TINY_ZIP));
+        set_deferred_source(b"/lazy/f", b"", &[0x11u8; crate::sdef::DIGEST_LEN])
             .expect("declare a digest the member's bytes will not match");
 
         let (mut fetch, calls) =
@@ -6962,7 +6962,7 @@ mod tests {
         set_deferred_source(
             b"/fetched.bin",
             &blob_uri(9),
-            &crate::sffs_deferred::digest_of(real),
+            &crate::sdef::digest_of(real),
         )
         .expect("declare where it is and what it must be");
 
@@ -7270,7 +7270,7 @@ mod tests {
         let mut image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
         // ... whose header says it has lazy archives.
         let flags = u32::from_le_bytes([image[8], image[9], image[10], image[11]]);
-        let declared = flags | crate::sffs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES;
+        let declared = flags | crate::kandelo_image_fs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES;
         image[8..12].copy_from_slice(&declared.to_le_bytes());
 
         assert_eq!(
@@ -7369,10 +7369,10 @@ mod tests {
 
         // Cross-check against a DIRECT mount of the same image: same bytes,
         // reached without the store, without the remembered geometry, and
-        // without `Sffs::from_geometry`. If the plumbing this item adds ever
+        // without `KandeloImageFs::from_geometry`. If the plumbing this item adds ever
         // mis-addresses a block, the two disagree.
-        let direct_source = crate::sffs::unwrap_vfsi(&image).expect("vfsi body");
-        let direct = crate::sffs::Sffs::mount(direct_source).expect("direct mount");
+        let direct_source = crate::kandelo_image_fs::unwrap_vfsi(&image).expect("vfsi body");
+        let direct = crate::kandelo_image_fs::KandeloImageFs::mount(direct_source).expect("direct mount");
         let big_ino = direct.resolve(b"/big.txt", true).expect("resolve");
         let mut expected = alloc::vec![0u8; 45_000];
         let mut done = 0usize;
@@ -7769,7 +7769,7 @@ mod tests {
     /// descriptions come from one writer; a hand-assembled one could disagree
     /// with itself in a way no production image can.
     fn url_backed_image(url: &[u8], real_size: u64) -> Vec<u8> {
-        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(
             256 * 1024,
         ))
         .expect("mkfs");
@@ -7787,38 +7787,38 @@ mod tests {
         let body = w
             .finish()
             .expect("finish")
-            .to_vec(&crate::sffs_write::NoContent)
+            .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize the body");
 
         let klzy = klzy_section(&[], &[(ino, real_size, 0, "")]);
-        let sections = crate::sffs_container::ContainerSections {
+        let sections = crate::vfsi_container::ContainerSections {
             lazy_json: b"",
             archive_json: None,
             metadata_json: None,
             kernel_lazy: Some(&klzy),
         };
-        let mut image = crate::sffs_container::header(body.len(), sections.flags())
+        let mut image = crate::vfsi_container::header(body.len(), sections.flags())
             .expect("header")
             .to_vec();
         image.extend_from_slice(&body);
-        image.extend_from_slice(&crate::sffs_container::trailer(&sections).expect("trailer"));
+        image.extend_from_slice(&crate::vfsi_container::trailer(&sections).expect("trailer"));
         image
     }
 
     /// Distinct constants so a round-trip test that crossed two of them would
     /// fail rather than pass by coincidence.
     const ARCHIVE_URI: &[u8] = b"https://example.invalid/php-8.3.zip";
-    const ARCHIVE_DIGEST: [u8; crate::sffs_deferred::DIGEST_LEN] =
-        [0xA1; crate::sffs_deferred::DIGEST_LEN];
-    const FILE_DIGEST: [u8; crate::sffs_deferred::DIGEST_LEN] =
-        [0xF1; crate::sffs_deferred::DIGEST_LEN];
-    const MEMBER_DIGEST: [u8; crate::sffs_deferred::DIGEST_LEN] =
-        [0x3D; crate::sffs_deferred::DIGEST_LEN];
+    const ARCHIVE_DIGEST: [u8; crate::sdef::DIGEST_LEN] =
+        [0xA1; crate::sdef::DIGEST_LEN];
+    const FILE_DIGEST: [u8; crate::sdef::DIGEST_LEN] =
+        [0xF1; crate::sdef::DIGEST_LEN];
+    const MEMBER_DIGEST: [u8; crate::sdef::DIGEST_LEN] =
+        [0x3D; crate::sdef::DIGEST_LEN];
 
     /// The same image as [`url_backed_image`] but described ONLY by its body:
     /// no `KLZY` section, and the container flag clear.
     fn sdef_only_image(url: &[u8], real_size: u64) -> Vec<u8> {
-        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(
             256 * 1024,
         ))
         .expect("mkfs");
@@ -7860,16 +7860,16 @@ mod tests {
         let body = w
             .finish()
             .expect("finish")
-            .to_vec(&crate::sffs_write::NoContent)
+            .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
 
-        let sections = crate::sffs_container::ContainerSections {
+        let sections = crate::vfsi_container::ContainerSections {
             lazy_json: b"",
             archive_json: None,
             metadata_json: None,
             kernel_lazy: None,
         };
-        crate::sffs_container::wrap(&body, &sections).expect("wrap")
+        crate::vfsi_container::wrap(&body, &sections).expect("wrap")
     }
 
     /// An image in the shape the legacy writer produces when it had to skip an
@@ -7881,7 +7881,7 @@ mod tests {
     /// that the header flag is what decides -- a fixture with the flag clear
     /// must LOAD, or the refusal is coming from something else.
     fn legacy_image_with_an_undescribed_archive(claims_archives: bool) -> Vec<u8> {
-        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(
             256 * 1024,
         ))
         .expect("mkfs");
@@ -7889,12 +7889,12 @@ mod tests {
         // The member as the legacy body holds it: a zero-length regular file.
         // Its real length lived only in the archive metadata that was skipped,
         // so nothing here says this file is 4,242 bytes of binary.
-        w.create_file(root, b"php", 0o755, crate::sffs_write::Content::Bytes(b""))
+        w.create_file(root, b"php", 0o755, crate::kandelo_image_write::Content::Bytes(b""))
             .expect("member stub");
         let body = w
             .finish()
             .expect("finish")
-            .to_vec(&crate::sffs_write::NoContent)
+            .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
 
         // A `KLZY` that describes nothing, which is what the legacy encoder
@@ -7920,13 +7920,13 @@ mod tests {
         // ever looked. That is a THIRD different check doing the refusing, and
         // it is why the mutation kept surviving a test that read as correct.
         let archive_json: &[u8] = br#"[{"url":"https://example.invalid/x.zip"}]"#;
-        let sections = crate::sffs_container::ContainerSections {
+        let sections = crate::vfsi_container::ContainerSections {
             lazy_json: b"",
             archive_json: if claims_archives { Some(archive_json) } else { None },
             metadata_json: None,
             kernel_lazy: Some(&klzy),
         };
-        crate::sffs_container::wrap(&body, &sections).expect("wrap")
+        crate::vfsi_container::wrap(&body, &sections).expect("wrap")
     }
 
     #[test]
@@ -8083,7 +8083,7 @@ mod tests {
         load_image(image.len() as u64, image_host(&image)).expect("load image");
 
         let exported = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount the export");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount the export");
         let section = fs
             .deferred_section()
             .expect("read the section")
@@ -8129,25 +8129,25 @@ mod tests {
         // files" from "lazy files recorded only in host-side JSON I cannot
         // read", and loading it would build a tree where every deferred file
         // reports size 0 -- a wrong tree that looks like a right one.
-        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(
             128 * 1024,
         ))
         .expect("mkfs");
         let root = w.root();
-        w.create_file(root, b"plain", 0o644, crate::sffs_write::Content::Bytes(b"hi"))
+        w.create_file(root, b"plain", 0o644, crate::kandelo_image_write::Content::Bytes(b"hi"))
             .expect("a file with no deferred anything");
         let body = w
             .finish()
             .expect("finish")
-            .to_vec(&crate::sffs_write::NoContent)
+            .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
-        let sections = crate::sffs_container::ContainerSections {
+        let sections = crate::vfsi_container::ContainerSections {
             lazy_json: b"",
             archive_json: None,
             metadata_json: None,
             kernel_lazy: None,
         };
-        let image = crate::sffs_container::wrap(&body, &sections).expect("wrap");
+        let image = crate::vfsi_container::wrap(&body, &sections).expect("wrap");
 
         assert_eq!(
             load_image(image.len() as u64, image_host(&image)).unwrap_err(),
@@ -8158,9 +8158,9 @@ mod tests {
         // above is the missing description rather than anything else about
         // this image.
         let empty_klzy = klzy_section(&[], &[]);
-        let with_klzy = crate::sffs_container::wrap(
+        let with_klzy = crate::vfsi_container::wrap(
             &body,
-            &crate::sffs_container::ContainerSections {
+            &crate::vfsi_container::ContainerSections {
                 lazy_json: b"",
                 archive_json: None,
                 metadata_json: None,
@@ -8181,7 +8181,7 @@ mod tests {
         // because "whichever we happen to read first" is how two descriptions
         // of one thing start disagreeing -- and reading the OLDER one is what
         // keeps this change from altering how any existing image loads.
-        let mut w = crate::sffs_write::SffsWriter::mkfs(crate::sffs_write::SffsConfig::fixed(
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(
             256 * 1024,
         ))
         .expect("mkfs");
@@ -8192,16 +8192,16 @@ mod tests {
         let body = w
             .finish()
             .expect("finish")
-            .to_vec(&crate::sffs_write::NoContent)
+            .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
 
         // The KLZY section disagrees with the body on purpose: a different size
         // for the same inode. Whichever number the tree reports names the
         // carrier that was read.
         let klzy = klzy_section(&[], &[(ino, 999, 0, "")]);
-        let image = crate::sffs_container::wrap(
+        let image = crate::vfsi_container::wrap(
             &body,
-            &crate::sffs_container::ContainerSections {
+            &crate::vfsi_container::ContainerSections {
                 lazy_json: b"",
                 archive_json: None,
                 metadata_json: None,
@@ -8235,7 +8235,7 @@ mod tests {
         assert_eq!(lstat(b"/big.bin").expect("stat").st_size, 45_000);
 
         let exported = drain_export(8192, &mut image_host(&image));
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount exported image");
 
         let ino = fs.resolve(b"/big.bin", true).expect("the path survives");
         assert_eq!(
@@ -8318,7 +8318,7 @@ mod tests {
     fn registering_an_oversized_fetch_description_is_refused() {
         let _guard = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
-        let too_long = alloc::vec![b'x'; crate::sffs_deferred::MAX_PAYLOAD_LEN as usize + 1];
+        let too_long = alloc::vec![b'x'; crate::sdef::MAX_PAYLOAD_LEN as usize + 1];
         assert_eq!(
             insert_lazy_file(b"/a", 0, b"", 10, 0o644, 0, 0, 2, b"", b"", &too_long),
             Err(Errno::EINVAL),
@@ -8365,7 +8365,7 @@ mod tests {
         reset_image_export();
         declare_archive(3, 8_000_000).expect("declare");
         let exported = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount");
         assert_eq!(
             fs.deferred_section()
                 .expect("decodes")
@@ -8470,8 +8470,8 @@ mod tests {
         // is not something the kernel reads. So the body's record here carries
         // an EMPTY description, which is the exact condition gap 21 flattened.
         let image = {
-            let mut w = crate::sffs_write::SffsWriter::mkfs(
-                crate::sffs_write::SffsConfig::fixed(256 * 1024),
+            let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(
+                crate::kandelo_image_write::KandeloImageConfig::fixed(256 * 1024),
             )
             .expect("mkfs");
             let root = w.root();
@@ -8481,21 +8481,21 @@ mod tests {
             let body = w
                 .finish()
                 .expect("finish")
-                .to_vec(&crate::sffs_write::NoContent)
+                .to_vec(&crate::kandelo_image_write::NoContent)
                 .expect("materialize");
             let klzy = klzy_section(&[], &[(ino, 45_000, 0, "")]);
-            let sections = crate::sffs_container::ContainerSections {
+            let sections = crate::vfsi_container::ContainerSections {
                 lazy_json: b"",
                 archive_json: None,
                 metadata_json: None,
                 kernel_lazy: Some(&klzy),
             };
-            crate::sffs_container::wrap(&body, &sections).expect("wrap")
+            crate::vfsi_container::wrap(&body, &sections).expect("wrap")
         };
         assert!(load_image(image.len() as u64, image_host(&image)).is_ok(), "load it");
 
         let exported = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount");
         let section = fs
             .deferred_section()
             .expect("decodes")
@@ -8527,7 +8527,7 @@ mod tests {
         mark_deferred_base(b"/php").expect("deferred, description unknown");
 
         let exported = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount");
         // The image's inode is a zero-length stub BY DESIGN -- a deferred file's
         // bytes are not in the image, and its real length lives in the deferred
         // record beside it. So the stub proves nothing either way, and the
@@ -8559,7 +8559,7 @@ mod tests {
         insert_host_file(b"/walked.bin", 77, 4096, 0o644, 0, 0, 2).expect("base file");
 
         let exported = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported image");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount exported image");
         let ino = fs.resolve(b"/walked.bin", true).expect("the path survives");
         assert_eq!(fs.stat_ino(ino).expect("stat").size, 0);
         // The export always DECLARES a section, because an image that declares
@@ -8580,7 +8580,7 @@ mod tests {
         build_small_overlay();
 
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount exported image");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount exported image");
 
         // Directory structure and metadata.
         let etc = fs.resolve(b"/etc", true).expect("/etc");
@@ -8620,7 +8620,7 @@ mod tests {
 
     #[test]
     fn an_exported_image_carries_the_overlay_timestamps() {
-        // The fixtures in `sffs_write` pin timestamps to zero because the
+        // The fixtures in `kandelo_image_write` pin timestamps to zero because the
         // TypeScript writer stamps `Date.now()`. A real exported image must
         // carry the overlay's own mtimes, or every save would flatten them.
         let _guard = TestGuard::acquire();
@@ -8628,7 +8628,7 @@ mod tests {
         write_file_at(b"/stamped", 0, b"x", 0o644, true, no_bytes()).expect("write");
 
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         let ino = fs.resolve(b"/stamped", true).expect("resolve");
         let stat = fs.stat_ino(ino).unwrap();
         assert_eq!(stat.mtime_ms, 1_700_000_123 * 1000 + 456);
@@ -8643,7 +8643,7 @@ mod tests {
         chown(b"/su", 0, 0, false).expect("chown");
 
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         let ino = fs.resolve(b"/su", true).expect("resolve");
         assert_eq!(fs.stat_ino(ino).unwrap().mode & 0o7777, 0o4755);
     }
@@ -8655,7 +8655,7 @@ mod tests {
         link(b"/a", b"/b").expect("link");
 
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         let a = fs.resolve(b"/a", true).expect("/a");
         let b = fs.resolve(b"/b", true).expect("/b");
         assert_eq!(a, b, "one inode, not a second copy");
@@ -8678,7 +8678,7 @@ mod tests {
         drop(plan);
 
         let bytes = drain_export(8192, &mut no_bytes());
-        let fs = crate::sffs::Sffs::mount(bytes.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         assert!(fs.resolve(b"/keep", true).is_ok());
         assert!(
             fs.resolve(b"/sock", false).is_err(),
@@ -8729,7 +8729,7 @@ mod tests {
         let after = drain_export(8192, &mut no_bytes());
         assert_ne!(before, after, "a mutated tree must export differently");
 
-        let fs = crate::sffs::Sffs::mount(after.as_slice()).expect("mount");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(after.as_slice()).expect("mount");
         assert!(fs.resolve(b"/etc/passwd", true).is_err(), "deleted file is gone");
         let group = fs.resolve(b"/etc/group", true).expect("/etc/group");
         assert_eq!(fs.stat_ino(group).unwrap().mode, S_IFREG | 0o640);
@@ -8747,7 +8747,7 @@ mod tests {
         load_image(image.len() as u64, image_host(&image)).expect("load image");
 
         let exported = drain_export(8192, &mut image_host(&image));
-        let fs = crate::sffs::Sffs::mount(exported.as_slice()).expect("mount exported");
+        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount exported");
 
         // Same tree as the source image, read back out of the EXPORTED one.
         let hello = fs.resolve(b"/hello.txt", true).expect("/hello.txt");

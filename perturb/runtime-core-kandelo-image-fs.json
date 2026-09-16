@@ -1,5 +1,5 @@
 {
-  "file": "crates/runtime-core/src/sffs.rs",
+  "file": "crates/runtime-core/src/kandelo_image_fs.rs",
   "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
   "trials": [
     {

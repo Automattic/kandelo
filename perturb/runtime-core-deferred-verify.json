@@ -7,15 +7,15 @@
       "name": "a fetched archive is never checked against its digest",
       "scope": "fn ensure_archive_member<F>(",
       "scope_end": "\n}\n",
-      "find": "        if !crate::sffs_deferred::digest_accepts(&expected, &data) {\n            return Err(Errno::EIO);\n        }",
+      "find": "        if !crate::sdef::digest_accepts(&expected, &data) {\n            return Err(Errno::EIO);\n        }",
       "replace": ""
     },
     {
       "name": "the archive is cached first and judged afterwards",
       "scope": "fn ensure_archive_member<F>(",
       "scope_end": "\n}\n",
-      "find": "        if !crate::sffs_deferred::digest_accepts(&expected, &data) {\n            return Err(Errno::EIO);\n        }\n        ROOTFS.with(|state| {\n            if let Some(entry) = state.archives.get_mut(&archive_id) {\n                // Re-check: another touch of this archive may have already\n                // stored `raw` (no reentrancy in the single-threaded kernel,\n                // but keep the store the source of truth).\n                if entry.raw.is_none() {\n                    entry.raw = Some(data);\n                }\n            }\n        });",
-      "replace": "        let accepted = crate::sffs_deferred::digest_accepts(&expected, &data);\n        ROOTFS.with(|state| {\n            if let Some(entry) = state.archives.get_mut(&archive_id) {\n                if entry.raw.is_none() {\n                    entry.raw = Some(data);\n                }\n            }\n        });\n        if !accepted {\n            return Err(Errno::EIO);\n        }"
+      "find": "        if !crate::sdef::digest_accepts(&expected, &data) {\n            return Err(Errno::EIO);\n        }\n        ROOTFS.with(|state| {\n            if let Some(entry) = state.archives.get_mut(&archive_id) {\n                // Re-check: another touch of this archive may have already\n                // stored `raw` (no reentrancy in the single-threaded kernel,\n                // but keep the store the source of truth).\n                if entry.raw.is_none() {\n                    entry.raw = Some(data);\n                }\n            }\n        });",
+      "replace": "        let accepted = crate::sdef::digest_accepts(&expected, &data);\n        ROOTFS.with(|state| {\n            if let Some(entry) = state.archives.get_mut(&archive_id) {\n                if entry.raw.is_none() {\n                    entry.raw = Some(data);\n                }\n            }\n        });\n        if !accepted {\n            return Err(Errno::EIO);\n        }"
     },
     {
       "name": "the archive's address and expected digest are read separately, so they can describe different archives",
@@ -28,14 +28,14 @@
       "name": "an inflated member is never checked against its own digest",
       "scope": "        Base::LazyMember(archive_id, source_path) => {",
       "scope_end": "\n        }\n",
-      "find": "            if !crate::sffs_deferred::digest_accepts(&expected, &bytes) {\n                return Err(Errno::EIO);\n            }",
+      "find": "            if !crate::sdef::digest_accepts(&expected, &bytes) {\n                return Err(Errno::EIO);\n            }",
       "replace": ""
     },
     {
       "name": "a standalone file's fetched bytes are never checked",
       "scope": "        Base::BaseRegular(size) => {",
       "scope_end": "\n        }\n",
-      "find": "            if !crate::sffs_deferred::digest_accepts(&expected, &data) {\n                return Err(Errno::EIO);\n            }",
+      "find": "            if !crate::sdef::digest_accepts(&expected, &data) {\n                return Err(Errno::EIO);\n            }",
       "replace": ""
     },
     {
@@ -56,14 +56,14 @@
       "name": "set-ID survives on deferred bytes nothing can verify",
       "scope": "fn demote_unverifiable_setid()",
       "scope_end": "\n}\n",
-      "find": "            if deferred && inode.deferred_digest == crate::sffs_deferred::DIGEST_NONE {\n                inode.demote_setid_unverified();\n            }",
+      "find": "            if deferred && inode.deferred_digest == crate::sdef::DIGEST_NONE {\n                inode.demote_setid_unverified();\n            }",
       "replace": ""
     },
     {
       "name": "set-ID is demoted even when the image DID declare a digest",
       "scope": "fn demote_unverifiable_setid()",
       "scope_end": "\n}\n",
-      "find": "            if deferred && inode.deferred_digest == crate::sffs_deferred::DIGEST_NONE {",
+      "find": "            if deferred && inode.deferred_digest == crate::sdef::DIGEST_NONE {",
       "replace": "            if deferred {"
     },
     {

@@ -2499,12 +2499,12 @@ pub struct BaseImage {
 /// archive table (`archive_count = 0` — no lazy archives in this builder's
 /// scope).
 pub fn build_base_image(entries: &[BaseEntrySpec]) -> BaseImage {
-    use runtime_core::sffs_write::{Content, SffsConfig, SffsWriter};
+    use runtime_core::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter};
 
     // Sized generously and fixed: this builder serves hand-written test trees,
     // and an image that cannot fit its own tree is a test bug rather than a
     // capacity question worth computing.
-    let mut w = SffsWriter::mkfs(SffsConfig::fixed(4 * 1024 * 1024))
+    let mut w = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(4 * 1024 * 1024))
         .expect("mkfs for the in-memory base image");
     let root = w.root();
 
@@ -2545,16 +2545,16 @@ pub fn build_base_image(entries: &[BaseEntrySpec]) -> BaseImage {
     let body = w
         .finish()
         .expect("finish the base image")
-        .to_vec(&runtime_core::sffs_write::NoContent)
+        .to_vec(&runtime_core::kandelo_image_write::NoContent)
         .expect("materialize the base image body");
 
-    let sections = runtime_core::sffs_container::ContainerSections {
+    let sections = runtime_core::vfsi_container::ContainerSections {
         lazy_json: b"",
         archive_json: None,
         metadata_json: None,
         kernel_lazy: None,
     };
-    let image = runtime_core::sffs_container::wrap(&body, &sections).expect("wrap the container");
+    let image = runtime_core::vfsi_container::wrap(&body, &sections).expect("wrap the container");
     BaseImage { image }
 }
 
@@ -3242,11 +3242,11 @@ mod base_image_tests {
     /// asserted the shape of a host-side description rather than whether the
     /// kernel could read what this host produced. Mounting is the question
     /// that matters, and it is the same code the kernel runs.
-    fn mount(image: &[u8]) -> runtime_core::sffs::Sffs<&[u8]> {
-        // Past the container header: `Sffs::mount` reads a BODY, while the
+    fn mount(image: &[u8]) -> runtime_core::kandelo_image_fs::KandeloImageFs<&[u8]> {
+        // Past the container header: `KandeloImageFs::mount` reads a BODY, while the
         // kernel is handed the whole container and finds the body itself.
-        let body = &image[runtime_core::sffs::VFSI_HEADER_SIZE..];
-        runtime_core::sffs::Sffs::mount(body).expect("the kernel's reader mounts it")
+        let body = &image[runtime_core::kandelo_image_fs::VFSI_HEADER_SIZE..];
+        runtime_core::kandelo_image_fs::KandeloImageFs::mount(body).expect("the kernel's reader mounts it")
     }
 
     #[test]
