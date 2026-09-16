@@ -686,7 +686,18 @@ const MEASURED: Record<string, () => number> = {
   // file is the event worth ratcheting, and cutting the first four of nine
   // references to it changes nothing about whether the file can be deleted.
   forkAtticImports: () => {
-    const atticDir = join(repoRoot, "attic/fork-typescript-do-not-use");
+    // THE ATTIC IS GONE (2026-09-15), so this counts what it was always really
+    // after: a `host/src` import that resolves to NOTHING. While the directory
+    // existed those were the same set, because an unresolved fork import was
+    // an attic file by construction. Counting unresolved imports outright
+    // keeps the measure meaningful past the deletion -- and keeps it able to
+    // fail, which a check against a directory that cannot exist could not.
+    if (existsSync(join(repoRoot, "attic/fork-typescript-do-not-use"))) {
+      throw new Error(
+        "the fork attic is back; it was deleted on 2026-09-15 and nothing "
+          + "should restore it (docs/plans/2026-09-12-lane-f-census.md, D1)",
+      );
+    }
     const sources = execFileSync(
       "/bin/sh",
       ["-c", "ls host/src/*.ts 2>/dev/null || true"],
@@ -699,7 +710,10 @@ const MEASURED: Record<string, () => number> = {
       const text = readFileSync(join(repoRoot, rel), "utf8");
       for (const [, specifier] of text.matchAll(/from "\.\/([a-z0-9-]+)"/g)) {
         if (existsSync(join(repoRoot, "host/src", `${specifier}.ts`))) continue;
-        if (existsSync(join(atticDir, `${specifier}.ts`))) unresolved.add(specifier);
+        // `./vfs` and `./networking` are DIRECTORIES with an index; they
+        // resolve, and counting them would make this number noise.
+        if (existsSync(join(repoRoot, "host/src", specifier, "index.ts"))) continue;
+        unresolved.add(specifier);
       }
     }
     return unresolved.size;
