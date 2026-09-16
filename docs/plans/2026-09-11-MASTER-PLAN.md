@@ -877,6 +877,51 @@ and never which resource. So:
    whatever the reason for the round trip. This is the same migration
    `tools/mkrootfs` already took.
 
+### Scoped 2026-09-15: the migration has NO API gap, and the fix is mostly subtraction
+
+Counted rather than estimated. The browser boot path calls 16 filesystem
+methods. `SffsImageFs` already has 12. The other four —
+`exportLazyEntries`, `exportLazyArchiveEntries`, `rewriteLazyFileUrls`,
+`rewriteLazyArchiveUrls` — exist ONLY to serve `bindImageOwnedRuntimeUrls`,
+which step (1) deletes. So step (1) does not add to step (2)'s cost; it removes
+most of it.
+
+A fifth looked like a genuine gap and is not.
+`verifyImportedSealsForCurrentBoot(buildFs)` delegates to
+`fs.verifyImportedLazyAtomicGroupSeals()`, which `SffsImageFs` does not have —
+because it does not need one. `sm_load_image` calls `seal::verify_cohorts`
+inside the load and unloads the image if it fails, and the module says why in
+its own words: *"The incumbent exposes this as a separate `verify` the builder
+must remember to await — a contract that exists only because `SubtleCrypto` is
+a promise. A synchronous digest has no such excuse, and a verification a caller
+can forget is one some caller eventually will. Verifying here makes an
+UNVERIFIED loaded image unrepresentable rather than merely discouraged."*
+
+So that call site disappears too, and with it the delicate comment about not
+introducing a microtask gap between the check and the effects that depend on
+it — there is no await left to open one.
+
+**What the mapping actually does, since "resolve a relative URL" undersells it.**
+`normalizeImageOwnedLazyReference` is a grammar translation from the BUILDER's
+vocabulary to the DEPLOYMENT's layout (`binaries/programs/wasm32/<p>` and
+`kandelo-lazy:programs/<p>` both become `assets/programs/wasm32/<p>`, plus an
+allow-list of bare archive names; anything else throws).
+`resolveGroupedAssetUrl` then resolves that against the asset-group manifest's
+directory and REFUSES a result that leaves the manifest's origin, the manifest's
+directory, or the deployment base — a containment proof, not a join. The
+no-`lazyAssets` branch is not resolution at all: `ROOTFS_LAZY_ASSET_URLS` is a
+literal table built from vite `?url` imports. All three shapes are pure
+functions of the reference, which is exactly why they can move to fetch time.
+
+**One behavioural consequence, stated rather than buried.** Today an unmappable
+reference fails the whole boot, because every reference is rewritten up front.
+At fetch time it would fail when that file is first touched. That reads as a
+loss until you notice the up-front check is ALREADY vacuous on an `SDEF` image,
+since it enumerates zero entries. The honest home for it is the producer, the
+same place the set-ID digest refusal just went: a lazy reference outside the
+known grammar is a build-time defect, so the image builder should refuse to
+write one.
+
 **A guard belongs here either way**, and it already exists one directory over:
 `refuseImageThisReaderCannotSee`. Whatever reads an image and answers questions
 about it must refuse an image whose deferred half it cannot see. Had the browser
