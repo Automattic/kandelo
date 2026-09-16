@@ -46,25 +46,39 @@ export interface ForkResumeSlots {
 }
 
 export class ForkResumeTable {
-  /** Slot 0 is the reserved "no event" sentinel, so the table starts at 1. */
-  readonly table = new WebAssembly.Table({ element: "anyfunc", initial: 1 });
-
   private readonly activationSlots = new Map<number, number[]>();
-  private slots: ForkResumeSlots | null = null;
+  /**
+   * The numbering and the table it indexes, as ONE thing.
+   *
+   * They are set together and they are unusable apart -- a slot is an index
+   * into that table -- so one field means one guard rather than two that can
+   * only ever disagree by a bug.
+   */
+  private bound: { slots: ForkResumeSlots; table: WebAssembly.Table } | null = null;
 
   constructor(private readonly label = "fork resume table") {}
 
   /**
-   * Bind the module that decides the numbering.
+   * Bind the module that owns the table and decides the numbering.
    *
-   * Late, and not incidentally: this table exists before the fork-module does
-   * (the guest's import object is built first), so the binding cannot be a
-   * constructor argument. Registering before it is bound is refused rather than
-   * deferred -- a thunk placed at a slot nobody assigned is the silent
-   * corruption this whole file exists to prevent.
+   * BOTH come from the module now, and they arrive together because they are
+   * the same fact: a slot is an index into that table. The host used to mint a
+   * `WebAssembly.Table` here and hand it to the guest in `extras`, which made
+   * "the guest's table" and "the table the module numbers" a per-caller
+   * convention rather than one object.
+   *
+   * Late, and not incidentally: this class exists before the fork-module does,
+   * because the guest's import object is assembled around it. Registering
+   * before it is bound is refused rather than deferred -- a thunk placed at a
+   * slot nobody assigned is the silent corruption this file exists to prevent.
    */
-  bindSlots(slots: ForkResumeSlots): void {
-    this.slots = slots;
+  bindSlots(slots: ForkResumeSlots, table: WebAssembly.Table): void {
+    this.bound = { slots, table };
+  }
+
+  /** The module's table, for callers that need the object itself. */
+  get resumeTable(): WebAssembly.Table {
+    return this.require().table;
   }
 
   /**
@@ -87,7 +101,7 @@ export class ForkResumeTable {
         `${this.label}: activation ${activationId} is already registered`,
       );
     }
-    const slots = this.requireSlots();
+    const { slots } = this.require();
     const placed: number[] = [];
     for (const target of targets) {
       if (!Number.isInteger(target.functionOrdinal) || target.functionOrdinal < 0) {
@@ -107,7 +121,7 @@ export class ForkResumeTable {
       // this class can no longer paper over by inventing a slot.
       const slot = slots.resumeSlot(activationId, target.functionOrdinal);
       this.grow(slot);
-      this.table.set(slot, target.thunk);
+      this.resumeTable.set(slot, target.thunk);
       placed.push(slot);
     }
     this.activationSlots.set(activationId, placed);
@@ -121,12 +135,12 @@ export class ForkResumeTable {
         `${this.label}: activation ${activationId} is not registered`,
       );
     }
-    for (const slot of slots) this.table.set(slot, null);
+    for (const slot of slots) this.resumeTable.set(slot, null);
     this.activationSlots.delete(activationId);
     // The module frees them; this side only stops pointing at them. Doing it
     // AFTER the nulling means a throw from the module leaves no live thunk at a
     // slot the module still believes is assigned.
-    this.requireSlots().releaseResumeSlots(activationId);
+    this.require().slots.releaseResumeSlots(activationId);
   }
 
   /** Release every activation, highest id first. */
@@ -143,21 +157,27 @@ export class ForkResumeTable {
     return this.activationSlots.get(activationId) ?? [];
   }
 
-  private requireSlots(): ForkResumeSlots {
-    if (!this.slots) {
+  private require(): { slots: ForkResumeSlots; table: WebAssembly.Table } {
+    if (!this.bound) {
       throw new Error(
-        `${this.label}: no fork module bound, so no slot numbering exists. ` +
-          `Call bindSlots() before registering an activation -- placing a ` +
-          `thunk at a slot nobody assigned is how a guest resumes into the ` +
-          `wrong function.`,
+        `${this.label}: no fork module bound, so there is no resume table and ` +
+          `no slot numbering. Call bindSlots() first -- placing a thunk at a ` +
+          `slot nobody assigned is how a guest resumes into the wrong function.`,
       );
     }
-    return this.slots;
+    return this.bound;
   }
 
-  /** Grow so `slot` is addressable. The module numbers; this only sizes. */
+  /**
+   * Grow so `slot` is addressable. The module numbers; this only sizes.
+   *
+   * Growing the MODULE's exported table, which is allowed because the injector
+   * declares it with no maximum -- the host adds an activation's thunks as it
+   * loads, and how many there will be is not known at instantiation.
+   */
   private grow(slot: number): void {
-    if (slot < this.table.length) return;
-    this.table.grow(slot - this.table.length + 1);
+    const table = this.resumeTable;
+    if (slot < table.length) return;
+    table.grow(slot - table.length + 1);
   }
 }

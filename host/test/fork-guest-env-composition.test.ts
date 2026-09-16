@@ -6,7 +6,6 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { describeWasmArtifactPolicyFailures } from "../src/constants";
 import { buildForkGuestImports } from "../src/fork-guest-imports";
-import { ForkResumeTable } from "../src/fork-resume-table";
 
 /**
  * The pieces of the thin layer, composed against a REAL instrumented artifact.
@@ -32,6 +31,18 @@ import { ForkResumeTable } from "../src/fork-resume-table";
  */
 
 const repoRoot = join(import.meta.dirname, "..", "..");
+
+/**
+ * A stand-in resume table for the cases that test the BINDER, not ownership.
+ *
+ * The real one is the module's export now, and `buildForkGuestImports` takes it
+ * from there -- so where these tests pass stub module exports, something has to
+ * stand in. It is a plain table on purpose: `ForkResumeTable` no longer mints
+ * one, and reaching through it here would test this file's scaffolding.
+ */
+function resumeTable(): WebAssembly.Table {
+  return new WebAssembly.Table({ element: "anyfunc", initial: 1 });
+}
 const script = join(repoRoot, "scripts", "build-fork-instrumented-test-fixture.sh");
 
 let workspace: string | null = null;
@@ -82,7 +93,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
   const guard = guest === null ? it.skip : it;
 
   guard("binds every single thing the artifact imports from env", () => {
-    const resume = new ForkResumeTable();
 
     const env = buildForkGuestImports({
       moduleExports: moduleExportsFor(guest!),
@@ -90,7 +100,7 @@ describe("the thin layer composed against a real instrumented guest", () => {
       // per-process globals. The transit table and the unwind tag are not here
       // -- the module exports them and the binder takes them from there.
       extras: {
-        __wpk_fork_resume_table: resume.table,
+        __wpk_fork_resume_table: resumeTable(),
         __wpk_fork_module_activation: new WebAssembly.Global(
           { value: "i32", mutable: false },
           0,
@@ -128,7 +138,7 @@ describe("the thin layer composed against a real instrumented guest", () => {
     try {
       buildForkGuestImports({
         moduleExports: moduleExportsFor(guest!),
-        extras: { __wpk_fork_resume_table: new ForkResumeTable().table },
+        extras: { __wpk_fork_resume_table: resumeTable() },
         guestModule: guest!,
         label: "composition test",
       });
@@ -208,8 +218,14 @@ describe("the thin layer composed against a real instrumented guest", () => {
     );
     expect(exports.has("__wpk_fork_unwind")).toBe(true);
     expect(exports.has("__wpk_fork_ref_gc_transit")).toBe(true);
-    // The three a JS host must still supply, each argued in census section 101.
-    expect(exports.has("__wpk_fork_resume_table")).toBe(false);
+    // The resume table joined them on 2026-09-16. It was argued as host floor
+    // -- "Rust cannot hold a funcref, so the table has to exist outside the
+    // module" -- and the conclusion did not follow from the premise: the
+    // INJECTOR declares the funcref table, exactly as it declares the anyref
+    // transit one, and nothing has to hold a funcref for a table to exist.
+    // Census 198.
+    expect(exports.has("__wpk_fork_resume_table")).toBe(true);
+    // The two a JS host must still supply, each argued in census section 101.
     expect(exports.has("__wpk_fork_module_activation")).toBe(false);
     expect(
       exports.has("__wpk_fork_module_state_table_generation_addr"),
@@ -224,7 +240,7 @@ describe("the thin layer composed against a real instrumented guest", () => {
     const env = buildForkGuestImports({
       moduleExports,
       extras: {
-        __wpk_fork_resume_table: new ForkResumeTable().table,
+        __wpk_fork_resume_table: resumeTable(),
         __wpk_fork_module_activation: new WebAssembly.Global(
           { value: "i32", mutable: false }, 0,
         ),

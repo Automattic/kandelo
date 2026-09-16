@@ -96,7 +96,9 @@ function harness(): Harness {
   };
 
   const table = new ForkResumeTable("resume slots");
-  table.bindSlots(slots);
+  // The MODULE's table, not one this test minted: it owns and exports it now,
+  // so binding anything else here would test a table nothing else can see.
+  table.bindSlots(slots, x.__wpk_fork_resume_table as unknown as WebAssembly.Table);
 
   const seed = (activationId: number, ordinals: readonly number[]): void => {
     const bytes = new Uint8Array(ordinals.length * 4);
@@ -148,7 +150,7 @@ describe("ForkResumeTable, numbered by the module", () => {
     const h = harness();
     register(h, 0, [4, 9]);
     expect(h.table.slotsOf(0)).toEqual([1, 2]);
-    expect(h.table.table.get(0)).toBeNull();
+    expect(h.table.resumeTable.get(0)).toBeNull();
   });
 
   it("assigns slots by SORTED ordinal, not registration order", () => {
@@ -187,10 +189,10 @@ describe("ForkResumeTable, numbered by the module", () => {
     // hand that slot to another activation before this side places over it.
     const h = harness();
     register(h, 0, [0, 1]);
-    expect(h.table.table.get(1)).not.toBeNull();
+    expect(h.table.resumeTable.get(1)).not.toBeNull();
     h.table.unregisterActivation(0);
-    expect(h.table.table.get(1)).toBeNull();
-    expect(h.table.table.get(2)).toBeNull();
+    expect(h.table.resumeTable.get(1)).toBeNull();
+    expect(h.table.resumeTable.get(2)).toBeNull();
   });
 
   it("refuses a repeated ordinal, in the module", () => {
@@ -205,10 +207,13 @@ describe("ForkResumeTable, numbered by the module", () => {
   });
 
   it("refuses to register before a module is bound", () => {
-    const table = new ForkResumeTable("unbound");
-    expect(() => table.registerActivation(0, [target(0)])).toThrow(
+    const unbound = new ForkResumeTable("unbound");
+    expect(() => unbound.registerActivation(0, [target(0)])).toThrow(
       /no fork module bound/,
     );
+    // And the table itself is refused by name, rather than answering undefined
+    // and failing later inside a `table.set` that names nothing.
+    expect(() => unbound.resumeTable).toThrow(/no fork module bound/);
   });
 
   it("rejects a non-function target and a negative ordinal", () => {
@@ -291,7 +296,7 @@ describe("ForkResumeTable, numbered by the module", () => {
       const placed = h.table.slotsOf(activation);
       ordinals.forEach((ordinal, index) => {
         expect(
-          h.table.table.get(placed[index]!),
+          h.table.resumeTable.get(placed[index]!),
           `activation ${activation} ordinal ${ordinal}`,
         ).not.toBeNull();
       });

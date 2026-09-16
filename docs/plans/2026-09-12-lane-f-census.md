@@ -10489,3 +10489,52 @@ implementation of a shared rule is shorter than the others, ask what it is
 assuming rather than admiring the brevity.** Two of the three copies here had
 the full rule; the short one was the one that had quietly decided a case could
 not arise.
+
+## §198 -- "Rust cannot hold a funcref" was true, and the conclusion drawn from it was not
+
+`fork-guest-imports.ts` argued the resume table as host floor in these words:
+
+> `__wpk_fork_resume_table` -- a `WebAssembly.Table` of guest resume thunks.
+> Rust cannot hold a funcref, and the module's `resume_peek` returns an index
+> INTO this table, so it has to exist outside the module.
+
+The first clause is true. The conclusion does not follow. **Nothing has to HOLD
+a funcref for a funcref table to exist.** The injector declares the anyref
+transit table with `module.tables.add_local` and exports it; a funcref table is
+the same call with a different `RefType`. Six lines.
+
+This is the §109 shape again, and the third time this lane has hit it: a true
+capability limit stated, then a conclusion drawn from it that the limit does not
+support, then the conclusion read back later as established. §109 was "a JS
+import cannot throw a tagged exception, therefore the exn imports cannot be
+served" -- true premise, and the answer was that nothing has to throw, it can
+CALL something that throws. §191 was "provenance must be recorded at the
+production site" -- true, and nothing read the recording. Here it is "Rust
+cannot hold a funcref" -- true, and holding is not what a table needs.
+
+**The pattern, stated so it can be checked rather than admired:** when a floor
+entry's argument has the form *"X cannot do Y, therefore Z must be host"*, the
+load-bearing step is *therefore*, not *cannot*. Ask what Z actually requires. It
+is usually weaker than Y.
+
+### What moved
+
+The injector declares `__wpk_fork_resume_table` (funcref, initial 1 because
+slot 0 is the reserved "no resume event" sentinel, no maximum because the host
+grows it as activations load) and exports it. `buildForkGuestImports` already
+binds non-function module exports, so the guest picked it up with no change
+there. `ForkResumeTable` stops minting a table and takes the module's, which
+`bindSlots` now delivers alongside the numbering -- **one field, one guard**,
+because a slot is an index into that table and the two are unusable apart.
+
+Four `extras` sites in `worker-main.ts` stop supplying it, and
+`FORK_GUEST_RESUME_TABLE_IMPORT` is deleted.
+
+`forkGuestObjectImportsUnserved` banks **3 -> 2**. The two left are genuinely
+the host's: `__wpk_fork_module_activation` is per-activation and ONE module
+instance serves every activation, so the module cannot have a different value
+per guest; the generation-fence address is a per-process placement.
+
+With §194's numbering cutover before it, the guest's import, the module's
+numbering and the host's placement are now one object and one allocator. They
+were a per-caller convention holding two independent implementations in step.

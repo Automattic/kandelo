@@ -44,15 +44,23 @@ const FORK_IMPORT_PREFIX = "__wpk_fork_";
  * reason each one cannot come from the module.
  *
  * A real instrumented guest imports five non-function things. The module serves
- * two of them -- the `__wpk_fork_ref_gc_transit` table and the
- * `__wpk_fork_unwind` tag -- and `buildForkGuestImports` binds those from its
- * exports. These three are what is left, and none is a module candidate:
+ * THREE of them -- the `__wpk_fork_ref_gc_transit` table, the
+ * `__wpk_fork_unwind` tag and now the `__wpk_fork_resume_table` funcref table
+ * -- and `buildForkGuestImports` binds those from its exports.
  *
- *   * `__wpk_fork_resume_table` -- a `WebAssembly.Table` of guest resume thunks.
- *     Rust cannot hold a funcref, and the module's `resume_peek` returns an
- *     index INTO this table, so it has to exist outside the module.
+ * The resume table was argued here as host floor, in these words: "Rust cannot
+ * hold a funcref, and the module's `resume_peek` returns an index INTO this
+ * table, so it has to exist outside the module." The first half is true and the
+ * conclusion did not follow. Rust cannot hold a funcref; the INJECTOR can
+ * declare a funcref table, exactly as it declares the anyref transit table, and
+ * the module exports it. Nothing has to hold a funcref for a table to exist.
+ * Census 198.
+ *
+ * These two are what is left, and neither is a module candidate:
+ *
  *   * `__wpk_fork_module_activation` -- this activation's id as an immutable
- *     global. Per-activation and known only at instantiation.
+ *     global. Per-activation, and one module instance serves every activation,
+ *     so the module cannot have a different value per guest.
  *   * `__wpk_fork_module_state_table_generation_addr` -- the address of the
  *     shared generation fence. A per-process placement decision.
  *
@@ -60,16 +68,14 @@ const FORK_IMPORT_PREFIX = "__wpk_fork_";
  * them, so a host binding its `env` does not depend on code this campaign is
  * deleting. Census section 101 argues each entry.
  */
-export const FORK_GUEST_RESUME_TABLE_IMPORT = "__wpk_fork_resume_table" as const;
 export const FORK_GUEST_ACTIVATION_GLOBAL_IMPORT =
   "__wpk_fork_module_activation" as const;
 export const FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT =
   "__wpk_fork_module_state_table_generation_addr" as const;
 
-/** The three above, for callers that need to reason about the set. */
+/** The two above, for callers that need to reason about the set. */
 export const FORK_GUEST_HOST_OBJECT_IMPORTS = [
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
-  FORK_GUEST_RESUME_TABLE_IMPORT,
   FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
 ] as const;
 

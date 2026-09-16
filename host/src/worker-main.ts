@@ -85,7 +85,6 @@ import {
   FORK_GUEST_ACTIVATION_GLOBAL_IMPORT,
   FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT,
   forkUnwindTagFrom,
-  FORK_GUEST_RESUME_TABLE_IMPORT,
   isForkUnwindException,
   requireForkUnwindTag,
 } from "./fork-guest-imports";
@@ -918,10 +917,10 @@ function createProcessDylinkActivationOwner(
           // provides fails here BY NAME rather than as a LinkError naming a type.
           extras: {
             fork: (): number => options.invokeProcessFork(),
-            // The resume table is host floor: the module's `resume_peek` returns
-            // an index INTO it and Rust cannot hold a funcref.
-            [FORK_GUEST_RESUME_TABLE_IMPORT]:
-              options.resumeTable.table as unknown as WebAssembly.ImportValue,
+            // The resume table is NOT here any more. The module owns and
+            // exports it, so `buildForkGuestImports` binds it from
+            // `moduleExports` -- one object for the guest's import, the
+            // module's numbering and this host's placement.
             [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]: new WebAssembly.Global(
               { value: "i32", mutable: false },
               activationId,
@@ -3784,7 +3783,10 @@ export async function centralizedWorkerMain(
           // this activation's slots. Binding here rather than at construction
           // is forced by the order: the resume table exists before the module
           // does, because the guest's import object is built from it.
-          resumeTable.bindSlots(forkModuleBackend);
+          resumeTable.bindSlots(
+            forkModuleBackend,
+            forkModuleInstance.exports.__wpk_fork_resume_table as WebAssembly.Table,
+          );
           // The per-activation frame entry points are the module's own, emitted
           // by the injector and read out of its table -- there is nothing to
           // construct or cache here any more.
@@ -4529,11 +4531,9 @@ export async function centralizedWorkerMain(
         ...(buildForkGuestImports({
           moduleExports: forkModuleInstance.exports as Record<string, unknown>,
           extras: {
-            // `continuationImports` contributes only the host-owned
-            // `__wpk_fork_resume_table` funcref table the module's
-            // `resume_peek` indexes.
-            [FORK_GUEST_RESUME_TABLE_IMPORT]:
-              resumeTable.table as unknown as WebAssembly.ImportValue,
+            // No resume table: the module exports it (census 198), so the
+            // binder takes it from `moduleExports` like the transit table and
+            // the unwind tag.
             [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]: new WebAssembly.Global(
               { value: "i32", mutable: false },
               0,
@@ -6528,7 +6528,11 @@ export async function centralizedThreadWorkerMain(
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
-        threadResumeTable.bindSlots(threadForkModuleBackend);
+        threadResumeTable.bindSlots(
+          threadForkModuleBackend,
+          threadForkModuleInstance.exports
+            .__wpk_fork_resume_table as WebAssembly.Table,
+        );
         threadModuleUnwindTag = forkUnwindTagFrom(
           threadForkModuleInstance.exports,
           `pid=${pid} tid=${tid} unwind`,
@@ -6898,8 +6902,6 @@ export async function centralizedThreadWorkerMain(
                     unknown
                   >,
                   extras: {
-                    [FORK_GUEST_RESUME_TABLE_IMPORT]:
-                      threadResumeTable.table as unknown as WebAssembly.ImportValue,
                     [FORK_GUEST_ACTIVATION_GLOBAL_IMPORT]:
                       new WebAssembly.Global(
                         { value: "i32", mutable: false },
@@ -6912,8 +6914,9 @@ export async function centralizedThreadWorkerMain(
                   label: `pid=${pid} tid=${tid}: fork imports`,
                 }) as Record<string, WebAssembly.ImportValue>)
               : {
-                  [FORK_GUEST_RESUME_TABLE_IMPORT]:
-                    threadResumeTable.table as unknown as WebAssembly.ImportValue,
+                  // No fork-module on this branch, so no resume table either:
+                  // an uninstrumented guest declares no `__wpk_fork_*` import
+                  // to satisfy.
                 }),
             // Phase 6 D7b IMPORT FLIP (mirrors the main worker path): when the
             // fork-module is wired into this pthread parent, the thread's guest

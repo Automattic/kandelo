@@ -127,6 +127,11 @@ const DRIVE_BUMP_HELPER_EXPORT: &str = "fm_drive_bump";
 /// instead of a standalone host-provided table, so this name must still match
 /// the guest's import name/element type exactly.
 const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
+/// The funcref table of guest resume thunks, OWNED and exported by the module
+/// for the same reason the transit table above is: one object, so the guest's
+/// import, the module's slot numbering and the host's placement cannot be
+/// three different tables. Rust cannot hold a funcref, so it is defined here.
+const RESUME_TABLE_EXPORT: &str = "__wpk_fork_resume_table";
 
 /// The injected anyref-table growth primitive the Rust side calls.
 const TRANSIT_GROW_EXPORT: &str = "fm_transit_grow";
@@ -1020,6 +1025,23 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
     let transit_table = module.tables.add_local(false, 1, None, RefType::ANYREF);
     module.tables.get_mut(transit_table).name = Some(TRANSIT_TABLE_IMPORT.to_string());
     module.exports.add(TRANSIT_TABLE_IMPORT, transit_table);
+
+    // The guest's resume thunks, at the slots `fm_resume_slots` assigns.
+    //
+    // INITIAL 1 and not 0: slot 0 is the reserved "no resume event" sentinel
+    // that `resume_peek` answers when a replay has nothing to resume, and no
+    // thunk may ever live there. Growable (no maximum) because the host adds
+    // an activation's thunks as it loads, and how many there will be is not
+    // known when the module is instantiated.
+    //
+    // This used to be a `WebAssembly.Table` the host minted and passed in
+    // `extras`. Moving it here is the same move `TRANSIT_TABLE_IMPORT` made
+    // (M1) and for the same reason: while the host minted it, "the guest's
+    // table" and "the table the module numbers" were a per-caller convention
+    // rather than one object.
+    let resume_table = module.tables.add_local(false, 1, None, RefType::FUNCREF);
+    module.tables.get_mut(resume_table).name = Some(RESUME_TABLE_EXPORT.to_string());
+    module.exports.add(RESUME_TABLE_EXPORT, resume_table);
 
     // The merged, host-owned static-root catalog (`anyref`) the shim reads with
     // `table.get` on a DRIVE_OP_STATIC_ROOT step. Initial size 0; the host grows
