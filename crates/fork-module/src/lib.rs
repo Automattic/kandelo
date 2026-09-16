@@ -537,6 +537,223 @@ mod wasm {
     static ACT_CATALOG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_CATALOG_ORD_USED: AtomicU32 = AtomicU32::new(0);
 
+    // -- The WORKER-LIFETIME resume slot assignment (the single numbering) -----
+    //
+    // WHY THIS EXISTS, and what was wrong before it.
+    //
+    // A resume slot is an index into the funcref table the guest
+    // `call_indirect`s to resume a fork-instrumented frame. Two things had to
+    // agree on that index: the HOST, which places each activation's thunks into
+    // the physical `WebAssembly.Table`, and this MODULE, whose `resume_peek`
+    // returns the index to call. Both implemented the same four rules -- slot 0
+    // reserved, ordinals sorted ascending, repeats rejected, freed slots reused
+    // smallest-first -- and the lane's own guard checked that those four rules
+    // were still SPELLED the same in both places.
+    //
+    // The rules were never the problem. WHEN each table was built was. The host
+    // builds one per WORKER and mutates it as activations come and go; the
+    // module built a fresh one per FORK, so it never had freed slots to reuse.
+    // `dlclose` of a library while a later-loaded one is still open makes those
+    // two disagree:
+    //
+    //   dlopen A (1 target), dlopen B (2), dlclose A, dlopen C (2), then fork.
+    //   host:   B at 4,5   C at 3,6      (3 was freed by A and reused first)
+    //   module: B at 3,4   C at 5,6      (fresh table, ascending activation id)
+    //
+    // Three coordinates disagree, so the guest resumes into another
+    // activation's thunk. Nothing traps: it is a real function of the right
+    // type. A rule-comparison guard cannot see this, because both sides follow
+    // the rules.
+    //
+    // So the numbering moves here and happens ONCE, at the moment the host
+    // seeds an activation's catalog -- which is before any fork, and is the
+    // same moment the host has the thunks to place. The host asks for each
+    // slot (`fm_resume_slots` op 0) instead of computing one. There is one
+    // allocator, so there is nothing left to diverge.
+    //
+    // Fixed BSS like the catalogs above, for the same reason: it must survive
+    // the per-fork bump-heap reset.
+    const RESUME_SLOT_CAP: usize = ACTIVATION_CATALOG_ORD_CAP;
+
+    /// `[activation_id, ordinal, slot]` per assigned coordinate. Only the first
+    /// `RESUME_SLOT_COUNT` entries are live; an entry freed by
+    /// `resume_unregister_impl` is overwritten by the last live one.
+    #[repr(C, align(4))]
+    struct ResumeSlotIndex(UnsafeCell<[[u32; 3]; RESUME_SLOT_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ResumeSlotIndex {}
+    static RESUME_SLOT_INDEX: ResumeSlotIndex =
+        ResumeSlotIndex(UnsafeCell::new([[0u32; 3]; RESUME_SLOT_CAP]));
+    static RESUME_SLOT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// Slots freed by an unregistered activation, kept SORTED ASCENDING so the
+    /// smallest is reused first -- the fourth of the four rules, and now the
+    /// only implementation of it.
+    #[repr(C, align(4))]
+    struct ResumeFreeSlots(UnsafeCell<[u32; RESUME_SLOT_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ResumeFreeSlots {}
+    static RESUME_FREE_SLOTS: ResumeFreeSlots =
+        ResumeFreeSlots(UnsafeCell::new([0u32; RESUME_SLOT_CAP]));
+    static RESUME_FREE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// The next never-used slot. Starts at 1: slot 0 is the reserved "no event"
+    /// sentinel, which is why the physical table starts at length 1.
+    static RESUME_NEXT_SLOT: AtomicU32 = AtomicU32::new(1);
+
+    /// Smallest free slot, else a freshly grown one. The one allocator.
+    fn resume_allocate_slot() -> u32 {
+        let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
+        if free_count > 0 {
+            // SAFETY: single-threaded; `free_count <= RESUME_SLOT_CAP`.
+            let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
+            let slot = free[0];
+            // Kept sorted, so removing the smallest is a shift by one.
+            free.copy_within(1..free_count, 0);
+            RESUME_FREE_COUNT.store((free_count - 1) as u32, Ordering::Relaxed);
+            return slot;
+        }
+        let slot = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
+        RESUME_NEXT_SLOT.store(slot + 1, Ordering::Relaxed);
+        slot
+    }
+
+    /// Assign this activation's slots from its seeded catalog.
+    ///
+    /// Precedence matches `register_activation_slots`: the activation's own
+    /// catalog, else the process-wide one. A worker that seeded NEITHER gets
+    /// nothing here and falls through to the per-fork committed-ordinal path,
+    /// which is the legacy harness route.
+    ///
+    /// Rejects a re-registered activation and a repeated ordinal with `EINVAL`,
+    /// for the reasons the host class stated: the module refuses the same
+    /// catalog, and accepting a repeat would place N-1 thunks where N are
+    /// expected and shift every later slot by one.
+    fn resume_register_impl(activation_id: u32) -> Result<u32, Errno> {
+        let catalog = match activation_catalog(activation_id) {
+            Some(catalog) => catalog,
+            None => {
+                let global = resume_catalog();
+                if global.is_empty() {
+                    return Ok(0);
+                }
+                global
+            }
+        };
+        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let live = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+        if live[..count].iter().any(|entry| entry[0] == activation_id) {
+            return Err(Errno::EINVAL); // already registered
+        }
+        if count + catalog.len() > RESUME_SLOT_CAP {
+            return Err(Errno::E2BIG);
+        }
+        // Sorted ascending with repeats rejected, which are two of the four
+        // rules. The scratch vector is bump-heap and lives only for this call;
+        // registration happens before any fork, so nothing resets under it.
+        let mut sorted: Vec<u32> = catalog.to_vec();
+        sorted.sort_unstable();
+        for window in sorted.windows(2) {
+            if window[0] == window[1] {
+                return Err(Errno::EINVAL); // repeated ordinal
+            }
+        }
+        let mut assigned = 0u32;
+        for ordinal in sorted {
+            let slot = resume_allocate_slot();
+            // SAFETY: single-threaded; bounded by the cap check above.
+            let index = unsafe { &mut *RESUME_SLOT_INDEX.0.get() };
+            let at = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+            index[at] = [activation_id, ordinal, slot];
+            RESUME_SLOT_COUNT.store((at + 1) as u32, Ordering::Relaxed);
+            assigned += 1;
+        }
+        Ok(assigned)
+    }
+
+    /// Seeding a catalog re-decides that activation's slots.
+    ///
+    /// A re-seed frees the previous assignment first rather than refusing: the
+    /// catalog IS the ordinal set, so replacing it replaces the numbering, and
+    /// a host that seeds twice has changed its mind rather than made an error.
+    /// A first seed has nothing to free, which is the ordinary case.
+    fn resume_reseed(activation_id: u32) -> Result<(), Errno> {
+        let _ = resume_unregister_impl(activation_id);
+        resume_register_impl(activation_id).map(|_| ())
+    }
+
+    /// Free an activation's slots for reuse, keeping the free list sorted.
+    ///
+    /// ZERO SLOTS IS A SUCCESS, not "never registered", and the distinction cost
+    /// a real fork. A side module with no fork-instrumented function seeds an
+    /// EMPTY resume catalog -- `libneeded-provider.so` in
+    /// `fork-from-dlopen-side-module-e2e` is exactly that -- so it holds no
+    /// slots, leaves no entry here, and an emptiness check reads it as unknown.
+    /// The child's `dlclose` then failed, the child exited non-zero, and the
+    /// parent reported only that its child had died.
+    ///
+    /// Whether an activation was registered is a question the HOST already
+    /// answers: `ForkResumeTable.unregisterActivation` refuses one it never
+    /// placed thunks for, by name. Answering it a second time here was the same
+    /// duplication this lane has been removing everywhere else, and this one
+    /// had a wrong answer in it.
+    fn resume_unregister_impl(activation_id: u32) -> Result<u32, Errno> {
+        let mut count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let index = unsafe { &mut *RESUME_SLOT_INDEX.0.get() };
+        let mut freed = 0u32;
+        let mut position = 0usize;
+        while position < count {
+            if index[position][0] != activation_id {
+                position += 1;
+                continue;
+            }
+            let slot = index[position][2];
+            // SAFETY: single-threaded; freed slots never exceed assigned ones.
+            let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
+            let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
+            free[free_count] = slot;
+            RESUME_FREE_COUNT.store((free_count + 1) as u32, Ordering::Relaxed);
+            // Compact: the last live entry takes this one's place.
+            index[position] = index[count - 1];
+            count -= 1;
+            freed += 1;
+        }
+        RESUME_SLOT_COUNT.store(count as u32, Ordering::Relaxed);
+        let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; sorting the live prefix only.
+        let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
+        free[..free_count].sort_unstable();
+        Ok(freed)
+    }
+
+    /// The slot assigned to `(activation_id, ordinal)`, or `None`.
+    fn resume_slot_of(activation_id: u32, ordinal: u32) -> Option<u32> {
+        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+        index[..count]
+            .iter()
+            .find(|entry| entry[0] == activation_id && entry[1] == ordinal)
+            .map(|entry| entry[2])
+    }
+
+    /// Every `(ordinal, slot)` this activation holds, for the per-fork table to
+    /// adopt rather than re-derive.
+    fn resume_assignment_of(activation_id: u32) -> Option<alloc::vec::Vec<(u32, u32)>> {
+        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+        let mut out = alloc::vec::Vec::new();
+        for entry in index[..count].iter() {
+            if entry[0] == activation_id {
+                out.push((entry[1], entry[2]));
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
+    }
+
     fn set_activation_resume_catalog_impl(
         activation_id: u32,
         ptr: u64,
@@ -630,6 +847,15 @@ mod wasm {
         global_catalog: &[u32],
         committed_ordinals: &[u32],
     ) -> Result<(), Errno> {
+        // ADOPT the worker-lifetime assignment when there is one. It was made
+        // at catalog-seed time, before any fork, and it is the numbering the
+        // host placed its thunks by -- re-deriving it here is what let the two
+        // drift after a `dlclose` (see the allocator's comment above). The two
+        // branches below are the legacy no-catalog route, where no assignment
+        // was ever made and the per-fork derivation is the only one there is.
+        if let Some(assignment) = resume_assignment_of(activation_id) {
+            return table.adopt_activation(activation_id, &assignment);
+        }
         if let Some(catalog) = activation_catalog(activation_id) {
             table.register_activation(activation_id, catalog)
         } else if !global_catalog.is_empty() {
@@ -2995,6 +3221,14 @@ mod wasm {
         // without a reset. See that function.
         ACT_CATALOG_ACT_COUNT.store(0, Ordering::Relaxed);
         ACT_CATALOG_ORD_USED.store(0, Ordering::Relaxed);
+        // The slot assignment goes with the catalogs it was derived from. A COW
+        // child re-seeds, and re-seeding into a table that still held the
+        // parent's assignment would either refuse as already-registered or
+        // number the child's activations after the parent's -- and the child's
+        // physical table, which it inherits nothing of, starts empty.
+        RESUME_SLOT_COUNT.store(0, Ordering::Relaxed);
+        RESUME_FREE_COUNT.store(0, Ordering::Relaxed);
+        RESUME_NEXT_SLOT.store(1, Ordering::Relaxed);
         ACT_FUNC_CATALOG_BASE_COUNT.store(0, Ordering::Relaxed);
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
         // Table-state ownership resets for the same COW reason: a child
@@ -6429,7 +6663,12 @@ mod wasm {
     /// the host then keeps the JavaScript continuation for that program.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_resume_catalog(ptr: usize, count: usize) {
-        match set_resume_catalog_impl(ptr as u64, count as u64) {
+        // Seeding IS registering. The catalog is the ordinal set, and the slot
+        // for each ordinal is decided here, once, so the host can ask for it
+        // (`fm_resume_slots` op 0) rather than compute a second answer.
+        match set_resume_catalog_impl(ptr as u64, count as u64)
+            .and_then(|()| resume_reseed(0))
+        {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -6453,7 +6692,10 @@ mod wasm {
         ptr: usize,
         count: usize,
     ) {
-        match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64) {
+        // Seeding IS registering; see `fm_set_resume_catalog`.
+        match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64)
+            .and_then(|()| resume_reseed(activation_id))
+        {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -10238,6 +10480,51 @@ mod wasm {
         match stats.get(field as usize) {
             Some(counter) => counter.load(Ordering::Relaxed) as i64,
             None => -1,
+        }
+    }
+
+    /// The worker-lifetime resume-slot assignment, read and released.
+    ///
+    /// ONE entry with an `op` rather than two, following `fm_module_state_arena`:
+    /// both operations are the host's view of the same small table, and a lane
+    /// whose target is five entries should not spend two on it.
+    ///
+    ///   * op 0 -- the slot assigned to `(activation, ordinal)`, or -1 with
+    ///     `EINVAL` when that coordinate has none. This is what the host places
+    ///     its thunk at; it does NOT compute an answer of its own any more.
+    ///   * op 1 -- release `activation`'s slots for reuse (`ordinal` ignored),
+    ///     returning how many were freed. The host calls this on `dlclose`.
+    ///
+    /// Slots are assigned when the host SEEDS the catalog
+    /// (`fm_set_resume_catalog` / `fm_set_activation_resume_catalog`), which is
+    /// before any fork and is the same moment the host has thunks to place.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_resume_slots(op: u32, activation: u32, ordinal: u32) -> i32 {
+        match op {
+            0 => match resume_slot_of(activation, ordinal) {
+                Some(slot) => {
+                    set_ok();
+                    slot as i32
+                }
+                None => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            },
+            1 => match resume_unregister_impl(activation) {
+                Ok(freed) => {
+                    set_ok();
+                    freed as i32
+                }
+                Err(errno) => {
+                    set_err(errno);
+                    -1
+                }
+            },
+            _ => {
+                set_err(Errno::EINVAL);
+                -1
+            }
         }
     }
 

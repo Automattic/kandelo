@@ -10180,3 +10180,77 @@ glob that justified a wide slack is gone -- it is a named file list.
 `workerMainTypeScript` keeps its 150. That file is the one still under active
 reduction, and its churn allowance is what lets a refactor land without a
 ceiling commit. The ceiling itself still ratchets.
+
+## §194 -- Two resume-slot allocators, and the fork they were losing
+
+`host/src/fork-resume-table.ts` and `fork_codec::ResumeSlotTable` each
+implemented the same four rules: slot 0 reserved, ordinals sorted ascending,
+repeats rejected, freed slots reused smallest-first. The lane's guard checked
+that those four rules were still SPELLED the same in both places -- four
+regexes against `replay_journal.rs` -- and it passed throughout.
+
+**The rules were never the problem. WHEN each table was built was.** The host
+builds one per WORKER and mutates it as activations come and go. The module
+built a fresh one per FORK, so it never had freed slots to reuse:
+
+```
+dlopen A (1 target), dlopen B (2), dlclose A, dlopen C (2), then fork.
+host:   B at 4,5   C at 3,6      (3 was freed by A and reused first)
+module: B at 3,4   C at 5,6      (fresh table, ascending activation id)
+```
+
+Three coordinates disagree. `resume_peek` then returns an index the host filled
+with another activation's thunk, and the guest `call_indirect`s into a real
+function of the right type. Nothing traps. `dlclose` of a library while a
+later-loaded one is still open is an ordinary thing for a program to do.
+
+A rule-comparison guard cannot see this, because neither side breaks a rule.
+That is the general lesson: **when two implementations are kept in step by
+comparing their RULES, check whether they are also fed the same INPUTS at the
+same TIME.** Ours were not.
+
+### The cutover
+
+The numbering moved into the module and happens ONCE, when the host seeds an
+activation's catalog -- which is before any fork, and is the same moment the
+host has thunks to place. Seeding IS registering. The host asks
+(`fm_resume_slots` op 0) and places where it is told; `ForkResumeTable` lost
+its allocator, its free list and its ordering rule, keeping only the physical
+`WebAssembly.Table` that Rust cannot hold and the `table.set` that fills it.
+
+The per-fork table ADOPTS that assignment rather than re-deriving it
+(`ResumeSlotTable::adopt_activation`). Disabling the adopt as an isolation
+probe reproduced the failure, which is how we know it is load-bearing rather
+than an optimisation: the worker-lifetime table numbers by SEED order and the
+per-fork one by ascending activation id, and a DT_NEEDED closure seeds out of
+id order.
+
+One new entry, `fm_resume_slots(op, activation, ordinal)`, with an op rather
+than two entries -- the shape `fm_module_state_arena` established.
+
+### The second defect, found by the cutover
+
+`fork-from-dlopen-side-module-e2e` failed, and the failure had no message: the
+child exited non-zero and the parent reported only `8`, its own "child died"
+code. Tracing it needed printing the registration and release of every
+activation.
+
+**A side module with no fork-instrumented function seeds an EMPTY resume
+catalog.** `libneeded-provider.so` is exactly that. It holds no slots, so it
+leaves no entry in the module's assignment -- and the release path read "no
+entries" as "never registered", refused, and `dlclose` failed in the child.
+
+Whether an activation was registered is the HOST's question, and
+`ForkResumeTable.unregisterActivation` already answers it by name. Asking it a
+second time in the module was the duplication this lane keeps removing, and
+this instance had a wrong answer in it. Zero slots is a success now, and a test
+covers the empty-catalog activation.
+
+### What is still owed here
+
+The assignment lives in fixed BSS so it survives the per-fork bump reset, and
+`fm_set_format` clears it along with the catalogs it derives from. The physical
+funcref table is still the host's: moving it into the module (the injector can
+define and export a funcref table as it does the anyref transit) would take
+`forkGuestObjectImportsUnserved` 3 -> 2. That is a smaller change than this one
+now that the numbering is settled, and it is not done here.

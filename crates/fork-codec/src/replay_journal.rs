@@ -328,6 +328,41 @@ impl ResumeSlotTable {
         Ok(())
     }
 
+    /// Take an activation's `(ordinal, slot)` assignment as already decided.
+    ///
+    /// The per-fork table is rebuilt on every fork, so left to itself it would
+    /// re-derive a numbering that the worker-lifetime allocator already made --
+    /// and the two only agree while no activation has ever been unregistered.
+    /// Adopting instead of re-deriving is what keeps ONE numbering: see the
+    /// worker-lifetime allocator in `crates/fork-module/src/lib.rs`, whose
+    /// comment records the `dlclose` sequence that made them disagree.
+    ///
+    /// `next_slot` is advanced past every adopted slot so a LATER activation
+    /// registered only per-fork (the legacy no-catalog path) cannot be handed
+    /// one of these.
+    pub fn adopt_activation(
+        &mut self,
+        activation_id: u32,
+        assignment: &[(u32, u32)],
+    ) -> Result<(), Errno> {
+        if self.activation_keys.contains_key(&activation_id) {
+            return Err(Errno::EINVAL); // already registered
+        }
+        let mut keys: Vec<(u32, u32)> = Vec::with_capacity(assignment.len());
+        for &(ordinal, slot) in assignment {
+            if self.slots.insert((activation_id, ordinal), slot).is_some() {
+                return Err(Errno::EINVAL); // repeated ordinal
+            }
+            self.free_slots.remove(&slot);
+            if slot >= self.next_slot {
+                self.next_slot = slot + 1;
+            }
+            keys.push((activation_id, ordinal));
+        }
+        self.activation_keys.insert(activation_id, keys);
+        Ok(())
+    }
+
     /// Unregister an activation, freeing its slots for reuse. Mirrors
     /// `unregisterActivation`; rejects an unknown activation with
     /// `Err(Errno::EINVAL)`.

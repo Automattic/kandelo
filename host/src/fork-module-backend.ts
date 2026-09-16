@@ -818,6 +818,25 @@ export class ForkModuleContinuationBackend {
   // is the same arena by construction. Its last caller went with the broker
   // (census 192), and a method the host keeps for nobody is host surface.
 
+  /**
+   * The slot the module assigned `(activation, ordinal)`, decided when the
+   * catalog was seeded.
+   *
+   * The host does NOT compute this. It used to: `ForkResumeTable` ran the same
+   * four rules the module runs, and the two only agreed while no activation had
+   * ever been unregistered. See the worker-lifetime allocator in
+   * `crates/fork-module/src/lib.rs` for the `dlclose` sequence that made them
+   * disagree, and census 194.
+   */
+  resumeSlot(activationId: number, functionOrdinal: number): number {
+    return this.call("fm_resume_slots", 0, activationId, functionOrdinal);
+  }
+
+  /** Release an activation's resume slots for reuse. Returns how many. */
+  releaseResumeSlots(activationId: number): number {
+    return this.call("fm_resume_slots", 1, activationId, 0);
+  }
+
   decodedNodeCount(): number {
     return this.call("fm_decoded_node_count");
   }

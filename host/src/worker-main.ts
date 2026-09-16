@@ -3780,6 +3780,11 @@ export async function centralizedWorkerMain(
           // Seed the linked-frame format + full resume catalog once, now, before
           // any fork drives the module. Both are host-known custom sections.
           forkModuleBackend.setup();
+          // `setup()` seeds the resume catalog, and seeding IS what assigns
+          // this activation's slots. Binding here rather than at construction
+          // is forced by the order: the resume table exists before the module
+          // does, because the guest's import object is built from it.
+          resumeTable.bindSlots(forkModuleBackend);
           // The per-activation frame entry points are the module's own, emitted
           // by the injector and read out of its table -- there is nothing to
           // construct or cache here any more.
@@ -6523,6 +6528,7 @@ export async function centralizedThreadWorkerMain(
           label: `pid=${pid} tid=${tid}: fork-module`,
         });
         threadForkModuleBackend.setup();
+        threadResumeTable.bindSlots(threadForkModuleBackend);
         threadModuleUnwindTag = forkUnwindTagFrom(
           threadForkModuleInstance.exports,
           `pid=${pid} tid=${tid} unwind`,
