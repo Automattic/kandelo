@@ -13084,6 +13084,89 @@ discrimination — `rootMount.backend instanceof MemoryFileSystem` — feeding
 CONSTRUCTED, by `vfs/default-mounts.ts` through `restoreVerifiedVfsImage`;
 what the entries hold is a reference to it, not a use of it.
 
+### THE STEP-5 SUBJECT FILES, AUDITED CLAIM BY CLAIM — 2026-09-16
+
+**The plan has been saying the four files "go when the class goes". Reading
+them says three different things, and one of them corrects this document.**
+
+**`vfs-image-helpers.test.ts` is misclassified here. It is a step-4 REPOINT,
+not a step-5 deletion.** Its subject is
+`images/vfs/scripts/vfs-image-helpers` — `walkAndWrite`, `saveImage`,
+`writeVfsBinary` — which already takes the structural `VfsImageFilesystem`
+and already imports `KandeloImageFs` itself. `MemoryFileSystem` appears only
+as the fixture the helpers write INTO and as the test's own read-back
+helper. All eighteen claims — exclusions, symlink preservation, and fourteen
+error-propagation paths that are the reason a builder fails loudly instead
+of silently omitting a file — survive a repoint unchanged. Lane Y's closure
+condition covered `images/` SOURCE; this is an `images/` module whose TESTS
+still couple to the filesystem being deleted.
+
+**`lazy-vfs.test.ts`'s thirteen claims are not one category.** Mapped
+against the Rust corpus rather than counted:
+
+* **Eight are already made in Rust**, most of them better. Declared size
+  through `stat`/`lstat` on an unmaterialized file, enumeration of the
+  deferred set, an ordinary file NOT enumerated, per-file payload identity,
+  and materialization replacing the declared size with the real one are
+  `lstat_reports_a_deferred_file_and_which_archive_backs_it`,
+  `the_deferred_set_is_enumerable_with_every_identity_it_carries`,
+  `an_ordinary_file_is_not_enumerated_as_a_deferred_one`,
+  `many_deferred_files_keep_their_own_payloads`,
+  `lazy_member_read_fetches_decodes_and_serves_bytes` and
+  `lazy_member_write_materializes_then_overwrites`.
+* **One is a leniency difference, not a claim**: *"creates parent
+  directories automatically"*. `KandeloImageFs.registerLazyFile` does not,
+  and that is the seam the export-fixture port hit as
+  `ENOENT: registerLazyFile /opt/lazy-tool`. Worth carrying forward as a
+  documented difference; not worth porting as a requirement.
+* **One belongs to the host and not to any filesystem**: *"emits lazy
+  download progress while materializing a file"*. Progress is a property of
+  the FETCH. Both kernel hosts already implement `subscribeLazyDownloads`
+  themselves, `web-libs/kandelo-session` wires it and a demo page consumes
+  it, so the capability is live — but it is live ABOVE `memory-fs.ts`, and
+  this claim should be re-made against the host that owns it rather than
+  deleted with the class.
+* **One asserts the behaviour the platform deliberately REVERSED.**
+  *"preserves root ownership and set-ID mode through materialization"*
+  registers `/usr/bin/sudo-lite` mode `0o4755` from a URL with no digest,
+  materializes it, and asserts the set-ID bit survives. That is precisely
+  lane S's vulnerability: bytes of the right length from wherever the host
+  got them, executing as root inside the guest. Rust says the opposite, with
+  a control beside it —
+  `setid_is_demoted_on_deferred_bytes_nothing_can_verify` and
+  `setid_survives_when_the_image_says_what_the_bytes_must_be`. **Deleting
+  this file removes an assertion that is now wrong**, which is a different
+  and much cheaper conclusion than "coverage is lost".
+
+### `rewriteLazyFileUrls` AND `rewriteLazyArchiveUrls` OUTLIVED THEIR CALLERS
+
+**Censused 2026-09-16 while auditing the above.** Neither has a production
+caller anywhere. `bindImageOwnedRuntimeUrls` and
+`assertShellLazyUrlsResolved`, the other two members of the URL-rewriting
+cluster, are already gone — `node-image-runtime.test.ts` asserts, as an
+INVERTED property, that `live-setup.ts` contains none of the four, because
+rewriting the image's deferred half is what defect B45 did to 65 lazy
+binaries. The mapping that replaced them is computed beside the image
+(`imageOwnedRuntimeUrlTable`).
+
+**What keeps the surviving two alive is a test ORACLE, and it lives inside
+the production file.** `module-base-image.test.ts` rebases URLs on a
+restored `MemoryFileSystem` and asserts `createBaseImageFromContainer`
+produces the same answer. That is the `rootfs-manifest-oracle.ts` pattern —
+a differential test needs the other implementation to survive — with one
+difference that matters: that oracle was MOVED OUT of `host/src` and kept as
+test support, and these two were not. While they stay, `memory-fs.ts` cannot
+reach zero for a reason that is not about the filesystem at all.
+
+**Both tests already guard the guard with explicit expectations** —
+`/kandelo/assets/rel.bin` rebased, `https://cdn.test/abs.bin` and
+`/already/rooted.bin` left alone; an archive's `transports` AND its derived
+`url`. So the incumbent comparison restates a claim the explicit
+expectations already make. **The increment is therefore a MOVE, matching the
+precedent**: carry the rebasing into test support if the differential is
+still worth having, or stand on the explicit expectations if it is not, and
+delete the two methods either way. Not yet landed.
+
 ### Next in lane V: make the round-trip verb re-enter its own output
 
 **Scoped 2026-09-12, straight out of H-13.** `xtask vfs-image roundtrip` loads
