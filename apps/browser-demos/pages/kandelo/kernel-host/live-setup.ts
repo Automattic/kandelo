@@ -23,6 +23,7 @@ import {
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../../../../../images/vfs/lib/sffs-image-fs";
 import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
@@ -1158,9 +1159,16 @@ async function bootProfile(
     `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
   );
   const fetchedVfsImageBytes = new Uint8Array(loadedVfs.imageBytes);
-  const vfsMetadata = MemoryFileSystem.readImageMetadata(fetchedVfsImageBytes);
+  const vfsMetadata = SffsImageFs.readImageMetadata(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
-    MemoryFileSystem.readImageCapacity(fetchedVfsImageBytes),
+    // `byteLength` is the image as fetched; `maxByteLength` is what it
+    // DECLARES it may grow to. The bridge reports only the declaration,
+    // because that is the image's own statement — the size of the bytes in
+    // hand is something the caller is already holding.
+    {
+      byteLength: fetchedVfsImageBytes.byteLength,
+      ...SffsImageFs.readImageCapacity(fetchedVfsImageBytes),
+    },
     profile.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
     `${profile.id}.vfs.zst`,
@@ -1177,23 +1185,38 @@ async function bootProfile(
   // out of the live-VFS ownership set so WebKit reclaims it on teardown via
   // Worker.terminate() rather than lazy GC — the root fix for the Safari
   // image-switch OOM.
-  const buildFs = MemoryFileSystem.fromImage(fetchedVfsImageBytes, {
-    maxByteLength: profile.maxVfsByteLength,
-  });
+  // THE FIX for B45. This was `MemoryFileSystem.fromImage(...)`, the legacy
+  // TypeScript reader — and the `saveImage()` below was its writer. That round
+  // trip could not express the `SDEF` section, so since `tools/mkrootfs` began
+  // writing one it silently emptied the image's deferred half: all 65 lazy
+  // binaries came back as zero-byte files marked COMPLETE, which the kernel
+  // then never tried to fetch. The symptom was ENOEXEC from exec'ing an empty
+  // binary, which points at everything except the writer.
+  //
+  // Same reader and writer the image was BUILT with now, so what it says
+  // survives being read and written again.
+  const buildFs = SffsImageFs.create();
+  buildFs.loadImage(fetchedVfsImageBytes);
+  buildFs.setImageCapacity(profile.maxVfsByteLength);
   // Track as soon as the caller owns the staged filesystem. This covers every
   // later fetch, staging, supersession, and serialization failure; finalizing
   // the image is intentionally an idempotent second registration.
-  trackTransientImageBuffer(buildFs.sharedBuffer);
+  trackTransientImageBuffer(buildFs.transientBuffer);
   // WHY: register cleanup before rejecting a composition superseded while its
   // asynchronous layer loads were in flight. Otherwise its completed buffer
   // becomes unreachable without entering the WebKit reclamation ledger.
   assertCurrent();
-  // WHY: establish cleanup ownership first, then reject forged imported seals
-  // before URL rewriting or asset registration can trust their lazy metadata.
-  await verifyImportedSealsForCurrentBoot(buildFs);
-  // WHY: this check must live in the same continuation as the effects below.
-  // Moving it into an async helper creates a microtask gap where a newer boot
-  // can take ownership before this boot resumes mutating its staged image.
+  // Seals are already verified, and not by a call here. `loadImage` above runs
+  // `seal::verify_cohorts` inside the load and unloads the image if it fails,
+  // so an unverified loaded image is unrepresentable rather than merely
+  // discouraged — the module argues the point in its own words: a verification
+  // a caller can forget is one some caller eventually will.
+  //
+  // `await verifyImportedSealsForCurrentBoot(buildFs)` was here, together with
+  // a careful note that it had to stay in this continuation because moving it
+  // into an async helper would open a microtask gap for a newer boot to take
+  // ownership in. There is no await left to open one. The incumbent needed
+  // that dance only because `SubtleCrypto` made its digest a promise.
   assertCurrent();
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
   if (profile.candidateEvidence === undefined) {
@@ -1505,7 +1528,7 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
 }
 
 function stageShellUtilities(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   dashBytes: ArrayBuffer,
   bashBytes: ArrayBuffer,
 ): void {
@@ -1536,14 +1559,14 @@ function stageShellUtilities(
   }
 }
 
-function ensureDemoHomes(fs: MemoryFileSystem): void {
+function ensureDemoHomes(fs: SffsImageFs): void {
   ensureDirRecursive(fs, "/home");
   ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
   ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
 }
 
 function ensureOwnedDir(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   path: string,
   mode: number,
   uid: number,
@@ -1555,7 +1578,7 @@ function ensureOwnedDir(
 }
 
 function patchWordPressRuntimeConfig(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   kind: WordPressDatabaseKind,
 ): void {
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
@@ -1596,7 +1619,7 @@ function patchWordPressRuntimeConfig(
   );
 }
 
-function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
+function patchMariaDbUnixSocketConfig(fs: SffsImageFs): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
@@ -1635,7 +1658,7 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   patchPhpFpmMariaDbDependency(fs);
 }
 
-function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
+function ensureMariaDbReadyService(fs: SffsImageFs): void {
   ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
   writeVfsFile(
     fs,
@@ -1668,7 +1691,7 @@ restart = false
   );
 }
 
-function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
+function patchPhpFpmMariaDbDependency(fs: SffsImageFs): void {
   const phpFpmServicePath = "/etc/dinit.d/php-fpm";
   const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
   if (phpFpmService === null) return;
@@ -1694,7 +1717,7 @@ function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
   }
 }
 
-function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+function patchWordPressPersistentMysqli(fs: SffsImageFs): void {
   for (const path of [
     "/var/www/html/wp-includes/class-wpdb.php",
     "/var/www/html/wp-includes/wp-db.php",
@@ -2142,7 +2165,7 @@ function isLiveDemoId(id: string): id is LiveDemoId {
 }
 
 function readImageExperimentalTerminalSession(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
 ): ExperimentalTerminalSession {
   let stat;
   try {
@@ -2173,7 +2196,7 @@ function readImageExperimentalTerminalSession(
 }
 
 function assertImageTerminalProgram(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   program: ExperimentalTerminalProgram,
 ): void {
   const path = program.path;
@@ -2191,12 +2214,12 @@ function assertImageTerminalProgram(
   }
 }
 
-function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
+function readImageConfig(fs: SffsImageFs): KandeloDemoConfig | null {
   return readKandeloDemoConfigFromVfs(fs);
 }
 
 function readOptionalVfsText(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   path: string,
 ): string | null {
   const bytes = readOptionalVfsFile(fs, path);
@@ -2206,7 +2229,7 @@ function readOptionalVfsText(
 }
 
 function readOptionalVfsFile(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   path: string,
 ): ArrayBuffer | null {
   try {
@@ -2227,7 +2250,7 @@ function isMissingVfsPath(err: unknown): boolean {
   return message.includes("No such file or directory");
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
+function readVfsFile(fs: SffsImageFs, path: string): ArrayBuffer {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {

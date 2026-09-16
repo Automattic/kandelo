@@ -8,7 +8,7 @@
 // Worker.terminate() frees it deterministically. The only main-thread buffer
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
+import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
@@ -74,9 +74,9 @@ export async function settleWebKitReclaim(): Promise<void> {
  * its `buildFs` reference right after; the kernel worker rebuilds and owns the
  * live VFS from these bytes.
  */
-export async function finalizeKernelOwnedImage(buildFs: MemoryFileSystem): Promise<Uint8Array> {
+export async function finalizeKernelOwnedImage(buildFs: SffsImageFs): Promise<Uint8Array> {
   const bytes = await buildFs.saveImage();
-  trackTransientImageBuffer(buildFs.sharedBuffer);
+  trackTransientImageBuffer(buildFs.transientBuffer);
   return bytes;
 }
 
@@ -84,14 +84,14 @@ export async function finalizeKernelOwnedImage(buildFs: MemoryFileSystem): Promi
  *  that the kernel worker will own. Scratch mounts (/tmp, /var, /home/user, …)
  *  are provided worker-side, so only the image's `/` content (e.g. /etc, /bin)
  *  needs to live here. */
-export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFileSystem {
-  const SharedArrayBufferCtor = SharedArrayBuffer as new (
-    byteLength: number,
-    options?: { maxByteLength?: number },
-  ) => SharedArrayBuffer;
-  const initial = Math.min(16 * 1024 * 1024, maxByteLength);
-  const sab = new SharedArrayBufferCtor(initial, { maxByteLength });
-  return MemoryFileSystem.create(sab, maxByteLength);
+export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): SffsImageFs {
+  // No `SharedArrayBuffer`. The bridge owns its own module memory and grows it
+  // as the tree does, so `maxByteLength` stops being an up-front reservation
+  // and becomes what the exported image DECLARES — the same change
+  // `tools/mkrootfs` made when it moved to this writer.
+  const fs = SffsImageFs.create();
+  fs.setImageCapacity(maxByteLength);
+  return fs;
 }
 
 /**
@@ -99,7 +99,7 @@ export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): MemoryFile
  * rootfs — the kernel-owned equivalent of the legacy empty-FS + init()-overlay
  * starting point.
  */
-export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<MemoryFileSystem> {
+export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<SffsImageFs> {
   const buildFs = createEmptyBuildFs(maxByteLength);
   await overlayEtcFromRootfs(buildFs, await fetchRootfsBytes());
   return buildFs;

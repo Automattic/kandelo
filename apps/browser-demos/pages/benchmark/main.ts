@@ -13,7 +13,7 @@
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
 import { restoreVerifiedVfsImage } from "../../../../host/src/vfs/load-image";
 import {
   createEmptyBuildFs,
@@ -90,12 +90,17 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
   return resp.arrayBuffer();
 }
 
-async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBuffer> {
-  await fs.ensureMaterialized(path);
+async function readVfsBytes(fs: SffsImageFs, path: string): Promise<ArrayBuffer> {
+  // No `ensureMaterialized`. That asked a filesystem to fetch a deferred file
+  // before reading it, which a BUILD-time image has no notion of: it holds what
+  // it was given, and anything deferred is deferred for the kernel to fetch
+  // later, not for this page. `stat` by path rather than `fstat` by descriptor
+  // for the same reason — the path is right here, and the bridge describes an
+  // image rather than a live filesystem with open-file state.
+  const size = fs.stat(path).size;
   const fd = fs.open(path, 0, 0);
   try {
-    const stat = fs.fstat(fd);
-    const buf = new Uint8Array(stat.size);
+    const buf = new Uint8Array(size);
     fs.read(fd, buf, 0, buf.length);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   } finally {
@@ -103,7 +108,7 @@ async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBu
   }
 }
 
-async function readVfsText(fs: MemoryFileSystem, path: string): Promise<string> {
+async function readVfsText(fs: SffsImageFs, path: string): Promise<string> {
   return new TextDecoder().decode(await readVfsBytes(fs, path));
 }
 

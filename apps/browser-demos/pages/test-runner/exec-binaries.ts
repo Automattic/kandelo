@@ -1,4 +1,4 @@
-import type { MemoryFileSystem } from "@host/vfs/memory-fs";
+import type { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
@@ -31,12 +31,12 @@ interface ExecBinaries {
 }
 
 export interface ExecBinarySupport {
-  populate(fs: MemoryFileSystem): void;
+  populate(fs: SffsImageFs): void;
 }
 
 /** Write a binary file to the virtual filesystem. */
 function writeFileToFs(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   path: string,
   data: ArrayBuffer,
 ): void {
@@ -48,7 +48,7 @@ function writeFileToFs(
 
 /** Populate VFS with actual executable binaries and symlinks for exec. */
 function populateExecBinaries(
-  fs: MemoryFileSystem,
+  fs: SffsImageFs,
   binaries: ExecBinaries,
 ): void {
   for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {

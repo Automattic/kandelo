@@ -237,6 +237,21 @@ export class SffsImageFs {
         this.check(this.exports.sm_symlink(t, tl, l, ll, uid, gid), "symlink", linkPath)));
   }
 
+  /**
+   * {@link symlink} under the name `RootfsOverlayWriter` asks for, so this
+   * bridge satisfies that interface.
+   *
+   * Not a second implementation: ownership was never optional in the module
+   * call, only defaulted here. The incumbent grew a `WithOwner` twin because
+   * its own `symlink` could not carry a uid, and the pairing outlived the
+   * reason — `mkdirWithOwner` already sits beside `mkdir` here for the same
+   * historical reason. Naming it rather than renaming the interface keeps this
+   * a rename problem for V-NAME rather than a behaviour change now.
+   */
+  symlinkWithOwner(target: string, path: string, uid: number, gid: number): void {
+    this.symlink(target, path, uid, gid);
+  }
+
   chmod(path: string, mode: number): void {
     this.withPath(path, (p, pl) =>
       this.check(this.exports.sm_chmod(p, pl, mode), "chmod", path));

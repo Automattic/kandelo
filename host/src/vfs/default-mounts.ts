@@ -12,7 +12,7 @@
 
 import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
-import { restoreVerifiedVfsImage } from "./load-image";
+import { restoreVerifiedVfsImageBackend } from "./load-image";
 
 /**
  * Scratch prefixes the in-kernel tmpfs (Phase 5) claims. MUST stay in exact
@@ -179,7 +179,7 @@ export async function restoreVerifiedImageMounts(
         .filter((mount) => mount.source === "image")
         .map(async (mount) => [
           mount,
-          await restoreVerifiedVfsImage(rootfsImage, {
+          await restoreVerifiedVfsImageBackend(rootfsImage, {
             maxByteLength: IMAGE_MEMFS_MAX_BYTES,
           }),
         ] as const),

@@ -36,7 +36,12 @@ export interface RootfsOverlayReader {
 
 /** The write half: creating entries and setting their metadata. */
 export interface RootfsOverlayWriter {
-  lstat(path: string): StatResult;
+  /**
+   * Only the fields this module reads. Narrowed from `StatResult` so a writer
+   * that is not a `MemoryFileSystem` can satisfy it: `SffsImageFs` describes an
+   * image, and an image records no access or change times to report.
+   */
+  lstat(path: string): Pick<StatResult, "mode" | "uid" | "gid" | "size">;
   open(path: string, flags: number, mode: number): number;
   write(
     handle: number,
@@ -44,7 +49,8 @@ export interface RootfsOverlayWriter {
     offset: HostFileOffset | null,
     length: number,
   ): number;
-  close(handle: number): number;
+  /** The return is not read here; a writer may report nothing. */
+  close(handle: number): void | number;
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
   mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void;
@@ -61,13 +67,34 @@ const { S_IFDIR, S_IFLNK, S_IFMT, S_IFREG } = FILE_MODES;
 
 // Needs `lstat` and nothing else, and is called with both a reader and a
 // writer — so it is typed to the one method rather than to either role.
-function lstatIfPresent(fs: Pick<RootfsOverlayReader, "lstat">, path: string) {
+function lstatIfPresent(
+  // The NARROW shape, so both roles pass: a reader's fuller `StatResult` is
+  // assignable to it, and a writer that describes an image (which records no
+  // access or change times) satisfies it exactly.
+  fs: { lstat(path: string): Pick<StatResult, "mode" | "uid" | "gid" | "size"> },
+  path: string,
+) {
   try {
     return fs.lstat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return null;
+    if (isNotFound(error)) return null;
     throw error;
   }
+}
+
+/**
+ * "This path is not there" from either filesystem.
+ *
+ * `MemoryFileSystem` raises `SFSError` with `code`; `SffsImageFs` raises
+ * `SffsImageError` with `errno`. Both mean ENOENT and this function is the one
+ * place that has to know it — an `instanceof` check against one class silently
+ * RETHROWS the other's not-found, which turns "copy this path if it is
+ * missing" into a crash on the ordinary case.
+ */
+function isNotFound(error: unknown): boolean {
+  if (error instanceof SFSError && error.code === ENOENT) return true;
+  return typeof error === "object" && error !== null
+    && (error as { errno?: unknown }).errno === ENOENT;
 }
 
 function readFile(
