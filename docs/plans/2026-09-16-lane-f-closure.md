@@ -86,6 +86,34 @@ mutation that had passed the entire fork suite now fails on the first call.
   pass; every reduction is banked with its reason.
 - `cargo test -p fork-codec -p fork-module-inject`; `cargo check -p host-native`.
 
+### Conformance — and the gap that had to be closed to claim it
+
+`host/test/suite-baseline.mjs` does **not** cover `tests/posix`, `tests/libc`
+or `tests/sortix`: its vitest `include` is `host/test`, `web-libs`,
+`packages/registry/*/test`, `tests/package-system` and `examples/dlopen`. Fork
+is process lifecycle, which is exactly what the validation contract says not to
+stop short of — so a closure report resting on the baseline alone would have
+been claiming more than it ran.
+
+Run against this branch:
+
+| suite | result |
+|---|---|
+| sortix `process` (fork, waitpid, zombies, setpgid, setsid) | **24 / 24 pass** |
+| sortix `signal` + `io` | **87 / 87 pass** |
+| the four `os-test-local` tests that call `fork()` — epoll fd inheritance, SysV msg/shm/sem across processes | **3 pass, 1 pre-registered XFAIL** |
+
+Those four are the only tests in the conformance trees that fork, found by
+grepping for `fork(` rather than by name.
+
+**Provisioning note for whoever repeats this.** `tests/sortix/os-test` is not
+checked out in this worktree, and `--init` refuses because the runner had
+already written a `build/` directory into the empty submodule path. The suite
+reported "Discovered 0 tests" and exited 0 — a green run of nothing. Point
+`KANDELO_OS_TEST_DIR` at a populated checkout of the **same commit**
+(`7e8f0082ab`) instead; that override exists for precisely this, and the runner
+keeps its build output on the repository's own filesystem.
+
 ## Still the maintainer's
 
 1. **Provisional ceiling raises.** `docs/surface-budget.json` carries **27**
