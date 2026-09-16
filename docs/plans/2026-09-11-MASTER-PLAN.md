@@ -425,8 +425,8 @@ never by number.
 |---|---|---|
 | **B40** | the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd` | a dead mirror stopped the build — RESOLVED `8e5dbfc26` |
 | **B41** | `setuidLazyWithoutDigest` can be closed without fixing anything | three perturb trials stopped anchoring when the graph moved |
-| **B42** | the URI relay is built and held on one unanswered question | a survivor declared observable is still surviving |
-| **B43** | the host's lazy table is empty for an SDEF image | the Xcode licence blocked spidermonkey — RESOLVED |
+| **B42** | the URI relay — LANDED 2026-09-15 | a survivor declared observable is still surviving |
+| **B43** | the host's lazy table is empty for an SDEF image — CLOSED by B42 | the Xcode licence blocked spidermonkey — RESOLVED |
 
 `B39` and `B44` are unique.
 
@@ -559,9 +559,52 @@ What is new here is the MEASURED reason the fix cannot work today — that
 record has no digest field — rather than the judgement that it should not be
 landed alone.
 
-## B42 — the URI relay is built and held on one unanswered question
+## B42 — the URI relay — LANDED 2026-09-15
 
-The kernel half is **done and green**, on
+**RESOLVED.** The maintainer chose option 2 ("host-native depends on
+`runtime-core` and builds a real SDEF image") after asking why the alternative
+inverts what the native host exists to demonstrate. `crates/host-native` now
+hands the kernel a real container and the relay landed on top of it, kernel and
+host halves together — they cannot land apart, because a kernel that names a
+URI and a host that answers to `(kind, id)` do not compose.
+
+**What the host lost, which is the point.** `exportLazyEntries()` has no
+production caller. `createDeferredUrlReader` and its inode→URL map are deleted;
+so are `HOST_DEFERRED_KIND_FILE`/`_ARCHIVE` and the archive-id→record table.
+`buildRootfsLazyWiring` now returns one provider keyed by ADDRESS.
+`hostVfsTypeScript` fell from 8818 (17 over its rebased ceiling) to ~8750.
+
+**What the host kept, and why it is not the same thing.** A URI may still have
+alternate transports (a CORS proxy, a mirror) and a declared length to judge a
+mirror by. That table is keyed by address and decides only HOW to fetch, never
+WHICH resource — an address it has no entry for is fetched directly. Transport
+policy is the host's job; identity was never supposed to be.
+
+**A boundary crossed deliberately, for the maintainer to review.** The loop
+brief says to stay out of `host/src/kernel-worker.ts`. Three lines there are a
+type annotation on a parameter that file stores and forwards without ever
+calling: `(kind: number, id: bigint, ...)` became `(uri: string, ...)`. The
+seam's contract changed, so the annotation moved with it. No logic, no new host
+behaviour, one line fewer. There was no way to land the relay without it short
+of weakening the type to dodge the rule, which would have been worse.
+
+**Legacy formats lose byte-serving, asserted rather than hidden.** A
+`KLZY`-described deferred file or archive records a length and no address, so a
+read is `EIO` — refused by the kernel for having nothing that says where the
+bytes are, not by a host that happened to have no transport. `EIO` and never
+`EAGAIN`: the kernel parks and retries on `EAGAIN`, so a file with no address
+would hang its reader forever. This had one real consequence:
+`host/test/exec-lazy-archive-binary.test.ts` built its fixture with
+`MemoryFileSystem` (which writes `KLZY`) and began failing with
+`rootfs read failed`. It was ported to `SffsImageFs`, the format production
+ships, rather than deleted — it still execs a binary that exists ONLY inside a
+lazy archive, still counts real inbound HTTP requests, and now additionally
+proves the address survived the round trip through the image, since the kernel
+could only have named that URL by reading it back out of the `SDEF` record.
+
+### The record of why it was held (kept, because the reasoning was the work)
+
+The kernel half was **done and green** on
 `brandonpayton/lane-y-uri-relay-wip` (`f0244e5fa`), deliberately not on the
 lane branch. `ByteReq::Base`/`Archive` collapse into one
 `ByteReq::Deferred { uri, offset }`; `HostIO::blob_read` and `fetch_archive`
@@ -605,7 +648,28 @@ SDEF v5 carries the address, the kernel verifies the digest, every production
 producer emits both, and `tools/mkrootfs` writes the rootfs image with the Rust
 writer. The relay re-applies onto whichever answer comes back.
 
-## B43 — the host's lazy table is empty for an SDEF image (SCOPE CORRECTED)
+*(It did. Option 2 came back, and the relay re-applied with three conflict
+hunks — two of them textual accidents where git spliced the relay's rewrite of
+`host_fetch_deferred` into the `host_image_read` block that had replaced it.)*
+
+## B43 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
+
+**CLOSED by the URI relay (B42), as a side effect rather than as a fix.** The
+table that was empty no longer exists: the kernel names the resource by the URI
+its own image recorded, so there is nothing for a host table to hold and
+nothing for it to be empty of. The pin in
+`host/test/sdef-image-runtime.test.ts` — an `it.fails` with a comment saying
+*"THIS TEST WILL START FAILING when that lands — that is the point"* — started
+failing on the first run after the relay was applied, which is how it was
+confirmed rather than assumed. It is a plain `it` again and the `KLZY` control
+beside it still passes, so the test still distinguishes the format from the
+harness.
+
+The scope correction below is kept in full. Two invalid claims were made about
+this defect before one was established, and the record of how they were wrong
+is worth more than the entry.
+
+### The entry as filed (SCOPE CORRECTED)
 
 **CORRECTED 2026-09-15, twice, and the correction matters more than the
 entry.** This was first filed as "the migration breaks the canonical Node mount
@@ -675,6 +739,184 @@ defect again, one layer up. Removing it is host-lane work, not lane Y's.
 **Browser status unknown.** `live-setup.ts` boots kernel-owned and may not use
 `DEFAULT_MOUNT_SPEC` at all, so the browser may be unaffected — but B40 blocks
 the suite that would say.
+
+## B45 — the browser rebuilds the rootfs image through the legacy writer, losing every address
+
+**OPEN. Found 2026-09-15 by reading the browser boot path after the URI relay
+landed on Node, then MEASURED on Node rather than left as a reading.** Not yet
+reproduced in a browser — B40 blocks the suite — but the losing step is host
+code with no browser in it, and it was run directly:
+
+Measured twice: once on a synthetic one-file image, then on the REAL
+`host/wasm/rootfs.vfs` this branch builds, which is the artifact the browser
+actually fetches.
+
+| step, on the real `rootfs.vfs` (3,608,657 bytes) | deferred files visible |
+|---|---|
+| the Rust reader — what the kernel sees | **65**, with 65/65 carrying an address and 65/65 a digest |
+| `MemoryFileSystem.fromImage(...)` — the browser's step 2 | **0** |
+| after `saveImage()`, what the kernel would receive | **0 files, 0 archives** |
+
+**All 65 lazy binaries disappear.** The synthetic run isolates the mechanism —
+one deferred file, URI and 32-byte digest written, read back intact by the Rust
+reader (so the image is sound), seen as 0 by the legacy reader.
+
+**The failure is SILENT, not an error, and the shape of it is the problem.**
+Measured on the same real image, per file:
+
+```
+before the round trip:  /usr/bin/bash  size=3,025,067  deferred=true
+after  the round trip:  /usr/bin/bash  size=0  mode=755  deferred=false
+```
+
+The file is not missing. It is EMPTY and marked COMPLETE. `ls -l` shows a
+mode-755 file, `[ -x ]` passes, and `deferred=false` means the kernel will never
+attempt a fetch — it believes it already holds the whole contents. There is no
+`EAGAIN`, no retry and no error path, because nothing in the image says anything
+is outstanding. The image asserts the file is whole.
+
+So the user-visible symptom is `ENOEXEC` — "Exec format error" — from exec'ing a
+zero-byte binary. **That is the same misleading symptom this document already
+records one session chasing** into musl, the sysroot and the overlay, all of
+them innocent (see B43's scope correction).
+
+It also silently removes lane S's work on that path: the same round trip drops
+all 65 digests, so the mechanism that refuses substituted bytes is not bypassed
+by an attacker but erased by a build step — on the host where untrusted images
+actually arrive.
+
+**The browser's own lazy tests are structurally blind to it.**
+`test/lazy-archive-runtime.spec.ts` and `test/package-deferred-tree-browser.spec.ts`
+build their fixtures THROUGH `MemoryFileSystem`, so they exercise the `KLZY`
+path that still works and cannot reach the `SDEF` path that does not. The
+coverage points away from the defect, which is why a browser run could come back
+green while every lazy binary is a zero-byte stub. The re-saved
+image carries BOTH an `SDEF` section and a freshly written EMPTY `KLZY` one,
+and `load_image_inner` takes the `KLZY` branch when it is present — so the
+legacy writer's empty section overrides the real one it could not read.
+
+**Attribution, which is not the relay.** The relay did not cause this. The
+legacy reader has never been able to see an `SDEF` section, so the browser
+broke the moment `tools/mkrootfs` started writing one — lane Y's own commit
+"mkrootfs writes the rootfs image with the Rust writer". It is contained to
+this branch and has never shipped, but it means the branch must not merge
+until it is fixed.
+
+**The parent's green browser run does not contradict this, and checking that it
+does not is the reason to state it.** The parent recorded 164 passed / 14
+failed with "nothing attributable to any of the three lane Y/V tranches" — but
+`0dda2bbd9` ("mkrootfs writes the rootfs image with the Rust writer") is NOT an
+ancestor of the parent. That run fetched a `KLZY` rootfs image, which the legacy
+reader reads correctly. The defect needs an `SDEF` image to appear, and only
+this branch produces one.
+
+Both artifacts exist on this machine and show the split directly:
+`host/wasm/rootfs.vfs` (built 15:24, after the migration) carries `SDEF` and no
+`KLZY`; `local-binaries/source-only-v1/programs/wasm32/rootfs.vfs` (built 12:44,
+before it) carries `KLZY` and no `SDEF`.
+
+`apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` boots like this:
+
+1. fetch `rootfs.vfs`, which `tools/mkrootfs` now writes with the Rust writer,
+   so it carries an `SDEF` section where every deferred file has a typed URI
+   and digest;
+2. `MemoryFileSystem.fromImage(fetchedVfsImageBytes, …)` — the legacy
+   TypeScript reader (line ~1180);
+3. apply per-session mutations (demo homes, `/etc` overlays);
+4. `finalizeKernelOwnedImage(buildFs)` → `buildFs.saveImage()` — the legacy
+   TypeScript WRITER, which emits `KLZY` (line ~1266);
+5. hand THAT image to the kernel.
+
+`KLZY` has no field for an address. So step 4 destroys what step 1 fetched, and
+under URI addressing the kernel has nothing to fetch a deferred file with —
+every lazy binary in the browser reads `EIO`. `apps/browser-demos/lib/
+kernel-owned-boot.ts` puts the same round trip under `createEmptyBuildFs` and
+`createBuildFsWithEtc`, which the test-runner page and most specs go through.
+
+**This is the "filesystem we implement twice" being exactly the defect lane V
+is named for, rather than merely a duplication to tidy.** The second
+implementation is not just redundant here; it is LOSSY, and it is lossy
+precisely in the fields SDEF v5 added.
+
+**The guard for this already exists, one directory away.**
+`tools/mkrootfs/src/cli/sdef-reader-guard.ts` (`refuseImageThisReaderCannotSee`)
+was written for exactly this: a reader answering questions about an image whose
+deferred half it cannot see. It guards the `mkrootfs` CLI. The browser path has
+no equivalent, which is why the same defect is loud in one place and silent in
+the other.
+
+### The fix, designed 2026-09-15 — and the relay already paid for half of it
+
+Reading what the browser actually MUTATES between `fromImage` and `saveImage`
+splits the problem cleanly. Everything in the list is an ordinary filesystem
+operation — `writeVfsFile` for config, `ensureDirRecursive`,
+`patchWordPressRuntimeConfig`, `patchMariaDbUnixSocketConfig`,
+`writeVfsBinary` to stage the init program, `ensureDemoHomes`,
+`stageConfiguredAssets` — all of which `SffsImageFs` already supports, because
+`tools/mkrootfs` builds the entire rootfs with them.
+
+**Exactly one operation is not ordinary, and it is the one that should not
+exist**: `bindImageOwnedRuntimeUrls` (`lib/init/image-owned-runtime-urls.ts`)
+rewrites every lazy URL INSIDE the image, enumerating them through
+`exportLazyEntries()` so a deployment can point them at vite-hashed asset
+paths or a CDN base.
+
+Under URI addressing that is the wrong shape, and the relay has already made it
+unnecessary. The image's URI is the canonical ADDRESS. A deployment's hashed
+asset path is TRANSPORT POLICY — which is precisely what
+`buildRootfsLazyWiring` now keeps, keyed by address, deciding only how to fetch
+and never which resource. So:
+
+1. **Stop rewriting the image; map addresses at FETCH time.**
+   `resolveGroupedAssetUrl` becomes part of the browser's fetcher rather than a
+   mutation of the image. This removes the host's last reason to enumerate the
+   image's deferred entries at all — which is the very operation B45 breaks on —
+   and it is the relay's own design applied one layer further out.
+2. **Port the remaining mutations from `MemoryFileSystem` to `SffsImageFs`.**
+   Needed even with (1), because the round trip drops the `SDEF` section
+   whatever the reason for the round trip. This is the same migration
+   `tools/mkrootfs` already took.
+
+**A guard belongs here either way**, and it already exists one directory over:
+`refuseImageThisReaderCannotSee`. Whatever reads an image and answers questions
+about it must refuse an image whose deferred half it cannot see. Had the browser
+path carried it, this would have been a loud refusal on the first run instead of
+65 zero-byte binaries.
+
+**The end state remains (3): stop rebuilding the image at all.** The kernel owns
+the filesystem; a host that fetches an image, parses it, mutates a tree and
+re-encodes it is doing the kernel's job twice and losing information doing it.
+The config edits and demo homes are mutations to a MOUNTED filesystem, and the
+`write_vfs_file` worker RPC already exists for exactly that. (1) and (2) are the
+steps that make (3) reachable rather than a rewrite.
+
+**Two ways out, and the second is the end state.**
+
+1. **Port the browser build path to `SffsImageFs`**, the same migration
+   `tools/mkrootfs` already took. Direct, and preserves address and digest
+   because the Rust writer is what emits them.
+2. **Stop rebuilding the image at all.** The kernel owns the filesystem; a host
+   that fetches an image, parses it, mutates a tree and re-encodes it is doing
+   the kernel's job twice and losing information in the process. The per-session
+   mutations (demo homes, `/etc`) are the real requirement, and they are
+   mutations to a MOUNTED filesystem, not edits to an image file. This is where
+   lane V ends, and the round trip is the thing standing in the way.
+
+Known consumers of the round trip, from a census of `MemoryFileSystem` in
+`apps/browser-demos/` and `web-libs/` (27 files; these are the ones that
+register DEFERRED content, which is what breaks):
+`pages/benchmark/main.ts` (a product page, not a test),
+`test/lazy-archive-runtime.spec.ts`, `test/package-deferred-tree-browser.spec.ts`,
+`test/kernel-allocator-churn.spec.ts`, `test/rootfs-export.spec.ts`,
+`pages/network/network-demo-worker.test.ts`,
+and `lib/init/rootfs-lazy-files.ts` / `shell-lazy-files.ts`, whose whole job is
+rewriting lazy URLs in a structure the kernel will no longer read.
+
+**Why it was not caught on Node.** It was, in the same shape and fixed the same
+day: `host/test/exec-lazy-archive-binary.test.ts` built its fixture with
+`MemoryFileSystem` and started failing with `rootfs read failed`; it was ported
+to `SffsImageFs`. The browser has the identical defect in product code rather
+than in a fixture, and B40 is why nothing reported it.
 
 ## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
 
@@ -3967,10 +4209,14 @@ bytes nothing can verify. **The gate moved too**, which lane S asked for: the
 measure named one string in one file, satisfiable while the image had nowhere
 to put a digest; it names four layers now, one per place the chain can break.
 
-**Held: the URI relay** (B42). Its kernel half is built and green on
-`brandonpayton/lane-y-uri-relay-wip`, blocked on `crates/host-native`, whose v3
-manifest has no field for an address. Three ways out, each costing something
-only the maintainer should spend — see B42.
+**Landed: the URI relay** (B42), 2026-09-15, kernel and host halves together —
+they do not compose apart. The maintainer chose option 2, so `host-native`
+builds a real `SDEF` image and the block is gone. The host's id→URL table went
+with it, which closed B43 as a side effect and repaid `hostVfsTypeScript`
+(8818, over its rebased ceiling, down to ~8750). Evidence: runtime-core 2198,
+sffs-module 80, host-native 74, surface budget 101, and
+`exec-lazy-archive-binary` execs a binary that exists only inside a lazy
+archive with a real inbound HTTP request counted.
 
 **The risk a digest introduces, checked rather than assumed.** A digest turns
 "the host served something else" from an invisible substitution into a hard
