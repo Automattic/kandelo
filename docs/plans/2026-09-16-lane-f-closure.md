@@ -285,10 +285,31 @@ that found all of this.
    So three raises are actually awaiting a ruling. The other two were taken and
    given back within the session; they are listed only so the `PROVISIONAL`
    markers in the ledger are not read as five outstanding debts.
-2. **The budget-ledger conflict with the parent branch.** A trial merge
-   conflicts in exactly two files — `docs/surface-budget.json` and
-   `host/test/surface-budget.test.ts` — because both lanes evolved the same
-   surfaces. Not merged, per instruction.
+2. **The merge conflict with the parent branch: FIVE files, 18 hunks.** Not
+   merged, per instruction. An earlier version of this item said "exactly two
+   files"; that was measured before this lane's last commits and was wrong by
+   the time anyone would have acted on it. Re-measured with
+   `git merge-tree --write-tree` against `brandonpayton/rust-first-abi44-
+   reconcile` at `0c0246390`, which resolves nothing in the working tree:
+
+   | File | Hunks | What it is |
+   |---|---|---|
+   | `host/test/surface-budget.test.ts` | 8 | the real work |
+   | `docs/surface-budget.json` | 7 | the real work |
+   | `docs/plans/2026-09-11-MASTER-PLAN.md` | 1 | both lanes edited the lane table |
+   | `host/src/platform/native-metadata.ts` | 1 | **comment only** |
+   | `host/src/process-lifecycle.ts` | 1 | **comment only** |
+
+   The two source conflicts are not source conflicts. Both lanes independently
+   made the SAME two browser-parity fixes — guarding a bare `process` read with
+   `typeof process !== "undefined"`, and importing past the `./vfs` barrel so
+   `node:fs` does not reach the browser kernel worker — and the code agrees on
+   both. Only the prose explaining it differs. Take either side's comment.
+
+   That leaves the ledger as the whole of the merge: 15 of the 18 hunks. Keep
+   BOTH lanes' entries when resolving. A resolution that keeps one side's
+   history silently loses either a ceiling somebody owes a ruling on or a
+   reduction somebody earned, and the budget will still pass either way.
 3. **`forkModuleHostEntries`' target of 5**, which census 195 argues is
    reachable only by diluting; ~8 is realistic once the follow-up lands.
 4. **`workerMainForkTypeScript`'s target of 1200**, labelled a proposal in the
