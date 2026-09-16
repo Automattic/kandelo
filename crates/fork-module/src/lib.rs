@@ -7876,6 +7876,36 @@ mod wasm {
         -1
     }
 
+    /// Guest-facing `env.__wpk_fork_ref_exn_ingress_throw(token)`.
+    ///
+    /// The other half of the ingress pair, and the half that can never run.
+    ///
+    /// An ingress token is minted by ONE thing: the encode side of the
+    /// unknown-tag path, `__wpk_fork_ref_exn_broker_encode` above, which
+    /// refuses with `EOPNOTSUPP` and a poisoned recipe. Nothing else mints one
+    /// anywhere in the tree. So a guest reaching this has been handed a token
+    /// that no code path produced, and the honest answer is the bound it ran
+    /// into, not an invented exception.
+    ///
+    /// # Why it traps rather than returning
+    ///
+    /// The instrumenter emits `unreachable` immediately after this call
+    /// (`module_exception_codec.rs`), because the import's contract is that it
+    /// does not come back. Returning normally would therefore trap one
+    /// instruction later in the GUEST, with the guest's own frame and no
+    /// errno set. Trapping here sets `EOPNOTSUPP` first, so a host that reads
+    /// `fm_last_errno()` after the trap learns which refusal it hit.
+    ///
+    /// This replaces a `fork-guest-host-floor` member that threw a JavaScript
+    /// `Error`. The message is gone and the errno replaces it -- a fair trade
+    /// for an import no JS host has to implement any more, on a path nothing
+    /// can reach. Census section 191.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_ingress_throw(_token: u32) -> () {
+        set_err(Errno::EOPNOTSUPP);
+        wasm_intr::unreachable()
+    }
+
     /// Intern every witness this layout recorded, newest-first ordinal order,
     /// returning their recipe ids.
     ///

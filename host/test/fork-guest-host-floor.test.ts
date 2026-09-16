@@ -43,16 +43,12 @@ describe("fork host identity floor", () => {
     ).not.toThrow();
   });
 
-  it("delegates both throws to the activation's exported throwers", () => {
+  it("delegates the throw to the activation's exported thrower", () => {
     // The implementation route section 109 established: the import does not
     // throw from JavaScript -- which would reach the guest with the wrong tag --
     // it calls a guest EXPORT that raises a tagged exception in wasm.
     const calls: Array<[string, number]> = [];
     const thrower = {
-      throwIngress: (token: number): never => {
-        calls.push(["ingress", token]);
-        throw new Error("wasm raised");
-      },
       throwRecipe: (recipe: number): never => {
         calls.push(["recipe", recipe]);
         throw new Error("wasm raised");
@@ -61,14 +57,10 @@ describe("fork host identity floor", () => {
     const { floor } = createForkGuestHostFloor(
       deps({ exceptionThrower: () => thrower }),
     );
-    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(11)).toThrow(/wasm raised/);
     expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(22)).toThrow(
       /wasm raised/,
     );
-    expect(calls).toEqual([
-      ["ingress", 11],
-      ["recipe", 22],
-    ]);
+    expect(calls).toEqual([["recipe", 22]]);
   });
 
   it("still fails loud if a bound thrower RETURNS instead of throwing", () => {
@@ -78,13 +70,9 @@ describe("fork host identity floor", () => {
     const { floor } = createForkGuestHostFloor(
       deps({
         exceptionThrower: () => ({
-          throwIngress: (() => undefined) as unknown as (t: number) => never,
           throwRecipe: (() => undefined) as unknown as (r: number) => never,
         }),
       }),
-    );
-    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(
-      /did not throw/,
     );
     expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(1)).toThrow(
       /did not throw/,
@@ -103,7 +91,7 @@ describe("fork host identity floor", () => {
   // capability it needed. Its coverage moved to the V8 capture harness, where
   // the scan runs against a real catalog.
 
-  it("fails loud on the two throws rather than silently doing nothing", () => {
+  it("fails loud on the throw rather than silently doing nothing", () => {
     const { floor } = createForkGuestHostFloor(deps());
     // Returning quietly would let a fork replay continue past an exception it
     // never delivered, which is the failure this guards.
@@ -115,7 +103,6 @@ describe("fork host identity floor", () => {
     // -- which would arrive with the wrong tag -- never happens. They are
     // unbound because the maintainer deferred them, not because a host cannot
     // do it. Census section 109.
-    expect(() => floor.__wpk_fork_ref_exn_ingress_throw(1)).toThrow(/did not throw/);
     expect(() => floor.__wpk_fork_ref_exn_broker_throw_recipe(1)).toThrow(
       /did not throw/,
     );
@@ -123,7 +110,7 @@ describe("fork host identity floor", () => {
     // sent this lane's census down the wrong path once already.
     let message = "";
     try {
-      floor.__wpk_fork_ref_exn_ingress_throw(1);
+      floor.__wpk_fork_ref_exn_broker_throw_recipe(1);
     } catch (error) {
       message = (error as Error).message;
     }

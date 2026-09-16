@@ -139,9 +139,13 @@ describe("fork guest imports", () => {
     // implementation, the host keeps running TypeScript nobody needs -- and
     // `forkGuestImportsUnserved` in docs/surface-budget.json would disagree with
     // this file. That is the drift this pins.
-    // TWO, and NEITHER is a capability floor any more: both are the `exn_*`
-    // throws the maintainer deferred, and census section 174 records the
-    // drive-slot shape that would serve them from the module.
+    // ONE, and it is not a capability floor: it is the `exn_*` recipe throw
+    // the maintainer deferred, and census section 174 records the drive-slot
+    // shape that would serve it from the module. Its ingress twin left at two:
+    // that half only ever said "no ingress token exists, because the module
+    // refuses the encode that would mint one", and stating a refusal is not
+    // host work -- the module sets the errno and traps where the guest's own
+    // `unreachable` would have trapped one instruction later.
     //
     // It was six until the module took over encode_funcref and
     // table_mutation_commit, and four until table_state_owned moved -- the host
@@ -152,7 +156,7 @@ describe("fork guest imports", () => {
     // gone the import was `|value| value` -- and an identity function over an
     // externref is something the injector emits and Rust cannot (section 191).
     // This number falling is what the lane's progress looks like.
-    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(2);
+    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(1);
     expect([...FORK_GUEST_HOST_FLOOR_NAMES]).toEqual(
       [...FORK_GUEST_HOST_FLOOR_NAMES].sort(),
     );

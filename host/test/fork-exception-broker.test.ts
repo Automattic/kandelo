@@ -179,10 +179,10 @@ describe("fork exception broker", () => {
     expect(() => broker.throwRecipe(1)).toThrow(/without throwing/);
   });
 
-  it("says which bound the ingress half ran into", () => {
-    // Not "unimplemented": nothing can mint a token, because the module refuses
-    // the encode that would have made one.
-    const { broker } = harness();
-    expect(() => broker.throwIngress(1)).toThrow(/EOPNOTSUPP/);
-  });
+  // The ingress half's test went with the method. It asserted that the broker
+  // named the bound it ran into -- nothing can mint an ingress token, because
+  // `__wpk_fork_ref_exn_broker_encode` is the only minter and the module
+  // refuses it with EOPNOTSUPP. The module states that bound itself now, so
+  // the guest import never reaches JavaScript; `fork-module-host-obligation`
+  // asserts the module exports it. Census 191.
 });

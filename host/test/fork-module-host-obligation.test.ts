@@ -299,6 +299,34 @@ describe("fork-module host obligation", () => {
       }
     });
 
+    it("serves the guest's ingress throw by refusing it, with an errno", () => {
+      // `__wpk_fork_ref_exn_ingress_throw` was a `fork-guest-host-floor` member
+      // whose body threw an `Error` saying no ingress token exists. That is
+      // true -- the only minter is `__wpk_fork_ref_exn_broker_encode`, which
+      // the module refuses with EOPNOTSUPP -- and stating a bound is not host
+      // work. Census section 191.
+      //
+      // TRAPPING IS THE CONTRACT, not an implementation detail: the
+      // instrumenter emits `unreachable` immediately after this call, so an
+      // implementation that RETURNED would trap one instruction later in the
+      // guest's own frame with no errno set. Trapping here sets the errno
+      // first, which is the whole reason to do it in the module.
+      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const instance = instantiate({ ...caps.imports, ...moduleTables() });
+      const ingress = instance.exports[
+        "__wpk_fork_ref_exn_ingress_throw"
+      ] as (token: number) => void;
+      expect(typeof ingress, "the module must export the guest's import").toBe(
+        "function",
+      );
+      expect(() => ingress(1)).toThrow(WebAssembly.RuntimeError);
+      const lastErrno = instance.exports.fm_last_errno as () => number;
+      // 95 is EOPNOTSUPP. Read AFTER the trap on purpose: a trap unwinds to the
+      // host but leaves the instance's memory and globals intact, so the sticky
+      // errno is exactly what survives to explain it.
+      expect(lastErrno()).toBe(95);
+    });
+
     it("serves the guest's provenance hook, and serves it as an IDENTITY", () => {
       // `__wpk_fork_ref_provenance_externref` used to be a host import. Its
       // host body recorded a `WeakMap` nothing ever read, so what was left of

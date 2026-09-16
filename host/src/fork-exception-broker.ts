@@ -139,22 +139,10 @@ export class ForkExceptionBroker implements ForkGuestExceptionThrower {
       + `${THROW_RECIPE}(${recipeId}) without throwing`);
   }
 
-  /**
-   * Throw the exception an ingress token names -- which nothing can mint.
-   *
-   * The token came from `encodeFromSlot`, whose guest import the fork-module
-   * now serves and refuses (`__wpk_fork_ref_exn_broker_encode`, `EOPNOTSUPP`):
-   * a capture cannot carry an exception whose tag no activation's codec claims,
-   * and says so structurally by returning a poisoned recipe. So no token ever
-   * exists, and the honest implementation of this half is to say which bound it
-   * ran into rather than to keep a map that can never be filled. Lifting it is
-   * F3's capture-side drive work, not a host change.
-   */
-  throwIngress(token: number): never {
-    throw new Error(`${this.label}: no ingress token ${token} exists. The `
-      + `module refuses __wpk_fork_ref_exn_broker_encode with EOPNOTSUPP, so `
-      + `nothing mints one. See census 159.`);
-  }
+  // WHAT USED TO BE HERE: `throwIngress`, which threw an `Error` saying no
+  // ingress token exists. The module states that bound itself now --
+  // `__wpk_fork_ref_exn_ingress_throw` sets `EOPNOTSUPP` and traps -- so the
+  // guest import no longer reaches JavaScript at all. See census 191.
 
   private makeGraphResident(): void {
     if (this.resident) return;

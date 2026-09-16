@@ -47,12 +47,19 @@ import {
  * more: the module serves both, given the one host capability they needed
  * (`__wpk_fork_host_func_identity`).
  *
- * The two `exn_*` throws are here for a different reason again, and it is NOT a
- * capability limit. They must re-enter wasm throwing a tagged exception, and a
+ * `exn_ingress_throw` used to be here and is not any more. Its host body threw
+ * an `Error` saying no ingress token exists, because the only minter of one is
+ * `__wpk_fork_ref_exn_broker_encode`, which the module refuses with
+ * `EOPNOTSUPP`. A refusal is not host work: the module states the same bound
+ * itself, sets the errno, and traps where the instrumenter's `unreachable`
+ * would have trapped one instruction later anyway.
+ *
+ * The remaining `exn_*` throw is here for a different reason again, and it is
+ * NOT a capability limit. It must re-enter wasm throwing a tagged exception, and a
  * JS `throw` cannot do that -- it crosses back as a foreign exception with the
  * wrong tag. But the host import does not have to throw: it can call a guest
- * EXPORT that throws, which is how `fork-exception-broker.ts` implements both.
- * They sit here because the maintainer deferred them to last. Census sections
+ * EXPORT that throws, which is how `fork-exception-broker.ts` implements it.
+ * It sits here because the maintainer deferred it to last. Census sections
  * 109 and 174 record that, and that the module could serve them the same way --
  * it already calls guest exports through its drive table, and it already serves
  * this family's third import, `__wpk_fork_ref_exn_broker_encode`.
@@ -68,14 +75,12 @@ import {
 const FORK_IMPORT_PREFIX = "__wpk_fork_";
 
 export interface ForkGuestHostFloor {
-  readonly __wpk_fork_ref_exn_ingress_throw: (recipe: number) => void;
   readonly __wpk_fork_ref_exn_broker_throw_recipe: (recipe: number) => void;
 }
 
 /** The floor's member names, for callers that need to reason about the set. */
 export const FORK_GUEST_HOST_FLOOR_NAMES = [
   "__wpk_fork_ref_exn_broker_throw_recipe",
-  "__wpk_fork_ref_exn_ingress_throw",
 ] as const;
 
 /**
