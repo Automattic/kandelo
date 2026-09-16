@@ -8,7 +8,7 @@ import manZipUrl from "@binaries/programs/man.zip?url";
 import coreutilsDocsZipUrl from "@binaries/programs/coreutils-docs.zip?url";
 import lsofDocsZipUrl from "@binaries/programs/lsof-docs.zip?url";
 
-const SHELL_LAZY_ARCHIVES: Record<string, string> = {
+export const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "vim.zip": vimZipUrl,
   "nethack.zip": nethackZipUrl,
   "ruby.zip": rubyZipUrl,

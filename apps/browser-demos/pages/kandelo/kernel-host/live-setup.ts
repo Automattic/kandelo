@@ -4,7 +4,7 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
-  bindImageOwnedRuntimeUrls,
+  imageOwnedRuntimeUrlTable,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import {
@@ -1255,10 +1255,18 @@ async function bootProfile(
   // Serialize the assembled image to transferable bytes, then let `buildFs`
   // go out of scope. `saveImage()` emits raw (uncompressed) bytes that
   // `MemoryFileSystem.fromImage` restores directly in the worker.
-  // WHY: this is the final synchronous image mutation. Binding before any
-  // later staging could leave newly-added lazy metadata outside the manifest
-  // authority copied from the authenticated product activation.
-  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);
+  // NOT a mutation of the image. This used to be `bindImageOwnedRuntimeUrls`,
+  // which rewrote every lazy URL inside `buildFs` so the stored records already
+  // named this deployment's asset paths. That was the last host-side write to
+  // the image's deferred half — and since `tools/mkrootfs` began writing `SDEF`
+  // it silently erased it, because the writer underneath cannot express that
+  // section (defect B45: 65 lazy binaries became zero-byte files marked
+  // complete).
+  //
+  // The image keeps its canonical addresses. WHERE this deployment serves them
+  // is transport policy, which the URI relay already made the host's job, so it
+  // travels beside the image as a table rather than being written into it.
+  const lazyUrlMap = imageOwnedRuntimeUrlTable(loadedVfs.lazyAssets);
   tick("assembling kernel-owned VFS image...");
   // Serialize to transferable bytes + register the transient build buffer for
   // reclamation tracking, then let `buildFs` fall out of scope when bootProfile
@@ -1329,6 +1337,7 @@ async function bootProfile(
       ? {
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
+        lazyUrlMap,
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,

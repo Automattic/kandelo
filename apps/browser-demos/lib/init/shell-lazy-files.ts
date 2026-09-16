@@ -65,7 +65,7 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   "sqlite-cli": sqlite3WasmUrl,
 };
 
-const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
+export const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
   SHELL_LAZY_BINARY_SPECS.map((spec) => [
     shellLazyPlaceholderUrl(spec),
     SHELL_LAZY_ASSET_URLS[spec.id],

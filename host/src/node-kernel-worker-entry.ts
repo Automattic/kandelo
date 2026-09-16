@@ -762,7 +762,6 @@ async function buildVirtualPlatformIO(
     gid?: number;
   }>,
   sessionSeedTrees?: InitMessage["sessionSeedTrees"],
-  rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
   rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
 ): Promise<VirtualPlatformIO> {
@@ -807,10 +806,12 @@ async function buildVirtualPlatformIO(
     ? rootMount.backend
     : null;
   if (rootfsMemfs) {
-    // No rewriteLazy*Urls here any more, so `rootfsLazyUrlBase` is not read on
-    // this path: the deployment base is applied when the overlay reads its
-    // metadata out of the container, and nothing mutates a stored record to
-    // say where bytes live.
+    // No rewriteLazy*Urls here any more, and this function no longer TAKES
+    // `rootfsLazyUrlBase` — it was a parameter nothing in the body read, kept
+    // alive by two call sites passing it. The deployment base is applied where
+    // it is actually used, when `createBaseImageFromContainer` reads the
+    // container's metadata, and nothing mutates a stored record to say where
+    // bytes live.
     const lazyFetcher = rootfsLazyAssets !== undefined
       ? createClosedLazyAssetFetcherFromOwnedAssets(rootfsLazyAssets)
       : rootfsLazyAssetSources !== undefined
@@ -890,7 +891,6 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsMountSpec,
       msg.extraMounts,
       msg.sessionSeedTrees,
-      msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
       msg.rootfsLazyAssetSources,
     )

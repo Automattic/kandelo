@@ -15,7 +15,6 @@ import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "@host/worker-entry-browser.ts?worker&url";
 import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
-import { bindImageOwnedRuntimeUrls } from "../../lib/init/image-owned-runtime-urls";
 import {
   createPagesVfsProductLoader,
   type PagesVfsProductEntry,
@@ -119,12 +118,16 @@ async function loadActivatedRootfs(): Promise<ArrayBuffer> {
   const activation = await CANONICAL_PAGES_VFS_LOADER!.activate(
     "platform-rootfs",
   );
-  const fs = MemoryFileSystem.fromImage(new Uint8Array(activation.imageBytes));
-  // The network worker mounts image bytes directly, so it must consume the
-  // same authenticated activation authority as the main image assembler.
-  bindImageOwnedRuntimeUrls(fs, activation.lazyAssets);
-  const image = await fs.saveImage();
-  return image.slice().buffer;
+  // The activation's bytes, unchanged. This used to load them into a
+  // `MemoryFileSystem`, rewrite every lazy URL and re-save — which was a round
+  // trip through a writer that cannot express the `SDEF` section, so it emptied
+  // the image's deferred half (defect B45).
+  //
+  // Nothing replaces the rewriting here, because nothing needed it: the other
+  // branch of `loadArtifacts` fetches `rootfsVfsUrl` and mounts it as written,
+  // so the raw addresses already had to work. The activated branch was the
+  // asymmetric one, and it is now the same shape.
+  return activation.imageBytes.slice(0) as ArrayBuffer;
 }
 
 function createProcessMemory(ptrWidth: 4 | 8, initialPages = 17): WebAssembly.Memory {

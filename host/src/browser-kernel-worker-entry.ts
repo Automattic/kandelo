@@ -678,15 +678,40 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // in-kernel LazyMember path fetches raw archives over the identical
   // transport (closed-asset bundle or CORS proxy) as System A's first-touch
   // materialization.
+  // Resolve an ADDRESS the image recorded to the URL this deployment serves it
+  // at, immediately before fetching it. The image is never rewritten: it holds
+  // the canonical address, and where those bytes actually live is transport
+  // policy, which is the host's job and now travels as data (`lazyUrlMap` for a
+  // build whose asset names are known statically, `lazyAssetAuthority` for one
+  // that computes them against a manifest).
+  //
+  // An address neither shape recognises is fetched as written, which is the
+  // courier contract working rather than a hole in a table: the image said
+  // where the bytes are, and nothing here knows better.
+  // A TABLE, computed by the app, not a resolver running here. The deployment
+  // knows its own asset names -- it imports every one of them -- so it can
+  // build the whole mapping without asking the image what it contains. That
+  // matters twice over: enumerating an image's deferred entries host-side is
+  // the operation B45 is about, and a resolver here would need `web-libs`,
+  // which `host/src` is not allowed to import.
+  //
+  // An address the table does not carry is fetched as written, which is the
+  // courier contract working rather than a hole: the image said where the
+  // bytes are, and nothing here knows better. An address NO deployment can
+  // serve is a build-time defect, and belongs to the builder to refuse.
   let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
   if (msg.closedLazyAssets !== undefined) {
+    // NOT wrapped: a closed-asset bundle is already keyed by the canonical URL
+    // the image stores, so it resolves the address itself and a second mapping
+    // would look one up that was never put in.
     rootfsLazyFetcher = createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets);
     memfs.setLazyFetcher(rootfsLazyFetcher);
   } else if (corsProxyLazyFetcher !== undefined) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
     // Lazy VFS must read and verify release-asset bytes, which requires CORS.
     // CORP alone cannot make an opaque response body readable to JavaScript.
-    rootfsLazyFetcher = corsProxyLazyFetcher;
+    rootfsLazyFetcher = (url, init) =>
+      corsProxyLazyFetcher(msg.lazyUrlMap?.[url] ?? url, init);
     memfs.setLazyFetcher(rootfsLazyFetcher);
   }
   // `/dev/shm` is NOT mounted here. POSIX shared memory moved into the

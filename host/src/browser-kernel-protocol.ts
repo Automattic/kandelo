@@ -179,6 +179,22 @@ export interface InitMessage {
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
+  /**
+   * How to FETCH an address the image recorded, for a deployment that serves
+   * those bytes somewhere other than where the image names them.
+   *
+   * The image's URI is the canonical address and nothing rewrites it. This is
+   * transport policy, which the relay already made the host's job — so it
+   * travels as DATA rather than as a rewritten image.
+   *
+   * A TABLE and not a resolver, because the deployment can build one without
+   * asking the image what it contains: it imports every asset it serves, so it
+   * knows the whole key set statically. Enumerating an image's deferred
+   * entries host-side is exactly the operation that made B45 silent.
+   *
+   * Absent means the image's addresses are already fetchable as written.
+   */
+  lazyUrlMap?: Readonly<Record<string, string>>;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;

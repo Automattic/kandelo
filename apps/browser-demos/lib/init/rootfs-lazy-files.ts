@@ -70,7 +70,7 @@ import posixYaccWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/yacc.wa
 import sudoLiteWasmUrl from "@binaries/programs/wasm32/sudo-lite.wasm?url";
 import sudoWasmUrl from "@binaries/programs/wasm32/sudo/sudo.wasm?url";
 
-const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
+export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/dash.wasm", dashWasmUrl],
   ["binaries/programs/wasm32/bash.wasm", bashWasmUrl],
   ["binaries/programs/wasm32/coreutils.wasm", coreutilsWasmUrl],

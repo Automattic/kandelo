@@ -384,6 +384,9 @@ export class BrowserKernel {
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
+    /** Where THIS deployment serves the addresses the image records. See
+     *  `lazyUrlMap` on the init message: the image is never rewritten. */
+    lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
@@ -401,6 +404,7 @@ export class BrowserKernel {
       kernelWasmBytes: wasmBytes,
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlMap: options.lazyUrlMap,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
@@ -443,6 +447,7 @@ export class BrowserKernel {
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
+    lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
@@ -555,6 +560,7 @@ export class BrowserKernel {
           ...(dylinkModuleBytes ? { dylinkModuleBytes } : {}),
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
+          lazyUrlMap: opts.lazyUrlMap,
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
