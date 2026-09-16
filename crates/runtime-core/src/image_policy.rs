@@ -348,47 +348,99 @@ pub fn check_wasm_artifacts<S: BlockSource>(
 /// its metadata had a stray comma would fail the machine for something no part
 /// of the system reads.
 ///
-/// It finds the FIRST `"kernelAbi"` key. A section carrying two would be a
-/// malformed artifact, and choosing the first is the same rule every streaming
-/// reader uses; it is not a judgement about which one is true.
+/// # Why it tracks depth, which a substring search would not
+///
+/// A shipped image's metadata carries the field TWICE. `lamp.vfs.zst` and its
+/// siblings are:
+///
+/// ```json
+/// {"version":1,"kernelAbi":44,"createdBy":"…","baseImage":{…,"kernelAbi":44}}
+/// ```
+///
+/// The second one is the BASE image this product was derived from, and it is
+/// not the claim this check is about. A first-match substring scan reads the
+/// right one today only because the writer happens to emit the top-level key
+/// first — so a refactor that reordered an object literal would silently point
+/// the kernel's ABI gate at a different image's declaration, and nothing would
+/// look wrong. That is the same failure shape as every other defect this lane
+/// has found: a plausible wrong answer.
+///
+/// So this knows enough structure to tell depth 1 from deeper: it tracks
+/// braces, and it tracks strings and their escapes, because a `}` inside
+/// `"createdBy"` is not a closing brace. **It still is not a parser.** It
+/// validates nothing, allocates nothing, recurses nowhere, interprets no other
+/// value, and a section it cannot follow simply declares no ABI.
 pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {
     const KEY: &[u8] = b"\"kernelAbi\"";
     let mut at = 0usize;
-    while at + KEY.len() <= metadata.len() {
-        if &metadata[at..at + KEY.len()] != KEY {
-            at += 1;
-            continue;
-        }
-        let mut cursor = at + KEY.len();
-        while matches!(metadata.get(cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            cursor += 1;
-        }
-        if metadata.get(cursor) != Some(&b':') {
-            at += 1;
-            continue;
-        }
-        cursor += 1;
-        while matches!(metadata.get(cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            cursor += 1;
-        }
-        let start = cursor;
-        let mut value: u32 = 0;
-        while let Some(&byte) = metadata.get(cursor) {
-            if !byte.is_ascii_digit() {
-                break;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while at < metadata.len() {
+        let byte = metadata[at];
+        // Inside a string nothing is structural. The `continue` matters: an
+        // earlier version fell through after clearing the flag, so every
+        // CLOSING quote was immediately read as an opening one and the whole
+        // scan ran inverted. Two tests caught it; reading the code did not.
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
             }
-            // A version that does not fit a u32 is not a version this kernel
-            // could ever match, and saturating would turn it into one.
-            value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;
-            cursor += 1;
-        }
-        if cursor == start {
             at += 1;
             continue;
         }
-        return Some(value);
+        match byte {
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => depth -= 1,
+            b'"' => {
+                if depth == 1 && metadata[at..].starts_with(KEY) {
+                    if let Some(value) = read_number_after_key(metadata, at + KEY.len()) {
+                        return Some(value);
+                    }
+                }
+                in_string = true;
+            }
+            _ => {}
+        }
+        at += 1;
     }
     None
+}
+
+/// The integer a `"key":` is followed by, or `None` when it is followed by
+/// anything else — a string, a null, an object, or nothing at all.
+fn read_number_after_key(metadata: &[u8], from: usize) -> Option<u32> {
+    let skip_space = |cursor: &mut usize| {
+        while matches!(metadata.get(*cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            *cursor += 1;
+        }
+    };
+    let mut cursor = from;
+    skip_space(&mut cursor);
+    if metadata.get(cursor) != Some(&b':') {
+        return None;
+    }
+    cursor += 1;
+    skip_space(&mut cursor);
+    let start = cursor;
+    let mut value: u32 = 0;
+    while let Some(&byte) = metadata.get(cursor) {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        // A version that does not fit a u32 is not a version this kernel could
+        // ever match, and saturating would turn it into one.
+        value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;
+        cursor += 1;
+    }
+    if cursor == start {
+        return None;
+    }
+    Some(value)
 }
 
 /// Refuse an image that states it was built for a different kernel ABI.
@@ -685,6 +737,46 @@ mod tests {
         // reads a number or it reads nothing, and it never guesses one.
         assert_eq!(declared_kernel_abi(br#"{"kernelAbi":"44"}"#), None);
         assert_eq!(declared_kernel_abi(br#"{"kernelAbi":null}"#), None);
+    }
+
+    #[test]
+    fn a_derived_product_declares_the_field_twice_and_only_one_is_its_own() {
+        // The real shape of lamp/wordpress/nginx: the image's own claim, and
+        // the base image it was derived from. Nine shipped images carry this.
+        let real = br#"{"version":1,"kernelAbi":44,"createdBy":"x","baseImage":{"sha256":"ab","bytes":7,"kernelAbi":43}}"#;
+        assert_eq!(declared_kernel_abi(real), Some(44));
+    }
+
+    #[test]
+    fn the_nested_declaration_does_not_win_by_coming_first() {
+        // THE REASON THIS SCANS WITH DEPTH. A first-match substring search
+        // reads the right key in the shape above only because the writer emits
+        // it first. Reorder the object literal -- a refactor, not a format
+        // change -- and the gate would silently compare the kernel against a
+        // DIFFERENT image's declaration, with nothing looking wrong.
+        let reordered = br#"{"baseImage":{"sha256":"ab","kernelAbi":43},"version":1,"kernelAbi":44}"#;
+        assert_eq!(declared_kernel_abi(reordered), Some(44));
+    }
+
+    #[test]
+    fn a_brace_inside_a_string_is_not_a_brace() {
+        // `createdBy` is free text written by a build script. Counting depth
+        // without knowing where strings are would put this key at depth 2.
+        let braced = br#"{"createdBy":"images/vfs/scripts/{save}","kernelAbi":44}"#;
+        assert_eq!(declared_kernel_abi(braced), Some(44));
+        // And the same with an escaped quote, so the string does not "end"
+        // early and unbalance everything after it.
+        let escaped = br#"{"createdBy":"a\"}b","kernelAbi":44}"#;
+        assert_eq!(declared_kernel_abi(escaped), Some(44));
+    }
+
+    #[test]
+    fn an_image_that_only_names_its_bases_abi_declares_none_of_its_own() {
+        // Not the same as declaring 43. The image makes no claim about itself,
+        // and inheriting its base's would be inventing one.
+        let nested_only = br#"{"version":1,"baseImage":{"kernelAbi":43}}"#;
+        assert_eq!(declared_kernel_abi(nested_only), None);
+        assert_eq!(check_declared_abi(Some(nested_only), 44), Ok(()));
     }
 
     #[test]
