@@ -13331,6 +13331,110 @@ against the Rust corpus rather than counted:
   this file removes an assertion that is now wrong**, which is a different
   and much cheaper conclusion than "coverage is lost".
 
+### A REFUSED IMAGE FREED THE BUILDER'S BUFFER TWICE — `81e95a3e9`, 2026-09-16
+
+**Found while asking whether seal verification could move into the loader, and
+it is the more serious of the two things that question turned up.**
+
+`sm_load_image` is the image module's one entry point that ADOPTS the host's
+allocation, and the contract on `AdoptedImage` states the failure case
+plainly: *"on FAILURE ownership does not transfer and the host still owns its
+buffer — because a caller that must inspect a return code to know whether it
+still owns memory will eventually get it wrong."*
+
+The seal-verification arm broke exactly that rule. Its refusal called
+`release_image()`, which frees, and then returned a negative errno to a
+caller whose own contract is to free — `KandeloImageFs.loadImage` frees in
+its `catch`. **An image whose cohort seals did not authenticate was passed to
+`dealloc` twice**, once by each side that believed it owned it. The check
+that refuses a tampered image was the check that corrupted the process
+reading it.
+
+**Nothing caught it because the test helper and the real caller disagree
+about ownership in the one direction that matters.** `load_image_bytes` never
+frees — *"ownership transfers on success; nothing here frees it"* — so the
+Rust tests LEAK where the TypeScript bridge frees, and the only path where
+the two conventions collide is the only path no test walked. Worth carrying
+forward: **a test helper that is more forgiving than the real caller makes
+the disagreement invisible rather than safe.**
+
+The new test asserts the allocator's own invariant instead of reading freed
+memory: a LIVE allocation cannot be handed out again, so if the module freed
+the buffer under the host, the next request of the same size may return that
+block. Confirmed by restoring the defect — the allocator handed back the
+identical pointer.
+
+### A TRIAL HAD ENCODED THE WRONG CONTRACT, AND THEN DEFENDED IT — `23dcff328`
+
+**An eighth cause, and it is not a variant of the seventh.** `xtask perturb
+--validate` refused to run after the fix; three trials no longer anchored.
+Two had merely quoted the changed lines. The third,
+*"an image that failed to authenticate stays resident"*, mutated
+`release_image()` away and expected a kill — so it **required** a refused
+load to free the host's buffer. That is the double free. The trial was not
+stale; it asserted the defect, and every green run of it said the defect was
+the contract.
+
+Retired and replaced by its inverse. The catalogue's seventh cause is a TEST
+asserting an outcome both versions produce; this is a TRIAL asserting the
+wrong one of the two, and no amount of running it would have said so.
+
+A second rot is worth its own line: *"a refused load adopts the host's buffer
+anyway"* had a unique anchor until the fix added a second, identically
+spelled line. **An anchor matching two places reads exactly like one that was
+never applied** — the validator says so in those words, and it is the same
+hazard as `count == 1` passing because a sibling edit made it unique.
+
+### THE SEAL BOUNDARY AT BOOT IS THE REMAINING V5 BLOCKER, AND IT IS A DESIGN DECISION
+
+**Measured 2026-09-16, and this is what keeps `memory-fs.ts` alive.**
+
+The `/` image mount is restored into a `MemoryFileSystem` on every boot —
+`restoreVerifiedVfsImage`, up to a gigabyte — and then **dropped from
+`guestMounts`**, because the kernel owns `/`. Every remaining reference to
+that filesystem in both worker entries is a truthiness check. It is
+constructed so a predicate can be answered.
+
+Except for one thing, and it is a real one: `restoreVerifiedVfsImage` is
+`fromImage` + `verifyImportedLazyAtomicGroupSeals`, and that is the boot-time
+authentication of atomic lazy-tree cohorts.
+`apps/browser-demos/test/vfs-import-seal-boundary.spec.ts` asserts the boot
+REFUSES a spliced image with `Kernel worker init failed: Lazy atomic
+activation (member|group)`. Deleting the restore deletes that boundary.
+
+**Every built-image mount in all seventeen products is `/`** — checked, not
+assumed — and `restoreVerifiedImageMounts` restores the same `rootfsImage`
+for each image mount regardless of its `ref`, which only makes sense because
+there is exactly one. So there is no second consumer to preserve.
+
+**Three ways to keep the boundary, and the one that looked obvious is wrong:**
+
+* **(a) verify in `rootfs::load_image`.** Tried, and backed out the same
+  hour. `verify_cohorts` DECODES the archive payload, and this lane's
+  recorded decision is that `runtime-core` "stores and returns opaque payload
+  bytes" and learns nothing about the format. Three runtime-core tests said
+  so immediately by failing: they build images with hand-written payloads
+  like `b"sha256:abc"`, which are not seal envelopes, and the loader refused
+  them. Whether shipped images carry envelopes in every archive payload is
+  **not yet measured**, and that measurement decides whether (a) is a
+  compatibility break or merely a layering one.
+* **(b) a small `crates/image-seal` shared by the image module and the
+  kernel.** Keeps one copy of the format, but still ends with the kernel
+  parsing payloads, so it inherits (a)'s question rather than answering it.
+  Adding `kandelo-image-module` to the kernel's dependencies is NOT the
+  shape: that pulls the whole builder — writer, export, three thousand lines
+  — into a shipped kernel wasm for a verifier.
+* **(c) authenticate through the bridge at boot.** `KandeloImageFs.loadImage`
+  already verifies, because `sm_load_image` does — so there is no separate
+  `verify` to add, which is the module's own point about the incumbent's
+  async one. But the browser would then load `lamp.vfs` twice, once into the
+  module and once into the kernel, at 249 MiB each. Rejected on cost.
+
+**Not decided here, and deliberately so**: (a) is a reversal of a decision
+this plan records, and the measurement that would justify it has not been
+made. What IS settled is that the host's gigabyte-scale restore is not the
+answer, and that the boundary is real and must survive whatever replaces it.
+
 ### THE BROWSER VERDICT FOR THE EXPORT CUTOVER, AND WHAT THE DIFF ACTUALLY SAID
 
 **Chromium, 2026-09-16 after `e7f6936d2`: 162 passed / 19 failed / 6 skipped /
