@@ -11,13 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import {
-  assertVfsImageCapacity,
-  assertVfsImageHeadroom,
-  saveImage,
-  sourceDateEpochMilliseconds,
-} from "../../images/vfs/scripts/vfs-image-helpers";
+import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
 import {
   MAIN_SHELL_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
@@ -108,43 +102,18 @@ function stripStandaloneLazyIdentity(image: Uint8Array): Uint8Array {
 }
 
 describe("VFS image save/restore", () => {
+  /**
+   * The capacity, headroom and `SOURCE_DATE_EPOCH` claims that used to live
+   * here MOVED to `vfs-image-helpers.test.ts` on 2026-09-16, because they are
+   * about `images/vfs/scripts/vfs-image-helpers` — a module `MemoryFileSystem`
+   * does not participate in and which outlives it.
+   *
+   * The one below stayed, and the reason is the shape of its fixture rather
+   * than the shape of its claim: a growable `SharedArrayBuffer` whose encoded
+   * ceiling exceeds the runtime buffer restored from it. That is a property of
+   * this filesystem's backing store, so it goes when the class goes.
+   */
   describe("product image runtime headroom", () => {
-    it("validates the serialized product capacity contract and reports drift", async () => {
-      const mfs = createMemfs();
-      const image = await mfs.saveImage();
-      const maxByteLength =
-        MemoryFileSystem.readImageCapacity(image).maxByteLength;
-
-      expect(() =>
-        assertVfsImageCapacity(image, maxByteLength, "test image")
-      ).not.toThrow();
-      expect(() =>
-        assertVfsImageCapacity(image, maxByteLength + 4096, "test image")
-      ).toThrow(/test image has a .* VFS capacity; .* required/);
-    });
-
-    it.each([-1, 0, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
-      "rejects invalid product capacity %s",
-      async (maxByteLength) => {
-        const image = await createMemfs().saveImage();
-        expect(() =>
-          assertVfsImageCapacity(image, maxByteLength, "test image")
-        ).toThrow(/expectedMaxByteLength must be a positive safe integer/);
-      },
-    );
-
-    it("rejects malformed serialized capacity state", () => {
-      // The MODULE judges this now — `assertVfsImageCapacity` without a
-      // producer calls `KandeloImageFs.readImageCapacity`, because reading a
-      // container header in TypeScript would be format knowledge on the wrong
-      // side of the boundary. So the refusal arrives as an errno rather than
-      // as the prose the TypeScript parser used to produce, and the errno is
-      // what this asserts: message text is not the contract.
-      expect(() =>
-        assertVfsImageCapacity(new Uint8Array(0), 1, "test image")
-      ).toThrow(/EINVAL/);
-    });
-
     it("rejects an encoded ceiling hidden by a smaller runtime buffer before writing", async () => {
       const MiB = 1024 * 1024;
       const encodedMaxBytes = 8 * MiB;
@@ -190,69 +159,6 @@ describe("VFS image save/restore", () => {
       }
     });
 
-    it("checks free blocks and free inodes as independent resources", () => {
-      // The FILESYSTEM judges headroom now, and reports the numbers behind its
-      // verdict — that is what `sm_check_headroom` was added for. Taking the
-      // thresholds from `statfs` and a `MemoryFileSystem` tested the arithmetic
-      // that moved into the module, against a filesystem that no longer
-      // answers the question.
-      const fs = KandeloImageFs.create();
-      fs.writeFile("/probe", new Uint8Array(8), 0o644);
-      const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
-
-      expect(() => assertVfsImageHeadroom(fs, {
-        minimumFreeBytes: freeBytes,
-        minimumFreeInodes: freeInodes,
-      }, "test image")).not.toThrow();
-      expect(() => assertVfsImageHeadroom(fs, {
-        minimumFreeBytes: freeBytes + 1,
-        minimumFreeInodes: freeInodes,
-      }, "test image")).toThrow(
-        /test image lacks runtime VFS headroom: .* free bytes remain/,
-      );
-      expect(() => assertVfsImageHeadroom(fs, {
-        minimumFreeBytes: freeBytes,
-        minimumFreeInodes: freeInodes + 1,
-      }, "test image")).toThrow(
-        /test image lacks runtime VFS headroom: .* free inodes remain/,
-      );
-    });
-
-    it("enforces the declared reserve before writing a product image", async () => {
-      const fs = KandeloImageFs.create();
-      fs.writeFile("/probe", new Uint8Array(8), 0o644);
-      const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
-      const dir = mkdtempSync(join(tmpdir(), "vfs-headroom-"));
-      try {
-        await expect(saveImage(fs, join(dir, "full.vfs.zst"), {
-          headroom: {
-            minimumFreeBytes: freeBytes + 1,
-            minimumFreeInodes: freeInodes + 1,
-          },
-        })).rejects.toThrow(/lacks runtime VFS headroom.*free bytes.*free inodes/);
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
-  });
-
-  describe("SOURCE_DATE_EPOCH", () => {
-    it.each([
-      [undefined, 0],
-      ["0", 0],
-      ["946684800", 946_684_800_000],
-    ])("maps %s to a reproducible millisecond timestamp", (value, expected) => {
-      expect(sourceDateEpochMilliseconds(value)).toBe(expected);
-    });
-
-    it.each(["-1", "1.5", "01", "NaN", "9007199254741"])(
-      "rejects invalid value %s",
-      (value) => {
-        expect(() => sourceDateEpochMilliseconds(value)).toThrow(
-          /SOURCE_DATE_EPOCH/,
-        );
-      },
-    );
   });
 
   describe("snapshot timestamp policy", () => {

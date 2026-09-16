@@ -13,10 +13,14 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  assertVfsImageCapacity,
+  assertVfsImageHeadroom,
   saveImage,
+  sourceDateEpochMilliseconds,
   walkAndWrite,
   writeVfsBinary,
 } from "../../images/vfs/scripts/vfs-image-helpers";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
 const O_RDONLY = 0;
@@ -348,4 +352,124 @@ describe("VFS artifact publication inspection", () => {
 
     await expectArtifactInspectionFailure(fs, failure);
   });
+});
+
+/**
+ * MOVED here from `vfs-image.test.ts`, 2026-09-16.
+ *
+ * `assertVfsImageCapacity`, `assertVfsImageHeadroom` and
+ * `sourceDateEpochMilliseconds` live in the module this file tests and are
+ * called by four or more builder scripts each — and every one of them was
+ * tested in exactly one place: a file step 5 deletes along with
+ * `MemoryFileSystem`, which none of them depend on. Deleting it would have
+ * taken the product capacity contract, the runtime headroom reserve and
+ * reproducible build timestamps with it, and the commit would have read like
+ * progress.
+ *
+ * Three of these used `MemoryFileSystem` only to PRODUCE an image to judge.
+ * They now produce it with `KandeloImageFs`, which is the producer the
+ * builders themselves use.
+ */
+describe("product image capacity and headroom contract", () => {
+  function probeImageFs(): KandeloImageFs {
+    const fs = KandeloImageFs.create();
+    fs.writeFile("/probe", new Uint8Array(8), 0o644);
+    return fs;
+  }
+
+  it("validates the serialized product capacity contract and reports drift", async () => {
+    const image = await probeImageFs().saveImage();
+    const { maxByteLength } = KandeloImageFs.readImageCapacity(image);
+
+    expect(() => assertVfsImageCapacity(image, maxByteLength, "test image"))
+      .not.toThrow();
+    // Drift in the direction that matters: a product asking for more room
+    // than the image it was handed declares.
+    expect(() => assertVfsImageCapacity(image, maxByteLength + 4096, "test image"))
+      .toThrow(/test image has a .* VFS capacity; .* required/);
+  });
+
+  it.each([-1, 0, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid product capacity %s",
+    async (maxByteLength) => {
+      const image = await probeImageFs().saveImage();
+      expect(() => assertVfsImageCapacity(image, maxByteLength, "test image"))
+        .toThrow(/expectedMaxByteLength must be a positive safe integer/);
+    },
+  );
+
+  it("rejects malformed serialized capacity state", () => {
+    // The MODULE judges this: `assertVfsImageCapacity` without a producer
+    // calls `KandeloImageFs.readImageCapacity`, because reading a container
+    // header in TypeScript would be format knowledge on the wrong side of the
+    // boundary. So the refusal arrives as an errno rather than as prose, and
+    // the errno is the contract — message text is not.
+    expect(() => assertVfsImageCapacity(new Uint8Array(0), 1, "test image"))
+      .toThrow(/EINVAL/);
+  });
+
+  it("checks free blocks and free inodes as independent resources", () => {
+    // The FILESYSTEM judges headroom and reports the numbers behind its
+    // verdict; that is what `sm_check_headroom` was added for. Each resource
+    // is raised on its own so neither can be the one doing all the refusing.
+    const fs = probeImageFs();
+    const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
+
+    expect(() =>
+      assertVfsImageHeadroom(fs, {
+        minimumFreeBytes: freeBytes,
+        minimumFreeInodes: freeInodes,
+      }, "test image")
+    ).not.toThrow();
+    expect(() =>
+      assertVfsImageHeadroom(fs, {
+        minimumFreeBytes: freeBytes + 1,
+        minimumFreeInodes: freeInodes,
+      }, "test image")
+    ).toThrow(/test image lacks runtime VFS headroom: .* free bytes remain/);
+    expect(() =>
+      assertVfsImageHeadroom(fs, {
+        minimumFreeBytes: freeBytes,
+        minimumFreeInodes: freeInodes + 1,
+      }, "test image")
+    ).toThrow(/test image lacks runtime VFS headroom: .* free inodes remain/);
+  });
+
+  it("enforces the declared reserve before writing a product image", async () => {
+    const fs = probeImageFs();
+    const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
+    const dir = mkdtempSync(join(tmpdir(), "vfs-headroom-"));
+    try {
+      await expect(saveImage(fs, join(dir, "full.vfs.zst"), {
+        headroom: {
+          minimumFreeBytes: freeBytes + 1,
+          minimumFreeInodes: freeInodes + 1,
+        },
+      })).rejects.toThrow(/lacks runtime VFS headroom.*free bytes.*free inodes/);
+      // BEFORE writing, not after: a refused product leaves no artifact for a
+      // later step to pick up and ship.
+      expect(existsSync(join(dir, "full.vfs.zst"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("SOURCE_DATE_EPOCH", () => {
+  it.each([
+    [undefined, 0],
+    ["0", 0],
+    ["946684800", 946_684_800_000],
+  ])("maps %s to a reproducible millisecond timestamp", (value, expected) => {
+    expect(sourceDateEpochMilliseconds(value)).toBe(expected);
+  });
+
+  it.each(["-1", "1.5", "01", "NaN", "9007199254741"])(
+    "rejects invalid value %s",
+    (value) => {
+      expect(() => sourceDateEpochMilliseconds(value)).toThrow(
+        /SOURCE_DATE_EPOCH/,
+      );
+    },
+  );
 });
