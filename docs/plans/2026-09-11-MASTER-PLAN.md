@@ -804,6 +804,40 @@ rule someone forgets, and the typechecker then found all ten call sites.
    provisioning state. The first browser attempt of the night was thrown away
    for exactly this.
 
+### Cycle 2 found two more, and both were the migration's own seams
+
+Chromium-only this time (199 tests, the baseline's scope): **81 failed / 102
+passed**. Two causes, both mine, both now fixed and both worth reading.
+
+**59 failures were one always-false comparison** (`27855cf5f`).
+`SffsImageError: ENOENT: lstat /etc` — not because `/etc` was missing, which is
+the ordinary case the code catches on purpose, but because the catch could not
+recognise it. `host/src/vfs/vfs-errors.ts` numbers errnos NEGATIVELY (`ENOENT`
+is `-2`, since `SFSError` carries a returned code); the bridge raises
+`SffsImageError` with the POSITIVE errno (`2`), negated at its boundary. The
+`isNotFound` helper written to bridge the two classes compared one convention
+against the other.
+
+Nothing would have caught that by reading: both are `number`, both are named
+`ENOENT`, and each is correct in its own file. The mismatch exists only where
+they meet. It is now a Node test — overlay `/etc` onto a fresh image — that
+reproduces the browser failure in milliseconds instead of a 90-minute cycle,
+and it was confirmed RED against the bug before green against the fix.
+
+**One failure was the stricter filesystem being right** (`a8a8d3cff`). Two
+sites registered a lazy file at `/bin/...` into a fresh image without creating
+`/bin`. `MemoryFileSystem` created missing parents silently; the Rust writer
+refuses, as POSIX does. The callers had leaned on the looser behaviour without
+knowing it. The error reads as a missing PROGRAM
+(`ENOENT: registerLazyFile /bin/kernel_allocator_churn_test`) and is a missing
+DIRECTORY.
+
+**A pattern across all three cycles worth naming.** Every defect the browser
+found was at a seam between the two filesystems — module loading, errno sign,
+parent-directory strictness — and none was in the image format or the relay.
+That is the shape of a migration's risk: not the thing being replaced, but the
+places where the old and new conventions have to agree.
+
 **Still owed: a clean browser run.** Everything else is typecheck-and-Node
 evidence. The bar, set by the maintainer, is NO NEW FAILURES against lane Y's
 fourteen named ones — not a pass count, because a test can change character
