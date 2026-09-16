@@ -3456,6 +3456,29 @@ refuses — test-writing work, well defined, needing no decision from the
 maintainer. **The design question this section previously raised is
 withdrawn.**
 
+**AND THE PORT IS SMALLER STILL, because the Rust side needs nothing.**
+`seal.rs` carries **seventeen** unit tests covering precisely the forgeries the
+browser test exercises — `a_changed_descriptor_does_not_authenticate` is the
+"member" forgery and
+`a_cohort_whose_members_are_each_intact_still_needs_its_own_digest` is the
+"cohort" one — plus count mismatch, members disagreeing about their cohort, one
+name standing for two archives, domain separation, and a seal wanted and never
+written.
+
+The WIRING is covered too, deliberately:
+`a_load_refuses_an_image_whose_seals_do_not_authenticate` asserts
+`sm_load_image` calls the verifier, and says why it exists — *"which it did not
+for several commits while the verifier sat complete and inert."*
+
+So what the browser test uniquely adds is one claim: **a BrowserKernel worker
+init SURFACES the refusal instead of starting the worker**
+(`workerStartedAfterRejection: false`). That assertion already exists and
+already passes; it runs on a legacy-built image only because the forgery helper
+is written against the legacy metadata section.
+
+**Guarantee three's port is therefore: rebuild ONE forgery helper against
+`seal.rs`'s encoding.** No Rust, no new browser assertion, no design decision.
+
 **Three revisions of one paragraph, each after reading one layer deeper, is
 itself the finding.** The rule written after the second — read the thing being
 forged AND the code that rejects it — would have been right the first time if
