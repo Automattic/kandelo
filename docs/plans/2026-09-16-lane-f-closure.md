@@ -4,13 +4,21 @@ Branch `brandonpayton/lane-f-fork-inversion`, worktree
 `/Users/brandon/kandelo-lane-f`. Written 2026-09-16 at the maintainer's
 direction to treat the lane as closeable.
 
-**Status: closeable.** The measure is met, the three owed guards are gated, and
-the one thing that reopened it — `crates/host-native` — is repaired here for
-the damage this lane did and handed to **Lane N (native fork reconstruction)**
-for the subsystem underneath, by maintainer decision. What remains for the
-maintainer is listed at the end: three standing provisional ceiling raises, a
-two-file budget-ledger conflict with the parent, two target restatements, and
-one provisioning defect that keeps this worktree's suite red.
+**Status: closeable, and validated on both hosts.** The measure is met, the
+three owed guards are gated, and the one thing that reopened it —
+`crates/host-native` — is repaired here for the damage this lane did and handed
+to **Lane N (native fork reconstruction)** for the subsystem underneath, by
+maintainer decision.
+
+Node: the host baseline is GREEN (64 expected failures, nothing new, nothing
+unbanked, exit 0). Browser: 18/18 Chromium fork specs at `d3099c7c1`. Surface
+budget: 99 checks pass.
+
+What remains for the maintainer is listed at the end and is entirely decisions,
+not work: three standing provisional ceiling raises, a merge conflict with the
+parent of five files and 18 hunks (15 of them ledger, two comment-only), two
+target restatements, and one provisioning defect that costs eleven baselined
+test files.
 
 ## What the lane was for
 
