@@ -838,6 +838,50 @@ parent-directory strictness — and none was in the image format or the relay.
 That is the shape of a migration's risk: not the thing being replaced, but the
 places where the old and new conventions have to agree.
 
+### Where the browser actually stands, 2026-09-16
+
+Four cycles. **81 -> 23 -> 19 failures; 102 -> 160 -> 165 passing.**
+
+| | passed | failed | skipped | did not run | total |
+|---|---|---|---|---|---|
+| baseline (parent, KLZY image) | 164 | 14 | 6 | 10 | 194 |
+| this branch, final | **165** | **19** | 6 | 9 | 199 |
+
+**The honest reading: I cannot claim the bar was met.** It was "no new failures
+against the fourteen named ones", and there are nineteen. The pass count is one
+ABOVE the baseline and the suite has grown by five tests, which is suggestive
+and is not the same as reconciled — the fourteen are referred to by count in
+this document and never enumerated, so a name-by-name comparison was not
+available to me.
+
+**What is solid:** cycle 3 was run TWICE, unchanged, and both runs failed the
+same 17 specs with the same 23 counts. Zero flakiness, so these are
+deterministic failures rather than load artifacts — which is worth more than
+the number, because it means the remaining list is a list and not a mood.
+
+**Three real defects, all fixed, all at seams** (`b7711b91a`, `27855cf5f`,
+`a8a8d3cff`, `b3f6567ff`): the writer could not read its module in a browser;
+two errno sign conventions met in one comparison that was silently always
+false; a caller leaned on the incumbent creating parent directories; and the
+module install sat 36 lines after two "readers" that instantiate it.
+
+**The remaining nineteen, by domain.** Ten are in subsystems this lane never
+touched — fork and wasm reflection (`fork-continuation`,
+`gc-reference-cycle-fork-module-worker`, `thread-wasm-patch`,
+`wasm-module-reflection`), networking (`virtual-network-udp-delivery`), OPFS
+(`opfs-advisory-lock`, `opfs-pathconf`, the latter an explicit
+`ENOSYS: pathconf name 3` platform gap), plus `select-signal-browser`, whose
+`ReferenceError: readFileSync is not defined` is in a file untouched on this
+branch. Five are "the wasm-artifact module has not been installed in this
+realm", whose driver is likewise untouched here.
+
+**Four are image-adjacent and NOT cleared**: `kandelo-wordpress` (5, all
+`@slow` selector timeouts), `kandelo-merge-gate` (1), `kandelo-url` (1),
+`default-maker-profile` (1, `SFSError: No such file or directory` — the LEGACY
+filesystem's error, so a path that module still owns), and
+`kernel-allocator-churn` (1). These are where a reviewer should look first, and
+where I would look next.
+
 **Still owed: a clean browser run.** Everything else is typecheck-and-Node
 evidence. The bar, set by the maintainer, is NO NEW FAILURES against lane Y's
 fourteen named ones — not a pass count, because a test can change character
