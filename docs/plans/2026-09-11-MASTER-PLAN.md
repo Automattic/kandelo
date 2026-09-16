@@ -916,6 +916,22 @@ the only thing that can now serve `/home/maker`; asserting the mount's absence
 is the fallback if booting a kernel in that spec proves heavy, and it is
 strictly weaker because it tests the plumbing instead of the promise.
 
+**And the trap that made the mistake easy is still set.** `DEFAULT_MOUNT_SPEC`
+declares "the eight canonical mount points" — `/` plus the seven the kernel
+tmpfs owns — and `host/test/vfs/default-mounts.test.ts` asserts exactly that
+list. Both resolvers then drop seven of the eight, unconditionally
+("this filtering is always applied"). So the spec a caller reads declares
+mounts that are never mounted, and a test that filters it by `source ===
+"scratch"` — as this one does, to size scratch SABs — gets seven paths that
+will not exist.
+
+The filter itself has to stay: `rootfsMountSpec` is an optional field on the
+browser worker's init message, so a boot descriptor can supply its own spec and
+the filter is what keeps an arbitrary one from shadowing the kernel. What is
+questionable is `DEFAULT_MOUNT_SPEC` still listing seven entries that every
+resolver removes. Naming it here because the next person to fix one of these
+tests will otherwise re-derive it.
+
 Filed rather than fixed in this tick: the chromium baseline is mid-run and the
 worktree must not move under it.
 
