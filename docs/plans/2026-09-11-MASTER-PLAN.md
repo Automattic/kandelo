@@ -3183,6 +3183,38 @@ The honest status is **the format is renamed and the code is two thirds
 renamed.** The claim is corrected here rather than in a footnote because a plan
 that says "complete" is what a later reader trusts instead of counting.
 
+**The names the remainder takes, decided in-lane and checked for collisions
+first** — because the one thing this rename has already proved is that the
+collision is where the information is.
+
+| old | new | why |
+|---|---|---|
+| `SffsImage` | `KandeloImage` | what `KandeloImageWriter::finish()` produces; the pair completes |
+| `SffsImageSource` | `KandeloImageSource` | the `BlockSource` that reads one back |
+| `SffsStat`, `SffsDirent` | `KandeloImageStat`, `KandeloImageDirent` | the TS bridge already calls its stat record `KandeloImageStat`; two layers describing one record should spell it the same |
+| `SFFS_MODULE_CLOSURE_CRATES` | `IMAGE_MODULE_CLOSURE_CRATES` | the crate is `kandelo-image-module` |
+| `sffs_ino` | `out_ino` | see below |
+| `parent_sffs` | `parent_out` | see below |
+| `root_sffs` | `root_out` | see below |
+
+**The export walk's three locals are NOT `image_ino`, and finding out why was
+the whole value of checking.** `image_ino` is the obvious name and is already a
+FUNCTION in the same file — `fn image_ino(blob_id: u64) -> Result<u32, Errno>`
+— mapping a blob id to an inode of the base image being READ. The walk's
+locals are inodes of the image being WRITTEN. Two different images, one
+obvious name, and the shadowing would have compiled somewhere and confused
+someone later. That is the `ImageGeometry` find again, caught this time by
+counting before typing rather than by the compiler.
+
+So the walk is named for its direction instead: `PendingExport { overlay, …
+}` carries the source inode, and its destination peer becomes `parent_out`,
+with `out_ino` and `root_out` alongside. Source and destination now read as a
+pair, which `overlay` / `parent_sffs` never did.
+
+**`b"hello sffs\n"` and the `sffs-*.deflate` fixture names stay**, and the
+rename must be done name-by-name rather than by a `\bsffs\b` sweep, which is
+exactly how the fixture content was damaged the first time.
+
 **The byte order, which `SFFS` had been hiding.** The magic is read as a
 little-endian `u32`, so the LOW byte is the first character. `SFFS` is a
 byte-palindrome — `53 46 46 53` — so the old constant read correctly whichever
