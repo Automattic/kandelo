@@ -909,6 +909,21 @@ So that call site disappears too, and with it the delicate comment about not
 introducing a microtask gap between the check and the effects that depend on
 it — there is no await left to open one.
 
+**CORRECTION, 2026-09-15, after step 1 landed: "no API gap" was very slightly
+wrong, and the wrong part is worth naming.** `finalizeKernelOwnedImage` calls
+`trackTransientImageBuffer(buildFs.sharedBuffer)`, which registers the build
+filesystem's backing buffer for WebKit reclamation — the root fix for the
+Safari image-switch OOM. `trackTransientImageBuffer` accepts any
+`ArrayBufferLike`, so the mechanism transfers, but `SffsImageFs` keeps its
+module memory private and exposes nothing to hand it. So step (2) needs ONE
+small addition to the bridge: a way to reach the buffer it wants reclaimed.
+
+That is a real addition rather than a rename, and the concern behind it does
+not go away with the writer — a wasm module's memory sized to a 3.6 MB image
+held on the main thread is the same shape of problem the `SharedArrayBuffer`
+was. Whether WebKit reclaims it on the same terms is untested either way, and
+the browser run is what would say.
+
 **What the mapping actually does, since "resolve a relative URL" undersells it.**
 `normalizeImageOwnedLazyReference` is a grammar translation from the BUILDER's
 vocabulary to the DEPLOYMENT's layout (`binaries/programs/wasm32/<p>` and
