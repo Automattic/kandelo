@@ -10823,3 +10823,116 @@ does not.
 decision. Both remaining imports are the floor, now for reasons that were
 checked rather than assumed — and one of those reasons had to be corrected
 first.
+
+## §204 -- The staging slab's two per-fork tenants, and why the rewind is not blind
+
+Answering the maintainer's question about the fork-module's 256 KiB staging
+slab -- "does that mean only so much forking can happen before we encounter a
+memory-related error?" -- turned up a lane-F defect in lane F's own file. The
+answer was yes, and the bound was lower than it looked.
+
+`ForkModuleContinuationBackend.stage()` bump-allocates out of one slab and its
+own doc says everything placed there "is seeded once per worker and must
+outlive the call". Eight callers. Six of them are exactly that: the worker's
+resume catalog, and each activation's template id, resume catalog, GC codec,
+import spaces and exception codec. **Two are per-FORK and always were:**
+
+- `stageSides()` -- `N * 8` bytes of `(id, fixedPrefix)` pairs, at BOTH
+  `parentBeginCapture` and `installChild`.
+- `stageExternrefHandover()` -- `4 * handles`.
+
+The cursor never rewound. So a dlopen program carrying three side activations
+spent 24 bytes on every fork forever and exhausted the 256 KiB slab in roughly
+eleven thousand of them; a fork carrying externref handles spent more. The failure is
+`staging slab exhausted` raised on a fork that had done nothing wrong, in a
+long-lived forking server -- the one process shape that reaches it.
+
+### The rewind cannot be blind, which is the part worth recording
+
+The obvious fix -- mark the cursor at the start of a fork, rewind to the mark at
+the start of the next -- is wrong, and wrong silently.
+
+**`dlopen` happens between forks.** A process forks, then loads a library, and
+that registers a new activation whose catalog, GC codec and exception codec are
+staged ABOVE the mark the last fork took. Rewinding to that mark on the next
+fork hands those addresses out a second time and overwrites a live codec with
+side-activation pairs. Nothing traps: the module reads a codec that is now
+eight bytes of activation ids, and the child is simply rebuilt wrong.
+
+So the mark is dropped by every DURABLE stage, and the next fork takes a fresh
+one wherever the cursor then is. The cost is one fork's worth of per-fork bytes
+stranded below the new mark -- bounded by the number of `dlopen`s, not by the
+number of forks, which is the bound that mattered.
+
+The mark is taken at the START of a fork rather than released at its end
+because a fork has several ends -- finish, abort, a seal that failed after the
+journal sealed -- and a mark that is simply re-taken next time cannot be
+forgotten on one of them.
+
+### What it cost and how it is held
+
+Four code lines on `forkTypeScript` (886 -> 890, provisional): a rewind mark,
+one field, and a `perFork` flag on `stage()`. Three earlier shapes cost seven
+to thirteen; they were wrapper methods around the same two facts.
+
+`host/test/fork-module-staging-rewind.test.ts` asserts the addresses the
+backend hands the module, which is the only thing about the cursor a caller can
+observe: 32 forks place their pairs at an IDENTICAL address (not merely a
+bounded one -- a slab big enough to hide 32 forks would hide a per-fork leak
+too), 2000 forks do not exhaust an 8 KiB slab, and a codec staged by a
+`dlopen` between two forks is neither overwritten nor re-issued. Both halves
+were perturbed and each fails exactly the assertions it owns, with the source
+hash recorded per mutation.
+
+### The other derivation already had it right
+
+`crates/host-native` solves the same problem and has all along, which is the
+lane's "two derivations of one thing" pattern with the JS host as the outlier.
+It does not have ONE slab. It has `capture_scratch_base`, `gc_codec_scratch_
+base` and `template_id_scratch_base` as separate pages, split on exactly the
+lifetime this fix introduces, and says so in its own comment: a dedicated page
+
+> because this data must OUTLIVE every capture ... while `capture_scratch_base`
+> is explicitly a per-capture bump allocator reset to empty at the start of
+> every fork (`NativeReferenceCapture::reset`).
+
+Reset at the START of every fork, durable data kept elsewhere. That is the same
+two rules, reached independently, by the host this lane spent its last day
+repairing. The JS host had the distinction in `stage()`'s doc comment -- "seeded
+once per worker and must outlive the call" -- and nowhere in its code.
+
+Which is the general shape worth keeping: when one derivation states an
+invariant in prose and the other enforces it in structure, the prose one is
+where to look. The comment was not wrong about the six; it was silent about the
+two.
+
+### Both fork paths, and the reason the slab was chosen
+
+There are two `parentBeginCapture` callers -- the process fork and the
+fork-from-thread -- on two different backends. Each holds its backend for the
+life of its worker (`threadForkModuleBackend` is a `let` in thread-init scope,
+constructed once), so the mark persists across that path's forks and the rewind
+actually happens on both. A backend rebuilt per fork would have reset the mark
+to `null` every time and the rewind would have been dead code.
+
+The thread path also records WHY the slab was chosen, which the leak quietly
+defeated:
+
+> Stage into the dedicated slab inside this thread's fork-module region rather
+> than a growing channel mmap ... keeps the staging from permanently growing
+> the shared process memory a fork-from-thread child would clone.
+
+The slab was picked to stop staging from growing memory permanently, and then
+grew permanently itself. The mechanism changed; the outcome did not. That is
+worth more than the byte count: an argument for a design can survive the design
+failing to deliver what the argument promised, because nothing re-checks the
+promise once the decision is made.
+
+Every ordering is safe, which is worth stating because the two per-fork tenants
+are staged at different times. `stageExternrefHandover` runs after the seal and
+before the fork syscall, inside the marked region, so the next fork reclaims
+it. If it ever ran on a backend whose `parentBeginCapture` had not yet been
+called, `perForkMark` would still be `null`, the first mark would be taken
+ABOVE those bytes, and they would be stranded once rather than reclaimed --
+harmless, and not silent corruption. The flag makes the failure mode of a
+wrong ordering a bounded waste rather than a reused address.

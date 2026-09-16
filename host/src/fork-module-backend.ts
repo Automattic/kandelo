@@ -511,6 +511,10 @@ export class ForkModuleContinuationBackend {
     arenaRoot: number,
     sides: readonly ForkSideActivation[],
   ): number {
+    // Rewind the staging cursor to where the last fork found it; see
+    // `perForkMark`.
+    this.staged = this.perForkMark ?? this.staged;
+    this.perForkMark = this.staged;
     // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
     // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
     // memory exhaustion that fails with ENOMEM -- which is the case
@@ -789,7 +793,7 @@ export class ForkModuleContinuationBackend {
     const bytes = new Uint8Array(handles.length * 4);
     const view = new DataView(bytes.buffer);
     handles.forEach((handle, index) => view.setUint32(index * 4, handle >>> 0, true));
-    return this.stage(bytes, "externref handover");
+    return this.stage(bytes, "externref handover", true);
   }
 
   /**
@@ -905,14 +909,6 @@ export class ForkModuleContinuationBackend {
   }
 
   /**
-   * Copy `bytes` into the module's staging slab and return their address.
-   *
-   * A bump cursor, never reset: everything staged here is seeded once per worker
-   * and must outlive the call. Overflow is an error rather than a wrap, because
-   * wrapping would silently overwrite an earlier activation's section with a
-   * later one's and leave the module pointing at the wrong bytes.
-   */
-  /**
    * Stage a side-activation list as `(id, fixedPrefix)` u32 pairs.
    *
    * The SAME layout serves capture and child seed, because the host owns the
@@ -929,10 +925,60 @@ export class ForkModuleContinuationBackend {
       view.setUint32(index * 8, side.id >>> 0, true);
       view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
     });
-    return this.stage(bytes, `${sides.length} side activation(s)`);
+    return this.stage(bytes, `${sides.length} side activation(s)`, true);
   }
 
-  private stage(bytes: Uint8Array, what: string): number {
+  /**
+   * Where a per-fork rewind returns to, or `null` when the next fork must take
+   * a fresh mark at wherever the cursor then is.
+   *
+   * `stage()` used to say that everything in the slab "is seeded once per
+   * worker and must outlive the call", and that is true of six of its eight
+   * callers. TWO are per-FORK and always were: `stageSides()`, which runs at
+   * both `parentBeginCapture` and `installChild`, and
+   * `stageExternrefHandover()`. Their bytes need only outlive the fork, and the
+   * cursor never rewound -- so a dlopen program at `N * 8` bytes per fork, or
+   * any fork carrying externref handles at 4 bytes each, consumed the 256 KiB
+   * slab permanently. Thousands of forks, not millions: a long-lived forking
+   * server is the shape that reaches it, and the failure is `staging slab
+   * exhausted` on a fork that had done nothing wrong.
+   *
+   * The mark is taken at the START of a fork rather than released at its end,
+   * because a fork has several ends -- finish, abort, a seal that failed after
+   * the journal sealed -- and a mark that is simply re-taken next time cannot
+   * be forgotten on one of them.
+   *
+   * And a DURABLE stage drops it, which is the whole reason `stage()` takes a
+   * flag. A process that forks, then `dlopen`s, stages the new activation's
+   * catalog, GC codec and exception codec ABOVE the mark that fork took;
+   * rewinding to that mark on the next fork would hand those addresses out
+   * twice and overwrite a live codec with side-activation pairs -- a wrong
+   * child, silently, rather than an error. Clearing the mark makes the next
+   * fork re-take it above them. The cost is one fork's worth of per-fork bytes
+   * stranded below the new mark, bounded by the number of `dlopen`s rather
+   * than by the number of forks.
+   */
+  private perForkMark: number | null = null;
+
+  /**
+   * Copy `bytes` into the module's staging slab and return their address.
+   *
+   * `perFork` picks which of the two lifetimes the bytes have. The default is
+   * DURABLE -- seeded once per worker or per activation, and must outlive every
+   * fork. `perFork` marks bytes that need only outlive the fork that stages
+   * them, in the region `parentBeginCapture` rewinds; see `perForkMark`.
+   *
+   * This comment used to read "a bump cursor, never reset: everything staged
+   * here is seeded once per worker and must outlive the call". That was true of
+   * six callers out of eight, and stating it as though it were true of all
+   * eight is what hid the leak.
+   *
+   * Overflow is an error rather than a wrap, because wrapping would silently
+   * overwrite an earlier activation's section with a later one's and leave the
+   * module pointing at the wrong bytes.
+   */
+  private stage(bytes: Uint8Array, what: string, perFork = false): number {
+    if (!perFork) this.perForkMark = null;
     const base = this.options.instance.stagingBase;
     const limit = base + this.options.instance.stagingBytes;
     const at = base + this.staged;

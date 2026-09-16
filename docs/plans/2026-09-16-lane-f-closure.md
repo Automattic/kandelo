@@ -8,7 +8,7 @@ direction to treat the lane as closeable.
 the one thing that reopened it — `crates/host-native` — is repaired here for
 the damage this lane did and handed to **Lane N (native fork reconstruction)**
 for the subsystem underneath, by maintainer decision. What remains for the
-maintainer is listed at the end: four provisional ceiling raises, a
+maintainer is listed at the end: three standing provisional ceiling raises, a
 two-file budget-ledger conflict with the parent, and two target restatements.
 
 ## What the lane was for
@@ -266,11 +266,24 @@ that found all of this.
 
 1. **Provisional ceiling raises.** `docs/surface-budget.json` carries **27**
    `PROVISIONAL RAISE` markers across the whole lane, of which 3 have an
-   explicit `RULED` marker from 2026-09-15. **Four are from this session**
-   (`forkTypeScript` 887→893, `workerMainTypeScript` 5409→5411,
-   `forkPlatformTypeScript` 1629→1631, `forkModuleHostEntries` 58→59), each
-   with its reason and what it bought. An earlier report of this said
+   explicit `RULED` marker from 2026-09-15. **Five are from this session**,
+   each with its reason and what it bought. An earlier report of this said
    "thirteen"; that was a miscount of this session's, corrected here.
+
+   Read them by where the surface NOW STANDS, not by the delta taken, because
+   later banks in the same session repaid three of them:
+
+   | Surface | Raise taken | Ceiling now | Target | Standing? |
+   |---|---|---|---|---|
+   | `forkTypeScript` | 886 → 890 | 890 | 484 | **yes** — the staging-slab rewind, census 204, in the closing commit |
+   | `forkPlatformTypeScript` | 1629 → 1631 | 1631 | 500 | **yes** |
+   | `forkModuleHostImports` | 6 → 7 | 7 | 7 | **yes** — and the target was restated to meet it |
+   | `workerMainTypeScript` | 5409 → 5411 | 5356 | 5356 | no — repaid, and then some |
+   | `forkModuleHostEntries` | 58 → 59 | 58 | 5 | no — repaid |
+
+   So three raises are actually awaiting a ruling. The other two were taken and
+   given back within the session; they are listed only so the `PROVISIONAL`
+   markers in the ledger are not read as five outstanding debts.
 2. **The budget-ledger conflict with the parent branch.** A trial merge
    conflicts in exactly two files — `docs/surface-budget.json` and
    `host/test/surface-budget.test.ts` — because both lanes evolved the same
