@@ -3405,6 +3405,30 @@ execs through verified lazy archives"*, plus CORS-proxied external archives.
 **Porting the three legacy tests to the kernel path may be re-enabling work
 that was silenced as collateral rather than writing new tests.**
 
+**THE GUARANTEE MAP, so the deletion is defensible rather than asserted.** The
+maintainer chose "port the three tests to the kernel path first". Matching them
+against what already exists:
+
+| legacy test (`package-deferred-tree-browser`, runs, `MemoryFileSystem`) | kernel-path counterpart |
+|---|---|
+| retries transient lazy package trees and consumes the exact ZIP | `lazy-archive-runtime`: *"retries a transient lazy-tree response before surfacing EIO"* + *"consumes lazy and eager package trees derived from one exact ZIP"* — **silenced** |
+| a corrupt cached Vim archive fails SHA validation without materializing | `lazy-archive-runtime`: *"reports digest failure without mutation and retries cleanly"* — **silenced** |
+| verifies imported seals before atomically activating package trees | `vfs-import-seal-boundary`: refuses a forged member seal and a forged cohort seal at worker init — **runs, and passes** |
+
+Two of the three have a silenced counterpart; the third has a live one.
+
+**The third's counterpart has the same fixture problem, and it is smaller than
+it looks.** `vfs-import-seal-boundary` asserts KERNEL behaviour — its expected
+error is `Kernel worker init failed: Lazy atomic activation …` — but its
+forged images are built by `apps/browser-demos/pages/vfs-import-seal-boundary.ts`
+with `MemoryFileSystem`. So the port for guarantee three is repointing that
+ONE page's fixture onto `registerArchiveMember`'s `cohort`, not writing a test.
+
+Which makes the whole of the maintainer's chosen option, if the silenced file
+passes: **re-enable one spec, repoint one page's fixture, then delete the
+legacy trio and the module they exercise.** No new tests. That is worth
+confirming before anything is deleted, which is what the run in flight does.
+
 **Four specs excluded with no recorded reason is worth someone's attention.**
 It is the same failure shape as a green baseline that hides how much actually
 ran: a file that looks like coverage, is maintained like coverage, and is not
