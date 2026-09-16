@@ -159,7 +159,6 @@ import {
 } from "./thread-worker-disposition";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
-import { exportRootfsImageFromOverlay } from "./vfs/rootfs-overlay-export";
 import type { MemoryFileSystem } from "./vfs";
 
 /** The backing a single execution image owns. A PID persists across exec. */
@@ -1900,17 +1899,23 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             "rootfs export requires a quiescent kernel with no live or tearing-down processes",
           );
         }
-        // The kernel overlay owns `/`; the base image is only the frozen tree
-        // the kernel booted from. Rebuild a faithful image by reconciling that
-        // base with the overlay's authoritative tree (copy-on-writes, runtime
-        // creates and deletes, metadata) rather than serializing the stale
-        // base directly.
-        const { image: overlayImage } = await exportRootfsImageFromOverlay({
-          baseImage: await baseImage.saveImage(),
-          overlayTree: host.kernel().rootfsExportTree(),
-          readCowBytes: (path) => host.kernel().rootfsReadFile(path),
-        });
-        return overlayImage;
+        // ASK THE KERNEL FOR THE IMAGE rather than rebuilding one here.
+        //
+        // The host used to clone the frozen base into a writable filesystem and
+        // replay the overlay's tree onto it -- deletions, copy-on-writes,
+        // runtime creates, owners, modes and times -- which was a second
+        // implementation of a reconciliation the kernel performs from the side
+        // that owns the tree. `rootfs::export_image_read` already did all of
+        // it; only a way to call it was missing, and that is now
+        // `kernel_rootfs_export_container_read`.
+        //
+        // It is also the better-tested half: `runtime-core` carries twenty-one
+        // export tests -- set-ID survival, deferred files re-exporting as
+        // deferred, addresses and digests surviving a load and re-export,
+        // normalized timestamps, a reset discarding an in-progress export --
+        // plus `export_is_chunk_independent` for the streaming contract this
+        // reads through.
+        return host.kernel().rootfsExportContainerRead();
       });
       respondTransferredBytes(msg.requestId, image);
     } catch (error) {

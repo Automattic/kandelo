@@ -2278,6 +2278,67 @@ pub extern "C" fn kernel_rootfs_export_tree(
     }
 }
 
+/// Stream the FINISHED `/` image the overlay would export, CONTAINER AND ALL.
+///
+/// # Why this exists, and what it deletes
+///
+/// The host used to build this image itself: take the frozen base the kernel
+/// booted from, clone it into a writable filesystem, replay the overlay's
+/// tree onto that clone -- deletions, copy-on-writes, runtime creates, owners,
+/// modes and times -- and serialise the result. That is
+/// `host/src/vfs/rootfs-overlay-export.ts`, and it is a second implementation
+/// of a reconciliation the kernel can do from the authoritative side, against
+/// a tree the host has to ask for in pieces.
+///
+/// `rootfs::export_container_read` already did the whole job; only a way to
+/// call it was missing. It is that function and NOT `export_image_read`,
+/// which yields the bare KIFS body: a body is not an image, it has no
+/// container header, and nothing can find the filesystem inside it. Wiring
+/// this to the body first produced exactly that -- `Bad VFS image magic:
+/// 0x5346494b (expected 0x56465349)`, KIFS where VFSI belonged. `build_export_image` walks the overlay itself, so the
+/// deletions-before-parents ordering, the metadata replay and the capacity
+/// arithmetic all live where the tree does.
+///
+/// # Shape
+///
+/// Offset-addressable and streamed, exactly like [`kernel_rootfs_export_tree`]
+/// above and for the same reason: `lamp.vfs` is 249 MiB and neither side can
+/// hold it whole. An `offset` of 0 BUILDS the image and starts the stream; a
+/// later offset serves from the plan that build produced. A returned 0 is the
+/// end of the image, not an error.
+///
+/// Base-file content comes through the same `ByteReq` pair every other rootfs
+/// entry point uses, so a deferred file's bytes are fetched by URI and an
+/// image-backed file's are read out of the loaded container.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_export_container_read(
+    offset_lo: u32,
+    offset_hi: i32,
+    buf_ptr: usize,
+    buf_len: usize,
+) -> i32 {
+    if buf_len > i32::MAX as usize {
+        return -(Errno::EOVERFLOW as i32);
+    }
+    if buf_len != 0 && (buf_ptr == 0 || buf_ptr.checked_add(buf_len).is_none()) {
+        return -(Errno::EFAULT as i32);
+    }
+    let buf: &mut [u8] = if buf_len == 0 {
+        &mut []
+    } else {
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) }
+    };
+    let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::export_container_read(offset, buf, &mut |req, b| match req {
+        crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, b, offset),
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
+    }) {
+        Ok(read) => read as i32,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]

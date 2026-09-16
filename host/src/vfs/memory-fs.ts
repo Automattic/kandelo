@@ -679,9 +679,9 @@ function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
  * the kernel every archive-backed lazy stub in that image is then an ordinary
  * 0-byte regular file: a plausible-looking product artifact that is wrong,
  * which is precisely the silent corruption the platform-values contract
- * forbids. Restore→mutate→save is a production path, not only a build one
- * (`./rootfs-overlay-export.ts`, reached from the kernel's rootfs-snapshot
- * request), so the window is real.
+ * forbids. Restore→mutate→save was a production path and not only a build one
+ * until the kernel took over the rootfs export; it is a build path now, and the
+ * window is still real there.
  *
  * Re-encoding the JSON and comparing bytes turns "the two halves agree" from a
  * property of one writer into an invariant checked on every read. It is also

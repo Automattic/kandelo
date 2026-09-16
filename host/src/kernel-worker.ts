@@ -5452,21 +5452,33 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Serialize the entire overlay-owned `/` tree (Phase 5 cutover export) as an
-   * RXPT metadata buffer through the in-kernel overlay. Runs in one kernel entry,
-   * reading region-sized chunks; the kernel serializes once (the overlay is
-   * quiescent during export) and serves the rest from a cache. Throws
-   * `KernelScratchError` (POSIX errno) on failure, or `KernelReentrantEntryError`
-   * if a kernel entry is already active (the RPC caller retries). See
-   * `host/src/vfs/rootfs-overlay-export.ts` for the buffer's reconciler.
+   * Stream the FINISHED `/` image the overlay would export.
+   *
+   * What REPLACES the host rebuilding that image itself.
+   * `host/src/vfs/rootfs-overlay-export.ts` used to clone the frozen base into
+   * a writable filesystem and replay the overlay onto it -- deletions,
+   * copy-on-writes, creates, owners, modes, times -- which was a second
+   * implementation of a reconciliation the kernel performs from the side that
+   * owns the tree. `kernel_rootfs_export_container_read` hands over the result,
+   * and that file is gone.
+   *
+   * **The end condition is a ZERO read, not a short one.**
+   * `export_container_read` serves `min(request, remaining)` from a plan built
+   * at offset 0 and answers 0 when the image is spent; a chunk shorter than the
+   * buffer is ordinary mid-stream progress. Breaking on a short read -- which
+   * is what a metadata reader whose buffer is its whole answer may do -- would
+   * truncate an image at the first boundary that did not divide evenly, and a
+   * truncated `lamp.vfs` is 249 MiB of plausible-looking bytes that do not
+   * mount.
    */
-  rootfsExportTree(): Uint8Array {
+  rootfsExportContainerRead(): Uint8Array {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let output = new Uint8Array(0);
     let failErrno = 0;
-    this.#runImmediateKernelEntry("kernel rootfs export tree", (entry) => {
+    this.#runImmediateKernelEntry("kernel rootfs export image", (entry) => {
       if (
-        typeof entry.instance.exports.kernel_rootfs_export_tree !== "function"
+        typeof entry.instance.exports.kernel_rootfs_export_container_read
+          !== "function"
       ) {
         failErrno = ENOSYS;
         return undefined;
@@ -5486,7 +5498,7 @@ export class CentralizedKernelWorker {
             const result = this.#invokeEntryScratchExport(
               entry,
               lease,
-              "kernel_rootfs_export_tree",
+              "kernel_rootfs_export_container_read",
               [
                 offset >>> 0,
                 Math.floor(offset / 0x1_0000_0000),
@@ -5505,11 +5517,10 @@ export class CentralizedKernelWorker {
           failErrno = res.errno;
           break;
         }
+        // Zero is the end of the image. A short chunk is not.
         if (res.bytes === null) break;
         chunks.push(res.bytes);
         offset += res.bytes.byteLength;
-        // A short read (min(request, remaining)) means end of buffer.
-        if (res.bytes.byteLength < chunkCap) break;
       }
       if (failErrno === 0) {
         let total = 0;
@@ -5525,7 +5536,7 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs export tree failed", failErrno);
+      throw new KernelScratchError("rootfs export image failed", failErrno);
     }
     return output;
   }
