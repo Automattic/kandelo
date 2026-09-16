@@ -14,6 +14,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
+import { ensureDirRecursive } from "../../../../host/src/vfs/image-helpers";
 import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import {
   createEmptyBuildFs,
@@ -164,6 +165,10 @@ async function runProgramWithExecMap(
   // them on demand when the child execs them.
   const buildFs = await createEmptyBuildFs();
   for (const e of execMap) {
+    // Each entry's parent, explicitly. A fresh image is `/` and nothing else,
+    // and the Rust writer refuses a file whose directory does not exist, as
+    // POSIX does. The incumbent created parents silently.
+    ensureDirRecursive(buildFs, e.path.slice(0, e.path.lastIndexOf("/")) || "/");
     buildFs.registerLazyFile(e.path, e.url, e.size, 0o755);
   }
   const vfsImage = await finalizeKernelOwnedImage(buildFs);
