@@ -4825,87 +4825,43 @@ export async function centralizedWorkerMain(
               );
             }
           }
-          // Static-root binder: populate the merged anyref catalog mirror the
-          // module's injected `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT
-          // step. The child's static roots were harvested + registered during
-          // activation registration (above), so `decodeStaticRoot` derefs the live
-          // child root here; publishing it into the transit stays in wasm (the
-          // binder), replacing the JS `publishTransit` for static roots. Only the
-          // REFERENCED ordinals are pinned into the mirror, so an unreferenced
-          // (and possibly collected) root is never derefed. Each static-root-
-          // bearing activation gets a contiguous slice `[base, base + width)`
-          // (`width` = its max referenced ordinal + 1); the module's
-          // `fm_static_root_slot` returns `base(activation) + ordinal`. A single
-          // static-root activation seeds NO base (module defaults base 0),
-          // byte-identical to the raw-ordinal mapping. The mirror is cleared right
-          // after the attach drives the plan so it never pins a child root past
-          // replay.
-          // `moduleReferenceKindsSupported` (this block's guard) is only true on
-          // the module path, where the exnref gate above already made the module's
-          // decoded reference graph resident. Read the static-root nodes from the
-          // module's `fm_decoded_*` accessors (node index == canonical node id)
-          // instead of walking the JS `decodeSegmentedForkReferenceTransaction`
-          // structure. The resident graph survived the intervening guest
-          // instantiation + attach (which seed the replay DRIVER, not this
-          // read-only graph). WireNodeKind.StaticRoot (`fork-reference-recipes.ts`)
-          // is 7 — the same discriminant the JS `entry.node.kind === "static-root"`
-          // filter selected.
-          const WIRE_NODE_KIND_STATIC_ROOT = 7;
-          const decodedNodeCount = forkModuleBackend.decodedNodeCount();
-          const staticRootNodes: { activation: number; ordinal: number }[] = [];
-          for (let index = 0; index < decodedNodeCount; index += 1) {
-            if (
-              forkModuleBackend.decodedNodeKind(index) !==
-              WIRE_NODE_KIND_STATIC_ROOT
-            ) {
-              continue;
-            }
-            staticRootNodes.push({
-              activation: forkModuleBackend.decodedNodeModuleActivation(index),
-              ordinal: forkModuleBackend.decodedNodeOrdinal(index),
-            });
-          }
-          if (staticRootNodes.length > 0) {
-            const mirror = forkModuleInstance.staticRootCatalog;
-            const maxOrdinalByActivation = new Map<number, number>();
-            for (const entry of staticRootNodes) {
-              maxOrdinalByActivation.set(
-                entry.activation,
-                Math.max(
-                  maxOrdinalByActivation.get(entry.activation) ?? 0,
-                  entry.ordinal,
-                ),
-              );
-            }
-            const staticRootActivations = [
-              ...maxOrdinalByActivation.keys(),
-            ].sort((left, right) => left - right);
-            const staticRootBase = new Map<number, number>();
-            let staticRootWidth = 0;
-            for (const activation of staticRootActivations) {
-              staticRootBase.set(activation, staticRootWidth);
-              staticRootWidth += maxOrdinalByActivation.get(activation)! + 1;
-            }
-            if (mirror.length < staticRootWidth) {
-              mirror.grow(staticRootWidth - mirror.length, null);
-            }
-            for (const entry of staticRootNodes) {
-              mirror.set(
-                staticRootBase.get(entry.activation)! + entry.ordinal,
-                forkStaticRoots.get(entry.activation)?.get(entry.ordinal) ?? null,
-              );
-            }
-            // Seed bases only for a multi-activation static-root fork; a single
-            // static-root activation keeps the empty base map (module base 0).
-            if (staticRootActivations.length > 1) {
-              for (const activation of staticRootActivations) {
-                forkModuleBackend.setActivationStaticRootBase(
-                  activation,
-                  staticRootBase.get(activation)!,
-                );
-              }
-            }
-          }
+          // Static-root binder: the merged anyref catalog the module's injected
+          // `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT step has to hold
+          // the child's live roots before the drive runs.
+          //
+          // WHAT USED TO BE HERE: a second base map. This block walked the
+          // module's decoded graph for static-root nodes, computed a base per
+          // activation as the running sum of `max referenced ordinal + 1` in
+          // ascending activation order, filled the mirror at ITS bases, and
+          // seeded those bases back into the module.
+          //
+          // `ForkMergedStaticRoots` already settled that map at REGISTRATION,
+          // as the running sum of each activation's catalog length in
+          // registration order, and published every base. Two derivations of
+          // one layout, and they agree only by coincidence:
+          //
+          //   * the module reads `base(activation) + ordinal` from the
+          //     REGISTERED map, so a fill at the other map's slots puts the
+          //     child's roots where nothing looks for them -- silently, since
+          //     an unfilled slot is a legal null;
+          //   * and the re-seed could not succeed anyway.
+          //     `set_activation_static_root_base_impl` refuses a second base
+          //     for one activation with EINVAL, and `setActivationStaticRootBase`
+          //     throws on a non-zero errno.
+          //
+          // This block's own comment said "a single static-root activation
+          // seeds NO base (module defaults base 0)", which was true before
+          // `ForkMergedStaticRoots` existed and began seeding every registered
+          // activation. A stale premise, held in a comment, under an
+          // arithmetic that depended on it. Census 201.
+          //
+          // `fill()` copies every registered activation's catalog at the bases
+          // the module was told, which is what the PARENT path has always
+          // done at capture-begin. It pins more than the referenced ordinals
+          // for the duration of the fork; the roots are strong references in
+          // the guest's own harvest buffer either way, and `clear()` drops
+          // them when the fork finishes.
+          forkMergedStaticRoots.fill();
         }
         // ONE install call for both child shapes. A COW child and a vfork
         // BORROWED child share an identical plan in the module; the only

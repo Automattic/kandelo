@@ -10638,3 +10638,76 @@ module could drive" -- which is the same question the deferred
 `fm_admit_activation` work asks, and the same answer: the host's irreducible
 act is assembling an import object and spawning a worker, not deciding what
 goes in them.
+
+## §201 -- A second static-root base map, and a stale comment holding it up
+
+The child-install path in `worker-main.ts` built its own merged static-root
+layout. Eighty-two lines: walk the module's decoded graph for static-root
+nodes, take each activation's maximum referenced ordinal, assign bases as the
+running sum of `max + 1` in ascending activation order, fill the mirror at
+those bases, and seed them back into the module.
+
+`ForkMergedStaticRoots` had already settled that map at REGISTRATION, as the
+running sum of each activation's catalog LENGTH in registration order, and
+published every base to the module. **Two derivations of one layout**, and this
+time they were not even the same function of the same inputs.
+
+They agree only when every registered activation has static roots, each
+catalog's length equals its maximum referenced ordinal plus one, and
+registration order matches ascending activation id. Otherwise:
+
+- **The mirror is filled where nothing looks.** The module turns a static-root
+  recipe into `base(module_activation) + ordinal` from the REGISTERED map. A
+  fill at the other map's slots leaves the module reading slots the host never
+  wrote — and an unfilled slot is a legal `null`, not an error, so the child
+  rebuilds a null where a statically initialised reference belonged.
+- **And the re-seed could not have succeeded.**
+  `set_activation_static_root_base_impl` refuses a second base for one
+  activation with `EINVAL`, and `setActivationStaticRootBase` throws on a
+  non-zero errno. Verified against the real module, not read:
+  seeding activation 1 twice answers 22, and seeding activation 2 answers 0.
+
+### The comment that kept it standing
+
+The block explained itself this way:
+
+> A single static-root activation seeds NO base (module defaults base 0),
+> byte-identical to the raw-ordinal mapping.
+
+That was true when it was written, and stopped being true when
+`ForkMergedStaticRoots` arrived and began publishing a base for EVERY
+registered activation — which empties the "map is empty, default 0" branch the
+sentence depends on. The arithmetic below it went on assuming base 0 for the
+first static-root activation it found, which is only activation 0's base if
+activation 0 registered first and nothing else did.
+
+This is the third time in this census a comment has been the load-bearing
+support for something no longer true (§105, §108, §109). **A comment records
+what was true when someone wrote it. It is evidence of history, never of
+state.**
+
+### The fix
+
+Delete the block and call `forkMergedStaticRoots.fill()`, which is what the
+PARENT path already does at capture-begin. One layout, published once,
+consulted by everyone. Net -50 host code lines.
+
+`fill()` copies every registered activation's whole catalog rather than only
+the referenced ordinals. That pins more for the fork's duration and pins
+nothing after it: the roots are strong references in the guest's own harvest
+buffer either way, and `clear()` drops them when the fork finishes.
+
+### Gated
+
+`host/test/fork-merged-static-roots.test.ts` is new, and the file had no unit
+test before. Two mutations, both caught:
+
+- **Fill at `ordinal` instead of `base + ordinal`** — the deleted block's exact
+  failure mode: `activation 0 ordinal 0: expected { label: 'a1' } to match
+  { label: 'a0' }`, activation 1 having overwritten activation 0's slice.
+- **Publish base 0 for everyone** while filling at the real bases — the map and
+  the fill disagree: `expected [[0,0],[1,0]] to deeply equal [[0,0],[1,3]]`.
+
+And the module's refusal of a second base is pinned, because that refusal is
+what makes a second map unrepresentable rather than merely absent. If it ever
+became idempotent, two maps could quietly coexist again.
