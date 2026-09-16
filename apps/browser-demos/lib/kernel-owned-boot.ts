@@ -84,6 +84,41 @@ export async function finalizeKernelOwnedImage(buildFs: SffsImageFs): Promise<Ui
  *  that the kernel worker will own. Scratch mounts (/tmp, /var, /home/user, …)
  *  are provided worker-side, so only the image's `/` content (e.g. /etc, /bin)
  *  needs to live here. */
+/**
+ * Restore an image for BUILDING on: mutate the tree, then re-export it.
+ *
+ * The app-side peer of `host/src/vfs/load-image.ts`, and the split is a
+ * layering fact rather than a preference. That module returns a live mount
+ * BACKEND and must stay `MemoryFileSystem`, which owes `append`, `seek`,
+ * `fpathconf` and the rest of the runtime surface. This returns an image
+ * BUILDER, which must be `SffsImageFs`: the legacy writer cannot express the
+ * `SDEF` section, so restoring and re-saving through it empties an image's
+ * deferred half (defect B45 — 65 lazy binaries became zero-byte files marked
+ * complete).
+ *
+ * It lives here because `host/src` may not import from `images/`, which the
+ * host package's own `rootDir` enforces at build time — a rule worth obeying
+ * rather than working around, since the host runtime shipping the image
+ * BUILDER is the coupling this lane exists to remove.
+ *
+ * Verification is not a step: `loadImage` runs `seal::verify_cohorts` inside
+ * the load and unloads on failure, so an unverified loaded image is
+ * unrepresentable rather than merely discouraged.
+ */
+export function restoreVerifiedImageForBuild(
+  image: Uint8Array,
+  options?: { maxByteLength?: number },
+): SffsImageFs {
+  const fs = SffsImageFs.create();
+  fs.loadImage(image);
+  // A declared ceiling, not a reservation: the bridge grows its own memory
+  // with the tree, so this is what the exported image DECLARES it may grow to.
+  if (options?.maxByteLength !== undefined) {
+    fs.setImageCapacity(options.maxByteLength);
+  }
+  return fs;
+}
+
 export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): SffsImageFs {
   // No `SharedArrayBuffer`. The bridge owns its own module memory and grows it
   // as the tree does, so `maxByteLength` stops being an up-front reservation

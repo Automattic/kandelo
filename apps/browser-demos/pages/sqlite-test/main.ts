@@ -6,7 +6,7 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
 import { writeVfsFile } from "@host/vfs/image-helpers";
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
 import {
   patchTestrunnerForKandelo,
@@ -114,7 +114,7 @@ async function createFs(): Promise<SffsImageFs> {
   if (!vfsImageBytes) throw new Error("SQLite test VFS image not loaded");
   // WHY: chmod and Tcl patching mutate imported state before the worker sees
   // it, so a forged sealed cohort must fail before either operation.
-  const fs = await restoreVerifiedVfsImage(vfsImageBytes, {
+  const fs = restoreVerifiedImageForBuild(vfsImageBytes, {
     maxByteLength: 512 * 1024 * 1024,
   });
   fs.chmod("/sqlite", 0o777);

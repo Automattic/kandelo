@@ -6,7 +6,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 import { finalizeKernelOwnedImage } from "../../lib/kernel-owned-boot";
 import { imageOwnedRuntimeUrlTable } from "../../lib/init/image-owned-runtime-urls";
@@ -50,7 +50,7 @@ let activeOutput: { stdout: string; stderr: string; output: string } | null = nu
 async function createFs(vfsImageBytes: Uint8Array): Promise<SffsImageFs> {
   // WHY: the test runner rewrites permissions and source files immediately.
   // Authenticate imported lazy-tree seals before any fixture mutation.
-  const fs = await restoreVerifiedVfsImage(vfsImageBytes, {
+  const fs = restoreVerifiedImageForBuild(vfsImageBytes, {
     maxByteLength: 2 * 1024 * 1024 * 1024,
   });
   // NOT rewritten. This used to resolve the image's canonical rootfs
