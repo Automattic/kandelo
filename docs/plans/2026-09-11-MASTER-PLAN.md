@@ -774,7 +774,37 @@ which it is. Migrating the backend role is a separate job with a different end
 state, since the kernel owns `/` and the remaining host backends are the ones
 it does not claim.
 
-**Still owed: the browser run.** Everything above is typecheck-and-Node
+### The browser run, and two things it corrected
+
+**The run found a real defect on its first valid attempt, which is the point of
+running it.** 83 of the Chromium failures were one error:
+`SffsImageFs.create() cannot read sffs_module32.wasm outside Node`. Step 2 put
+the image writer on the browser's boot path, and `create()` gets its module by
+reading a FILE. Fixed in `b7711b91a`: the browser fetches it through a Vite
+alias like the kernel and the co-resident side modules, and installs it once
+per page. `create()` stays synchronous — it instantiates a module and returns a
+tree, while a fetch does not — so the bytes are installed BEFORE the first
+create rather than supplied at it, which made `createEmptyBuildFs` and
+`restoreVerifiedImageForBuild` async. Making the factories async rather than
+documenting "call this first" is deliberate: a rule someone must remember is a
+rule someone forgets, and the typechecker then found all ten call sites.
+
+**Two process facts worth keeping, because both cost a wasted run.**
+
+1. **The browser suite has three projects — chromium, firefox, webkit — and the
+   documented `164 passed / 14 failed / 6 skipped / 10 did not run` baseline is
+   194 tests, which is CHROMIUM ONLY.** A bare `npx playwright test` is 597
+   tests across all three and is not comparable to it. Comparing the two
+   produced an alarming "179 failed" that meant nothing. Reconcile against the
+   baseline with `--project=chromium`.
+2. **Browser validation must follow the LAST commit that touches `images/`,
+   `tools/` or `crates/`.** Those move the closure cache keys (B38's churn), and
+   a stale closure makes vite fail every test with "Package artifact closure is
+   incomplete" — which looks like a catastrophic regression and is a
+   provisioning state. The first browser attempt of the night was thrown away
+   for exactly this.
+
+**Still owed: a clean browser run.** Everything else is typecheck-and-Node
 evidence. The bar, set by the maintainer, is NO NEW FAILURES against lane Y's
 fourteen named ones — not a pass count, because a test can change character
 under `SDEF` without anything being wrong.
