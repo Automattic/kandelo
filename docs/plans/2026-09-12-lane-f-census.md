@@ -9974,3 +9974,43 @@ The general shape, worth carrying to the remaining imports: **an import whose
 body reads as bookkeeping is a candidate for having no reader.** Check the
 readers before porting the writer. The comments will argue for the design the
 code used to have.
+
+### §191 addendum -- the perturbation that survived, and what it exposed
+
+Two mutations of the injected shim, each with its build key so "artifact
+unchanged" is distinguishable from "survived" (baseline `49fb174cb29a`):
+
+- **Drop the export** (`2ab495a74e65`) -- FAILED loudly, as required. Three
+  fork specs died at instantiation with `1 fork import(s) have no
+  implementation, neither in the fork module nor in the host floor:
+  __wpk_fork_ref_provenance_externref`. The binding path is gated.
+- **Return `ref.null extern` instead of the value** (`c46f09259d95`) --
+  **SURVIVED the entire fork suite.** Four specs passed against a shim that
+  substitutes null for every value it is handed.
+
+The second is the interesting one, because identity here is not cosmetic.
+`crates/fork-instrument/src/externref_provenance.rs` emits `local.get result;
+call provenance; local.set result` -- the hook's return value REPLACES the
+value the real host import produced, before the guest's own code sees it. A
+null-returning shim corrupts the guest's data flow at every externref
+production site.
+
+Nothing caught it because **no fixture in the suite reaches the shim**. The
+pass rewrites DIRECT calls to externref-returning imports only. The
+gated-externref fixture mints its externref through `call_indirect`, which is
+the residual gap that file's own header records; the GC fixtures internalize a
+guest-allocated `anyref` with no host call to wrap. The census line quoted in
+that header -- "0/113 real packages produce externref at all" -- is why the
+direct-call path has no coverage: nothing in the tree exercises it.
+
+Gated where the contract actually lives: `fork-module-host-obligation.test.ts`
+instantiates the real `fork_module32.wasm` and asserts the export is an
+identity over objects, strings, numbers, `null` and `undefined`, plus a fresh
+frozen sentinel so a cached-value implementation cannot pass. Re-running
+mutation B against it fails on the first case (`expected null to be { a: 1 }`).
+
+**Owed, and named:** an end-to-end fork through a DIRECT externref-returning
+host import is still unexercised. That is a fixture gap older than this
+change -- it predates the hook moving into the module and would have been just
+as unexercised with the host implementation -- but it is the one path where
+this shim's identity matters in production, and it should get a fixture.

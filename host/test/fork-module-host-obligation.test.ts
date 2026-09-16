@@ -298,5 +298,43 @@ describe("fork-module host obligation", () => {
         ).toThrow();
       }
     });
+
+    it("serves the guest's provenance hook, and serves it as an IDENTITY", () => {
+      // `__wpk_fork_ref_provenance_externref` used to be a host import. Its
+      // host body recorded a `WeakMap` nothing ever read, so what was left of
+      // it was `|value| value` -- and the injector emits that, because an
+      // externref cannot cross a Rust signature. Census section 191.
+      //
+      // IDENTITY IS THE WHOLE CONTRACT, and it is easy to miss how load-bearing
+      // that is. `fork-instrument`'s wrapper does not discard this call's
+      // result: `externref_provenance.rs` emits `local.get result; call
+      // provenance; local.set result`, so whatever comes back REPLACES the
+      // value the real host import produced, before the guest's own code ever
+      // sees it. A shim returning null here would substitute null into the
+      // guest's data flow at every externref production site.
+      //
+      // WHY THIS TEST AND NOT A FORK: no fixture in this suite reaches the
+      // shim. The pass rewrites DIRECT calls to externref-returning imports
+      // only; the gated-externref fixture mints through `call_indirect` (the
+      // residual gap `externref_provenance.rs` records in its own header) and
+      // the GC fixtures internalize a guest-allocated `anyref` with no host
+      // call to wrap. Perturbing the shim to return null therefore passed the
+      // whole fork suite. This asserts the contract where it actually lives.
+      const caps = createForkModuleHostCapabilities({ tokens: stubResolver() });
+      const instance = instantiate({ ...caps.imports, ...moduleTables() });
+      const hook = instance.exports[
+        "__wpk_fork_ref_provenance_externref"
+      ] as (value: unknown) => unknown;
+      expect(typeof hook, "the module must export the guest's hook").toBe(
+        "function",
+      );
+      for (const value of [{ a: 1 }, "a string", 7, null, undefined]) {
+        expect(hook(value)).toBe(value);
+      }
+      // A fresh object each time: `toBe` on a literal would also pass for an
+      // implementation that returned a cached value of the right shape.
+      const sentinel = Object.freeze({ sentinel: Symbol("provenance") });
+      expect(hook(sentinel)).toBe(sentinel);
+    });
   });
 });
