@@ -393,7 +393,7 @@ describe("in-kernel rootfs base tree: image parse vs host-walked manifest", () =
  * superblock field needs to be sure it edited a superblock field.
  */
 function findSuperblockOffset(image: Uint8Array): number {
-  const magic = [0x53, 0x46, 0x46, 0x53]; // "SFFS", little-endian u32 0x5346_4653
+  const magic = [0x4b, 0x49, 0x46, 0x53]; // "KIFS", little-endian u32 0x4B49_4653
   for (let i = 0; i + 4 <= image.length; i += 4) {
     if (magic.every((b, k) => image[i + k] === b)) return i;
   }

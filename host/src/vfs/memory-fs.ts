@@ -31,7 +31,7 @@ import {
   hostFilePositionToSafeNumber,
 } from "../file-offset";
 import { backendPathconf } from "../pathconf";
-import { SFFS_SUPER_MAGIC } from "../statfs";
+import { KANDELO_IMAGE_SUPER_MAGIC } from "../statfs";
 import {
   ACCESS_MODES,
   DIRENT_TYPES,
@@ -7446,7 +7446,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     this.fs.stat(path);
     const stats = this.fs.statfs();
     return {
-      type: SFFS_SUPER_MAGIC,
+      type: KANDELO_IMAGE_SUPER_MAGIC,
       bsize: stats.blockSize,
       blocks: stats.totalBlocks,
       bfree: stats.freeBlocks,

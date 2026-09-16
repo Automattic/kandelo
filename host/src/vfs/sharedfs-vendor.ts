@@ -41,7 +41,7 @@ export const MAX_FDS = Math.floor(
   (BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE,
 );
 
-export const MAGIC = 0x53464653; // "SFFS"
+export const MAGIC = 0x5346494b; // "KIFS" in LE byte order
 export const VERSION = 1;
 
 // File types

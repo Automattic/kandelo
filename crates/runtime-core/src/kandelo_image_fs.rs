@@ -301,7 +301,7 @@ pub fn kernel_lazy_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
     image.get(start..end).map(Some).ok_or(Errno::EINVAL)
 }
 
-pub(crate) const KANDELO_IMAGE_MAGIC: u32 = 0x5346_4653; // "SFFS"
+pub(crate) const KANDELO_IMAGE_MAGIC: u32 = 0x5346_494B; // "KIFS" in LE byte order
 pub(crate) const KANDELO_IMAGE_VERSION: u32 = 1;
 pub(crate) const BLOCK_SIZE: usize = 4096;
 pub(crate) const SB_INODE_TABLE_START: u64 = 36;
@@ -384,7 +384,7 @@ pub(crate) const SB_TOTAL_INODES: u64 = 16;
 /// answered it. Divergence here would be a platform-visible difference
 /// between two implementations of one filesystem, which is the defect lane V
 /// is closing.
-pub const KANDELO_IMAGE_SUPER_MAGIC: u32 = 0x5346_4653;
+pub const KANDELO_IMAGE_SUPER_MAGIC: u32 = 0x5346_494B;
 
 pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
 pub(crate) const SB_FREE_BLOCKS: u64 = 20;
@@ -950,8 +950,11 @@ mod tests {
     #[test]
     fn unwrap_vfsi_returns_the_image_with_valid_magic() {
         let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
-        // Inner SFFS superblock magic "SFFS" (0x53464653) at byte 0, LE.
-        assert_eq!(r32(image, 0), Some(0x5346_4653));
+        // Inner filesystem superblock magic "KIFS" at byte 0. The constant is
+        // 0x5346_494B because it is read as a LITTLE-ENDIAN u32, so the low
+        // byte is the first character. "SFFS" hid this: its bytes are a
+        // palindrome, so the old constant read correctly either way.
+        assert_eq!(r32(image, 0), Some(0x5346_494B));
     }
 
     #[test]

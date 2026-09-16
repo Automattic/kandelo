@@ -234,7 +234,7 @@ for (const fixture of fixtures) {
     );
   }
   const packed = deflateRawSync(body, { level: 9 });
-  const out = join(outDir, `${fixture.name}.sffs.deflate`);
+  const out = join(outDir, `${fixture.name}.deflate`);
   writeFileSync(out, packed);
   console.log(
     `wrote ${out} (${packed.byteLength} bytes, ${body.byteLength} uncompressed)`,
