@@ -69,6 +69,7 @@ exact hazard `run.sh`'s `KANDELO_SOURCE_CACHE_ROOT` documentation describes.
 |---|---|---|---|
 | **Y** image builders | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
 | **S** setuid integrity *(deferred)* | `/Users/brandon/kandelo-lane-s` | `brandonpayton/lane-s-setuid-integrity` | 2026-09-12, from `002149196` |
+| **N** native fork reconstruction | `/Users/brandon/kandelo-lane-n` | `brandonpayton/lane-n-native-fork` | 2026-09-16, from lane F's HEAD |
 
 **The lane S worktree holds one commit and it is not lane S's.** The lane was
 deferred mid-flight; what survives on that branch is the code-line budget

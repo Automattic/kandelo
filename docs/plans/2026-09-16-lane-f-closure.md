@@ -4,6 +4,13 @@ Branch `brandonpayton/lane-f-fork-inversion`, worktree
 `/Users/brandon/kandelo-lane-f`. Written 2026-09-16 at the maintainer's
 direction to treat the lane as closeable.
 
+**Status: closeable.** The measure is met, the three owed guards are gated, and
+the one thing that reopened it — `crates/host-native` — is repaired here for
+the damage this lane did and handed to **Lane N (native fork reconstruction)**
+for the subsystem underneath, by maintainer decision. What remains for the
+maintainer is listed at the end: four provisional ceiling raises, a
+two-file budget-ledger conflict with the parent, and two target restatements.
+
 ## What the lane was for
 
 Set aside all fork TypeScript, implement everything possible in the Rust
@@ -120,7 +127,15 @@ reported "Discovered 0 tests" and exited 0 — a green run of nothing. Point
 (`7e8f0082ab`) instead; that override exists for precisely this, and the runner
 keeps its build output on the repository's own filesystem.
 
-## NOT CLOSEABLE YET — `crates/host-native` (open, 2026-09-16)
+## `crates/host-native` — five fixes here, the rest is Lane N
+
+**Maintainer decision, 2026-09-16: "native forking should be dedicated lane."**
+Lane F repairs what it broke; the subsystem underneath goes to
+`docs/plans/2026-09-16-lane-n-native-fork.md`.
+
+`cargo test -p host-native` was **52 passed / 12 failed**, every failure a fork
+test, and this lane caused it. The host suite does not build host-native, which
+is why it went unseen. It is **56 / 8** now.
 
 `cargo test -p host-native` fails **11 of 68**, every one a fork test, and this
 lane caused it. The host suite does not build host-native, which is why it went
@@ -203,7 +218,7 @@ next one of these too. The JavaScript hosts distinguish them because the kernel
 records the exit before the trap; host-native has the same information and does
 not check it here.
 
-### The root cause class: host-native still runs its OWN capture
+### Why the remaining 8 became their own lane
 
 `crates/host-native` keeps `NativeReferenceCapture` — its own port of the
 reference graph builder, described in its doc comment as "the native port of
@@ -234,15 +249,18 @@ fix is not another missing call. It is retiring `NativeReferenceCapture` in
 favour of the module's builder, which is precisely the full-peer-parity work
 ruled OUT of scope when the instruction was "make the 12 pass, nothing more".
 
-**That instruction and this finding now conflict, and the conflict is new
-information rather than an excuse.** When the scope was set, neither of us knew
+When the scope was set to "make the 12 pass, nothing more", neither of us knew
 that 8 of the 12 need native reference reconstruction to work at all. The five
-fixed above were genuinely bounded; these eight are a subsystem.
+fixed here were genuinely bounded; these eight are a subsystem, and the
+maintainer opened **Lane N (native fork reconstruction)** for them.
 
-The two smaller pieces — the swallowed-fault visibility defect, and the
-divergent child protocol (`fm_attach_child` versus the fine-grained sequence)
-— are native-host work of their own and neither is a sixth instance of the five
-fixed above.
+Lane N also carries the two smaller pieces this trace turned up: the
+swallowed-fault visibility defect — which is why a lane-caused regression
+stayed invisible for days, and which that lane should fix FIRST because it
+makes everything after it visible — and the divergent child protocol
+(`fm_attach_child` versus the fine-grained sequence). Its charter has the full
+account, what is already done here so it is not redone, and the working method
+that found all of this.
 
 ## Still the maintainer's
 
