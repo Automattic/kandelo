@@ -203,8 +203,46 @@ next one of these too. The JavaScript hosts distinguish them because the kernel
 records the exit before the trap; host-native has the same information and does
 not check it here.
 
-Both are native-host work of their own, not a sixth instance of the five fixed
-above.
+### The root cause class: host-native still runs its OWN capture
+
+`crates/host-native` keeps `NativeReferenceCapture` — its own port of the
+reference graph builder, described in its doc comment as "the native port of
+`ForkReferenceTransaction`'s node/vector tables". At seal it writes THAT graph
+into the arena with
+
+```rust
+write_module_state_arena(guest_mem, fm.empty_module_state_root, &accumulated.graph, ...)
+```
+
+while the module's own `parent_replay_impl` replays from
+
+```rust
+Some(module) => module.module_state.root(),
+```
+
+**Two reference graphs and two arena roots.** The module's builder is populated
+by the guest through the `__wpk_fork_ref_*` imports the module now serves — the
+same imports lane F spent itself moving — and the parent replays from the
+module's root. host-native's parallel graph, at a different root, is what it
+still believes in. Neither host calls `fm_capture_intern` and friends directly;
+the guest does, into the module. So the parent replays a graph host-native
+never wrote to, and the guest asserts on the references that are not there.
+
+This is the same "two implementations of one thing" pattern the lane found in
+the resume slots and the static-root bases, at the largest scale yet — and the
+fix is not another missing call. It is retiring `NativeReferenceCapture` in
+favour of the module's builder, which is precisely the full-peer-parity work
+ruled OUT of scope when the instruction was "make the 12 pass, nothing more".
+
+**That instruction and this finding now conflict, and the conflict is new
+information rather than an excuse.** When the scope was set, neither of us knew
+that 8 of the 12 need native reference reconstruction to work at all. The five
+fixed above were genuinely bounded; these eight are a subsystem.
+
+The two smaller pieces — the swallowed-fault visibility defect, and the
+divergent child protocol (`fm_attach_child` versus the fine-grained sequence)
+— are native-host work of their own and neither is a sixth instance of the five
+fixed above.
 
 ## Still the maintainer's
 
