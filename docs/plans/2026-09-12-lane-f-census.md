@@ -9800,3 +9800,104 @@ abort cleanly with the parent surviving. Not yet diagnosed. The seal-phase fix
   needed a temporary probe compiled into the worker. A child that dies during
   replay should say so on the error channel, the way a launch failure already
   does.
+
+## §190 -- The night the forks came back, the attic went, and the browser ran
+
+One session, 2026-09-15 into the 16th. The baseline went **105 -> 67** and the
+lane's own debt went to nearly nothing. What follows is what changed and what
+is left, so the next session starts from facts rather than from this file's
+older optimism.
+
+### All eleven reference-carrying forks pass
+
+Every fork that carries a reference across `fork()` was red at the start of the
+session and every one of them had passed before the attic move. They pass now:
+the host externref fork and its gated twin, the funcref fork, the exnref local
+fork, the reference-bearing catch fork, both Wasm-GC reference forks (state and
+cycle), both static-root forks (bare and through a struct field), and both
+shell command-substitution forks.
+
+Seven defects stood between them and working, and each was hidden behind the
+one in front of it:
+
+1. **The capture could not NAME a host reference.** No seam existed from a live
+   externref to its broker handle. One new host import closed it
+   (`__wpk_fork_host_externref_handle`), the exact reverse of
+   `resolve_externref` -- §188.
+2. **Nothing sized the anyref transit.** The host used to; after the attic move
+   nothing did, and an unsized table traps the child rather than failing
+   anywhere visible. Every plan sizes it now, and so do the two capture entries
+   that hand the guest a recipe it publishes.
+3. **A parent replayed a graph it never decoded.** It resumes into the same
+   guest code its child does and gets asked the same reference questions. It
+   decodes the arena it just sealed.
+4. **Nothing recognised a static root at capture time**, so the child rebuilt a
+   second object beside the one its own instantiation made. The module walks
+   the merged static-root catalog now, the way it already walks the funcref
+   one -- §189.
+5. **Reference vectors nest and the module allowed one.** An aggregate's field
+   vector is built while the frame's vector is open; the single in-flight slot
+   refused the nested `begin` invisibly, and the capture failed to seal four
+   layers downstream.
+6. **A fork that aborted said nothing**, so a program that does not check
+   `fork()`'s return failed somewhere unrelated. Every abort path reports now.
+7. **A fork that ran out of memory killed its worker** instead of returning
+   `-ENOMEM`, and its aborted transaction leaked the metadata arena.
+
+### The attic is deleted
+
+23,174 lines: the 22 set-aside modules and the twelve test files whose subject
+was that implementation. Nothing in `host/src` imported it, and the surface
+that counts such imports now counts ANY unresolved `host/src` import -- a
+ceiling of 0 against a directory that cannot exist would be a check that can
+never fail again.
+
+### The browser runs, and the lane is green there
+
+`./run.sh prepare-browser` needed the parent branch's SpiderMonkey fix
+(cherry-picked as its own commit); php still fails on ICU pkg-config, which
+blocks only the php-dependent products.
+
+Then three defects stopped the browser kernel worker from starting AT ALL --
+a `process.platform` read at module scope, a barrel import dragging `node:fs`
+in, and a spec importing two names this lane deleted. Two of the three predate
+this lane. With them fixed, **18 of 18** fork/vfork/GC/exnref/externref/
+static-root/catch-ref specs pass in Chromium.
+
+### What is actually left
+
+**67 banked files, and every one of them was in the baseline as first pinned.**
+The lane has added nothing to it. Of those 67:
+
+- **8 are fork-related.** Four were ported tonight and came off. What remains:
+  `fork-module-drive-shim`, `fork-module-host-obligation`,
+  `fork-host-import-runtime` (a malformed type section in a legacy artifact),
+  and `fork-instrument-coverage`.
+- **`fork-instrument-coverage` is a LOAD-SENSITIVITY finding, not a defect
+  list.** Run alone it passes whole (41 passed, 2 expected fail, 8 skipped).
+  Run inside the full suite it fails one case (K-03, fork from a
+  `pthread_cleanup_push` handler) after 540 seconds. Earlier in the session,
+  with builds running concurrently, the same file failed EIGHT cases -- all
+  timeouts. Any future reading of this baseline should account for that: some
+  of its entries are a busy machine, not broken code.
+- **39 of the 67 were missing package artifacts.** The browser build produced
+  six of them (bzip2, gzip, unzip, xz, zip, zstd came off the baseline the
+  moment their binaries existed). The rest are the same shape: provisioning,
+  not defects, and `docs/agent-guidance/validation.md` says to build them.
+
+### Owed, and named so it is not lost
+
+- The failed-seal phase condition (§188's owed test) is still ungated.
+- The i31 transit sizing is ungated; `gc-reference-cycle-fresh-worker` is now
+  GREEN, so re-running that mutant against it is the cheap way to close it.
+- The chunk release on a FAILED capture-begin is ungated: P-11's failures land
+  in the frame reserve during the unwind, never in the begin.
+- Six provisional ceiling raises are recorded in `docs/surface-budget.json`,
+  each with its reason and what it bought, awaiting the maintainer's ruling.
+- The two lanes' surface-budget ledgers DISAGREE. A trial merge of the parent
+  into this lane conflicts in exactly two files -- `docs/surface-budget.json`
+  and `host/test/surface-budget.test.ts` -- because both lanes evolved the same
+  surfaces (this lane narrowed `forkTypeScript` to `fork-module-*.ts`; the
+  parent still measures the broad glob at 19,804). That reconciliation is the
+  maintainer's, and it is the one thing standing between this branch and a
+  clean merge.
