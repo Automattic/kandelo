@@ -2938,25 +2938,6 @@ mod wasm {
     unsafe impl Sync for DrivePlanCell {}
     static DRIVE_PLAN: DrivePlanCell = DrivePlanCell(UnsafeCell::new(None));
 
-    fn build_trivial_plan_impl(activation: u32, recipe: u32, _pid: u32) -> Result<usize, Errno> {
-        // The injected shim's post-ALLOC integrity guard reads STORE #2 (the
-        // guest's Wasm-GC transit table) directly, so no host generation is opened
-        // here.
-        // Serialize the trivial ALLOC-then-FILL plan into a module-owned buffer;
-        // its guest address is what `fm_drive_execute` strides over.
-        let steps = drive_plan::trivial_struct_plan(activation, recipe);
-        let mut buf = Vec::new();
-        buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
-        drive_plan::serialize_plan(&steps, &mut buf)?;
-        let ptr = buf.as_ptr() as usize;
-        // SAFETY: single-threaded per worker; rooting the backing bytes so the
-        // returned pointer stays valid for the shim's reads.
-        unsafe {
-            *DRIVE_PLAN.0.get() = Some(buf);
-        }
-        Ok(ptr)
-    }
-
     fn set_format_impl(
         pointer_width: u32,
         fixed_prefix_size: u32,
@@ -6736,45 +6717,6 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_gc_plan_count() -> i32 {
         GC_PLAN_COUNT.load(Ordering::Relaxed) as i32
-    }
-
-    /// Serialize a TRIVIAL single-struct drive plan (ALLOC then FILL for one
-    /// `recipe` in `activation`) into a module-owned scratch buffer and return its
-    /// guest address for `fm_drive_execute`. The shim's post-ALLOC integrity guard
-    /// reads STORE #2 (the guest's Wasm-GC transit table) directly, so no host
-    /// generation is opened here. Returns 0 on failure (check `fm_last_errno`).
-    ///
-    /// RETENTION: this is a test-only plan builder — no production or native path
-    /// calls it. It survives ONLY to enable the sole runtime regression test of
-    /// the injected `fm_drive_execute` shim's store-#2 GC-integrity trap
-    /// (`host/test/fork-module-drive-shim.test.ts`): the load-bearing
-    /// `table.get`+`ref.is_null` guard that turns a guest `_gc_allocate` that
-    /// failed to publish a live GC object into a truthful trap instead of a silent
-    /// wrong reconstruction. That coverage is wasmtime-runnable (the guard is in
-    /// the injected wasm, not V8-specific) and should migrate to a host-native
-    /// wasmtime instantiation test built on `fork_codec::drive_plan`'s public
-    /// `trivial_struct_plan` + `serialize_plan`; once it does, this export and
-    /// `fm_trivial_plan_count` can be deleted.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_build_trivial_plan(activation: u32, recipe: u32, pid: u32) -> usize {
-        match build_trivial_plan_impl(activation, recipe, pid) {
-            Ok(ptr) => {
-                set_ok();
-                ptr
-            }
-            Err(errno) => {
-                set_err(errno);
-                0
-            }
-        }
-    }
-
-    /// The step count of the plan `fm_build_trivial_plan` wrote (the `count`
-    /// argument for `fm_drive_execute`). The trivial plan is exactly ALLOC + FILL.
-    /// Test-only; see the retention note on `fm_build_trivial_plan`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_trivial_plan_count() -> i32 {
-        2
     }
 
     /// Sequence a whole PARENT REPLAY-begin phase in the module (control-flow

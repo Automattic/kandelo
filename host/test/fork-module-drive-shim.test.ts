@@ -7,7 +7,7 @@
 // the JS `materializeTypedGraph` drive-order calling those guest exports, the
 // module drives them through a MUTABLE funcref table (`env.__wpk_fork_drive_table`)
 // the host binds post-instantiation. Rust has no `call_indirect` intrinsic, so the
-// split is: Rust serializes an ordered PLAN (`fm_build_trivial_plan`); the injected
+// split is: Rust serializes an ordered PLAN (`fm_restore_from_arena`); the injected
 // walrus shim `fm_drive_execute(plan_ptr, count)` loops the plan, `call_indirect`s
 // the table slot for each step, and — after each ALLOC step — reads STORE #2 (the
 // shared Wasm-GC transit table `env.__wpk_fork_ref_gc_transit`) at slot `recipe + 1`
@@ -35,6 +35,13 @@ import { readFileSync } from "node:fs";
 import { instantiateForkModule } from "../src/fork-module-instance";
 import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
+import {
+  CAPTURE_KIND_STRUCT,
+  CHILD_MODULE_BASE,
+  INTERN_KIND_I31,
+  captureGraph,
+  fixture,
+} from "./fork-module-capture-fixture";
 
 const PTR_WIDTH = 4 as const;
 const PID = 3131;
@@ -67,42 +74,96 @@ interface NonPublishingGuest {
 }
 
 interface DriveShimExports {
-  fm_build_trivial_plan: (activation: number, recipe: number, pid: number) => number;
-  fm_trivial_plan_count: () => number;
+  fm_set_activation_gc_codec: (act: number, ptr: number, len: number) => void;
+  fm_restore_from_arena: (root: number, pid: number) => number;
+  fm_gc_plan_count: () => number;
   fm_drive_execute: (planPtr: number, count: number) => void;
   fm_drive_table_base: (activation: number) => number;
   fm_last_errno: () => number;
 }
+
+/** The committed KFGC fixture; its layout 1 is a two-reference struct. */
+const GC_CODEC = new Uint8Array(
+  readFileSync(
+    new URL("../../crates/fork-codec/testdata/gc-codec-wasm32.bin", import.meta.url),
+  ),
+);
+/** Where the codec bytes are staged: low scratch, clear of the channel. */
+const CODEC_AT = 2 * 65536;
 
 const MODULE = new WebAssembly.Module(
   readFileSync(resolveBinary("fork_module32.wasm")),
 );
 const NONPUBLISHING_GUEST_MODULE = new WebAssembly.Module(NONPUBLISHING_GUEST_BYTES);
 
-/** Instantiate the fork-module and wrap (not mint) its OWN exported transit
- *  table (STORE #2, M1) so the shim's post-ALLOC read, the guest's publish, and
- *  this test's read-back all reach the same table. */
-function setup() {
-  const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+/**
+ * A REAL plan for one struct: a parent captures it, a child restores it.
+ *
+ * THIS USED TO CALL `fm_build_trivial_plan`, a module entry that existed for
+ * this test and nothing else -- its own doc said so, and said the coverage
+ * should move to a plan built the way production builds one. It has: the
+ * capture fixture interns a struct over an i31 leaf, and
+ * `fm_restore_from_arena` returns the ALLOC-then-FILL plan the drive executes.
+ * Two `fm_*` entries went with the change.
+ *
+ * The transit table is the module's OWN export (STORE #2, M1), wrapped rather
+ * than minted, so the shim's post-ALLOC read, the guest's publish and this
+ * test's read-back all reach one table.
+ */
+function setup(): {
+  fm: ReturnType<typeof instantiateForkModule>;
+  x: DriveShimExports;
+  transitTable: ForkAnyrefTransitTable;
+  recipe: number;
+  planPtr: number;
+  count: number;
+} {
+  const f = fixture();
+  const { root, aggregateRecipes } = captureGraph(
+    f,
+    [[INTERN_KIND_I31, 9, 0]],
+    [
+      {
+        kind: CAPTURE_KIND_STRUCT,
+        activation: 0,
+        typeOrdinal: 0,
+        layoutId: 1,
+        scalars: new Uint8Array(4),
+        edges: ({ leaves }) => [leaves[0]!, leaves[0]!],
+      },
+    ],
+  );
+
+  const needed = CHILD_MODULE_BASE + 8 * 1024 * 1024;
+  if (f.memory.buffer.byteLength < needed) {
+    f.memory.grow(Math.ceil((needed - f.memory.buffer.byteLength) / 65536));
+  }
   const fm = instantiateForkModule({
     module: MODULE,
-    memory,
+    memory: f.memory,
     ptrWidth: PTR_WIDTH,
-    reserve: () => 8 * 1024 * 1024,
+    reserve: () => CHILD_MODULE_BASE,
     label: "drive-shim-test",
   });
   const x = fm.exports as unknown as DriveShimExports;
-  // The wrapper takes the module's EXPORTS, not a table: it needs
-  // `fm_transit_grow` and `fm_last_errno` alongside the table, because
-  // growing an anyref table is the module's own job.
+  (fm.exports.fm_set_format as (...a: number[]) => void)(4, 0, 0, 0, 4 * 65536);
+
+  new Uint8Array(f.memory.buffer, CODEC_AT, GC_CODEC.byteLength).set(GC_CODEC);
+  x.fm_set_activation_gc_codec(0, CODEC_AT, GC_CODEC.byteLength);
+  expect(x.fm_last_errno(), "the GC codec seeds").toBe(0);
+
   const transitTable = new ForkAnyrefTransitTable(fm.exports);
-  return { fm, x, transitTable };
+  const planPtr = x.fm_restore_from_arena(root, PID);
+  expect(x.fm_last_errno(), "the child restores the captured graph").toBe(0);
+  const count = x.fm_gc_plan_count();
+  // ALLOC then FILL for the struct, plus the leaf's own ALLOC.
+  expect(count, "the plan drives the captured graph").toBeGreaterThanOrEqual(2);
+  return { fm, x, transitTable, recipe: aggregateRecipes[0]!, planPtr, count };
 }
 
 describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () => {
   it("call_indirects the guest _gc_allocate then _gc_fill via the drive table and passes the store-#2 integrity check", () => {
-    const { fm, x, transitTable } = setup();
-    const recipe = 7;
+    const { fm, x, transitTable, recipe, planPtr, count } = setup();
 
     // Bind the FAITHFUL guest (its `gc_allocate` publishes a live identity into
     // STORE #2 at `recipe+1`) into the host-owned drive table (base(0) = 0 ->
@@ -116,35 +177,29 @@ describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () 
     fm.driveTable.set(base + 0, guest.gc_allocate);
     fm.driveTable.set(base + 1, guest.gc_fill);
 
-    // Rust serializes the trivial ALLOC-then-FILL plan (no host generation is
-    // opened; the shim reads store #2 directly).
-    const planPtr = x.fm_build_trivial_plan(0, recipe, PID);
-    expect(x.fm_last_errno()).toBe(0);
-    expect(planPtr).not.toBe(0);
-    expect(x.fm_trivial_plan_count()).toBe(2);
-
     // Nothing has run yet.
     expect(guest.seq()).toBe(0);
 
     // Drive: the shim loops the plan and call_indirects the bound guest exports.
-    x.fm_drive_execute(planPtr, x.fm_trivial_plan_count());
+    x.fm_drive_execute(planPtr, count);
 
-    // (a) MECHANISM — guest _gc_allocate ran first, then _gc_fill, each once, each
-    // with the plan's arg (== recipe for the trivial plan).
-    expect(guest.seq()).toBe(2);
-    expect(guest.order()).toBe(12); // 1 (alloc) then 2 (fill)
-    expect(guest.alloc_arg()).toBe(recipe);
+    // (a) MECHANISM — every plan step reached a guest export through the drive
+    // table, allocate before fill, and the FILL carried the struct's own
+    // recipe. The plan is the captured graph's, so the leaf allocates too:
+    // `order()` packs the sequence and must end in a fill.
+    expect(guest.seq()).toBe(count);
+    expect(String(guest.order())).toMatch(/^1+2$/);
     expect(guest.fill_arg()).toBe(recipe);
-    // (b) STORE-#2 CHECK PASSED — the guest published slot recipe+1 during
-    // allocate, so the shim's read-back found a live object and did not trap.
-    expect(published).toEqual([recipe]);
+    // (b) STORE-#2 CHECK PASSED — the guest published each ALLOC recipe's slot
+    // during allocate, so the shim's read-back found a live object every time
+    // and did not trap.
+    expect(published).toContain(recipe);
     expect(transitTable.get(recipe + 1)).not.toBeNull();
     expect(x.fm_last_errno()).toBe(0);
   });
 
   it("TRAPS when the store-#2 slot is null (integrity check is load-bearing)", () => {
-    const { fm, x } = setup();
-    const recipe = 4;
+    const { fm, x, planPtr, count } = setup();
 
     // A NON-PUBLISHING guest: `gc_allocate` records its call but never publishes
     // into the transit table, so the shim's post-ALLOC read finds a null slot.
@@ -157,12 +212,9 @@ describe("fork-module call_indirect drive-shim mechanism (Phase 6 item 3b)", () 
     fm.driveTable.set(base + 0, guest.gc_allocate);
     fm.driveTable.set(base + 1, guest.gc_fill);
 
-    const planPtr = x.fm_build_trivial_plan(0, recipe, PID);
-    expect(x.fm_last_errno()).toBe(0);
-
     // The guest does NOT publish: the shim must read a null store-#2 slot and
     // trap, never silently pass an integrity check with no live identity.
-    expect(() => x.fm_drive_execute(planPtr, x.fm_trivial_plan_count())).toThrow();
+    expect(() => x.fm_drive_execute(planPtr, count)).toThrow();
 
     // The guest _gc_allocate DID run (call_indirect happened before the trap); the
     // trap fired in the post-ALLOC store-#2 check, before _gc_fill.
