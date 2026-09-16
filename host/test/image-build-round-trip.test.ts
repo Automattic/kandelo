@@ -147,6 +147,38 @@ describe("overlaying /etc onto a fresh image", () => {
     expect(target.lstat("/etc/hostname").size).toBe(8);
   });
 
+  // The surviving mutant said this was uncovered, and it was right: every case
+  // above uses ENOENT, so none of them can tell "this path is not there" from
+  // "this failed for a reason I should not swallow".
+  //
+  // That distinction is the whole job of `isNotFound`. Widened to accept any
+  // errno, a real EACCES or EIO would read as a missing path and the overlay
+  // would silently skip the copy — an image that quietly lacks `/etc` rather
+  // than a boot that fails saying why.
+  it("propagates a failure that is NOT not-found, instead of skipping the path", async () => {
+    const source = KandeloImageFs.create();
+    source.mkdir("/etc", 0o755);
+    source.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+    const sourceImage = await source.saveImage();
+
+    class Denied extends Error {
+      // The POSITIVE errno the bridge raises, which is the convention the
+      // helper has to read; 13 is EACCES.
+      readonly errno = 13;
+    }
+    const target = KandeloImageFs.create();
+    const denying = new Proxy(target, {
+      get(inner, key, receiver) {
+        if (key === "lstat") return () => { throw new Denied("EACCES: lstat /etc"); };
+        return Reflect.get(inner, key, receiver);
+      },
+    });
+
+    await expect(
+      overlayEtcFromRootfs(denying as unknown as typeof target, sourceImage),
+    ).rejects.toThrow(/EACCES/);
+  });
+
   it("is idempotent, because a path that IS present is the other branch", async () => {
     const source = KandeloImageFs.create();
     source.mkdir("/etc", 0o755);
