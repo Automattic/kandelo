@@ -55,6 +55,30 @@ if [ ! -f "$NCURSES_PREFIX/lib/libtinfow.a" ]; then
 fi
 echo "==> ncurses at $NCURSES_PREFIX"
 
+# --- Invalidate a configure result made against a different ncurses ---
+# Same defect vim carried (B39): `configure` bakes $NCURSES_PREFIX into
+# CPPFLAGS and LDFLAGS as an ABSOLUTE, content-addressed path and records it in
+# Makefile and config.status, while the test below only configures when
+# Makefile is absent. The prefix moves whenever ncurses' cache key moves, which
+# is routine, and the stale result is then kept forever: the resolver hands
+# over a live prefix, the guard above passes against it, and the link runs
+# against the dead one.
+#
+# This tree was ALREADY in that state when the guard was added on 2026-09-14 --
+# less-src/Makefile and less-src/config.status both named
+# ncurses-6.5-rev8-wasm32-c3401e5f..., the very prefix whose disappearance
+# broke vim. It had not surfaced only because less had not been rebuilt since.
+#
+# config.status goes with Makefile: autoconf refuses a reconfigure that sees
+# changed flags, telling you to remove its cache and start over.
+CONFIG_MARKER="$SRC_DIR/.kandelo-less-config"
+expected_config_marker="$NCURSES_PREFIX"
+if [ -f "$SRC_DIR/Makefile" ] && \
+   [ "$(cat "$CONFIG_MARKER" 2>/dev/null || true)" != "$expected_config_marker" ]; then
+    echo "==> ncurses prefix changed since the last configure; reconfiguring"
+    rm -f "$SRC_DIR/Makefile" "$SRC_DIR/config.status" "$SRC_DIR/config.cache"
+fi
+
 NCURSES_CPPFLAGS="-I$NCURSES_PREFIX/include"
 if [ -d "$NCURSES_PREFIX/include/ncursesw" ]; then
     NCURSES_CPPFLAGS="$NCURSES_CPPFLAGS -I$NCURSES_PREFIX/include/ncursesw"
@@ -127,6 +151,7 @@ if [ ! -f Makefile ]; then
         --with-regex=posix \
         2>&1 | tail -30
 
+    printf '%s\n' "$expected_config_marker" >"$CONFIG_MARKER"
     echo "==> Configure complete."
 fi
 

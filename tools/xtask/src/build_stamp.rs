@@ -22,8 +22,11 @@
 
 use wasmparser::{Parser, Payload};
 
-pub(crate) const BUILD_KEY_SECTION: &str = "kandelo.build.key";
-pub(crate) const ABI_CONTRACT_SECTION: &str = "kandelo.abi.contract";
+// Declared once, in the artifact reader every realm shares. This module WRITES
+// the sections; `verify-fresh`, the native host and the kernel READ them, and a
+// writer that spells a name differently from a reader produces artifacts that
+// look unstamped to everyone but itself.
+pub(crate) use wasm_artifact::{ABI_CONTRACT_SECTION, BUILD_KEY_SECTION};
 
 /// Read the 32-byte payload of the first custom section named `name`, or
 /// `None` if the module carries no such section.

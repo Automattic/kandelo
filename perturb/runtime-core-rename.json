@@ -1,0 +1,27 @@
+{
+ "file": "crates/runtime-core/src/rootfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a directory may replace a non-directory",
+   "scope": "            if old_is_dir && !new_is_dir {",
+   "scope_end": "\n            }\n",
+   "find": "            if old_is_dir && !new_is_dir {\n                return Err(Errno::ENOTDIR);\n            }",
+   "replace": ""
+  },
+  {
+   "name": "a non-directory may replace a directory",
+   "scope": "            if !old_is_dir && new_is_dir {",
+   "scope_end": "\n            }\n",
+   "find": "            if !old_is_dir && new_is_dir {\n                return Err(Errno::EISDIR);\n            }",
+   "replace": ""
+  },
+  {
+   "name": "a non-empty destination directory is replaced instead of refused",
+   "scope": "                if !empty {",
+   "scope_end": "\n                }\n",
+   "find": "                if !empty {\n                    return Err(Errno::ENOTEMPTY);\n                }",
+   "replace": ""
+  }
+ ]
+}

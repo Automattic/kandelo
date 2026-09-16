@@ -9,10 +9,8 @@ import {
 } from "./fork-module-state";
 import {
   FORK_REFERENCE_TRANSACTION_OWNER_ID,
-} from "./fork-reference-transaction";
-import {
   scanSegmentedForkReferenceExternrefHandles,
-} from "./fork-reference-segments";
+} from "./fork-reference-wire";
 import {
   unwrapForkWorkerExceptionCapability,
 } from "./fork-worker-exception-capability";
@@ -183,18 +181,6 @@ export class ForkExternrefProcessOwner {
         this.requireWireGeneration(pid, generationId),
         handle,
       ),
-    );
-  }
-
-  /** Permanently close a host resource and invalidate all fork aliases. */
-  tombstoneForWire(
-    pid: number,
-    generationId: number,
-    handle: number,
-  ): void {
-    this.broker.tombstone(
-      this.requireWireGeneration(pid, generationId),
-      handle,
     );
   }
 

@@ -1,0 +1,28 @@
+{
+ "file": "crates/sffs-module/src/lib.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a read past the end of the image is an error instead of zero",
+   "scope": "fn image_source(req: rootfs::ByteReq",
+   "scope_end": "\n}\n",
+   "find": "    if start >= bytes.len() {\n        return Ok(0);\n    }",
+   "replace": "    if start >= bytes.len() {\n        return Err(Errno::EIO);\n    }"
+  },
+  {
+   "name": "the window reads from the start regardless of the offset asked for",
+   "scope": "fn image_source(req: rootfs::ByteReq",
+   "scope_end": "\n}\n",
+   "find": "    dst[..n].copy_from_slice(&bytes[start..start + n]);",
+   "replace": "    dst[..n].copy_from_slice(&bytes[..n]);"
+  },
+  {
+   "name": "a negative offset is accepted rather than refused",
+   "scope": "pub unsafe extern \"C\" fn sm_image_read(",
+   "scope_end": "\n}\n",
+   "find": "    if out_ptr == 0 || offset < 0 {",
+   "replace": "    if out_ptr == 0 {"
+  }
+ ],
+ "_comment": "The image-window reader. Verified by the Rust test rather than by rebuilding the wasm and running the TypeScript bridge: the trials mutate Rust, the Rust test asserts the same three properties, and a rebuild per trial cost ten minutes a run. The bridge's parity test still runs in the ordinary suite; it is not this spec's verifier."
+}

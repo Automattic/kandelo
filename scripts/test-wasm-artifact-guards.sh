@@ -1188,4 +1188,38 @@ if WASM_POSIX_FORK_INSTRUMENT="$missing_inventory_tool" \
     exit 1
 fi
 
+# Asyncify: exporting the transform's entry points is what makes a module
+# instrumented. Naming them in a data segment does not. The guard scanned the
+# whole file for the literal `asyncify_` and so refused every freshly built
+# kernel, because `crates/wasm-artifact` is linked into it and puts that
+# literal in its data section. Both directions are asserted here, matching
+# what the fork-instrumentation guard above already does.
+cat >"$work/asyncify-instrumented.wat" <<'WAT'
+(module
+  (func $unwind)
+  (func $rewind)
+  (export "asyncify_start_unwind" (func $unwind))
+  (export "asyncify_stop_rewind" (func $rewind)))
+WAT
+wat2wasm "$work/asyncify-instrumented.wat" -o "$work/asyncify-instrumented.wasm"
+if wasm_require_no_legacy_asyncify "$work/asyncify-instrumented.wasm" \
+    >/dev/null 2>&1; then
+    echo "ERROR: asyncify guard accepted a module exporting asyncify_start_unwind" >&2
+    exit 1
+fi
+
+cat >"$work/asyncify-mentioned.wat" <<'WAT'
+(module
+  (memory 1)
+  (data (i32.const 0)
+    "asyncify_start_unwind asyncify_stop_unwind asyncify_start_rewind asyncify_stop_rewind")
+  (func (export "_start")))
+WAT
+wat2wasm "$work/asyncify-mentioned.wat" -o "$work/asyncify-mentioned.wasm"
+if ! wasm_require_no_legacy_asyncify "$work/asyncify-mentioned.wasm" \
+    >/dev/null 2>&1; then
+    echo "ERROR: asyncify guard refused a module that only names asyncify_ in data" >&2
+    exit 1
+fi
+
 echo "test-wasm-artifact-guards.sh: ok"

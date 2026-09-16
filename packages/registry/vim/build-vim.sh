@@ -55,9 +55,13 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # --- Resolve ncurses via the dep cache ---
-# An env-var short-circuit lets a caller (e.g. another resolver run,
-# or a wrapper script) pass the prefix in directly and skip the cargo
-# invocation. Otherwise we ask the resolver to build-or-hit the cache.
+# `WASM_POSIX_DEP_NCURSES_DIR` is the normal path: ncurses is a declared
+# dependency (package.toml), so the build engine builds it first and hands
+# the prefix over. The fallback below is for a standalone invocation with no
+# engine around it. It must stay a fallback -- when the engine IS running,
+# resolving ncurses here races the engine's own ncurses node for the same
+# content-addressed entry, and the loser fails with "concurrent cache winner
+# differs from staged build".
 NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
 if [ -z "$NCURSES_PREFIX" ]; then
     echo "==> Resolving ncurses via cargo xtask build-deps..."
@@ -69,6 +73,29 @@ if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
     exit 1
 fi
 echo "==> ncurses at $NCURSES_PREFIX"
+
+# --- Invalidate a configure result that was made against a different ncurses ---
+# `configure` bakes $NCURSES_PREFIX into CFLAGS and LDFLAGS as an ABSOLUTE,
+# content-addressed path, and records it in both src/auto/config.mk and
+# autoconf's own src/auto/config.cache. The prefix changes whenever ncurses'
+# cache key changes, which is routine -- several ncurses-6.5-rev8 trees with
+# different hashes can coexist on one machine.
+#
+# Without this, the "configure only if config.mk is absent" test below keeps a
+# stale result forever: the resolver hands over a live prefix, the guard above
+# passes against it, and the link still runs against the dead one, failing with
+# `wasm-ld: error: unable to find library -lncursesw`. Observed 2026-09-14
+# against a config.mk eight days old. Re-running configure without clearing
+# config.cache does not help either; autoconf refuses outright with "`CFLAGS'
+# has changed since the previous run ... run `make distclean' and/or `rm
+# auto/config.cache'".
+CONFIG_MARKER="$SRC_DIR/.kandelo-vim-config"
+expected_config_marker="$NCURSES_PREFIX"
+if [ -f "$SRC_DIR/src/auto/config.mk" ] && \
+   [ "$(cat "$CONFIG_MARKER" 2>/dev/null || true)" != "$expected_config_marker" ]; then
+    echo "==> ncurses prefix changed since the last configure; reconfiguring"
+    rm -f "$SRC_DIR/src/auto/config.mk" "$SRC_DIR/src/auto/config.cache"
+fi
 
 # --- Download Vim source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -177,6 +204,7 @@ if [ ! -f src/auto/config.mk ]; then
         --with-modified-by="" \
         2>&1 | tail -30
 
+    printf '%s\n' "$expected_config_marker" >"$CONFIG_MARKER"
     echo "==> Configure complete."
 
 fi

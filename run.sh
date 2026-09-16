@@ -228,8 +228,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmdt_for_task
     kernel_is_fd_nonblock
     kernel_mark_process_signaled
-    kernel_mq_descriptor_msgsize
-    kernel_msqid_ds_bytes
     kernel_pcm_claim_transport
     kernel_pcm_clock_update
     kernel_pcm_reconcile
@@ -247,11 +245,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
-    kernel_semctl_array_bytes
-    kernel_semid_ds_bytes
     kernel_set_current_tid
     kernel_set_cwd
-    kernel_shmid_ds_bytes
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
     kernel_spawn_process
@@ -2505,6 +2500,38 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    # Provision a case-sensitive os-test checkout when this filesystem
+    # collapsed the submodule's case-colliding paths.
+    #
+    # WHY here: os-test tracks 17 pairs of paths that differ only in letter
+    # case, and a case-insensitive filesystem (the macOS default) can hold
+    # only one file per pair. Only one spelling keeps a directory entry, so
+    # the suite never discovers the other and silently runs 17 fewer tests
+    # while reporting a plausible total. Setup is where the rest of this
+    # project's test inputs are provisioned, so it is where this one belongs
+    # too.
+    #
+    # This is a no-op on Linux, a no-op on any macOS checkout already on a
+    # case-sensitive filesystem, and a no-op when the submodule is not checked
+    # out. It never modifies the repository's own checkout, and a failure here
+    # is reported but does not block setup: the sortix runners enforce the
+    # requirement themselves, so setup should not refuse to build a kernel
+    # over a conformance-input problem.
+    if [ -d "$REPO_ROOT/tests/sortix/os-test/.git" ] \
+       || [ -f "$REPO_ROOT/tests/sortix/os-test/.git" ]; then
+        if ! bash "$REPO_ROOT/scripts/check-case-sensitive-checkout.sh" \
+                "$REPO_ROOT/tests/sortix/os-test" >/dev/null 2>&1; then
+            echo "==> os-test checkout is case-collapsed; provisioning a case-sensitive one"
+            if bash "$REPO_ROOT/scripts/ensure-case-sensitive-os-test.sh"; then
+                :
+            else
+                echo "WARNING: could not provision a case-sensitive os-test checkout." >&2
+                echo "         The sortix conformance suites will refuse to run until" >&2
+                echo "         this is resolved; the rest of setup continues." >&2
+            fi
+        fi
+    fi
+
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
         bash "$REPO_ROOT/scripts/setup.sh" "$@"
 }

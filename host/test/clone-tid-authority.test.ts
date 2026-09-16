@@ -109,7 +109,12 @@ function makeCloneHarness(
       explicitMaxAddr: true,
     }]]),
     threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
-    usePolling: true,
+  });
+  // This harness installs its channels directly instead of registering a
+  // process, and drives them synchronously, so suppress arming an
+  // Atomics.waitAsync listener on them.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
   });
   installKernelWorkerTestScratch(
     worker as unknown as Record<string, unknown>,
@@ -190,7 +195,12 @@ function makeChannelOwnershipHarness() {
       }],
     ]),
     threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
-    usePolling: true,
+  });
+  // This harness installs its channels directly instead of registering a
+  // process, and drives them synchronously, so suppress arming an
+  // Atomics.waitAsync listener on them.
+  worker.testAuthority.configureScratchBoundaryHooksForTest({
+    listenOnChannel: () => {},
   });
   installKernelWorkerTestScratch(
     worker as unknown as Record<string, unknown>,

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -112,7 +112,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
 // the interpreter stops probing and the REPL starts cleanly. This mirrors the
 // dedicated python VFS product, which sets the same value in its boot env.
 // Sourced by /etc/profile for interactive login shells.
-export function registerPythonShellProfile(fs: MemoryFileSystem): void {
+export function registerPythonShellProfile(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
@@ -130,7 +130,7 @@ export function registerPythonShellProfile(fs: MemoryFileSystem): void {
 // is a shipped shell lazy-archive dependency and lazy-loads on first use,
 // same as coreutils' cat. /etc/man.conf gives the manpath root the docs
 // archives fill.
-export function registerManShellProfile(fs: MemoryFileSystem): void {
+export function registerManShellProfile(fs: VfsImageFilesystem): void {
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(
     fs,
@@ -156,7 +156,7 @@ export function registerManShellProfile(fs: MemoryFileSystem): void {
  * to /usr/bin/man (not a separate inode), so it needs no separate removal:
  * it keeps resolving to whatever now lives at /usr/bin/man.
  */
-export function displacePosixUtilsLiteManApplet(fs: MemoryFileSystem): void {
+export function displacePosixUtilsLiteManApplet(fs: VfsImageFilesystem): void {
   try {
     fs.lstat("/usr/bin/man");
   } catch {
@@ -279,21 +279,40 @@ export function loadDeclaredShellLazyArchive(
 
 /** Register one package-owned archive without rebuilding or rereading it. */
 export function registerDeclaredShellLazyArchive(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   spec: ShellLazyArchiveSpec,
   resolveArtifact: ShellLazyArchiveResolver,
 ): DeclaredShellLazyArchive {
   const archive = loadDeclaredShellLazyArchive(spec, resolveArtifact);
-  fs.registerLazyArchiveFromEntries(
-    spec.archiveUrl,
-    archive.entries,
-    spec.mountPrefix,
-    archive.symlinkTargets,
-    {
-      sha256: archive.integrity.sha256,
-      bytes: archive.integrity.compressedBytes,
-    },
-  );
+  const integrity = {
+    sha256: archive.integrity.sha256,
+    bytes: archive.integrity.compressedBytes,
+  };
+  // Prefer the filesystem that takes a whole archive; fall back to the
+  // positional form for the one that only has that. The fallback is deleted
+  // along with `MemoryFileSystem`, and failing loudly here beats registering
+  // nothing quietly.
+  if (fs.registerLazyArchive) {
+    fs.registerLazyArchive({
+      url: spec.archiveUrl,
+      entries: archive.entries,
+      mountPrefix: spec.mountPrefix,
+      symlinkTargets: archive.symlinkTargets,
+      integrity,
+    });
+  } else if (fs.registerLazyArchiveFromEntries) {
+    fs.registerLazyArchiveFromEntries(
+      spec.archiveUrl,
+      archive.entries,
+      spec.mountPrefix,
+      archive.symlinkTargets,
+      integrity,
+    );
+  } else {
+    throw new Error(
+      `${spec.archiveUrl}: filesystem can register neither a whole archive nor its entries`,
+    );
+  }
   return archive;
 }
 
@@ -323,7 +342,7 @@ export const NCURSES_TERMINFO_RUNTIME_FILE = {
  * exact declared bytes.
  */
 export function populateTerminfoDatabase(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   const sourcePath = resolveArtifact(

@@ -15,7 +15,6 @@ const O_TRUNC = 0x200;
 
 const time = {
   clockGettime: () => ({ sec: 0, nsec: 0 }),
-  nanosleep: () => {},
 };
 
 function createFs(bytes = 4 * 1024 * 1024): MemoryFileSystem {

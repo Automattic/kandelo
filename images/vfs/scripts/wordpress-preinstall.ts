@@ -18,8 +18,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeKernelHost, type NodeKernelHostOptions } from "../../../host/src/node-kernel-host";
-import { resolveBinary } from "../../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { findRepoRoot, resolveBinary } from "../../../host/src/binary-resolver";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -114,7 +114,7 @@ export interface WordPressPreinstallPrograms {
 }
 
 export async function preinstallWordPressSqlite(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
   console.log("[wp-preinstall:sqlite] installing WordPress into SQLite database...");
@@ -138,7 +138,7 @@ export async function preinstallWordPressSqlite(
 }
 
 export async function preinstallWordPressMariaDb(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
   console.log("[wp-preinstall:mariadb] initializing MariaDB /data and installing WordPress...");
@@ -226,7 +226,7 @@ export async function preinstallWordPressMariaDb(
 }
 
 async function withKernelSession(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   fn: (session: KernelSession) => Promise<void>,
   hostOptions: PreinstallKernelHostOptions = {},
 ): Promise<void> {
@@ -253,6 +253,18 @@ async function withKernelSession(
       ...(hostDataDir ? [{ mountPoint: "/data", hostPath: hostDataDir }] : []),
     ],
     rootfsImage: imageBytes,
+    // MariaDB and PHP both fork, so this build-time boot exercises the
+    // co-resident fork module — the unconditional fork reconstructor the kernel
+    // worker ships to every process worker. Inject the staged artifact
+    // explicitly (like the kernel below): this boot runs under the source-only
+    // resolution policy with no source-only binary root, so the kernel worker
+    // resolving the fork module through the binary resolver would fail.
+    forkModuleBytesByWidth: { 4: loadStagedForkModule32() },
+    // PHP loads `opcache.so` through `dlopen`, so the same reasoning applies to
+    // the co-resident dynamic-linking planner. Without it the install run gets
+    // "this process worker has no dynamic-linking planner module" and the image
+    // is never written.
+    dylinkModuleBytes: loadStagedDylinkModule32(),
     onStdout: (_pid, data) => {
       activeStdoutSink?.(new Uint8Array(data));
     },
@@ -342,6 +354,26 @@ function loadProgram(binaryId: string): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+/**
+ * Read the wasm32 co-resident fork module from its repo-staged location. The
+ * fork module is built out-of-band by `crates/fork-module/build-wasm.sh` (the
+ * local-build engine runs it before any package build) and staged into both
+ * `local-binaries/` and `host/wasm/`; it is not a registry package, so there is
+ * no `WASM_POSIX_DEP_*_DIR` for it. Loading the staged artifact directly keeps
+ * this build-time boot independent of the source-only program projection, which
+ * is not finalized mid-build.
+ */
+function loadStagedForkModule32(): Uint8Array {
+  const repoRoot = findRepoRoot();
+  return new Uint8Array(readFileSync(join(repoRoot, "host/wasm/fork_module32.wasm")));
+}
+
+/** The dynamic-linking planner, staged the same way and for the same reason. */
+function loadStagedDylinkModule32(): Uint8Array {
+  const repoRoot = findRepoRoot();
+  return new Uint8Array(readFileSync(join(repoRoot, "host/wasm/dylink_module32.wasm")));
+}
+
 function exactProgramBuffer(bytes: Uint8Array, label: string): ArrayBuffer {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
     throw new Error(`${label} input is empty`);
@@ -423,7 +455,7 @@ function makeHostMariaDbDataWritable(hostDataDir: string): void {
 
 async function bootstrapMariaDbSystemTables(
   session: KernelSession,
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mariadbBytes: ArrayBuffer,
 ): Promise<void> {
   if (!session.hostDataDir) {
@@ -474,7 +506,7 @@ async function bootstrapMariaDbSystemTables(
   }
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: VfsImageFilesystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -673,7 +705,7 @@ fwrite(STDERR, "dumped " . count($records) . " entries\\n");
 `.trim();
 }
 
-function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
+function ingestDump(buf: Uint8Array, fs: VfsImageFilesystem): number {
   const text = new TextDecoder("utf-8").decode(buf);
   const beginAt = text.indexOf(DUMP_BEGIN);
   if (beginAt < 0) {
@@ -732,7 +764,7 @@ function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
   return records.length;
 }
 
-function ingestHostDirectory(hostRoot: string, fs: MemoryFileSystem, vfsRoot: string): number {
+function ingestHostDirectory(hostRoot: string, fs: VfsImageFilesystem, vfsRoot: string): number {
   let written = 0;
 
   function copyDir(hostDir: string, vfsDir: string): void {
@@ -787,7 +819,7 @@ function collectHostMariaDbDiagnostics(hostDataDir: string): string {
   return chunks.join("\n");
 }
 
-function ensureMariaDbDataOwnership(fs: MemoryFileSystem): void {
+function ensureMariaDbDataOwnership(fs: VfsImageFilesystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/wordpress"]) {
     try {
       fs.chown(dir, MYSQL_UID, MYSQL_GID);
@@ -798,7 +830,7 @@ function ensureMariaDbDataOwnership(fs: MemoryFileSystem): void {
   }
 }
 
-function assertVfsPath(fs: MemoryFileSystem, path: string): void {
+function assertVfsPath(fs: VfsImageFilesystem, path: string): void {
   try {
     fs.stat(path);
   } catch {

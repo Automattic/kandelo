@@ -1,9 +1,13 @@
 #![no_std]
 
+pub mod artifact_tiers;
+pub mod channel_record;
 pub mod channel_scalar;
 pub mod host_abi;
+pub mod host_raw_syscalls;
 pub mod ioctl_contract;
 pub mod process_layout;
+pub mod trap_signal;
 
 /// Kernel ABI version.
 ///
@@ -110,8 +114,12 @@ pub mod process_layout;
 ///     completions consumed outside libc's post-syscall trampoline. OSS PCM
 ///     ioctl transfers use request-sized arguments, `/dev/dsp` descriptors
 ///     share a refcounted stream across fork and exec, and the host consumes a
-///     versioned bounded transport paced by the audio clock.
-pub const ABI_VERSION: u32 = 43;
+///     versioned bounded transport paced by the audio clock. The kernel owns
+///     the exec `#!` interpreter-line decode through a required
+///     `kernel_exec_target_shebang` export, and the `posix_spawn` blob's
+///     argv/envp decode through a required `kernel_spawn_blob_decode` export,
+///     so no host interprets the exec or spawn guest ABI.
+pub const ABI_VERSION: u32 = 44;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -158,6 +166,18 @@ pub mod platform_limits {
     /// u32 byte-length wire used by tokenized scratch reservations.
     pub const MAX_TRANSFER_ALLOCATION_BYTES: usize = u32::MAX as usize;
     pub const IOV_MAX: usize = 1024;
+    /// Largest `msg_controllen` a caller may present to `sendmsg`/`recvmsg`.
+    ///
+    /// Ancillary data is kernel-allocated on the caller's word, so it needs a
+    /// ceiling that is a property of the operation rather than of whatever
+    /// allocation happens to fail first. Linux bounds the same buffer with
+    /// `net.core.optmem_max`, whose default is on this order; the value is
+    /// generous next to the only ancillary payload Kandelo carries — one
+    /// `SCM_RIGHTS` array, which `IOV_MAX`-scale descriptor counts do not
+    /// approach — and a request above it is EINVAL rather than an allocation
+    /// that might or might not succeed depending on unrelated memory
+    /// pressure.
+    pub const SOCKET_CONTROL_MAX_BYTES: usize = 64 * 1024;
 }
 
 /// Host/kernel selectors for one atomic argv/environment replacement.
@@ -786,6 +806,15 @@ pub enum ChannelStatus {
     Pending = 1,
     Complete = 2,
     Error = 3,
+    /// Host-driven thread reclamation sentinel (not a normal syscall
+    /// outcome). The pump publishes this value plus an `atomic_notify` to
+    /// unwind a guest thread parked in the channel wait
+    /// (`memory.atomic.wait32`) without letting it resume the
+    /// superseded/doomed image — execve-abandon, fork-replay teardown, and
+    /// spawn `-ECHILD` rollback. The guest glue traps immediately on
+    /// observing this status instead of reading CH_RETURN/CH_ERRNO. See
+    /// `docs/plans/2026-09-05-native-thread-reclamation-spike.md`.
+    Teardown = 4,
 }
 
 impl ChannelStatus {
@@ -799,6 +828,8 @@ impl ChannelStatus {
             Some(Self::Complete)
         } else if val == Self::Error as u32 {
             Some(Self::Error)
+        } else if val == Self::Teardown as u32 {
+            Some(Self::Teardown)
         } else {
             None
         }
@@ -816,6 +847,7 @@ pub enum Errno {
     EIO = 5,
     ENXIO = 6,
     E2BIG = 7,
+    ENOEXEC = 8,
     EBADF = 9,
     ECHILD = 10,
     EAGAIN = 11,
@@ -848,8 +880,16 @@ pub enum Errno {
     ELOOP = 40,
     ENOMSG = 42,
     EIDRM = 43,
+    EDOM = 33,
+    ENOSTR = 60,
     ENODATA = 61,
+    ETIME = 62,
+    ENOLINK = 67,
+    EPROTO = 71,
+    EMULTIHOP = 72,
+    EBADMSG = 74,
     EOVERFLOW = 75,
+    EILSEQ = 84,
     ENOTSOCK = 88,
     EDESTADDRREQ = 89,
     EMSGSIZE = 90,
@@ -860,16 +900,25 @@ pub enum Errno {
     EAFNOSUPPORT = 97,
     EADDRINUSE = 98,
     EADDRNOTAVAIL = 99,
+    ENETDOWN = 100,
     ENETUNREACH = 101,
+    ENETRESET = 102,
     ECONNABORTED = 103,
     ECONNRESET = 104,
+    ENOBUFS = 105,
     ECONNREFUSED = 111,
     EISCONN = 106,
     ENOTCONN = 107,
     ESHUTDOWN = 108,
     ETIMEDOUT = 110,
+    EHOSTUNREACH = 113,
     EALREADY = 114,
     EINPROGRESS = 115,
+    ESTALE = 116,
+    EDQUOT = 122,
+    ECANCELED = 125,
+    EOWNERDEAD = 130,
+    ENOTRECOVERABLE = 131,
 }
 
 impl Errno {
@@ -886,6 +935,7 @@ impl Errno {
             5 => Some(Errno::EIO),
             6 => Some(Errno::ENXIO),
             7 => Some(Errno::E2BIG),
+            8 => Some(Errno::ENOEXEC),
             9 => Some(Errno::EBADF),
             10 => Some(Errno::ECHILD),
             11 => Some(Errno::EAGAIN),
@@ -918,8 +968,16 @@ impl Errno {
             40 => Some(Errno::ELOOP),
             42 => Some(Errno::ENOMSG),
             43 => Some(Errno::EIDRM),
+            33 => Some(Errno::EDOM),
+            60 => Some(Errno::ENOSTR),
             61 => Some(Errno::ENODATA),
+            62 => Some(Errno::ETIME),
+            67 => Some(Errno::ENOLINK),
+            71 => Some(Errno::EPROTO),
+            72 => Some(Errno::EMULTIHOP),
+            74 => Some(Errno::EBADMSG),
             75 => Some(Errno::EOVERFLOW),
+            84 => Some(Errno::EILSEQ),
             88 => Some(Errno::ENOTSOCK),
             89 => Some(Errno::EDESTADDRREQ),
             90 => Some(Errno::EMSGSIZE),
@@ -930,16 +988,25 @@ impl Errno {
             97 => Some(Errno::EAFNOSUPPORT),
             98 => Some(Errno::EADDRINUSE),
             99 => Some(Errno::EADDRNOTAVAIL),
+            100 => Some(Errno::ENETDOWN),
             101 => Some(Errno::ENETUNREACH),
+            102 => Some(Errno::ENETRESET),
             103 => Some(Errno::ECONNABORTED),
             104 => Some(Errno::ECONNRESET),
+            105 => Some(Errno::ENOBUFS),
             106 => Some(Errno::EISCONN),
             111 => Some(Errno::ECONNREFUSED),
             107 => Some(Errno::ENOTCONN),
             108 => Some(Errno::ESHUTDOWN),
             110 => Some(Errno::ETIMEDOUT),
+            113 => Some(Errno::EHOSTUNREACH),
             114 => Some(Errno::EALREADY),
             115 => Some(Errno::EINPROGRESS),
+            116 => Some(Errno::ESTALE),
+            122 => Some(Errno::EDQUOT),
+            125 => Some(Errno::ECANCELED),
+            130 => Some(Errno::EOWNERDEAD),
+            131 => Some(Errno::ENOTRECOVERABLE),
             _ => None,
         }
     }
@@ -967,6 +1034,109 @@ pub mod flags {
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     pub const AT_REMOVEDIR: u32 = 0x200;
     pub const AT_EMPTY_PATH: u32 = 0x1000;
+}
+
+/// Per-call read/write flags (`RWF_*`) carried by `preadv2`/`pwritev2`.
+///
+/// These are the sixth argument of both calls. That slot used to be
+/// unavailable: the host overwrote it with the caller's pointer width, so no
+/// `RWF_*` value ever reached the kernel. The width is now registered per
+/// process, and the slot belongs to the caller again.
+///
+/// Only [`RWF_NOWAIT`] is implemented. Every other bit names behaviour this
+/// kernel does not provide, and [`RWF_SUPPORTED`] is deliberately narrow so an
+/// unimplemented flag is refused rather than silently ignored -- a caller that
+/// asked for `RWF_DSYNC` and got an unsynced write was told a lie.
+pub mod rwf_flags {
+    /// High-priority request hint.
+    pub const RWF_HIPRI: u32 = 0x0000_0001;
+    /// Per-write data synchronization (`O_DSYNC` for this call only).
+    pub const RWF_DSYNC: u32 = 0x0000_0002;
+    /// Per-write file synchronization (`O_SYNC` for this call only).
+    pub const RWF_SYNC: u32 = 0x0000_0004;
+    /// Fail with `EAGAIN` rather than blocking.
+    pub const RWF_NOWAIT: u32 = 0x0000_0008;
+    /// Per-write append (`O_APPEND` for this call only).
+    pub const RWF_APPEND: u32 = 0x0000_0010;
+    /// Per-write suppression of an open file description's `O_APPEND`.
+    pub const RWF_NOAPPEND: u32 = 0x0000_0020;
+    /// Torn-write-prevention request.
+    pub const RWF_ATOMIC: u32 = 0x0000_0040;
+    /// Drop the page cache for the range after the transfer.
+    pub const RWF_DONTCACHE: u32 = 0x0000_0080;
+
+    /// The flags this kernel actually implements.
+    ///
+    /// `RWF_NOWAIT` is the one flag with behaviour behind it here: it
+    /// suppresses the blocking retry a would-block transfer would otherwise
+    /// park on, which is exactly what the flag promises.
+    pub const RWF_SUPPORTED: u32 = RWF_NOWAIT;
+
+    /// Accept a `preadv2`/`pwritev2` `flags` word, or refuse it.
+    ///
+    /// An unimplemented flag is an error, not a no-op. Every bit outside
+    /// [`RWF_SUPPORTED`] names behaviour the caller asked for and would not
+    /// get -- a write that was not synchronized for `RWF_DSYNC`, an offset
+    /// that was not taken from the end of the file for `RWF_APPEND` -- and
+    /// reporting success for it would be a lie the caller cannot detect.
+    /// Linux answers the same way, with `EOPNOTSUPP`.
+    pub fn check_rwf_flags(flags: u32) -> Result<u32, crate::Errno> {
+        if flags & !RWF_SUPPORTED != 0 {
+            return Err(crate::Errno::EOPNOTSUPP);
+        }
+        Ok(flags)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Errno;
+
+        #[test]
+        fn no_flags_and_rwf_nowait_are_accepted() {
+            assert_eq!(check_rwf_flags(0), Ok(0));
+            assert_eq!(check_rwf_flags(RWF_NOWAIT), Ok(RWF_NOWAIT));
+        }
+
+        #[test]
+        fn every_unimplemented_flag_is_refused_rather_than_ignored() {
+            for flag in [
+                RWF_HIPRI,
+                RWF_DSYNC,
+                RWF_SYNC,
+                RWF_APPEND,
+                RWF_NOAPPEND,
+                RWF_ATOMIC,
+                RWF_DONTCACHE,
+            ] {
+                assert_eq!(
+                    check_rwf_flags(flag),
+                    Err(Errno::EOPNOTSUPP),
+                    "flag {flag:#x} must be refused, not silently dropped",
+                );
+                // Pairing an unimplemented flag with the implemented one does
+                // not launder it.
+                assert_eq!(
+                    check_rwf_flags(flag | RWF_NOWAIT),
+                    Err(Errno::EOPNOTSUPP),
+                );
+            }
+        }
+
+        #[test]
+        fn undefined_high_bits_are_refused_too() {
+            // A bit this kernel has never heard of is not a bit it implements.
+            assert_eq!(check_rwf_flags(0x8000_0000), Err(Errno::EOPNOTSUPP));
+            assert_eq!(check_rwf_flags(u32::MAX), Err(Errno::EOPNOTSUPP));
+        }
+
+        #[test]
+        fn the_supported_set_stays_narrow() {
+            // Widening this set is a claim that the kernel implements another
+            // flag. It must be made deliberately, with the behaviour.
+            assert_eq!(RWF_SUPPORTED, RWF_NOWAIT);
+        }
+    }
 }
 
 /// File descriptor flags (FD_*).
@@ -1053,13 +1223,6 @@ pub mod socket {
     pub const SCM_RIGHTS: u32 = 1;
     /// Serialized width of one file descriptor in SCM_RIGHTS payload data.
     pub const SCM_RIGHTS_FD_BYTES: usize = 4;
-    /// Exact iovec-record count in a nonempty flattened kernel message wire.
-    ///
-    /// WHY: public sendmsg/recvmsg still accept IOV_MAX native entries. The
-    /// host flattens or scatters those entries through one canonical scratch
-    /// iovec so Rust never interprets a caller-width table. An empty caller
-    /// list uses zero records; every nonempty list uses exactly this count.
-    pub const KERNEL_MESSAGE_WIRE_FLATTENED_IOVEC_COUNT: u32 = 1;
     pub const SCM_CREDENTIALS: u32 = 2;
     pub const SO_REUSEADDR: u32 = 2;
     pub const SO_ERROR: u32 = 4;
@@ -1148,6 +1311,68 @@ pub mod poll {
     pub const POLLERR: i16 = 0x0008;
     pub const POLLHUP: i16 = 0x0010;
     pub const POLLNVAL: i16 = 0x0020;
+}
+
+/// Host-observable readiness facts for a host-delegated network connection.
+///
+/// Workstream H4 (host-surface minimization), the same shape as
+/// `runtime_core::netif`. The POSIX readiness *decision* for a socket — which
+/// of `POLLIN`/`POLLOUT`/`POLLERR`/`POLLHUP` belongs in `revents` — is a
+/// kernel decision, and the kernel now makes it in exactly one place
+/// (`runtime_core::net_readiness::stream_revents`).
+///
+/// What a host engine alone can observe is *facts*: whether its buffer holds
+/// bytes, whether the peer's FIN arrived, whether the engine will accept a
+/// write. Those facts, and only those, cross the `host_net_readiness` import.
+/// The host reports; the kernel decides.
+///
+/// The low 16 bits are the fact flags below. Bits 16.. carry a POSIX errno
+/// when [`net_readiness::ERROR`] is set, so a sticky asynchronous socket error
+/// reaches `SO_ERROR` as the errno the host engine actually observed rather
+/// than one the transport invented on its behalf.
+pub mod net_readiness {
+    /// Bytes are buffered for this connection: `recv` returns >0 without
+    /// blocking.
+    pub const RECV_READY: u32 = 1 << 0;
+    /// End of stream was observed (peer FIN, or a complete response body):
+    /// `recv` returns 0 without blocking. Independent of [`RECV_READY`] — an
+    /// engine may hold buffered bytes *and* know the stream has ended.
+    pub const RECV_EOF: u32 = 1 << 1;
+    /// The engine accepts a `send` now without blocking.
+    pub const SEND_READY: u32 = 1 << 2;
+    /// The writable half is gone: `send` can no longer make progress.
+    pub const SEND_CLOSED: u32 = 1 << 3;
+    /// The connection is torn down in both directions.
+    pub const HANGUP: u32 = 1 << 4;
+    /// A sticky asynchronous error is pending. The errno is in bits 16.. ;
+    /// see [`errno_of`].
+    pub const ERROR: u32 = 1 << 5;
+    /// The engine cannot observe readiness for this connection at all.
+    ///
+    /// This is the honest encoding of a backend with no readiness source. The
+    /// kernel's documented response is wake-every-round: report the requested
+    /// `POLLIN`/`POLLOUT` so userspace runs, and let `recv`/`send` return
+    /// `EAGAIN` when the data is not actually there yet. It is a named fact
+    /// rather than an implicit default precisely because "assume everything
+    /// the caller asked for is ready" used to be an unnamed fallback in three
+    /// separate places.
+    pub const UNOBSERVABLE: u32 = 1 << 6;
+
+    /// Mask covering the fact flags; bits above this carry the errno.
+    pub const FLAG_MASK: u32 = 0x0000_ffff;
+    /// Shift for the POSIX errno carried alongside [`ERROR`].
+    pub const ERRNO_SHIFT: u32 = 16;
+
+    /// Extract the POSIX errno a host engine attached to [`ERROR`].
+    /// Returns 0 when the engine reported an error without classifying it.
+    pub const fn errno_of(facts: u32) -> u32 {
+        facts >> ERRNO_SHIFT
+    }
+
+    /// Encode `facts` together with a POSIX `errno`.
+    pub const fn with_errno(facts: u32, errno: u32) -> u32 {
+        (facts & FLAG_MASK) | (errno << ERRNO_SHIFT)
+    }
 }
 
 /// Epoll event constants.
@@ -1274,10 +1499,23 @@ pub mod channel {
     /// until an explicit guest checkpoint can invoke the handler after the
     /// owning host transition returns.
     pub const REQUEST_FLAG_DEFER_SIGNAL_DELIVERY: u32 = 1 << 2;
+    /// The guest self-marshalled this request's pointer arguments into an opaque
+    /// [`crate::channel_record`] record at [`DATA_OFFSET`] (Phase 2 transport).
+    ///
+    /// WHY a header flag, not a data-region magic: the record magic lives in the
+    /// reusable/inheritable data buffer, so a fork child or a reused per-thread
+    /// channel slot can carry a stale magic from a prior process into a RAW
+    /// syscall. This flag is written fresh in the channel header on every
+    /// request (beside the syscall number), exactly like
+    /// [`REQUEST_FLAG_CANCELLATION_POINT`], so it can never be stale. The host
+    /// keys the record vs raw transport decision on this bit; the record magic
+    /// remains the kernel's decode sentinel over the host-owned lease it copies.
+    pub const REQUEST_FLAG_OPAQUE_RECORD: u32 = 1 << 3;
     /// Every request flag understood by this ABI epoch.
     pub const REQUEST_FLAGS_KNOWN_MASK: u32 = REQUEST_FLAG_CANCELLATION_POINT
         | REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY;
+        | REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+        | REQUEST_FLAG_OPAQUE_RECORD;
     /// Total header size before data buffer.
     pub const HEADER_SIZE: usize = REQUEST_FLAGS_OFFSET + REQUEST_FLAGS_SIZE;
     /// Byte offset of the data buffer region.
@@ -1356,7 +1594,8 @@ mod channel_abi_tests {
             channel::REQUEST_FLAGS_KNOWN_MASK,
             channel::REQUEST_FLAG_CANCELLATION_POINT
                 | channel::REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
-                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
+                | channel::REQUEST_FLAG_DEFER_SIGNAL_DELIVERY
+                | channel::REQUEST_FLAG_OPAQUE_RECORD,
         );
         assert_eq!(
             channel::SIG_BASE + channel::SIG_AREA_SIZE,
@@ -1373,6 +1612,31 @@ mod channel_abi_tests {
         assert!(channel::SIG_DELIVERY_SIZE <= channel::SIG_AREA_SIZE);
         assert_eq!(channel::SIG_AREA_SIZE - channel::SIG_DELIVERY_SIZE, 0);
         assert_eq!(channel::SIG_BASE % channel::SIG_AREA_ALIGNMENT, 0);
+    }
+
+    #[test]
+    fn teardown_status_is_distinct_from_every_other_channel_status() {
+        use super::ChannelStatus;
+
+        let all = [
+            ChannelStatus::Idle,
+            ChannelStatus::Pending,
+            ChannelStatus::Complete,
+            ChannelStatus::Error,
+            ChannelStatus::Teardown,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert_ne!(*a as u32, *b as u32, "{a:?} collides with {b:?}");
+                }
+            }
+        }
+        assert_eq!(ChannelStatus::Teardown as u32, 4);
+        assert_eq!(
+            ChannelStatus::from_u32(ChannelStatus::Teardown as u32),
+            Some(ChannelStatus::Teardown),
+        );
     }
 }
 
@@ -1444,6 +1708,9 @@ pub mod signal {
     pub const SIGFPE: u32 = 8;
     pub const SIGKILL: u32 = 9;
     pub const SIGUSR1: u32 = 10;
+    /// Invalid memory reference. A Wasm out-of-bounds access, table-index
+    /// fault, or stack exhaustion becomes this — see [`crate::trap_signal`].
+    pub const SIGSEGV: u32 = 11;
     pub const SIGUSR2: u32 = 12;
     pub const SIGPIPE: u32 = 13;
     pub const SIGALRM: u32 = 14;
@@ -1583,6 +1850,40 @@ pub struct KernelWaitResult {
 
 pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
 
+/// Fixed record written by `kernel_shared_mapping_fd_facts`.
+///
+/// Everything here is already kernel state: the descriptor's `fstat` identity,
+/// its access mode, and whether it is backed by a host file handle the host may
+/// address directly. The host used to re-derive all of it by re-entering the
+/// kernel with a synthetic `fstat` channel and a second synthetic `F_GETFL`
+/// channel, then recovering the handle by snooping the kernel's own `host_fstat`
+/// call. One record answers all three questions at their source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct KernelSharedMappingFdFacts {
+    /// `st_dev` of the descriptor.
+    pub dev: u64,
+    /// `st_ino` of the descriptor.
+    pub ino: u64,
+    /// `st_size` of the descriptor.
+    pub size: u64,
+    /// Host file handle backing the descriptor. Meaningful only when
+    /// `has_host_handle` is non-zero.
+    pub host_handle: i64,
+    /// `st_mode` of the descriptor.
+    pub mode: u32,
+    /// `F_GETFL & O_ACCMODE` for the descriptor.
+    pub access_mode: u32,
+    /// 1 when the descriptor is a regular file whose bytes live behind a host
+    /// handle, 0 when the kernel owns them itself (tmpfs, memfd, rootfs
+    /// overlay, procfs, synthetic regulars).
+    pub has_host_handle: u32,
+    pub _pad: u32,
+}
+
+pub const KERNEL_SHARED_MAPPING_FD_FACTS_SIZE: u32 =
+    core::mem::size_of::<KernelSharedMappingFdFacts>() as u32;
+
 /// Fixed host/kernel records borrowed through kernel-owned scratch.
 ///
 /// These are representation limits, not public POSIX limits. Keeping them in
@@ -1653,6 +1954,20 @@ mod wait_abi_tests {
     }
 
     #[test]
+    fn kernel_shared_mapping_fd_facts_layout_is_stable() {
+        use super::{KernelSharedMappingFdFacts, KERNEL_SHARED_MAPPING_FD_FACTS_SIZE};
+        assert_eq!(KERNEL_SHARED_MAPPING_FD_FACTS_SIZE, 48);
+        assert_eq!(size_of::<KernelSharedMappingFdFacts>(), 48);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, dev), 0);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, ino), 8);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, size), 16);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, host_handle), 24);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, mode), 32);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, access_mode), 36);
+        assert_eq!(offset_of!(KernelSharedMappingFdFacts, has_host_handle), 40);
+    }
+
+    #[test]
     fn kernel_wait_result_layout_is_stable() {
         assert_eq!(KERNEL_WAIT_RESULT_SIZE, 160);
         assert_eq!(size_of::<KernelWaitResult>(), 160);
@@ -1705,46 +2020,6 @@ pub struct WasmPollFd {
     pub revents: i16,
 }
 
-/// Fixed u32-pointer iovec used only inside kernel-owned scratch.
-///
-/// Guest wasm64 `struct iovec` is wider. The host validates and translates
-/// caller-native records before Rust receives this width-independent wire.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelIovecWire {
-    pub base: u32,
-    pub len: u32,
-}
-
-/// Fixed u32-pointer `msghdr` used only inside kernel-owned scratch.
-///
-/// The pointed-to name, control, iovec, and data ranges all live within the
-/// same synchronously leased kernel allocation.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelMsghdrWire {
-    pub name: u32,
-    pub name_len: u32,
-    pub iov: u32,
-    pub iov_len: u32,
-    pub control: u32,
-    pub control_len: u32,
-    pub flags: u32,
-}
-
-/// Fixed ancillary-message header used only inside kernel-owned scratch.
-///
-/// This matches the wasm32 C layout by design, but it is not a caller-native
-/// structure. The host translates wasm64 headers and eight-byte CMSG
-/// alignment before and after the synchronous kernel call.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KernelCmsghdrWire {
-    pub cmsg_len: u32,
-    pub cmsg_level: u32,
-    pub cmsg_type: u32,
-}
-
 /// Canonical `struct epoll_event` layout used by both Kandelo musl targets.
 ///
 /// The C ABI aligns `epoll_data_t` to eight bytes on wasm32 and wasm64, so
@@ -1792,8 +2067,7 @@ pub struct WasmStatfs {
 #[cfg(test)]
 mod native_wire_layout_tests {
     use super::{
-        kernel_scratch_wire, prctl, KernelCmsghdrWire, KernelIovecWire, KernelMsghdrWire,
-        WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
+        kernel_scratch_wire, prctl, WasmEpollEvent, WasmFlock, WasmSysvMessageHeader,
     };
     use core::mem::{align_of, offset_of, size_of};
 
@@ -1812,30 +2086,6 @@ mod native_wire_layout_tests {
     }
 
     #[test]
-    fn kernel_socket_scratch_wires_use_fixed_u32_fields() {
-        assert_eq!(size_of::<KernelIovecWire>(), 8);
-        assert_eq!(align_of::<KernelIovecWire>(), 4);
-        assert_eq!(offset_of!(KernelIovecWire, base), 0);
-        assert_eq!(offset_of!(KernelIovecWire, len), 4);
-
-        assert_eq!(size_of::<KernelMsghdrWire>(), 28);
-        assert_eq!(align_of::<KernelMsghdrWire>(), 4);
-        assert_eq!(offset_of!(KernelMsghdrWire, name), 0);
-        assert_eq!(offset_of!(KernelMsghdrWire, name_len), 4);
-        assert_eq!(offset_of!(KernelMsghdrWire, iov), 8);
-        assert_eq!(offset_of!(KernelMsghdrWire, iov_len), 12);
-        assert_eq!(offset_of!(KernelMsghdrWire, control), 16);
-        assert_eq!(offset_of!(KernelMsghdrWire, control_len), 20);
-        assert_eq!(offset_of!(KernelMsghdrWire, flags), 24);
-
-        assert_eq!(size_of::<KernelCmsghdrWire>(), 12);
-        assert_eq!(align_of::<KernelCmsghdrWire>(), 4);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_len), 0);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_level), 4);
-        assert_eq!(offset_of!(KernelCmsghdrWire, cmsg_type), 8);
-    }
-
-    #[test]
     fn special_scratch_contracts_derive_record_sizes_once() {
         assert_eq!(prctl::PR_SET_NAME, 15);
         assert_eq!(prctl::PR_GET_NAME, 16);
@@ -1848,6 +2098,71 @@ mod native_wire_layout_tests {
             kernel_scratch_wire::SIGNAL_MASK_BYTES,
             size_of::<u64>() as u32,
         );
+    }
+}
+
+/// The rule for judging a pointer and length against a linear memory.
+///
+/// # Why this is declared once
+///
+/// Every host that reaches into a WebAssembly linear memory asks the same
+/// question, and the two that exist asked it in two places: `checked_shared_
+/// range` in `crates/host-native/src/guest.rs`, whose own doc comment named
+/// the TypeScript function it was transcribed from, and `checkedRange` /
+/// `checkedMemoryRange` / `checkedWasmImportMemoryRange` in
+/// `host/src/kernel-scratch.ts`.
+///
+/// `crates/host-native` now calls [`checked_range`] directly. The TypeScript
+/// hosts do NOT: a bounds check runs on the syscall hot path, and routing each
+/// one through a wasm module call would buy shared code with a cost the
+/// performance contract does not permit. They are instead checked against the
+/// same corpus this crate's tests read — `crates/shared/tests/
+/// host-memory-ranges.json` — so the rule is stated once and BOTH hosts are
+/// failed against that statement, rather than each host asserting its own
+/// numbers and agreeing only until someone edits one.
+pub mod host_memory {
+    /// Why a pointer and length are not a range this host may touch.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RangeError {
+        /// A null address with a positive length.
+        ///
+        /// Address zero is addressable in a WebAssembly linear memory, so this
+        /// is not a hardware fact — it is the convention that a kernel
+        /// allocator returning zero means "allocation failed". A caller that
+        /// genuinely means offset zero says so with `allow_address_zero`.
+        NullPointer,
+        /// The end of the range overflows the address space.
+        EndOverflows,
+        /// The range extends past the memory's current extent.
+        OutOfBounds { end: u64, limit: u64 },
+    }
+
+    /// Judge `[addr, addr + len)` against a memory of `limit` bytes.
+    ///
+    /// `limit` must be the memory's CURRENT length, read at the moment of the
+    /// check: a guest may `memory.grow` between two calls, and a cached extent
+    /// answers about a memory that no longer exists.
+    ///
+    /// This proves the host can address those bytes. It does NOT prove an
+    /// allocator gave them to this caller — that is a separate fact, and it
+    /// has to be carried beside the pointer rather than re-derived from it.
+    pub const fn checked_range(
+        addr: u64,
+        len: u64,
+        limit: u64,
+        allow_address_zero: bool,
+    ) -> Result<u64, RangeError> {
+        if !allow_address_zero && addr == 0 && len != 0 {
+            return Err(RangeError::NullPointer);
+        }
+        let end = match addr.checked_add(len) {
+            Some(end) => end,
+            None => return Err(RangeError::EndOverflows),
+        };
+        if end > limit {
+            return Err(RangeError::OutOfBounds { end, limit });
+        }
+        Ok(addr)
     }
 }
 
@@ -1925,6 +2240,215 @@ pub mod process_memory {
 
     /// Pages reserved for one pthread control slot.
     pub const PAGES_PER_THREAD_SLOT: u32 = 4;
+
+    /// Pages the main-thread syscall channel occupies, derived from the
+    /// channel's own size rather than restated as a literal.
+    pub const CHANNEL_PAGES: u32 =
+        (crate::channel::MIN_CHANNEL_SIZE as u32).div_ceil(WASM_PAGE_SIZE);
+
+    /// Resolve a program's concurrent-pthread quota from what it declared.
+    ///
+    /// A missing declaration and [`THREAD_SLOTS_USE_HOST_DEFAULT`] both mean
+    /// "the host decides" — a binary that predates the declaration is not
+    /// asking for zero threads. [`THREAD_SLOTS_NONE`] IS honoured as zero: such
+    /// a program gets EAGAIN from the kernel for `pthread_create`, which is the
+    /// truthful answer rather than an accident of how much room a host had.
+    /// Anything below `-1` is a malformed declaration and is refused.
+    pub const fn resolve_thread_slot_count(
+        declared: Option<i32>,
+        host_default: u32,
+    ) -> Result<u32, i32> {
+        match declared {
+            None => Ok(host_default),
+            Some(THREAD_SLOTS_USE_HOST_DEFAULT) => Ok(host_default),
+            Some(value) if value >= 0 => Ok(value as u32),
+            Some(value) => Err(value),
+        }
+    }
+
+    /// What a host knows about a program before it decides where that
+    /// program's control memory goes.
+    ///
+    /// Every field is a fact about the program or a host policy choice. None
+    /// of them is a placement decision — those are [`Layout`]'s job, and
+    /// keeping the two apart is what lets one host read a program's bytes
+    /// while another reads a snapshot and both still get the same address
+    /// space.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LayoutRequest {
+        /// Host policy ceiling on this address space, in pages.
+        pub maximum_pages: u32,
+        /// The minimum of the program's imported `env.memory`, or 0 when it
+        /// imports no memory.
+        pub imported_minimum_pages: u32,
+        /// An additional floor the caller wants honoured, or 0.
+        pub requested_minimum_pages: u32,
+        /// The program's `__heap_base` export, or `None` when it exports
+        /// none.
+        pub heap_base: Option<u64>,
+        /// The concurrent-pthread quota already resolved for this process.
+        pub thread_slot_count: u32,
+    }
+
+    /// Where one process's control memory lands, and the bounds that follow
+    /// from it.
+    ///
+    /// **One address space described once.** A second host that computes these
+    /// numbers itself will agree with this one right up until either side is
+    /// edited, and the two hosts that exist today were three fields apart when
+    /// this type was introduced — see `compute_layout`'s note on `heap_base`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Layout {
+        /// Pages the address space must already hold before guest code runs.
+        pub initial_pages: u32,
+        /// Pages this address space may grow to.
+        pub maximum_pages: u32,
+        /// First byte of host-owned control memory, above linker-owned data.
+        pub control_base: u64,
+        /// First guest-managed byte above the host-owned control slab.
+        pub control_end: u64,
+        /// Byte offset of the main thread's syscall channel.
+        pub channel_offset: u64,
+        /// Page holding the main thread's syscall channel header.
+        pub channel_page: u32,
+        /// Initial program break, directly above the control slab.
+        pub brk_base: u64,
+        /// Lower bound for automatic mmap placement.
+        pub mmap_base: u64,
+        /// Highest permitted brk address; a legacy compatibility field.
+        pub brk_limit: u64,
+        /// Highest address the maximum page count permits.
+        pub max_addr: u64,
+        /// This process's concurrent-pthread quota.
+        pub thread_slot_count: u32,
+    }
+
+    /// Why a layout could not be placed.
+    ///
+    /// A refusal, not a panic: a host turns this into the message its own
+    /// callers expect, and both refusals are conditions a malformed or
+    /// oversized program can produce, so neither is an internal error.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum LayoutError {
+        /// The page ceiling cannot hold even the syscall channel.
+        MaximumPagesTooSmall { maximum_pages: u32 },
+        /// Control memory alone exceeds the page ceiling.
+        InitialPagesExceedMaximum { initial_pages: u32, maximum_pages: u32 },
+    }
+
+    /// Place one process's control memory.
+    ///
+    /// **`heap_base` is the field the two hosts disagreed about.** The
+    /// TypeScript host has always placed control memory at the program's own
+    /// `__heap_base`, falling back to [`FALLBACK_BRK_BASE`] only when the
+    /// program exports none; `crates/host-native` read no `__heap_base` at all
+    /// and used the fallback unconditionally. For a program whose heap base is
+    /// below 16 MiB that merely wasted address space, but a program linked
+    /// with a heap base ABOVE it had its own static data underneath the
+    /// syscall channel on the native host.
+    ///
+    /// **Both hosts ask this function.** `crates/host-native` calls it
+    /// directly; the TypeScript host reaches it through the
+    /// `wa_process_memory_layout` export of `crates/wasm-artifact-module`, so
+    /// `host/src/process-memory.ts` no longer does the arithmetic itself. The
+    /// TypeScript half was held on
+    /// `brandonpayton/lane-l-typescript-layout-held` for as long as landing it
+    /// wedged `./run.sh local-build` — see "the projection deadlock" in lane L
+    /// of `docs/plans/2026-09-11-MASTER-PLAN.md` — and was cherry-picked once
+    /// the maintainer took the xtask ordering fix.
+    pub const fn compute_layout(request: LayoutRequest) -> Result<Layout, LayoutError> {
+        let page = WASM_PAGE_SIZE as u64;
+        if request.maximum_pages <= CHANNEL_PAGES {
+            return Err(LayoutError::MaximumPagesTooSmall {
+                maximum_pages: request.maximum_pages,
+            });
+        }
+
+        let mut min_pages = DEFAULT_INITIAL_PAGES;
+        if request.requested_minimum_pages > min_pages {
+            min_pages = request.requested_minimum_pages;
+        }
+        if request.imported_minimum_pages > min_pages {
+            min_pages = request.imported_minimum_pages;
+        }
+
+        let heap_base = match request.heap_base {
+            Some(value) => value,
+            None => FALLBACK_BRK_BASE as u64,
+        };
+        let min_pages_bytes = min_pages as u64 * page;
+        let first_free_byte = if heap_base > min_pages_bytes {
+            heap_base
+        } else {
+            min_pages_bytes
+        };
+
+        // `max_addr` bounds every later multiplication. A program may export
+        // any `__heap_base` it likes, including one that would overflow the
+        // page arithmetic below, so the ceiling is applied to the raw byte
+        // address BEFORE it is turned into a page number rather than after.
+        let max_addr = request.maximum_pages as u64 * page;
+        if first_free_byte > max_addr {
+            // The SAME number the full path below would report — control
+            // memory's last page, not the heap base's — so an early refusal
+            // and a late one describe the same address space. Saturating
+            // rather than truncating: a wrapped page count reads as a smaller
+            // request than the caller actually made.
+            let control_end_page = first_free_byte.div_ceil(page)
+                + MAIN_CHANNEL_PRIMARY_PAGE as u64
+                + CHANNEL_PAGES as u64;
+            return Err(LayoutError::InitialPagesExceedMaximum {
+                initial_pages: if control_end_page > u32::MAX as u64 {
+                    u32::MAX
+                } else {
+                    control_end_page as u32
+                },
+                maximum_pages: request.maximum_pages,
+            });
+        }
+
+        let control_base_page = first_free_byte.div_ceil(page);
+        let channel_page = control_base_page + MAIN_CHANNEL_PRIMARY_PAGE as u64;
+        let control_end_page = channel_page + CHANNEL_PAGES as u64;
+
+        // Always `control_end_page`: `first_free_byte` is already at least
+        // `min_pages * page`, so `control_end_page` — that address rounded up
+        // to a page, plus the channel's primary page and its span — is at
+        // least `min_pages + 3`. This was written as a comparison, whose else
+        // branch no input can reach; a plain assignment says the same thing
+        // without implying `min_pages` can raise the count on its own.
+        let initial_pages = control_end_page;
+        if initial_pages > request.maximum_pages as u64 {
+            return Err(LayoutError::InitialPagesExceedMaximum {
+                // Saturating for the same reason as the early refusal above:
+                // a page ceiling near `u32::MAX` can push control memory's
+                // last page past it, and a truncated report ("initial pages
+                // 2") would read as a request far smaller than the one being
+                // refused.
+                initial_pages: if initial_pages > u32::MAX as u64 {
+                    u32::MAX
+                } else {
+                    initial_pages as u32
+                },
+                maximum_pages: request.maximum_pages,
+            });
+        }
+
+        let brk_base = control_end_page * page;
+        Ok(Layout {
+            initial_pages: initial_pages as u32,
+            maximum_pages: request.maximum_pages,
+            control_base: control_base_page * page,
+            control_end: brk_base,
+            channel_offset: channel_page * page,
+            channel_page: channel_page as u32,
+            brk_base,
+            mmap_base: brk_base,
+            brk_limit: max_addr,
+            max_addr,
+            thread_slot_count: request.thread_slot_count,
+        })
+    }
 }
 
 /// ABI-surface constants captured by the structural ABI snapshot.
@@ -2051,6 +2575,14 @@ pub mod abi {
     pub const WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS: u16 = 11;
     pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REFERENCE_RECIPE_SEGMENT: u16 = 12;
     pub const WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT: u16 = 13;
+    /// Phase 6 (minimize host surface, Option B): a manifest naming WHERE the
+    /// parent channel-mmap'd the serialized replay-event (KFRE) journal image and
+    /// its length. With Option B the module owns its frame allocation via
+    /// in-realm `SYS_MMAP`, so the KFRE image no longer lives at a host-computed
+    /// arena offset; the child instead reads this record to find the inherited
+    /// image and seed its replay. Additive: only a module-backed (flag-on) seal
+    /// writes it, so the flag-off arena is byte-identical.
+    pub const WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE: u16 = 14;
 
     /// One recognized module-state arena record kind.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2111,6 +2643,10 @@ pub mod abi {
         ForkModuleStateRecordKind {
             number: WPK_FORK_MODULE_STATE_RECORD_KIND_REPLAY_EVENT_SEGMENT,
             name: "replay_event_segment",
+        },
+        ForkModuleStateRecordKind {
+            number: WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
+            name: "journal_image",
         },
     ];
 
@@ -2184,6 +2720,17 @@ pub mod abi {
     pub const WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE: u16 = 16;
     pub const WPK_FORK_ACTIVATION_CONTINUATIONS_KNOWN_FLAGS: u16 = 0;
     pub const WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_KNOWN_FLAGS: u32 = 0;
+    /// Journal-image manifest payload (Option B). A fixed 32-byte record naming
+    /// the guest offset the parent channel-mmap'd the serialized KFRE journal
+    /// image to (`ptr`, +16) and its byte length (`len`, +24). Layout: magic u32
+    /// (+0), version u16 (+4), header_size u16 (+6), flags u16 (+8), reserved u16
+    /// (+10), reserved u32 (+12), ptr u64 (+16), len u64 (+24).
+    pub const WPK_FORK_JOURNAL_IMAGE_OWNER: u32 = 5;
+    pub const WPK_FORK_JOURNAL_IMAGE_MAGIC: [u8; 4] = *b"KFJI";
+    pub const WPK_FORK_JOURNAL_IMAGE_VERSION: u16 = 1;
+    pub const WPK_FORK_JOURNAL_IMAGE_HEADER_SIZE: u16 = 16;
+    pub const WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE: u16 = 32;
+    pub const WPK_FORK_JOURNAL_IMAGE_KNOWN_FLAGS: u16 = 0;
     pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER: u32 = 4;
     pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_MAGIC: [u8; 4] = *b"KFBT";
     pub const WPK_FORK_IMPORTED_TABLE_BINDINGS_VERSION: u16 = 1;
@@ -2218,6 +2765,82 @@ pub mod abi {
     pub const WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE: u16 = 24;
     pub const WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64: u8 = 1 << 0;
     pub const WPK_FORK_IMPORTED_TABLE_KNOWN_FLAGS: u8 = WPK_FORK_IMPORTED_TABLE_FLAG_TABLE64;
+
+    /// Kernel-facing lazy-linkage section of a VFS image ("KLZY").
+    ///
+    /// A VFS image's trailing sections are otherwise JSON, and JSON is the
+    /// host's persistence form for host authority: fetch URLs, transports,
+    /// integrity digests, activation seals, and per-builder image metadata.
+    /// Exactly two facts in it are kernel-relevant — a lazy file's real size,
+    /// and an archive member's `(archive_id, source_path, size)` — and the
+    /// kernel already consumes both in binary today through RTFS v3's
+    /// `KIND_LAZY_FILE` entries. `KLZY` moves that same kernel-needed subset
+    /// into the image itself, so the kernel can read an image's lazy linkage
+    /// without a JSON parser and without the host walking the tree first.
+    ///
+    /// The section is appended after the image-metadata section and announced
+    /// by `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`. Readers that predate it stop at
+    /// the metadata section and never observe either the flag or the bytes.
+    ///
+    /// Layout (all little-endian), following the `KFIG` idiom:
+    ///
+    /// Header (`VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE` = 20 bytes): `+0` magic
+    /// `KLZY`, `+4` version (u16), `+6` header size (u16), `+8` archive-group
+    /// count (u32), `+12` file-record count (u32), `+16` reserved (u32, 0).
+    ///
+    /// Then `group_count` group records
+    /// (`VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE` = 24 bytes + name): `+0`
+    /// record size (u32, `24 + mount_prefix_len`), `+4` archive id (nonzero
+    /// u32, strictly increasing), `+8` archive byte length (u64), `+16` flags
+    /// (u16), `+18` reserved (u16, 0), `+20` mount-prefix length (u32),
+    /// followed by the UTF-8 mount prefix.
+    ///
+    /// Then `file_count` file records
+    /// (`VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE` = 24 bytes + path): `+0`
+    /// record size (u32, `24 + source_path_len`), `+4` inode number (nonzero
+    /// u32, unique), `+8` real size in bytes (u64), `+16` archive id (u32; `0`
+    /// means a URL-backed single lazy file rather than an archive member),
+    /// `+20` source-path length (u32; zero exactly when the archive id is
+    /// zero), followed by the UTF-8 source path relative to the archive root.
+    ///
+    /// `archive_id` is assigned by the image writer rather than minted at
+    /// boot, so the kernel's archive table and the host's fetch table cannot
+    /// drift. It is an image-local ordinal and carries no transport meaning.
+    pub const VFS_IMAGE_KERNEL_LAZY_MAGIC: [u8; 4] = *b"KLZY";
+    pub const VFS_IMAGE_KERNEL_LAZY_VERSION: u16 = 1;
+    pub const VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE: u16 = 20;
+    pub const VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE: u16 = 24;
+    pub const VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE: u16 = 24;
+    /// No group flag is defined yet. A `SOURCE_PATH_DERIVED` bit — "every
+    /// member's source path is its VFS path with `mount_prefix + '/'`
+    /// stripped" — is reachable here, but only for a writer that PROVES the
+    /// invariant per group and falls back to explicit paths otherwise. Today's
+    /// images satisfy it, but that is a property of today's builders, not of
+    /// the format, so the writer encodes every source path explicitly.
+    pub const VFS_IMAGE_KERNEL_LAZY_GROUP_KNOWN_FLAGS: u16 = 0;
+    /// Announces the trailing `KLZY` section in the VFS image header's flags
+    /// word. Bits 0-3 are `HAS_LAZY`, `HAS_LAZY_ARCHIVES`, `HAS_METADATA`, and
+    /// `HAS_TYPED_LAZY_ARCHIVES` (see `host/src/vfs/memory-fs.ts`).
+    pub const VFS_IMAGE_FLAG_HAS_KERNEL_LAZY: u32 = 1 << 4;
+
+    /// Which deferred resource `env.host_fetch_deferred(kind, id, ...)` is a
+    /// positioned read of.
+    ///
+    /// The kernel owns `/` and reads an image-backed file's bytes out of the
+    /// image itself. What is left for the host is one capability: fetch a
+    /// resource the image does NOT carry, and serve positioned bytes of it,
+    /// reporting `EAGAIN` while the fetch is in flight. Two id namespaces use
+    /// it, so the kind travels as its own argument rather than as a reserved
+    /// range of one opaque id — an id that means two things is a semantic
+    /// surface increase wearing a no-change disguise.
+    ///
+    /// `FILE` is a URL-backed lazy file, addressed by its inode number: the
+    /// image records only its real size (`KLZY`, `archive_id == 0`) and the
+    /// host owns its transport. `ARCHIVE` is a lazy archive, addressed by the
+    /// image-assigned `archive_id`; the host serves raw archive bytes and the
+    /// kernel extracts the member.
+    pub const HOST_DEFERRED_KIND_FILE: u32 = 0;
+    pub const HOST_DEFERRED_KIND_ARCHIVE: u32 = 1;
 
     /// ABI 43 structural Wasm GC reconstruction catalog.
     ///
@@ -2349,6 +2972,22 @@ pub mod abi {
         "__wpk_fork_ref_gc_provenance_ref";
     pub const WPK_FORK_REFERENCE_IMPORT_GC_ROUTE: &str = "__wpk_fork_ref_gc_route";
     pub const WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT: &str = "__wpk_fork_ref_gc_transit";
+    /// FLOOR-1 externref production-site provenance import (N1-F5).
+    ///
+    /// `wasm-fork-instrument` wraps every call site that invokes a
+    /// declared host-function import whose result includes `externref` so
+    /// the wrapper immediately calls this import with the freshly-minted
+    /// value before handing it to the original caller. The signature is a
+    /// pass-through — `fn(externref) -> externref` — so the host records
+    /// `(externref identity -> handle)` at mint time (the ONLY sound moment
+    /// to observe that association; see
+    /// `docs/plans/2026-09-05-n1-f5-externref-capture-grounding.md`) and
+    /// returns the same value unchanged. Capture-time work then shrinks to a
+    /// lookup against data guaranteed to exist, rather than an attempt to
+    /// derive a handle from an already-live value by inspection (which is
+    /// unsound; see the grounding doc's `§2`).
+    pub const WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF: &str =
+        "__wpk_fork_ref_provenance_externref";
     pub const WPK_FORK_REFERENCE_IMPORT_SCRATCH_RELEASE: &str = "__wpk_fork_ref_scratch_release";
     pub const WPK_FORK_REFERENCE_IMPORT_SCRATCH_RESERVE: &str = "__wpk_fork_ref_scratch_reserve";
     pub const WPK_FORK_REFERENCE_IMPORT_VECTOR_APPEND: &str = "__wpk_fork_ref_vector_append";
@@ -2632,6 +3271,12 @@ pub mod abi {
             name: WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
             params: &[I32, I32],
             results: &[I32],
+        },
+        ProgramArtifactImport {
+            module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
+            name: WPK_FORK_REFERENCE_IMPORT_PROVENANCE_EXTERNREF,
+            params: &[ExternRef],
+            results: &[ExternRef],
         },
         ProgramArtifactImport {
             module: WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,
@@ -2980,7 +3625,9 @@ pub mod abi {
         "kernel_exec_commit",
         "kernel_exec_target_cancel",
         "kernel_exec_target_prepare",
+        "kernel_exec_target_probe",
         "kernel_exec_target_read",
+        "kernel_exec_target_shebang",
         "kernel_exec_target_size",
         "kernel_fork_process",
         "kernel_get_cwd",
@@ -3005,8 +3652,6 @@ pub mod abi {
         "kernel_ipc_shmdt_for_task",
         "kernel_is_fd_nonblock",
         "kernel_mark_process_signaled",
-        "kernel_mq_descriptor_msgsize",
-        "kernel_msqid_ds_bytes",
         "kernel_pcm_claim_transport",
         "kernel_pcm_clock_update",
         "kernel_pcm_reconcile",
@@ -3024,11 +3669,9 @@ pub mod abi {
         "kernel_publish_spawn_child",
         "kernel_reap_exited_child",
         "kernel_remove_process",
-        "kernel_semctl_array_bytes",
-        "kernel_semid_ds_bytes",
         "kernel_set_current_tid",
         "kernel_set_cwd",
-        "kernel_shmid_ds_bytes",
+        "kernel_spawn_blob_decode",
         "kernel_spawn_exec_commit",
         "kernel_spawn_exec_target_prepare",
         "kernel_spawn_process",
@@ -3052,10 +3695,14 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_release_host_region",
         "kernel_reserve_host_region",
         "kernel_reserve_host_region_at",
         "kernel_set_max_addr",
         "kernel_set_mmap_base",
+        "kernel_set_thread_slot_quota",
+        "kernel_thread_parent_tid_target",
+        "kernel_thread_slot_addr",
     ];
 
     pub static HOST_ADAPTER_MANIFEST: HostAdapterManifest = HostAdapterManifest {
@@ -3788,7 +4435,7 @@ pub mod abi {
             assert_eq!(wpk_fork_linked_chunk_header_size(16), None);
             assert_eq!(wpk_fork_linked_node_header_size(16), None);
 
-            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 45);
+            assert_eq!(WPK_FORK_REQUIRED_IMPORTS.len(), 46);
             let mut previous_import = ("", "");
             for requirement in WPK_FORK_REQUIRED_IMPORTS {
                 let current = (requirement.module, requirement.name);
@@ -3853,7 +4500,7 @@ pub mod abi {
                 assert!(!kind.name.is_empty());
                 previous_number = kind.number;
             }
-            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_KINDS.len(), 13);
+            assert_eq!(WPK_FORK_MODULE_STATE_RECORD_KINDS.len(), 14);
 
             assert_eq!(WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE, 32);
             assert_eq!(WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE, 40);

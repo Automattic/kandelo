@@ -1,7 +1,7 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findRepoRoot } from "../../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
@@ -45,7 +45,7 @@ export function loadMainShellDemoConfig(
   return { config, source };
 }
 
-export function writeMainShellDemoConfig(fs: MemoryFileSystem): void {
+export function writeMainShellDemoConfig(fs: VfsImageFilesystem): void {
   const { source } = loadMainShellDemoConfig();
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, source, 0o644);

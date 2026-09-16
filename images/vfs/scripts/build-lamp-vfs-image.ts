@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
  * browser demo. The image starts from shell.vfs.zst, then dinit, the first
@@ -16,7 +17,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -81,7 +81,7 @@ const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
 const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
 
 function populateMariadb(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mariadbd: Uint8Array,
   systemTablesDirectory: string,
 ): void {
@@ -100,7 +100,7 @@ function populateMariadb(
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 }
 
-function populateNginxConfig(fs: MemoryFileSystem): void {
+function populateNginxConfig(fs: VfsImageFilesystem): void {
   for (const dir of [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
     "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp", "/tmp/nginx_proxy_temp",
@@ -187,7 +187,7 @@ http {
 }
 
 function populatePhpFpmConfig(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
@@ -328,7 +328,7 @@ wait $PID 2>/dev/null || true
 exit 0
 `;
 
-function buildServices(fs: MemoryFileSystem): DinitService[] {
+function buildServices(fs: VfsImageFilesystem): DinitService[] {
   const mariadbReady = addPathReadinessService(fs, {
     name: "mariadb-ready",
     path: MARIADB_SOCKET_PATH,
@@ -382,7 +382,7 @@ function buildServices(fs: MemoryFileSystem): DinitService[] {
 
 const decoder = new TextDecoder();
 
-function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+function patchWordPressPersistentMysqli(fs: VfsImageFilesystem): void {
   for (const path of [
     "/var/www/html/wp-includes/class-wpdb.php",
     "/var/www/html/wp-includes/wp-db.php",
@@ -394,7 +394,7 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
   }
 }
 
-function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {
+function readOptionalVfsText(fs: VfsImageFilesystem, path: string): string | null {
   try {
     const st = fs.stat(path);
     const fd = fs.open(path, 0, 0);

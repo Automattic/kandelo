@@ -67,6 +67,26 @@ for tool in "$CC" "$AR" "$RANLIB"; do
 done
 
 # ---------------------------------------------------------------
+# 0. Preconditions
+# ---------------------------------------------------------------
+# WHY this check exists: with `libc/musl` uninitialized the overlay copy below
+# fails, but this script previously reported success anyway, leaving a partial
+# `libc/musl/arch` tree and no sysroot. The failure then resurfaced much later
+# as a confusing missing-sysroot error naming neither the submodule nor this
+# script. A step that cannot do its job must say so, at the point it cannot do
+# it -- the platform's rule is truthful failure over convenient illusion.
+if [ ! -d "$MUSL_DIR/arch" ] || [ ! -f "$MUSL_DIR/Makefile" ]; then
+    echo "Error: the musl submodule at $MUSL_DIR is not initialized." >&2
+    echo "       Expected $MUSL_DIR/arch and $MUSL_DIR/Makefile to exist." >&2
+    echo "       Run:  git submodule update --init --recursive libc/musl" >&2
+    exit 1
+fi
+if [ ! -d "$OVERLAY_DIR/arch/$ARCH" ]; then
+    echo "Error: no overlay for arch '$ARCH' at $OVERLAY_DIR/arch/$ARCH." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------
 # 1. Copy overlay files into musl source tree
 # ---------------------------------------------------------------
 echo "==> Copying overlay files for $ARCH..."
@@ -331,8 +351,117 @@ if [ "$ARCH" = "wasm32posix" ]; then
     bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
 fi
 
+# ---------------------------------------------------------------
+# 11. Postcondition: do not announce a sysroot this script did not produce
+# ---------------------------------------------------------------
+# WHY: this script's tail used to end with
+#   ls -la "$SYSROOT/lib/libc.a" || echo "    WARNING: libc.a not found!"
+# which printed a warning and exited 0 -- the other half of the silent-success
+# defect the precondition block above closed. Preconditions became truthful,
+# but the postcondition still allowed "musl build complete!" over an absent
+# libc.a, and callers keyed on this script's exit status.
+#
+# An incomplete sysroot does not announce itself; it surfaces much later, in an
+# unrelated package, as an error naming neither this script nor the sysroot.
+# The recorded instance is `tar/wasm32` failing with
+# `gnu/readdir.c:38: incomplete definition of type 'DIR'`. Nothing is wrong
+# with `DIR` there -- it is the POSIX-correct opaque `struct __dirstream`,
+# exactly as upstream musl declares it, and Kandelo's overlay declares it the
+# same way. `gnu/readdir.c` is gnulib's *replacement* readdir: gnulib compiles
+# it only when its configure probe concluded the C library has no `readdir` at
+# all, and it dereferences a `DIR` that only gnulib's own `dirent-private.h`
+# defines (under `GNULIB_defined_DIR`, which gnulib sets only when it is also
+# replacing `opendir`/`closedir`). A probe reaches that conclusion by failing
+# to compile or link against the sysroot. So the tar error was a truthful
+# report of a broken sysroot wearing a package's clothes, and the layer that
+# owed the fix was this script -- not the overlay, and not a tar patch.
+#
+# See `bootstrap_sysroot_step` in tools/xtask/src/local_build.rs: it treats a
+# present `lib/libc.a` as "sysroot exists" and only resyncs headers thereafter,
+# so a libc.a that never appeared must fail here rather than be re-observed as
+# a missing-sysroot error somewhere else.
+if [ ! -s "$SYSROOT/lib/libc.a" ]; then
+    echo "Error: the musl build did not produce $SYSROOT/lib/libc.a." >&2
+    echo "       This sysroot is INCOMPLETE. Package builds that configure" >&2
+    echo "       against it will conclude the C library is missing functions it" >&2
+    echo "       should have, and will fail with errors naming their own sources" >&2
+    echo "       rather than this script." >&2
+    exit 1
+fi
+
+# Presence is not completeness. A truncated or partially-archived libc.a is
+# non-empty, so the check above passes and the failure re-emerges later as a
+# configure probe concluding some function is missing -- which is exactly the
+# `gnu/readdir.c` instance described above. The probes that matter link
+# against the sysroot, so the postcondition does too.
+missing_members=""
+for member in readdir.o opendir.o closedir.o __main_void.o; do
+    "$AR" t "$SYSROOT/lib/libc.a" "$member" >/dev/null 2>&1 ||
+        missing_members="$missing_members $member"
+done
+if [ -n "$missing_members" ]; then
+    echo "Error: $SYSROOT/lib/libc.a is missing expected members:$missing_members" >&2
+    echo "       The archive exists but is incomplete. A package configuring" >&2
+    echo "       against this sysroot will conclude the C library lacks those" >&2
+    echo "       functions and fail while naming its own sources." >&2
+    exit 1
+fi
+
+# The decisive check: compile a program against these headers that uses the
+# exact surface whose absence produced the recorded failure.
+#
+# WHY compile and not link: the recorded failure IS a compile error --
+# `incomplete definition of type 'DIR'` -- because a configure probe that
+# cannot see a complete `DIR` concludes the C library has no `readdir` and
+# compiles gnulib's replacement. Linking here would additionally require the
+# SDK's `libclang_rt.builtins.a` search flags, which this script does not
+# otherwise need; coupling to them would make this gate fail spuriously on a
+# perfectly good sysroot, which is worse than not gating at all. Truncation is
+# covered by the member check above, which reads the archive itself.
+probe_dir="$(mktemp -d)"
+trap 'rm -rf "$probe_dir"' EXIT
+#
+# WHY `<stddef.h>` is here: POSIX does not require `<dirent.h>` to define
+# `NULL`, and musl's does not. Without this include the probe fails to compile
+# against ANY sysroot, so the gate reported a perfectly good one as INCOMPLETE
+# and no `./run.sh setup` in a fresh worktree could get past it. The probe must
+# test the sysroot, not its own missing declarations.
+cat >"$probe_dir/probe.c" <<'PROBE'
+#include <dirent.h>
+/* WHY <stddef.h>: POSIX requires <dirent.h> to declare DIR, opendir, readdir,
+   closedir and struct dirent -- it does NOT require it to define NULL. Relying
+   on a transitive definition made this probe fail against a perfectly correct
+   sysroot and then blame the sysroot, which is exactly the failure this whole
+   postcondition exists to prevent. It happened to pass where it was written
+   because that sysroot's headers pulled NULL in by accident. */
+#include <stddef.h>
+
+int main(void) {
+    DIR *d = opendir(".");
+    if (d == NULL) return 0;
+    struct dirent *e = readdir(d);
+    closedir(d);
+    return e == NULL ? 0 : 1;
+}
+PROBE
+if ! "$CC" --target=$TARGET --sysroot="$SYSROOT" -O0 -c \
+        "$probe_dir/probe.c" -o "$probe_dir/probe.o" \
+        >"$probe_dir/probe.log" 2>&1; then
+    echo "Error: the freshly built sysroot cannot compile a program that uses" >&2
+    echo "       opendir/readdir/closedir." >&2
+    echo "       $SYSROOT is INCOMPLETE even though lib/libc.a exists." >&2
+    echo "       This is the failure that otherwise surfaces later as an" >&2
+    echo "       unrelated package's error -- the recorded instance being" >&2
+    echo "       tar/wasm32's 'gnu/readdir.c:38: incomplete definition of" >&2
+    echo "       type DIR', which is gnulib's replacement readdir compiled" >&2
+    echo "       only because its probe failed against a sysroot like this." >&2
+    echo "" >&2
+    sed 's/^/       /' "$probe_dir/probe.log" >&2
+    exit 1
+fi
+
 echo ""
 echo "==> musl build complete!"
 echo "    Sysroot: $SYSROOT"
 echo "    libc.a:  $SYSROOT/lib/libc.a"
-ls -la "$SYSROOT/lib/libc.a" 2>/dev/null || echo "    WARNING: libc.a not found!"
+ls -la "$SYSROOT/lib/libc.a"

@@ -182,7 +182,6 @@ function mutableState(harness: SignalHarness) {
       errVal: number;
     }>;
     pendingSignalWaits: Map<string, unknown>;
-    signalWaitDeadlines: Map<string, unknown>;
     pendingPollRetries: Map<TestChannel, {
       timer: ReturnType<typeof setTimeout> | null;
       channel: TestChannel;

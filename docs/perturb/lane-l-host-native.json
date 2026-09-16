@@ -1,0 +1,98 @@
+{
+  "file": "crates/host-native/src/guest.rs",
+  "build": "cargo build -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --tests",
+  "verify": "cargo test -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --lib",
+  "trials": [
+    {
+      "name": "L5: a call site restates a length instead of asking the region",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "(manifest.ptr(), manifest.capacity())",
+      "replace": "(manifest.ptr(), manifest_len)"
+    },
+    {
+      "name": "L5: a call site passes a DIFFERENT region's capacity",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "(root_scratch.ptr(), root_scratch.capacity())",
+      "replace": "(root_scratch.ptr(), prefix_scratch.capacity())"
+    },
+    {
+      "name": "L-D3: the launch-entry range proof is removed",
+      "scope": "fn copy_launch_entry",
+      "scope_end": "\n}\n",
+      "find": "    let Some(offset) = checked_shared_range(guest_mem, buf_ptr, len as u32) else {\n        return -libc_errno::EFAULT;\n    };\n    unsafe { write_bytes(guest_mem, offset, entry) };",
+      "replace": "    unsafe { write_bytes(guest_mem, buf_ptr as usize, entry) };"
+    },
+    {
+      "name": "L-D3: the blob decode restates the length as its capacity",
+      "scope": "fn handle_spawn",
+      "scope_end": "\n}\n",
+      "find": "(scratch as i32, blob_scratch.capacity() as i32, blob_len as i32)",
+      "replace": "(scratch as i32, blob_len as i32, blob_len as i32)"
+    },
+    {
+      "name": "L5 exemption count: a third base-address binding appears",
+      "scope": "fn handle_spawn",
+      "scope_end": "\n}\n",
+      "find": "    let scratch = blob_scratch.ptr() as u32 as usize;",
+      "replace": "    let scratch = blob_scratch.ptr() as u32 as usize;\n    let _smuggled = blob_scratch.ptr() as u32 as usize;"
+    },
+    {
+      "name": "L5: a capacity that is mentioned but wrong (capacity() - 1)",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "(manifest.ptr(), manifest.capacity())",
+      "replace": "(manifest.ptr(), manifest.capacity() - 1)"
+    },
+    {
+      "name": "PROBE: the allocator reached under a different binding name",
+      "scope": "fn run_guest_inner",
+      "scope_end": "\n}\n",
+      "find": "        manifest.write(&kernel_mem, &base_image.manifest)?;",
+      "replace": "        manifest.write(&kernel_mem, &base_image.manifest)?;\n        {\n            let sneaky = &alloc_scratch;\n            let _bare = sneaky.call(&mut kernel_store, 64u32)?;\n        }"
+    },
+    {
+      "name": "L-D3: a kernel host import writes through a raw pointer again",
+      "scope": "fn define_kernel_host_imports",
+      "scope_end": "\n}\n",
+      "find": "                            if let Err(errno) = write_lent(\n                                &mem,\n                                value_ptr as u32 as u64,\n                                8,\n                                &value.to_le_bytes(),\n                            ) {\n                                return errno;\n                            }",
+      "replace": "                            unsafe { write_bytes(&mem, value_ptr as u32 as usize, &value.to_le_bytes()) };"
+    },
+    {
+      "name": "L-D3: a raw write hidden behind a NON-pointer-named local",
+      "scope": "fn define_kernel_host_imports",
+      "scope_end": "\n}\n",
+      "find": "                        Ok(value) => {",
+      "replace": "                        Ok(value) => {\n                            let dest = value_ptr as u32 as usize;\n                            unsafe { write_bytes(&mem, dest, &[0u8]) };"
+    },
+    {
+      "name": "L-D3: the lent capacity stops binding the write",
+      "scope": "impl KernelLent {",
+      "scope_end": "\n}\n",
+      "find": "        if bytes.len() > self.capacity as usize {",
+      "replace": "        if false {"
+    },
+    {
+      "name": "L-D3: prove admits a region without checking it",
+      "scope": "impl KernelLent {",
+      "scope_end": "\n}\n",
+      "find": "        checked_shared_range(mem, ptr, capacity).map(|offset| Self { offset, capacity })",
+      "replace": "        Some(Self { offset: ptr as usize, capacity })"
+    },
+    {
+      "name": "L3: a record size is asked of the wrong shared type",
+      "scope": "const WASM_STAT_SIZE",
+      "scope_end": "\n/// First host handle",
+      "find": "const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStat>();",
+      "replace": "const WASM_STAT_SIZE: usize = core::mem::size_of::<wasm_posix_shared::WasmStatfs>();"
+    },
+    {
+      "name": "L3: a dirent type is asked of the wrong shared constant",
+      "scope": "const DT_UNKNOWN",
+      "scope_end": "\n/// Size of the",
+      "find": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_DIR;",
+      "replace": "const DT_DIR: u32 = wasm_posix_shared::dirent::DT_BLK;"
+    }
+  ]
+}

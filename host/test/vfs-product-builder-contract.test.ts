@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openVfsProductBuild } from "../../images/vfs/scripts/vfs-product-builder-contract";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 
 const SNAPSHOT_SHA256 = "b".repeat(64);
 const cleanupDirectories = new Set<string>();
@@ -174,6 +174,57 @@ describe("VFS product builder contract", () => {
     await expect(
       openVfsProductBuild(hostileFixture.inputsPath, hostileFixture.reportPath),
     ).rejects.toThrow(/reference is not immutable or does not bind its SHA-256/);
+  });
+
+  it("refuses a manifest path the TypeScript rule alone would have accepted", async () => {
+    // THE REASON THE ENVELOPE MOVED TO RUST.
+    //
+    // `assertNormalizedRelativePath` SPLITS on a backslash, so
+    // `images\mini-shell.toml` becomes two components and passes every check
+    // this file used to make. On POSIX that string is ONE legal filename, so
+    // the two rules do not merely differ in strictness — they disagree about
+    // what the path is.
+    //
+    // `validate_repo_path_shape` refuses it, and this test is the proof the
+    // document now reaches that rule rather than the weaker one.
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    inputs.product.manifest_path = "images\\mini-shell.toml";
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    await expect(
+      openVfsProductBuild(fixture.inputsPath, fixture.reportPath),
+    ).rejects.toThrow(/not normalized/);
+  });
+
+  it("refuses a local-fixture reference to every builder but the miniature one", async () => {
+    // A local-fixture reference points outside the exact-source world, so only
+    // one builder may ask for it. Without a test the permission could be
+    // handed to every caller and nothing would notice — the flag would simply
+    // always be sent.
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    inputs.reference_class = "local-fixture";
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    await expect(
+      openVfsProductBuild(fixture.inputsPath, fixture.reportPath),
+    ).rejects.toThrow(/local-fixture/);
+  });
+
+  it("refuses a manifest path carrying a NUL, which the TypeScript never looked for", async () => {
+    // A NUL truncates a path in the first C API that receives it, so a
+    // document naming `images/mini\0shell.toml` validated cleanly here and
+    // meant `images/mini` downstream. The TypeScript rule has no check for it
+    // at all — this is a gap being closed, not a rule being tightened.
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    inputs.product.manifest_path = "images/mini\u0000shell.toml";
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    await expect(
+      openVfsProductBuild(fixture.inputsPath, fixture.reportPath),
+    ).rejects.toThrow(/not normalized/);
   });
 
   it("accepts an exact canonical Pages URL for a lazy package input", async () => {
@@ -401,7 +452,7 @@ async function createFixture(
   const inputsPath = join(directory, "resolved-inputs.json");
   writeFileSync(inputsPath, canonicalJson(inputs));
 
-  const vfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  const vfs = SffsImageFs.create();
   const outputBytes = await vfs.saveImage({
     metadata: {
       version: 1,

@@ -3,13 +3,12 @@
 // Tests CentralizedKernelWorker process management and fork flow.
 import { describe, it, expect, vi } from "vitest";
 import {
-  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 import {
   type CentralizedKernelCallbacks,
   createCentralizedKernelWorkerTestDouble,
@@ -54,6 +53,10 @@ import {
   emptyProcessTimerCleanup,
   installKernelWorkerTestScratch,
 } from "./kernel-worker-test-scratch";
+// The in-kernel tmpfs owns the scratch prefixes unconditionally, so the
+// mmap-teardown case stages its host-backed file outside every scratch prefix
+// (`makeHostScratchTempRoot`) and maps it through NodePlatformIO.
+
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -156,8 +159,11 @@ function createGatedLifecycleHarness(options: {
     kernel_remove_process: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),
     kernel_set_max_addr: vi.fn(() => 0),
+    kernel_set_process_pointer_width: vi.fn(() => 0),
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: vi.fn(() => 0),
+    // `sys_clone` places the control slot; the host reads the address back.
+    kernel_thread_slot_addr: vi.fn(() => BigInt(8 * 65536)),
     kernel_validate_task: vi.fn(() => 0),
     ...(options.kernelExports ?? {}),
   };
@@ -1600,6 +1606,15 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_set_current_tid: vi.fn(() => 0),
           kernel_set_max_addr: setMaxAddr,
           kernel_set_mmap_base: vi.fn(() => 0),
+          // `sys_clone` places the control slot at an address this test picks:
+          // the channel it then attaches sits inside that slot.
+          kernel_thread_slot_addr: vi.fn(() =>
+            BigInt(
+              highThreadChannelOffset
+                - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE,
+            )
+          ),
+          kernel_set_process_pointer_width: vi.fn(() => 0),
           kernel_validate_task: vi.fn(() => 0),
         },
         kernelExportNames: [
@@ -1611,6 +1626,8 @@ describe("CentralizedKernelWorker Process Management", () => {
           "kernel_set_current_tid",
           "kernel_set_max_addr",
           "kernel_set_mmap_base",
+          "kernel_thread_slot_addr",
+          "kernel_set_process_pointer_width",
           "kernel_validate_task",
         ],
       },
@@ -2023,9 +2040,7 @@ describe("CentralizedKernelWorker Process Management", () => {
   });
 
   it("releases a retained mmap handle before forced descriptor teardown", async () => {
-    const tempDirectory = mkdtempSync(
-      join(tmpdir(), "kandelo-mmap-teardown-"),
-    );
+    const tempDirectory = makeHostScratchTempRoot("kandelo-mmap-teardown-");
     const filePath = join(tempDirectory, "mapped.bin");
     writeFileSync(filePath, new Uint8Array(4096).fill(0x41));
     const io = new NodePlatformIO();

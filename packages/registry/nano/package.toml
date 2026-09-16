@@ -6,6 +6,11 @@ depends_on = ["ncurses@6.5"]
 
 [source]
 url = "https://ftpmirror.gnu.org/nano/nano-8.0.tar.xz"
+# ftpmirror.gnu.org is GNU's redirector and stays primary. It picks a mirror
+# without checking that mirror carries the file, and the pick is sticky, so a
+# package can 404 on every retry while the canonical archive serves it fine.
+# sha256 below gates the bytes whichever host answers.
+mirrors = ["https://ftp.gnu.org/gnu/nano/nano-8.0.tar.xz"]
 sha256 = "c17f43fc0e37336b33ee50a209c701d5beb808adc2d9f089ca831b40539c9ac4"
 provider = "archive"
 

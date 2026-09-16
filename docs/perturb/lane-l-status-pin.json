@@ -1,0 +1,14 @@
+{
+  "file": "crates/host-native/src/guest.rs",
+  "build": "cargo build -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --tests",
+  "verify": "cargo test -p host-native --target $(rustc -vV | awk '/^host:/{print $2}') --lib the_channel_status_words",
+  "trials": [
+    {
+      "name": "L3: a channel status word drifts from the generated header",
+      "scope": "// --- Channel status word values",
+      "scope_end": "\n// --- Process memory layout",
+      "find": "const STATUS_PENDING: u32 = 1;",
+      "replace": "const STATUS_PENDING: u32 = 7;"
+    }
+  ]
+}

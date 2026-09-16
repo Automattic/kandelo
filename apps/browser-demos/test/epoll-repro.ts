@@ -21,7 +21,7 @@ import {
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   WASM_EPOLL_EVENT_DATA_OFFSET,
 } from "../../../host/src/generated/abi.ts";
-import { VirtualPlatformIO, MemoryFileSystem, DeviceFileSystem } from "../../../host/src/vfs/index.ts";
+import { VirtualPlatformIO, MemoryFileSystem } from "../../../host/src/vfs/index.ts";
 import { BrowserTimeProvider } from "../../../host/src/vfs/time.ts";
 import { readFileSync } from "fs";
 
@@ -44,9 +44,7 @@ async function main() {
   const kernelWasm = readFileSync(resolveBinary("kernel.wasm"));
 
   const memfs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
-  const devfs = new DeviceFileSystem();
   const io = new VirtualPlatformIO([
-    { mountPoint: "/dev", backend: devfs },
     { mountPoint: "/", backend: memfs },
   ], new BrowserTimeProvider());
 

@@ -41,8 +41,12 @@ describe("Node process Worker teardown ordering", () => {
     );
     const inFlightGuard = finalize.indexOf("processTeardowns.has(worker)");
     const crashNotification = finalize.indexOf("kernelWorker.notifyHostProcessCrashed");
+    // `finishProcessExit` gained an explicit crash-signal argument when it
+    // moved into `host/src/process-lifecycle.ts`; Node passes `undefined`
+    // there because this very function issues the reap itself, just above.
+    // The ordering asserted below is what this test is about.
     const sharedTeardown = finalize.indexOf(
-      'await finishProcessExit(pid, exitStatus, worker, "trap")',
+      'await finishProcessExit(pid, exitStatus, undefined, worker, "trap")',
     );
 
     expect(inFlightGuard).toBeGreaterThanOrEqual(0);

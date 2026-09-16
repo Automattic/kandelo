@@ -1,17 +1,17 @@
 /**
  * Tiny eager-import surface for the WASI compatibility path.
  *
- * Split out of `wasi-shim.ts` so worker bootstraps that handle our
- * native channel-syscall binaries (mariadbd, dinit, dash, coreutils,
- * everything compiled by the wasm32-posix toolchain) don't have to
- * pay the parse + JIT cost of the 1300-line WASI translation layer
- * just to run `Array.some()` over a module's imports and answer
- * "does this module import wasi_snapshot_preview1?".
+ * This is a pure predicate over a compiled module's import list: "does this
+ * module import `wasi_snapshot_preview1`?". It stays in its own file so worker
+ * bootstraps that handle our native channel-syscall binaries (mariadbd, dinit,
+ * dash, coreutils, everything compiled by the wasm32-posix toolchain) can
+ * import it eagerly without pulling in the WASI hosting path at all.
  *
- * The heavy WasiShim class lives in `wasi-shim.ts` and is dynamically
- * imported by `worker-main.ts` only when `isWasiModule()` returns
- * true. For non-WASI workloads (the common case in this repo) it
- * never enters the worker.
+ * The implementation those workers avoid is `wasi-module-instance.ts`, which
+ * `worker-main.ts` imports dynamically only when `isWasiModule()` returns
+ * true. WASI itself is no longer TypeScript: it is the co-resident Rust
+ * `crates/wasi-module`, and this file's job is only to decide whether to go
+ * and get it.
  */
 import {
   wasmModuleExports,

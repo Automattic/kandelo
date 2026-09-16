@@ -16,6 +16,31 @@ export interface KernelConfig {
 export interface StatResult {
   /** Exact filesystem identity values. Native backends should prefer bigint. */
   dev: number | bigint;
+  /**
+   * The file's inode number, and the backend's declaration about identity.
+   *
+   * CONTRACT, load-bearing across the host/kernel boundary: **a backend that
+   * cannot promise stable object identity reports `st_ino = 0`.**
+   *
+   * `MAP_SHARED` coherence keys one shared page cache per file object on
+   * `(dev, ino)`. Two files that report the same pair are treated as one
+   * object and share one cache, so a backend that hands out a placeholder,
+   * a recycled, or a colliding inode does not merely lose an optimisation —
+   * it causes one file's stores to appear in another. Zero is the way to say
+   * "I cannot promise this"; the mapping is then refused with `ENOTSUP`
+   * rather than silently aliased.
+   *
+   * The kernel consumes this rule in `file_identity_key`
+   * (`crates/runtime-core/src/memory.rs`), which refuses `ino == 0`. The two
+   * sides are one contract, not two predicates that happen to agree: change
+   * either and change both.
+   *
+   * `dev` must be a device number qualified across backends — see
+   * `VirtualFileSystem.qualifyStat`, which keys on the backend object so
+   * alias mounts agree and distinct backend instances cannot collide. A
+   * backend-local `dev` reaching the kernel would let two files in two
+   * different mounts alias onto one cache.
+   */
   ino: number | bigint;
   mode: number;
   nlink: number;
@@ -111,7 +136,16 @@ export interface PlatformIO {
    * pass the remembered path of an unlinked or renamed open file. Equal
    * identities must name the same underlying file object, including through
    * hard links. Return null when the backend cannot promise stable object
-   * identity (for example, a backend that reports no inode number).
+   * identity (for example, a backend that reports no inode number) — the same
+   * declaration `StatResult.ino === 0` makes, and for the same reason.
+   *
+   * The kernel can now derive this itself, from the same `(dev, ino)` any
+   * implementation here uses (`file_identity_key`, `crates/runtime-core/src/
+   * memory.rs`). This method's only remaining caller is the shared-mmap
+   * backing lookup in `kernel-worker.ts`, and it stays until something
+   * retires that caller. A new backend need not implement it: declaring
+   * through `StatResult.ino` is sufficient and is the contract the kernel
+   * reads.
    */
   fileIdentity?(path: string, dev: bigint, ino: bigint): string | null;
 
@@ -121,41 +155,105 @@ export interface PlatformIO {
    * Unlike `fileIdentity`, this must not resolve the remembered pathname: an
    * open file remains a valid mmap backing after that name is unlinked or
    * renamed. Return null when the backend cannot promise stable identity.
+   *
+   * This looks like the seam where a backend declares whether it can promise
+   * identity, and it is — but every implementation is a pure function of
+   * `(dev, ino)` whose only other output is that null, and the kernel can
+   * already hear the null through `StatResult.ino === 0`. So the declaration
+   * a new backend needs to make is on the stat, not here. This stays while
+   * its caller does; wiring it so the *kernel* could consult it would cost a
+   * host import to carry one bit the stat already carries, which is why it
+   * is not wired.
    */
   fileHandleIdentity?(handle: number, dev: bigint, ino: bigint): string | null;
 
-  // Path-based operations
-  stat(path: string): StatResult;
-  lstat(path: string): StatResult;
-  statfs(path: string): StatfsResult;
-  pathconf(path: string, name: number): PathconfValue;
-  mkdir(path: string, mode: number): void;
-  rmdir(path: string): void;
-  unlink(path: string): void;
-  rename(oldPath: string, newPath: string): void;
-  link(existingPath: string, newPath: string): void;
-  symlink(target: string, path: string): void;
-  readlink(path: string): string;
-  chmod(path: string, mode: number): void;
-  chown(path: string, uid: number, gid: number): void;
-  lchown(path: string, uid: number, gid: number): void;
-  access(path: string, mode: number): void;
-  utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
-
-  // Directory iteration
   /**
-   * Open a directory and return an opaque handle. A handle must not be reused
-   * while its previous directory iterator is still live.
+   * Metadata for a guest path, for this host's OWN bookkeeping only.
+   *
+   * This is NOT part of the kernel contract and backs no `env.host_*` import.
+   * The kernel never asks this host to resolve a path; its sole caller is the
+   * shared-mmap backing lookup in `kernel-worker.ts`, which needs a file's
+   * identity to find the mapping it already created for that file.
+   *
+   * It is the last path-shaped method on this interface, and it survives only
+   * because the mmap-coherence machinery that needs it is keyed by path rather
+   * than by descriptor. Reworking that is a change to the worker's mapping
+   * model, not to the host filesystem contract.
    */
-  opendir(path: string): number;
+  stat(path: string): StatResult;
+
+  // Directory-relative operations.
+  //
+  // The kernel owns the POSIX namespace. It resolves mount routing, `..`, and
+  // symlink chains itself, then asks this host to resolve exactly ONE path
+  // component relative to a directory handle this host previously issued. No
+  // method here ever receives a guest path, a mount prefix, a `..`, or a
+  // symlink chain, and `name` is always a single component (`"."` naming the
+  // directory itself).
+  //
+  // This whole group is an OPTIONAL capability: "expose a real host
+  // directory". A host with no host-backed mount implements none of it, and
+  // the kernel never calls it, because no path can reach a mount that does not
+  // exist.
+
   /**
-   * Return and consume the next entry. If this throws, the iterator must stay
-   * on that entry so the caller can retry without a directory-position gap.
+   * Directory handles naming each mount's root, published to the kernel at
+   * boot as the anchors for its per-component walks.
+   */
+  foreignMountRoots(): { prefix: string; handle: number }[];
+
+  /**
+   * Open one component relative to a directory handle. `O_DIRECTORY` yields
+   * another directory handle; anything else yields a file handle. Both share
+   * one id space and are released by `close`.
+   */
+  openat(dirHandle: number, name: string, flags: number, mode: number): number;
+  /** `AT_SYMLINK_NOFOLLOW` describes a symlink rather than its target. */
+  fstatat(dirHandle: number, name: string, flags: number): StatResult;
+  mkdirat(dirHandle: number, name: string, mode: number): void;
+  /** `AT_REMOVEDIR` selects `rmdir(2)` semantics. */
+  unlinkat(dirHandle: number, name: string, flags: number): void;
+  renameat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void;
+  linkat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void;
+  /** `target` is opaque data stored verbatim; only `name` names an entry. */
+  symlinkat(target: string, dirHandle: number, name: string): void;
+  readlinkat(dirHandle: number, name: string): string;
+  fchmodat(dirHandle: number, name: string, mode: number): void;
+  /** `AT_SYMLINK_NOFOLLOW` selects `lchown(2)`. */
+  fchownat(
+    dirHandle: number,
+    name: string,
+    uid: number,
+    gid: number,
+    flags: number,
+  ): void;
+  utimensatAt(
+    dirHandle: number,
+    name: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void;
+  /**
+   * Return and consume the next entry of a directory handle. If this throws,
+   * the iterator must stay on that entry so the caller can retry without a
+   * directory-position gap: the kernel may return a short successful
+   * `getdents64` after copying earlier records and retry on the next syscall.
    */
   readdir(
     handle: number,
   ): { name: string; type: number; ino: number } | null;
-  closedir(handle: number): void;
 
   // File operations
   ftruncate(handle: number, length: number): void;
@@ -165,7 +263,6 @@ export interface PlatformIO {
 
   // Time
   clockGettime(clockId: number): { sec: number; nsec: number };
-  nanosleep(sec: number, nsec: number): void;
 
   // Process (optional — only needed when process management is available)
   waitpid?(pid: number, options: number): { pid: number; status: number };
@@ -182,7 +279,16 @@ export interface NetworkAddress {
 export interface TcpConnectionPeer {
   send(data: Uint8Array, flags: number): number;
   recv(maxLen: number, flags: number): Uint8Array;
-  poll?(events: number): number;
+  /**
+   * Report what this engine can observe about the connection, as a
+   * `NET_READINESS` fact word (`host/src/generated/abi.ts`).
+   *
+   * This is deliberately *not* `revents`. Deciding which of
+   * POLLIN/POLLOUT/POLLERR/POLLHUP belongs in `revents` is a POSIX decision
+   * and the kernel makes it, in `runtime_core::net_readiness`. Report facts
+   * here and nothing else.
+   */
+  readiness?(): number;
   /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
   /** Orderly close: flush/FIN the write half and orphan the receive half. */
@@ -215,8 +321,20 @@ export interface NetworkIO {
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
-  /** Return POSIX poll revents bits for this connection handle. */
-  poll?(handle: number, events: number): number;
+  /**
+   * Report what this engine can observe about a connection handle, as a
+   * `NET_READINESS` fact word (`host/src/generated/abi.ts`).
+   *
+   * This is deliberately *not* `revents`. Deciding which of
+   * POLLIN/POLLOUT/POLLERR/POLLHUP belongs in `revents` is a POSIX decision
+   * and the kernel makes it, in `runtime_core::net_readiness`. Report facts
+   * here and nothing else.
+   *
+   * A backend that omits this is reported to the kernel as
+   * `NET_READINESS.UNOBSERVABLE`, whose documented handling is
+   * wake-every-round with `EAGAIN` from `recv`/`send`.
+   */
+  readiness?(handle: number): number;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
   listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;

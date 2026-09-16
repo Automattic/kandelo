@@ -12,6 +12,7 @@ import {
   VFS_DEFERRED_TREE_COLLECTION_LIMITS,
   VFS_DEFERRED_TREE_LIMITS,
 } from "../src/vfs/deferred-tree-limits";
+import { encodeKernelLazySection } from "../src/vfs/kernel-lazy-section";
 import {
   applyLazyTreeByteTransformRecipe,
   decodeMaterializationBytes,
@@ -3337,9 +3338,14 @@ describe("format-neutral deferred trees", () => {
       truncated.byteOffset,
       truncated.byteLength,
     );
+    // Declare an archive section longer than every byte that follows it. A
+    // bare `+1` stopped overrunning the image once a further section was
+    // appended after the metadata section, which would have made this assert
+    // nothing; the length has to beat the whole remaining tail to prove the
+    // bound is checked against the image and not against the next section.
     truncatedView.setUint32(
       archiveOffset,
-      truncatedView.getUint32(archiveOffset, true) + 1,
+      truncated.byteLength - archiveOffset,
       true,
     );
     expect(() => MemoryFileSystem.fromImage(truncated))
@@ -3378,22 +3384,65 @@ function lazyArchiveMetadataOffset(image: Uint8Array): number {
   return lazyOffset + 4 + lazyLength;
 }
 
+/**
+ * Rewrite an image's lazy-archive JSON section, keeping the rest of the
+ * container consistent with it.
+ *
+ * The binary `KLZY` section is re-emitted from the replacement metadata rather
+ * than carried over. A writer that emitted THIS archive JSON would have
+ * emitted THAT `KLZY`, and an image whose two halves disagree is refused at
+ * restore — so carrying the old section over would build a corrupt image and
+ * every caller below would be testing that refusal instead of the check it
+ * means to test.
+ */
 function replaceLazyArchiveMetadata(
   image: Uint8Array,
   metadata: unknown,
 ): Uint8Array {
   const archiveOffset = lazyArchiveMetadataOffset(image);
   const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  const oldLength = view.getUint32(archiveOffset, true);
-  const suffixOffset = archiveOffset + 4 + oldLength;
+  const flags = view.getUint32(8, true);
+  const lazyOffset = 16 + view.getUint32(12, true);
+  const lazyLength = view.getUint32(lazyOffset, true);
+  const lazyEntries = lazyLength > 0
+    ? JSON.parse(
+      decoder.decode(
+        image.subarray(lazyOffset + 4, lazyOffset + 4 + lazyLength),
+      ),
+    )
+    : [];
+
+  // Everything between the archive section and the kernel-lazy section — the
+  // image-metadata section, when the header declares one — is copied verbatim.
+  let suffixOffset = archiveOffset + 4 + view.getUint32(archiveOffset, true);
+  const carriedStart = suffixOffset;
+  if (flags & 0b100) {
+    suffixOffset += 4 + view.getUint32(suffixOffset, true);
+  }
+  const carried = image.subarray(carriedStart, suffixOffset);
+
   const json = encoder.encode(JSON.stringify(metadata));
-  const replaced = new Uint8Array(
-    archiveOffset + 4 + json.byteLength + image.byteLength - suffixOffset,
+  const kernelLazy = encodeKernelLazySection(
+    lazyEntries,
+    Array.isArray(metadata) ? metadata : [],
   );
+  const replaced = new Uint8Array(
+    archiveOffset +
+      4 +
+      json.byteLength +
+      carried.byteLength +
+      4 +
+      kernelLazy.byteLength,
+  );
+  const out = new DataView(replaced.buffer);
   replaced.set(image.subarray(0, archiveOffset), 0);
-  new DataView(replaced.buffer).setUint32(archiveOffset, json.byteLength, true);
+  out.setUint32(archiveOffset, json.byteLength, true);
   replaced.set(json, archiveOffset + 4);
-  replaced.set(image.subarray(suffixOffset), archiveOffset + 4 + json.byteLength);
+  let cursor = archiveOffset + 4 + json.byteLength;
+  replaced.set(carried, cursor);
+  cursor += carried.byteLength;
+  out.setUint32(cursor, kernelLazy.byteLength, true);
+  replaced.set(kernelLazy, cursor + 4);
   return replaced;
 }
 

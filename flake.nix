@@ -95,6 +95,12 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # wasm-tools, not just wabt: wabt's `wat2wasm` predates the
+            # WebAssembly GC text format, so checked-in GC fixtures (e.g.
+            # the fork GC-array `.wat`) cannot be reassembled with it. A
+            # fixture the declared toolchain cannot rebuild is undeclared
+            # host state doing load-bearing work.
+            pkgs.wasm-tools
             # cbindgen — required by Mozilla's JS/SpiderMonkey configure
             # path once Rust support is enabled.
             pkgs.rust-cbindgen
@@ -226,6 +232,25 @@
             # host prefixes.
             pkgs.xcbuild
         ];
+
+        # A macOS SDK for the ONE build that needs a newer one than the dev
+        # shell's default. SpiderMonkey's configure refuses any macOS SDK
+        # older than 15.5 (`mac_sdk_min_version()` in
+        # build/moz.configure/toolchain.configure), and this nixpkgs pins the
+        # default Darwin SDK at 14.4 -- so before this existed, the recipe
+        # reached outside Nix for /Applications/Xcode.app instead, which is
+        # how it came to depend on whichever Xcode the machine happened to
+        # have. Exposed as an environment variable rather than added to
+        # devShellPackages on purpose: putting it in the package set would
+        # move SDKROOT for every host-side compile in the shell (perl's
+        # miniperl, MariaDB's host tools, every configure probe) from 14.4 to
+        # 15.5, and nothing but SpiderMonkey needs that.
+        #
+        # 15.5 and not the newest available: the failure this replaced was a
+        # too-NEW SDK (see packages/registry/spidermonkey/build-spidermonkey.sh),
+        # so the oldest version Mozilla accepts is the safest point to sit.
+        macosSdk = pkgs.lib.optionalString pkgs.stdenv.isDarwin
+          "${pkgs.apple-sdk_15}";
       in {
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
@@ -250,6 +275,14 @@
             export RANLIB="$LLVM_BIN/llvm-ranlib"
             export WASM_POSIX_LLVM_LIBCXX_SOURCE=${llvmPkg.libcxx.src}
             export WASM_POSIX_LLVM_LIBUNWIND_SOURCE=${llvmPkg.libunwind.src}
+            ${pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+            # The newer-than-default macOS SDK described at `macosSdk` above.
+            # Only the SpiderMonkey recipe reads these; the shell's own
+            # SDKROOT/DEVELOPER_DIR stay on the nixpkgs default so no other
+            # host-side build changes SDK underneath it.
+            export KANDELO_MACOS_DEVELOPER_DIR="${macosSdk}"
+            export KANDELO_MACOS_SDK_DIR="${macosSdk}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk"
+            ''}
             # CA bundle for HTTPS — pure-shell strips the user's
             # SSL_CERT_FILE; without an explicit re-export, every
             # `curl https://…` returns exit 77 ("Problem with the
@@ -275,6 +308,16 @@
             if [ -d "$__repo_root/sdk/bin" ]; then
               export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/sdk/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
               export PATH="$__repo_root/sdk/bin:$PATH"
+            fi
+            # Same treatment for scripts/bin, which carries `cargo-xtask`.
+            # `cargo xtask <verb>` is written in 178 places in this tree and
+            # resolves nowhere without it: there is no cargo alias that can
+            # work, because `[build] target` would build a host tool for
+            # wasm and cargo cannot override that from inside an alias. See
+            # the shim's own comment.
+            if [ -d "$__repo_root/scripts/bin" ]; then
+              export KANDELO_DEV_SHELL_TOOL_PATH="$__repo_root/scripts/bin:$KANDELO_DEV_SHELL_TOOL_PATH"
+              export PATH="$__repo_root/scripts/bin:$PATH"
             fi
             if [ -f "$__repo_root/scripts/check-dev-shell-tools.sh" ]; then
               bash "$__repo_root/scripts/check-dev-shell-tools.sh"

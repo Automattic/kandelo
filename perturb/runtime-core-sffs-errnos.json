@@ -1,0 +1,20 @@
+{
+ "file": "crates/runtime-core/src/sffs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "a missing or out-of-range inode reports EIO instead of ENOENT",
+   "scope": "    fn read_inode(&self, ino: u32) -> Result<RawInode, Errno> {",
+   "scope_end": "\n    }\n",
+   "find": "        if ino == 0 || ino >= self.total_inodes { return Err(Errno::ENOENT); }",
+   "replace": "        if ino == 0 || ino >= self.total_inodes { return Err(Errno::EIO); }"
+  },
+  {
+   "name": "descending into a non-directory reports ENOENT instead of ENOTDIR",
+   "scope": "    pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<SffsDirent>, Errno> {",
+   "scope_end": "\n    }\n",
+   "find": "        if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }",
+   "replace": "        if file_type(st.mode) != 0x4000 { return Err(Errno::ENOENT); }"
+  }
+ ]
+}

@@ -38,7 +38,6 @@ host/test/demo-login-image.test.ts	source-only
 host/test/derived-vfs-symlink.test.ts	prepared-product
 host/test/dev-cors-proxy.test.ts	source-only
 host/test/dev-fd-stat.test.ts	prepared-product
-host/test/device-fs.test.ts	source-only
 host/test/dinit-image-helpers.test.ts	prepared-product
 host/test/dlopen-e2e.test.ts	prepared-product
 host/test/dlopen-host-imports.test.ts	source-only
@@ -52,8 +51,7 @@ host/test/dri-modeset.test.ts	prepared-product
 host/test/dri-multiplex.test.ts	source-only
 host/test/dri-registry.test.ts	source-only
 host/test/dri-smoke.test.ts	prepared-product
-host/test/dylink-fork-archive.test.ts	source-only
-host/test/dylink.test.ts	source-only
+host/test/dylink-planner-drive.test.ts	source-only
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
@@ -302,7 +300,7 @@ host/test/virtual-network-e2e.test.ts	prepared-product
 host/test/virtual-network.test.ts	source-only
 host/test/vm-interrupt-timer.test.ts	source-only
 host/test/wait-lifecycle-guest.test.ts	prepared-product
-host/test/wasi-shim.test.ts	prepared-product
+host/test/wasi-module.test.ts	prepared-product
 host/test/wasm-binary-parse.test.ts	prepared-product
 host/test/wasm-guest-pointer.test.ts	source-only
 host/test/wasm-memory-write-audit.test.ts	prepared-product

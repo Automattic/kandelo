@@ -3,7 +3,6 @@ import { installBrowserSetImmediatePolyfill } from "@host/browser-immediate-poly
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
 import { detectPtrWidth, extractHeapBase } from "@host/constants";
 import { LocalVirtualNetwork } from "@host/networking/virtual-network";
-import { DeviceFileSystem } from "@host/vfs/device-fs";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
 import { BrowserTimeProvider } from "@host/vfs/time";
 import { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "@host/vfs/default-mounts";
@@ -166,7 +165,6 @@ async function createMachineIO(
       backend: MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024)),
       nosuid: true,
     },
-    { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ...await resolveForBrowser(DEFAULT_MOUNT_SPEC, rootfs),
   ];
   const io = new VirtualPlatformIO(mounts, new BrowserTimeProvider());
@@ -227,7 +225,6 @@ async function runProgram(
       },
     },
   );
-  kernelWorker.usePolling = false;
   (kernelWorker as CentralizedKernelWorker & { relistenBatchSize: number }).relistenBatchSize = 8;
   kernelWorker.setOutputCallbacks({
     onStdout: (data) => {

@@ -1,0 +1,7 @@
+{
+  "_comment": "RETIRED 2026-09-12. Both trials moved into sffs-module-abi.json, where they are part of the green contract. The condition this file was waiting for -- 'the export can serialize a DERIVED build plus a real byte source' -- was met when sm_load_image landed and the export's byte source became the loaded image instead of a hardcoded EIO. Kept as an empty file rather than deleted so that the handoff document pointing here still lands somewhere that explains itself.",
+  "file": "crates/sffs-module/src/lib.rs",
+  "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+  "trials": [],
+  "build": "scripts/dev-shell.sh cargo build -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1"
+}

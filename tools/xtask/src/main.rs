@@ -8,6 +8,18 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
 //!                         pre-flight workflow to skip already-published
 //!                         matrix entries.
+//!   workspace-closure-sha Print a content digest (64 hex chars) over the union
+//!                         of one or more workspace crates' cargo dependency
+//!                         closures. Args: --crates <a,b,c>, and for a side
+//!                         module also --recipe <repo-relative build script>,
+//!                         which folds the recipe's own digest in. For a build
+//!                         artifact with no resolver `build.toml` (so it has
+//!                         no `cargo:<crate>` cache-key input), this gives the
+//!                         same drift-proof, cargo-metadata-derived freshness
+//!                         coverage. Every `crates/*/build-wasm.sh` stamps the
+//!                         key this prints; nothing may compute part of that
+//!                         key itself, or the stamp and the checks that read it
+//!                         stop describing the same thing.
 //!   sort-package-matrix   Order a package matrix so selected package dependencies
 //!                         appear before their dependents.
 //!   partition-package-matrix
@@ -45,14 +57,19 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+mod perturb;
+mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;
+mod archive_extract_tree;
+mod archive_paths;
 mod build_deps;
 mod build_stamp;
 mod bundle_program;
 mod cargo_closure;
 mod determinism_check;
 mod dump_abi;
+mod dump_wasi_translation;
 mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
@@ -73,7 +90,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, verify-fresh"
+                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, vfs-image, perturb, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -83,14 +100,19 @@ fn main() -> ExitCode {
         return vfs_products::run(rest);
     }
     let result = match sub.as_str() {
+        "perturb" => perturb::run(&rest),
+        "vfs-image" => vfs_image_describe::run(&rest),
         "dump-abi" => dump_abi::run(rest),
+        "dump-wasi-translation" => dump_wasi_translation::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
+        "workspace-closure-sha" => cargo_closure::run_workspace_closure_sha(rest),
         "sort-package-matrix" => package_matrix::run_sort(rest),
         "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
         "archive-extract-member" => archive_extract_member::run(rest),
+        "archive-extract-tree" => archive_extract_tree::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "local-build" => local_build::run(rest),
         "check-determinism" => determinism_check::run(rest),

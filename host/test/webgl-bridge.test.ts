@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeAndDispatch,
   GL_SUBMIT_EINVAL,
+  GL_SUBMIT_EIO,
 } from "../src/webgl/bridge.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
@@ -326,6 +327,43 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(recordedMat).toEqual(mat);
   });
 
+  // The wire format packs records with no padding, so a shader source whose
+  // length is not a multiple of four shifts every later record off a 4-byte
+  // boundary. `new Float32Array(buffer, byteOffset, n)` throws on such an
+  // offset, and the host used to refuse the whole submission with EINVAL —
+  // a legal command stream failing on a JavaScript constraint the format does
+  // not have.
+  it("UniformMatrix4fv decodes a payload the preceding record left misaligned", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    const mat: number[] = [];
+    for (let i = 0; i < 16; i++) mat.push(i * 0.5);
+
+    const t = new Tlv(b.cmdbufView!.buffer);
+    // A 6-byte shader source: payload 8 + 6 = 14, so the next record's float
+    // tail lands two bytes past a 4-byte boundary.
+    b.shaders.set(7, { kind: "shader", id: 7 } as unknown as WebGLShader);
+    const src = t.op(O.OP_SHADER_SOURCE, 8 + 6);
+    t.view.setUint32(src.p, 7, true);
+    t.view.setUint32(src.p + 4, 6, true);
+    for (let i = 0; i < 6; i++) t.view.setUint8(src.p + 8 + i, 0x61 + i);
+
+    const h = t.op(O.OP_UNIFORM_MATRIX4FV, 12 + 16 * 4);
+    expect((h.p + 12) % 4).not.toBe(0);
+    t.view.setInt32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 1, true);
+    t.view.setUint32(h.p + 8, 0, true);
+    for (let i = 0; i < 16; i++) {
+      t.view.setFloat32(h.p + 12 + i * 4, mat[i], true);
+    }
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+    const call = gl.log.find((r) => r[0] === "uniformMatrix4fv");
+    expect(call).toBeDefined();
+    expect(Array.from((call![1] as unknown[])[2] as Float32Array)).toEqual(mat);
+  });
+
   it("DrawArrays(GL_TRIANGLES, 0, 3) decodes correctly", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
@@ -340,13 +378,19 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(gl.log[0]).toEqual(["drawArrays", [0x0004, 0, 3]]);
   });
 
-  it("unknown opcode returns EINVAL without throwing", () => {
+  // Whether an opcode exists, and whether a payload has the shape that opcode
+  // requires, is decided by the kernel in `GLIO_SUBMIT`
+  // (`crates/runtime-core/src/dri/cmdbuf.rs`) before the host is called. The
+  // bridge no longer holds a second copy of that table, so bytes the kernel
+  // would have refused reach it only when a process rewrites its own cmdbuf
+  // mid-submit; it reports EIO and issues nothing it cannot decode.
+  it("unknown opcode fails the submission without throwing", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     const t = new Tlv(b.cmdbufView!.buffer);
     const h = t.op(0xCAFE, 4);
     t.view.setUint32(h.p, 0, true);
-    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EIO);
     expect(gl.log).toEqual([]);
   });
 
@@ -368,16 +412,14 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(gl.log).toEqual([]);
   });
 
-  it("short array payload returns EINVAL before partial dispatch", () => {
+  it("a payload shorter than its own count fails the submission", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     const t = new Tlv(b.cmdbufView!.buffer);
     const h = t.op(O.OP_GEN_BUFFERS, 8);
     t.view.setUint32(h.p, 2, true);
     t.view.setUint32(h.p + 4, 10, true);
-    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EINVAL);
-    expect(gl.log).toEqual([]);
-    expect(b.buffers.size).toBe(0);
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EIO);
   });
 
   it("submit with no live context is a silent no-op", () => {

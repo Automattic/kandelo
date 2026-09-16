@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { SffsImageFs } from "../lib/sffs-image-fs";
 import { FILE_MODES, OPEN_FLAGS } from "../../../host/src/generated/abi";
 import { walkAndWrite, writeVfsBinary } from "./vfs-image-helpers";
 import { ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
@@ -46,7 +46,11 @@ if (!nodeWasmPath || !npmSourceDir || !outputZip) {
 }
 
 // A memfs large enough for node.wasm (~29 MB) plus the npm dist (~15 MB).
-const fs = MemoryFileSystem.create(new SharedArrayBuffer(160 * 1024 * 1024));
+const fs = SffsImageFs.create();
+// The declared capacity the product's publication gate checks the artifact
+// against. The SharedArrayBuffer it used to come from was never anything but
+// the old constructor's first argument.
+fs.setImageCapacity(160 * 1024 * 1024);
 ensureDirRecursive(fs, "/usr/bin");
 ensureDirRecursive(fs, "/usr/local/lib");
 // The browser kernel worker writes the MITM CA cert here on init; npm reads it

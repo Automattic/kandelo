@@ -1,3 +1,11 @@
+// Errno constants and SFSError moved to the leaf module `vfs-errors.ts`,
+// derived from the generated ERRNO table. Re-exported so this file's
+// consumers keep working while lane V deletes it, and so `instanceof
+// SFSError` keeps ONE class identity across both import paths.
+export * from "./vfs-errors";
+import { EBADF, EBUSY, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ELOOP, EMFILE, ENAMETOOLONG, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EOVERFLOW, EPERM, SFSError } from "./vfs-errors";
+
+
 /**
  * SharedFS — A block-based filesystem on SharedArrayBuffer.
  *
@@ -81,23 +89,6 @@ const DIRENT_HEADER_SIZE = 8;
 const DIR_INDEX_MIN_SIZE = 64 * 1024;
 
 // Error codes
-export const EPERM = -1;
-export const ENOENT = -2;
-export const EIO = -5;
-export const EBADF = -9;
-export const EBUSY = -16;
-export const EEXIST = -17;
-export const ENOTDIR = -20;
-export const EISDIR = -21;
-export const EINVAL = -22;
-export const EMFILE = -24;
-export const EFBIG = -27;
-export const ENOSPC = -28;
-export const EROFS = -30;
-export const ENAMETOOLONG = -36;
-export const ENOTEMPTY = -39;
-export const ELOOP = -40;
-export const EOVERFLOW = -75;
 
 // Superblock field byte offsets
 const SB_MAGIC = 0;
@@ -270,34 +261,7 @@ interface DirIndex {
   free: Array<{ abs: number; recLen: number }>;
 }
 
-const ERROR_MESSAGES: Record<number, string> = {
-  [ENOENT]: "No such file or directory",
-  [EIO]: "I/O error",
-  [EBADF]: "Bad file descriptor",
-  [EBUSY]: "Device or resource busy",
-  [EEXIST]: "File exists",
-  [ENOTDIR]: "Not a directory",
-  [EISDIR]: "Is a directory",
-  [EINVAL]: "Invalid argument",
-  [EMFILE]: "Too many open files",
-  [EFBIG]: "File too large",
-  [ENOSPC]: "No space left on device",
-  [EROFS]: "Read-only file system",
-  [ENAMETOOLONG]: "File name too long",
-  [ENOTEMPTY]: "Directory not empty",
-  [ELOOP]: "Too many symbolic links",
-  [EOVERFLOW]: "Value too large for data type",
-};
 
-export class SFSError extends Error {
-  constructor(
-    public code: number,
-    message?: string,
-  ) {
-    super(message || ERROR_MESSAGES[code] || `Error ${code}`);
-    this.name = "SFSError";
-  }
-}
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

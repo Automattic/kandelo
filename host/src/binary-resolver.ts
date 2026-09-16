@@ -28,6 +28,21 @@ import {
   statSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+
+// The tier roots live in their own leaf module so the artifact reader's Node
+// source can share them without importing this file. See `binary-tiers.ts`:
+// the reader cannot resolve its own bytes through `resolveBinary`, because
+// `resolveBinary` validates candidates against the policy the reader answers.
+import {
+  binaryTierRoots,
+  currentModuleDir,
+  findRepoRoot,
+  hasSourceCheckout,
+  packageRoot,
+  resolverRepoRoot,
+} from "./binary-tiers";
+
+export { findRepoRoot, resolverRepoRoot };
 import { spawnSync } from "node:child_process";
 import {
   basename,
@@ -49,77 +64,12 @@ import { MemoryFileSystem } from "./vfs/memory-fs";
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
 /**
- * Walk up from the importing file to find the repo root. Markers:
- * workspace `Cargo.toml` + `package.json`. Both are tracked at the
- * top of the tree and together are unambiguous — they distinguish
- * the repo root from any nested cargo crate or npm subpackage.
- *
  * Per-package `packages/registry/<name>/package.toml` files carry the
  * release-archive metadata directly (URL + sha256 in `[binary]` /
- * `[binary.<arch>]`); there is no central pinfile for the resolver
- * to read.
+ * `[binary.<arch>]`); there is no central pinfile for the resolver to read.
+ *
+ * Repo-root discovery itself now lives in `binary-tiers.ts`, imported above.
  */
-let cachedRepoRoot: string | null = null;
-
-function currentModuleDir(): string {
-  if (typeof __dirname !== "undefined") return __dirname;
-  return import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd();
-}
-
-function isRepoRoot(dir: string): boolean {
-  // Workspace Cargo.toml has a [workspace] table; nested crate
-  // Cargo.tomls do not. The package identity matters too: an installed host
-  // package may live below an unrelated consumer's Cargo/npm workspace, which
-  // must not be mistaken for a Kandelo source checkout.
-  const cargo = join(dir, "Cargo.toml");
-  const packageJson = join(dir, "package.json");
-  if (!existsSync(cargo) || !existsSync(packageJson)) {
-    return false;
-  }
-  try {
-    const packageIdentity = JSON.parse(readFileSync(packageJson, "utf8"));
-    return /^\s*\[workspace\]/m.test(readFileSync(cargo, "utf8"))
-      && packageIdentity?.name === "kandelo";
-  } catch {
-    return false;
-  }
-}
-
-export function findRepoRoot(startFrom?: string): string {
-  if (cachedRepoRoot && !startFrom) return cachedRepoRoot;
-  const here = startFrom ?? currentModuleDir();
-  let dir = resolve(here);
-  for (let i = 0; i < 20; i++) {
-    if (isRepoRoot(dir)) {
-      if (!startFrom) cachedRepoRoot = dir;
-      return dir;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error(
-    "Could not find repo root (expected workspace Cargo.toml + package.json)"
-  );
-}
-
-function resolverRepoRoot(): string {
-  const explicitStart = process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT;
-  return explicitStart ? findRepoRoot(explicitStart) : findRepoRoot();
-}
-
-function packageRoot(): string {
-  return resolve(currentModuleDir(), "..");
-}
-
-function hasSourceCheckout(): boolean {
-  try {
-    resolverRepoRoot();
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Cache root used by xtask for immutable package generations.
@@ -283,54 +233,41 @@ export class BinaryNotFoundError extends Error {
  * not a silent-staleness hazard `verify-fresh` needs to separately guard.
  */
 function binaryCandidateTiers(): BinaryCandidateTier[] {
-  const tiers: BinaryCandidateTier[] = [];
-  let sourceCheckout = false;
-  try {
-    const repo = resolverRepoRoot();
-    sourceCheckout = true;
-    const sourceOnlyRoot = join(repo, "local-binaries", "source-only-v1");
-    if (existsSync(sourceOnlyRoot)) {
-      tiers.push({
-        label: "source-only-v1",
-        root: sourceOnlyRoot,
-        identity: "source-only-generation",
-        allowRegularFileClosure: false,
-        candidatesFor(relPath: string): string[] {
-          return [join(sourceOnlyRoot, applyDefaultArch(relPath))];
-        },
-      });
-    }
-    for (const [label, root] of [
-      ["local-binaries", join(repo, "local-binaries")],
-      ["binaries", join(repo, "binaries")],
-    ] as const) {
-      tiers.push({
+  // The ROOTS and their order come from `binary-tiers.ts`, which the artifact
+  // reader's Node source reads too. The per-tier POLICY -- identity, closure
+  // rules, how a relative path becomes candidates -- stays here, because only
+  // this file needs it. That split is the point: the reader needs the same
+  // places in the same order and nothing else, and it used to get them from a
+  // hand-maintained second copy that drifted in both directions.
+  const sourceCheckout = hasSourceCheckout();
+  return binaryTierRoots().map(({ label, root, kind }): BinaryCandidateTier => {
+    if (kind === "installed-package") {
+      return {
         label,
         root,
-        identity: label === "local-binaries"
+        identity: "installed-package",
+        // A checkout's installed-package tier is a staging directory, not a
+        // distribution, so regular-file closure stays off while sources exist.
+        allowRegularFileClosure: !sourceCheckout,
+        candidatesFor(relPath: string): string[] {
+          return packagedBinaryCandidates(relPath, root);
+        },
+      };
+    }
+    return {
+      label,
+      root,
+      identity: kind === "source-only-v1"
+        ? "source-only-generation"
+        : kind === "local-binaries"
           ? "local-generation"
           : "program-cache",
-        allowRegularFileClosure: false,
-        candidatesFor(relPath: string): string[] {
-          return [join(root, applyDefaultArch(relPath))];
-        },
-      });
-    }
-  } catch {
-    // Installed npm consumers do not carry a source repo root.
-  }
-
-  const root = join(packageRoot(), "wasm");
-  tiers.push({
-    label: "installed package",
-    root,
-    identity: "installed-package",
-    allowRegularFileClosure: !sourceCheckout,
-    candidatesFor(relPath: string): string[] {
-      return packagedBinaryCandidates(relPath, root);
-    },
+      allowRegularFileClosure: false,
+      candidatesFor(relPath: string): string[] {
+        return [join(root, applyDefaultArch(relPath))];
+      },
+    };
   });
-  return tiers;
 }
 
 interface ProgramPackageClosureMember {
@@ -1228,7 +1165,19 @@ interface SourceOnlyProjectionNode {
 interface LoadedSourceOnlyProjection {
   root: string;
   projectionPath: string;
+  /**
+   * The tier's own identity, under the `source-only-v1` resolve policy: the
+   * namespace its cache entries and receipts live in. Its cache keys are
+   * domain-separated from the ones in `program-packages.json` and are never
+   * comparable to them.
+   */
   projection: LoadedProgramPackageProjection;
+  /**
+   * The selection state this tier was materialized from — the same value the
+   * build that published it wrote to `program-packages.json`. This is the half
+   * that may be compared against the index this process regenerates.
+   */
+  selectionProjection: LoadedProgramPackageProjection;
   nodes: SourceOnlyProjectionNode[];
   ownerByMirrorPath: Map<string, SourceOnlyProjectionNode>;
 }
@@ -1461,6 +1410,22 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
   if (root === null) {
     throw new Error("Source-only projection requested outside source-only-v1");
   }
+  return readSourceOnlyProjectionAtRoot(root);
+}
+
+/**
+ * Read and fully validate the projection authority materialized at `root`.
+ *
+ * `root` must already be a canonical real directory. Under the
+ * `source-only-v1` resolution policy that is `sourceOnlyBinaryRoot()`; under
+ * the default policy it is the canonical path of the resolver's
+ * `local-binaries/source-only-v1` tier, which resolves the same bytes through
+ * the same authority so Node and the browser cannot disagree about one
+ * directory's contents.
+ */
+function readSourceOnlyProjectionAtRoot(
+  root: string,
+): LoadedSourceOnlyProjection {
   const metadataRoot = join(root, ".kandelo");
   try {
     const metadata = lstatSync(metadataRoot);
@@ -1503,6 +1468,24 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       error instanceof Error ? error.message : String(error),
     );
   }
+  // An authority published before the tier recorded its selection state
+  // cannot answer "was this built from the identity the source tree now
+  // selects?", and "expected exact fields" would send the reader looking for a
+  // corrupt file. Say what it actually is and what clears it.
+  if (
+    typeof raw === "object"
+    && raw !== null
+    && !Array.isArray(raw)
+    && (raw as { format?: unknown }).format === SOURCE_ONLY_PROJECTION_FORMAT
+    && !("selectionProjection" in raw)
+  ) {
+    throw sourceOnlyProjectionError(
+      projectionPath,
+      "the tier was published before the build recorded the package selection "
+        + "it was built from, so its identity cannot be checked; rebuild it "
+        + "with ./run.sh setup",
+    );
+  }
   if (
     typeof raw !== "object"
     || raw === null
@@ -1510,6 +1493,7 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
     || !hasExactObjectKeys(raw, [
       "format",
       "projection",
+      "selectionProjection",
       "graphAuthoritySha256",
       "nodes",
     ])
@@ -1542,6 +1526,23 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       throw sourceOnlyProjectionError(
         projectionPath,
         `program projection ${JSON.stringify(packageName)} architectures are not canonically sorted`,
+      );
+    }
+  }
+  // Parsed exactly as `program-packages.json` is parsed, because it is a copy
+  // of that file's value: the comparison at the bottom of
+  // `pinSourceOnlyTierClosure` is only sound while both sides went through
+  // this one parser with these one set of options.
+  const selectionProjection = parseProgramPackageProjection(
+    (raw as { selectionProjection: unknown }).selectionProjection,
+    `${projectionPath}#selectionProjection`,
+  );
+  for (const packageName of projection.packages.keys()) {
+    if (!selectionProjection.packages.has(packageName)) {
+      throw sourceOnlyProjectionError(
+        projectionPath,
+        `program projection ${JSON.stringify(packageName)} has no recorded `
+          + "selection identity; rebuild the tier with ./run.sh setup",
       );
     }
   }
@@ -1722,7 +1723,39 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       && packageName === "kernel"
       && members.length === 1
       && !members[0]!.mirrorPath.includes("/");
-    if (!isExactProgramNode && !isRootMirrorNode) {
+    // Modules the local-build engine projects at the root but the package
+    // resolver does not model: the co-resident fork-module side modules
+    // (`fork_module32.wasm` / `fork_module64.wasm`), the co-resident WASI
+    // module, the standalone dynamic-linking planner, and the standalone
+    // WebAssembly artifact reader. Each is built
+    // out-of-band by its own `build-wasm.sh` and carries no
+    // `packages/registry/<name>/build.toml`, so none appears in the v2
+    // `projection.packages` map. Admit each as its own single root-level member
+    // node so every host resolves it through the same pinned projection as
+    // `kernel.wasm`.
+    //
+    // This must list every module in `CORESIDENT_SIDE_MODULES`
+    // (`tools/xtask/src/local_build.rs`). A module the engine projects but this
+    // table omits makes the WHOLE manifest unreadable — the parse throws before
+    // any binary resolves — so adding a row there without adding it here breaks
+    // every SourceOnly boot, not just that module's.
+    //
+    // Kept as an explicit allowlist rather than "any single root-level member":
+    // this check is what stops an arbitrary node in an untrusted projection
+    // from claiming a root path, so it must enumerate what is permitted.
+    const standaloneModuleArtifacts: Record<string, readonly string[]> = {
+      "fork-module": ["fork_module32.wasm", "fork_module64.wasm"],
+      "wasi-module": ["wasi_module32.wasm"],
+      "dylink-module": ["dylink_module32.wasm"],
+      "wasm-artifact-module": ["wasm_artifact_module32.wasm"],
+    };
+    const isStandaloneModuleNode =
+      !projection.packages.has(packageName)
+      && members.length === 1
+      && (standaloneModuleArtifacts[packageName]?.includes(
+        members[0]!.mirrorPath,
+      ) ?? false);
+    if (!isExactProgramNode && !isRootMirrorNode && !isStandaloneModuleNode) {
       throw sourceOnlyProjectionError(
         projectionPath,
         `node ${JSON.stringify(packageName)} (${targetArch}) is neither an exact v2 program node nor a root-mirror package`,
@@ -1773,7 +1806,14 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
     }
   }
 
-  return { root, projectionPath, projection, nodes, ownerByMirrorPath };
+  return {
+    root,
+    projectionPath,
+    projection,
+    selectionProjection,
+    nodes,
+    ownerByMirrorPath,
+  };
 }
 
 function validateSourceOnlyMember(
@@ -2016,6 +2056,53 @@ function programPackageProjectionIdentity(
         }
     ),
   });
+}
+
+/**
+ * Name what actually changed between the identity a tier was built from and
+ * the one the source tree now selects.
+ *
+ * WHY THIS IS NOT COSMETIC. "was built from a different package identity" is
+ * equally true of an edited `package.toml`, an edited build script, a moved
+ * dependency, a bumped ABI version and a renamed output, and the reader's next
+ * action differs for each. It is also what an *unsatisfiable* comparison says,
+ * which is how one hid here: the check compared a `source-only-v1` cache key
+ * against a default-policy one, could never hold, and read as ordinary
+ * staleness — so readers rebuilt, repeatedly, and the message agreed with them
+ * every time. A refusal has to be able to name its own reason for a reader to
+ * notice when the reason is nonsense.
+ */
+function describeProgramPackageIdentityDrift(
+  recorded: ProgramPackageProjection,
+  selectedIdentity: string,
+): string {
+  const fields: Array<[string, string]> = [
+    ["manifestSha256", "its package.toml changed"],
+    ["arches", "its declared architectures changed"],
+    ["cacheKeys", "its build inputs or toolchain changed"],
+    ["dependencyClosures", "a dependency changed"],
+    ["members", "its declared outputs changed"],
+  ];
+  let selected: Record<string, unknown>;
+  let recordedFields: Record<string, unknown>;
+  try {
+    selected = JSON.parse(selectedIdentity) as Record<string, unknown>;
+    recordedFields = JSON.parse(
+      programPackageProjectionIdentity(recorded),
+    ) as Record<string, unknown>;
+  } catch {
+    return "the recorded and selected identities are not comparable";
+  }
+  const drifted = fields.filter(([field]) =>
+    JSON.stringify(recordedFields[field]) !== JSON.stringify(selected[field])
+  );
+  if (drifted.length === 0) {
+    // Every named field agrees, so the two encodings themselves diverged —
+    // which is a defect in this resolver, not in the reader's tree.
+    return "no identity field differs, so the two encodings disagree; this is "
+      + "a resolver defect, not a stale build";
+  }
+  return drifted.map(([, reason]) => reason).join("; ");
 }
 
 function bundledProgramPackageProjection(): LoadedProgramPackageProjection | null {
@@ -2927,6 +3014,73 @@ function hasBinaryArtifactPolicyFailures(
     hasVfsArtifactPolicyFailures(path, relPath);
 }
 
+/**
+ * Say WHY an artifact was refused, distinguishing a real policy verdict from
+ * an inspection that never happened.
+ *
+ * The boolean helpers above are fail-closed by design, and they must stay that
+ * way. But they reach `true` down two very different roads: the reader looked
+ * at the bytes and found a genuine defect, or the reader could not run at all —
+ * the file could not be read, or, much more commonly now, the wasm-artifact
+ * reader module has not been installed in this realm, which is a host bootstrap
+ * gap that has nothing to do with the artifact. Reporting the second as
+ * "rejected by artifact policy" sends the reader to rebuild an artifact that
+ * was never examined.
+ *
+ * Only the message-producing paths call this; resolution keeps using the
+ * booleans, so acceptance behaviour is unchanged.
+ */
+function describeBinaryArtifactRejection(
+  path: string,
+  relPath: string,
+  capturedForkInstrumentation?: "auto" | "disabled" | null,
+): string | null {
+  let bytes: Uint8Array;
+  try {
+    bytes = readFileSync(path);
+  } catch (error) {
+    return `could not be read: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  const programBytes = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(programBytes).set(bytes);
+
+  if (relPath.endsWith(".wasm")) {
+    try {
+      const forkDisabled = capturedForkInstrumentation === undefined
+        ? disablesForkInstrumentation(relPath)
+        : capturedForkInstrumentation === "disabled";
+      const failures = describeWasmArtifactPolicyFailures(programBytes, {
+        expectedAbi: ABI_VERSION,
+        requiredExports: requiredExportsForRelPath(relPath),
+        forbiddenExports: forbiddenExportsForRelPath(relPath),
+        requireForkInstrumentation: forkDisabled ? false : undefined,
+        forbidForkInstrumentation: forkDisabled,
+      });
+      return failures.length > 0
+        ? `rejected by artifact policy: ${failures.join("; ")}`
+        : null;
+    } catch (error) {
+      return `could not be inspected: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+  if (relPath.endsWith(".vfs") || relPath.endsWith(".vfs.zst")) {
+    try {
+      return hasVfsArtifactPolicyFailuresForBytes(bytes, relPath)
+        ? "rejected by artifact policy: VFS image declares a different kernel ABI"
+        : null;
+    } catch (error) {
+      return `could not be inspected: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+  }
+  return null;
+}
+
 function hasBinaryArtifactPolicyFailuresForBytes(
   bytes: Uint8Array,
   relPath: string,
@@ -3081,6 +3235,13 @@ function mutableGenerationIdentityFailure(
       ? null
       : "local mirror targets are not one direct immutable local generation";
   }
+  if (tier.identity === "source-only-generation") {
+    // The hermetic tier is a byte-verbatim mirror of regular files, because
+    // the browser loads it and cannot follow a host symlink. A symlink here
+    // means something other than the local-build engine wrote this tier.
+    return "source-only tier members must be regular files materialized by its"
+      + " projection authority, not symlinks";
+  }
   if (tier.identity === "program-cache") {
     const expectedParentPath = binaryProgramCacheRoot();
     if (!pathEntryExists(expectedParentPath)) {
@@ -3103,6 +3264,157 @@ interface PinnedPackageClosure {
 
 interface RejectedPackageClosure {
   failure: string;
+}
+
+/**
+ * Verify a regular-file package closure in `local-binaries/source-only-v1/`
+ * against that tier's own projection authority.
+ *
+ * WHY THIS TIER IS DIFFERENT. Every other local tier proves "these members
+ * came from one build" positionally: its members are symlinks into an
+ * immutable, content-addressed generation directory, and
+ * `mutableGenerationIdentityFailure` checks that they all point into the same
+ * one. The source-only tier deliberately holds REGULAR FILES — it is the one
+ * hermetic artifact root shipped to both hosts, and a browser cannot follow a
+ * host symlink. It carries its identity in
+ * `.kandelo/source-only-program-projection-v1.json` instead: per-node
+ * `manifestSha256` / `cacheKeySha256` / `cacheReceiptSha256`, and per-member
+ * `mode`, `size` and `sha256`. `validateSourceOnlyMember` checks each member
+ * with a stable read (O_NOFOLLOW open, fstat before and after, lstat the name,
+ * realpath equality, then the digest), which is a strictly stronger identity
+ * proof than a shared symlink parent, and it is exactly what the browser
+ * already runs under `WASM_POSIX_RESOLUTION_POLICY=source-only-v1`.
+ *
+ * Before this, the tier was constructed with `allowRegularFileClosure: false`
+ * and no `source-only-generation` arm anywhere, so it could never satisfy a
+ * package closure — not even a one-member package such as `dash`. Since it is
+ * the FIRST tier, and since a completed local build writes only here, the
+ * resolver would refuse the freshly built artifacts and fall through to the
+ * legacy `local-binaries/` symlink mirror, silently preferring an older build
+ * when one happened to be there and reporting "(missing)" when none was. One
+ * directory's bytes must not resolve under one policy and be refused under the
+ * other.
+ */
+function pinSourceOnlyTierClosure(
+  tier: BinaryCandidateTier,
+  members: readonly ProgramPackageClosureMember[],
+): PinnedPackageClosure | RejectedPackageClosure {
+  let loaded: LoadedSourceOnlyProjection;
+  try {
+    const metadata = lstatSync(tier.root);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+      return { failure: "the source-only tier root is not a real directory" };
+    }
+    loaded = readSourceOnlyProjectionAtRoot(realpathSync(tier.root));
+  } catch (error) {
+    return {
+      failure: `the source-only tier has no usable projection authority: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  const owners = new Set<SourceOnlyProjectionNode>();
+  for (const member of members) {
+    const owner = loaded.ownerByMirrorPath.get(member.relPath);
+    if (owner === undefined) {
+      return {
+        failure:
+          `${member.relPath} is not declared by the source-only projection `
+          + "authority (the tier was materialized by a different build than "
+          + "the one this projection describes)",
+      };
+    }
+    owners.add(owner);
+  }
+  if (owners.size !== 1) {
+    return {
+      failure:
+        "declared package members span more than one source-only generation",
+    };
+  }
+  const owner = [...owners][0]!;
+  if (owner.packageName !== members[0]!.packageName) {
+    return {
+      failure:
+        `source-only generation ${JSON.stringify(owner.packageName)} does not `
+        + `own the declared ${JSON.stringify(members[0]!.packageName)} closure`,
+    };
+  }
+  if (owner.members.length !== members.length) {
+    return {
+      failure:
+        `source-only generation ${JSON.stringify(owner.packageName)} `
+        + `materializes ${owner.members.length} member(s), but the selected `
+        + `package projection declares ${members.length}`,
+    };
+  }
+  // Bind the materialized generation to the package identity the CURRENT
+  // source projection selects. This is the source-only analogue of the
+  // `.kandelo-local-generations/<arch>/<package>/<cacheKey>/` parent check:
+  // without it a tier left over from an earlier source state would resolve as
+  // if it were fresh. `verify-fresh` only inspects `kernel.wasm`, so nothing
+  // else was catching a stale program here.
+  //
+  // WHICH IDENTITY. `loaded.projection` is the tier's own identity under the
+  // `source-only-v1` resolve policy, and `members[0].projectionIdentity` comes
+  // from `program-packages.json`, computed under the default policy. Those two
+  // are not two views of one fact: `source-only-v1` prefixes every cache key
+  // with a domain separator, so the keys for one *unchanged* package differ by
+  // construction. Comparing them — which this check used to do — could not
+  // hold for any package after any build, so the tier was refused
+  // unconditionally with a staleness message no rebuild could clear. The
+  // comparable half is `loaded.selectionProjection`: the selection index the
+  // build recorded, produced by the same generator under the same policy as
+  // the one this process regenerates.
+  const recordedSelection = loaded.selectionProjection.packages.get(
+    owner.packageName,
+  );
+  if (!recordedSelection) {
+    return {
+      failure:
+        `the source-only tier records no selection identity for `
+        + `${JSON.stringify(owner.packageName)}; it was published by a build `
+        + "that did not select that package, so it cannot be checked; rebuild "
+        + "it with ./run.sh setup",
+    };
+  }
+  if (
+    programPackageProjectionIdentity(recordedSelection)
+      !== members[0]!.projectionIdentity
+  ) {
+    return {
+      failure:
+        `the materialized source-only generation for `
+        + `${JSON.stringify(owner.packageName)} was built from a different `
+        + "package identity than the source tree now selects ("
+        + describeProgramPackageIdentityDrift(
+          recordedSelection,
+          members[0]!.projectionIdentity,
+        )
+        + "); rebuild it with ./run.sh setup",
+    };
+  }
+
+  let validated: Map<string, string>;
+  try {
+    validated = validateSourceOnlyNode(loaded, owner);
+  } catch (error) {
+    return {
+      failure: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const paths: string[] = [];
+  for (const member of members) {
+    const path = validated.get(member.relPath);
+    if (path === undefined) {
+      return {
+        failure: `the source-only generation omitted ${member.relPath}`,
+      };
+    }
+    paths.push(path);
+  }
+  return { paths };
 }
 
 /**
@@ -3142,6 +3454,9 @@ function pinPackageClosureIdentity(
     }
 
     if (allFiles) {
+      if (tier.identity === "source-only-generation") {
+        return pinSourceOnlyTierClosure(tier, members);
+      }
       if (!tier.allowRegularFileClosure) {
         return {
           failure: "a mutable source-checkout wasm tree is not an installed package identity",
@@ -3326,10 +3641,24 @@ function resolveBinaryInFreshProgramContext(relPath: string): string {
   }
   const candidate = chooseBinaryCandidate(candidates, relPath);
   if (candidate) return pinScalarCandidate(candidate, relPath);
-  if (candidates.some(pathEntryExists)) {
+  const present = candidates.filter(pathEntryExists);
+  if (present.length > 0) {
+    // Say which road led here. "Rejected by artifact policy" about a file the
+    // reader never managed to look at sends the reader to rebuild the wrong
+    // thing; the reason below distinguishes a genuine policy verdict from an
+    // inspection that could not run.
     throw new Error(
-      `Binary exists but was rejected by artifact policy: ${relPath}\n` +
-        checked.map((p) => `  checked: ${p}`).join("\n"),
+      `Binary exists but was not accepted: ${relPath}\n`
+        + present
+          .map((candidate) =>
+            `  ${candidate}\n    ${
+              describeBinaryArtifactRejection(candidate, relPath)
+                ?? "refused, but re-inspection now reports no failure"
+            }`
+          )
+          .join("\n")
+        + "\n"
+        + checked.map((p) => `  checked: ${p}`).join("\n"),
     );
   }
   throw new BinaryNotFoundError(
@@ -3511,10 +3840,18 @@ function tryResolveBinarySetFromTiers(
   if (relPaths.length === 0) return [];
 
   let anyExisting = false;
-  const incomplete: string[] = [];
+  const outcomes: TierResolutionOutcome[] = [];
   for (const tier of binaryCandidateTiers()) {
     const selected: string[] = [];
-    const unavailable: string[] = [];
+    const outcome: TierResolutionOutcome = {
+      label: tier.label,
+      root: tier.root,
+      present: [],
+      missing: [],
+      rejected: [],
+      tierRejection: null,
+    };
+    outcomes.push(outcome);
     if (closureMembers) {
       const [programs, arch, packageName] = closureMembers[0]!.relPath.split("/");
       if (programs === "programs" && arch && packageName) {
@@ -3532,20 +3869,34 @@ function tryResolveBinarySetFromTiers(
       );
       if (candidate) {
         selected.push(candidate);
+        outcome.present.push(relPath);
       } else if (existing.length > 0) {
-        unavailable.push(`${relPath} (rejected by artifact policy)`);
+        outcome.present.push(relPath);
+        const reason = existing
+          .map((candidate) =>
+            describeBinaryArtifactRejection(
+              candidate,
+              relPath,
+              closureMembers?.[index]?.forkInstrumentation,
+            )
+          )
+          .find((value) => value !== null)
+          ?? "refused, but re-inspection now reports no failure";
+        outcome.rejected.push(`${relPath} — ${reason}`);
       } else {
-        unavailable.push(`${relPath} (missing)`);
+        outcome.missing.push(relPath);
       }
     }
-    if (unavailable.length === 0 && closureMembers) {
+    const tierIsComplete = outcome.missing.length === 0
+      && outcome.rejected.length === 0;
+    if (tierIsComplete && closureMembers) {
       const identity = pinPackageClosureIdentity(
         tier,
         selected,
         closureMembers,
       );
       if ("failure" in identity) {
-        unavailable.push(`shared package identity rejected: ${identity.failure}`);
+        outcome.tierRejection = identity.failure;
       } else {
         const rejectedPinnedMembers = identity.paths.flatMap((path, index) =>
           hasBinaryArtifactPolicyFailures(
@@ -3557,15 +3908,14 @@ function tryResolveBinarySetFromTiers(
             : []
         );
         if (rejectedPinnedMembers.length > 0) {
-          unavailable.push(
-            `pinned package generation rejected by artifact policy: ${rejectedPinnedMembers.join(", ")}`,
-          );
+          outcome.tierRejection =
+            "the pinned package generation is rejected by artifact policy: "
+            + rejectedPinnedMembers.join(", ");
         } else {
           return identity.paths;
         }
       }
-    }
-    if (unavailable.length === 0) {
+    } else if (tierIsComplete) {
       return selected.map((path, index) =>
         pinScalarCandidate(
           path,
@@ -3574,17 +3924,89 @@ function tryResolveBinarySetFromTiers(
         )
       );
     }
-    incomplete.push(
-      `  ${tier.label} (${tier.root}): ${unavailable.join(", ")}`,
-    );
   }
 
   if (!anyExisting) return null;
-  throw new Error(
-    "Package artifact closure is incomplete: no single provenance tier " +
-      "contains every accepted artifact, and tiers will not be mixed.\n" +
-      incomplete.join("\n"),
+  throw new Error(describeIncompleteClosure(relPaths, outcomes));
+}
+
+interface TierResolutionOutcome {
+  label: string;
+  root: string;
+  /** Requested paths that exist on disk in this tier, accepted or not. */
+  present: string[];
+  /** Requested paths with no entry at all in this tier. */
+  missing: string[];
+  /** Present paths this tier's own artifact policy refused. */
+  rejected: string[];
+  /** Why the tier was refused as a whole, even though every member existed. */
+  tierRejection: string | null;
+}
+
+/**
+ * Explain a failed closure resolution in terms a reader can act on.
+ *
+ * WHY THIS IS NOT COSMETIC. The previous message listed every tier flatly, so
+ * a tier that HELD the artifacts and was refused for an identity reason
+ * appeared alongside tiers that simply did not have them, and the eye landed
+ * on `programs/wasm32/dash.wasm (missing)` — about a file that was right there
+ * in `local-binaries/source-only-v1/`. Readers reasonably concluded the build
+ * had not produced it and re-ran `./run.sh setup`, which cannot fix a
+ * rejection. A rejected tier must say it was rejected and why; "(missing)" is
+ * reserved for an artifact that is genuinely absent.
+ */
+function describeIncompleteClosure(
+  relPaths: readonly string[],
+  outcomes: readonly TierResolutionOutcome[],
+): string {
+  const refused = outcomes.filter(
+    (outcome) =>
+      outcome.tierRejection !== null || outcome.rejected.length > 0,
   );
+  const lines = [
+    "Package artifact closure is incomplete: no single provenance tier "
+    + "contains every accepted artifact, and tiers will not be mixed.",
+    `  requested: ${relPaths.join(", ")}`,
+  ];
+  if (refused.length > 0) {
+    lines.push(
+      "",
+      "  REJECTED (the artifacts are present here; resolution refused them):",
+    );
+    for (const outcome of refused) {
+      lines.push(`    ${outcome.label} (${outcome.root})`);
+      if (outcome.tierRejection !== null) {
+        lines.push(`      whole tier refused: ${outcome.tierRejection}`);
+      }
+      if (outcome.rejected.length > 0) {
+        lines.push(
+          `      refused by artifact policy: ${outcome.rejected.join(", ")}`,
+        );
+      }
+      if (outcome.missing.length > 0) {
+        lines.push(`      also absent here: ${outcome.missing.join(", ")}`);
+      }
+    }
+    lines.push(
+      "",
+      "  Re-running the build does not clear a rejection. Read the reason "
+      + "above.",
+    );
+  }
+  const absent = outcomes.filter((outcome) => !refused.includes(outcome));
+  if (absent.length > 0) {
+    lines.push("", "  ABSENT (nothing to resolve here):");
+    for (const outcome of absent) {
+      lines.push(
+        `    ${outcome.label} (${outcome.root}): ${
+          outcome.missing.length === relPaths.length
+            ? "none of the requested artifacts"
+            : `missing ${outcome.missing.join(", ")}`
+        }`,
+      );
+    }
+  }
+  return lines.join("\n");
 }
 
 /** Returns the absolute path of binaries/ whether or not it exists. */

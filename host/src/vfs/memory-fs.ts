@@ -1,4 +1,3 @@
-import { decompress as zstdDecompress } from "fzstd";
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -7,11 +6,31 @@ import type {
   StatfsResult,
 } from "../types";
 import {
+  maybeDecompressImage,
+  parseImageHeader,
+  sectionOffsetAfterArchives,
+  assertSectionFlagsConsistent,
+  archiveSectionBytes,
+  lazySectionBytes,
+  VFS_IMAGE_FLAG_HAS_LAZY,
+  VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES,
+  VFS_IMAGE_FLAG_HAS_METADATA,
+  VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES,
+  VFS_IMAGE_MAGIC,
+  VFS_IMAGE_VERSION,
+  VFS_IMAGE_HEADER_SIZE,
+  VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
+  VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES,
+  VFS_IMAGE_MAX_LAZY_METADATA_BYTES,
+  VFS_IMAGE_MAX_METADATA_BYTES,
+  type ParsedImageHeader,
+} from "./vfs-image-transport";
+import {
   hostFileLimitForNumberBackend,
   hostFileOffsetToSafeNumber,
   hostFilePositionToSafeNumber,
 } from "../file-offset";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
 import {
   ACCESS_MODES,
@@ -26,12 +45,8 @@ import {
   type MountConfig,
   type MountSetIdCapability,
 } from "./types";
+import { EROFS, SFSError } from "./vfs-errors";
 import {
-  EROFS,
-  O_CREAT,
-  O_EXCL,
-  O_TRUNC,
-  SFSError,
   SharedFS,
   type ConditionalNamespaceIdentity,
   type NamespaceEntryIdentity,
@@ -39,6 +54,11 @@ import {
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
+import {
+  normalizeLazyArchiveMountPrefix,
+  planLazyArchiveEntries,
+} from "./lazy-archive-paths";
+import type { PlannedLazyArchiveEntry } from "./lazy-archive-paths";
 import { resolveHardlinkGraph } from "./hardlink-graph";
 import {
   assertVfsDeferredTreeCollectionUsage,
@@ -57,6 +77,13 @@ import {
   assertUnicodeScalarText,
   compareUnicodeScalarText,
 } from "./canonical-text";
+import {
+  decodeKernelLazySection,
+  encodeKernelLazySection,
+  VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
+  VFS_IMAGE_MAX_KERNEL_LAZY_BYTES,
+} from "./kernel-lazy-section";
+import type { KernelLazyLinkage } from "./kernel-lazy-section";
 
 const intrinsicApply = Reflect.apply;
 const intrinsicObjectCreate = Object.create;
@@ -450,18 +477,8 @@ export interface VfsImageRestoreOptions {
 }
 
 /** Versioned, image-level declarations carried outside the guest file tree. */
-export interface VfsImageMetadata {
-  version: 1;
-  /**
-   * Exact kernel ABI this image expects when it carries ABI-bound artifacts
-   * such as wasm-posix user programs. Omit for data-only images.
-   */
-  kernelAbi?: number;
-  /** Free-form builder id, e.g. "mkrootfs 0.1.0" or a package script name. */
-  createdBy?: string;
-  /** Preserve forwards compatibility for future signed/provenance fields. */
-  [key: string]: unknown;
-}
+export type { VfsImageMetadata } from "./vfs-image-filesystem";
+import type { VfsImageMetadata } from "./vfs-image-filesystem";
 
 export interface VfsImageCapacity {
   /** Serialized SharedArrayBuffer length carried by the image. */
@@ -470,44 +487,18 @@ export interface VfsImageCapacity {
   maxByteLength: number;
 }
 
-// zstd frame magic (little-endian on the wire: 28 B5 2F FD).
-// fromImage() auto-detects this and decompresses transparently so callers
-// don't have to know whether the bytes came from a `.vfs` or `.vfs.zst`.
-const ZSTD_MAGIC_BYTES = [0x28, 0xb5, 0x2f, 0xfd];
-const ZSTD_FRAME_MAGIC = 0xfd2fb528;
-const ZSTD_SKIPPABLE_MAGIC_MIN = 0x184d2a50;
-const ZSTD_SKIPPABLE_MAGIC_MAX = 0x184d2a5f;
-const ZSTD_MAX_BLOCK_BYTES = 128 * 1024;
 
 // VFS image binary format constants
-const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
-const VFS_IMAGE_VERSION = 1;
-const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
-const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
-const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
-const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
-const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
 const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
 const { DT_UNKNOWN, DT_REG, DT_DIR, DT_LNK } = DIRENT_TYPES;
 const O_RDONLY = OPEN_FLAGS.O_RDONLY;
 const IMMUTABLE_PRODUCT_O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
 const IMMUTABLE_PRODUCT_O_CREAT = OPEN_FLAGS.O_CREAT;
 const IMMUTABLE_PRODUCT_O_TRUNC = OPEN_FLAGS.O_TRUNC;
-const IMMUTABLE_PRODUCT_W_OK = ACCESS_MODES.W_OK;
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
-const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
-const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
-const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
-const VFS_IMAGE_MAX_DECOMPRESSED_BYTES =
-  1024 * 1024 * 1024
-  + VFS_IMAGE_MAX_LAZY_METADATA_BYTES
-  + VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES
-  + VFS_IMAGE_MAX_METADATA_BYTES
-  + VFS_IMAGE_HEADER_SIZE
-  + 12;
 const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
 const MAX_LAZY_EXPANDED_BYTES = VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes;
 const MAX_LAZY_PAYLOAD_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPayloadBytes;
@@ -559,115 +550,6 @@ class LazyHttpResponseError extends Error {
     super(`HTTP ${status}`);
     this.name = "LazyHttpResponseError";
   }
-}
-
-interface PlannedLazyArchiveEntry {
-  entry: ZipEntry;
-  archivePath: string;
-  vfsPath: string;
-}
-
-function normalizeLazyArchiveMountPrefix(mountPrefix: unknown): string {
-  if (
-    typeof mountPrefix !== "string" ||
-    !mountPrefix.startsWith("/") ||
-    new TextEncoder().encode(mountPrefix).byteLength > MAX_LAZY_TREE_PATH_BYTES ||
-    mountPrefix.includes("\0") ||
-    mountPrefix.includes("\\")
-  ) {
-    throw new Error(
-      `Lazy archive mount prefix must be an absolute POSIX path: ${JSON.stringify(mountPrefix)}`,
-    );
-  }
-  const normalized = mountPrefix.replace(/\/+$/, "");
-  if (normalized === "") return "/";
-  const segments = normalized.slice(1).split("/");
-  if (
-    segments.some(
-      (segment) => segment === "" || segment === "." || segment === "..",
-    )
-  ) {
-    throw new Error(
-      `Lazy archive mount prefix is not canonical: ${JSON.stringify(mountPrefix)}`,
-    );
-  }
-  return normalized;
-}
-
-function planLazyArchiveEntries(
-  url: string,
-  zipEntries: ZipEntry[],
-  mountPrefix: string,
-  symlinkTargets?: Map<string, string>,
-): PlannedLazyArchiveEntry[] {
-  const normalizedPrefix = normalizeLazyArchiveMountPrefix(mountPrefix);
-  const seen = new Map<string, ZipEntry>();
-  const planned = zipEntries.map((entry): PlannedLazyArchiveEntry => {
-    const member = entry.fileName;
-    const context = `Lazy archive ${JSON.stringify(url)} member ${JSON.stringify(member)}`;
-    if (member.length === 0) {
-      throw new Error(`${context} has an empty path`);
-    }
-    if (member.includes("\0")) {
-      throw new Error(`${context} contains a NUL byte`);
-    }
-    if (member.includes("\\")) {
-      throw new Error(`${context} contains a backslash`);
-    }
-    if (member.startsWith("/") || /^[A-Za-z]:\//.test(member)) {
-      throw new Error(`${context} must be relative, not absolute`);
-    }
-    if (entry.isDirectory && entry.isSymlink) {
-      throw new Error(`${context} has conflicting directory and symlink types`);
-    }
-    if (entry.isDirectory !== member.endsWith("/")) {
-      throw new Error(`${context} has inconsistent directory metadata`);
-    }
-
-    const archivePath = entry.isDirectory ? member.slice(0, -1) : member;
-    const segments = archivePath.split("/");
-    if (
-      archivePath.length === 0 ||
-      segments.some(
-        (segment) => segment === "" || segment === "." || segment === "..",
-      )
-    ) {
-      throw new Error(
-        `${context} is not a canonical relative POSIX path`,
-      );
-    }
-    if (seen.has(archivePath)) {
-      throw new Error(
-        `${context} collides with another member at ${JSON.stringify(archivePath)}`,
-      );
-    }
-    if (entry.isSymlink && !symlinkTargets?.has(member)) {
-      throw new Error(`Lazy archive symlink target was not provided: ${member}`);
-    }
-    seen.set(archivePath, entry);
-    return {
-      entry,
-      archivePath,
-      vfsPath: normalizedPrefix === "/"
-        ? `/${archivePath}`
-        : `${normalizedPrefix}/${archivePath}`,
-    };
-  });
-
-  for (const { archivePath } of planned) {
-    const segments = archivePath.split("/");
-    for (let length = 1; length < segments.length; length++) {
-      const ancestorPath = segments.slice(0, length).join("/");
-      const ancestor = seen.get(ancestorPath);
-      if (ancestor && !ancestor.isDirectory) {
-        throw new Error(
-          `Lazy archive member ${JSON.stringify(archivePath)} descends ` +
-            `through non-directory ${JSON.stringify(ancestorPath)}`,
-        );
-      }
-    }
-  }
-  return planned;
 }
 
 function cloneMetadata(
@@ -730,240 +612,136 @@ function encodeMetadata(metadata: VfsImageMetadata | null): Uint8Array {
   return bytes;
 }
 
-function maybeDecompressImage(
-  image: Uint8Array,
-  maximum = VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
-): Uint8Array {
-  if (
-    !Number.isSafeInteger(maximum) || maximum < VFS_IMAGE_HEADER_SIZE ||
-    maximum > VFS_IMAGE_MAX_DECOMPRESSED_BYTES
-  ) {
-    throw new Error("VFS image decompressed byte bound is invalid");
+
+
+
+
+/**
+ * Locate the image's binary kernel-facing lazy-linkage (`KLZY`) section.
+ * Returns `null` only when the image does not declare the section at all.
+ */
+function kernelLazySectionBytes(parsed: ParsedImageHeader): Uint8Array | null {
+  if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_KERNEL_LAZY)) return null;
+  const { metadataOffset } = sectionOffsetAfterArchives(
+    parsed.image,
+    parsed.view,
+    parsed.flags,
+    parsed.sabLen,
+  );
+  let offset = metadataOffset;
+  if (parsed.flags & VFS_IMAGE_FLAG_HAS_METADATA) {
+    if (parsed.image.byteLength < offset + 4) {
+      throw new Error("VFS image truncated (metadata section)");
+    }
+    offset += 4 + parsed.view.getUint32(offset, true);
   }
-  if (
-    image.byteLength >= ZSTD_MAGIC_BYTES.length &&
-    image[0] === ZSTD_MAGIC_BYTES[0] &&
-    image[1] === ZSTD_MAGIC_BYTES[1] &&
-    image[2] === ZSTD_MAGIC_BYTES[2] &&
-    image[3] === ZSTD_MAGIC_BYTES[3]
-  ) {
-    assertBoundedZstdFrames(image, maximum);
-    const decompressed = decompressZstd(image);
-    if (decompressed.byteLength > maximum) {
-      throw new Error("zstd VFS image exceeds its decompressed byte bound");
-    }
-    return decompressed;
+  if (parsed.image.byteLength < offset + 4) {
+    throw new Error("VFS image truncated (kernel lazy linkage section)");
   }
-  if (image.byteLength > maximum) {
-    throw new Error("VFS image exceeds its decompressed byte bound");
-  }
-  return image;
-}
-
-function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  let offset = 0;
-  let totalBound = 0;
-  let frames = 0;
-  const requireBytes = (count: number, label: string) => {
-    if (count < 0 || offset + count > image.byteLength) {
-      throw new Error(`zstd VFS image has a truncated ${label}`);
-    }
-  };
-  const addBound = (count: number) => {
-    totalBound += count;
-    if (!Number.isSafeInteger(totalBound) || totalBound > maximum) {
-      throw new Error("zstd VFS image exceeds its decompressed byte bound");
-    }
-  };
-  const readLittleEndian = (count: number): bigint => {
-    requireBytes(count, "frame header");
-    let result = 0n;
-    for (let index = 0; index < count; index++) {
-      result |= BigInt(image[offset + index]!) << BigInt(index * 8);
-    }
-    offset += count;
-    return result;
-  };
-
-  while (offset < image.byteLength) {
-    requireBytes(4, "frame magic");
-    const magic = view.getUint32(offset, true);
-    offset += 4;
-    if (magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX) {
-      requireBytes(4, "skippable frame size");
-      const bytes = view.getUint32(offset, true);
-      offset += 4;
-      requireBytes(bytes, "skippable frame");
-      offset += bytes;
-      continue;
-    }
-    if (magic !== ZSTD_FRAME_MAGIC) {
-      throw new Error("zstd VFS image contains an invalid frame magic");
-    }
-    frames++;
-    requireBytes(1, "frame descriptor");
-    const descriptor = image[offset++]!;
-    if ((descriptor & 0x08) !== 0) {
-      throw new Error("zstd VFS image uses a reserved frame descriptor bit");
-    }
-    const singleSegment = (descriptor & 0x20) !== 0;
-    const hasChecksum = (descriptor & 0x04) !== 0;
-    const dictionaryBytes = [0, 1, 2, 4][descriptor & 0x03]!;
-    const contentSizeFlag = descriptor >>> 6;
-    let windowBytes: bigint | undefined;
-    if (!singleSegment) {
-      requireBytes(1, "window descriptor");
-      const windowDescriptor = image[offset++]!;
-      const exponent = 10 + (windowDescriptor >>> 3);
-      const base = 1n << BigInt(exponent);
-      windowBytes = base + (base >> 3n) * BigInt(windowDescriptor & 0x07);
-    }
-    requireBytes(dictionaryBytes, "dictionary identity");
-    offset += dictionaryBytes;
-    const contentSizeBytes = contentSizeFlag === 0
-      ? (singleSegment ? 1 : 0)
-      : contentSizeFlag === 1
-      ? 2
-      : contentSizeFlag === 2
-      ? 4
-      : 8;
-    let contentBytes: bigint | undefined;
-    if (contentSizeBytes > 0) {
-      contentBytes = readLittleEndian(contentSizeBytes);
-      if (contentSizeFlag === 1) contentBytes += 256n;
-      if (singleSegment) windowBytes = contentBytes;
-    }
-    if (windowBytes !== undefined && windowBytes > BigInt(maximum)) {
-      throw new Error("zstd VFS image exceeds its decompressed window bound");
-    }
-    if (contentBytes !== undefined && contentBytes > BigInt(maximum)) {
-      throw new Error("zstd VFS image exceeds its decompressed byte bound");
-    }
-
-    let frameBound = 0;
-    for (;;) {
-      requireBytes(3, "block header");
-      const header = image[offset]!
-        | (image[offset + 1]! << 8)
-        | (image[offset + 2]! << 16);
-      offset += 3;
-      const last = (header & 1) !== 0;
-      const type = (header >>> 1) & 0x03;
-      const blockBytes = header >>> 3;
-      if (type === 3 || blockBytes > ZSTD_MAX_BLOCK_BYTES) {
-        throw new Error("zstd VFS image contains an invalid block header");
-      }
-      frameBound += type === 2 ? ZSTD_MAX_BLOCK_BYTES : blockBytes;
-      if (
-        !Number.isSafeInteger(frameBound) ||
-        (contentBytes === undefined && frameBound > maximum)
-      ) {
-        throw new Error("zstd VFS image exceeds its decompressed byte bound");
-      }
-      const encodedBytes = type === 1 ? 1 : blockBytes;
-      requireBytes(encodedBytes, "block payload");
-      offset += encodedBytes;
-      if (last) break;
-    }
-    if (hasChecksum) {
-      requireBytes(4, "content checksum");
-      offset += 4;
-    }
-    if (contentBytes !== undefined && contentBytes > BigInt(frameBound)) {
-      throw new Error("zstd VFS image frame content exceeds its block bound");
-    }
-    // A compressed block may expand to at most 128 KiB, so frameBound is the
-    // only safe pre-decompression bound when the frame omits its content
-    // size. When zstd carries the exact size, use that stronger declaration:
-    // summing the per-block maximum can otherwise reject a valid frame whose
-    // declared output remains below the caller-owned lifecycle ceiling.
-    addBound(
-      contentBytes === undefined ? frameBound : Number(contentBytes),
-    );
-  }
-  if (frames === 0) {
-    throw new Error("zstd VFS image contains no data frame");
-  }
-}
-
-interface ParsedImageHeader {
-  image: Uint8Array;
-  view: DataView;
-  flags: number;
-  sabLen: number;
-}
-
-function parseImageHeader(
-  input: Uint8Array,
-  maxDecompressedBytes?: number,
-): ParsedImageHeader {
-  const image = maybeDecompressImage(input, maxDecompressedBytes);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
-    throw new Error("VFS image too small");
-  }
-
-  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
-  const magic = view.getUint32(0, true);
-  if (magic !== VFS_IMAGE_MAGIC) {
+  const length = parsed.view.getUint32(offset, true);
+  if (length > VFS_IMAGE_MAX_KERNEL_LAZY_BYTES) {
     throw new Error(
-      `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
+      `VFS image kernel lazy linkage exceeds ${VFS_IMAGE_MAX_KERNEL_LAZY_BYTES} bytes`,
     );
   }
-  const version = view.getUint32(4, true);
-  if (version !== VFS_IMAGE_VERSION) {
-    throw new Error(
-      `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
-    );
+  if (parsed.image.byteLength < offset + 4 + length) {
+    throw new Error("VFS image truncated (kernel lazy linkage payload)");
   }
-  const flags = view.getUint32(8, true);
-  const sabLen = view.getUint32(12, true);
-
-  if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
-    throw new Error("VFS image truncated");
-  }
-
-  return { image, view, flags, sabLen };
+  return parsed.image.subarray(offset + 4, offset + 4 + length);
 }
 
-function sectionOffsetAfterArchives(
-  image: Uint8Array,
-  view: DataView,
-  flags: number,
-  sabLen: number,
-): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
-  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-  const lazyLen = view.getUint32(lazyOffset, true);
-  if (lazyLen > VFS_IMAGE_MAX_LAZY_METADATA_BYTES) {
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Require that an image's two descriptions of its own lazy linkage agree.
+ *
+ * The image's trailing JSON and its binary `KLZY` section are deliberately
+ * split by AUTHORITY, not duplicated for convenience: the JSON carries the
+ * host's fetch authority (URLs, transport mirrors, integrity digests,
+ * activation modes, atomic-group seals) and `KLZY` carries the only two facts
+ * the kernel needs (a lazy file's real size, and an archive member's
+ * `(archive_id, source_path, size)`). See `./kernel-lazy-section.ts`.
+ *
+ * WHY THIS CHECK EXISTS. `saveImage` derives `KLZY` from exactly the two
+ * arrays it stringifies into the JSON sections, so `KLZY` is a pure function
+ * of that JSON for any image this writer produced. Nothing verified that on
+ * the way back in, and only the JSON is read back on restore. A restore that
+ * silently loses archive members — because a producer dropped the JSON
+ * `entries[]`, or trimmed it, or a tool rewrote one section and not the
+ * other — therefore yields a `MemoryFileSystem` that looks healthy and whose
+ * NEXT `saveImage` emits a well-formed `KLZY` with an EMPTY file table. To
+ * the kernel every archive-backed lazy stub in that image is then an ordinary
+ * 0-byte regular file: a plausible-looking product artifact that is wrong,
+ * which is precisely the silent corruption the platform-values contract
+ * forbids. Restore→mutate→save is a production path, not only a build one
+ * (`./rootfs-overlay-export.ts`, reached from the kernel's rootfs-snapshot
+ * request), so the window is real.
+ *
+ * Re-encoding the JSON and comparing bytes turns "the two halves agree" from a
+ * property of one writer into an invariant checked on every read. It is also
+ * writer-agnostic: when the kernel becomes the image writer, the same equality
+ * still has to hold, and this gate keeps holding it to that.
+ */
+/**
+ * Encode the section the JSON describes, deferring any encoder complaint.
+ *
+ * The encode runs on the freshly decoded JSON, before any importer sees it, so
+ * the comparison is against what the image SAYS rather than against whatever
+ * an importer made of it. A malformed section makes this return the error
+ * instead of throwing, so the importers' own validation — which produces the
+ * better diagnostic — still gets to speak first.
+ */
+function deriveKernelLazySection(
+  lazyEntries: readonly LazyFileEntry[],
+  archiveEntries: readonly SerializedLazyArchiveEntry[],
+): Uint8Array | Error {
+  try {
+    return encodeKernelLazySection(lazyEntries, archiveEntries);
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+function assertKernelLazySectionMatchesJson(
+  parsed: ParsedImageHeader,
+  lazyEntries: readonly LazyFileEntry[],
+  archiveEntries: readonly SerializedLazyArchiveEntry[],
+  derivedOrError: Uint8Array | Error,
+): void {
+  const declared = kernelLazySectionBytes(parsed);
+  if (declared === null) {
+    // An image that does not declare the section predates it. There is nothing
+    // here to cross-check, and the loud failure for that image already exists
+    // one layer down: `kernel_rootfs_load_image` refuses it with `EINVAL`
+    // rather than reading it best-effort, because the kernel cannot tell "no
+    // lazy files" from "lazy files recorded only in JSON I cannot read". Every
+    // image this writer produces declares the section — empty, in 20 bytes,
+    // when there is no lazy state at all — so for them this branch is
+    // unreachable and the equality below always runs.
+    return;
+  }
+  if (derivedOrError instanceof Error) {
+    // The importers accepted the JSON, so the encoder's complaint about it is
+    // the real one and belongs to the caller now.
+    throw derivedOrError;
+  }
+  const derived = derivedOrError;
+  if (!equalBytes(declared, derived)) {
     throw new Error(
-      `VFS image lazy metadata exceeds ${VFS_IMAGE_MAX_LAZY_METADATA_BYTES} bytes`,
+      "VFS image kernel lazy linkage (KLZY) does not match its JSON lazy " +
+        `sections (${declared.byteLength} bytes declared, ` +
+        `${derived.byteLength} bytes derived from the JSON). The image's two ` +
+        "descriptions of its own deferred files disagree; restoring it would " +
+        "lose deferred backings and the next save would write them out as " +
+        "empty regular files.",
     );
   }
-  if (image.byteLength < lazyOffset + 4 + lazyLen) {
-    throw new Error("VFS image truncated (lazy metadata section)");
-  }
-  const archiveOffset = lazyOffset + 4 + lazyLen;
-  let metadataOffset = archiveOffset;
-
-  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-    if (image.byteLength < archiveOffset + 4) {
-      throw new Error("VFS image truncated (lazy archive section)");
-    }
-    const archiveLen = view.getUint32(archiveOffset, true);
-    if (archiveLen > VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES) {
-      throw new Error(
-        `VFS image lazy archive metadata exceeds ` +
-          `${VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES} bytes`,
-      );
-    }
-    if (image.byteLength < archiveOffset + 4 + archiveLen) {
-      throw new Error("VFS image truncated (lazy archive payload)");
-    }
-    metadataOffset = archiveOffset + 4 + archiveLen;
-  }
-
-  return { lazyLen, archiveOffset, metadataOffset };
 }
 
 function decodeJsonSection(bytes: Uint8Array, label: string): unknown {
@@ -4553,7 +4331,33 @@ export class MemoryFileSystem implements FileSystemBackend {
   private importLazyEntriesInternal(
     entries: LazyFileEntry[],
     trustedLegacySnapshot: boolean,
+    /**
+     * Treat an entry that resolves to nothing as CORRUPTION rather than as an
+     * entry that has simply stopped applying.
+     *
+     * Set only when restoring an image, where the invariant is provable rather
+     * than hoped for: `saveImage` reconciles its lazy entries against a
+     * freshly snapshotted `identityState()` and only THEN serializes them, so
+     * every entry a well-formed image carries resolves in that same image's
+     * body by construction. A lazy file the overlay materialized or deleted is
+     * dropped at save time and never reaches the JSON. So at restore there is
+     * no legitimate "no longer lazy" case left to tolerate, and a mismatch
+     * means the image's description of its deferred files disagrees with its
+     * own body.
+     *
+     * The cost of tolerating it is total and silent: the entry is discarded,
+     * its URL goes with it, and the file survives as a zero-byte regular file
+     * whose real bytes nothing can ever fetch again.
+     *
+     * This is deliberately a DIFFERENT axis from the `KLZY`-versus-JSON check.
+     * That one compares the image's two descriptions of its deferred files
+     * against each other, so both can agree perfectly and both still disagree
+     * with the body. Agreement between two descriptions is not agreement with
+     * the thing described.
+     */
+    imageIdentityIsAuthoritative = false,
   ): void {
+    const unresolved: LazyFileEntry[] = [];
     for (const e of entries) {
       const isLegacy =
         e.generation === undefined || e.dataSequence === undefined;
@@ -4581,7 +4385,12 @@ export class MemoryFileSystem implements FileSystemBackend {
         identity ??= st;
         validPaths.add(path);
       }
-      if (!identity || validPaths.size === 0) continue;
+      if (!identity || validPaths.size === 0) {
+        // A legacy entry carries no generation or data sequence to check, so
+        // "did not resolve" is genuinely ambiguous for it and stays tolerated.
+        if (imageIdentityIsAuthoritative && !isLegacy) unresolved.push(e);
+        continue;
+      }
       const primaryPath = validPaths.has(e.path)
         ? e.path
         : validPaths.values().next().value!;
@@ -4596,6 +4405,28 @@ export class MemoryFileSystem implements FileSystemBackend {
           url: e.url,
           size: e.size,
         },
+      );
+    }
+    if (unresolved.length > 0) {
+      const shown = unresolved
+        .slice(0, 5)
+        .map(
+          (e) =>
+            `${e.path} (declared inode ${e.ino}/gen ${e.generation}/seq ` +
+            `${e.dataSequence}, ${e.size} bytes)`,
+        )
+        .join(", ");
+      const more =
+        unresolved.length > 5 ? ` and ${unresolved.length - 5} more` : "";
+      throw new Error(
+        `VFS image declares ${unresolved.length} deferred file(s) whose inode ` +
+          `identity does not exist in the image's own filesystem body: ` +
+          `${shown}${more}. The image's lazy metadata and its filesystem ` +
+          `disagree about which inode backs each deferred file, so restoring ` +
+          `it would drop those files' fetch URLs and leave them as empty ` +
+          `regular files that can never be fetched again. This usually means ` +
+          `the body was written by one producer and the lazy metadata carried ` +
+          `over from another, which assigns different inode numbers.`,
       );
     }
   }
@@ -5074,7 +4905,38 @@ export class MemoryFileSystem implements FileSystemBackend {
     trustedLegacySnapshot: boolean,
     requireDiscriminator: boolean,
     sealedImportTrust: "reject" | "pending" | "verified",
+    /**
+     * Treat an archive member that resolves to nothing as CORRUPTION rather
+     * than as a member that has simply stopped applying. Set only when
+     * restoring an image, for the same reason as the file-entry gate: a
+     * well-formed image's members all resolve in its own body, because
+     * `saveImage` validates them against a freshly snapshotted
+     * `identityState()` before serializing.
+     *
+     * This path carries ~100x what the file-entry path does — production
+     * images hold 79 lazy files against roughly 7,467 archive members — and
+     * measurement shows EVERY archive in every production image is the
+     * non-generic shape, which is the one that silently dropped. The loud
+     * handling below guards generic trees, of which production ships none.
+     *
+     * EXPECTED RETIREMENT. This gate should become unrepresentable once
+     * archive descriptions move into the filesystem body alongside the
+     * per-file ones (see `crates/runtime-core/src/sffs_deferred.rs`). With one
+     * author there is no second description to disagree, exactly as for the
+     * `KLZY`-versus-JSON check. Retire it then; do not leave it standing out
+     * of caution once the condition is met.
+     */
+    imageIdentityIsAuthoritative = false,
   ): void {
+    const unresolvedMembers: Array<{ vfsPath: string; ino: number; size: number }> =
+      [];
+    const recordUnresolved = (e: {
+      vfsPath: string;
+      ino: number;
+      size: number;
+    }): void => {
+      unresolvedMembers.push({ vfsPath: e.vfsPath, ino: e.ino, size: e.size });
+    };
     const serialized = requireLazyTreeArray(
       serializedValue,
       "Serialized lazy archive groups",
@@ -5151,6 +5013,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} is missing from the filesystem`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (st.ino !== e.ino) {
@@ -5159,6 +5022,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} has a different inode`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (e.generation !== undefined && st.generation !== e.generation) {
@@ -5167,6 +5031,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} has a different generation`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (e.dataSequence === undefined) {
@@ -5184,6 +5049,7 @@ export class MemoryFileSystem implements FileSystemBackend {
                 `Serialized lazy tree stub ${e.vfsPath} has a different data sequence`,
               );
             }
+            if (imageIdentityIsAuthoritative) recordUnresolved(e);
             continue;
           }
           if (genericTree) {
@@ -5419,6 +5285,26 @@ export class MemoryFileSystem implements FileSystemBackend {
         );
       }
     }
+    if (unresolvedMembers.length > 0) {
+      const shown = unresolvedMembers
+        .slice(0, 5)
+        .map((m) => `${m.vfsPath} (declared inode ${m.ino}, ${m.size} bytes)`)
+        .join(", ");
+      const more =
+        unresolvedMembers.length > 5
+          ? ` and ${unresolvedMembers.length - 5} more`
+          : "";
+      throw new Error(
+        `VFS image declares ${unresolvedMembers.length} lazy archive member(s) ` +
+          `whose inode identity does not exist in the image's own filesystem ` +
+          `body: ${shown}${more}. The image's archive metadata and its ` +
+          `filesystem disagree about which inode backs each member, so ` +
+          `restoring it would drop those members' archive linkage and leave ` +
+          `them as empty regular files that can never be fetched again. This ` +
+          `means the body and the archive metadata came from different ` +
+          `producers, which assign different inode numbers.`,
+      );
+    }
     for (const [key, group] of plannedInodes) {
       this.lazyArchiveInodes.set(key, group);
     }
@@ -5581,6 +5467,33 @@ export class MemoryFileSystem implements FileSystemBackend {
     validateCompleteSerializedLazyArchiveCollection(serialized);
     this.validatePendingLazyTreeNamespaceState(identities);
     return serialized;
+  }
+
+  /**
+   * A LIVE view of the SFFS filesystem bytes this instance owns — the same
+   * bytes a VFS image carries at `VFS_IMAGE_HEADER_SIZE`, and the same bytes
+   * `saveImage` copies out of.
+   *
+   * WHY this is exposed. Since the boot cutover the kernel owns `/`: it mounts
+   * the `/` image's filesystem, walks it, and (as of the image-backed byte
+   * route) reads every base file's CONTENT out of it too, through its own SFFS
+   * reader. The kernel therefore needs the image body for the whole session,
+   * not just for the boot walk. Handing it this view instead of a retained copy
+   * of the container keeps ONE copy of a 16-256 MiB body in the worker rather
+   * than two, which matters most on the host where it matters most (a browser
+   * switching VFS images is the tightest memory constraint this platform has).
+   *
+   * It is a view, not a snapshot: no quiescence check, no lock clearing, no
+   * copy. Use {@link saveImage} for anything that must be a portable artifact.
+   * A reader must be synchronous with respect to this instance's own mutations
+   * — see `KERNEL_IMAGE_WINDOW` in `host/src/kernel-worker.ts` for the ordering
+   * the kernel's reads rely on.
+   *
+   * Re-derived per call because the underlying buffer is growable: a view taken
+   * once would stop tracking a grown buffer's length.
+   */
+  imageBodyBytes(): Uint8Array {
+    return new Uint8Array(this.fs.buffer);
   }
 
   /** Export all pending lazy archive groups for transfer to another instance. */
@@ -7063,17 +6976,29 @@ export class MemoryFileSystem implements FileSystemBackend {
     const metadataJson = encodeMetadata(metadata);
     const hasMetadata = metadataJson.byteLength > 0;
 
-    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson | u32 metadataLen | metadataJson
+    // The kernel-facing lazy linkage is written in binary alongside the JSON
+    // that still carries the host's fetch authority (URLs, transports,
+    // integrity, activation, seals). See ./kernel-lazy-section.ts for why the
+    // two halves are split this way. It is emitted unconditionally, so its
+    // presence is a positive assertion that this image's lazy linkage is
+    // readable without a JSON parser -- an image with no lazy state at all
+    // still says so, in 20 bytes, rather than being indistinguishable from an
+    // image written before the section existed.
+    const kernelLazyJson = encodeKernelLazySection(lazyEntries, archiveEntries);
+
+    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson | u32 metadataLen | metadataJson | u32 kernelLazyLen | kernelLazy
     // Archive and metadata sections are only appended when their flags are set.
     const archiveSectionSize = hasArchives ? 4 + archiveJson.byteLength : 0;
     const metadataSectionSize = hasMetadata ? 4 + metadataJson.byteLength : 0;
+    const kernelLazySectionSize = 4 + kernelLazyJson.byteLength;
     const totalSize =
       VFS_IMAGE_HEADER_SIZE +
       sabBytes.byteLength +
       4 +
       lazyJson.byteLength +
       archiveSectionSize +
-      metadataSectionSize;
+      metadataSectionSize +
+      kernelLazySectionSize;
     const image = new Uint8Array(totalSize);
     const view = new DataView(image.buffer);
 
@@ -7085,7 +7010,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       (hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0) |
         (hasArchives ? VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES : 0) |
         (hasArchives ? VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES : 0) |
-        (hasMetadata ? VFS_IMAGE_FLAG_HAS_METADATA : 0),
+        (hasMetadata ? VFS_IMAGE_FLAG_HAS_METADATA : 0) |
+        VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
       true,
     );
     view.setUint32(12, sabBytes.byteLength, true);
@@ -7108,12 +7034,18 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     // Metadata
+    const metadataOffset =
+      lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
     if (hasMetadata) {
-      const metadataOffset =
-        lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
       view.setUint32(metadataOffset, metadataJson.byteLength, true);
       image.set(metadataJson, metadataOffset + 4);
     }
+
+    // Kernel-facing lazy linkage, last so every reader that stops at the
+    // metadata section is unaffected by it.
+    const kernelLazyOffset = metadataOffset + metadataSectionSize;
+    view.setUint32(kernelLazyOffset, kernelLazyJson.byteLength, true);
+    image.set(kernelLazyJson, kernelLazyOffset + 4);
 
     return image;
   }
@@ -7147,6 +7079,22 @@ export class MemoryFileSystem implements FileSystemBackend {
         metadataOffset + 4 + metadataLen,
       ),
     );
+  }
+
+  /**
+   * Read an image's kernel-facing lazy linkage without materializing the
+   * filesystem SAB. `null` for an image written before the section existed:
+   * that is a legitimate older image, not a corrupt one. A declared section
+   * over truncated or self-inconsistent framing throws.
+   *
+   * Mirrors `sffs::kernel_lazy_span` + `klzy::decode_kernel_lazy_linkage` in
+   * `crates/runtime-core`.
+   */
+  static readImageKernelLazyLinkage(
+    image: Uint8Array,
+  ): KernelLazyLinkage | null {
+    const bytes = kernelLazySectionBytes(parseImageHeader(image));
+    return bytes === null ? null : decodeKernelLazySection(bytes);
   }
 
   /**
@@ -7235,17 +7183,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     const flags = parsed.flags;
     const sabLen = parsed.sabLen;
     const sections = sectionOffsetAfterArchives(image, view, flags, sabLen);
-    if (!(flags & VFS_IMAGE_FLAG_HAS_LAZY) && sections.lazyLen !== 0) {
-      throw new Error("VFS image has lazy metadata without its format flag");
-    }
-    if (
-      (flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES) &&
-      !(flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES)
-    ) {
-      throw new Error(
-        "VFS image has typed lazy-archive metadata without its archive flag",
-      );
-    }
+    assertSectionFlagsConsistent(flags, sections);
 
     // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
     // versions still expose only the 1-arg constructor even on runtimes that
@@ -7273,46 +7211,53 @@ export class MemoryFileSystem implements FileSystemBackend {
       metadata,
     );
 
-    // Restore lazy entries
-    const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
-    const lazyLen = sections.lazyLen;
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY) {
-      if (lazyLen > 0) {
-        const lazyBytes = image.subarray(
-          lazyOffset + 4,
-          lazyOffset + 4 + lazyLen,
-        );
-        const entries = requireLazyTreeArray(
-          decodeJsonSection(lazyBytes, "VFS image lazy metadata"),
-          "VFS image lazy entries",
-          0,
-          MAX_LAZY_TREE_ENTRIES,
-        ) as LazyFileEntry[];
-        mfs.importLazyEntriesInternal(entries, true);
-      }
+    // Decode both JSON halves before importing either. The binary `KLZY`
+    // section is re-derived from these PRISTINE arrays, so that the comparison
+    // below cannot be perturbed by anything an importer does to the values it
+    // is handed. See `assertKernelLazySectionMatchesJson` for why it is
+    // compared at all.
+    const lazyBytes = lazySectionBytes(parsed, sections);
+    let lazyEntries: LazyFileEntry[] = [];
+    if (lazyBytes !== null) {
+      lazyEntries = requireLazyTreeArray(
+        decodeJsonSection(lazyBytes, "VFS image lazy metadata"),
+        "VFS image lazy entries",
+        0,
+        MAX_LAZY_TREE_ENTRIES,
+      ) as LazyFileEntry[];
     }
 
-    // Restore lazy archive groups
-    if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
-      const archiveOffset = sections.archiveOffset;
-      const archiveLen = view.getUint32(archiveOffset, true);
-      if (archiveLen > 0) {
-        const archiveBytes = image.subarray(
-          archiveOffset + 4,
-          archiveOffset + 4 + archiveLen,
-        );
-        const entries = decodeJsonSection(
-          archiveBytes,
-          "VFS image lazy archive metadata",
-        );
-        mfs.importLazyArchiveEntriesInternal(
-          entries,
-          true,
-          Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
-          "pending",
-        );
-      }
+    const archiveBytes = archiveSectionBytes(parsed, sections);
+    const archiveValue: unknown = archiveBytes === null
+      ? null
+      : decodeJsonSection(archiveBytes, "VFS image lazy archive metadata");
+    const archiveEntries = Array.isArray(archiveValue)
+      ? (archiveValue as SerializedLazyArchiveEntry[])
+      : [];
+    const derivedKernelLazy = deriveKernelLazySection(lazyEntries, archiveEntries);
+
+    if (lazyEntries.length > 0) {
+      mfs.importLazyEntriesInternal(lazyEntries, true, true);
     }
+    if (archiveValue !== null) {
+      mfs.importLazyArchiveEntriesInternal(
+        archiveValue,
+        true,
+        Boolean(flags & VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES),
+        "pending",
+        true,
+      );
+    }
+
+    // Deliberately after the imports: their validation produces the better
+    // diagnostic for a malformed section, and only a JSON the importers
+    // accepted can meaningfully be compared against the binary one.
+    assertKernelLazySectionMatchesJson(
+      parsed,
+      lazyEntries,
+      archiveEntries,
+      derivedKernelLazy,
+    );
 
     return mfs;
   }
@@ -7358,13 +7303,16 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   open(path: string, flags: number, mode: number): number {
     if (
-      (flags & O_TRUNC) === 0 &&
-      !((flags & O_CREAT) !== 0 && (flags & O_EXCL) !== 0)
+      (flags & OPEN_FLAGS.O_TRUNC) === 0 &&
+      !(
+        (flags & OPEN_FLAGS.O_CREAT) !== 0 &&
+        (flags & OPEN_FLAGS.O_EXCL) !== 0
+      )
     ) {
       this.guardSynchronousLazyAccess(path);
     }
     const handle = this.fs.open(path, flags, mode);
-    if ((flags & O_TRUNC) !== 0) {
+    if ((flags & OPEN_FLAGS.O_TRUNC) !== 0) {
       // O_TRUNC
       this.invalidateLazyData(this.fs.fstat(handle));
     }
@@ -7462,8 +7410,10 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   fpathconf(handle: number, name: number): PathconfValue {
-    const stat = this.fstat(handle);
-    return filesystemPathconf(stat, name, {
+    // Validate the live descriptor, then answer only what this backend owns;
+    // every other name is the kernel's (see `backendPathconf`).
+    this.fstat(handle);
+    return backendPathconf(name, {
       supportsSymlinks: true,
       timestampResolutionNs: 1_000_000,
     });
@@ -7511,8 +7461,8 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const stat = this.stat(path);
-    return filesystemPathconf(stat, name, {
+    this.stat(path);
+    return backendPathconf(name, {
       supportsSymlinks: true,
       timestampResolutionNs: 1_000_000,
     });
@@ -7874,11 +7824,6 @@ export class MemoryFileSystem implements FileSystemBackend {
     fs.utimensat(path, atimeSec, atimeNsec, mtimeSec, mtimeNsec);
   }
 
-  // access: check if path exists by stat'ing it (stat throws on error)
-  access(path: string, _mode: number): void {
-    this.fs.stat(path);
-  }
-
   utimensat(
     path: string,
     atimeSec: number,
@@ -8013,7 +7958,6 @@ const intrinsicImmutableProductSnapshot = (
   MemoryFileSystem.prototype as unknown as ImmutableProductSnapshotSource
 ).snapshotForImmutableProduct;
 const intrinsicMemoryFileSystemOpen = MemoryFileSystem.prototype.open;
-const intrinsicMemoryFileSystemAccess = MemoryFileSystem.prototype.access;
 
 function immutableProductReadonlyFailure(): never {
   throw new SFSError(EROFS, "EROFS: Read-only file system");
@@ -8103,22 +8047,6 @@ export function createImmutableProductBackend(
           ) as number;
         };
       }
-      if (property === "access") {
-        return (path: string, mode: number): void => {
-          const normalizedMode = normalizeImmutableProductInteger(
-            mode,
-            "immutable product access mode",
-          );
-          if ((normalizedMode & IMMUTABLE_PRODUCT_W_OK) !== 0) {
-            immutableProductReadonlyFailure();
-          }
-          intrinsicApply(
-            intrinsicMemoryFileSystemAccess,
-            snapshot,
-            [path, normalizedMode],
-          );
-        };
-      }
       const operation = intrinsicApply(
         intrinsicMapGet,
         IMMUTABLE_PRODUCT_READ_OPERATIONS,
@@ -8193,6 +8121,3 @@ export function resolveMountSetIdCapability(
 // static import is bundled by Vite for browser pages and resolved by
 // Node for tests + build scripts (host/package.json + apps/browser-demos/
 // package.json both declare fzstd, so it's always installed).
-function decompressZstd(image: Uint8Array): Uint8Array {
-  return zstdDecompress(image);
-}

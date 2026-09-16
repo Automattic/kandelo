@@ -6,6 +6,9 @@ import {
   PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE,
 } from "./generated/abi";
 
+/** Bytes one pthread control slot occupies in a process address space. */
+export const THREAD_SLOT_BYTES = PAGES_PER_THREAD * WASM_PAGE_SIZE;
+
 export interface ThreadAllocation {
   /** Start page of the pthread slot. */
   slotStartPage: number;
@@ -21,166 +24,73 @@ export interface ThreadAllocation {
   tlsAllocAddr: number;
 }
 
-export interface ThreadPageAllocatorOptions {
-  /** First page whose start address begins a pthread slot. */
-  firstSlotStartPage?: number;
-  /** @deprecated First page whose start address holds a thread channel. */
-  firstBasePage?: number;
-  /** Exclusive upper page bound for control-arena allocations. */
-  maxPageExclusive: number;
-  /** Pointer width of the process memory, used when growing memory64. */
-  ptrWidth?: 4 | 8;
-  /** Maximum concurrent pthread slots for this process. */
-  reservedSlots?: number;
-  /** Dynamically reserve a fresh pthread slot start page when no free slot exists. */
-  reserveSlotStartPage?: () => number;
-}
-
 /**
- * Manages pthread channel/TLS allocation within a process WebAssembly.Memory.
+ * The byte offsets inside a pthread control slot placed at `slotStartAddr`.
  *
- * New process launches reserve only the main-thread control pages. Pthread
- * slots are either allocated from a fixed compatibility arena or dynamically
- * reserved in the process address space by the kernel worker.
- *
- * Per-thread slot layout:
+ * Slot layout, relative to the slot start:
  *   slotStart+0 - TLS/control page
  *   slotStart+1 - fork-save/scratch page
  *   slotStart+2 - syscall channel primary page
  *   slotStart+3 - syscall channel spill page
+ *
+ * These are ABI constants, read from the generated bindings rather than
+ * restated, so this host and the native host derive the same offsets from the
+ * one definition in `wasm-posix-shared`.
  */
-export class ThreadPageAllocator {
-  private nextPage: number;
-  private freePages: number[] = [];
-  private readonly maxPageExclusive: number;
-  private readonly direction: "up" | "down";
-  private readonly ptrWidth: 4 | 8;
-  private readonly reservedSlots: number;
-  private readonly reserveSlotStartPage?: () => number;
-  private activeCount = 0;
-  private readonly hostControlPages = new Set<number>();
-
-  constructor(options: ThreadPageAllocatorOptions);
-  constructor(maxPages: number);
-  constructor(options: ThreadPageAllocatorOptions | number) {
-    if (typeof options === "number") {
-      // Back-compatibility for existing external users of the old allocator.
-      this.nextPage =
-        options - 2 - PAGES_PER_THREAD - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
-      this.maxPageExclusive = options;
-      this.direction = "down";
-      this.ptrWidth = 4;
-      this.reservedSlots = Math.max(0, Math.floor(options / PAGES_PER_THREAD));
-      this.reserveSlotStartPage = undefined;
-    } else {
-      if (options.firstSlotStartPage !== undefined) {
-        this.nextPage = options.firstSlotStartPage;
-      } else if (options.firstBasePage !== undefined) {
-        this.nextPage =
-          options.firstBasePage - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
-      } else {
-        throw new Error("ThreadPageAllocator requires firstSlotStartPage");
-      }
-      this.maxPageExclusive = options.maxPageExclusive;
-      this.direction = "up";
-      this.ptrWidth = options.ptrWidth ?? 4;
-      this.reservedSlots = options.reservedSlots ?? Math.max(
-        0,
-        Math.floor((this.maxPageExclusive - this.nextPage) / PAGES_PER_THREAD),
-      );
-      this.reserveSlotStartPage = options.reserveSlotStartPage;
-    }
+export function threadSlotOffsets(slotStartAddr: number): ThreadAllocation {
+  if (
+    !Number.isSafeInteger(slotStartAddr)
+    || slotStartAddr <= 0
+    || slotStartAddr % WASM_PAGE_SIZE !== 0
+  ) {
+    throw new Error(`invalid pthread control slot address ${slotStartAddr}`);
   }
+  const slotStartPage = slotStartAddr / WASM_PAGE_SIZE;
+  const tlsOffset =
+    (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
+  const forkSaveOffset =
+    (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE) * WASM_PAGE_SIZE;
+  const channelOffset =
+    (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
+  return {
+    slotStartPage,
+    basePage: slotStartPage,
+    tlsOffset,
+    forkSaveOffset,
+    channelOffset,
+    tlsAllocAddr: tlsOffset,
+  };
+}
 
-  /** Allocate pages for a new thread. Zeros the channel and TLS regions. */
-  allocate(memory: WebAssembly.Memory): ThreadAllocation {
-    return this.allocateSlot(memory, false);
-  }
+/**
+ * Make a pthread control slot the kernel has placed usable by a thread.
+ *
+ * WHERE the slot goes is the kernel's decision: `sys_clone` reserves it from
+ * the same address-space allocator that answers `mmap`, so it can see every
+ * mapping, every other slot, and the brk heap. This host is told the address
+ * (`kernel_thread_slot_addr`, or `kernel_reserve_host_region` for a control
+ * slot outside the pthread quota) and does the two things only a host can do:
+ * grow the process `WebAssembly.Memory` until the range is addressable, and
+ * zero it.
+ *
+ * Both hosts previously carried their own placement arithmetic. The copies
+ * disagreed -- a fixed 16-slot arena natively against dynamic reservations
+ * here -- which made the native host's concurrent-thread ceiling its arena
+ * size rather than the program's `__wasm_posix_thread_slots` declaration.
+ */
+export function materializeThreadSlot(
+  memory: WebAssembly.Memory,
+  slotStartAddr: number,
+  ptrWidth: 4 | 8 = 4,
+): ThreadAllocation {
+  const slot = threadSlotOffsets(slotStartAddr);
+  growMemoryToCover(memory, slotStartAddr + THREAD_SLOT_BYTES, ptrWidth);
 
-  /**
-   * Allocate a host-owned control slot outside the guest pthread quota.
-   *
-   * WHY: a single-threaded executable can truthfully declare zero pthread
-   * slots and still call vfork. Its borrowing child needs an independent
-   * syscall channel, replay prefix, and scratch page, but that platform state
-   * must neither require nor consume capacity promised to pthread_create.
-   */
-  allocateHostControl(memory: WebAssembly.Memory): ThreadAllocation {
-    return this.allocateSlot(memory, true);
-  }
+  // Zero channel, TLS, and the per-thread fork save buffer.
+  new Uint8Array(memory.buffer, slot.channelOffset, CH_TOTAL_SIZE).fill(0);
+  new Uint8Array(memory.buffer, slot.tlsOffset, WASM_PAGE_SIZE).fill(0);
+  new Uint8Array(memory.buffer, slot.forkSaveOffset, WASM_PAGE_SIZE).fill(0);
+  new Uint8Array(memory.buffer, slot.forkSaveOffset, FORK_SAVE_BUFFER_SIZE).fill(0);
 
-  private allocateSlot(
-    memory: WebAssembly.Memory,
-    hostControl: boolean,
-  ): ThreadAllocation {
-    if (!hostControl && this.activeCount >= this.reservedSlots) {
-      throw new Error(
-        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
-          `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
-          "or increase the host defaultThreadSlots setting.",
-      );
-    }
-
-    let slotStartPage: number;
-    if (this.freePages.length > 0) {
-      slotStartPage = this.freePages.pop()!;
-    } else if (this.reserveSlotStartPage) {
-      slotStartPage = this.reserveSlotStartPage();
-    } else {
-      slotStartPage = this.nextPage;
-      if (this.direction === "up") {
-        this.nextPage += PAGES_PER_THREAD;
-      } else {
-        this.nextPage -= PAGES_PER_THREAD;
-      }
-    }
-
-    if (!this.reserveSlotStartPage && (
-      slotStartPage < 0 ||
-      slotStartPage + PAGES_PER_THREAD > this.maxPageExclusive
-    )) {
-      throw new Error(
-        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
-          `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
-          "or increase the host defaultThreadSlots setting.",
-      );
-    }
-
-    const tlsOffset =
-      (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE) * WASM_PAGE_SIZE;
-    const forkSaveOffset =
-      (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE) * WASM_PAGE_SIZE;
-    const channelOffset =
-      (slotStartPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE) * WASM_PAGE_SIZE;
-    growMemoryToCover(
-      memory,
-      (slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE,
-      this.ptrWidth,
-    );
-
-    // Zero channel, TLS, and the per-thread fork save buffer.
-    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
-    new Uint8Array(memory.buffer, tlsOffset, WASM_PAGE_SIZE).fill(0);
-    new Uint8Array(memory.buffer, forkSaveOffset, WASM_PAGE_SIZE).fill(0);
-    new Uint8Array(memory.buffer, forkSaveOffset, FORK_SAVE_BUFFER_SIZE).fill(0);
-
-    if (hostControl) this.hostControlPages.add(slotStartPage);
-    else this.activeCount++;
-    return {
-      slotStartPage,
-      basePage: slotStartPage,
-      tlsOffset,
-      forkSaveOffset,
-      channelOffset,
-      tlsAllocAddr: tlsOffset,
-    };
-  }
-
-  /** Return pages to the free list after thread exit. */
-  free(slotStartPage: number): void {
-    this.freePages.push(slotStartPage);
-    if (!this.hostControlPages.delete(slotStartPage)) {
-      this.activeCount = Math.max(0, this.activeCount - 1);
-    }
-  }
+  return slot;
 }

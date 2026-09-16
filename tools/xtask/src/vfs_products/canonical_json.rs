@@ -90,7 +90,20 @@ pub fn validate_stable_id(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn validate_repo_path(root: &Path, value: &str) -> Result<PathBuf, String> {
+/// Is this string a safe repository-relative path?
+///
+/// SHAPE ONLY. Split out from [`validate_repo_path`] because "is this document
+/// well formed" and "are the things it names present" are different questions,
+/// and answering the second while being asked the first means a document cannot
+/// be validated without the whole repository around it. A producer checking
+/// what it is about to emit, or a schema check in CI, wants exactly this half.
+///
+/// Refuses a backslash and a NUL. On POSIX `a\b` is one legal filename, so a
+/// rule that SPLIT on the backslash — as the TypeScript this replaces does —
+/// would disagree about what the path is rather than about how strict to be.
+/// A NUL truncates the path in the first C API that receives it, so a name
+/// carrying one means something different downstream than it says here.
+pub fn validate_repo_path_shape(value: &str) -> Result<PathBuf, String> {
     if value.is_empty() || value.len() > 4_096 {
         return Err("repository path must contain 1 through 4096 UTF-8 bytes".to_string());
     }
@@ -103,7 +116,6 @@ pub fn validate_repo_path(root: &Path, value: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("repository path is not normalized: {value:?}"));
     }
-
     let relative = Path::new(value);
     if relative
         .components()
@@ -111,6 +123,16 @@ pub fn validate_repo_path(root: &Path, value: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("repository path is not normalized: {value:?}"));
     }
+    Ok(relative.to_path_buf())
+}
+
+/// The shape check, plus: every component exists and none is a symbolic link.
+///
+/// The second half is what a caller about to READ the path needs, and it is
+/// deliberately not what a caller merely validating a document needs.
+pub fn validate_repo_path(root: &Path, value: &str) -> Result<PathBuf, String> {
+    let relative = validate_repo_path_shape(value)?;
+    let relative = relative.as_path();
 
     let mut current = root.to_path_buf();
     for component in relative.components() {

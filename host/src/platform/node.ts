@@ -28,11 +28,11 @@ import {
   NativePositionedWriteHandles,
   openNativeBackingFile,
 } from "../native-positioned-write";
-import { filesystemPathconf } from "../pathconf";
+import { backendPathconf } from "../pathconf";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { zeroCapacityStatfs } from "../statfs";
 import { ST_NOSUID } from "../vfs/types";
-import { OPEN_FLAGS } from "../generated/abi";
+import { AT_FLAGS, OPEN_FLAGS } from "../generated/abi";
 import { NativeMetadataOverlay } from "./native-metadata";
 
 const UTIME_NOW = 0x3fffffff;
@@ -44,9 +44,31 @@ function makeFsError(code: string, message: string): Error & { code: string } {
   return error;
 }
 
+/**
+ * Base for directory-handle ids.
+ *
+ * A file handle here is a real OS file descriptor, and the kernel now closes a
+ * directory with the same `host_close` it uses for a file, so the two id spaces
+ * must not overlap. Descriptors are small positives bounded by the process's
+ * open-file limit; starting directory ids above 2^30 puts them out of reach of
+ * any attainable limit while staying an exact JS integer. (The previous
+ * counter started at 1 and so could collide with stdout.)
+ */
+const DIR_HANDLE_BASE = 0x4000_0000;
+
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
-  private nextDirHandle = 1;
+  /**
+   * Open directory anchors: handle → the guest path that directory names.
+   *
+   * The kernel resolves the POSIX namespace itself and asks this host to
+   * resolve one component relative to a handle it issued, so an anchor is all
+   * the context a `*at` call needs. `rewritePath` still maps the joined guest
+   * path to a native one, which is what keeps `/dev/shm` and Windows drive
+   * translation working.
+   */
+  private dirAnchors = new Map<number, string>();
+  private nextDirHandle = DIR_HANDLE_BASE;
   private fdPositions = new Map<number, HostFileOffset>();
   private readonly positionedWrites = new NativePositionedWriteHandles();
   // Offset from hrtime (monotonic) to epoch, computed once at startup.
@@ -134,6 +156,15 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   close(handle: number): number {
+    // A directory closes with the same call as a file: the kernel has one
+    // handle concept, not two. Directory ids come from a disjoint high band
+    // (see DIR_HANDLE_BASE) so they can never be mistaken for a descriptor.
+    if (this.dirAnchors.has(handle)) {
+      this.dirHandles.get(handle)?.closeSync();
+      this.dirHandles.delete(handle);
+      this.dirAnchors.delete(handle);
+      return 0;
+    }
     try {
       this.positionedWrites.close(handle);
     } finally {
@@ -249,7 +280,21 @@ export class NodePlatformIO implements PlatformIO {
   // tools that compare ownership against their own euid (git's
   // "dubious ownership" check, nginx config ownership, etc.) see a
   // match. Same policy as HostFileSystem.
+  // Handle-taking operations that a *directory* handle must also answer.
+  //
+  // A directory handle here is an anchor — a guest path — not an OS
+  // descriptor, so `fstatSync` would reject it. These resolve the directory
+  // case through the path form. `read`/`write`/`seek`/`ftruncate` are
+  // meaningless on a directory and keep rejecting it, which is truthful for a
+  // handle with no byte stream.
+
   fstat(handle: number): StatResult {
+    const anchor = this.dirAnchors.get(handle);
+    if (anchor !== undefined) {
+      return this.metadata.toStatResult(
+        fs.statSync(this.rewritePath(anchor), { bigint: true }),
+      );
+    }
     return this.metadata.toStatResult(fs.fstatSync(handle, { bigint: true }));
   }
 
@@ -263,16 +308,14 @@ export class NodePlatformIO implements PlatformIO {
 
   fpathconf(handle: number, name: number): PathconfValue {
     // Validate the live descriptor rather than re-resolving its original
-    // pathname. This keeps fpathconf valid after rename or unlink.
-    const stat = this.fstat(handle);
-    return filesystemPathconf(
-      stat,
-      name,
-      {
-        supportsSymlinks: true,
-        timestampResolutionNs: 1_000_000,
-      },
-    );
+    // pathname. This keeps fpathconf valid after rename or unlink. Node has no
+    // `fpathconf(3)` binding, so every name beyond this backend's own two
+    // capabilities is refused with ENOSYS and answered by the kernel.
+    this.fstat(handle);
+    return backendPathconf(name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   fileIdentity(_path: string, dev: bigint, ino: bigint): string | null {
@@ -306,18 +349,11 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   pathconf(path: string, name: number): PathconfValue {
-    const nativePath = this.rewritePath(path);
-    const stat = this.metadata.toStatResult(
-      fs.statSync(nativePath, { bigint: true }),
-    );
-    return filesystemPathconf(
-      stat,
-      name,
-      {
-        supportsSymlinks: true,
-        timestampResolutionNs: 1_000_000,
-      },
-    );
+    fs.statSync(this.rewritePath(path), { bigint: true });
+    return backendPathconf(name, {
+      supportsSymlinks: true,
+      timestampResolutionNs: 1_000_000,
+    });
   }
 
   mkdir(path: string, mode: number): void {
@@ -387,13 +423,6 @@ export class NodePlatformIO implements PlatformIO {
     );
   }
 
-  access(path: string, mode: number): void {
-    this.metadata.access(
-      fs.statSync(this.rewritePath(path), { bigint: true }),
-      mode,
-    );
-  }
-
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
     const nativePath = this.rewritePath(path);
     if (atimeNsec === UTIME_OMIT && mtimeNsec === UTIME_OMIT) return;
@@ -420,18 +449,138 @@ export class NodePlatformIO implements PlatformIO {
     );
   }
 
-  opendir(path: string): number {
-    const dir = fs.opendirSync(this.rewritePath(path));
+  private openDirAnchor(path: string): number {
     const handle = this.nextDirHandle++;
-    this.dirHandles.set(handle, dir);
+    this.dirAnchors.set(handle, path);
     return handle;
+  }
+
+  private anchorPath(dirHandle: number): string {
+    const path = this.dirAnchors.get(dirHandle);
+    if (path === undefined) {
+      throw makeFsError("EBADF", `invalid directory handle ${dirHandle}`);
+    }
+    return path;
+  }
+
+  private at(dirHandle: number, name: string): string {
+    const dir = this.anchorPath(dirHandle);
+    if (name === "." || name === "") return dir;
+    return dir === "/" ? "/" + name : dir + "/" + name;
+  }
+
+  /**
+   * This host serves `/` itself rather than sibling mounts under an
+   * overlay-owned `/`, so it publishes one anchor: the root.
+   */
+  foreignMountRoots(): { prefix: string; handle: number }[] {
+    return [{ prefix: "/", handle: this.openDirAnchor("/") }];
+  }
+
+  openat(dirHandle: number, name: string, flags: number, mode: number): number {
+    const path = this.at(dirHandle, name);
+    if ((flags & OPEN_FLAGS.O_DIRECTORY) !== 0) {
+      // Confirm it is a directory before issuing an anchor, so a
+      // non-directory component fails here rather than at first use.
+      const st = fs.statSync(this.rewritePath(path), { bigint: true });
+      if (!st.isDirectory()) {
+        throw makeFsError("ENOTDIR", `not a directory: ${path}`);
+      }
+      return this.openDirAnchor(path);
+    }
+    return this.open(path, flags, mode);
+  }
+
+  fstatat(dirHandle: number, name: string, flags: number): StatResult {
+    const path = this.at(dirHandle, name);
+    return (flags & AT_FLAGS.AT_SYMLINK_NOFOLLOW) !== 0
+      ? this.lstat(path)
+      : this.stat(path);
+  }
+
+  mkdirat(dirHandle: number, name: string, mode: number): void {
+    this.mkdir(this.at(dirHandle, name), mode);
+  }
+
+  /** `AT_REMOVEDIR` selects `rmdir(2)`. */
+  unlinkat(dirHandle: number, name: string, flags: number): void {
+    const path = this.at(dirHandle, name);
+    if ((flags & AT_FLAGS.AT_REMOVEDIR) !== 0) this.rmdir(path);
+    else this.unlink(path);
+  }
+
+  renameat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void {
+    this.rename(this.at(oldDirHandle, oldName), this.at(newDirHandle, newName));
+  }
+
+  linkat(
+    oldDirHandle: number,
+    oldName: string,
+    newDirHandle: number,
+    newName: string,
+  ): void {
+    this.link(this.at(oldDirHandle, oldName), this.at(newDirHandle, newName));
+  }
+
+  /** `target` is opaque data stored verbatim; only `name` names an entry. */
+  symlinkat(target: string, dirHandle: number, name: string): void {
+    this.symlink(target, this.at(dirHandle, name));
+  }
+
+  readlinkat(dirHandle: number, name: string): string {
+    return this.readlink(this.at(dirHandle, name));
+  }
+
+  fchmodat(dirHandle: number, name: string, mode: number): void {
+    this.chmod(this.at(dirHandle, name), mode);
+  }
+
+  /** `AT_SYMLINK_NOFOLLOW` selects `lchown(2)`. */
+  fchownat(
+    dirHandle: number,
+    name: string,
+    uid: number,
+    gid: number,
+    flags: number,
+  ): void {
+    const path = this.at(dirHandle, name);
+    if ((flags & AT_FLAGS.AT_SYMLINK_NOFOLLOW) !== 0) this.lchown(path, uid, gid);
+    else this.chown(path, uid, gid);
+  }
+
+  utimensatAt(
+    dirHandle: number,
+    name: string,
+    atimeSec: number,
+    atimeNsec: number,
+    mtimeSec: number,
+    mtimeNsec: number,
+  ): void {
+    this.utimensat(
+      this.at(dirHandle, name),
+      atimeSec,
+      atimeNsec,
+      mtimeSec,
+      mtimeNsec,
+    );
   }
 
   readdir(
     handle: number,
   ): { name: string; type: number; ino: number } | null {
-    const dir = this.dirHandles.get(handle);
-    if (!dir) throw new Error("Invalid dir handle");
+    let dir = this.dirHandles.get(handle);
+    if (!dir) {
+      // The cursor is opened on first use: a directory handle is an anchor,
+      // and most anchors — every mount root, and every intermediate directory
+      // of a walk — are never iterated.
+      dir = fs.opendirSync(this.rewritePath(this.anchorPath(handle)));
+      this.dirHandles.set(handle, dir);
+    }
     const entry = dir.readSync();
     if (!entry) return null;
     // Map Dirent to d_type
@@ -446,12 +595,6 @@ export class NodePlatformIO implements PlatformIO {
     return { name: entry.name, type: dtype, ino: 0 };
   }
 
-  closedir(handle: number): void {
-    const dir = this.dirHandles.get(handle);
-    if (!dir) throw new Error("Invalid dir handle");
-    dir.closeSync();
-    this.dirHandles.delete(handle);
-  }
 
   ftruncate(handle: number, length: number): void {
     const before = fs.fstatSync(handle, { bigint: true });
@@ -463,14 +606,26 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   fsync(handle: number): void {
+    // A directory anchor holds no dirty byte stream of its own to flush.
+    if (this.dirAnchors.has(handle)) return;
     fs.fsyncSync(handle);
   }
 
   fchmod(handle: number, mode: number): void {
+    const anchor = this.dirAnchors.get(handle);
+    if (anchor !== undefined) {
+      this.chmod(anchor, mode);
+      return;
+    }
     this.metadata.chmod(fs.fstatSync(handle, { bigint: true }), mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
+    const anchor = this.dirAnchors.get(handle);
+    if (anchor !== undefined) {
+      this.chown(anchor, uid, gid);
+      return;
+    }
     this.metadata.chown(fs.fstatSync(handle, { bigint: true }), uid, gid);
   }
 
@@ -491,15 +646,6 @@ export class NodePlatformIO implements PlatformIO {
     // CLOCK_REALTIME — use hrtime + epoch offset for nanosecond resolution
     const realNs = ns + this._epochOffsetNs;
     return { sec: Number(realNs / 1000000000n), nsec: Number(realNs % 1000000000n) };
-  }
-
-  nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-    if (ms > 0) {
-      const sab = new SharedArrayBuffer(4);
-      const arr = new Int32Array(sab);
-      Atomics.wait(arr, 0, 0, ms);
-    }
   }
 }
 

@@ -6,7 +6,6 @@ export {
   encodeKeyboardEventAsLinuxMediumRaw,
   encodeLinuxMediumRawKeyCode,
   createPcmAudioScheduler,
-  injectChunkedMouseMotion,
   linuxKeyCodeFromKeyboardEvent,
   scalePointerLockMouseDelta,
 } from "./browser-controls.js";

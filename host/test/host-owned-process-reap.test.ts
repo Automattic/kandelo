@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { reapHostOwnedExitedProcess } from "../src/host-owned-process-reap";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { signalExitStatus, SIGILL } from "../src/trap-signals";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const helloWasm = join(__dirname, "../../examples/hello.wasm");
@@ -30,7 +30,7 @@ function loadProgramBytes(path: string): ArrayBuffer {
 }
 
 async function spawnSmokeRootfs(): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  const fs = SffsImageFs.create();
   fs.mkdir("/usr", 0o755);
   fs.mkdir("/usr/bin", 0o755);
   fs.createFileWithOwner(
@@ -127,24 +127,39 @@ describe("host-owned exited-process reaping", () => {
   });
 
   it("keeps the normal Node and browser exit paths symmetric", () => {
+    // Symmetry is now structural: both entries call one `finishProcessExit`
+    // in `host/src/process-lifecycle.ts`, so the two paths cannot diverge.
+    // What still needs asserting is the ordering inside it — a process must be
+    // terminated before its generation is detached, and reaped only after
+    // both — because getting that order wrong reaps a PID whose successor may
+    // already own it.
+    const source = readFileSync(
+      join(__dirname, "../src/process-lifecycle.ts"),
+      "utf8",
+    );
+    const finishExit = source.slice(
+      source.indexOf("async function finishProcessExit"),
+    );
+    const exactDetachAt = finishExit.indexOf(
+      "detachExactProcessGeneration({",
+    );
+    const deactivateAt = finishExit.indexOf('operation: "deactivate"');
+    const terminateAt = finishExit.indexOf("terminateTrackedWorker(expectedWorker");
+    const reapAt = finishExit.indexOf("reapHostOwnedExitedProcess(");
+    expect(exactDetachAt).toBeGreaterThanOrEqual(0);
+    expect(deactivateAt).toBeGreaterThanOrEqual(0);
+    expect(terminateAt).toBeGreaterThanOrEqual(0);
+    expect(reapAt).toBeGreaterThan(terminateAt);
+    expect(reapAt).toBeGreaterThan(exactDetachAt);
+    expect(exactDetachAt).toBeGreaterThan(terminateAt);
+    // Both entries must still route their exits through that one function.
     for (const entry of [
       "../src/node-kernel-worker-entry.ts",
       "../src/browser-kernel-worker-entry.ts",
     ]) {
-      const source = readFileSync(join(__dirname, entry), "utf8");
-      const finishExit = source.slice(source.indexOf("async function finishProcessExit"));
-      const exactDetachAt = finishExit.indexOf(
-        "detachExactProcessGeneration({",
-      );
-      const deactivateAt = finishExit.indexOf('operation: "deactivate"');
-      const terminateAt = finishExit.indexOf("terminateTrackedWorker(expectedWorker");
-      const reapAt = finishExit.indexOf("reapHostOwnedExitedProcess(");
-      expect(exactDetachAt).toBeGreaterThanOrEqual(0);
-      expect(deactivateAt).toBeGreaterThanOrEqual(0);
-      expect(terminateAt).toBeGreaterThanOrEqual(0);
-      expect(reapAt).toBeGreaterThan(terminateAt);
-      expect(reapAt).toBeGreaterThan(exactDetachAt);
-      expect(exactDetachAt).toBeGreaterThan(terminateAt);
+      const entrySource = readFileSync(join(__dirname, entry), "utf8");
+      expect(entrySource, `${entry} must bind finishProcessExit`)
+        .toContain("  finishProcessExit,");
     }
   });
 

@@ -5,7 +5,7 @@
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
+import { type MouseEventSink } from "@host/framebuffer/browser-controls";
 import { DemoSurfaceDockControls } from "./Framebuffer";
 import { useFittedCanvasStyle } from "./canvasFit";
 
@@ -134,7 +134,10 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = 1, onDockControlsChan
     };
     const sendDelta = (dx: number, dy: number) => {
       if (dx === 0 && dy === 0) return;
-      injectChunkedMouseMotion(sink, dx, -dy, buttons);
+      // The kernel splits a displacement wider than one PS/2 packet across
+      // consecutive packets, and inverts screen-sense Y into the PS/2 sense
+      // (`crates/runtime-core/src/mouse.rs`). Pass canvas deltas unchanged.
+      sink.injectMouseEvent(dx, dy, buttons);
       wasmCursorX += dx;
       wasmCursorY += dy;
     };

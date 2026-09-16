@@ -31,14 +31,6 @@ export class NodeTimeProvider implements TimeProvider {
     const realNs = ns + this._epochOffsetNs;
     return { sec: Number(realNs / 1000000000n), nsec: Number(realNs % 1000000000n) };
   }
-
-  nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-    if (ms > 0) {
-      const sab = new SharedArrayBuffer(4);
-      Atomics.wait(new Int32Array(sab), 0, 0, ms);
-    }
-  }
 }
 
 export class BrowserTimeProvider implements TimeProvider {
@@ -51,13 +43,5 @@ export class BrowserTimeProvider implements TimeProvider {
     // CLOCK_REALTIME
     const now = Date.now();
     return { sec: Math.floor(now / 1000), nsec: (now % 1000) * 1_000_000 };
-  }
-
-  nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-    if (ms > 0) {
-      const sab = new SharedArrayBuffer(4);
-      Atomics.wait(new Int32Array(sab), 0, 0, ms);
-    }
   }
 }

@@ -1334,13 +1334,17 @@ describe("Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", () => {
       new NodeTimeProvider(),
     );
 
-    const dh = vfs.opendir("/");
+    // The kernel reaches a host directory through an anchor this host
+    // published, then one component at a time. `"."` names the anchor itself.
+    const O_DIRECTORY = 0o200000;
+    const root = vfs.foreignMountRoots().find((r) => r.prefix === "/")!.handle;
+    const dh = vfs.openat(root, ".", O_DIRECTORY, 0);
     const names: string[] = [];
     let entry;
     while ((entry = vfs.readdir(dh)) !== null) {
       names.push(entry.name);
     }
-    vfs.closedir(dh);
+    vfs.close(dh);
 
     expect(names).toContain("a.txt");
     expect(names).toContain("b.txt");
@@ -1365,13 +1369,22 @@ describe("Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. VirtualPlatformIO with no mounts throws
+// 7. VirtualPlatformIO with no mounts
 // ---------------------------------------------------------------------------
 
 describe("VirtualPlatformIO constructor validation", () => {
-  it("throws if no mounts provided", () => {
-    expect(() => new VirtualPlatformIO([], new NodeTimeProvider())).toThrow(
-      "at least one mount",
+  // REVERSED 2026-09-13: this asserted a throw. Zero mounts is now the
+  // DESTINATION rather than a mistake — the kernel owns `/`, every scratch
+  // prefix, and since POSIX shared memory moved in-kernel, the whole of
+  // `/dev`. On Node, `/dev/shm` was the last mount keeping the list non-empty,
+  // and the guard turned "the kernel owns everything" into a boot failure.
+  it("accepts no mounts, because the kernel may own every path", () => {
+    const io = new VirtualPlatformIO([], new NodeTimeProvider());
+
+    // The mistake the constructor guard used to catch is still caught, at the
+    // moment it matters and with the path it could not route named.
+    expect(() => io.open("/etc/passwd", 0, 0)).toThrow(
+      /no mount for path: \/etc\/passwd/,
     );
   });
 });

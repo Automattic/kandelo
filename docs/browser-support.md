@@ -193,7 +193,6 @@ pipe pair.
   `fsync()` succeeds after already-completed directory operations because the
   File System API exposes no directory flush primitive; it is not an
   additional crash-durability barrier.
-- `DeviceFileSystem` — `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`
 - Stable-identity regular files, including OPFS regular files on supported
   browsers, can be shared across process memories through the host mapping
   cache, but updates become visible at syscall boundaries rather than
@@ -668,10 +667,11 @@ the package-built main shell uses
 `packages/registry/shell/source-rootfs-shell-demo.json` as its single reviewed
 source.
 
-VFS images do not need to serialize placeholder device nodes. Both Node and
-browser boot replace `/dev` with the authoritative `DeviceFileSystem` and mount
-shared memory at `/dev/shm`; image acceptance should exercise devices such as
-`/dev/null` only after those runtime mounts exist.
+VFS images do not need to serialize placeholder device nodes. `/dev` is a
+kernel namespace on both hosts — `crates/runtime-core/src/devfs.rs` and
+`match_virtual_device` answer every path under it, and the rootfs overlay
+excludes it — so an image entry under `/dev` is never reachable. The one
+exception is `/dev/shm`, which both hosts mount for POSIX shared memory.
 
 KMS demos use the same metadata path. A profile can set
 `runningPrimary` to include `"kms"` and provide an `autoCommand` such as
@@ -981,6 +981,19 @@ sorted package nodes and their materialized member mode, size, and SHA-256.
 The resolver validates exact node ownership and the complete owning package
 closure. It does not fall back to `local-binaries`, fetched/indexed binaries,
 the ordinary compiled cache, or an installed host package.
+
+The authority embeds a second `kandelo-program-packages-v2` value,
+`selectionProjection`. The two are not redundant and are not
+interchangeable. `projection` is the tier's own identity under the
+`source-only-v1` resolve policy, which domain-separates every cache key so
+the tier can address its own cache namespace; `selectionProjection` is the
+selection index the build was run against, byte-for-byte what that build
+wrote to `packages/registry/program-packages.json` under the default
+policy. Only the second is comparable to the index a resolver regenerates,
+and only the default-policy tier path in `binary-resolver.ts` compares it —
+under `source-only-v1` the resolver reads the authority directly and never
+performs that comparison. An authority published without
+`selectionProjection` is refused by name and must be rebuilt.
 
 SourceOnly materializations are regular files and may be replaced by a later
 producer run. Vite therefore parses one aggregate authority for its lifetime,

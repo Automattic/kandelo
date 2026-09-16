@@ -8,7 +8,6 @@ import {
   DEMO_LOGIN_PASSWORD,
   DEMO_LOGIN_PASSWORD_HASH,
 } from "../../images/vfs/lib/demo-login";
-import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
@@ -208,7 +207,6 @@ function loginPlatform(
   return new VirtualPlatformIO(
     [
       { mountPoint: "/", backend: fs },
-      { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
     ],
     new NodeTimeProvider(),
   );

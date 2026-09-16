@@ -1,0 +1,252 @@
+{
+ "file": "crates/runtime-core/src/rootfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p sffs-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1 && scripts/dev-shell.sh cargo test -q -p runtime-core --lib --target \"$(rustc -vV | sed -n 's/^host: //p')\" rootfs:: >/dev/null 2>&1",
+ "build": "scripts/dev-shell.sh cargo build -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the export goes back to emptying archive members",
+   "scope": "                InodeKind::LazyMember {\n                    archive_id,",
+   "scope_end": "                },",
+   "find": "                } => ExportNode::LazyMember {\n                    archive_id: *archive_id,\n                    source_path: source_path.clone(),\n                    size: *size,",
+   "replace": "                } => ExportNode::LazyMember {\n                    archive_id: *archive_id,\n                    source_path: source_path.clone(),\n                    size: 0,"
+  },
+  {
+   "name": "the exported record forgets which archive backs the member",
+   "scope": "            ExportNode::LazyMember {",
+   "scope_end": "\n            }\n",
+   "find": "                    archive_id,\n                    &source_path,",
+   "replace": "                    0,\n                    b\"\","
+  },
+  {
+   "name": "the exported record names the wrong member of the right archive",
+   "scope": "            ExportNode::LazyMember {",
+   "scope_end": "\n            }\n",
+   "find": "                    &source_path,\n                    &payload,",
+   "replace": "                    b\"x\",\n                    &payload,"
+  },
+  {
+   "name": "the member is materialized into the body instead of described",
+   "scope": "            ExportNode::LazyMember {",
+   "scope_end": "\n            }\n",
+   "find": "                writer.create_deferred_file(\n                    item.parent_sffs,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    &payload,\n                )?",
+   "replace": "                let _ = (archive_id, source_path, size, payload);\n                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b\"\"))?"
+  },
+  {
+   "name": "the loader throws away the description it was given",
+   "scope": "                        Some(lazy) => {",
+   "scope_end": "                        // Not deferred at all",
+   "find": "                            if let Some(section) = &deferred {\n                                if let Some(record) = section.get(entry.ino) {\n                                    set_deferred_payload(&abs, &record.payload)?;\n                                }\n                            }",
+   "replace": ""
+  },
+  {
+   "name": "the loader never looks for a deferred section",
+   "scope": "    let deferred = filesystem.deferred_section()?;",
+   "scope_end": "\n",
+   "find": "    let deferred = filesystem.deferred_section()?;",
+   "replace": "    let deferred: Option<crate::sffs_deferred::DeferredSection> = None;"
+  },
+  {
+   "name": "the export drops the retained description and stubs the file",
+   "scope": "                    BaseSource::Host => {",
+   "scope_end": "                    }\n",
+   "find": "                        if inode.deferred_base || !inode.deferred_payload.is_empty() {",
+   "replace": "                        if false {"
+  },
+  {
+   "name": "a file with no description becomes a deferred record pointing nowhere",
+   "scope": "                    BaseSource::Host => {",
+   "scope_end": "                    }\n",
+   "find": "                        if inode.deferred_base || !inode.deferred_payload.is_empty() {",
+   "replace": "                        if true {"
+  },
+  {
+   "name": "the export invents an archive for a standalone fetch",
+   "scope": "            ExportNode::LazyBase { size, payload } => {",
+   "scope_end": "\n            }\n",
+   "find": "                    size,\n                    0,\n                    b\"\",\n                    &payload,",
+   "replace": "                    size,\n                    1,\n                    b\"m\",\n                    &payload,"
+  },
+  {
+   "name": "the exported record carries an empty description",
+   "scope": "            ExportNode::LazyBase { size, payload } => {",
+   "scope_end": "\n            }\n",
+   "find": "                    &payload,\n                )?",
+   "replace": "                    b\"\",\n                )?"
+  },
+  {
+   "name": "the export never declares the archive its records point into",
+   "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
+   "scope_end": "\n                }\n",
+   "find": "                    writer.declare_lazy_archive(archive_id, bytes, &payload)?;",
+   "replace": ""
+  },
+  {
+   "name": "the export invents an archive length instead of using the loaded one",
+   "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
+   "scope_end": "\n                }\n",
+   "find": "                    let (bytes, payload) = ROOTFS\n                        .with(|state| {\n                            state\n                                .archives\n                                .get(&archive_id)\n                                .map(|entry| (entry.size, entry.payload.clone()))\n                        })\n                        .ok_or(Errno::EIO)?;",
+   "replace": "                    let (bytes, payload) = ROOTFS\n                        .with(|state| {\n                            state\n                                .archives\n                                .get(&archive_id)\n                                .map(|entry| (entry.size, entry.payload.clone()))\n                        })\n                        .unwrap_or((0, alloc::vec::Vec::new()));"
+  },
+  {
+   "name": "the loader goes back to refusing an image described only by its body",
+   "scope": "        None => {\n            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;",
+   "scope_end": "\n        }\n    }\n",
+   "find": "            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;",
+   "replace": "            if true {\n                return Err(Errno::EINVAL);\n            }\n            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;"
+  },
+  {
+   "name": "the loader prefers the body over KLZY when an image carries both",
+   "scope": "    match klzy_span {",
+   "scope_end": "\n        Some((offset, len)) => {",
+   "find": "    match klzy_span {",
+   "replace": "    match if deferred.is_some() { None } else { klzy_span } {"
+  },
+  {
+   "name": "the loader drops the archive table the body declares",
+   "scope": "            for archive in &section.archives {",
+   "scope_end": "\n            }\n",
+   "find": "                lazy_archives.push((\n                    archive.archive_id,\n                    archive.bytes,\n                    archive.payload.clone(),\n                ));",
+   "replace": ""
+  },
+  {
+   "name": "the loader drops the sizes the body declares",
+   "scope": "            for record in &section.records {",
+   "scope_end": "\n            }\n",
+   "find": "                        size: record.size,",
+   "replace": "                        size: 0,"
+  },
+  {
+   "name": "the container export emits a bare body with no header",
+   "scope": "pub fn export_container_read",
+   "scope_end": "\n}\n",
+   "find": "    if offset < head_len {",
+   "replace": "    if false {"
+  },
+  {
+   "name": "the header records the whole image length instead of the body's",
+   "scope": "pub fn export_container_read",
+   "scope_end": "\n}\n",
+   "find": "        usize::try_from(body_len).map_err(|_| Errno::EINVAL)?,",
+   "replace": "        usize::try_from(body_len + trailer.len() as u64).map_err(|_| Errno::EINVAL)?,"
+  },
+  {
+   "name": "the container drops its trailer",
+   "scope": "pub fn export_container_read",
+   "scope_end": "\n}\n",
+   "find": "    let total = head_len\n        .checked_add(body_len)\n        .and_then(|n| n.checked_add(trailer.len() as u64))\n        .ok_or(Errno::EINVAL)?;",
+   "replace": "    let total = head_len.checked_add(body_len).ok_or(Errno::EINVAL)?;"
+  },
+  {
+   "name": "the container declares a KLZY section it does not carry",
+   "scope": "    let sections = crate::sffs_container::ContainerSections {\n        lazy_json: b\"\",",
+   "scope_end": "\n    };\n",
+   "find": "        kernel_lazy: None,",
+   "replace": "        kernel_lazy: Some(b\"\"),"
+  },
+  {
+   "name": "image metadata is dropped on the way to the container",
+   "scope": "    let metadata = ROOTFS.with(|state| state.image_metadata.clone());",
+   "scope_end": "\n",
+   "find": "    let metadata = ROOTFS.with(|state| state.image_metadata.clone());",
+   "replace": "    let metadata: Option<Vec<u8>> = None;"
+  },
+  {
+   "name": "setting empty metadata stores an empty section instead of clearing",
+   "scope": "pub fn set_image_metadata",
+   "scope_end": "\n}\n",
+   "find": "        state.image_metadata = if metadata.is_empty() {\n            None\n        } else {\n            Some(metadata.to_vec())\n        };",
+   "replace": "        state.image_metadata = Some(metadata.to_vec());"
+  },
+  {
+   "name": "a standalone file is exported as if an archive backed it",
+   "scope": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
+   "scope_end": "\n                }\n",
+   "find": "                if archive_id != 0 && !declared_archives.contains(&archive_id) {",
+   "replace": "                if !declared_archives.contains(&archive_id) {"
+  },
+  {
+   "name": "the exported record drops a standalone file's description",
+   "scope": "            ExportNode::LazyMember {",
+   "scope_end": "\n            }\n",
+   "find": "                    &payload,\n                )?",
+   "replace": "                    b\"\",\n                )?"
+  },
+  {
+   "name": "registration accepts a half-specified linkage",
+   "scope": "pub fn insert_lazy_file(",
+   "scope_end": "\n    ROOTFS.with(",
+   "find": "    if (archive_id == 0) != source_path.is_empty() {\n        return Err(Errno::EINVAL);\n    }",
+   "replace": ""
+  },
+  {
+   "name": "registration drops the description it was given",
+   "scope": "        if let Some(inode) = state.get_mut(child) {",
+   "scope_end": "\n        }\n",
+   "find": "            inode.deferred_payload = payload.to_vec();",
+   "replace": ""
+  },
+  {
+   "name": "the export headroom check ignores free inodes",
+   "scope": "pub fn check_export_headroom(",
+   "scope_end": "\n}\n",
+   "find": "    let met =\n        free_bytes >= headroom.minimum_free_bytes && st.f_ffree >= headroom.minimum_free_inodes;",
+   "replace": "    let met = free_bytes >= headroom.minimum_free_bytes;"
+  },
+  {
+   "name": "the reported headroom is not the image's own measurement",
+   "scope": "pub fn check_export_headroom(",
+   "scope_end": "\n}\n",
+   "find": "    let free_bytes = ceiling.saturating_sub(occupied);",
+   "replace": "    let free_bytes = u64::MAX;"
+  },
+  {
+   "name": "the capacity report ignores the image and guesses",
+   "scope": "pub fn export_capacity_bytes()",
+   "scope_end": "\n}\n",
+   "find": "    crate::sffs::Sffs::mount(source)?.growth_ceiling_bytes()",
+   "replace": "    let _ = source;\n    Ok(0)"
+  },
+  {
+   "name": "a requested capacity is ignored",
+   "scope": "    let requested_blocks = ROOTFS",
+   "scope_end": "\n        .unwrap_or(0);\n",
+   "find": "        .map(|bytes| bytes.div_ceil(4096))",
+   "replace": "        .map(|_| 0u64)"
+  },
+  {
+   "name": "a requested capacity replaces the tree's requirement instead of flooring it",
+   "scope": "    let mut max_blocks = u32::try_from(core::cmp::max(",
+   "scope_end": "\n    .map_err(|_| Errno::EIO)?;\n",
+   "find": "        core::cmp::max(inode_requirement, 64),\n        requested_blocks,",
+   "replace": "        requested_blocks,\n        requested_blocks,"
+  },
+  {
+   "name": "a load forgets the capacity the image declared",
+   "scope": "    let declared_capacity = filesystem.growth_ceiling_bytes()?;",
+   "scope_end": "\n    });\n",
+   "find": "        state.image_capacity_bytes = Some(declared_capacity);",
+   "replace": "        state.image_capacity_bytes = None;"
+  },
+  {
+   "name": "a load forgets the metadata the image declared",
+   "scope": "    let declared_capacity = filesystem.growth_ceiling_bytes()?;",
+   "scope_end": "\n    });\n",
+   "find": "        state.image_metadata = declared_metadata;",
+   "replace": "        state.image_metadata = None;"
+  },
+  {
+   "name": "the declared capacity is taken rather than declared",
+   "scope": "    let total_blocks = core::cmp::min(",
+   "scope_end": "\n    let total_blocks = core::cmp::max(total_blocks, 16);\n",
+   "find": "    let total_blocks = core::cmp::min(\n        max_blocks,",
+   "replace": "    let total_blocks = core::cmp::max(\n        max_blocks,"
+  },
+  {
+   "name": "the archive accessor reports no archives at all",
+   "scope": "pub fn archive_payloads()",
+   "scope_end": "\n}\n",
+   "find": "            .map(|(id, entry)| (*id, entry.payload.clone()))",
+   "replace": "            .filter(|_| false)\n            .map(|(id, entry)| (*id, entry.payload.clone()))"
+  }
+ ]
+}

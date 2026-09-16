@@ -39,6 +39,31 @@ for tool in cmake make; do
     "$tool" --version >/dev/null
 done
 
+# `cargo xtask <verb>` is written throughout this tree -- 178 places when
+# this check was added -- docs,
+# tools/xtask's own source, and messages host-native prints to an operator
+# debugging a stale artifact. It resolves only because the dev shell puts
+# `scripts/bin` on PATH (flake.nix), the same way it does `sdk/bin`. There is
+# no cargo alias that can stand in: `[build] target` would build a host tool
+# for wasm, and cargo cannot override that from inside an alias.
+#
+# Nothing else in the tree would notice if that prepend were dropped: the 178
+# citations would go back to answering "no such command: `xtask`", quietly.
+resolved="$(command -v cargo-xtask || true)"
+case "$resolved" in
+    */scripts/bin/cargo-xtask)
+        [ -x "$resolved" ] || {
+            echo "ERROR: cargo-xtask is on PATH but not executable: $resolved" >&2
+            exit 1
+        }
+        ;;
+    *)
+        echo "ERROR: cargo-xtask did not resolve to this repository's scripts/bin," >&2
+        echo "       so \`cargo xtask <verb>\` will not run: ${resolved:-<missing>}" >&2
+        exit 1
+        ;;
+esac
+
 for tool_path in "${AR:-}" "${RANLIB:-}"; do
     case "$tool_path" in
         "$nix_store"/*/bin/llvm-ar | "$nix_store"/*/bin/llvm-ranlib) ;;

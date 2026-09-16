@@ -483,20 +483,16 @@ const ownershipSeeds: OwnershipSeed[] = [
     why: "A pending thread attachment carries process memory.",
   },
   {
+    // Both hosts used to declare their own `ProcessGenerationOwnership`, and
+    // this seed named each copy. The interface now lives once in
+    // `process-lifecycle.ts`, which both entries import, so one seed covers
+    // the Node and browser process generations that previously needed two.
     declaration:
-      "host/src/node-kernel-worker-entry.ts::ProcessGenerationOwnership.memory",
+      "host/src/process-lifecycle.ts::ProcessGenerationOwnership.memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
-    why: "Each Node process generation owns its exact guest process memory.",
-  },
-  {
-    declaration:
-      "host/src/browser-kernel-worker-entry.ts::ProcessGenerationOwnership.memory",
-    target: "value",
-    owner: "process-memory",
-    form: "memory",
-    why: "Each browser process generation owns its exact guest process memory.",
+    why: "Each process generation, on either host, owns its exact guest process memory.",
   },
   {
     declaration:
@@ -530,22 +526,26 @@ const ownershipSeeds: OwnershipSeed[] = [
     why: "This browser message replaces a framebuffer process-memory binding after growth, not kernel memory.",
   },
   {
-    declaration: "host/src/wasi-shim.ts::WasiShim.memory",
-    target: "value",
-    owner: "process-memory",
-    form: "memory",
-    why: "The WASI shim operates on its guest process memory.",
-  },
-  {
     declaration:
-      "host/src/fork-continuation.ts::LinkedForkContinuation.$param:memory",
+      "host/src/wasi-module-instance.ts::InstantiateWasiModuleOptions.memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
-    why: "Fork continuation frames live in process memory.",
+    why:
+      "Placing the co-resident WASI side module writes its static data and " +
+      "argv/env blobs into the guest process memory it will run against.",
   },
   {
-    declaration: "host/src/dylink.ts::LoadSharedLibraryOptions.memory",
+    declaration: "host/src/pic-side-module.ts::placeSideModule.memory",
+    target: "value",
+    owner: "process-memory",
+    form: "memory",
+    why:
+      "The placement bounds check reads the guest process memory's length to " +
+      "refuse a region that would not fit.",
+  },
+  {
+    declaration: "host/src/dylink-loader.ts::DylinkLoaderOptions.memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
@@ -553,7 +553,7 @@ const ownershipSeeds: OwnershipSeed[] = [
   },
   {
     declaration:
-      "host/src/thread-allocator.ts::ThreadPageAllocator.allocate.$param:memory",
+      "host/src/thread-allocator.ts::materializeThreadSlot.$param:memory",
     target: "value",
     owner: "process-memory",
     form: "memory",
@@ -586,13 +586,6 @@ const ownershipSeeds: OwnershipSeed[] = [
     owner: "shared-memory",
     form: "view",
     why: "This host snapshot is separate from allocator-owned scratch.",
-  },
-  {
-    declaration: "host/src/kernel-worker.ts::SysvShmMapping.snapshot",
-    target: "value",
-    owner: "shared-memory",
-    form: "view",
-    why: "This host snapshot tracks a System V shared-memory mapping.",
   },
 ];
 
@@ -655,18 +648,51 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#generateHostSignalWithinKernelEntry::kernel-export-direct-use::generateHostSignal(targetPid, signum)",
   ),
+  // -- SysV shared-memory byte-coherence mirror -------------------------
+  //
+  // The three calls that stood here -- shmat, shmdt and record_mapping,
+  // interleaved per attachment during fork -- are gone: that transaction moved
+  // into the kernel, which drives its own tables without crossing the host
+  // boundary at all.
+  //
+  // What replaces them is the host's entry points into the Rust-owned mirror,
+  // grouped here rather than scattered alphabetically because reviewing them
+  // means reviewing one subsystem. Every argument is a scalar the caller
+  // already holds: a pid, a segment id, a byte length, a boolean flag, or a
+  // `KernelPointer` produced by `toKernelPtr` from an address the kernel
+  // itself returned. None of them lends a host-owned buffer, so none needs a
+  // scratch lease.
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::messageSizeForDescriptor( channel.pid, this.guestTidForChannel(channel), origArgs[0], )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::this.#sysvMirrorExports(entry).inherit( prepared.parentPid, prepared.childPid, BigInt(prepared.childMemory.buffer.byteLength), )",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmat!( prepared.childPid, mapping.segId, mapping.mapAddr, mapping.readOnly ? SHM_RDONLY : 0, )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareAddressSpaceForExecWithinKernelEntry::kernel-export-direct-use::this.#sysvMirrorExports(entry).processCount(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::kernelShmdt!( prepared.childPid, mapping.segId, )",
-    2,
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#refreshSysvActivePidCount::kernel-export-direct-use::this.#sysvMirrorExports(entry).activePidCount()",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#inheritPreparedSharedMappingsWithinKernelEntry::kernel-export-direct-use::recordMapping!( prepared.childPid, kernelMapAddrs[mappingIndex]!, mapping.segId, mapping.size, )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#releaseSysvMirrorForProcess::kernel-export-direct-use::this.#sysvMirrorExports(entry).releaseProcess( pid, options.publish ? 1 : 0, options.detach ? 1 : 0, )",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#syncSysvMirrorForProcess::kernel-export-direct-use::this.#sysvMirrorExports(entry).syncProcess( pid, force ? 1 : 0, )",
+  ),
+  // The accessor itself: returning the resolved exports as one typed object is
+  // what lets every call site above carry `KernelPointer` rather than `number`.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#sysvMirrorExports::kernel-export-direct-use::return { activePidCount, processCount, track, syncProcess, syncSegment, publishMapping, dropMapping, releaseProcess, inherit, };",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#sysvMirrorMappingOp::kernel-export-direct-use::exports.dropMapping(pid, kernelAddr, segId, size)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#sysvMirrorMappingOp::kernel-export-direct-use::exports.publishMapping(pid, kernelAddr, segId, size)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmat::kernel-export-direct-use::this.#sysvMirrorExports(entry).syncSegment(shmid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmat::kernel-export-direct-use::this.#sysvMirrorExports(entry).track( channel.pid, kernelAllocatedAddr, shmid, size, readOnly ? 1 : 0, )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, )",
@@ -720,6 +746,15 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#reserveHostRegionWithinKernelEntry::kernel-export-direct-use::reserveHostRegionFn(pid, this.toKernelPtr(checkedLength))",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#setThreadSlotQuotaWithinKernelEntry::kernel-export-direct-use::setQuotaFn(pid, quota)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#threadSlotAddrWithinKernelEntry::kernel-export-direct-use::threadSlotAddrFn(pid, tid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseHostRegion::kernel-export-direct-use::releaseHostRegionFn( pid, this.toKernelPtr(addr), this.toKernelPtr(len), )",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#resolveExecListenerFdWithinKernelEntry::kernel-export-direct-use::fdIsOpen(pid, oldFd)",
   ),
   reviewedScalarKernelExportCall(
@@ -733,9 +768,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#retireBlockingRetryCaptureAfterExitedProcess::kernel-export-direct-use::getState(channel.pid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#rollbackInheritedSysvAttachmentsWithinKernelEntry::kernel-export-direct-use::kernelShmdtAddr( childPid, this.toKernelPtr(mapping.mapAddr), )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#rollbackIpcShmatWithinKernelEntry::kernel-export-direct-use::kernelShmdt(channel.pid, shmid)",
@@ -811,9 +843,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleBlockingRetry::kernel-export-direct-use::getSendPipeIdx?.(channel.pid, origArgs[0])",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleExit::kernel-export-direct-use::commitProcessExit(exitStatus)",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleExit::kernel-export-direct-use::getProcessState(channel.pid)",
   ),
   reviewedScalarKernelExportCall(
@@ -833,12 +862,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmdt::kernel-export-direct-use::kernelShmdt(channel.pid, callerTid, kernelAddr)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::arrayBytes( channel.pid, this.guestTidForChannel(channel), semid, rawCmd, )",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleSemctl::kernel-export-direct-use::statBytes(processPointerWidth)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.inheritHostFdMirrors::kernel-export-direct-use::fdIsOpen(childPid, entry.fd)",
@@ -884,15 +907,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.releaseAllSysvShmMappingsForProcess::kernel-export-direct-use::kernelShmdtAddr(pid, this.toKernelPtr(addr))",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getAcceptWakeIdx(pid, interest.fd)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveEpollReadinessIndices::kernel-export-direct-use::getRecvPipe(pid, interest.fd)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.resolveInheritedListenerFd::kernel-export-direct-use::findListenerFd?.(pid, wakeIdx)",
@@ -982,6 +996,24 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel.ts::WasmPosixKernel.umask::kernel-export-direct-use::fn(mask)",
   ),
+  // Reviewed: `kernel_commit_process_exit` / `kernel_commit_process_group_exit`
+  // take one exit-status scalar and return the committed status. Selecting
+  // between them by a static branch (rather than indexing the exports
+  // namespace with a computed name) is what lets this be classified as the
+  // scalar call it has always been.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleExit::kernel-export-direct-use::commitProcessExit(exitStatus)",
+  ),
+  // Reviewed: `kernel_rootfs_load_image` takes only the two halves of the
+  // image byte length. It replaced a four-site sequence that allocated
+  // kernel scratch, built a Uint8Array over kernel memory, wrote the manifest
+  // into it, and passed that pointer to the kernel. The kernel now pulls the
+  // image bytes itself through the `setRootfsImageProvider` window installed
+  // immediately above the call, so no host-staged kernel-memory borrow
+  // crosses this boundary at all.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::loadImage(imageLenLo, imageLenHi)",
+  ),
 ];
 
 const auditAllowances: AuditAllowance[] = [
@@ -1067,24 +1099,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "This browser epoll reproduction creates its test process memory, not the kernel's linear memory.",
   },
   {
-    key: "apps/browser-demos/test/fixtures/borrowed-active-side-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(mainModule, { env: { memory, ...mainEnv }, kernel: { kernel_fork: finishBorrowedFork }, })",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "This isolated browser worker instantiates the user process's main fork-replay module against the request-owned process memory and wrapped continuation imports.",
-  },
-  {
-    key: "apps/browser-demos/test/fixtures/borrowed-active-side-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(sideModule, { env: { memory, ...sideEnv }, })",
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "This isolated browser worker instantiates the user process's side module against the same request-owned process memory and activation-specific replay imports.",
-  },
-  {
-    key: 'apps/browser-demos/test/fixtures/borrowed-fork-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory, ...runtime.envImports, }, kernel: { kernel_fork: () => { if (runtime.coordinator.phaseName() !== "child-replay") { throw new Error( `borrowed browser child reached fork while ` + runtime.coordinator.phaseName(), ); } runtime.coordinator.finishReplay(); return 0; }, }, })',
-    disposition: "non-kernel",
-    authorityOwner: "process-memory",
-    why: "This isolated browser worker instantiates one user process replay activation against request-owned memory and the test runtime's wrapped fork imports.",
-  },
-  {
     key: "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
     disposition: "kernel-control",
     authorityOwner: "kernel",
@@ -1116,10 +1130,34 @@ const auditAllowances: AuditAllowance[] = [
     why: "The memory32 branch creates one allocator-owned process generation and immediately records its exact ownership and byte charge.",
   },
   {
-    key: "host/src/dylink.ts::instantiateSharedLibrarySteps::wasm-instance-authority::new WebAssembly.Instance(module, instanceImports)",
+    key: "host/src/dylink-planner.ts::DylinkActExecutor.perform::wasm-instance-authority::new WebAssembly.Instance( module, this.#environment.wrapImports?.(imports) ?? imports, )",
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This instance is a user process's dynamically linked shared library and receives only that activation's wrapped process imports.",
+  },
+  {
+    key: "host/src/dylink-planner.ts::DylinkActExecutor.perform::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The act executor instantiates a user process's dynamically linked shared library from a plan, receiving only that activation's resolved bindings; it is the planner-driven form of instantiateSharedLibrarySteps above and reaches no kernel memory.",
+  },
+  {
+    key: "host/src/dylink-planner.ts::PlannerSession.instantiate::wasm-instance-authority::new WebAssembly.Instance(module, {})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The dylink planner module imports nothing at all -- the empty import object is the whole surface, and the build script enforces it -- so this instance owns only the planner's private linear memory inside the process worker and can reach neither kernel memory nor guest memory.",
+  },
+  {
+    key: "host/src/fork-module-instance.ts::instantiateForkModule::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The co-resident fork module is instantiated into the user process's own address space at an explicit __memory_base, with the process's memory, table and continuation imports; it is guest-side machinery and holds no kernel authority.",
+  },
+  {
+    key: "host/src/fork-module-trampoline.ts::instantiateTrampoline::wasm-instance-authority::new WebAssembly.Instance(module, { [SHARED_MODULE]: { fm_frame_reserve: sharedExports.fm_frame_reserve as WebAssembly.ImportValue, fm_frame_commit: sharedExports.fm_frame_commit as WebAssembly.ImportValue, fm_frame_peek: sharedExports.fm_frame_peek as WebAssembly.ImportValue, fm_frame_next: sharedExports.fm_frame_next as WebAssembly.ImportValue, fm_resume_peek: sharedExports.fm_resume_peek as WebAssembly.ImportValue, }, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The per-activation trampoline declares no memory of its own and imports exactly five frame/resume functions from the co-resident fork-module instance above; it binds an activation id and forwards, so it adds no memory authority of any kind.",
   },
   {
     key: "host/src/fork-anyref-transit.ts::ForkAnyrefTransitTable.constructor::wasm-instance-authority::new WebAssembly.Instance(compileProviderModule())",
@@ -1162,6 +1200,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This ordinary memory32 factory creates caller-owned process memory.",
+  },
+  {
+    key: "host/src/wasi-module-instance.ts::instantiateWasiModule::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "The co-resident WASI side module is instantiated against the guest process's own memory and three placement globals the host mints for it; it imports no kernel memory and no kernel export.",
   },
   {
     key: "host/src/worker-main.ts::centralizedThreadWorkerMain::wasm-instance-authority::new WebAssembly.Instance(module, threadInstanceImports)",
@@ -1241,6 +1285,59 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.claimPcmTransport::kernel-memory-escape::kernelEntryIntrinsicApply( kernelEntryIntrinsicMemoryBuffer, this.#kernelMemory!, [], )",
     disposition: "kernel-control",
     why: "The trusted Node/browser audio driver must retain the shared backing for the checked PCM control-and-ring range; the exact claim entry validates the pointer, length, shared backing, and transport header before this machine-level descriptor is published.",
+  },
+  {
+    // The four entries below admit ONE structural exception, and it is worth
+    // stating plainly because it is wider than the other scratch-address
+    // allowances in this file, which each cover a single expression.
+    //
+    // The spawn-blob decode keeps its lease inside `withLease` but forwards it
+    // into one named private method, `#decodeSpawnFramingWithinLease`, shared
+    // by the fixed-scratch and large-reservation callers. The audit's rule is
+    // structural -- keep every lease use inline, or forward it to a helper
+    // that makes exactly one reviewed copy call -- and a helper performing
+    // copyFrom, exportPointer and copyOut cannot satisfy either form.
+    //
+    // Reviewed against the properties the structural rule exists to
+    // guarantee, all of which hold here:
+    //   - the helper is invoked directly from the `withLease` callback and
+    //     returns before the lease is revoked; nothing is deferred or async;
+    //   - it never stores, returns, reflects, casts or aliases the lease --
+    //     it returns a parsed `{ argv, envp }`;
+    //   - `exportPointer(0, capacity)` is passed only to
+    //     `#invokeEntryScratchExport`, the reviewed invoker;
+    //   - `copyFrom` is bounded by a `blobLen` the caller has already checked
+    //     against the region capacity (or against the reservation capacity on
+    //     the large path), and `copyOut` by `#checkedScratchProducerByteLength`.
+    //
+    // The alternative to this exception is to inline roughly thirty-five lines
+    // into both callers, which would duplicate the transaction rather than
+    // share it. That trade is a maintainer call, not a mechanical one, and
+    // this comment exists so the choice stays visible rather than becoming an
+    // unexamined allowance.
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#spawnDecodeArgvEnvp::scratch-address-contract::scratch",
+    disposition: "kernel-control",
+    why: "The fixed-scratch spawn decode forwards its lease synchronously into #decodeSpawnFramingWithinLease and that method returns before withLease revokes it; the lease is never stored, returned, reflected or aliased.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#decodeLargeSpawnBlob::scratch-address-contract::scratch",
+    disposition: "kernel-control",
+    why: "The large-blob spawn decode forwards the reservation's lease into the same reviewed #decodeSpawnFramingWithinLease method, under the tokenized reservation it releases before returning.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#decodeSpawnFramingWithinLease::scratch-address-contract::scratch.copyFrom",
+    disposition: "kernel-control",
+    why: "The blob is copied into offset zero for exactly blobLen bytes, a length both callers have already checked against the leased capacity they pass in.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#decodeSpawnFramingWithinLease::scratch-address-contract::scratch.exportPointer",
+    disposition: "kernel-control",
+    why: "The opaque range token spans exactly the leased capacity and is passed only to #invokeEntryScratchExport, the reviewed invoker that binds it to kernel_spawn_blob_decode.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#decodeSpawnFramingWithinLease::scratch-address-contract::scratch.copyOut",
+    disposition: "kernel-control",
+    why: "The read-back length is the kernel's own return value after #checkedScratchProducerByteLength proves it lies within the leased capacity.",
   },
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::scratch-address-contract::options.instance",
@@ -1331,11 +1428,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "An allocator-owned KernelScratchExportPointer cannot represent null. This secret-capability fixed wait companion is the only intentional direct null call to this export and proves Rust rejects the destination before selecting or consuming child status; guarded destinations still require opaque lease tokens.",
   },
   {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcControl::kernel-pointer-export-bypass::structureBytes(pointerWidth)",
-    disposition: "kernel-control",
-    why: "This exact two-name IPC metadata branch passes only pointer width and returns a structure-size scalar.",
-  },
-  {
     key: "host/src/kernel.ts::bufferByteLength::kernel-buffer-escape::intrinsicApply( intrinsicSharedArrayBufferByteLength, buffer, [], )",
     disposition: "kernel-read",
     why: "The captured byteLength getter authenticates and measures the current kernel buffer for page-count and range checks without retaining or mutating it.",
@@ -1421,24 +1513,37 @@ const auditAllowances: AuditAllowance[] = [
     why: "The host_pread Wasm import binds the untouched Rust pointer and capacity formals before invoking any positioned producer.",
   },
   {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_fetch_deferred destination", )',
+    disposition: "rust-lent",
+    why: "The host_fetch_deferred Wasm import binds the untouched Rust pointer and capacity formals before invoking the deferred-resource byte producer.",
+  },
+  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_fstat destination", )',
     disposition: "rust-lent",
     why: "The host_fstat import binds its exact pointer formal to the generated fixed stat capacity before the backend consumes the handle.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_stat destination", )',
+    // Reviewed replacement for the deleted host_stat allowance: the path form
+    // is now the *at variant, and the destination binding is unchanged.
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_fstatat destination", )',
     disposition: "rust-lent",
-    why: "The host_stat import binds its exact pointer formal to the generated fixed stat capacity before path/backend work.",
+    why: "The host_fstatat import binds its exact pointer formal to the generated fixed stat capacity before any directory-handle or name resolution runs.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statPtr, WASM_STAT_SIZE, "host_lstat destination", )',
+    // Reviewed replacement for the deleted host_readlink allowance.
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_readlinkat destination", )',
     disposition: "rust-lent",
-    why: "The host_lstat import binds its exact pointer formal to the generated fixed stat capacity before path/backend work.",
+    why: "The host_readlinkat import binds the untouched Rust pointer and capacity formals before resolving the link, exactly as the path-relative form it replaced.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statfsPtr, WASM_STATFS_SIZE, "host_statfs destination", )',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_image_read destination", )',
     disposition: "rust-lent",
-    why: "The host_statfs import binds its exact pointer formal to the generated fixed filesystem-stat capacity before backend work.",
+    why: "The host_image_read import binds the untouched Rust pointer and capacity formals before the VFS image provider is consulted; the read is bounded by that capacity and never by the image length.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, 4, "host_network_local_address destination", )',
+    disposition: "rust-lent",
+    why: "The host_network_local_address import binds its pointer formal to a fixed four-byte capacity, and the single write that follows is guarded by an exact four-byte length check on the host-owned address.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statfsPtr, WASM_STATFS_SIZE, "host_fstatfs destination", )',
@@ -1446,19 +1551,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The exact-handle host_fstatfs import binds its pointer formal to the generated fixed filesystem-stat capacity before retained-route policy lookup.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( valuePtr, 8, "host_pathconf destination", )',
-    disposition: "rust-lent",
-    why: "The host_pathconf import binds its exact pointer formal to the fixed eight-byte result capacity before backend work.",
-  },
-  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( valuePtr, 8, "host_fpathconf destination", )',
     disposition: "rust-lent",
     why: "The host_fpathconf import binds its exact pointer formal to the fixed eight-byte result capacity before backend work.",
-  },
-  {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_readlink destination", )',
-    disposition: "rust-lent",
-    why: "The host_readlink import binds the untouched Rust pointer and capacity formals before resolving the link.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( direntPtr, WASM_DIRENT_SIZE, "host_readdir dirent destination", )',
@@ -1516,11 +1611,6 @@ const auditAllowances: AuditAllowance[] = [
     why: "The display-mode import binds its exact pointer formal to the generated fixed structure capacity before inspecting display state.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWait::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
-    disposition: "kernel-control",
-    why: "The lossless pointer, four-byte current-memory range, and alignment are proved before constructing this one synchronous futex-wait atomic view.",
-  },
-  {
     key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWake::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
     disposition: "kernel-control",
     why: "The lossless pointer, four-byte current-memory range, and alignment are proved before constructing this one synchronous futex-wake atomic view.",
@@ -1564,6 +1654,55 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel.ts::WasmPosixKernel.ioctl::kernel-pointer-export-bypass::fn( fd, request, this.toKernelPtr(scalarArgument), bufLen, 4, )",
     disposition: "kernel-control",
     why: "This exact non-pointer ioctl branch passes a scalar command argument with zero buffer length; pointer ioctl requests use the scratch lease branch above.",
+  },
+  // Overlay/tmpfs boot path (Phase 5 cutover). `#maybeLoadKernelRootfs` stages
+  // host-authored trusted rootfs config (the manifest bytes and the
+  // NUL-separated foreign mount prefixes) into a kernel-owned scratch region
+  // that the kernel's own `kernel_alloc_scratch` allocated, then hands the
+  // kernel-authored pointer plus its exact byte length to the `kernel_rootfs_*`
+  // exports. Every destination pointer originates from the kernel allocator,
+  // every source is trusted boot config, and no guest-controlled pointer or
+  // length reaches kernel memory. `enableKernelTmpfs` is a pure control-scalar
+  // export call.
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::scratch-allocator-call::alloc(encoded.byteLength)",
+    disposition: "scratch-core",
+    why: "The overlay boot path allocates a kernel-owned scratch region sized to the NUL-separated foreign-prefix bytes through the kernel's own scratch allocator; the returned pointer is kernel-authored and stays private to this synchronous foreign-prefix publish.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-view::new Uint8Array(memory.buffer, fptrValue, encoded.byteLength)",
+    disposition: "kernel-control",
+    why: "This fixed-size view over the kernel-allocated scratch pointer stages the host-authored NUL-separated foreign mount prefixes into kernel memory; the pointer is kernel-authored, no guest-controlled pointer or length is involved, and the view is written once and discarded.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-write::new Uint8Array(memory.buffer, fptrValue, encoded.byteLength).set(encoded)",
+    disposition: "kernel-control",
+    why: "Copies the trusted host-authored foreign-prefix bytes into the kernel-allocated scratch region sized to that exact byte length; the destination is a kernel-authored pointer and the source is trusted boot config, so no guest pointer reaches kernel memory.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setNow(rootfsNowSecLo, rootfsNowSecHi, rootfsNowNsec)",
+    disposition: "kernel-control",
+    why: "kernel_set_rootfs_now receives only host clock control scalars (seconds high/low and nanoseconds); it borrows no kernel-memory pointer.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setForeign(fptr, encoded.byteLength)",
+    disposition: "kernel-control",
+    why: "kernel_rootfs_set_foreign_prefixes reads the trusted NUL-separated mount prefixes from the kernel-authored scratch pointer staged above and its exact byte length; the pointer originates from the kernel's own allocator, not from any guest input.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setNosuid(this.#rootfsNosuid ? 1 : 0)",
+    disposition: "kernel-control",
+    why: "kernel_set_rootfs_nosuid receives a single 0/1 set-ID policy control scalar; it borrows no kernel-memory pointer.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::enable(1)",
+    disposition: "kernel-control",
+    why: "kernel_set_rootfs_enabled receives a single enable control scalar to publish the overlay as the `/` authority; it borrows no kernel-memory pointer.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::enableKernelTmpfs::kernel-export-direct-use::fn(1)",
+    disposition: "kernel-control",
+    why: "kernel_set_tmpfs_enabled receives a single enable control scalar for the Phase 5 in-kernel tmpfs cutover; it borrows no kernel-memory pointer.",
   },
 ];
 
@@ -1759,6 +1898,41 @@ describe("kernel scratch static contract", () => {
       "kernel_preadv",
       "kernel_pwritev",
       "kernel_prepare_write_operation",
+      // ABI 44: exports deleted because nothing called them -- not the
+      // kernel, not the TypeScript host, not crates/host-native, not any
+      // test, script or .mjs harness, and no dynamic export lookup. Listing
+      // them here keeps the deletion permanent: a reintroduced name would
+      // have to come back in wasm_api.rs, one of the two legacy glue files,
+      // or the ABI snapshot, and all four are asserted below.
+      //
+      // kernel_ipc_shmdt is the one entry with live prefix relatives
+      // (kernel_ipc_shmdt_addr, _for_process, _for_task, ...). The \b
+      // anchors below stop those from masking the exact obsolete name,
+      // because "_" is a word character.
+      "kernel_clear_argv",
+      "kernel_convert_pipe_to_host",
+      "kernel_get_exit_status",
+      "kernel_get_fork_exec_path_pid",
+      "kernel_get_fork_state",
+      "kernel_get_pipe_ofds",
+      "kernel_getpgid_direct",
+      "kernel_gettimeofday",
+      "kernel_ipc_shmdt",
+      "kernel_is_fork_child_pid",
+      "kernel_is_signal_blocked",
+      "kernel_mmap",
+      "kernel_mq_is_mqd",
+      "kernel_mremap",
+      "kernel_posix_timer_interval_fire",
+      "kernel_prctl",
+      "kernel_rewinddir",
+      "kernel_rt_sigtimedwait",
+      "kernel_seekdir",
+      "kernel_sendfile",
+      "kernel_set_fork_exec",
+      "kernel_set_fork_fd_action",
+      "kernel_telldir",
+      "kernel_tgkill",
     ]) {
       expect(kernelWasmApiSource).not.toMatch(
         new RegExp(
@@ -1778,6 +1952,17 @@ describe("kernel scratch static contract", () => {
       expect(abiKernelExportNames.has(obsoleteRawExport)).toBe(false);
     }
 
+    // The four vector adapters used to parse a `KernelIovecWire` table out of
+    // kernel scratch, so the rule was that each must carry the allocation
+    // region alongside the table pointer -- a pointer alone proves only that
+    // it lands somewhere in kernel memory, not inside the live allocation.
+    //
+    // They parse nothing in kernel scratch now. Their `struct iovec *` is
+    // `SyscallArgSize::KernelDereferenced`: the host stages no table, and the
+    // kernel reads the CALLER's own table through the cross-memory primitives.
+    // Passing a `ChannelScratchRegion` would be meaningless, and the property
+    // that replaces it is stronger -- they must take a caller GUEST address
+    // and the caller's pointer width, and must never be handed kernel scratch.
     for (const helper of [
       "channel_readv",
       "channel_writev",
@@ -1787,16 +1972,25 @@ describe("kernel scratch static contract", () => {
       expect(kernelWasmApiSource).toMatch(
         new RegExp(
           `fn\\s+${helper}\\s*\\([\\s\\S]*?` +
-            `region:\\s*ChannelScratchRegion[\\s\\S]*?\\)\\s*->\\s*i32`,
+            `iov_addr:\\s*u64[\\s\\S]*?pointer_width:\\s*u32[\\s\\S]*?\\)\\s*->\\s*i32`,
+        ),
+      );
+      expect(kernelWasmApiSource).not.toMatch(
+        new RegExp(
+          `fn\\s+${helper}\\s*\\([\\s\\S]*?` +
+            `ChannelScratchRegion[\\s\\S]*?\\)\\s*->\\s*i32`,
         ),
       );
       expect(kernelWasmApiSource).toMatch(
-        new RegExp(`${helper}\\([\\s\\S]*?scratch_region[\\s\\S]*?\\)`),
+        new RegExp(
+          `${helper}\\([\\s\\S]*?guest_address!\\(1\\)[\\s\\S]*?` +
+            `caller_pointer_width!\\(\\)[\\s\\S]*?\\)`,
+        ),
       );
     }
-    expect(kernelWasmApiSource).toContain(
-      "checked_kernel_iovec_entries(iov_ptr, iovcnt, region)",
-    );
+    // The fixed kernel-scratch iovec wire is retired; nothing may parse one.
+    expect(kernelWasmApiSource).not.toContain("KernelIovecWire");
+    expect(kernelWasmApiSource).not.toContain("checked_kernel_iovec_entries");
     // Total linear-memory size can never stand in for allocation ownership.
     expect(kernelWasmApiSource).not.toContain("current_kernel_memory_bytes");
   });
@@ -1990,17 +2184,46 @@ describe("kernel scratch static contract", () => {
       );
     }
 
+    // The host consumes only the limits it still legitimately applies. Under
+    // ABI 44 the kernel became the authoritative `posix_spawn` blob parser
+    // (`crate::spawn::parse_blob`, reached through `kernel_spawn_blob_decode`),
+    // and the host stopped interpreting the guest spawn ABI at all. The argv
+    // and envp counts, the action count, and the wire record/header sizes are
+    // therefore kernel-owned now.
+    //
+    // WHY this list shrank rather than the host being "fixed" to match it:
+    // requiring the host to reference those symbols again would require the
+    // host to re-derive limits the kernel already enforces -- pushing an
+    // authority back out of the kernel to satisfy a test. That is backwards
+    // from the direction this contract exists to protect.
     for (const name of [
       "POSIX_ARG_MAX_BYTES",
       "POSIX_PATH_MAX_BYTES",
+      "SPAWN_WIRE_MAX_BYTES",
+    ]) {
+      expect(hostKernelWorkerSource).toMatch(new RegExp(`\\b${name}\\b`));
+    }
+
+    // The authority really did move: the host must reach the kernel's parser
+    // rather than growing its own. Without this, the shrunken list above would
+    // be indistinguishable from the host quietly dropping the constants while
+    // still parsing spawn blobs itself.
+    expect(hostKernelWorkerSource).toMatch(/\bkernel_spawn_blob_decode\b/);
+
+    // And it must not reintroduce kernel-owned spawn limits under any local
+    // spelling.
+    for (const name of [
       "SPAWN_MAX_ARGV_COUNT",
       "SPAWN_MAX_ENVP_COUNT",
       "SPAWN_MAX_ACTION_COUNT",
       "SPAWN_WIRE_HEADER_BYTES",
       "SPAWN_WIRE_ACTION_RECORD_BYTES",
-      "SPAWN_WIRE_MAX_BYTES",
     ]) {
-      expect(hostKernelWorkerSource).toMatch(new RegExp(`\\b${name}\\b`));
+      expect(
+        hostKernelWorkerSource,
+        `${name} is kernel-owned under ABI 44; the host must not consume or ` +
+          "redefine it",
+      ).not.toMatch(new RegExp(`\\b${name}\\b`));
     }
   });
 });

@@ -39,7 +39,10 @@ DECLARED_TOOL_PATH="${KANDELO_DEV_SHELL_TOOL_PATH:-$PATH}"
 NODE_BIN="$(PATH="$DECLARED_TOOL_PATH" type -P node || true)"
 [ -n "$NODE_BIN" ] || fail "node is not available from KANDELO_DEV_SHELL_TOOL_PATH"
 TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
-[ -f "$TSX_CLI" ] || fail "locked tsx CLI not found at $TSX_CLI"
+[ -f "$TSX_CLI" ] || fail "locked tsx CLI not found at $TSX_CLI
+  Install the repository's locked JavaScript dependencies first: npm ci (at the
+  repo root). \`npm --prefix host install\` is NOT enough -- tsx is a root
+  dependency, not a host/ one."
 TSX_TMP="$(mktemp -d /tmp/kandelo-node.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
 

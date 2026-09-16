@@ -22,6 +22,11 @@ const processWorkerSource = readFileSync(
   join(repoRoot, "host/src/worker-main.ts"),
   "utf8",
 );
+/** The single implementation both entries call for shared lifecycle logic. */
+const sharedLifecycleSource = readFileSync(
+  join(repoRoot, "host/src/process-lifecycle.ts"),
+  "utf8",
+);
 
 describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   const source = readFileSync(path, "utf8");
@@ -33,16 +38,34 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   });
 
   it("routes lifecycle, protocol, exec, clone, and thread failures as host diagnostics", () => {
+    // The subject is that each failure class reaches main as a host
+    // diagnostic, not which file raises it. `worker protocol` is now raised
+    // once in `host/src/process-lifecycle.ts` on behalf of both entries, so
+    // it is asserted there — and the entry must still bind the reporter, so
+    // deleting the wire keeps failing this test.
+    expect(source).toContain('source: "worker-main error message"');
+    // `clone allocation` and `thread worker failure` join `worker protocol`
+    // in `host/src/process-lifecycle.ts`: `handleClone` is now one
+    // implementation serving both hosts, so each is raised once. That is
+    // stronger than asserting it twice — a clone failure can no longer be
+    // reported on one host and swallowed on the other — and the entry must
+    // still bind the reporter and the handler, so deleting either wire keeps
+    // failing this test.
+    // `exec post-commit transition` joined them when `handleExec` became one
+    // implementation: an exec that fails after the commit point can no longer
+    // be reported on one host and swallowed on the other.
     for (const diagnosticSource of [
       "worker protocol",
-      "worker-main error message",
-      "exec post-commit transition",
       "clone allocation",
       "thread worker failure",
+      "exec post-commit transition",
     ]) {
-      expect(source).toContain(`source: "${diagnosticSource}"`);
+      expect(sharedLifecycleSource).toContain(`source: "${diagnosticSource}"`);
     }
-    expect(source).toContain("reportHostDiagnostic({");
+    expect(source).toContain("handleClone");
+    expect(source).toContain("handleExec");
+    expect(source).toContain("reportWorkerProtocolError");
+    expect(source).toContain("reportHostDiagnostic");
   });
 
   it("does not classify an ordinary nonzero process exit as a host failure", () => {
@@ -52,15 +75,26 @@ describe.each(entries)("%s kernel-worker diagnostic routing", (_name, path) => {
   });
 
   it("wires a poisoned shared kernel instance to definitive worker teardown", () => {
-    expect(source).toMatch(
+    // The teardown itself is one implementation in
+    // `host/src/process-lifecycle.ts` now, so it is asserted there. What each
+    // entry still owes is the wire into the kernel and the one irreducibly
+    // host-specific step: stopping its own worker realm once the kernel can no
+    // longer coordinate anything.
+    expect(sharedLifecycleSource).toMatch(
       /\bfunction\s+terminatePoisonedKernelWorker\s*\(\s*error:\s*Error\s*\)/,
     );
-    expect(source).toMatch(
-      /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
-    );
-    expect(source).toMatch(
+    expect(sharedLifecycleSource).toMatch(
       /post\(\{\s*type:\s*"kernel_fatal",\s*error:\s*detail\s*\}\)/,
     );
+    expect(sharedLifecycleSource).toContain("host.stopKernelRealm()");
+    // The kernel callback record is shared now, so the wire is asserted
+    // there; the entry must still take that record.
+    expect(sharedLifecycleSource).toMatch(
+      /\bonKernelFatal:\s*terminatePoisonedKernelWorker\b/,
+    );
+    expect(source).toContain("...processLifecycleKernelCallbacks(),");
+    expect(source).toContain("terminatePoisonedKernelWorker,");
+    expect(source).toMatch(/\bstopKernelRealm:\s*\(\)\s*=>/);
   });
 });
 

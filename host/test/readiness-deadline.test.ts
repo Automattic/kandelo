@@ -44,7 +44,7 @@ interface TestChannel {
   readonly memory: WebAssembly.Memory;
   readonly channelOffset: number;
   readonly i32View: Int32Array;
-  readinessDeadline?: number;
+  waitHandle?: bigint;
   readinessFinalCheck?: boolean;
 }
 
@@ -58,10 +58,10 @@ interface ReadinessState {
   }>;
   readonly hostReaped: Set<number>;
   readonly pendingPollRetries: Map<TestChannel, {
-    readonly deadline: number;
+    readonly deadlineHintMs: number;
   }>;
   readonly pendingSelectRetries: Map<TestChannel, {
-    readonly deadline: number;
+    readonly deadlineHintMs: number;
     readonly needsSignalSafeWake: boolean;
   }>;
 }
@@ -371,12 +371,17 @@ describe("finite readiness deadlines", () => {
     expect(retainedSnapshot?.dispatch.adjustedArgs[2]).toBe(120);
     expect(retainedSnapshot?.dispatch.readinessTimeoutMs).toBe(120);
 
-    expect(harness.channel.readinessDeadline).toBe(1_120);
+    // The deadline itself is kernel state now; what the host keeps is the
+    // handle naming it. The invariant under test is that the retries share one
+    // deadline rather than each restarting the clock, so the handle must be
+    // the same one across all of them.
+    const waitHandle = harness.channel.waitHandle;
+    expect(waitHandle).toBeTypeOf("bigint");
     await vi.advanceTimersByTimeAsync(119);
     expect(harness.completeChannel).not.toHaveBeenCalled();
     expect(observedKernelTimeouts.length).toBeGreaterThanOrEqual(3);
     expect(new Set(observedKernelTimeouts)).toEqual(new Set([120]));
-    expect(harness.channel.readinessDeadline).toBe(1_120);
+    expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(1);
     await Promise.resolve();
@@ -416,22 +421,30 @@ describe("finite readiness deadlines", () => {
     const args = syscallArgs(0, 0, 30);
 
     dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
-      .toBe(2_030);
+    // The absolute deadline is kernel state; the host keeps a monotonic hint
+    // for sizing its safety timer. Either way the point is that a broad wake
+    // must not push the expiry out, so assert the value does not move.
+    const hint = harness.state.pendingPollRetries
+      .get(harness.channel)?.deadlineHintMs;
+    expect(hint).toBeTypeOf("number");
+    expect(harness.channel.waitHandle).toBeTypeOf("bigint");
+    const waitHandle = harness.channel.waitHandle;
 
     await vi.advanceTimersByTimeAsync(5);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
     await vi.advanceTimersByTimeAsync(0);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
-      .toBe(2_030);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
+      .toBe(hint);
+    expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(7);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
     await vi.advanceTimersByTimeAsync(0);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
-      .toBe(2_030);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
+      .toBe(hint);
+    expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(17);
     expect(harness.completeChannel).not.toHaveBeenCalled();
@@ -466,8 +479,9 @@ describe("finite readiness deadlines", () => {
     const args = syscallArgs(pollPointer, 1, 40);
 
     dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadline)
-      .toBe(3_040);
+    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
+      .toBeTypeOf("number");
+    expect(harness.channel.waitHandle).toBeTypeOf("bigint");
 
     await vi.advanceTimersByTimeAsync(7);
     harness.worker.notifyPipeReadable(99);
@@ -595,10 +609,9 @@ describe("finite readiness deadlines", () => {
     const initialEntry = harness.state.pendingSelectRetries.get(
       harness.channel,
     );
-    expect(initialEntry).toMatchObject({
-      deadline: 2_100,
-      needsSignalSafeWake: true,
-    });
+    expect(initialEntry).toMatchObject({ needsSignalSafeWake: true });
+    expect(initialEntry?.deadlineHintMs).toBeTypeOf("number");
+    const initialHint = initialEntry?.deadlineHintMs;
     await vi.advanceTimersByTimeAsync(20);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
@@ -606,7 +619,7 @@ describe("finite readiness deadlines", () => {
     expect(
       harness.state.pendingSelectRetries.get(harness.channel),
     ).toBe(initialEntry);
-    expect(initialEntry?.deadline).toBe(2_100);
+    expect(initialEntry?.deadlineHintMs).toBe(initialHint);
     await vi.advanceTimersByTimeAsync(30);
     expect(retrySyscall).not.toHaveBeenCalled();
 
@@ -664,7 +677,11 @@ describe("host-emulated epoll signal delivery", () => {
     expect(harness.completeChannel).not.toHaveBeenCalled();
     expect(harness.relistenChannel).not.toHaveBeenCalled();
     expect(harness.state.pendingPollRetries.size).toBe(0);
-    expect(harness.handleChannel).not.toHaveBeenCalled();
+    // The kernel IS dispatched, exactly as it is for a non-empty interest
+    // list: an empty list is its zero-event answer, not a host short-circuit.
+    // What matters is that the reap happens on the far side of that boundary
+    // and the guest is never woken, which the assertions above and below pin.
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
     expect(
       new DataView(harness.processMemory.buffer).getUint32(CH_STATUS, true),
     ).toBe(CHANNEL_STATUS_PENDING);

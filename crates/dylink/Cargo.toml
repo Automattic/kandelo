@@ -1,0 +1,20 @@
+[package]
+name = "dylink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure Rust dynamic-linking planner for WebAssembly side modules"
+
+[lib]
+name = "dylink"
+crate-type = ["rlib"]
+
+[dependencies]
+# The KFLA fork-archive decoder. `crates/fork-codec/src/dylink_archive.rs` was
+# ported from `host/src/dylink-fork-archive.ts` and had ZERO callers; the
+# planner consumes its `DylinkModule` / `DylinkInitializationStage` records as
+# its replay input rather than declaring a second set of the same types.
+fork-codec = { path = "../fork-codec" }
+# The fork-instrument export contract, read from its single authority instead
+# of the hand-copied list `host/src/dylink.ts:46-54` maintains.
+wasm-posix-shared = { path = "../shared" }

@@ -1,0 +1,20 @@
+{
+  "file": "crates/shared/tests/host-memory-ranges.json",
+  "verify": "npx vitest run host/test/kernel-scratch-range.test.ts",
+  "trials": [
+    {
+      "name": "L4: a case is marked rustOnly with no true reason",
+      "scope": "\"name\": \"one byte past the end is refused\"",
+      "scope_end": "    },\n",
+      "find": "\"limitPages\": 1,",
+      "replace": "\"limitPages\": 1,\n    \"rustOnly\": true,"
+    },
+    {
+      "name": "L4: an expected verdict is changed",
+      "scope": "\"name\": \"one byte past the end is refused\"",
+      "scope_end": "    },\n",
+      "find": "\"verdict\": \"out-of-bounds\"",
+      "replace": "\"verdict\": \"ok\""
+    }
+  ]
+}

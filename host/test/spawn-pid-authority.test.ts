@@ -256,6 +256,9 @@ describe("kernel task-ID authority", () => {
           return count;
         }),
         kernel_exec_target_cancel: vi.fn(() => 0),
+        // Kernel-owned shebang decode (Phase 6 D3): a real wasm target is not
+        // a script, so the export reports "not a script" with 0.
+        kernel_exec_target_shebang: vi.fn(() => 0),
       },
     });
     kernelBytes = new Uint8Array(emptyPath.kernelMemory.buffer);
@@ -589,10 +592,24 @@ describe("kernel task-ID authority", () => {
       /export interface SpawnMessage \{[\s\S]*?\n\}/,
     )?.[0];
 
-    expect(nodeEntry).toContain("kernelWorker.createProcess(");
-    expect(browserEntry).toContain("kernelWorker.createProcess(");
-    expect(nodeEntry).not.toMatch(/next(?:Child|Spawn)Pid/);
-    expect(browserEntry).not.toMatch(/next(?:Child|Spawn)Pid/);
+    // The PID comes from Rust. `handleSpawn` is one implementation in
+    // `host/src/process-lifecycle.ts` serving both hosts now, so the
+    // `createProcess` call is asserted there — which is stronger, because a
+    // host can no longer allocate its own PID on a path the other does not
+    // have. Each entry must still bind the handler, and neither may reintroduce
+    // a host-side PID counter.
+    const sharedLifecycle = readFileSync(
+      join(repoRoot, "host", "src", "process-lifecycle.ts"),
+      "utf8",
+    );
+    expect(sharedLifecycle).toContain("kernelWorker.createProcess(");
+    for (const entry of [nodeEntry, browserEntry]) {
+      expect(
+        entry.includes("  handleSpawn,\n") && entry.includes("} = lifecycle;"),
+      ).toBe(true);
+      expect(entry).not.toMatch(/next(?:Child|Spawn)Pid/);
+    }
+    expect(sharedLifecycle).not.toMatch(/next(?:Child|Spawn)Pid/);
     expect(spawnMessage).toBeDefined();
     expect(spawnMessage).not.toMatch(/\bpid\??:/);
   });

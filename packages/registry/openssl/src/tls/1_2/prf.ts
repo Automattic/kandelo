@@ -1,4 +1,4 @@
-import { concatArrayBuffers } from '../shims';
+import { concatArrayBuffers, toCryptoBufferSource } from '../shims';
 
 /**
  * Implements the TLS 1.2 PRF using HMAC-SHA256.
@@ -16,7 +16,7 @@ export async function tls12Prf(
 	// Import the secret as a CryptoKey
 	const hmacKey = await crypto.subtle.importKey(
 		'raw',
-		secret,
+		toCryptoBufferSource(secret),
 		{ name: 'HMAC', hash: { name: 'SHA-256' } },
 		false,
 		['sign']

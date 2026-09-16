@@ -717,8 +717,37 @@ kandelo_package_stage_verified_source() {
     # both gzip and xz archives, and tar should select the decompressor from
     # the verified bytes rather than a recipe-specific filename convention.
     tarball="$download_dir/source.archive"
-    if ! curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$source_url" -o "$tarball"; then
+    # WHY a list and not just --retry: `curl --retry` retries the SAME url. When
+    # that url is a redirector, it re-resolves to the same host every time, so a
+    # mirror that is missing the file fails identically on every attempt. Observed
+    # 2026-09-14: ftpmirror.gnu.org sent every request for bash-5.2.37.tar.gz to
+    # one mirror returning 404, three tries running, while the canonical host
+    # served it fine. Fourteen packages share that pin.
+    #
+    # Trying several hosts is safe here specifically because $source_sha256 gates
+    # the bytes below, whoever served them: this widens availability without
+    # widening trust. The recipes cpython, less and libxml2 each grew their own
+    # copy of this loop; it belongs here instead.
+    kandelo_source_urls="$source_url"
+    if [ -n "${WASM_POSIX_DEP_SOURCE_MIRRORS:-}" ]; then
+        kandelo_source_urls="$kandelo_source_urls
+$WASM_POSIX_DEP_SOURCE_MIRRORS"
+    fi
+    kandelo_fetched=0
+    while IFS= read -r kandelo_url; do
+        [ -n "$kandelo_url" ] || continue
+        if curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+            -fsSL "$kandelo_url" -o "$tarball"; then
+            kandelo_fetched=1
+            break
+        fi
+        echo "$label: source host failed, trying the next: $kandelo_url" >&2
+        rm -f "$tarball"
+    done <<KANDELO_SOURCE_URLS
+$kandelo_source_urls
+KANDELO_SOURCE_URLS
+    if [ "$kandelo_fetched" -ne 1 ]; then
+        echo "ERROR: $label could not fetch its source from any configured host" >&2
         rm -rf "$download_dir"
         return 1
     fi

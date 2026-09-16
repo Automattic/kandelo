@@ -5,3 +5,11 @@ edition.workspace = true
 
 [lib]
 crate-type = ["rlib"]
+
+# Test-only. `tests/process_memory_layout.rs` reads the hand-derived layout
+# corpus that `host/test/process-memory-layout.test.ts` reads too, so the two
+# hosts are checked against one file of expectations rather than two sets of
+# assertions that happen to agree today. The library itself stays `no_std` and
+# dependency-free.
+[dev-dependencies]
+serde_json = "1"

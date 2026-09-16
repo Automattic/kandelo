@@ -1,0 +1,47 @@
+[package]
+name = "wasm-artifact-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone wasm entry point for the WebAssembly artifact reader and ABI-epoch policy"
+
+# The wasm face of `crates/wasm-artifact`.
+#
+# `crates/wasm-artifact` is a pure `no_std + alloc` library. `crates/kernel`
+# links it directly (`kernel_exec_target_artifact_policy`) and the build tooling
+# links it natively. Neither of those reaches the callers that matter most for
+# deleting `host/src/constants.ts`, because those callers have NO KERNEL:
+#
+#   * `host/src/kernel.ts` needs an artifact's pointer width to build the
+#     import object BEFORE the kernel module is compiled -- a genuine bootstrap
+#     floor no kernel export can serve;
+#   * `worker-main.ts`, `dylink.ts`, `fork-host-import-runtime.ts` and
+#     `wasm-module-reflection.ts` run in the PROCESS worker, which holds no
+#     kernel instance at all;
+#   * `binary-resolver.ts` validates `kernel.wasm` itself, on the main thread,
+#     before any kernel exists.
+#
+# A kernel export therefore cannot retire the TypeScript reader. A standalone
+# module can, because it depends on nothing: it dissolves the bootstrap paradox
+# rather than working around it.
+[lib]
+name = "wasm_artifact_module"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-artifact = { path = "../wasm-artifact" }
+wasm-posix-shared = { path = "../shared" }
+
+# The module owns its own linear memory -- it imports nothing at all, not even
+# `env.memory` -- so it supplies its own global allocator. `dlmalloc` is what
+# `crates/kernel` and `crates/dylink-module` use, and crucially it RECLAIMS: a
+# process worker validates one artifact after another over its lifetime and
+# must give the memory back.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dlmalloc = { version = "0.2.14", default-features = false }
+
+[target.'cfg(target_arch = "wasm64")'.dependencies]
+dlmalloc = { version = "0.2.14", default-features = false }
+
+[dev-dependencies]
+wat = "1"

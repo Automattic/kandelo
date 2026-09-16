@@ -22,6 +22,8 @@ import {
   type Transferable,
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
+// The main thread validates `kernel.wasm` itself, before any kernel exists.
+
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -109,12 +111,40 @@ export interface NodeKernelHostOptions {
   /** Attach a real-TCP backend in the worker so wasm programs can dial
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
+  /**
+   * Explicit co-resident fork-module wasm bytes keyed by pointer width. The
+   * fork module is the unconditional fork reconstructor the kernel worker ships
+   * to every process worker; it is normally resolved through the binary
+   * resolver. A build-time boot that runs under the source-only resolution
+   * policy without a source-only binary root (its declared inputs arrive as
+   * explicit bytes, not a finalized projection) passes the artifact here —
+   * exactly as `kernelWasmBytes` injects the kernel — so the kernel worker
+   * never re-enters the resolver. Omitted resolves the fork module normally.
+   */
+  forkModuleBytesByWidth?: Partial<Record<4 | 8, ArrayBuffer | Uint8Array>>;
+  /**
+   * Explicit co-resident dynamic-linking planner wasm bytes
+   * (`dylink_module32.wasm`), on exactly the terms above.
+   *
+   * A boot that omits this and cannot resolve the planner does not fail here.
+   * It fails much later, the first time a guest calls `dlopen` — which is what
+   * makes the omission worth an explicit option rather than a resolver retry:
+   * `php` loading `opcache.so` inside a build-time WordPress or LAMP image
+   * boot reported `dlopen: this process worker has no dynamic-linking planner
+   * module` with nothing to connect it back to resolution policy.
+   */
+  dylinkModuleBytes?: ArrayBuffer | Uint8Array;
   /** Called when a process writes to stdout */
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (pid: number, data: Uint8Array) => void;
   /** Called for host-runtime diagnostics that are not guest stderr. */
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
+  /** Called for co-resident fork-module proof-of-use telemetry (frame/reference
+   *  reconstruction counts). This is an informational success signal, NOT a
+   *  problem, so it rides a channel separate from `onHostDiagnostic`; a caller
+   *  that does not opt in never sees a fork emit proof-of-use. */
+  onForkModuleProof?: (diagnostic: HostDiagnostic) => void;
   /** Called as lazy VFS files or trees are fetched on demand. */
   onLazyDownload?: (event: LazyDownloadEvent) => void;
   /** Called when a process writes PTY output */
@@ -398,9 +428,17 @@ export class NodeKernelHost {
         const maxProcessMemoryBytes =
           this.options.maxProcessMemoryBytes
           ?? maxWorkers * maxPages * WASM_PAGE_SIZE;
+        const forkModuleBytesByWidth = snapshotForkModuleBytesByWidth(
+          this.options.forkModuleBytesByWidth,
+        );
+        const dylinkModuleBytes = snapshotModuleBytes(
+          this.options.dylinkModuleBytes,
+        );
         const initMsg: MainToKernelMessage = {
           type: "init",
           kernelWasmBytes: wasmBytes,
+          forkModuleBytesByWidth,
+          dylinkModuleBytes,
           config: {
             maxWorkers,
             maxPages,
@@ -1104,6 +1142,15 @@ export class NodeKernelHost {
         });
         break;
       }
+      case "fork_module_proof": {
+        this.options.onForkModuleProof?.({
+          pid: msg.pid,
+          source: msg.source,
+          message: msg.message,
+          ...(msg.status === undefined ? {} : { status: msg.status }),
+        });
+        break;
+      }
       case "pty_output":
         this.options.onPtyOutput?.(msg.pid, msg.data);
         break;
@@ -1227,6 +1274,39 @@ function resolveRootfsImage(
   return override;
 }
 
+/**
+ * Copy each injected fork-module artifact into a fresh, non-shared ArrayBuffer
+ * so the worker init protocol accepts it (the source may be a pooled Buffer
+ * view or a SharedArrayBuffer). Returns undefined when nothing was injected, so
+ * the kernel worker keeps resolving the fork module through the binary
+ * resolver as usual.
+ */
+function snapshotForkModuleBytesByWidth(
+  injected: Partial<Record<4 | 8, ArrayBuffer | Uint8Array>> | undefined,
+): Partial<Record<4 | 8, ArrayBuffer>> | undefined {
+  if (injected === undefined) return undefined;
+  const out: Partial<Record<4 | 8, ArrayBuffer>> = {};
+  for (const width of [4, 8] as const) {
+    const src = injected[width];
+    if (src === undefined) continue;
+    out[width] = snapshotModuleBytes(src)!;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Detach one injected wasm artifact from the caller's buffer before it is posted. */
+function snapshotModuleBytes(
+  src: ArrayBuffer | Uint8Array | undefined,
+): ArrayBuffer | undefined {
+  if (src === undefined) return undefined;
+  if (src instanceof Uint8Array) {
+    const copy = new ArrayBuffer(src.byteLength);
+    new Uint8Array(copy).set(src);
+    return copy;
+  }
+  return src.slice(0);
+}
+
 export interface ResolvedRootfsArtifact {
   resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
   selectedPath: string;
@@ -1264,6 +1344,10 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
   const entryTs = join(MODULE_DIR, "node-kernel-worker-entry.ts");
   const entryJs = join(MODULE_DIR, "node-kernel-worker-entry.js");
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
+
+  // The co-resident fork-module is the unconditional fork reconstructor, so the
+  // kernel worker always resolves and ships it to process workers; there is no
+  // per-host env override to forward.
 
   // Check for compiled .js version first (much faster startup)
   if (compiledWorkerEntryIsCurrent(entryTs, distJs)) {

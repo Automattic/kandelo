@@ -1,0 +1,13 @@
+{
+ "file": "host/src/process-lifecycle.ts",
+ "verify": "cd host && npx vitest run test/browser-worker-node-globals.test.ts >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the one VFS symbol is taken from the barrel again, dragging node:fs into the browser bundle",
+   "scope": "import { readPreparedPlatformFile }",
+   "scope_end": ";\n",
+   "find": "import { readPreparedPlatformFile } from \"./vfs/vfs\";",
+   "replace": "import { readPreparedPlatformFile } from \"./vfs\";"
+  }
+ ]
+}
