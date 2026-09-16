@@ -1,1230 +1,998 @@
-// Phase 6 D5 step 4b/5: the host-side driver that makes a QUALIFYING simple
-// fork run its continuation through the co-resident `fork-module` (wasm→wasm
-// over the shared memory) instead of the per-frame JavaScript closures in
-// `ForkProcessContinuationCoordinator`. This backend owns every `fm_*` call and
-// the placement of the serialized replay-event image so the coordinator's
-// module-backed branches stay small and structurally parallel to the JS path.
-//
-// Scope (single-activation, single-thread, no dlopen/references/vfork): the
-// coordinator activates these branches only when `enableModuleBacking` was
-// called with an instance of this class, which `worker-main` does solely for a
-// qualifying fork behind `WASM_POSIX_FORK_MODULE`. Flag-off / non-qualifying
-// forks never construct this and are byte-identical to today.
+/**
+ * The host's calls into the co-resident fork module, for both JS hosts.
+ *
+ * This replaces a 1239-line wrapper that predated most of what the module can
+ * now do. Two things shrank it.
+ *
+ * The module folded eleven `fm_*` counter exports into one `fm_stats(field)`;
+ * the host wrapper kept eight one-line accessors over it, so reading a counter
+ * cost a method here AND a field constant. One `stat()` replaces them, and the
+ * field numbering lives next to the module's own array.
+ *
+ * And half of the old wrapper served callers that are no longer here: the
+ * capture/replay orchestration the module took over. Methods are added back when
+ * a caller needs one, not in anticipation.
+ *
+ * Every call reports through `fm_last_errno`, so every wrapper checks it. A
+ * module entry that failed silently would surface as a wrong fork much later.
+ */
 
-import { WASM_PAGE_SIZE } from "./constants";
+import type { ForkSideActivation } from "./fork-activations";
+import type { ForkModuleInstance } from "./fork-module-instance";
 import {
   ContinuationAllocationError,
   type LinkedFrameFormatDescriptor,
 } from "./fork-continuation";
-import type { ForkModuleExports } from "./fork-module-instance";
 
 /**
- * The fork-module's static resume-catalog cap (mirrors `RESUME_CATALOG_CAP` in
- * `crates/fork-module/src/lib.rs` and `crates/host-native/src/guest.rs`). Sized
- * to hold every real guest's catalog with headroom (largest shipped: php-fpm
- * 19190, php 19026, node/spidermonkey 16555). A catalog past this cap FAILS LOUD
- * via the backend constructor — Phase 3 removed the silent JS-continuation
- * fallback. `FORK_MODULE_STAGING_BYTES` (fork-module-instance.ts) must hold
- * `FORK_MODULE_RESUME_CATALOG_CAP * 4` bytes so a COPIED fork child stages the
- * catalog into the inherited slab without growing memory.
+ * Field indices into the module's `fm_stats` array, in its order.
+ *
+ * DUPLICATED from the `stats` array in `crates/fork-module/src/lib.rs`. Reading
+ * the wrong index returns a plausible number from the wrong counter, which is a
+ * wrong diagnostic rather than an error -- so `host/test/fork-module-backend.test.ts`
+ * pins these against that array.
+ */
+export const FORK_MODULE_STATS = [
+  "framesCommitted",
+  "framesReplayed",
+  "referencesReconstructed",
+  "externrefsResolved",
+  "exnrefsReconstructed",
+  "gcNodesReconstructed",
+  "staticRootsPublished",
+  "driveStepsExecuted",
+  "referenceFeedReads",
+  "referenceGraphsDecoded",
+  "externrefHandlesScanned",
+] as const;
+
+/**
+ * The backend, or a loud failure naming what was missing.
+ *
+ * The handle is nullable everywhere in the worker, and every fork path that
+ * reaches these calls has one by construction — a fork only gets here having
+ * instantiated the module. A bare `!` would be right and would also mean that
+ * if the impossible ever happened, the failure would name a JavaScript property
+ * rather than the thing that was absent.
+ *
+ * One guard rather than one per call site: this replaced a
+ * `borrowedReplayWorkspaceOf` that did the same job for exactly one method,
+ * which stopped being the right shape as soon as a second caller needed it.
+ */
+export function requireForkModuleBackend(
+  backend: ForkModuleContinuationBackend | null,
+  pid: number,
+): ForkModuleContinuationBackend {
+  if (backend === null) {
+    throw new Error(`pid=${pid}: this fork path needs a fork-module backend`);
+  }
+  return backend;
+}
+
+/** Sizes a vfork BORROWED child's host-reserved private workspace. */
+export interface ForkBorrowedReplayWorkspace {
+  readonly prefixBytes: number;
+  readonly scratchBytes: number;
+}
+
+export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
+
+/** `ENOMEM`: the module could not get memory, which a fork survives. */
+const FORK_MODULE_ENOMEM = 12;
+
+/**
+ * The module's resume-catalog capacity, in ordinals.
+ *
+ * DUPLICATED from `RESUME_CATALOG_CAP` in `crates/fork-module/src/lib.rs`, whose
+ * comment names THIS file as its counterpart -- the module sizes a static
+ * `[u32; CAP]` arena from it, so a host that staged more would be writing past
+ * the end of it. Pinned against that constant by
+ * `host/test/fork-module-backend.test.ts`.
  */
 export const FORK_MODULE_RESUME_CATALOG_CAP = 65_536;
 
 /**
- * Field indices for the module's single folded proof-of-use counter accessor
- * `fm_stats(field) -> i64`, which replaced the former 11 individual `fm_*`
- * counter exports. MUST match `fm_stats`'s match arms in
- * `crates/fork-module/src/lib.rs`, the `FM_STAT_*` constants in
- * `crates/host-native/src/guest.rs`, and `FM_STAT` in
- * `crates/fork-module/tests/harness.mjs`; all ship in lockstep.
+ * Drive-table slots reserved per activation.
+ *
+ * DUPLICATED from `DRIVE_SLOTS_PER_ACTIVATION` in `fork-codec`; the module
+ * derives every slot from `fm_drive_table_base`, so a host that grew the table
+ * by a smaller stride would leave later activations overlapping earlier ones.
  */
-/**
- * Field selector for `fm_decoded_node_field(index, field) -> i32`, which
- * replaced the former `fm_decoded_node_kind`,
- * `fm_decoded_node_module_activation` and `fm_decoded_node_ordinal` exports.
- * MUST match `fm_decoded_node_field`'s match arms in
- * `crates/fork-module/src/lib.rs`; they ship in lockstep.
- */
-export enum FmDecodedNodeField {
-  Kind = 0,
-  ModuleActivation = 1,
-  Ordinal = 2,
-}
-
-export enum FmStatField {
-  FramesCommitted = 0,
-  FramesReplayed = 1,
-  ReferencesReconstructed = 2,
-  ExternrefsResolved = 3,
-  ExnrefsReconstructed = 4,
-  GcNodesReconstructed = 5,
-  StaticRootsPublished = 6,
-  DriveStepsExecuted = 7,
-  RefFeedReads = 8,
-  ReferenceGraphsDecoded = 9,
-  ExternrefHandlesScanned = 10,
-}
+export const FORK_ACTIVATION_DRIVE_SLOTS = 16;
 
 /**
- * The guest offset + byte length of the serialized replay-event (KFRE) journal
- * image the module channel-mmap'd (Option B). `finishUnwindAndSerialize`
- * returns this; the coordinator records it in a `JournalImage` KFMS record so
- * the forked child finds the inherited image.
+ * One activation's guest exports, bound into the module's drive table so the
+ * module can `call_indirect` them.
+ *
+ * Each entry is `[slot offset, guest export name]`. The offsets are
+ * DUPLICATED from `crates/fork-codec/src/drive_plan.rs`, and binding the wrong
+ * one makes the module call the wrong guest function with the right-looking
+ * arguments -- a silent wrong answer, so `host/test/fork-module-backend.test.ts`
+ * pins them against that file.
+ *
+ * This replaces `forkGcCodecProviderFromInstance`, which bound the same exports
+ * into a JavaScript object the host then called. The module calls them now, so
+ * the host only has to put them somewhere the module can reach.
  */
-export interface ForkModuleJournalImage {
-  ptr: number;
-  len: number;
+export interface ForkActivationDriveBinding {
+  /** Slot offset within the activation's slice, from `fork-codec`'s drive plan. */
+  readonly slot: number;
+  /** The guest export bound there. */
+  readonly name: string;
+  /**
+   * Whether a fork-instrumented guest must export it.
+   *
+   * The unwind/rewind/abort quartet is emitted by the instrumentation runtime
+   * for every fork-capable guest, so a missing one is a broken artifact and has
+   * to fail loudly -- the module WILL drive that slot, and an unbound slot is a
+   * `call_indirect` on null.
+   *
+   * The module-state restore pair is required for the same reason, and the
+   * binding it replaces said so explicitly: restore and finish reconstruct an
+   * activation's global and table state, which exists even for an activation
+   * carrying no references at all, so every activation the attach plan
+   * enumerates must have them bound.
+   *
+   * The rest are conditional on what the guest actually contains: no typed-GC
+   * codec means no allocate/fill, and no exception codec means no materialize.
+   * The module emits no step for what a guest does not have, so an unbound
+   * optional slot is never driven.
+   */
+  readonly required: boolean;
 }
+
+export const FORK_ACTIVATION_DRIVE_BINDINGS: readonly ForkActivationDriveBinding[] = [
+  { slot: 0, name: "__wpk_fork_ref_gc_allocate", required: false },
+  { slot: 1, name: "__wpk_fork_ref_gc_fill", required: false },
+  { slot: 2, name: "__wpk_fork_exception_materialize", required: false },
+  { slot: 3, name: "wpk_fork_module_state_restore", required: true },
+  { slot: 4, name: "wpk_fork_module_state_finish_restore", required: true },
+  { slot: 5, name: "wpk_fork_rewind_begin", required: true },
+  { slot: 6, name: "wpk_fork_abort_begin", required: true },
+  { slot: 7, name: "wpk_fork_unwind_end", required: true },
+  { slot: 8, name: "wpk_fork_rewind_end", required: true },
+  { slot: 9, name: "wpk_fork_abort_end", required: true },
+  { slot: 10, name: "wpk_fork_unwind_begin", required: true },
+  { slot: 11, name: "__wpk_fork_ref_gc_encode_slot", required: false },
+  { slot: 12, name: "__wpk_fork_ref_gc_probe", required: false },
+  { slot: 13, name: "wpk_fork_module_state_save", required: true },
+  // The peer-table checkpoint's save walk. Not required: a guest built
+  // without dylink support has no table state to publish.
+  { slot: 14, name: "wpk_fork_module_table_state_save", required: false },
+  // The activation's own tagged thrower, so the MODULE can ask whichever
+  // activation owns an exception recipe to raise it. Not required: a guest with
+  // no exception codec has no tags to raise and exports no thrower.
+  { slot: 15, name: "__wpk_fork_ref_exn_throw_recipe", required: false },
+] as const;
+
+/** Selectors for `fm_decoded_node_field`, in the module's `match` order. */
+const DECODED_FIELD_KIND = 0;
+const DECODED_FIELD_MODULE_ACTIVATION = 1;
 
 export interface ForkModuleBackendOptions {
-  /** The co-resident module instance's guest-facing + lifecycle exports. */
-  readonly exports: ForkModuleExports;
-  /**
-   * The module's imported `__wpk_fork_drive_table` (funcref). The coarse
-   * `parentReplay`/`parentAbort` entries drive each activation's guest
-   * `wpk_fork_rewind_begin` / `wpk_fork_abort_begin` through the injected
-   * `fm_drive_execute` shim, which `call_indirect`s this table at
-   * `fm_drive_table_base(activation) + DRIVE_SLOT_{REWIND,ABORT}_BEGIN`. The
-   * host binds those slots (`bindActivationBeginDrive`) — the ref-typed table
-   * write is a host floor Rust cannot express. Shared with the child
-   * reconstruct drive's alloc/fill/exn/restore bindings in `worker-main`.
-   */
-  readonly driveTable: WebAssembly.Table;
-  /** The single shared guest linear memory (the frame data plane). */
+  readonly instance: ForkModuleInstance;
   readonly memory: WebAssembly.Memory;
-  /** Guest pointer width: 4 for wasm32, 8 for wasm64. */
   readonly ptrWidth: 4 | 8;
-  /** The guest's real linked-frame format (from `readLinkedFrameFormat`). */
   readonly format: LinkedFrameFormatDescriptor;
-  /**
-   * The FULL resume catalog's function ordinals (from `readForkResumeCatalog`),
-   * seeded into the module so its resume-slot numbering matches the JS
-   * `__wpk_fork_resume_table` by construction. Must be `<= CAP`.
-   */
+  /** The guest's resume-target function ordinals, in slot order. */
   readonly catalogOrdinals: readonly number[];
+  /** The worker's dlopen control address, or 0 when it has no archive. */
+  readonly archiveControlAddr?: number;
+  /** The physical table whose patches this worker applies. */
+  readonly tableOwner?: number;
   /**
-   * The guest syscall channel base. The module channel-mmaps its per-fork frame
-   * chunks and the journal image through this channel (Option B: dynamic,
-   * kernel-tracked `SYS_mmap` → `find_gap` placement, no fork-depth cap and no
-   * carved-out guest region). Also used for the small pre-fork catalog scratch.
-   * Must be page-aligned and nonzero.
+   * This worker's syscall channel base. Publishing a table patch allocates its
+   * record with SYS_MMAP through the same channel the guest uses, so the module
+   * needs it -- and a borrowed fork child cannot derive it from the archive
+   * control address, which belongs to its owner.
    */
-  readonly channelBase: number;
-  /**
-   * Reserve a small page-aligned guest region for PRE-FORK CATALOG SCRATCH only
-   * (production: channel `continuationMmap`). This is unrelated to frame
-   * allocation — the module owns that — and stays only to stage the
-   * resume-catalog ordinals `setup()`/`setActivationResumeCatalog` copy in.
-   */
-  readonly reserveRegion: (size: number) => number;
-  /** Release a region reserved by `reserveRegion` (production: `continuationMunmap`). */
-  readonly releaseRegion: (addr: number, size: number) => void;
-  /**
-   * The child process PID. Passed to the module's `fm_begin_reference_replay`
-   * so its `drive_reconstruction` opens the host root generation
-   * (`begin_generation(pid)`) that owns this fork's re-rooted externref
-   * identities (Phase 6 D6.2).
-   */
-  readonly pid: number;
-  readonly label: string;
+  readonly channelBase?: number;
+  readonly label?: string;
 }
 
-/**
- * Drives one process worker's fork continuation through the co-resident module.
- *
- * A parent worker calls `beginUnwind` → `finishUnwindAndSerialize` →
- * `beginParentReplay` → `finishReplay`. A fresh child worker (its own instance
- * at a different `__memory_base`, empty journal) calls only `beginChildReplay`
- * → `finishReplay`, seeding entirely from the copied guest memory.
- */
-/**
- * Drive-table slot offsets within an activation's slice (must match
- * `fork_codec::drive_plan` DRIVE_SLOT_REWIND_BEGIN / DRIVE_SLOT_ABORT_BEGIN /
- * DRIVE_SLOT_UNWIND_END and the DRIVE_SLOTS_PER_ACTIVATION stride the module's
- * `fm_drive_table_base` reserves). ALLOC/FILL/EXN/RESTORE/FINISH_RESTORE occupy
- * slots 0..=4; the per-activation REPLAY/ABORT begin drive occupies 5/6; the
- * capture-SEAL `wpk_fork_unwind_end` drive occupies 7; the REPLAY/ABORT finish
- * drives occupy 8/9; the capture-BEGIN `wpk_fork_unwind_begin` drive occupies 10
- * (appended so the earlier assignments are unchanged).
- */
-const DRIVE_SLOT_REWIND_BEGIN = 5;
-const DRIVE_SLOT_ABORT_BEGIN = 6;
-const DRIVE_SLOT_UNWIND_END = 7;
-const DRIVE_SLOT_REWIND_END = 8;
-const DRIVE_SLOT_ABORT_END = 9;
-const DRIVE_SLOT_UNWIND_BEGIN = 10;
-
 export class ForkModuleContinuationBackend {
-  private readonly exports: ForkModuleExports;
-  private readonly driveTable: WebAssembly.Table;
-  private readonly memory: WebAssembly.Memory;
-  private readonly ptrWidth: 4 | 8;
-  private readonly format: LinkedFrameFormatDescriptor;
-  private readonly catalogOrdinals: readonly number[];
-  private readonly channelBase: number;
-  private readonly reserveRegion: (size: number) => number;
-  private readonly releaseRegion: (addr: number, size: number) => void;
-  private readonly pid: number;
   private readonly label: string;
-
-  /** Whether the parent module unwind is active (Option B: no host arena). */
-  private unwindActive = false;
-  private moduleBuffer = 0;
   private didSetup = false;
 
-  constructor(options: ForkModuleBackendOptions) {
-    this.exports = options.exports;
-    this.driveTable = options.driveTable;
-    this.memory = options.memory;
-    this.ptrWidth = options.ptrWidth;
-    this.format = options.format;
-    this.catalogOrdinals = options.catalogOrdinals;
-    this.channelBase = options.channelBase;
-    this.reserveRegion = options.reserveRegion;
-    this.releaseRegion = options.releaseRegion;
-    this.pid = options.pid;
-    this.label = options.label;
-    if (
-      !Number.isSafeInteger(this.channelBase)
-      || this.channelBase <= 0
-      || this.channelBase % WASM_PAGE_SIZE !== 0
-    ) {
-      throw new RangeError(
-        `${this.label}: fork-module channel base must be a positive page multiple`,
-      );
-    }
-    if (this.catalogOrdinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
-      throw new RangeError(
-        `${this.label}: resume catalog of ${this.catalogOrdinals.length} exceeds `
-          + `the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
+  /**
+   * Read lazily, so the capacity check below genuinely runs BEFORE any export is
+   * touched -- which is what lets a caller prove the boundary with a stand-in
+   * instance, and is what `fork-module-backend-coarse-failures` asserts.
+   */
+  private get exports(): Record<string, (...args: never[]) => unknown> {
+    return this.options.instance.exports as Record<
+      string,
+      (...args: never[]) => unknown
+    >;
+  }
+
+  constructor(private readonly options: ForkModuleBackendOptions) {
+    this.label = options.label ?? "fork-module backend";
+    // Checked HERE, not in `setup()`: it needs no module call, and a catalog
+    // over the cap is a fact about the guest that is knowable the moment this is
+    // constructed. The module sizes a static `[u32; CAP]` arena from the same
+    // number, so staging more would write past its end.
+    if (options.catalogOrdinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
+      throw new Error(
+        `${this.label}: a resume catalog of ${options.catalogOrdinals.length} ` +
+          `ordinals exceeds the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
       );
     }
   }
 
+  /** The errno the last module call reported. */
+  lastErrno(): number {
+    return (this.exports.fm_last_errno as () => number)();
+  }
+
+  private call(name: string, ...args: (number | bigint)[]): number {
+    const fn = this.exports[name] as
+      | ((...a: (number | bigint)[]) => number)
+      | undefined;
+    if (fn === undefined) {
+      throw new Error(`${this.label}: fork-module exports no ${name}`);
+    }
+    const result = fn(...args);
+    const errno = this.lastErrno();
+    if (errno !== 0) {
+      // EBUSY (16) from a phase entry means the module was in a DIFFERENT phase
+      // than the entry requires, and WHICH phase is the whole diagnosis --
+      // "errno 16" alone leaves a reader six to guess between, which cost an
+      // afternoon on the externref fork (census section 188). The module
+      // answers it, so say it. Written as one expression deliberately: this
+      // surface's ceiling equals its target, so a diagnostic pays for itself
+      // in lines or it does not land.
+      throw new Error(`${this.label}: ${name} failed with errno ${errno}${errno === 16 ? ` in module phase ${(this.exports.fm_phase as () => number)()}` : ""}`);
+    }
+    return result;
+  }
+
   /**
-   * Seed the linked-frame format and the FULL resume catalog once per worker,
-   * before any fork. Both are host-known (the guest module's custom sections),
-   * so this runs at process init on every worker that may drive a module fork.
+   * The once-per-worker seed, which also RESETS every per-activation catalog --
+   * so it must run before any of the `setActivation*` calls below, and exactly
+   * once. A second call would silently discard their seeds.
    */
   setup(): void {
     if (this.didSetup) {
-      throw new Error(`${this.label}: fork-module backend is already set up`);
+      throw new Error(`${this.label}: already set up`);
     }
-    this.exports.fm_set_format(this.ptrWidth, this.format.fixedPrefixSize);
-    this.requireOk("fm_set_format");
-    const count = this.catalogOrdinals.length;
-    if (count > 0) {
-      const byteLen = count * 4;
-      const regionBytes = alignUpPage(byteLen);
-      const scratch = this.reserveRegion(regionBytes);
-      try {
-        const view = new DataView(this.memory.buffer);
-        for (let i = 0; i < count; i++) {
-          view.setUint32(scratch + i * 4, this.catalogOrdinals[i]! >>> 0, true);
-        }
-        this.exports.fm_set_resume_catalog(this.wptr(scratch), this.wptr(count));
-        this.requireOk("fm_set_resume_catalog");
-      } finally {
-        this.releaseRegion(scratch, regionBytes);
-      }
-    }
+    this.call(
+      "fm_set_format",
+      this.options.ptrWidth,
+      this.options.format.fixedPrefixSize,
+      this.options.archiveControlAddr ?? 0,
+      this.options.tableOwner ?? 0,
+      this.options.channelBase ?? 0,
+    );
+    // The catalog is seeded AFTER the format, which resets it. Seeding first
+    // would be silently discarded -- the bug the module's own reset comment
+    // records having been hit on real forks.
+    const ordinals = this.options.catalogOrdinals;
+    const bytes = new Uint8Array(ordinals.length * 4);
+    const view = new DataView(bytes.buffer);
+    ordinals.forEach((ordinal, i) => view.setUint32(i * 4, ordinal >>> 0, true));
+    const at = this.stage(bytes, "resume catalog");
+    this.call("fm_set_resume_catalog", at, ordinals.length);
     this.didSetup = true;
   }
 
-  /** Number of frames the module has committed since worker start (proof-of-use). */
-  framesCommitted(): bigint {
-    return this.readStat(FmStatField.FramesCommitted);
-  }
-
   /**
-   * Number of frames the module has REPLAYED (consuming rewind advances) since
-   * worker start (Phase 6 D7b proof-of-use). A replay-only forked child never
-   * commits a frame, so `framesCommitted()` stays 0 on the child; this counter
-   * advances once per consumed frame and is the child worker's positive proof
-   * that its rewind ran through the module, not a silent JS fallback.
+   * One module counter, by name rather than by a method each.
+   *
+   * No local "is that a real field?" check: `fm_stats` answers -1 for a field it
+   * does not have, and the module is the authority on which fields exist.
+   * Checking first here would be a second opinion on the same question, which is
+   * the duplication this lane has been removing everywhere else.
    */
-  framesReplayed(): bigint {
-    return this.readStat(FmStatField.FramesReplayed);
-  }
-
-  /**
-   * Number of references (funcref or null) the module has reconstructed since
-   * worker start (Phase 6 D6.1 proof-of-use). Advances only when
-   * `__wpk_fork_ref_decode_funcref` runs through the module; a silent JS
-   * fallback leaves it unchanged.
-   */
-  referencesReconstructed(): bigint {
-    return this.readStat(FmStatField.ReferencesReconstructed);
-  }
-
-  /**
-   * Number of externrefs the module has re-rooted through the `wpk_fork_host`
-   * engine-floor seam since worker start (Phase 6 D6.2 proof-of-use). Advances
-   * only when `fm_begin_reference_replay` drives `resolve_externref` through the
-   * module; a silent JS fallback leaves it unchanged.
-   */
-  externrefsResolved(): bigint {
-    return this.readStat(FmStatField.ExternrefsResolved);
-  }
-
-  /**
-   * Number of exnref nodes the module has admitted and driven since worker start
-   * (Phase 6 D6.3a proof-of-use). Advances only when `fm_begin_reference_replay`
-   * drives an exnref-bearing graph through the module; a silent JS fallback
-   * leaves it unchanged.
-   */
-  exnrefsReconstructed(): bigint {
-    return this.readStat(FmStatField.ExnrefsReconstructed);
-  }
-
-  /**
-   * Number of typed-GC nodes (struct + array + i31) the module has admitted and
-   * driven since worker start (Phase 6 D6.4a proof-of-use). Advances only when
-   * `fm_begin_reference_replay` drives a typed-GC graph through the module; a
-   * silent JS fallback leaves it unchanged.
-   */
-  gcNodesReconstructed(): bigint {
-    return this.readStat(FmStatField.GcNodesReconstructed);
-  }
-
-  /**
-   * Number of static roots the static-root binder has published into the anyref
-   * transit since worker start (proof-of-use). Advances only when the module's
-   * DRIVE_OP_STATIC_ROOT step resolved + republished an immutable static root
-   * (`fm_static_root_slot`); a silent JS `publishTransit` fallback leaves it
-   * unchanged.
-   */
-  staticRootsPublished(): bigint {
-    return this.readStat(FmStatField.StaticRootsPublished);
-  }
-
-  /**
-   * Number of typed-GC drive STEPS the module has executed since worker start
-   * (Phase 6 item 3c proof-of-use). Distinct from `gcNodesReconstructed`, which
-   * `fm_begin_reference_replay` bumps merely by ADMITTING the graph (the item 3a
-   * data feed): this advances ONLY when `driveTypedGraph` ran the module's
-   * `fm_build_gc_plan` + `fm_drive_execute`, so a nonzero value proves the module
-   * — not the JS `materializeAllTyped` fallback — drove the typed allocate/fill/
-   * exn topological order. Never resets.
-   */
-  driveStepsExecuted(): bigint {
-    return this.readStat(FmStatField.DriveStepsExecuted);
-  }
-
-  /**
-   * Read one field of the module's folded proof-of-use statistics record via
-   * the single `fm_stats(field)` export (which replaced the former 11
-   * individual counter exports). Returns the monotonic-since-worker-start
-   * count. Throws on the module's `-1` unknown-field sentinel.
-   */
-  private readStat(field: FmStatField): bigint {
-    const value = BigInt(
-      (this.exports.fm_stats as (field: number) => number | bigint)(field),
-    );
+  stat(name: ForkModuleStat): bigint {
+    const field = FORK_MODULE_STATS.indexOf(name);
+    const value = (this.exports.fm_stats as (f: number) => bigint)(field);
     if (value < 0n) {
-      throw new RangeError(
-        `${this.label}: fm_stats returned ${value} for unknown field ${field}`,
-      );
+      throw new Error(`${this.label}: fm_stats rejected field ${field} (${name})`);
     }
     return value;
   }
 
   /**
-   * Seed ONE activation's raw KFGC (`kandelo.wpk_fork.gc_codec`) section bytes
-   * for this worker (Phase 6 item 3c). Staged into guest memory the same way
-   * `setup()` stages the resume catalog; the module copies them into its own
-   * arena, so the scratch is released immediately after. Called ONCE per
-   * participating activation per worker, before any fork drives the GC plan.
+   * Child-private workspace a vfork BORROWED child needs, sized by the module.
+   *
+   * Ported out of the JS coordinator, which reached into each activation's
+   * frame format for its fixed prefix and into the capture session for the
+   * scratch high-water -- per-activation module state and the module's own
+   * allocator, read through a JS mirror of both. The module walks its own
+   * activations now; this is the read.
+   *
+   * Legal only once the capture has sealed. The module answers `EBUSY` off
+   * phase rather than an undercount, because before the seal the activation set
+   * is still growing and the scratch high-water has not peaked -- and an
+   * undersized reservation means one activation's rewind writing into another's
+   * prefix, which is silent.
    */
-  setActivationGcCodec(activationId: number, bytes: Uint8Array): void {
-    this.requireSetup("seed activation GC codec");
-    const byteLen = bytes.byteLength;
-    if (byteLen === 0) {
-      throw new RangeError(
-        `${this.label}: activation ${activationId} GC codec is empty`,
+  borrowedReplayWorkspace(): ForkBorrowedReplayWorkspace {
+    const read = (field: number): number => {
+      const value = Number(
+        (this.exports.fm_borrowed_replay_workspace as (f: number) => bigint)(
+          field,
+        ),
       );
-    }
-    const regionBytes = alignUpPage(byteLen);
-    const scratch = this.reserveRegion(regionBytes);
-    try {
-      new Uint8Array(this.memory.buffer, scratch, byteLen).set(bytes);
-      this.exports.fm_set_activation_gc_codec(
-        activationId,
-        this.wptr(scratch),
-        this.wptr(byteLen),
-      );
-      this.requireOk("fm_set_activation_gc_codec");
-    } finally {
-      this.releaseRegion(scratch, regionBytes);
-    }
+      if (value < 0) {
+        throw new Error(
+          `${this.label}: fm_borrowed_replay_workspace rejected field ${field}`,
+        );
+      }
+      return value;
+    };
+    return { prefixBytes: read(0), scratchBytes: read(1) };
   }
 
   /**
-   * Seed the host-exception owner for this worker (Phase 6 item 3c): the smallest
-   * activation that declared an exception codec descriptor, which the drive plan
-   * uses to remap a HOST-exception exnref's owner exactly as the JS `directOwner`.
-   * Pass `0xffff_ffff` when there is no such owner (the JS `null`). Called ONCE
-   * per worker, before any fork drives the GC plan.
+   * Seed one activation's 32-byte module template id.
+   *
+   * The module writes a `Module` record per activation into the capture arena,
+   * and that record carries this id -- so without the seed a capture refuses
+   * with `EINVAL` rather than writing a record with a zero id. The bytes are
+   * a hash of the module the host holds, which is why they are seeded rather
+   * than computed.
    */
-  setHostExceptionOwner(owner: number): void {
-    this.requireSetup("set host exception owner");
-    this.exports.fm_set_host_exception_owner(owner >>> 0);
-    this.requireOk("fm_set_host_exception_owner");
+  setActivationTemplateId(activationId: number, templateId: Uint8Array): void {
+    if (templateId.byteLength !== 32) {
+      throw new Error(
+        `${this.label}: activation ${activationId} template id has ` +
+          `${templateId.byteLength} bytes, expected 32`,
+      );
+    }
+    const at = this.stage(templateId, "activation template id");
+    this.call("fm_set_activation_template_id", activationId, at);
+  }
+
+  setActivationCatalogBase(activationId: number, base: number): void {
+    this.call("fm_set_activation_catalog_base", activationId, base);
+  }
+
+  setActivationStaticRootBase(activationId: number, base: number): void {
+    this.call("fm_set_activation_static_root_base", activationId, base);
   }
 
   /**
-   * Seed ONE activation's declared exnref tag ordinals for this worker (the
-   * exnref tag-validity admission gate). `ordinals` are the tag ordinals that
-   * activation's `kandelo.wpk_fork.exception_codec` section declares; the module's
-   * child-install entry (`fm_attach_child` / `fm_attach_borrowed_child`) re-checks
-   * every captured exnref recipe against them BEFORE building the reconstruction
-   * drive plan, so a recipe naming an undeclared tag fails loud (`EINVAL`) rather
-   * than being materialized blindly. This is the module-side successor to the
-   * former host boundary `assertForkModuleExnrefTagsDeclared`. Staged into guest
-   * memory the same way `setActivationResumeCatalog` stages its ordinals; the
-   * module copies them into its own arena, so the scratch is released
-   * immediately. Called ONCE per activation per worker, before any fork drives
-   * reference reconstruction. An activation that declares no exnref tags is not
-   * seeded (nothing to declare); any exnref naming it then fails the gate.
+   * One activation's own resume-target ordinals.
+   *
+   * Distinct from the process catalog `setup()` seeds: a side module loaded by
+   * `dlopen` brings its own resume targets, and its slot numbering has to match
+   * the funcref table the module indexes for it.
    */
-  setActivationExceptionTags(
+  setActivationResumeCatalog(
     activationId: number,
     ordinals: readonly number[],
   ): void {
-    this.requireSetup("seed activation exception tags");
-    const count = ordinals.length;
-    if (count === 0) return;
-    const byteLen = count * 4;
-    const regionBytes = alignUpPage(byteLen);
-    const scratch = this.reserveRegion(regionBytes);
-    try {
-      const view = new DataView(this.memory.buffer);
-      for (let i = 0; i < count; i++) {
-        view.setUint32(scratch + i * 4, ordinals[i]! >>> 0, true);
-      }
-      this.exports.fm_set_activation_exception_tags(
-        this.wptr(activationId),
-        this.wptr(scratch),
-        this.wptr(count),
-      );
-      this.requireOk("fm_set_activation_exception_tags");
-    } finally {
-      this.releaseRegion(scratch, regionBytes);
-    }
-  }
-
-  /**
-   * Reconstruction-orchestration ENTRY (Phase 6). Seed the reference replay
-   * driver/feed from the inherited KFMS arena rooted at `moduleStateRoot` AND
-   * build the whole topological drive plan in ONE module call
-   * (`fm_restore_from_arena` = the collapsed `fm_begin_reference_replay` +
-   * `fm_build_gc_plan`), returning the plan's guest address for
-   * `driveRestoredPlan`. This moves the reference SEEDING + drive-order
-   * CONSTRUCTION into the module: the host no longer issues a separate
-   * `beginReferenceReplay` and then rebuilds the plan inside the drive closure.
-   * GC graphs still require each participating activation's `setActivationGcCodec`
-   * to have run at worker init (exactly as `driveTypedGraph` does). A missing
-   * driver, un-seeded GC activation, malformed arena, or an unadmitted reference
-   * kind (`EOPNOTSUPP`, host keeps the JS path) is a truthful throw, never a
-   * wrong plan.
-   */
-  restoreFromArena(moduleStateRoot: number): number {
-    this.requireSetup("restore from arena");
-    const planPtr = this.toNum(
-      this.exports.fm_restore_from_arena(this.wptr(moduleStateRoot), this.pid),
-    );
-    this.requireOk("fm_restore_from_arena");
-    return planPtr;
-  }
-
-  /**
-   * Child-install ENTRY for a COW module-backed child (Phase 6). Seeds the
-   * reference replay driver from the inherited KFMS arena AND builds ONE drive
-   * plan whose tail drives every activation's guest
-   * `wpk_fork_module_state_restore` / `wpk_fork_module_state_finish_restore`
-   * through the host-bound drive table — moving the JS `restoreModuleState`
-   * two-phase install SEQUENCING into the module. Supersedes `restoreFromArena`
-   * on the module-on child attach path: same reconstruction seed + plan build,
-   * plus the appended restore/finish steps. Returns the plan's guest address for
-   * `driveRestoredPlan` (the step count includes the restore/finish steps and is
-   * read from `fm_gc_plan_count`). A missing driver, un-seeded GC activation, or
-   * malformed arena is a truthful throw.
-   */
-  attachChild(moduleStateRoot: number): number {
-    this.requireSetup("attach child");
-    const planPtr = this.toNum(
-      this.exports.fm_attach_child(this.wptr(moduleStateRoot), this.pid),
-    );
-    this.requireOk("fm_attach_child");
-    return planPtr;
-  }
-
-  /**
-   * Child-install ENTRY for a vfork BORROWED module-backed child. The install
-   * plan is byte-identical to `attachChild`; the only borrowed-specific work (the
-   * child-private replay-prefix reservation) is raw host memory management handled
-   * by the coordinator, not this module call. Kept as a distinct entry so the
-   * borrowed path is explicit and future borrowed-specific install divergence has
-   * a home.
-   */
-  attachBorrowedChild(moduleStateRoot: number): number {
-    this.requireSetup("attach borrowed child");
-    const planPtr = this.toNum(
-      this.exports.fm_attach_borrowed_child(this.wptr(moduleStateRoot), this.pid),
-    );
-    this.requireOk("fm_attach_borrowed_child");
-    return planPtr;
-  }
-
-  /**
-   * Path-A INC-C: decode the inherited KFMS module-state arena rooted at
-   * `moduleStateRoot` into the module's RESIDENT read-only reference graph and
-   * return its node count. Distinct from `restoreFromArena`/`attachChild` (which
-   * seed the replay DRIVER): this seeds ONLY the read-only decoded graph so the
-   * host can read node kinds + coordinates from the module (`decodedNodeKind` /
-   * `decodedNodeModuleActivation` / `decodedNodeOrdinal`) instead of walking the
-   * JS `decodeSegmentedForkReferenceTransaction` structure. Reuses the SAME
-   * shared arena decode as the replay entry, so the resident structure is
-   * byte-identical to the JS decode. Reclaims any prior resident graph and
-   * survives a later `attachChild` (which does not touch it), so a pre-instance
-   * decode stays readable across the post-instance attach.
-   */
-  decodeReferenceGraph(moduleStateRoot: number): number {
-    this.requireSetup("decode reference graph");
-    const count = this.toNum(
-      this.exports.fm_decode_reference_graph(this.wptr(moduleStateRoot)),
-    );
-    this.requireOk("fm_decode_reference_graph");
-    return count;
-  }
-
-  /**
-   * The node count of the module's resident decoded reference graph (the
-   * `decodeReferenceGraph` result). Fails loudly (`fm_last_errno`) if no graph is
-   * resident.
-   */
-  decodedNodeCount(): number {
-    this.requireSetup("decoded node count");
-    const count = this.toNum(this.exports.fm_decoded_node_count());
-    this.requireOk("fm_decoded_node_count");
-    return count;
-  }
-
-  /**
-   * The wire node-kind discriminant (`0..=7`: null 0, funcref 1, externref 2,
-   * exnref 3, i31 4, struct 5, array 6, static-root 7) of the resident decoded
-   * graph node at `index` (== canonical node id). Fails loudly if no graph is
-   * resident or `index` is out of range.
-   */
-  decodedNodeKind(index: number): number {
-    return this.decodedNodeField(index, FmDecodedNodeField.Kind, "kind");
-  }
-
-  /**
-   * The `module_activation` coordinate of the resident decoded graph node at
-   * `index` (funcref/exnref/struct/array/static-root). Fails loudly if no graph
-   * is resident, `index` is out of range, or the node's kind carries no
-   * activation (null/externref/i31) — callers must gate on `decodedNodeKind`.
-   */
-  decodedNodeModuleActivation(index: number): number {
-    return this.decodedNodeField(
-      index,
-      FmDecodedNodeField.ModuleActivation,
-      "module activation",
-    );
-  }
-
-  /**
-   * The kind-specific ordinal ("second word") of the resident decoded graph node
-   * at `index`: funcref function ordinal, exnref tag ordinal, struct/array type
-   * ordinal, static-root static-root ordinal. Fails loudly if no graph is
-   * resident, `index` is out of range, or the node's kind carries no ordinal
-   * (null/externref/i31) — callers must gate on `decodedNodeKind`.
-   */
-  decodedNodeOrdinal(index: number): number {
-    return this.decodedNodeField(index, FmDecodedNodeField.Ordinal, "ordinal");
-  }
-
-  /**
-   * Shared body for the three typed decoded-node readers above. They keep their
-   * distinct names and doc comments — the host-side API stays as specific as it
-   * was — while sharing the single `fm_decoded_node_field` module export.
-   */
-  private decodedNodeField(
-    index: number,
-    field: FmDecodedNodeField,
-    label: string,
-  ): number {
-    this.requireSetup(`decoded node ${label}`);
-    // `index` is a `usize` module argument, so it takes the same guest-word
-    // conversion as a pointer (i64 on wasm64, i32 on wasm32). `field` is a
-    // plain `u32` selector and is passed as-is.
-    const value = this.toNum(
-      this.exports.fm_decoded_node_field(this.wptr(index), field),
-    );
-    this.requireOk(`fm_decoded_node_field (${label})`);
-    return value;
-  }
-
-  /**
-   * Execute a drive plan previously built by `restoreFromArena` through the
-   * injected `fm_drive_execute` shim. Mirrors `driveTypedGraph`'s count/ptr
-   * validation but consumes the PRE-BUILT plan rather than rebuilding it — the
-   * plan-BUILD moved to the `restoreFromArena` entry. The shared anyref transit
-   * must already be sized by the caller's `prepareTransit` (the host-side floor
-   * the module cannot size from Rust). Returns the executed step count (0 for a
-   * graph with no drivable node, e.g. funcref/null-only).
-   */
-  driveRestoredPlan(planPtr: number): number {
-    this.requireSetup("drive restored plan");
-    const count = Number(this.exports.fm_gc_plan_count() as number | bigint);
-    if (!Number.isSafeInteger(count) || count < 0) {
+    if (ordinals.length > FORK_MODULE_RESUME_CATALOG_CAP) {
       throw new Error(
-        `${this.label}: fm_gc_plan_count returned invalid count ${count}`,
+        `${this.label}: activation ${activationId}'s catalog of ` +
+          `${ordinals.length} ordinals exceeds the module cap ` +
+          `${FORK_MODULE_RESUME_CATALOG_CAP}`,
       );
     }
-    if (count === 0) return 0;
-    if (!Number.isSafeInteger(planPtr) || planPtr <= 0) {
-      throw new Error(
-        `${this.label}: fm_restore_from_arena returned invalid plan ptr ${planPtr}`,
-      );
-    }
-    // The injected shim owns its own truthful failure (a post-allocate integrity
-    // violation traps with `unreachable`); it sets no errno, so completion IS
-    // success.
-    this.exports.fm_drive_execute(this.wptr(planPtr), count);
-    return count;
+    const bytes = new Uint8Array(ordinals.length * 4);
+    const view = new DataView(bytes.buffer);
+    ordinals.forEach((ordinal, i) => view.setUint32(i * 4, ordinal >>> 0, true));
+    const at = this.stage(bytes, `activation ${activationId} resume catalog`);
+    this.call(
+      "fm_set_activation_resume_catalog",
+      activationId,
+      at,
+      ordinals.length,
+    );
+  }
+
+  setHostExceptionOwner(owner: number): void {
+    this.call("fm_set_host_exception_owner", owner);
   }
 
   /**
-   * Capture BEGIN, coarsened (control-flow inversion). ONE module call sequences
-   * the whole capture-begin phase internally: open activation 0's fresh capture,
-   * add each side activation (a dlopen fork's side module) from the seeded
-   * `(id, fixedPrefix)` list, publish each activation's arena root into its
-   * module-buffer prefix, then drive each activation's guest
-   * `wpk_fork_unwind_begin(root)` through the injected `fm_drive_execute` shim in
-   * ascending id order (`NORMAL` -> `UNWINDING`). Replaces the host's former
-   * per-activation `beginUnwind` / `addActivationUnwind` + `writeForkModuleStateRoot`
-   * + `wpk_fork_unwind_begin` loop. Each participating activation's
-   * `bindActivationUnwindBeginDrive` must have run first (the ref-typed table bind
-   * is a host floor). Returns activation 0's module-buffer anchor; side anchors are
-   * read back with `activationModuleBuffer`. A guest reconstruction failure traps
-   * inside the shim exactly as it did under the host loop.
+   * Hand the module one activation's raw GC codec section.
+   *
+   * The bytes are staged into the module's own slab rather than anywhere the
+   * guest might reuse: the module keeps the POINTER, not a copy, so the region
+   * has to stay valid and untouched for the life of the worker.
+   */
+  setActivationGcCodec(activationId: number, bytes: Uint8Array): void {
+    const at = this.stage(bytes, `activation ${activationId} GC codec`);
+    this.call("fm_set_activation_gc_codec", activationId, at, bytes.length);
+  }
+
+  /**
+   * Publish which `(activation, owner)` coordinate WRITES a physical table's
+   * sparse state, which the module then serves to the guest's
+   * `__wpk_fork_module_state_table_state_owned` import.
+   *
+   * Imported aliases name one `WebAssembly.Table`, and only the canonical
+   * coordinate writes its state; the others still contribute mutation marks.
+   * Deciding which is canonical is host floor -- it compares Table OBJECT
+   * IDENTITY, which wasm cannot observe -- and `ForkTableStateOwners` makes
+   * that decision. This is only the wire it leaves on.
+   */
+  setActivationTableStateOwner(
+    activationId: number,
+    ownerId: number,
+    owns: boolean,
+  ): void {
+    this.call(
+      "fm_set_activation_table_state_owner",
+      activationId,
+      ownerId,
+      owns ? 1 : 0,
+    );
+  }
+
+  /**
+   * Hand the module one activation's raw import declarations: the KFIG section
+   * for `space` 0, the KFIT section for 1.
+   *
+   * Raw and undecoded, like the two codec sections above. The module refuses a
+   * malformed one HERE rather than at the capture that finally reads it.
+   */
+  setActivationImports(space: number, activationId: number, bytes: Uint8Array): void {
+    const at = this.stage(bytes, `activation ${activationId} imports ${space}`);
+    this.call("fm_set_activation_imports", space, activationId, at, bytes.length);
+  }
+
+  /**
+   * Tell the module that one catalog entry is the object `groupId` names.
+   *
+   * Entries sharing a group are one `WebAssembly.Global` or `WebAssembly.Table`.
+   * The host assigns the ids because only JavaScript can compare object
+   * identity; which member PROVIDES the object is the module's election, since
+   * that needs the KFIG/KFIT sections it is seeded with.
+   */
+  setIdentityGroup(
+    space: number,
+    activationId: number,
+    ownerId: number,
+    groupId: number,
+  ): void {
+    this.call("fm_set_identity_group", space, activationId, ownerId, groupId);
+  }
+
+  /**
+   * Tell the module what one imported global or table turned out to be.
+   *
+   * `BASE_IMPORT` is not a kind a host may publish: it asserts that no
+   * activation provides the object, which is the election's conclusion.
+   */
+  setImportProvenance(
+    space: number,
+    consumerActivation: number,
+    importOrdinal: number,
+    kind: number,
+    groupId: number,
+    rawBits: bigint,
+  ): void {
+    this.call(
+      "fm_set_import_provenance",
+      space,
+      consumerActivation,
+      importOrdinal,
+      kind,
+      groupId,
+      rawBits,
+    );
+  }
+
+  /**
+   * Hand the module one activation's raw exception codec section.
+   *
+   * Raw, not decoded: the module derives the tag ordinals itself. The host used
+   * to decode this section to produce a `u32` array, which made it a second
+   * decoder of a module-owned format.
+   */
+  setActivationExceptionCodec(activationId: number, bytes: Uint8Array): void {
+    const at = this.stage(bytes, `activation ${activationId} exception codec`);
+    this.call(
+      "fm_set_activation_exception_codec",
+      activationId,
+      at,
+      bytes.length,
+    );
+  }
+
+  /**
+   * Open this fork's capture: register the activations, publish each one's arena
+   * root, and drive every guest `wpk_fork_unwind_begin` — one module call.
+   *
+   * `0` for the arena root asks the module to allocate its own and declare the
+   * activation set into it. A caller that brings its own root keeps the older
+   * contract, which is what `crates/host-native` still does.
+   *
+   * Returns activation 0's module-buffer anchor, which the host publishes as the
+   * process launch root. A side activation's anchor is read back separately;
+   * this entry returns only the first because its result is a single value.
    */
   parentBeginCapture(
+    channelBase: number,
     arenaRoot: number,
-    sideActivations: readonly { id: number; fixedPrefix: number }[],
+    sides: readonly ForkSideActivation[],
   ): number {
-    this.requireSetup("parent begin capture");
-    if (this.unwindActive) {
-      throw new Error(`${this.label}: fork-module unwind already active`);
-    }
-    const count = sideActivations.length;
-    let scratch = 0;
-    let regionBytes = 0;
-    if (count > 0) {
-      regionBytes = alignUpPage(count * 8);
-      scratch = this.reserveRegion(regionBytes);
-    }
-    try {
-      if (count > 0) {
-        const view = new DataView(this.memory.buffer);
-        for (let i = 0; i < count; i++) {
-          const side = sideActivations[i]!;
-          view.setUint32(scratch + i * 8, side.id >>> 0, true);
-          view.setUint32(scratch + i * 8 + 4, side.fixedPrefix >>> 0, true);
-        }
-      }
-      const root0 = this.toNum(
-        this.exports.fm_parent_begin_capture(
-          this.wptr(this.channelBase),
-          this.wptr(arenaRoot),
-          this.wptr(scratch),
-          this.wptr(count),
-        ),
-      );
-      this.requireOk("fm_parent_begin_capture");
-      if (!Number.isSafeInteger(root0) || root0 <= 0) {
-        throw new Error(`${this.label}: fm_parent_begin_capture returned invalid anchor`);
-      }
-      this.unwindActive = true;
-      this.moduleBuffer = root0;
-      return root0;
-    } finally {
-      if (count > 0) this.releaseRegion(scratch, regionBytes);
-    }
-  }
-
-  /**
-   * Read one activation's module-buffer anchor (its continuation root) from the
-   * module's current fork state. `parentBeginCapture` returns only activation 0's
-   * anchor; the host reads each SIDE activation's back with this to build the
-   * activation-continuation manifest. Fails loudly if no fork is open or the
-   * activation is not registered.
-   */
-  activationModuleBuffer(activationId: number): number {
-    this.requireSetup("activation module buffer");
-    const root = this.toNum(
-      (this.exports.fm_activation_module_buffer as (id: number) => number | bigint)(
-        activationId,
-      ),
+    // Rewind the staging cursor to where the last fork found it; see
+    // `perForkMark`.
+    this.staged = this.perForkMark ?? this.staged;
+    this.perForkMark = this.staged;
+    // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
+    // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
+    // memory exhaustion that fails with ENOMEM -- which is the case
+    // `p_11_fork_continuation_enomem` exists to prove survivable: `fork()`
+    // returns `-ENOMEM`, no child is created, and the parent runs on.
+    //
+    // It was not survivable, because this threw a plain Error. The fork
+    // handler's catch distinguishes `ContinuationAllocationError` from every
+    // other failure precisely so an allocation failure can become an errno,
+    // and anything else can still be fatal; `sealCaptureAndSerialize` has
+    // thrown the typed error for the same reason since it was written. Nothing
+    // has unwound yet at this point, so there are no frames to replay and no
+    // capture to seal -- the errno is the whole of the abort.
+    const root = (this.exports.fm_parent_begin_capture as (...a: number[]) => number)(
+      channelBase,
+      arenaRoot,
+      this.stageSides(sides),
+      sides.length,
     );
-    this.requireOk("fm_activation_module_buffer");
-    if (!Number.isSafeInteger(root) || root <= 0) {
+    const errno = this.lastErrno();
+    if (errno === FORK_MODULE_ENOMEM) {
+      throw new ContinuationAllocationError(
+        errno,
+        0,
+        `${this.label}: fm_parent_begin_capture could not allocate (errno ${errno})`,
+      );
+    }
+    if (errno !== 0) {
       throw new Error(
-        `${this.label}: fm_activation_module_buffer returned invalid anchor for `
-          + `activation ${activationId}`,
+        `${this.label}: fm_parent_begin_capture failed with errno ${errno}`,
       );
     }
     return root;
   }
 
   /**
-   * Bind ONE activation's guest `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`
-   * into the module's imported drive table at
-   * `fm_drive_table_base(activation) + DRIVE_SLOT_{REWIND,ABORT}_BEGIN`, so the
-   * coarse `parentReplay`/`parentAbort` drive can `call_indirect` them. The
-   * ref-typed `Table.set`/`Table.grow` is a host floor (Rust cannot hold a
-   * funcref). Idempotent: rebinding the same slot to the same export is
-   * harmless. Call once per open activation before `parentReplay`/`parentAbort`.
-   */
-  bindActivationBeginDrive(
-    activationId: number,
-    rewindBegin: Function,
-    abortBegin: Function,
-  ): void {
-    this.requireSetup("bind activation begin drive");
-    const slotBase = this.toNum(
-      (this.exports.fm_drive_table_base as (activation: number) => number | bigint)(
-        activationId,
-      ),
-    );
-    const needed = slotBase + DRIVE_SLOT_ABORT_BEGIN + 1;
-    if (this.driveTable.length < needed) {
-      this.driveTable.grow(needed - this.driveTable.length);
-    }
-    this.driveTable.set(slotBase + DRIVE_SLOT_REWIND_BEGIN, rewindBegin);
-    this.driveTable.set(slotBase + DRIVE_SLOT_ABORT_BEGIN, abortBegin);
-  }
-
-  /**
-   * Bind ONE activation's guest `wpk_fork_unwind_end` into the module's imported
-   * drive table at `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_END`, so
-   * the coarse `sealCaptureAndSerialize` drive can `call_indirect` it (the
-   * argument-free `() -> ()` capture-seal flip). Like `bindActivationBeginDrive`
-   * the ref-typed `Table.set`/`Table.grow` is a host floor (Rust cannot hold a
-   * funcref). Idempotent. Call once per open activation before
-   * `sealCaptureAndSerialize`.
-   */
-  bindActivationSealDrive(activationId: number, unwindEnd: Function): void {
-    this.requireSetup("bind activation seal drive");
-    const slotBase = this.toNum(
-      (this.exports.fm_drive_table_base as (activation: number) => number | bigint)(
-        activationId,
-      ),
-    );
-    const needed = slotBase + DRIVE_SLOT_UNWIND_END + 1;
-    if (this.driveTable.length < needed) {
-      this.driveTable.grow(needed - this.driveTable.length);
-    }
-    this.driveTable.set(slotBase + DRIVE_SLOT_UNWIND_END, unwindEnd);
-  }
-
-  /**
-   * Bind ONE activation's guest `wpk_fork_unwind_begin` into the module's imported
-   * drive table at `fm_drive_table_base(activation) + DRIVE_SLOT_UNWIND_BEGIN`, so
-   * the coarse `parentBeginCapture` drive can `call_indirect` the `(ptr) -> ()`
-   * capture-begin flip (the guest export takes its continuation root). Like
-   * `bindActivationBeginDrive` / `bindActivationSealDrive` the ref-typed
-   * `Table.set`/`Table.grow` is a host floor (Rust cannot hold a funcref).
-   * Idempotent. Call once per activation before `parentBeginCapture`.
-   */
-  bindActivationUnwindBeginDrive(activationId: number, unwindBegin: Function): void {
-    this.requireSetup("bind activation unwind-begin drive");
-    const slotBase = this.toNum(
-      (this.exports.fm_drive_table_base as (activation: number) => number | bigint)(
-        activationId,
-      ),
-    );
-    const needed = slotBase + DRIVE_SLOT_UNWIND_BEGIN + 1;
-    if (this.driveTable.length < needed) {
-      this.driveTable.grow(needed - this.driveTable.length);
-    }
-    this.driveTable.set(slotBase + DRIVE_SLOT_UNWIND_BEGIN, unwindBegin);
-  }
-
-  /**
-   * Bind ONE activation's guest `wpk_fork_rewind_end` / `wpk_fork_abort_end` into
-   * the module's imported drive table at `fm_drive_table_base(activation) +
-   * DRIVE_SLOT_{REWIND,ABORT}_END`, so the coarse `parentFinish` drive can
-   * `call_indirect` the argument-free `() -> ()` replay-finish / abort-finish
-   * flip. Like `bindActivationBeginDrive`/`bindActivationSealDrive` the ref-typed
-   * `Table.set`/`Table.grow` is a host floor (Rust cannot hold a funcref).
-   * Idempotent. Call once per open activation before `parentFinish`.
-   */
-  bindActivationFinishDrive(
-    activationId: number,
-    rewindEnd: Function,
-    abortEnd: Function,
-  ): void {
-    this.requireSetup("bind activation finish drive");
-    const slotBase = this.toNum(
-      (this.exports.fm_drive_table_base as (activation: number) => number | bigint)(
-        activationId,
-      ),
-    );
-    const needed = slotBase + DRIVE_SLOT_ABORT_END + 1;
-    if (this.driveTable.length < needed) {
-      this.driveTable.grow(needed - this.driveTable.length);
-    }
-    this.driveTable.set(slotBase + DRIVE_SLOT_REWIND_END, rewindEnd);
-    this.driveTable.set(slotBase + DRIVE_SLOT_ABORT_END, abortEnd);
-  }
-
-  /**
-   * Parent REPLAY-begin, coarsened (control-flow inversion). ONE module call
-   * sequences the whole phase internally: begin the parent rewind (attach every
-   * activation's driver + register its resume slots), build the per-activation
-   * REWIND-begin drive plan, then drive each activation's guest
-   * `wpk_fork_rewind_begin(root)` through the injected `fm_drive_execute` shim in
-   * ascending id order. Replaces the host's former `fm_begin_replay` +
-   * per-activation `wpk_fork_rewind_begin` loop. Each participating activation's
-   * `bindActivationBeginDrive` must have run first (the ref-typed table bind).
-   * A guest reconstruction failure traps inside the shim exactly as it did under
-   * the host loop; a state/plan-build failure is a truthful errno.
-   */
-  parentReplay(): void {
-    this.requireSetup("parent replay");
-    this.exports.fm_parent_replay();
-    this.requireOk("fm_parent_replay");
-  }
-
-  /**
-   * Parent ABORT-replay-begin, coarsened (mirror of `parentReplay`,
-   * abort-tagged). ONE module call runs `fm_begin_abort` (the shared begin plus
-   * the `in_abort` pairing flag `finishAbort` asserts) and drives each
-   * activation's guest `wpk_fork_abort_begin(root)` through the shim. Replaces
-   * the host's `fm_begin_abort` + per-activation `wpk_fork_abort_begin` loop.
-   */
-  parentAbort(): void {
-    this.requireSetup("parent abort");
-    this.exports.fm_parent_abort();
-    this.requireOk("fm_parent_abort");
-  }
-
-  /**
-   * CHILD reconstruct rewind-begin, coarsened (control-flow inversion, the
-   * child-worker mirror of `parentReplay`). ONE module call builds the
-   * per-activation REWIND-begin drive plan from each activation's stored
-   * `child_rewind_root` (the COW inherited anchor, or the borrowed child-private
-   * prefix) and drives each activation's guest `wpk_fork_rewind_begin(root)`
-   * through the injected `fm_drive_execute` shim in ascending id order. Replaces
-   * the host's former per-activation `wpk_fork_rewind_begin` loop in
-   * `attachModuleChild` / `attachBorrowedModuleChild`.
+   * Install this fork's child: SEED every activation's replay driver from the
+   * inherited journal image, then seed the reference replay from the inherited
+   * arena, admit its exnref tags, and build the whole reconstruction plan.
    *
-   * Unlike `parentReplay` there is NO begin step: the child's replay state was
-   * already seeded by `beginChildReplay` / `addActivationChildReplay` (or the
-   * borrowed variants) before this call, so this folds ONLY the guest rewind
-   * drive. Each participating activation's `bindActivationBeginDrive` must have
-   * run first (the ref-typed table bind is a host floor). A guest reconstruction
-   * failure traps inside the shim exactly as it did under the host loop.
+   * Both module calls, in this order, because they are one arrival at the
+   * child-replay phase and the install plan's restore/finish tail is built per
+   * activation -- so the activations must exist before the plan is built.
+   * WITHOUT THE SEED THE CHILD HAS NO MODULE STATE AT ALL: every
+   * `__wpk_fork_module_state_record_find` the guest's restore makes answers 0,
+   * which the guest reads as a page header at address 0 and traps on. The
+   * seed's only caller was the fork coordinator; census 183.
+   *
+   * Each side activation carries the ONE fact the host owns: its `fixedPrefix`,
+   * a static property of the module this child loaded. Its continuation root is
+   * a per-fork address the parent recorded in the arena's
+   * `ActivationContinuations` manifest, and the module reads that back itself.
+   *
+   * ONE call for both child shapes. A COW child and a vfork BORROWED child
+   * share an identical install plan -- the only borrowed-specific work is the
+   * host-side child-private replay-prefix reservation, which is raw memory
+   * placement carrying no reference values and never entered the module.
+   *
+   * Returns the plan's guest address; drive it with `driveRestoredPlan`. The
+   * step count comes from the module rather than the caller, so the two cannot
+   * disagree about how much of the plan to run.
    */
-  childReconstruct(): void {
-    this.requireSetup("child reconstruct");
-    this.exports.fm_child_reconstruct();
-    this.requireOk("fm_child_reconstruct");
+  installChild(
+    moduleStateRoot: number,
+    act0Root: number,
+    pid: number,
+    sides: readonly ForkSideActivation[],
+    /**
+     * A vfork BORROWED child's admitted replay workspace: where the kernel put
+     * it and how big it is. That is the whole of what a host knows about it and
+     * the module cannot derive. The module carves each activation's private
+     * prefix out of it, using the same walk it already reports the total for
+     * through `fm_borrowed_replay_workspace` -- so the host does not run that
+     * arithmetic a second time to hand the answers back.
+     */
+    borrowed?: { readonly prefixBase: number; readonly prefixBytes: number },
+  ): number {
+    if (borrowed) {
+      this.call(
+        "fm_set_borrowed_workspace",
+        borrowed.prefixBase,
+        borrowed.prefixBytes,
+      );
+    }
+    this.call(
+      borrowed ? "fm_child_seed_borrowed" : "fm_child_seed",
+      moduleStateRoot,
+      act0Root,
+      this.stageSides(sides),
+      sides.length,
+    );
+    return this.call("fm_attach_child", moduleStateRoot, pid);
   }
 
   /**
-   * Capture SEAL, coarsened (control-flow inversion). ONE module call sequences
-   * the whole seal internally: drive each open activation's guest
-   * `wpk_fork_unwind_end()` through the injected `fm_drive_execute` shim (moving
-   * each activation from `UNWINDING` back to `NORMAL`), then seal every frame
-   * writer + the process journal and serialize the child-inheritable KFRE image
-   * into a freshly channel-mmap'd chunk. Returns that chunk's guest offset and
-   * byte length. Replaces the host's former per-activation `wpk_fork_unwind_end`
-   * loop + `fm_finish_unwind` + `fm_serialize_journal_alloc`. Each participating
-   * activation's `bindActivationSealDrive` must have run first (the ref-typed
-   * table bind is a host floor).
+   * Execute a reconstruction plan the module built.
    *
-   * ONLY for a COMPLETE capture. A partial/aborted capture must NOT call this
-   * (driving `wpk_fork_unwind_end` mid-unwind corrupts the guest state machine);
-   * that path stays on `sealForAbort`.
-   *
-   * SEAL-TIME TRUTHFUL FAILURE (Phase 4 / Phase 2 carry): the module has ALREADY
-   * driven every activation's `wpk_fork_unwind_end` and sealed the writers +
-   * journal (guest back at `NORMAL`) but could not channel-mmap the
-   * child-inheritable journal-image chunk. `fm_parent_seal_capture` returns 0 with
-   * `fm_last_errno` set rather than trapping, so — exactly as the fine-grained
-   * `finishUnwindAndSerialize` did — surface a TYPED `ContinuationAllocationError`
-   * that the coordinator routes through the same abort-replay path a mid-unwind
-   * reserve failure uses (parent preserved, `fork()` returns `-errno`, no child
-   * launched). A guest reconstruction/seal failure traps inside the shim exactly
-   * as it did under the host loop.
+   * The injected shim `call_indirect`s each step through the drive table, so
+   * every slot the plan references must be bound first -- see
+   * `bindActivationDrive`. An unbound slot is a call on null, not a skipped
+   * step.
    */
-  sealCaptureAndSerialize(): ForkModuleJournalImage {
-    this.requireSetup("seal capture and serialize");
-    const ptr = this.toNum(
-      this.exports.fm_parent_seal_capture(this.wptr(this.channelBase)),
+  driveRestoredPlan(planPtr: number): void {
+    const count = Number((this.exports.fm_gc_plan_count as () => number)());
+    if (count < 0) {
+      throw new Error(`${this.label}: fm_gc_plan_count reported ${count}`);
+    }
+    if (count === 0) return;
+    (this.exports.fm_drive_execute as (p: number, n: number) => void)(
+      planPtr,
+      count,
     );
-    const sealErrno = this.lastErrno();
-    if (sealErrno !== 0) {
+  }
+
+
+  /**
+   * Seal a PARTIAL capture for abort, without the guest unwind-end drive or the
+   * journal serialization a normal seal does.
+   *
+   * The mid-unwind failure path: a frame reserve came back 0, so the capture
+   * cannot complete, but a failed reserve leaves no pending frame — the
+   * committed chain is whole and seal-able. Sealing it moves the module to
+   * sealed-parent so the abort replay can run over the frames that did commit,
+   * and the parent survives with `fork()` returning -errno.
+   *
+   * Distinct from `sealCaptureAndSerialize` precisely because it must NOT drive
+   * the guest's `wpk_fork_unwind_end`: the guest is still mid-unwind, and
+   * driving it there corrupts the unwind state machine.
+   */
+  parentAbortSeal(): void {
+    this.call("fm_parent_abort_seal");
+  }
+
+  /**
+   * Begin the parent's replay, or its abort replay when `abort` is set.
+   *
+   * Drives each activation's `wpk_fork_rewind_begin` / `wpk_fork_abort_begin`
+   * from the module rather than a host loop.
+   */
+  parentReplay(abort: boolean): void {
+    this.call("fm_parent_replay", abort ? 1 : 0);
+  }
+
+  /**
+   * End the parent's replay: drive each activation's `wpk_fork_rewind_end` (or
+   * `wpk_fork_abort_end`), finish the journal, and release this fork's
+   * channel-mapped chunks.
+   */
+  parentFinish(abort: boolean): void {
+    this.call("fm_parent_finish", abort ? 1 : 0);
+  }
+
+  /**
+   * Abandon whatever this fork had open and return the module to idle.
+   *
+   * Best effort by design — it is the teardown path for a capture that failed
+   * part-way, so it must not itself fail and strand the module mid-phase.
+   */
+  abort(): void {
+    this.call("fm_abort");
+  }
+
+  /**
+   * Seal this fork's capture and serialize the child-inheritable journal image.
+   *
+   * A failure here is a TYPED `ContinuationAllocationError`, not a generic
+   * throw: the coordinator distinguishes "the module could not allocate" from
+   * every other failure, and a generic error at this point traps the worker
+   * instead of aborting the fork truthfully.
+   */
+  sealCaptureAndSerialize(): { readonly ptr: number; readonly len: number } {
+    const seal = this.exports.fm_parent_seal_capture as (base: number) => number;
+    const ptr = Number(seal(this.options.channelBase ?? 0));
+    const errno = this.lastErrno();
+    if (errno !== 0) {
       throw new ContinuationAllocationError(
-        sealErrno,
+        errno,
         0,
-        `${this.label}: fm_parent_seal_capture failed with errno=${sealErrno}`,
+        `${this.label}: fm_parent_seal_capture failed with errno=${errno}`,
       );
     }
-    const len = this.toNum(this.exports.fm_journal_image_len());
-    if (!Number.isSafeInteger(ptr) || ptr <= 0) {
+    const len = Number((this.exports.fm_journal_image_len as () => number)());
+    if (!Number.isSafeInteger(ptr) || ptr <= 0 || !Number.isSafeInteger(len) || len <= 0) {
       throw new Error(
-        `${this.label}: fm_parent_seal_capture returned invalid image ptr ${ptr}`,
-      );
-    }
-    if (!Number.isSafeInteger(len) || len <= 0) {
-      throw new Error(
-        `${this.label}: fm_journal_image_len returned invalid length ${len}`,
+        `${this.label}: seal returned an invalid journal image (ptr ${ptr}, len ${len})`,
       );
     }
     return { ptr, len };
   }
 
   /**
-   * Seal a PARTIAL mid-unwind capture for a truthful abort (a frame reservation
-   * failed mid-unwind, so `__wpk_fork_frame_reserve` returned 0). Seals every
-   * activation's frame writer + the process journal via `fm_finish_unwind` — the
-   * SAME seal `finishUnwindAndSerialize` performs — but does NOT serialize a
-   * child-inheritable journal image (no child is launched) and NOT the guest's
-   * `wpk_fork_unwind_end` (the guest is still mid-unwind; driving unwind-end
-   * there corrupts the guest's unwind state machine). A failed reserve leaves no
-   * pending frame (`LinkedFrameWriter::reserve_frame` sets `pending` only after a
-   * successful chunk allocation), so the committed chain is complete and
-   * seal-able. After this the coordinator drives the ordinary module
-   * abort-replay (`beginAbort`), which attaches drivers over the in-memory
-   * journal to replay the already-committed frames.
+   * Bind one activation's typed-reference guest exports into the module's drive
+   * table, so the module can drive allocation, filling, exception
+   * materialization, probing and encoding without importing them.
    *
-   * Control-flow inversion: routes through the coarse `fm_parent_abort_seal`
-   * phase entry rather than calling the fine-grained `fm_finish_unwind` directly
-   * — the mid-unwind sibling of `sealCaptureAndSerialize`'s
-   * `fm_parent_seal_capture`. The abort-seal has no guest `wpk_fork_unwind_end`
-   * drive and no journal serialization to fold (the guest is mid-unwind and no
-   * child is launched), so the coarse entry wraps the SAME `finish_unwind_impl`
-   * seal `fm_parent_seal_capture` performs after its unwind-end drive.
+   * A reference-typed `Table.set` is a host floor: Rust cannot hold a funcref.
+   * Everything else about the drive -- the order, the plan, the transit asserts
+   * -- is the module's.
    */
-  sealForAbort(): void {
-    this.requireSetup("seal for abort");
-    this.exports.fm_parent_abort_seal();
-    this.requireOk("fm_parent_abort_seal");
-  }
-
-  /**
-   * The module's last errno (0 = ok). Read it IMMEDIATELY after a failed frame
-   * op (e.g. a `__wpk_fork_frame_reserve` that returned 0) and before any other
-   * module call overwrites `fm_last_errno`.
-   */
-  lastErrno(): number {
-    return Number(this.exports.fm_last_errno() as number | bigint);
-  }
-
-  /**
-   * Child: seed replay from the copied guest memory (Option B). `root` is the
-   * inherited continuation anchor (the parent's module buffer at the same guest
-   * offset); `imagePtr`/`imageLen` come from the inherited `JournalImage` KFMS
-   * record the parent wrote (the image was channel-mmap'd, so there is no
-   * host-computed arena offset to derive it from). Both are inherited verbatim
-   * by the fork memory copy.
-   */
-  /**
-   * Child SEED, coarsened (control-flow inversion). ONE module call decodes the
-   * inherited `JournalImage` record from the copied KFMS arena and seeds
-   * activation 0's replay from it, then seeds each side activation from the
-   * passed list — replacing the host's former `beginChildReplay` +
-   * per-activation `addActivationChildReplay` loop. `sideActivations` carries
-   * each side activation's id, inherited continuation root, and own module-buffer
-   * fixed prefix. The module cannot derive the fixed prefix (a static property of
-   * the child's loaded side module, absent from every inherited KFMS record — see
-   * `add_activation_child_replay_impl`'s doc), so the host supplies it. A
-   * single-activation fork passes an empty `sideActivations`.
-   */
-  childSeed(
-    arenaRoot: number,
-    act0Root: number,
-    sideActivations: readonly { id: number; root: number; fixedPrefix: number }[],
-  ): void {
-    this.requireSetup("child seed");
-    if (!Number.isSafeInteger(act0Root) || act0Root <= 0) {
-      throw new Error(`${this.label}: child seed act0 root ${act0Root} is invalid`);
-    }
-    const count = sideActivations.length;
-    let scratch = 0;
-    let regionBytes = 0;
-    if (count > 0) {
-      regionBytes = alignUpPage(count * 16);
-      scratch = this.reserveRegion(regionBytes);
-    }
-    try {
-      if (count > 0) {
-        const view = new DataView(this.memory.buffer);
-        for (let i = 0; i < count; i++) {
-          const side = sideActivations[i]!;
-          if (!Number.isSafeInteger(side.root) || side.root <= 0) {
-            throw new Error(
-              `${this.label}: child seed side activation ${side.id} root `
-                + `${side.root} is invalid`,
-            );
-          }
-          view.setUint32(scratch + i * 16, side.id >>> 0, true);
-          view.setUint32(scratch + i * 16 + 4, side.fixedPrefix >>> 0, true);
-          // Split the (possibly wasm64) root into low/high words; the module
-          // recombines `(high << 32) | low`.
-          view.setUint32(scratch + i * 16 + 8, side.root >>> 0, true);
-          view.setUint32(
-            scratch + i * 16 + 12,
-            Math.floor(side.root / 0x1_0000_0000) >>> 0,
-            true,
-          );
-        }
-      }
-      this.moduleBuffer = act0Root;
-      this.exports.fm_child_seed(
-        this.wptr(arenaRoot),
-        this.wptr(act0Root),
-        this.wptr(scratch),
-        this.wptr(count),
-      );
-      this.requireOk("fm_child_seed");
-    } finally {
-      if (count > 0) this.releaseRegion(scratch, regionBytes);
-    }
-  }
-
-  /**
-   * Borrowed (vfork) child SEED, coarsened (control-flow inversion). ONE module
-   * call decodes the inherited `JournalImage` record from the KFMS arena and
-   * seeds activation 0's BORROWED replay from it, then seeds each side activation
-   * from the passed list — replacing the host's former `beginBorrowedChildReplay`
-   * + per-activation `addActivationBorrowedChildReplay` loop. The borrowed
-   * sibling of `childSeed`: unlike the COW copy, a borrowed child shares the
-   * parked parent's LIVE memory read-only, so every activation additionally
-   * carries a child-PRIVATE prefix the module copies the parent's fixed runtime
-   * prefix into (so the guest's rewind writes its active-frame pointer there,
-   * never the parked parent's prefix). `act0PrivatePrefix` is activation 0's
-   * child-private prefix; each `sideActivations` entry carries its id, inherited
-   * borrowed continuation root, own module-buffer fixed prefix, and its own
-   * child-private prefix. A single-activation vfork passes an empty
-   * `sideActivations`.
-   */
-  childSeedBorrowed(
-    arenaRoot: number,
-    act0Root: number,
-    act0PrivatePrefix: number,
-    sideActivations: readonly {
-      id: number;
-      root: number;
-      fixedPrefix: number;
-      privatePrefix: number;
-    }[],
-  ): void {
-    this.requireSetup("borrowed child seed");
-    if (!Number.isSafeInteger(act0Root) || act0Root <= 0) {
-      throw new Error(`${this.label}: borrowed child seed act0 root ${act0Root} is invalid`);
-    }
-    if (!Number.isSafeInteger(act0PrivatePrefix) || act0PrivatePrefix <= 0) {
-      throw new Error(
-        `${this.label}: borrowed child seed act0 private prefix ${act0PrivatePrefix} is invalid`,
-      );
-    }
-    const count = sideActivations.length;
-    let scratch = 0;
-    let regionBytes = 0;
-    if (count > 0) {
-      regionBytes = alignUpPage(count * 24);
-      scratch = this.reserveRegion(regionBytes);
-    }
-    try {
-      if (count > 0) {
-        const view = new DataView(this.memory.buffer);
-        for (let i = 0; i < count; i++) {
-          const side = sideActivations[i]!;
-          if (!Number.isSafeInteger(side.root) || side.root <= 0) {
-            throw new Error(
-              `${this.label}: borrowed child seed side activation ${side.id} root `
-                + `${side.root} is invalid`,
-            );
-          }
-          if (!Number.isSafeInteger(side.privatePrefix) || side.privatePrefix <= 0) {
-            throw new Error(
-              `${this.label}: borrowed child seed side activation ${side.id} private `
-                + `prefix ${side.privatePrefix} is invalid`,
-            );
-          }
-          view.setUint32(scratch + i * 24, side.id >>> 0, true);
-          view.setUint32(scratch + i * 24 + 4, side.fixedPrefix >>> 0, true);
-          // Split the (possibly wasm64) root + private prefix into low/high words;
-          // the module recombines `(high << 32) | low`.
-          view.setUint32(scratch + i * 24 + 8, side.root >>> 0, true);
-          view.setUint32(
-            scratch + i * 24 + 12,
-            Math.floor(side.root / 0x1_0000_0000) >>> 0,
-            true,
-          );
-          view.setUint32(scratch + i * 24 + 16, side.privatePrefix >>> 0, true);
-          view.setUint32(
-            scratch + i * 24 + 20,
-            Math.floor(side.privatePrefix / 0x1_0000_0000) >>> 0,
-            true,
-          );
-        }
-      }
-      this.moduleBuffer = act0Root;
-      this.exports.fm_child_seed_borrowed(
-        this.wptr(arenaRoot),
-        this.wptr(act0Root),
-        this.wptr(act0PrivatePrefix),
-        this.wptr(scratch),
-        this.wptr(count),
-      );
-      this.requireOk("fm_child_seed_borrowed");
-    } finally {
-      if (count > 0) this.releaseRegion(scratch, regionBytes);
-    }
-  }
-
-  /**
-   * Phase 6 D7a.1a: seed ONE side activation's resume catalog once per worker,
-   * before any fork (mirrors `setup()`'s global catalog seed for activation 0).
-   * A dlopen fork loads N modules, each with its own fork-instrumented function
-   * catalog; the module numbers each activation's resume slots from ITS catalog
-   * so the slot numbering matches THAT activation's JS `__wpk_fork_resume_table`
-   * by construction. Activation 0 stays on the GLOBAL catalog (`setup()`), so a
-   * single-activation fork is byte-identical. A catalog that overflows the
-   * module's per-activation arena fails loudly (`E2BIG`); the caller then keeps
-   * the JavaScript continuation for that program.
-   */
-  setActivationResumeCatalog(
+  bindActivationDrive(
     activationId: number,
-    ordinals: readonly number[],
+    guestExports: Record<string, unknown>,
   ): void {
-    this.requireSetup("seed activation resume catalog");
-    const count = ordinals.length;
-    if (count === 0) return;
-    if (count > FORK_MODULE_RESUME_CATALOG_CAP) {
-      throw new RangeError(
-        `${this.label}: activation ${activationId} resume catalog of ${count} `
-          + `exceeds the module cap ${FORK_MODULE_RESUME_CATALOG_CAP}`,
-      );
-    }
-    const byteLen = count * 4;
-    const regionBytes = alignUpPage(byteLen);
-    const scratch = this.reserveRegion(regionBytes);
-    try {
-      const view = new DataView(this.memory.buffer);
-      for (let i = 0; i < count; i++) {
-        view.setUint32(scratch + i * 4, ordinals[i]! >>> 0, true);
+    const base = this.call("fm_drive_table_base", activationId);
+    const table = this.options.instance.driveTable;
+    // Grow by the FULL per-activation stride, not by the highest slot this
+    // activation happens to bind. The module derives every slot from
+    // `fm_drive_table_base`, so a table grown to the last BOUND slot leaves the
+    // tail of the slice off the end of the table -- and the next activation's
+    // base is past it. Growing to the stride makes the slice exist whether or
+    // not this guest fills all of it.
+    const needed = base + FORK_ACTIVATION_DRIVE_SLOTS;
+    if (table.length < needed) table.grow(needed - table.length);
+    for (const { slot, name, required } of FORK_ACTIVATION_DRIVE_BINDINGS) {
+      const fn = guestExports[name];
+      if (typeof fn !== "function") {
+        if (!required) continue;
+        throw new Error(
+          `${this.label}: activation ${activationId} exports no ${name}; the ` +
+            `module drives that slot on every fork, so an unbound one is a ` +
+            `call_indirect on null rather than a missing feature`,
+        );
       }
-      this.exports.fm_set_activation_resume_catalog(
-        this.wptr(activationId),
-        this.wptr(scratch),
-        this.wptr(count),
-      );
-      this.requireOk("fm_set_activation_resume_catalog");
-    } finally {
-      this.releaseRegion(scratch, regionBytes);
+      table.set(base + slot, fn);
     }
   }
 
   /**
-   * Phase 6 D7a.1b: seed ONE activation's function-catalog BASE into the module,
-   * once per worker, before any fork drives reference reconstruction. The host
-   * lays every activation's funcref catalog into ONE merged
-   * `__wpk_fork_function_catalog` table (activation `activationId`'s catalog at
-   * slots `[base, base + len)`); the module's `fm_funcref_ordinal` then returns
-   * the global slot `base(module_activation) + function_ordinal`, so a funcref
-   * minted in one activation but held by another's frame resolves against its own
-   * activation's slice. A single-activation fork seeds NO base (the module
-   * defaults `base = 0`, byte-identical to the D6.1 raw-ordinal mapping).
+   * Every externref broker handle this capture interned, in intern order.
+   *
+   * The kernel worker needs this set to lease the parent's externrefs to the
+   * child's generation. It used to DERIVE the set, by reading the parked
+   * parent's KFMS arena and running the full segmented-transaction parser over
+   * it. The module already had the handles -- they are passed to it on every
+   * `fm_capture_intern` -- so deriving them again was ~4,956 lines of host
+   * decoder duplicating work, on the one thread every process's syscalls
+   * serialize through.
+   *
+   * Throws on overflow rather than returning a short list. A truncated lease
+   * set is silent corruption: the child would hold references the parent
+   * believes it passed on, and nothing would report the difference.
    */
-  setActivationCatalogBase(activationId: number, base: number): void {
-    this.requireSetup("set activation catalog base");
-    this.exports.fm_set_activation_catalog_base(activationId, base);
-    this.requireOk("fm_set_activation_catalog_base");
-  }
-
-  /**
-   * Seed ONE activation's static-root catalog BASE for this worker (the
-   * static-root binder — the funcref merged-catalog mechanism, for static roots).
-   * Called once per activation, before any fork drives reference reconstruction.
-   * The host lays every activation's instantiation-time static-root catalog into
-   * ONE merged `env.__wpk_fork_static_root_catalog` anyref table (activation
-   * `activationId`'s catalog at slots `[base, base + len)`); the module's
-   * `fm_static_root_slot` then returns the global index `base(module_activation) +
-   * static_root_ordinal` the injected drive shim `table.get`s. A single-activation
-   * fork seeds NO base (the module defaults `base = 0`, byte-identical to the
-   * raw-ordinal mapping).
-   */
-  setActivationStaticRootBase(activationId: number, base: number): void {
-    this.requireSetup("set activation static-root base");
-    this.exports.fm_set_activation_static_root_base(activationId, base);
-    this.requireOk("fm_set_activation_static_root_base");
-  }
-
-  /**
-   * REPLAY FINISH, coarsened (control-flow inversion). ONE module call drives
-   * each open activation's guest `wpk_fork_rewind_end()` (`abort` false) or
-   * `wpk_fork_abort_end()` (`abort` true) through the injected `fm_drive_execute`
-   * shim (the argument-free `() -> ()` finish flip, ascending id order), then
-   * finishes the process replay/abort: exhausts every activation's driver,
-   * finishes the process journal, and releases this fork's channel-mapped chunks.
-   * Replaces the host's former per-activation `wpk_fork_rewind_end`/
-   * `wpk_fork_abort_end` loop + `fm_finish_replay`/`fm_finish_abort`. Each
-   * participating activation's `bindActivationFinishDrive` must have run first
-   * (the ref-typed table bind is a host floor). The abort finish keeps the
-   * `in_abort` pairing assertion `fm_parent_abort` armed, so a stray
-   * `parentFinish(true)` is a loud errno.
-   */
-  parentFinish(abort: boolean): void {
-    this.requireSetup("parent finish");
-    (this.exports.fm_parent_finish as (abort: number) => void)(abort ? 1 : 0);
-    this.requireOk("fm_parent_finish");
-    this.unwindActive = false;
-    this.moduleBuffer = 0;
-  }
-
-  /**
-   * Release every channel-mapped frame/image chunk on the error/abort path
-   * (Option B: the module owns them, so `fm_abort` munmaps them). Best-effort —
-   * does not assert module success. A replay-only child mapped nothing.
-   */
-  abort(): void {
-    this.exports.fm_abort();
-    this.unwindActive = false;
-    this.moduleBuffer = 0;
-  }
-
-  private requireSetup(operation: string): void {
-    if (!this.didSetup) {
+  capturedExternrefHandles(): number[] {
+    const count = Number(
+      (this.exports.fm_captured_externref_count as () => number)(),
+    );
+    if (count < 0) {
       throw new Error(
-        `${this.label}: cannot ${operation}; fork-module backend is not set up`,
+        `${this.label}: this capture interned more externref handles than the ` +
+          `module records, so the inherited set cannot be trusted`,
       );
     }
-  }
-
-  private requireOk(call: string): void {
-    const errno = Number(this.exports.fm_last_errno() as number | bigint);
-    if (errno !== 0) {
-      throw new Error(`${this.label}: ${call} failed with errno=${errno}`);
+    const read = this.exports.fm_captured_externref as (i: number) => bigint | number;
+    const handles: number[] = [];
+    for (let index = 0; index < count; index++) {
+      const handle = Number(read(index));
+      if (handle < 0) {
+        throw new Error(
+          `${this.label}: externref handle ${index} of ${count} is missing`,
+        );
+      }
+      handles.push(handle);
     }
+    return handles;
   }
 
-  private wptr(value: number): number | bigint {
-    return this.ptrWidth === 8 ? BigInt(value) : value;
+  /**
+   * Stage the captured handle list into guest memory and return its address.
+   *
+   * Uses the same staging slab every other pre-fork buffer goes through, so a
+   * COPIED child reusing this region does not grow its memory relative to the
+   * parent's -- the reason `setup()`'s comment gives for staging rather than
+   * mmapping per call.
+   */
+  stageExternrefHandover(handles: readonly number[]): number {
+    const bytes = new Uint8Array(handles.length * 4);
+    const view = new DataView(bytes.buffer);
+    handles.forEach((handle, index) => view.setUint32(index * 4, handle >>> 0, true));
+    return this.stage(bytes, "externref handover", true);
   }
 
-  private toNum(value: number | bigint): number {
-    return typeof value === "bigint" ? Number(value) : value;
+  /**
+   * Seed the replay driver from a sealed arena and build its install plan.
+   *
+   * Distinct from `attachChild`: this appends NO guest restore/finish steps,
+   * because a peer-table install is single-phase -- there is no child being
+   * reconstructed, only this worker's tables catching up to a peer's
+   * publication.
+   */
+  restoreFromArena(moduleStateRoot: number, pid: number): number {
+    return this.call("fm_restore_from_arena", moduleStateRoot, pid);
   }
-}
 
-function alignUpPage(value: number): number {
-  return Math.ceil(value / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
+  /** Make a child's decoded reference graph resident for the accessors below. */
+  decodeReferenceGraph(moduleStateRoot: number): void {
+    this.call("fm_decode_reference_graph", moduleStateRoot);
+  }
+
+  // WHAT USED TO BE HERE: `moduleStateArenaRoot`, which read
+  // `fm_module_state_arena` operation 0 so the host could tell the exception
+  // broker which arena's graph answers "who owns this recipe" -- the module's
+  // own root first, the inherited one as a fallback. The module makes that
+  // choice itself now: it remembers the root of its most recent replay, which
+  // is the same arena by construction. Its last caller went with the broker
+  // (census 192), and a method the host keeps for nobody is host surface.
+
+  /**
+   * The slot the module assigned `(activation, ordinal)`, decided when the
+   * catalog was seeded.
+   *
+   * The host does NOT compute this. It used to: `ForkResumeTable` ran the same
+   * four rules the module runs, and the two only agreed while no activation had
+   * ever been unregistered. See the worker-lifetime allocator in
+   * `crates/fork-module/src/lib.rs` for the `dlclose` sequence that made them
+   * disagree, and census 194.
+   */
+  resumeSlot(activationId: number, functionOrdinal: number): number {
+    return this.call("fm_resume_slots", 0, activationId, functionOrdinal);
+  }
+
+  /** Release an activation's resume slots for reuse. Returns how many. */
+  releaseResumeSlots(activationId: number): number {
+    return this.call("fm_resume_slots", 1, activationId, 0);
+  }
+
+  // WHAT USED TO BE HERE: `decodedNodeCount` and `decodedNodeOrdinal`. Their
+  // only caller was the child-install path's second merged static-root base
+  // map, which walked every node to find the static roots and took each
+  // activation's maximum ordinal. That layout is settled once at registration
+  // now (census 201), so nothing counts nodes or reads an ordinal from the
+  // host any more. `fm_decoded_node_field` is still reached, for kind and
+  // module_activation, by `ForkChildReferences`.
+
+  decodedNodeKind(index: number): number {
+    return this.call("fm_decoded_node_field", index, DECODED_FIELD_KIND);
+  }
+
+  decodedNodeModuleActivation(index: number): number {
+    return this.call(
+      "fm_decoded_node_field",
+      index,
+      DECODED_FIELD_MODULE_ACTIVATION,
+    );
+  }
+
+  /**
+   * Build one child activation's import plan and return its entry count.
+   *
+   * The activation's KFIG/KFIT sections must already be seeded. An activation
+   * that declared neither plans 0 imports, which is the ordinary single-module
+   * case rather than an error.
+   */
+  /**
+   * Capture a PEER-TABLE checkpoint into a fresh module-owned arena.
+   *
+   * Returns the arena root the dlopen loader publishes. The arena outlives this
+   * call -- peers read it -- so nothing here releases it.
+   */
+  capturePeerTables(channelBase: number): number {
+    const root = this.call("fm_capture_peer_tables", channelBase);
+    if (root === 0) {
+      throw new Error(`${this.label}: peer-table capture produced no arena`);
+    }
+    return root;
+  }
+
+  childImportPlan(activation: number, moduleStateRoot: number): number {
+    return this.call("fm_child_import_plan", activation, moduleStateRoot);
+  }
+
+  /**
+   * One field of the resident plan's entry at `index`.
+   *
+   * Not routed through `call`, which narrows to `number`: field 5 is a 64-bit
+   * PATTERN -- raw global bits, a recipe id or a saved scalar -- and narrowing
+   * it would lose the low bits of an i64. For the same reason `-1` is a legal
+   * result here, so failure is read from `fm_last_errno` rather than from the
+   * value.
+   */
+  childImportPlanField(index: number, field: number): bigint {
+    const read = this.exports.fm_child_import_plan_field as
+      (i: number, f: number) => bigint;
+    const value = read(index, field);
+    const errno = this.lastErrno();
+    if (errno !== 0) {
+      throw new Error(
+        `${this.label}: fm_child_import_plan_field(${index}, ${field}) ` +
+          `failed with errno ${errno}`,
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Stage a side-activation list as `(id, fixedPrefix)` u32 pairs.
+   *
+   * The SAME layout serves capture and child seed, because the host owns the
+   * same one fact in both: `fixedPrefix`, a static property of the loaded
+   * module. Everything else about a side activation -- above all its per-fork
+   * continuation root -- the module recorded itself and reads back itself.
+   * Where the pairs are written is this wrapper's business, not the caller's.
+   */
+  private stageSides(sides: readonly ForkSideActivation[]): number {
+    if (sides.length === 0) return 0;
+    const bytes = new Uint8Array(sides.length * 8);
+    const view = new DataView(bytes.buffer);
+    sides.forEach((side, index) => {
+      view.setUint32(index * 8, side.id >>> 0, true);
+      view.setUint32(index * 8 + 4, side.fixedPrefix >>> 0, true);
+    });
+    return this.stage(bytes, `${sides.length} side activation(s)`, true);
+  }
+
+  /**
+   * Where a per-fork rewind returns to, or `null` when the next fork must take
+   * a fresh mark at wherever the cursor then is.
+   *
+   * `stage()` used to say that everything in the slab "is seeded once per
+   * worker and must outlive the call", and that is true of six of its eight
+   * callers. TWO are per-FORK and always were: `stageSides()`, which runs at
+   * both `parentBeginCapture` and `installChild`, and
+   * `stageExternrefHandover()`. Their bytes need only outlive the fork, and the
+   * cursor never rewound -- so a dlopen program at `N * 8` bytes per fork, or
+   * any fork carrying externref handles at 4 bytes each, consumed the 256 KiB
+   * slab permanently. Thousands of forks, not millions: a long-lived forking
+   * server is the shape that reaches it, and the failure is `staging slab
+   * exhausted` on a fork that had done nothing wrong.
+   *
+   * The mark is taken at the START of a fork rather than released at its end,
+   * because a fork has several ends -- finish, abort, a seal that failed after
+   * the journal sealed -- and a mark that is simply re-taken next time cannot
+   * be forgotten on one of them.
+   *
+   * And a DURABLE stage drops it, which is the whole reason `stage()` takes a
+   * flag. A process that forks, then `dlopen`s, stages the new activation's
+   * catalog, GC codec and exception codec ABOVE the mark that fork took;
+   * rewinding to that mark on the next fork would hand those addresses out
+   * twice and overwrite a live codec with side-activation pairs -- a wrong
+   * child, silently, rather than an error. Clearing the mark makes the next
+   * fork re-take it above them. The cost is one fork's worth of per-fork bytes
+   * stranded below the new mark, bounded by the number of `dlopen`s rather
+   * than by the number of forks.
+   */
+  private perForkMark: number | null = null;
+
+  /**
+   * Copy `bytes` into the module's staging slab and return their address.
+   *
+   * `perFork` picks which of the two lifetimes the bytes have. The default is
+   * DURABLE -- seeded once per worker or per activation, and must outlive every
+   * fork. `perFork` marks bytes that need only outlive the fork that stages
+   * them, in the region `parentBeginCapture` rewinds; see `perForkMark`.
+   *
+   * This comment used to read "a bump cursor, never reset: everything staged
+   * here is seeded once per worker and must outlive the call". That was true of
+   * six callers out of eight, and stating it as though it were true of all
+   * eight is what hid the leak.
+   *
+   * Overflow is an error rather than a wrap, because wrapping would silently
+   * overwrite an earlier activation's section with a later one's and leave the
+   * module pointing at the wrong bytes.
+   */
+  private stage(bytes: Uint8Array, what: string, perFork = false): number {
+    if (!perFork) this.perForkMark = null;
+    const base = this.options.instance.stagingBase;
+    const limit = base + this.options.instance.stagingBytes;
+    const at = base + this.staged;
+    if (at + bytes.length > limit) {
+      throw new Error(
+        `${this.label}: staging slab exhausted placing ${what} ` +
+          `(${bytes.length} bytes; ${limit - at} left)`,
+      );
+    }
+    new Uint8Array(this.options.memory.buffer).set(bytes, at);
+    // 8-byte aligned so a later section's scalars are naturally aligned.
+    this.staged += (bytes.length + 7) & ~7;
+    return at;
+  }
+
+  private staged = 0;
 }

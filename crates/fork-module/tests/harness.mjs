@@ -79,7 +79,16 @@ const memory = new WebAssembly.Memory({
 const importObject = {
   env: {
     memory,
-    __indirect_function_table: new WebAssembly.Table({ element: "anyfunc", initial: 0 }),
+    // NOT zero. The module carries its own elements now (the dylink archive
+    // decoder's trait vtable), so its `dylink.0` table size is non-zero and an
+    // undersized import is a LinkError. Production hosts read the real size --
+    // host-native from the import's own type, the TypeScript layer from the
+    // `dylink.0` custom section -- which this co-residency harness does not need
+    // to parse; it only needs a table no smaller than the module asks for.
+    __indirect_function_table: new WebAssembly.Table({
+      element: "anyfunc",
+      initial: 64,
+    }),
     // Phase 6 D6.1: the module imports the guest's funcref function catalog for
     // `__wpk_fork_ref_decode_funcref`. This co-residency harness never
     // reconstructs references, so an empty funcref table is inert here.
@@ -96,7 +105,27 @@ const importObject = {
     // `resolve_externref(handle) -> externref`. Never exercised by this harness;
     // a stub returning a fresh unique object per call satisfies the
     // reference-returning import signature.
+    // The module asks the host "are these the same function?" when encoding a
+    // funcref -- wasm cannot compare two of them. This harness never encodes one,
+    // so a trap is the honest binding: it fails loud if the path is ever reached
+    // rather than returning a plausible id.
+    __wpk_fork_host_func_identity: () => {
+      throw new Error("harness: __wpk_fork_host_func_identity is not exercised here");
+    },
     resolve_externref: (_handle) => ({}),
+    // `__wpk_fork_host_ref_identity(anyref) -> i32`: a stable integer per
+    // distinct GC reference. Wasm can COMPARE references but cannot HASH one,
+    // so a reference cannot key a map inside the module; the host can. On a
+    // real JavaScript host this is a WeakMap; here a Map suffices because the
+    // values under test are i31s, which are primitives at this boundary.
+    __wpk_fork_host_ref_identity: (() => {
+      const ids = new Map();
+      let next = 1;
+      return (value) => {
+        if (!ids.has(value)) ids.set(value, next++);
+        return ids.get(value);
+      };
+    })(),
   },
 };
 
@@ -241,10 +270,10 @@ console.log("  ok: SENTINEL SURVIVED instantiation — module data/BSS/stack are
 // region). Success (errno 0) proves the instance is genuinely executable — the
 // call reaches real fork-module code, which only works if the start function
 // already relocated its passive data into the reserved region.
-x.fm_set_format(4, 128);
+x.fm_set_format(4, 128, 0, 0, 0);
 assert.equal(errno(), 0, "fm_set_format errno");
 assertSentinelIntact("after fm_set_format");
-console.log("  ok: fm_set_format(4, 128) succeeded; SENTINEL SURVIVED a coordinator write");
+console.log("  ok: fm_set_format(4, 128, 0, 0) succeeded; SENTINEL SURVIVED a coordinator write");
 
 // -- M2: fm_externref_handle traps outside a seeded reference replay ----------
 //

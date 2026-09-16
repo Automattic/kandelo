@@ -178,6 +178,18 @@ inject_funcref_decode "$WASM32"
 #     npm package resolve the module.
 #   * The browser's Vite `@fork-module32-wasm?url` alias resolves the same
 #     `local-binaries/`/`host/wasm/` copies.
+#   * `local-binaries/source-only-v1/`, when it exists, is the tier
+#     `resolveBinary` searches FIRST -- ahead of both of the above, by its own
+#     documentation in `host/src/binary-resolver.ts`. This script used to stage
+#     only the two tiers above and say it had covered everywhere the hosts
+#     load from, which was false the moment that tree existed: a rebuilt module
+#     staged into `local-binaries/` while Node and Vitest kept resolving the
+#     older copy one tier up. Nothing caught it, because `verify-fresh`'s scan
+#     of this tier is scoped to `kernel.wasm` -- the resolver's note says so
+#     directly, on the grounds that everything else here is a content-addressed
+#     generation, which `fork_module32.wasm` at the tier root is not. It cost a
+#     commit that added an export and a host that called it: the export existed
+#     in two tiers and the call resolved the third, so it read `undefined`.
 #
 # The per-width filename (`fork_module32.wasm` / `fork_module64.wasm`) lets the
 # kernel host ship the width matching the guest's pointer width.
@@ -193,8 +205,18 @@ stage_fork_module() {
   mkdir -p "$REPO_ROOT/local-binaries" "$REPO_ROOT/host/wasm"
   cp "$src" "$REPO_ROOT/local-binaries/$name"
   cp "$src" "$REPO_ROOT/host/wasm/$name"
+  local staged="local-binaries/$name, host/wasm/$name"
+  # Only when the tree already exists: this script builds one module, it does
+  # not materialize the hermetic tier. Creating it here would fabricate a
+  # source-only tree containing a single artifact and make it the highest
+  # priority tier for every OTHER artifact too, which is worse than the
+  # staleness being fixed.
+  if [ -d "$REPO_ROOT/local-binaries/source-only-v1" ]; then
+    cp "$src" "$REPO_ROOT/local-binaries/source-only-v1/$name"
+    staged="$staged, local-binaries/source-only-v1/$name"
+  fi
   printf '%s\n' "$FRESH_CLOSURE_SHA" > "$(build_key_path "$width")"
-  echo "staged $name -> local-binaries/$name, host/wasm/$name (build-key $FRESH_CLOSURE_SHA)" >&2
+  echo "staged $name -> $staged (build-key $FRESH_CLOSURE_SHA)" >&2
 }
 FRESH_CLOSURE_SHA="$(closure_sha)"
 stage_fork_module "$WASM32" 32

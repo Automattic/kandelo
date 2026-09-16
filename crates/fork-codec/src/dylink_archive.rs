@@ -79,6 +79,12 @@ use wasm_posix_shared::Errno;
 #[path = "dylink_archive_encode.rs"]
 pub mod encode;
 
+/// The incremental APPEND planner. A child module for the same reason as the
+/// other two: it writes KFJP records and moves header cursors using the exact
+/// offsets the decoder reads, so the two cannot disagree about where a field is.
+#[path = "dylink_table_append.rs"]
+pub mod table_append;
+
 /// The resumable chain WALKER. Also a child module, for the same reason: it
 /// decides which byte ranges the archive image occupies using the very
 /// constants and padding rules the decoder enforces, so the two cannot

@@ -98,8 +98,14 @@ describe.each([
     // Unprefixed: the owner registry is the shared module's own state now.
     // It used to be constructed identically in both entries and handed back
     // through `ProcessLifecycleHost`, which is why this once read `host.`.
+    // Renamed from `forkGenerationFromContinuation` when the externref-handle
+    // scan moved to the parent worker: this worker no longer derives the set
+    // from the parked parent's KFMS arena, it is handed the list the parent's
+    // capture interned. The ORDERING this test pins is unchanged -- grant before
+    // the child's init data, before the worker starts, and released on rollback
+    // -- which is why only the name here moved.
     const grant = handler.indexOf(
-      "externrefProcessOwner\n        .forkGenerationFromContinuation(",
+      "externrefProcessOwner\n        .forkGenerationFromCapturedHandles(",
     );
     const childInit = handler.indexOf(
       "const childInitData: CentralizedWorkerInitMessage",

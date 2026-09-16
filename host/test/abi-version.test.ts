@@ -2,17 +2,13 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../src/binary-resolver";
 import { detectPtrWidth } from "../src/constants";
-import {
-  FORK_ANYREF_TRANSIT_IMPORT,
-  ForkAnyrefTransitTable,
-} from "../src/fork-anyref-transit";
-import { FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT } from "../src/fork-activation-registry";
-import {
-  createForkUnwindTag,
-  FORK_UNWIND_TAG_IMPORT_NAME,
-} from "../src/fork-unwind-transport";
+import { FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT as FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT }
+  from "../src/fork-guest-imports";
+import { WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME }
+  from "../src/generated/abi";
 import {
   WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+  WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
   WPK_FORK_RESUME_IMPORT_TABLE,
 } from "../src/generated/abi";
 
@@ -136,12 +132,26 @@ describe("ABI version marker", () => {
     });
     const importObject: WebAssembly.Imports = { env: { memory } };
     const envImports = importObject.env as Record<string, unknown>;
-    const gcTransit = new ForkAnyrefTransitTable();
+    // A bare anyref table, not `ForkAnyrefTransitTable`. That class now wraps
+    // the fork MODULE's exported transit table (it takes the module's exports
+    // and reads `__wpk_fork_ref_gc_transit`, `fm_transit_grow` and
+    // `fm_last_errno` off them) because the module owns the transit and its
+    // growth. This test instantiates a guest only to read its `__abi_version`
+    // export: it needs SOMETHING of the right element type on that import and
+    // never grows it, so it should not stand up a fork module to get one.
+    const gcTransitTable = new WebAssembly.Table({
+      initial: 1,
+      element: "anyref" as WebAssembly.TableKind,
+    });
     const resumeTable = new WebAssembly.Table({
       initial: 1,
       element: "anyfunc",
     });
-    const unwindTag = createForkUnwindTag();
+    // `createForkUnwindTag` was DELETED from the host: the co-resident fork
+    // module DEFINES this tag and exports it, so a host that minted its own
+    // would leave that export dead and make the module and the guest disagree.
+    // A test that only needs a tag of the right shape on an import can make one.
+    const unwindTag = new WebAssembly.Tag({ parameters: [] });
     for (const imp of WebAssembly.Module.imports(module)) {
       if (imp.module === "env" && imp.name === "memory") continue;
       const target = (importObject[imp.module] ??= {}) as Record<
@@ -165,8 +175,8 @@ describe("ABI version marker", () => {
       } else if (imp.kind === "table") {
         // WHY: ABI 43's GC transit table has `(ref null any)` element type and
         // cannot be replaced by the legacy `anyfunc` resume table.
-        if (imp.name === FORK_ANYREF_TRANSIT_IMPORT) {
-          target[imp.name] = gcTransit.table;
+        if (imp.name === WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT) {
+          target[imp.name] = gcTransitTable;
         } else if (imp.name === WPK_FORK_RESUME_IMPORT_TABLE) {
           target[imp.name] = resumeTable;
         } else {

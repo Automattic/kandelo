@@ -13,8 +13,8 @@ import { runCentralizedProgram } from "../../../../host/test/centralized-test-he
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import {
-  FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT,
-} from "../../../../host/src/fork-activation-registry";
+  FORK_GUEST_TABLE_GENERATION_ADDR_IMPORT as FORK_MODULE_TABLE_GENERATION_ADDR_IMPORT,
+} from "../../../../host/src/fork-guest-imports";
 import {
   WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
   WPK_FORK_REQUIRED_IMPORTS,

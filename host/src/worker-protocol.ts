@@ -248,6 +248,7 @@ export type WorkerToHostMessage =
   | AlarmSetMessage
   | VmInterruptTimerMessage
   | ForkModuleFramesMessage
+  | ForkAbortedMessage
   | ForkModuleChildFramesMessage
   | ForkModuleReferencesMessage
   | ForkModuleRegionMessage
@@ -281,6 +282,29 @@ export interface ForkModuleFramesMessage {
   type: "fork_module_frames";
   pid: number;
   frames: number;
+}
+
+/**
+ * A fork that ABORTED: the parent survives and `fork()` returns `-errno` to
+ * the guest, and this says why.
+ *
+ * Without it the abort is silent. The platform knows exactly what refused --
+ * a seal that could not complete, a reference kind it cannot reconstruct, a
+ * kernel that would not create the process -- and told nobody, so a program
+ * that does not check `fork()`'s return goes on to fail somewhere unrelated
+ * (waiting for a child that was never created, usually) and the real reason is
+ * gone. Three separate defects wore that disguise in one day (census 189).
+ *
+ * A WARNING, not an error: an abort is the CORRECT outcome for a reference
+ * kind the platform refuses to reconstruct, and one test asserts exactly that.
+ */
+export interface ForkAbortedMessage {
+  type: "fork_aborted";
+  pid: number;
+  /** The positive errno `fork()` returns negated. */
+  errno: number;
+  /** Which refusal this was, in words a reader can act on. */
+  reason: string;
 }
 
 /**

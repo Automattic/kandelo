@@ -31,9 +31,13 @@
 //! import it reads.
 
 use anyhow::{anyhow, bail, Context, Result};
-use walrus::ir::{AnyConvertExtern, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg, UnaryOp};
+use walrus::ir::{
+    AnyConvertExtern, AtomicNotify, AtomicWait, BinaryOp, Br, CallIndirect, LoadKind, Loop, MemArg,
+    UnaryOp,
+};
 use walrus::{
-    ExportItem, FunctionBuilder, FunctionId, ImportKind, Module, RefType, ValType,
+    ConstExpr, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId, ImportKind,
+    Module, RefType, ValType,
 };
 
 // -- GC drive-shim injection (Phase 6 item 3b) --------------------------------
@@ -69,6 +73,41 @@ const DRIVE_TABLE_IMPORT: &str = "__wpk_fork_drive_table";
 /// `fm_drive_execute` shim. MUST match the `#[link(wasm_import_module = "env")]`
 /// `extern` name in `crates/fork-module/src/lib.rs`.
 const DRIVE_PLAN_THUNK_IMPORT: &str = "__wpk_fork_drive_plan";
+
+/// The CAPTURE-side placeholder (F3 step 2). Rust declares it as an `env`
+/// import and this tool rewrites it into a local thunk, so the emitted module
+/// carries no unresolved import and a host supplies nothing new — the same
+/// arrangement `DRIVE_PLAN_THUNK_IMPORT` uses.
+const CAPTURE_WITNESS_THUNK_IMPORT: &str = "__wpk_fork_capture_witness";
+/// Drive-table slot the host binds the guest's `__wpk_fork_ref_gc_encode_slot`
+/// into.
+///
+/// READ FROM `fork_codec`, not copied. These three used to be duplicated here
+/// with a comment saying the injector could not link fork-codec and that a test
+/// pinned them instead. Both halves were wrong: it can link it, and no such
+/// test existed -- which is how `DRIVE_SLOTS_PER_ACTIVATION` came to say 13
+/// while `fork_codec` and the host said 14, aiming every activation above 0 at
+/// the wrong guest export.
+const DRIVE_SLOT_GC_ENCODE: i32 = fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE as i32;
+/// See [`DRIVE_SLOT_GC_ENCODE`].
+const DRIVE_SLOT_GC_PROBE: i32 = fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE as i32;
+/// The capture-side probe placeholder, rewritten like the witness one.
+const CAPTURE_PROBE_THUNK_IMPORT: &str = "__wpk_fork_capture_probe";
+/// Encode-from-transit placeholder: the cross-activation broker's second step.
+const CAPTURE_ENCODE_THUNK_IMPORT: &str = "__wpk_fork_capture_encode";
+/// See [`DRIVE_SLOT_GC_ENCODE`].
+const DRIVE_SLOT_EXN_THROW_RECIPE: i32 =
+    fork_codec::drive_plan::DRIVE_SLOT_EXN_THROW_RECIPE as i32;
+/// The cross-activation exception throw placeholder: the module asks the
+/// activation that OWNS a tag to raise the exception, because only that
+/// activation can raise it with the right tag.
+const EXN_THROW_THUNK_IMPORT: &str = "__wpk_fork_exn_throw";
+/// The per-activation stride of the drive table. See [`DRIVE_SLOT_GC_ENCODE`]
+/// for why this is read rather than copied.
+const DRIVE_SLOTS_PER_ACTIVATION: i32 =
+    fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION as i32;
+/// The anyref transit slot a capture encode reads its value from.
+const CAPTURE_TRANSIT_SLOT: i32 = 0;
 /// The injected loop export the host calls to run a serialized plan.
 const DRIVE_EXECUTE_EXPORT: &str = "fm_drive_execute";
 /// The Rust drive-step proof-of-use counter the injected shim `call`s once per
@@ -88,6 +127,72 @@ const DRIVE_BUMP_HELPER_EXPORT: &str = "fm_drive_bump";
 /// instead of a standalone host-provided table, so this name must still match
 /// the guest's import name/element type exactly.
 const TRANSIT_TABLE_IMPORT: &str = "__wpk_fork_ref_gc_transit";
+/// The funcref table of guest resume thunks, OWNED and exported by the module
+/// for the same reason the transit table above is: one object, so the guest's
+/// import, the module's slot numbering and the host's placement cannot be
+/// three different tables. Rust cannot hold a funcref, so it is defined here.
+const RESUME_TABLE_EXPORT: &str = "__wpk_fork_resume_table";
+
+/// The injected anyref-table growth primitive the Rust side calls.
+const TRANSIT_GROW_EXPORT: &str = "fm_transit_grow";
+
+/// The guest-facing fresh-GC claim.
+const GC_CLAIM_EXPORT: &str = "__wpk_fork_ref_gc_claim";
+
+/// The guest-facing GC identity probe.
+const GC_LOOKUP_EXPORT: &str = "__wpk_fork_ref_gc_lookup";
+
+/// The host import that gives a GC reference a stable integer identity, and the
+/// two Rust helpers that map it. Wasm can COMPARE references but cannot HASH
+/// one, so a reference cannot key a map inside the module; the host can.
+const HOST_REF_IDENTITY_IMPORT: &str = "__wpk_fork_host_ref_identity";
+/// The placeholder the module declares and this injector rewrites: "the broker
+/// handle for the externref staged in transit `slot`".
+const EXTERNREF_HANDLE_THUNK_IMPORT: &str = "__wpk_fork_externref_handle";
+/// Its host half -- the exact reverse of `resolve_externref`.
+const HOST_EXTERNREF_HANDLE_IMPORT: &str = "__wpk_fork_host_externref_handle";
+/// The placeholder the module declares for the emitted `fm_transit_grow`.
+const TRANSIT_GROW_THUNK_IMPORT: &str = "__wpk_fork_transit_grow";
+
+/// The host's funcref identity oracle: a stable integer per distinct function.
+///
+/// Wasm cannot compare two `funcref`s -- `ref.eq` validates only on `eqref` and
+/// the hierarchies are disjoint (census section 58) -- so this is the one thing
+/// the scan below cannot do for itself. Both hosts can: a `WeakMap` in
+/// JavaScript, `Func::to_raw` in wasmtime, which `a_native_host_can_identify_funcrefs`
+/// proves is stable per function.
+const HOST_FUNC_IDENTITY_IMPORT: &str = "__wpk_fork_host_func_identity";
+
+/// Guest-facing capture entry: `(funcref) -> recipe`.
+const ENCODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_encode_funcref";
+
+/// Reads one `__indirect_function_table` slot and reports which merged
+/// function-catalog slot holds the same function. See `inject_indirect_slot_catalog`.
+const INDIRECT_SLOT_CATALOG_IMPORT: &str = "fm_indirect_slot_catalog_index";
+
+/// `table.size` of the guest's indirect function table, which Rust cannot emit.
+const INDIRECT_TABLE_SIZE_IMPORT: &str = "fm_indirect_table_size";
+
+/// Rust helpers the scan calls once it has an answer.
+const FUNCREF_SLOT_TO_RECIPE_HELPER: &str = "fm_funcref_slot_to_recipe";
+const FUNCREF_UNCATALOGUED_HELPER: &str = "fm_funcref_uncatalogued";
+const GC_IDENTITY_FIND_HELPER: &str = "fm_gc_identity_find";
+const GC_IDENTITY_CLAIM_HELPER: &str = "fm_gc_identity_claim";
+
+/// Constructor-provenance WITNESS pool. One retained instance per
+/// `(layout, provenance ordinal)`, not one record per allocated object: the
+/// seed replay passes to `struct.new` is overwritten by the snapshot fill, so
+/// it only has to be a type-correct capturable instance of the field's type.
+/// See docs/plans/2026-09-12-lane-f-census.md sections 21 and 22.
+const PROVENANCE_REF_EXPORT: &str = "__wpk_fork_ref_gc_provenance_ref";
+const PROVENANCE_WITNESS_SLOT_HELPER: &str = "fm_gc_provenance_witness_slot";
+const PROVENANCE_WITNESS_TABLE: &str = "__wpk_fork_ref_gc_provenance_witness";
+/// Must match `WITNESS_SLOTS` in `crates/fork-module/src/lib.rs`: Rust picks the
+/// slot index, this table holds the reference at it.
+const PROVENANCE_WITNESS_SLOTS: u64 = 256;
+
+/// The process-owned fork-unwind transport tag.
+const UNWIND_TAG_EXPORT: &str = "__wpk_fork_unwind";
 
 /// The merged, host-owned static-root catalog (`anyref`) the injected drive shim
 /// reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the static-root binder).
@@ -102,6 +207,8 @@ const STATIC_ROOT_CATALOG_IMPORT: &str = "__wpk_fork_static_root_catalog";
 /// merged anyref-catalog index (per-activation base + ordinal). Exported by
 /// `crates/fork-module/src/lib.rs`; traps on any inconsistency.
 const STATIC_ROOT_SLOT_HELPER_EXPORT: &str = "fm_static_root_slot";
+/// The capture-side twin: merged static-root slot -> static-root recipe.
+const STATIC_ROOT_RECIPE_HELPER_EXPORT: &str = "fm_static_root_recipe";
 
 // Serialized drive-step layout — MUST match `fork_codec::drive_plan`
 // (`DRIVE_STEP_SIZE`, `DRIVE_STEP_OFF_*`, `DRIVE_OP_*`). Four little-endian
@@ -137,7 +244,7 @@ const DRIVE_OP_RESTORE: i32 = 5;
 /// ALLOC family passes, so the shim reconstructs the pointer from the step's
 /// `recipe` (high 32) / `arg` (low 32) fields and `call_indirect`s it through a
 /// `(ptr) -> ()` type. MUST match `fork_codec::drive_plan::DRIVE_OP_REWIND_BEGIN`.
-const DRIVE_OP_REWIND_BEGIN: i32 = 7;
+const DRIVE_OP_REWIND_BEGIN: i32 = 8;
 /// op == the FIRST no-argument `() -> ()` guest-drive op. Every op
 /// `>= DRIVE_OP_UNWIND_END` drives a NO-argument guest state flip
 /// (`wpk_fork_unwind_end` capture-seal = 9, `wpk_fork_rewind_end` replay-finish =
@@ -146,13 +253,13 @@ const DRIVE_OP_REWIND_BEGIN: i32 = 7;
 /// share the `>= DRIVE_OP_RESTORE` "install/control" class (excluded from the
 /// reconstruction counter), so the `>= DRIVE_OP_UNWIND_END` void check runs
 /// BEFORE the `>= DRIVE_OP_REWIND_BEGIN` pointer-drive branch (their op values,
-/// 10/11/12, are all also `>= DRIVE_OP_REWIND_BEGIN`). The capture-BEGIN op
+/// 11/12/13, are all also `>= DRIVE_OP_REWIND_BEGIN`). The capture-BEGIN op
 /// `DRIVE_OP_UNWIND_BEGIN` (9) is a POINTER-argument drive that sits in the
 /// `[DRIVE_OP_REWIND_BEGIN, DRIVE_OP_UNWIND_END)` band, so it takes the
 /// pointer-drive branch (not this void one) with no dedicated injector constant.
 /// MUST match `fork_codec::drive_plan::DRIVE_OP_UNWIND_END` (and its
 /// REWIND_END/ABORT_END successors, which take the SAME void branch).
-const DRIVE_OP_UNWIND_END: i32 = 10;
+const DRIVE_OP_UNWIND_END: i32 = 11;
 
 /// The Rust helper the injected shim calls to map a recipe id to a catalog
 /// ordinal (or the null sentinel). Exported by `crates/fork-module/src/lib.rs`.
@@ -167,6 +274,32 @@ const DECODE_FUNCREF_EXPORT: &str = "__wpk_fork_ref_decode_funcref";
 /// supplies a matching funcref table to the fork-module import (a host-owned
 /// mirror populated from the guest's catalog — identical funcref identities).
 const FUNCTION_CATALOG_IMPORT: &str = "__wpk_fork_function_catalog";
+
+/// Placeholder the fork module declares for one funcref table write during a
+/// reconcile. Rewritten below into a local thunk; see `inject_table_apply_thunk`.
+const TABLE_APPLY_THUNK_IMPORT: &str = "__wpk_fork_table_apply";
+
+/// Placeholders for the two shared-memory atomics Rust cannot emit. Rewritten
+/// below into local thunks; see `inject_atomic_thunks`.
+const ATOMIC_WAIT_THUNK_IMPORT: &str = "__wpk_fork_atomic_wait32";
+const ATOMIC_NOTIFY_THUNK_IMPORT: &str = "__wpk_fork_atomic_notify";
+
+/// Module-owned funcref table of per-activation frame/resume entry points,
+/// indexed `activation * TRAMPOLINE_SLOTS + slot`.
+const ACTIVATION_TRAMPOLINE_TABLE: &str = "__wpk_fork_activation_trampolines";
+
+/// Activations the table covers. Matches `ACTIVATION_CATALOG_MAX_ACTS` in
+/// `crates/fork-module`, which is the module's own cap on distinct activations,
+/// so a trampoline can never be asked for an activation the module would refuse.
+const TRAMPOLINE_ACTIVATIONS: u32 = 64;
+
+/// Entries per activation, in this fixed order: frame_reserve, frame_commit,
+/// frame_peek, frame_next, resume_peek.
+const TRAMPOLINE_SLOTS: u32 = 6;
+
+/// The guest's own indirect call table -- the table a reconcile writes into.
+/// Named by the wasm tool convention, not by anything Kandelo chose.
+const INDIRECT_FUNCTION_TABLE_IMPORT: &str = "__indirect_function_table";
 const IMPORT_MODULE: &str = "env";
 
 /// The `NULL_ORDINAL` sentinel `fm_funcref_ordinal` returns for a Null recipe;
@@ -193,6 +326,9 @@ const EXTERNREF_HANDLE_HELPER_EXPORT: &str = "fm_externref_handle";
 /// no null branch: a valid recipe always resolves to the canonical token and the
 /// helper traps on any inconsistency.
 const DECODE_EXTERNREF_EXPORT: &str = "__wpk_fork_ref_decode_externref";
+/// The guest's production-site provenance hook, which the module serves as an
+/// identity function. See `inject_provenance_externref`.
+const PROVENANCE_EXTERNREF_EXPORT: &str = "__wpk_fork_ref_provenance_externref";
 
 fn inject(module: &mut Module) -> Result<()> {
     // Idempotency / sanity: never double-inject.
@@ -265,6 +401,378 @@ fn inject(module: &mut Module) -> Result<()> {
 /// find-or-add (mirroring `fork-instrument/src/legacy_dlopen.rs`) keeps the two
 /// passes order-independent and declares the import exactly once. Rust cannot
 /// declare a reference-returning import, which is exactly why it lives here.
+/// Find or add `env.__wpk_fork_host_ref_identity(anyref) -> i32`.
+fn import_host_ref_identity(module: &mut Module) -> FunctionId {
+    for import in module.imports.iter() {
+        if import.module == IMPORT_MODULE && import.name == HOST_REF_IDENTITY_IMPORT {
+            if let ImportKind::Function(id) = import.kind {
+                return id;
+            }
+        }
+    }
+    let ty = module
+        .types
+        .add(&[ValType::Ref(RefType::ANYREF)], &[ValType::I32]);
+    let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_REF_IDENTITY_IMPORT, ty);
+    id
+}
+
+/// Find or add `env.__wpk_fork_host_externref_handle(externref) -> i32`.
+///
+/// The reverse of `resolve_externref`, and needed for the same reason in the
+/// other direction: only the host knows which broker handle names a live host
+/// reference, and only wasm can hold the reference to be asked about. 0 means
+/// "not a reference the host owns", which is a real answer, not a failure.
+fn import_host_externref_handle(module: &mut Module) -> FunctionId {
+    for import in module.imports.iter() {
+        if import.module == IMPORT_MODULE && import.name == HOST_EXTERNREF_HANDLE_IMPORT {
+            if let ImportKind::Function(id) = import.kind {
+                return id;
+            }
+        }
+    }
+    let ty = module
+        .types
+        .add(&[ValType::Ref(RefType::EXTERNREF)], &[ValType::I32]);
+    let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_EXTERNREF_HANDLE_IMPORT, ty);
+    id
+}
+
+/// Rewrite the module's `__wpk_fork_externref_handle(slot)` placeholder into
+/// the three instructions Rust cannot write:
+///
+/// ```wat
+/// (func (param $slot i32) (result i32)
+///   (local $v anyref)
+///   (local.set $v (table.get $transit (local.get $slot)))
+///   (if (ref.is_null (local.get $v)) (then (return (i32.const 0))))
+///   (call $host_externref_handle (extern.convert_any (local.get $v))))
+/// ```
+///
+/// A null slot answers 0 without calling the host: the module asks this
+/// question about values that matched no GC layout, and a cleared slot is one
+/// of the answers "no host reference here" can take.
+fn inject_externref_handle_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != EXTERNREF_HANDLE_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let host = import_host_externref_handle(module);
+    let value = module.locals.add(ValType::Ref(RefType::ANYREF));
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let slot = args[0];
+            body.local_get(slot).table_get(transit_table).local_set(value);
+            body.local_get(value).ref_is_null().if_else(
+                None,
+                |null| {
+                    null.i32_const(0).return_();
+                },
+                |_| {},
+            );
+            body.local_get(value)
+                .instr(walrus::ir::ExternConvertAny {})
+                .call(host);
+        })
+        .with_context(|| {
+            format!("rewriting {EXTERNREF_HANDLE_THUNK_IMPORT} import into a thunk")
+        })?;
+    Ok(())
+}
+
+/// Rewrite the module's `__wpk_fork_transit_grow(needed)` placeholder into a
+/// call to the emitted `fm_transit_grow` export.
+///
+/// Rust cannot emit `table.grow`, and the module owns the table -- so the
+/// growth lives here and Rust reaches it the way it reaches every other
+/// wasm-only step: a placeholder import this pass replaces. MUST run after
+/// `inject_transit_grow`, which creates the export it forwards to.
+fn inject_transit_grow_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != TRANSIT_GROW_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        return Ok(());
+    };
+    let grow = exported_function(module, TRANSIT_GROW_EXPORT)?;
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            body.local_get(args[0]).call(grow);
+        })
+        .with_context(|| format!("rewriting {TRANSIT_GROW_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
+fn import_host_func_identity(module: &mut Module) -> FunctionId {
+    for import in module.imports.iter() {
+        if import.module == IMPORT_MODULE && import.name == HOST_FUNC_IDENTITY_IMPORT {
+            if let ImportKind::Function(id) = import.kind {
+                return id;
+            }
+        }
+    }
+    let ty = module
+        .types
+        .add(&[ValType::Ref(RefType::FUNCREF)], &[ValType::I32]);
+    let (id, _) = module.add_import_func(IMPORT_MODULE, HOST_FUNC_IDENTITY_IMPORT, ty);
+    id
+}
+
+/// Emit `__wpk_fork_ref_encode_funcref(funcref) -> recipe`.
+///
+/// Capture's inverse of `__wpk_fork_ref_decode_funcref`: that one turns a recipe
+/// into a function by indexing the merged catalog, this one turns a function
+/// back into a recipe by finding WHICH catalog slot holds it.
+///
+/// Finding it requires comparing functions, which wasm cannot do, so the host
+/// supplies an identity oracle and the SCAN is emitted here. That split matters:
+/// the host answers only "are these the same function?", and every decision
+/// built on the answer -- which slice of the merged catalog the slot falls in,
+/// which activation owns it, what ordinal it becomes, what happens when it is
+/// not found -- stays in the module.
+///
+/// A linear scan, deliberately. Capture is not a hot path, an identity map would
+/// need invalidating on every `dlopen`, and a stale map is a recipe that decodes
+/// to the wrong function -- the failure this whole design exists to avoid.
+fn inject_encode_funcref(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == ENCODE_FUNCREF_EXPORT)
+    {
+        bail!("module already exports {ENCODE_FUNCREF_EXPORT}");
+    }
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let identity = import_host_func_identity(module);
+    let to_recipe = exported_function(module, FUNCREF_SLOT_TO_RECIPE_HELPER)?;
+    let uncatalogued = exported_function(module, FUNCREF_UNCATALOGUED_HELPER)?;
+    let catalog_is_64 = module.tables.get(catalog).table64;
+
+    let mut builder =
+        FunctionBuilder::new(&mut module.types, &[ValType::Ref(RefType::FUNCREF)], &[ValType::I32]);
+    let wanted = module.locals.add(ValType::Ref(RefType::FUNCREF));
+    let want_id = module.locals.add(ValType::I32);
+    let i = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    let entry = module.locals.add(ValType::Ref(RefType::FUNCREF));
+
+    let mut loop_body = builder.dangling_instr_seq(None);
+    let loop_id = loop_body.id();
+    loop_body
+        .local_get(i)
+        .local_get(size)
+        .binop(BinaryOp::I32GeU)
+        .if_else(
+            None,
+            // Scanned the whole catalog without a match.
+            |done| {
+                done.call(uncatalogued).return_();
+            },
+            |work| {
+                work.local_get(i);
+                if catalog_is_64 {
+                    work.unop(UnaryOp::I64ExtendUI32);
+                }
+                work.table_get(catalog).local_set(entry);
+                // A null slot cannot be the function we hold, and asking the host
+                // to identify null would make it invent an answer.
+                work.local_get(entry).ref_is_null().if_else(
+                    None,
+                    |_null| {},
+                    |occupied| {
+                        occupied
+                            .local_get(entry)
+                            .call(identity)
+                            .local_get(want_id)
+                            .binop(BinaryOp::I32Eq)
+                            .if_else(
+                                None,
+                                |found| {
+                                    found.local_get(i).call(to_recipe).return_();
+                                },
+                                |_| {},
+                            );
+                    },
+                );
+                work.local_get(i)
+                    .i32_const(1)
+                    .binop(BinaryOp::I32Add)
+                    .local_set(i);
+                work.instr(Br { block: loop_id });
+            },
+        );
+    drop(loop_body);
+
+    {
+        let mut body = builder.func_body();
+        // A null funcref is recipe 0 -- the graph's own "no reference", not a
+        // lookup failure, and asking the host to identify it would be wrong.
+        body.local_get(wanted).ref_is_null().if_else(
+            None,
+            |null| {
+                null.i32_const(0).return_();
+            },
+            |_| {},
+        );
+        body.local_get(wanted).call(identity).local_set(want_id);
+        body.table_size(catalog);
+        if catalog_is_64 {
+            body.unop(UnaryOp::I32WrapI64);
+        }
+        body.local_set(size);
+        body.i32_const(0).local_set(i);
+        body.instr(Loop { seq: loop_id });
+        // Unreachable: the loop returns on both exits. Wasm still needs a value
+        // of the result type to fall out with.
+        body.call(uncatalogued);
+    }
+    let shim = builder.finish(vec![wanted], &mut module.funcs);
+    module.exports.add(ENCODE_FUNCREF_EXPORT, shim);
+    Ok(())
+}
+
+/// Rewrite `fm_indirect_slot_catalog_index(dest) -> i32` into a local thunk.
+///
+/// Publishing a guest table mutation means describing what the guest WROTE, and
+/// the description is a catalog coordinate. So for each changed slot the module
+/// asks the same question `encode_funcref` asks, about a function it reads out of
+/// the indirect table rather than one it was handed.
+///
+/// Returns the merged catalog slot, or:
+///   `-1` the indirect slot is null, a legitimate cleared entry;
+///   `-2` the function is not in the catalog at all.
+///
+/// Two codes rather than one because they are not the same event: a null slot is
+/// a run the patch records as `clear`, while an uncatalogued function is a
+/// mutation that cannot be described and must fail the commit.
+fn inject_indirect_slot_catalog(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, INDIRECT_SLOT_CATALOG_IMPORT) else {
+        return Ok(());
+    };
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
+    let identity = import_host_func_identity(module);
+    let catalog_is_64 = module.tables.get(catalog).table64;
+    let indirect_is_64 = module.tables.get(indirect).table64;
+    let want_id = module.locals.add(ValType::I32);
+    let i = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    let held = module.locals.add(ValType::Ref(RefType::FUNCREF));
+    let entry = module.locals.add(ValType::Ref(RefType::FUNCREF));
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let dest = args[0];
+            let mut loop_body = body.dangling_instr_seq(None);
+            let loop_id = loop_body.id();
+            loop_body
+                .local_get(i)
+                .local_get(size)
+                .binop(BinaryOp::I32GeU)
+                .if_else(
+                    None,
+                    |done| {
+                        done.i32_const(-2).return_();
+                    },
+                    |work| {
+                        work.local_get(i);
+                        if catalog_is_64 {
+                            work.unop(UnaryOp::I64ExtendUI32);
+                        }
+                        work.table_get(catalog).local_set(entry);
+                        work.local_get(entry).ref_is_null().if_else(
+                            None,
+                            |_null| {},
+                            |occupied| {
+                                occupied
+                                    .local_get(entry)
+                                    .call(identity)
+                                    .local_get(want_id)
+                                    .binop(BinaryOp::I32Eq)
+                                    .if_else(
+                                        None,
+                                        |found| {
+                                            found.local_get(i).return_();
+                                        },
+                                        |_| {},
+                                    );
+                            },
+                        );
+                        work.local_get(i)
+                            .i32_const(1)
+                            .binop(BinaryOp::I32Add)
+                            .local_set(i);
+                        work.instr(Br { block: loop_id });
+                    },
+                );
+            drop(loop_body);
+
+            body.local_get(dest);
+            if indirect_is_64 {
+                body.unop(UnaryOp::I64ExtendUI32);
+            }
+            body.table_get(indirect).local_set(held);
+            body.local_get(held).ref_is_null().if_else(
+                None,
+                |null| {
+                    null.i32_const(-1).return_();
+                },
+                |_| {},
+            );
+            body.local_get(held).call(identity).local_set(want_id);
+            body.table_size(catalog);
+            if catalog_is_64 {
+                body.unop(UnaryOp::I32WrapI64);
+            }
+            body.local_set(size);
+            body.i32_const(0).local_set(i);
+            body.instr(Loop { seq: loop_id });
+            body.i32_const(-2);
+        })
+        .with_context(|| format!("rewriting {INDIRECT_SLOT_CATALOG_IMPORT}"))?;
+    Ok(())
+}
+
+/// Rewrite `fm_indirect_table_size() -> i32` into a local thunk.
+///
+/// A published table patch records the table's LENGTH, and the decoder rejects a
+/// patch whose range runs past it. Rust cannot emit `table.size`, so without this
+/// the module would have to be TOLD a number it can read for itself -- and a host
+/// that told it a stale one would publish patches the decoder refuses.
+fn inject_indirect_table_size(module: &mut Module) -> Result<()> {
+    let Some(import_fn) = imported_func(module, INDIRECT_TABLE_SIZE_IMPORT) else {
+        return Ok(());
+    };
+    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
+    let is64 = module.tables.get(indirect).table64;
+    module
+        .replace_imported_func(import_fn, |(body, _args)| {
+            body.table_size(indirect);
+            if is64 {
+                body.unop(UnaryOp::I32WrapI64);
+            }
+        })
+        .with_context(|| format!("rewriting {INDIRECT_TABLE_SIZE_IMPORT}"))?;
+    Ok(())
+}
+
 fn import_resolve_externref(module: &mut Module) -> FunctionId {
     let params = [ValType::I32];
     let results = [ValType::Ref(RefType::EXTERNREF)];
@@ -308,6 +816,44 @@ fn import_resolve_externref(module: &mut Module) -> FunctionId {
 /// in the module's Rust `fm_externref_handle` helper; this tool only adds the
 /// externref-returning wrapper Rust cannot express and the residual
 /// `env.resolve_externref` import it calls.
+/// Inject `__wpk_fork_ref_provenance_externref(externref) -> externref`: the
+/// identity function.
+///
+/// # Why the guest calls it at all
+///
+/// `fork-instrument` wraps every host-import call site that yields an
+/// externref, so the value passes through this hook at its PRODUCTION site --
+/// the one moment a host could record where it came from. The host did record
+/// it, in a `WeakMap` keyed by the object, because a capture later needed to
+/// ask "which broker handle is this?" and only the production site knew.
+///
+/// # Why it is the identity now
+///
+/// It stopped being the only way to ask. The capture asks the host directly
+/// (`__wpk_fork_host_externref_handle`), which reads the handle off the broker
+/// token the value already is -- so the map was written on every import call
+/// and read by nobody. A hook whose only job is to remember something nobody
+/// recalls is a guest import every host still had to implement.
+///
+/// Wasm cannot pass an externref through a Rust function, which is the only
+/// reason this is emitted here rather than exported from `lib.rs`.
+fn inject_provenance_externref(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == PROVENANCE_EXTERNREF_EXPORT)
+    {
+        bail!("module already exports {PROVENANCE_EXTERNREF_EXPORT}");
+    }
+    let externref = ValType::Ref(RefType::EXTERNREF);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[externref], &[externref]);
+    let value = module.locals.add(externref);
+    builder.func_body().local_get(value);
+    let shim = builder.finish(vec![value], &mut module.funcs);
+    module.exports.add(PROVENANCE_EXTERNREF_EXPORT, shim);
+    Ok(())
+}
+
 fn inject_decode_externref(module: &mut Module) -> Result<()> {
     // Idempotency / sanity: never double-inject.
     if module
@@ -479,6 +1025,23 @@ fn inject_drive_execute(module: &mut Module) -> Result<()> {
     let transit_table = module.tables.add_local(false, 1, None, RefType::ANYREF);
     module.tables.get_mut(transit_table).name = Some(TRANSIT_TABLE_IMPORT.to_string());
     module.exports.add(TRANSIT_TABLE_IMPORT, transit_table);
+
+    // The guest's resume thunks, at the slots `fm_resume_slots` assigns.
+    //
+    // INITIAL 1 and not 0: slot 0 is the reserved "no resume event" sentinel
+    // that `resume_peek` answers when a replay has nothing to resume, and no
+    // thunk may ever live there. Growable (no maximum) because the host adds
+    // an activation's thunks as it loads, and how many there will be is not
+    // known when the module is instantiated.
+    //
+    // This used to be a `WebAssembly.Table` the host minted and passed in
+    // `extras`. Moving it here is the same move `TRANSIT_TABLE_IMPORT` made
+    // (M1) and for the same reason: while the host minted it, "the guest's
+    // table" and "the table the module numbers" were a per-caller convention
+    // rather than one object.
+    let resume_table = module.tables.add_local(false, 1, None, RefType::FUNCREF);
+    module.tables.get_mut(resume_table).name = Some(RESUME_TABLE_EXPORT.to_string());
+    module.exports.add(RESUME_TABLE_EXPORT, resume_table);
 
     // The merged, host-owned static-root catalog (`anyref`) the shim reads with
     // `table.get` on a DRIVE_OP_STATIC_ROOT step. Initial size 0; the host grows
@@ -912,8 +1475,50 @@ fn main() -> Result<()> {
     inject(&mut module).context("injecting __wpk_fork_ref_decode_funcref")?;
     inject_decode_externref(&mut module).context("injecting __wpk_fork_ref_decode_externref")?;
     inject_drive_execute(&mut module).context("injecting fm_drive_execute")?;
+    inject_transit_grow(&mut module).context("injecting fm_transit_grow")?;
+    inject_gc_claim(&mut module).context("injecting __wpk_fork_ref_gc_claim")?;
+    inject_gc_lookup(&mut module).context("injecting __wpk_fork_ref_gc_lookup")?;
+    inject_unwind_tag(&mut module).context("injecting __wpk_fork_unwind")?;
+    inject_gc_provenance_ref(&mut module)
+        .context("injecting __wpk_fork_ref_gc_provenance_ref")?;
+    inject_capture_witness_thunk(&mut module)
+        .context("rewriting __wpk_fork_capture_witness into a thunk")?;
+    inject_capture_probe_thunk(&mut module)
+        .context("rewriting __wpk_fork_capture_probe into a thunk")?;
+    inject_capture_encode_thunk(&mut module)
+        .context("rewriting __wpk_fork_capture_encode into a thunk")?;
+    inject_exn_throw_thunk(&mut module)
+        .context("rewriting __wpk_fork_exn_throw into a thunk")?;
+    inject_externref_handle_thunk(&mut module)
+        .context("rewriting __wpk_fork_externref_handle into a thunk")?;
+    inject_provenance_externref(&mut module)
+        .context("injecting __wpk_fork_ref_provenance_externref")?;
+    inject_transit_grow_thunk(&mut module)
+        .context("rewriting __wpk_fork_transit_grow into a thunk")?;
+    inject_table_apply_thunk(&mut module)
+        .context("rewriting __wpk_fork_table_apply into a thunk")?;
+    inject_atomic_thunks(&mut module).context("rewriting the shared-memory atomics")?;
+    inject_activation_trampolines(&mut module)
+        .context("emitting the per-activation frame trampolines")?;
+    inject_encode_funcref(&mut module).context("injecting __wpk_fork_ref_encode_funcref")?;
+    inject_indirect_slot_catalog(&mut module)
+        .context("injecting fm_indirect_slot_catalog_index")?;
+    inject_indirect_table_size(&mut module).context("injecting fm_indirect_table_size")?;
     inject_drive_thunk(&mut module).context("rewiring the coarse-entry drive thunk")?;
     let out_bytes = module.emit_wasm();
+    // Validate before writing. An injected function with a bad local index or a
+    // type mismatch produces bytes walrus is happy to emit and every consumer
+    // rejects, and without this check the artifact is written and STAGED before
+    // anything tries to instantiate it -- so the first symptom is a harness or a
+    // host failing on a module that was already published. That happened while
+    // adding the GC claim shim: `finish` was handed a non-parameter local, and
+    // the result was "invalid local index: 1" at instantiation time, long after
+    // the build reported success.
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&out_bytes)
+        .with_context(|| {
+            format!("injected module failed validation before writing {output}")
+        })?;
     std::fs::write(&output, &out_bytes).with_context(|| format!("writing {output}"))?;
     eprintln!(
         "fork-module-inject: {input} -> {output} ({} bytes, added {DECODE_FUNCREF_EXPORT} + \
@@ -923,6 +1528,916 @@ fn main() -> Result<()> {
         out_bytes.len()
     );
     Ok(())
+}
+
+/// Inject `fm_transit_grow(needed) -> i32`: ensure the module-owned
+/// `(ref null any)` GC transit table holds at least `needed` slots, and return
+/// its size afterwards (or `-1` if it could not be grown).
+///
+/// # Why this cannot be Rust
+///
+/// `table.size` and `table.grow` are the instructions, and Rust/LLVM emits
+/// neither — and `table.grow` on an `anyref` table additionally needs a
+/// `ref.null any` init value Rust has no type for. The module OWNS this table
+/// (`inject_drive_execute` defines and exports it), so growing it is its own
+/// job, not the host's.
+///
+/// # Why it is needed
+///
+/// `fork-instrument`'s GC codec publishes a captured value at `recipe + 1`:
+///
+/// ```wat
+/// (i32.const 0) (call $claim)                       ;; -> recipe
+/// (table.set $transit (i32.add (local.get $recipe) (i32.const 1)) (local.get $value))
+/// ```
+///
+/// so `claim` must leave room for `recipe + 1` BEFORE it returns — the
+/// generator states it: "claim grows the process-owned transit table through
+/// recipe+1 before returning". Without this primitive the guest's very next
+/// instruction traps on an out-of-bounds `table.set`.
+///
+/// ```wat
+/// (func (export "fm_transit_grow") (param $needed i32) (result i32)
+///   (if (i32.gt_s (local.get $needed) (table.size $transit))
+///     (then
+///       (if (i32.lt_s (table.grow $transit (ref.null any)
+///                       (i32.sub (local.get $needed) (table.size $transit)))
+///                     (i32.const 0))
+///         (then (return (i32.const -1))))))
+///   (table.size $transit))
+/// ```
+fn inject_transit_grow(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == TRANSIT_GROW_EXPORT)
+    {
+        bail!("module already exports {TRANSIT_GROW_EXPORT}");
+    }
+
+    // The transit table is module-owned and exported by `inject_drive_execute`,
+    // so this pass must run after it. Resolve by export rather than by
+    // threading the id through: a missing table is a loud failure here instead
+    // of a shim that silently grows the wrong table.
+    let transit = module
+        .exports
+        .iter()
+        .find(|export| export.name == TRANSIT_TABLE_IMPORT)
+        .ok_or_else(|| anyhow!("module does not export {TRANSIT_TABLE_IMPORT}"))?;
+    let transit_table = match transit.item {
+        ExportItem::Table(id) => id,
+        _ => bail!("{TRANSIT_TABLE_IMPORT} export is not a table"),
+    };
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    let needed = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(needed)
+            .table_size(transit_table)
+            .binop(BinaryOp::I32GtS)
+            .if_else(
+                None,
+                |grow| {
+                    grow.ref_null(RefType::ANYREF)
+                        .local_get(needed)
+                        .table_size(transit_table)
+                        .binop(BinaryOp::I32Sub)
+                        .table_grow(transit_table)
+                        .i32_const(0)
+                        .binop(BinaryOp::I32LtS)
+                        .if_else(
+                            None,
+                            |failed| {
+                                failed.i32_const(-1).return_();
+                            },
+                            |_ok| {},
+                        );
+                },
+                |_already| {},
+            );
+        body.table_size(transit_table);
+    }
+    let shim = builder.finish(vec![needed], &mut module.funcs);
+    module.exports.add(TRANSIT_GROW_EXPORT, shim);
+    Ok(())
+}
+
+/// Inject `__wpk_fork_ref_gc_claim(slot) -> recipe`: the guest-facing fresh-GC
+/// claim.
+///
+/// # Why this is injected rather than Rust
+///
+/// The Rust side already has the interesting half — `fm_capture_claim_gc`
+/// allocates a fresh identity in `fork_codec::ReferenceGraphBuilder`. What it
+/// cannot do is the other half: `fork-instrument` publishes the claimed value
+/// into the transit table at `recipe + 1` on the instruction AFTER this returns,
+/// so the table has to be big enough first, and Rust emits no `table.grow`.
+///
+/// This is the same shape as `__wpk_fork_ref_decode_funcref`: an injected
+/// wrapper doing the one wasm-only step around a Rust helper that does the
+/// thinking. Rust cannot call an injected function (it does not exist when Rust
+/// compiles), so the wrapper has to be the outer layer, not the inner one.
+///
+/// # The slot argument
+///
+/// The generator has exactly ONE call site and it passes `0`
+/// (`module_gc_codec.rs`: `constant_i32(instrs, 0); call(claim)`), because the
+/// value is sitting in transit slot 0 at that moment. Claim itself does not read
+/// it — the guest publishes the value afterwards, which is what makes the
+/// transit table the record and lets a later lookup find it. A non-zero slot
+/// would mean the emitted shape changed, so it traps rather than quietly
+/// claiming against an assumption that no longer holds.
+///
+/// ```wat
+/// (func (export "__wpk_fork_ref_gc_claim") (param $slot i32) (result i32)
+///   (local $recipe i32)
+///   (if (local.get $slot) (then (unreachable)))          ;; contract violation
+///   (local.set $recipe (call $fm_capture_claim_gc))
+///   (if (i32.lt_s (local.get $recipe) (i32.const 0))
+///     (then (return (local.get $recipe))))               ;; propagate the errno
+///   (if (i32.lt_s (call $fm_transit_grow
+///                   (i32.add (local.get $recipe) (i32.const 2)))
+///                 (i32.const 0))
+///     (then (return (i32.const -1))))                     ;; could not grow
+///   (local.get $recipe))
+/// ```
+fn inject_gc_claim(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == GC_CLAIM_EXPORT)
+    {
+        bail!("module already exports {GC_CLAIM_EXPORT}");
+    }
+    let claim_helper = exported_function(module, GC_IDENTITY_CLAIM_HELPER)?;
+    let grow = exported_function(module, TRANSIT_GROW_EXPORT)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let identity = import_host_ref_identity(module);
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    let slot = module.locals.add(ValType::I32);
+    let recipe = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(slot).if_else(
+            None,
+            |bad| {
+                bad.unreachable();
+            },
+            |_ok| {},
+        );
+        // The value is STILL in the staging slot here -- the generator clears
+        // slot 0 only after the payload is encoded -- so claim can bind the
+        // identity rather than merely allocate a recipe. Binding is what makes
+        // a later lookup hit, which is what terminates a cyclic graph.
+        body.local_get(slot)
+            .table_get(transit_table)
+            .call(identity)
+            .call(claim_helper)
+            .local_set(recipe);
+        body.local_get(recipe)
+            .i32_const(0)
+            .binop(BinaryOp::I32LtS)
+            .if_else(
+                None,
+                |failed| {
+                    failed.local_get(recipe).return_();
+                },
+                |_ok| {},
+            );
+        body.local_get(recipe)
+            .i32_const(2)
+            .binop(BinaryOp::I32Add)
+            .call(grow)
+            .i32_const(0)
+            .binop(BinaryOp::I32LtS)
+            .if_else(
+                None,
+                |failed| {
+                    failed.i32_const(-1).return_();
+                },
+                |_ok| {},
+            );
+        body.local_get(recipe);
+    }
+    let shim = builder.finish(vec![slot], &mut module.funcs);
+    module.exports.add(GC_CLAIM_EXPORT, shim);
+    Ok(())
+}
+
+/// Inject `__wpk_fork_ref_gc_lookup(slot) -> recipe`: the recipe an equal GC
+/// value was already claimed under, or 0 if this value is new.
+///
+/// # Why identity comes from the host
+///
+/// GC values ARE comparable in wasm -- `ref.eq` validates on `eqref` -- so the
+/// module CAN answer this itself, and did, by scanning every value published so
+/// far. What wasm cannot do is HASH a reference: there is no `ref.hash`, so a
+/// reference cannot key a map, and the scan was the only in-module algorithm.
+/// O(n) per lookup, O(n^2) over a capture.
+///
+/// `env.__wpk_fork_host_ref_identity` returns a stable integer per distinct
+/// reference and Rust maps it, which is O(1) amortised. It is an OPTIMISATION,
+/// not a capability floor, and `docs/fork-host-imports.md` says so. On
+/// JavaScript it is a `WeakMap`; a wasmtime embedder has rooted references with
+/// real identity, so it is not a JS-only mechanism.
+///
+/// # Why this is correctness, not deduplication for size
+///
+/// Without it a cyclic object graph never terminates: the generator publishes
+/// identity BEFORE recursing into fields precisely so the walk back finds it.
+///
+/// ```wat
+/// (func (export "__wpk_fork_ref_gc_lookup") (param $slot i32) (result i32)
+///   (local $v anyref)
+///   (local.set $v (table.get $transit (local.get $slot)))
+///   (if (ref.is_null (local.get $v)) (then (return (i32.const 0))))
+///   (call $fm_gc_identity_find (call $host_ref_identity (local.get $v))))
+/// ```
+/// `__wpk_fork_ref_gc_provenance_ref(token, ordinal, slot)`.
+///
+/// Stores the guest's staged constructor SEED into the witness pool. The
+/// division of labour is the same one `inject_gc_claim` uses and for the same
+/// reason: Rust picks the slot because Rust can hold the map, and wasm does the
+/// store because only wasm can hold the reference.
+///
+/// Needs no reference identity and no host call at all — unlike claim/lookup,
+/// the witness is keyed by `(layout, ordinal)`, both of which are plain
+/// integers the guest already passes. That is what keeps this off the
+/// allocation hot path.
+///
+/// The guest ABI returns nothing, so a rejected slot is latched in
+/// `fm_last_errno` and surfaces at `__wpk_fork_ref_gc_provenance_end`, which
+/// refuses a transaction whose stores did not match the declared count.
+/// Rewrite the `__wpk_fork_capture_witness(activation, witness_slot)`
+/// placeholder into a local thunk that encodes a constructor-provenance witness
+/// through the guest's own codec.
+///
+/// Three operations, straight-line — no loop, because interning one witness is
+/// one encode:
+///
+/// ```text
+///   transit[0] = witness_table[witness_slot]
+///   call_indirect drive_table[activation * SLOTS + DRIVE_SLOT_GC_ENCODE] (0)
+/// ```
+///
+/// This is the first CAPTURE use of the drive table; every other slot drives
+/// replay. The guest's `__wpk_fork_ref_gc_encode_slot` takes the transit slot
+/// and returns the recipe id, so the module gets a recipe for a reference it
+/// could never encode itself.
+///
+/// MUST run after `inject_gc_provenance_ref`, which creates the witness table.
+/// Rewrite `__wpk_fork_capture_probe(activation, slot)` into a local thunk that
+/// `call_indirect`s the guest's type-test probe.
+///
+/// Simpler than the witness thunk: the value is ALREADY in the transit slot
+/// when the guest asks which layout it is, so there is nothing to stage — just
+/// forward the slot and call through.
+/// Rewrite a `(activation, slot)` placeholder into a local thunk that forwards
+/// `slot` and `call_indirect`s `drive_table[activation * SLOTS + offset]`.
+///
+/// Shared by the probe, encode and exception-throw thunks, which differ only in
+/// the drive slot and the callee's results (the throw has none -- it does not
+/// come back). Keeping one emitter means the index arithmetic
+/// — the part that silently calls the wrong guest function when wrong — exists
+/// once.
+fn inject_forwarding_drive_thunk(
+    module: &mut Module,
+    import_name: &str,
+    drive_slot: i32,
+    results: &[ValType],
+) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != import_name {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        return Ok(());
+    };
+    let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
+    let callee_ty = module.types.add(&[ValType::I32], results);
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let activation = args[0];
+            let slot = args[1];
+            body.local_get(slot);
+            body.local_get(activation)
+                .i32_const(DRIVE_SLOTS_PER_ACTIVATION)
+                .binop(BinaryOp::I32Mul)
+                .i32_const(drive_slot)
+                .binop(BinaryOp::I32Add);
+            body.instr(CallIndirect {
+                ty: callee_ty,
+                table: drive_table,
+            });
+        })
+        .with_context(|| format!("rewriting {import_name} import into a thunk"))?;
+    Ok(())
+}
+
+fn inject_capture_probe_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(
+        module,
+        CAPTURE_PROBE_THUNK_IMPORT,
+        DRIVE_SLOT_GC_PROBE,
+        &[ValType::I64],
+    )
+}
+
+/// The broker's encode step. Same shape as the probe, different slot and result.
+fn inject_capture_encode_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(
+        module,
+        CAPTURE_ENCODE_THUNK_IMPORT,
+        DRIVE_SLOT_GC_ENCODE,
+        &[ValType::I32],
+    )
+}
+
+/// Rewrite `__wpk_fork_exn_throw(activation, recipe)` into a local thunk that
+/// `call_indirect`s the OWNING activation's `__wpk_fork_ref_exn_throw_recipe`.
+///
+/// Same emitter as the probe and encode thunks, and the one that does not come
+/// back: the callee raises a wasm exception, so it has no results and no caller
+/// of this thunk gets a value.
+///
+/// # Why the throw has to happen there
+///
+/// A replay reconstructing an `exnref` must re-enter wasm THROWING, with the
+/// tag the capturing activation's codec declared. The module has no such tag,
+/// and a JavaScript import cannot raise one either -- a JS `throw` crosses back
+/// as a foreign exception with the wrong tag. Only the owning activation's own
+/// exported thrower raises the right exception, and this is how the module
+/// reaches it. Which activation owns the recipe is read from the module's own
+/// decoded graph; see `__wpk_fork_ref_exn_broker_throw_recipe` in `lib.rs`.
+fn inject_exn_throw_thunk(module: &mut Module) -> Result<()> {
+    inject_forwarding_drive_thunk(module, EXN_THROW_THUNK_IMPORT, DRIVE_SLOT_EXN_THROW_RECIPE, &[])
+}
+
+fn inject_capture_witness_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != CAPTURE_WITNESS_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+
+    let witness_table = exported_table(module, PROVENANCE_WITNESS_TABLE)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let drive_table = imported_table(module, DRIVE_TABLE_IMPORT)?;
+    let encode_ty = module
+        .types
+        .add(&[ValType::I32], &[ValType::I32]);
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let activation = args[0];
+            let witness_slot = args[1];
+            // transit[0] = witness_table[witness_slot]
+            body.i32_const(CAPTURE_TRANSIT_SLOT)
+                .local_get(witness_slot)
+                .table_get(witness_table)
+                .table_set(transit_table);
+            // the guest codec's argument: which transit slot to encode
+            body.i32_const(CAPTURE_TRANSIT_SLOT);
+            // drive_table index = activation * SLOTS + DRIVE_SLOT_GC_ENCODE
+            body.local_get(activation)
+                .i32_const(DRIVE_SLOTS_PER_ACTIVATION)
+                .binop(BinaryOp::I32Mul)
+                .i32_const(DRIVE_SLOT_GC_ENCODE)
+                .binop(BinaryOp::I32Add);
+            body.instr(CallIndirect {
+                ty: encode_ty,
+                table: drive_table,
+            });
+        })
+        .with_context(|| format!("rewriting {CAPTURE_WITNESS_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
+/// Emit one frame/resume entry point per activation, ahead of time.
+///
+/// The guest's five frame imports are frozen at `(ptr)`, while the module's
+/// exports take `(activation_id, ptr)` -- one shared implementation serving
+/// every activation. Something has to fold the activation id in.
+///
+/// That something used to be 286 lines of TypeScript SYNTHESIZING a wasm module
+/// at runtime, per activation, by hand-assembling opcodes. Emitting them here
+/// instead costs 320 functions of three instructions each, and reduces the host
+/// to five `table.get` calls. Runtime code generation in the host is precisely
+/// what this campaign exists to remove.
+///
+/// `resume_peek` drops the guest's argument rather than forwarding it; it is a
+/// diagnostic the module does not take. That asymmetry is preserved from the
+/// TypeScript it replaces, not invented here.
+fn inject_activation_trampolines(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == ACTIVATION_TRAMPOLINE_TABLE)
+    {
+        bail!("module already exports {ACTIVATION_TRAMPOLINE_TABLE}");
+    }
+    let ptr_ty = if module
+        .memories
+        .iter()
+        .next()
+        .ok_or_else(|| anyhow!("module has no linear memory"))?
+        .memory64
+    {
+        ValType::I64
+    } else {
+        ValType::I32
+    };
+
+    // (shared export, forwards the guest's argument)
+    let targets: [(&str, bool); TRAMPOLINE_SLOTS as usize] = [
+        ("fm_frame_reserve", true),
+        ("fm_frame_commit", true),
+        ("fm_frame_peek", true),
+        ("fm_frame_next", true),
+        ("fm_resume_peek", false),
+        // The guest's `table_state_owned(owner)` takes its activation the same
+        // way the frame imports do: folded in here. The host elects which
+        // coordinate owns a physical table (a `WebAssembly.Table` identity
+        // comparison wasm cannot make) and seeds the answer through
+        // `fm_set_activation_table_state_owner`; the module then serves the
+        // import itself.
+        ("fm_module_state_table_state_owned", true),
+    ];
+    let mut resolved = Vec::with_capacity(targets.len());
+    for (name, forwards) in targets {
+        resolved.push((exported_function(module, name)?, forwards));
+    }
+
+    let slots = TRAMPOLINE_ACTIVATIONS * TRAMPOLINE_SLOTS;
+    let table = module
+        .tables
+        .add_local(false, u64::from(slots), Some(u64::from(slots)), RefType::FUNCREF);
+    module.exports.add(ACTIVATION_TRAMPOLINE_TABLE, table);
+
+    let mut entries = Vec::with_capacity(slots as usize);
+    for activation in 0..TRAMPOLINE_ACTIVATIONS {
+        for (target, forwards) in &resolved {
+            // Every guest-facing frame import is `(ptr) -> ptr` except
+            // `frame_commit`, which returns nothing, and `resume_peek`, which is
+            // `(i32) -> i32`. Building from the TARGET's own type keeps this
+            // correct without restating any of those signatures here.
+            let target_ty = module.types.get(module.funcs.get(*target).ty());
+            let results: Vec<ValType> = target_ty.results().to_vec();
+            let params: Vec<ValType> = if *forwards {
+                vec![*target_ty
+                    .params()
+                    .get(1)
+                    .ok_or_else(|| anyhow!("frame export takes no forwarded argument"))?]
+            } else {
+                vec![ValType::I32]
+            };
+            let mut builder = FunctionBuilder::new(&mut module.types, &params, &results);
+            let arg = module.locals.add(params[0]);
+            {
+                let mut body = builder.func_body();
+                body.i32_const(activation as i32);
+                if *forwards {
+                    body.local_get(arg);
+                }
+                body.call(*target);
+            }
+            entries.push(builder.finish(vec![arg], &mut module.funcs));
+        }
+    }
+    let _ = ptr_ty;
+
+    module.elements.add(
+        ElementKind::Active {
+            table,
+            offset: ConstExpr::Value(walrus::ir::Value::I32(0)),
+        },
+        ElementItems::Functions(entries),
+    );
+    Ok(())
+}
+
+/// Rewrite the two shared-memory atomic placeholders into local thunks.
+///
+/// `core::sync::atomic` gives the module compare-and-swap on any guest address,
+/// which is most of a lock. What it cannot give is BLOCKING: `memory.atomic
+/// .wait32` and `memory.atomic.notify` have no Rust spelling, and a spin would
+/// burn a worker's CPU while the archive writer does I/O.
+///
+/// Both take the address as the guest's pointer type, so a wasm64 build widens
+/// the `u32` Rust declared -- the same widening `inject_table_apply_thunk` does
+/// for table indices, and caught the same way if it is missing.
+fn inject_atomic_thunks(module: &mut Module) -> Result<()> {
+    let memory = module
+        .memories
+        .iter()
+        .next()
+        .map(|m| m.id())
+        .ok_or_else(|| anyhow!("module has no linear memory"))?;
+    let is64 = module.memories.get(memory).memory64;
+    // A 4-byte atomic must be 4-byte aligned; `align` is the log2 of that.
+    let arg = MemArg { align: 4, offset: 0 };
+
+    if let Some(import_fn) = imported_func(module, ATOMIC_WAIT_THUNK_IMPORT) {
+        module
+            .replace_imported_func(import_fn, |(body, args)| {
+                let addr = args[0];
+                let expected = args[1];
+                let timeout = args[2];
+                body.local_get(addr);
+                if is64 {
+                    body.unop(UnaryOp::I64ExtendUI32);
+                }
+                body.local_get(expected)
+                    .local_get(timeout)
+                    .instr(AtomicWait { memory, arg, sixty_four: false });
+            })
+            .with_context(|| format!("rewriting {ATOMIC_WAIT_THUNK_IMPORT}"))?;
+    }
+
+    if let Some(import_fn) = imported_func(module, ATOMIC_NOTIFY_THUNK_IMPORT) {
+        module
+            .replace_imported_func(import_fn, |(body, args)| {
+                let addr = args[0];
+                let count = args[1];
+                body.local_get(addr);
+                if is64 {
+                    body.unop(UnaryOp::I64ExtendUI32);
+                }
+                body.local_get(count).instr(AtomicNotify { memory, arg });
+            })
+            .with_context(|| format!("rewriting {ATOMIC_NOTIFY_THUNK_IMPORT}"))?;
+    }
+    Ok(())
+}
+
+/// The imported function with this name, if the build declares it.
+fn imported_func(module: &Module, name: &str) -> Option<FunctionId> {
+    module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != name {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    })
+}
+
+/// Rewrite the table-write placeholder into a local thunk.
+///
+/// Rust cannot emit `table.set` on an imported table, so the fork module
+/// declares `__wpk_fork_table_apply(dest, catalog_slot, clear)` as an import
+/// and this replaces it with the three instructions it stands for. Rust keeps
+/// the reconcile's striding and bounds logic, where it is testable; only the
+/// write itself lives in emitted wasm.
+///
+/// Both bounds are wasm's own: an out-of-range `dest` or `catalog_slot` traps
+/// rather than writing somewhere else.
+fn inject_table_apply_thunk(module: &mut Module) -> Result<()> {
+    let import_fn = module.imports.iter().find_map(|import| {
+        if import.module != IMPORT_MODULE || import.name != TABLE_APPLY_THUNK_IMPORT {
+            return None;
+        }
+        match import.kind {
+            walrus::ImportKind::Function(id) => Some(id),
+            _ => None,
+        }
+    });
+    let Some(import_fn) = import_fn else {
+        // A build that does not declare the placeholder needs no thunk.
+        return Ok(());
+    };
+
+    let catalog = imported_table(module, FUNCTION_CATALOG_IMPORT)?;
+    let indirect = imported_table(module, INDIRECT_FUNCTION_TABLE_IMPORT)?;
+    let funcref = ValType::Ref(RefType::FUNCREF);
+    // A 64-bit table indexes with `i64`, and Rust declared the placeholder with
+    // `u32` slots because a slot ordinal is a small number on both widths. So
+    // widen here, per table: on wasm64 the two tables are indexed with `i64`
+    // even though the values passed are the same ordinals. Without this the
+    // emitted module fails validation with "expected i64, found i32" -- which
+    // is exactly how this was caught, by the injector's own validator on the
+    // wasm64 build.
+    let indirect_is_64 = module.tables.get(indirect).table64;
+    let catalog_is_64 = module.tables.get(catalog).table64;
+
+    module
+        .replace_imported_func(import_fn, |(body, args)| {
+            let dest = args[0];
+            let catalog_slot = args[1];
+            let clear = args[2];
+            body.local_get(dest);
+            if indirect_is_64 {
+                body.unop(UnaryOp::I64ExtendUI32);
+            }
+            body.local_get(clear)
+                .if_else(
+                    Some(funcref),
+                    |then| {
+                        then.ref_null(RefType::FUNCREF);
+                    },
+                    |els| {
+                        els.local_get(catalog_slot);
+                        if catalog_is_64 {
+                            els.unop(UnaryOp::I64ExtendUI32);
+                        }
+                        els.table_get(catalog);
+                    },
+                )
+                .table_set(indirect);
+        })
+        .with_context(|| format!("rewriting {TABLE_APPLY_THUNK_IMPORT} import into a thunk"))?;
+    Ok(())
+}
+
+fn inject_gc_provenance_ref(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == PROVENANCE_REF_EXPORT)
+    {
+        bail!("module already exports {PROVENANCE_REF_EXPORT}");
+    }
+    let helper = exported_function(module, PROVENANCE_WITNESS_SLOT_HELPER)?;
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+
+    // Module-owned, and deliberately ROOTED: a witness the collector could take
+    // would leave a later object of that layout with no type-correct seed.
+    let witness_table = module.tables.add_local(
+        false,
+        PROVENANCE_WITNESS_SLOTS,
+        Some(PROVENANCE_WITNESS_SLOTS),
+        RefType::ANYREF,
+    );
+    module.tables.get_mut(witness_table).name = Some(PROVENANCE_WITNESS_TABLE.to_string());
+    module.exports.add(PROVENANCE_WITNESS_TABLE, witness_table);
+
+    let mut builder = FunctionBuilder::new(
+        &mut module.types,
+        &[ValType::I32, ValType::I32, ValType::I32],
+        &[],
+    );
+    let token = module.locals.add(ValType::I32);
+    let ordinal = module.locals.add(ValType::I32);
+    let slot = module.locals.add(ValType::I32);
+    let index = module.locals.add(ValType::I32);
+    {
+        let mut body = builder.func_body();
+        body.local_get(token)
+            .local_get(ordinal)
+            .call(helper)
+            .local_tee(index)
+            .i32_const(0)
+            .binop(BinaryOp::I32LtS)
+            .if_else(
+                None,
+                |rejected| {
+                    // errno is already latched by the helper.
+                    rejected.return_();
+                },
+                |_ok| {},
+            );
+        body.local_get(index)
+            .local_get(slot)
+            .table_get(transit_table)
+            .table_set(witness_table);
+    }
+    let shim = builder.finish(vec![token, ordinal, slot], &mut module.funcs);
+    module.exports.add(PROVENANCE_REF_EXPORT, shim);
+    Ok(())
+}
+
+fn inject_gc_lookup(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == GC_LOOKUP_EXPORT)
+    {
+        bail!("module already exports {GC_LOOKUP_EXPORT}");
+    }
+    let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
+    let find = exported_function(module, GC_IDENTITY_FIND_HELPER)?;
+    let identity = import_host_ref_identity(module);
+    let catalog = imported_table(module, STATIC_ROOT_CATALOG_IMPORT)?;
+    let to_recipe = exported_function(module, STATIC_ROOT_RECIPE_HELPER_EXPORT)?;
+
+    let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
+    let slot = module.locals.add(ValType::I32);
+    let value = module.locals.add(ValType::Ref(RefType::ANYREF));
+    let want_id = module.locals.add(ValType::I32);
+    let found = module.locals.add(ValType::I32);
+    let i = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    let entry_value = module.locals.add(ValType::Ref(RefType::ANYREF));
+
+    // THE STATIC-ROOT SCAN. A reference the module's own instantiation created
+    // must not be captured structurally: the child's instantiation makes it
+    // too, and a structural copy puts a SECOND object beside it -- a fork-only
+    // identity split `ref.eq` sees and nothing else does.
+    //
+    // So before answering "new", walk the merged static-root catalog for a slot
+    // holding this same reference. Identity is the host's answer (the same
+    // oracle the funcref scan uses, for the same reason: `ref.eq` validates
+    // only on `eqref`, and these are `anyref`), and every decision built on it
+    // -- which activation's slice the slot falls in, what ordinal it becomes --
+    // stays in the module. Linear, and deliberately so: capture is not a hot
+    // path, and a cached map would need invalidating on every `dlopen`.
+    let mut loop_body = builder.dangling_instr_seq(None);
+    let loop_id = loop_body.id();
+    loop_body
+        .local_get(i)
+        .local_get(size)
+        .binop(BinaryOp::I32GeU)
+        .if_else(
+            None,
+            // Scanned the whole catalog: not a static root.
+            |_done| {},
+            |work| {
+                work.local_get(i).table_get(catalog).local_set(entry_value);
+                // A null slot cannot be the reference we hold, and asking the
+                // host to identify null would make it invent an answer.
+                work.local_get(entry_value).ref_is_null().if_else(
+                    None,
+                    |_null| {},
+                    |occupied| {
+                        occupied
+                            .local_get(entry_value)
+                            .call(identity)
+                            .local_get(want_id)
+                            .binop(BinaryOp::I32Eq)
+                            .if_else(
+                                None,
+                                |hit| {
+                                    hit.local_get(i).call(to_recipe).local_set(found);
+                                    // PUBLISH the root's identity into the
+                                    // transit at `recipe + 1`, the way the
+                                    // claim and i31 paths do for the values
+                                    // they mint. The generator publishes for a
+                                    // FRESH claim; a value recognised as
+                                    // already-known returns through its
+                                    // `existing` branch, which publishes
+                                    // nothing -- so without this the PARENT's
+                                    // own replay reads an empty slot for a
+                                    // reference it is still holding.
+                                    // `fm_static_root_recipe` grew the table
+                                    // through this slot before returning.
+                                    hit.local_get(found).if_else(
+                                        None,
+                                        |ok| {
+                                            ok.local_get(found)
+                                                .i32_const(1)
+                                                .binop(BinaryOp::I32Add)
+                                                .local_get(entry_value)
+                                                .table_set(transit_table);
+                                        },
+                                        |_| {},
+                                    );
+                                },
+                                |_| {},
+                            );
+                    },
+                );
+                work.local_get(found).unop(UnaryOp::I32Eqz).if_else(
+                    None,
+                    |keep_going| {
+                        keep_going
+                            .local_get(i)
+                            .i32_const(1)
+                            .binop(BinaryOp::I32Add)
+                            .local_set(i);
+                        keep_going.instr(Br { block: loop_id });
+                    },
+                    |_| {},
+                );
+            },
+        );
+    drop(loop_body);
+
+    {
+        let mut body = builder.func_body();
+        body.local_get(slot)
+            .table_get(transit_table)
+            .local_set(value);
+        // A null staging slot is "new", not an error: the guest then claims,
+        // which is what lets a cycle terminate rather than trap.
+        body.local_get(value).ref_is_null().if_else(
+            None,
+            |null| {
+                null.i32_const(0).return_();
+            },
+            |_| {},
+        );
+        body.local_get(value).call(identity).local_set(want_id);
+        // An identity already claimed in THIS capture wins: it is what closes a
+        // cycle, and a value cannot be both a fresh claim and a static root.
+        body.local_get(want_id).call(find).local_tee(found);
+        body.if_else(
+            None,
+            |claimed| {
+                claimed.local_get(found).return_();
+            },
+            |_| {},
+        );
+        body.i32_const(0).local_set(found);
+        body.table_size(catalog).local_set(size);
+        body.instr(Loop { seq: loop_id });
+        body.local_get(found);
+    }
+    let shim = builder.finish(vec![slot], &mut module.funcs);
+    module.exports.add(GC_LOOKUP_EXPORT, shim);
+    Ok(())
+}
+
+/// Inject the process-owned fork-unwind TAG and export it as
+/// `__wpk_fork_unwind`.
+///
+/// The guest imports `env.__wpk_fork_unwind` as a `tag () -> ()` -- the private
+/// Wasm-EH transport the instrumented capture path throws to escape a nested
+/// call chain. It was minted in JavaScript, which made every host responsible
+/// for creating one and handing it over.
+///
+/// It does not have to be. A wasm module can DEFINE a tag, export it, throw it
+/// and catch it, and the export arrives in JavaScript as a real
+/// `WebAssembly.Tag` -- verified against V8 before this was written. Rust cannot
+/// declare a tag, which is the only reason this lives in the injector.
+///
+/// The type is `() -> ()`: the transport carries no payload. Taken from the
+/// guest binary's own import section, not from a comment.
+fn inject_unwind_tag(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == UNWIND_TAG_EXPORT)
+    {
+        bail!("module already exports {UNWIND_TAG_EXPORT}");
+    }
+    let ty = module.types.add(&[], &[]);
+    let tag = module.tags.add(ty);
+    module.exports.add(UNWIND_TAG_EXPORT, tag);
+    Ok(())
+}
+
+/// Resolve an exported table by name.
+/// Resolve an IMPORTED table by name.
+///
+/// The drive table is created by an earlier pass with `add_import_table`, whose
+/// id is local to that pass. A later pass that needs it must look it up rather
+/// than thread the id through, and failing loud here beats emitting a
+/// `call_indirect` against the wrong table.
+fn imported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
+    module
+        .imports
+        .iter()
+        .find_map(|import| match import.kind {
+            walrus::ImportKind::Table(id)
+                if import.module == IMPORT_MODULE && import.name == name =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("module does not import table {name}"))
+}
+
+fn exported_table(module: &Module, name: &str) -> Result<walrus::TableId> {
+    let export = module
+        .exports
+        .iter()
+        .find(|export| export.name == name)
+        .ok_or_else(|| anyhow!("module does not export {name}"))?;
+    match export.item {
+        ExportItem::Table(id) => Ok(id),
+        _ => bail!("{name} export is not a table"),
+    }
+}
+
+/// Resolve an exported function by name, failing loud rather than letting a
+/// later pass wire up a shim that calls nothing.
+fn exported_function(module: &Module, name: &str) -> Result<FunctionId> {
+    let export = module
+        .exports
+        .iter()
+        .find(|export| export.name == name)
+        .ok_or_else(|| anyhow!("module does not export {name}"))?;
+    match export.item {
+        ExportItem::Function(id) => Ok(id),
+        _ => bail!("{name} export is not a function"),
+    }
 }
 
 #[cfg(test)]
@@ -992,6 +2507,254 @@ mod tests {
         );
 
         module
+    }
+
+    /// The five shared frame/resume exports the trampoline pass folds an
+    /// activation id into, with the module's real argument order.
+    fn add_frame_exports(module: &mut Module) {
+        for name in ["fm_frame_reserve", "fm_frame_peek", "fm_frame_next"] {
+            add_stub_export(module, name, &[ValType::I32, ValType::I32], &[ValType::I32]);
+        }
+        add_stub_export(module, "fm_frame_commit", &[ValType::I32, ValType::I32], &[]);
+        add_stub_export(module, "fm_resume_peek", &[ValType::I32], &[ValType::I32]);
+        // The sixth trampoline target, added to the pass by 88e039c041 and NOT
+        // to this fixture -- which left both trampoline tests failing on
+        // "module does not export fm_module_state_table_state_owned" from that
+        // commit until now. Nobody ran `cargo test -p fork-module-inject`; that
+        // is also how this crate's drive-table stride came to disagree with
+        // `fork_codec`'s by one.
+        add_stub_export(
+            module,
+            "fm_module_state_table_state_owned",
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        );
+    }
+
+    /// The `i32.const` an emitted trampoline body folds in, and the function it
+    /// then calls.
+    fn folded_activation(module: &Module, func: FunctionId) -> (i32, FunctionId) {
+        let local = match &module.funcs.get(func).kind {
+            walrus::FunctionKind::Local(local) => local,
+            _ => panic!("trampoline is not a local function"),
+        };
+        let instrs = local.block(local.entry_block());
+        let mut folded = None;
+        let mut called = None;
+        for (instr, _) in &instrs.instrs {
+            match instr {
+                walrus::ir::Instr::Const(c) => {
+                    if let walrus::ir::Value::I32(v) = c.value {
+                        folded = Some(v);
+                    }
+                }
+                walrus::ir::Instr::Call(call) => called = Some(call.func),
+                _ => {}
+            }
+        }
+        (
+            folded.expect("trampoline folds a constant"),
+            called.expect("trampoline calls a shared export"),
+        )
+    }
+
+    /// The `i32.const` operands and the arithmetic an emitted forwarding thunk
+    /// applies to them, in order.
+    ///
+    /// The OPERATORS are read as well as the constants, because the index math
+    /// is wrong in two independent ways: the wrong numbers, and the right
+    /// numbers combined wrongly. A test that read only the constants passed
+    /// with `i32.add` turned into `i32.sub`.
+    fn folded_arithmetic(module: &Module, func: FunctionId) -> (Vec<i32>, Vec<String>) {
+        let local = match &module.funcs.get(func).kind {
+            walrus::FunctionKind::Local(local) => local,
+            _ => panic!("the rewritten import is not a local function"),
+        };
+        let mut constants = Vec::new();
+        let mut binops = Vec::new();
+        for (instr, _) in &local.block(local.entry_block()).instrs {
+            match instr {
+                walrus::ir::Instr::Const(c) => {
+                    if let walrus::ir::Value::I32(v) = c.value {
+                        constants.push(v);
+                    }
+                }
+                // `BinaryOp` has no `PartialEq`, so compare its debug spelling.
+                walrus::ir::Instr::Binop(b) => binops.push(format!("{:?}", b.op)),
+                _ => {}
+            }
+        }
+        (constants, binops)
+    }
+
+    /// A fixture carrying the drive table and one `(activation, slot)`
+    /// placeholder import, which is all `inject_forwarding_drive_thunk` reads.
+    fn drive_thunk_fixture(import_name: &str) -> (Module, FunctionId) {
+        let mut module = fixture_module();
+        module.add_import_table(
+            IMPORT_MODULE,
+            DRIVE_TABLE_IMPORT,
+            false,
+            0,
+            None,
+            RefType::FUNCREF,
+        );
+        let ty = module
+            .types
+            .add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+        let (func, _) = module.add_import_func(IMPORT_MODULE, import_name, ty);
+        (module, func)
+    }
+
+    #[test]
+    fn a_forwarding_thunk_strides_by_the_shared_drive_geometry() {
+        // THIS TEST EXISTS BECAUSE THE CONSTANT DRIFTED. The injector carried
+        // its own copy of the drive-table stride, 13, while `fork_codec` and
+        // the host used 14. Activation 0 is unaffected (0 * 13 == 0 * 14),
+        // which is why nothing ever failed; activation 1's GC encode aimed at
+        // slot 24, which is activation 1's `wpk_fork_unwind_begin`. A wrong
+        // guest function, called with the encode's arguments, inside a capture.
+        //
+        // The duplicate is gone -- the constants are now one symbol -- so this
+        // asserts the EMITTED ARITHMETIC against `fork_codec`'s own base
+        // helper, which is the thing a future edit could still get wrong.
+        // The real entry points, not the shared emitter: the slot each one
+        // passes is the other thing an edit can get wrong, and comparing the
+        // emitter's own argument against itself would prove nothing. Each
+        // expectation is `fork_codec`'s constant, read here independently.
+        type Inject = fn(&mut Module) -> Result<()>;
+        for (import_name, slot, inject) in [
+            (
+                CAPTURE_PROBE_THUNK_IMPORT,
+                fork_codec::drive_plan::DRIVE_SLOT_GC_PROBE as i32,
+                inject_capture_probe_thunk as Inject,
+            ),
+            (
+                CAPTURE_ENCODE_THUNK_IMPORT,
+                fork_codec::drive_plan::DRIVE_SLOT_GC_ENCODE as i32,
+                inject_capture_encode_thunk as Inject,
+            ),
+            (
+                EXN_THROW_THUNK_IMPORT,
+                fork_codec::drive_plan::DRIVE_SLOT_EXN_THROW_RECIPE as i32,
+                inject_exn_throw_thunk as Inject,
+            ),
+        ] {
+            let (mut module, func) = drive_thunk_fixture(import_name);
+            inject(&mut module).expect("the thunk injects");
+            let (constants, binops) = folded_arithmetic(&module, func);
+            assert_eq!(
+                binops,
+                vec![String::from("I32Mul"), String::from("I32Add")],
+                "{import_name} must MULTIPLY by the stride and ADD its slot",
+            );
+            assert_eq!(
+                constants,
+                vec![
+                    fork_codec::drive_plan::DRIVE_SLOTS_PER_ACTIVATION as i32,
+                    slot,
+                ],
+                "{import_name} must multiply by the shared stride and add its slot",
+            );
+            // Exhaustive over the activations a trampoline table can address,
+            // because an off-by-one shows up only above activation 0 -- which
+            // is exactly how the original defect hid.
+            for activation in 0..TRAMPOLINE_ACTIVATIONS {
+                let emitted = activation as i32 * constants[0] + constants[1];
+                let expected = fork_codec::drive_plan::drive_table_base(activation) as i32
+                    + slot;
+                assert_eq!(
+                    emitted, expected,
+                    "{import_name} at activation {activation} must land on \
+                     fork_codec's own slot",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_trampoline_folds_the_activation_it_is_indexed_by() {
+        let mut module = fixture_module();
+        add_frame_exports(&mut module);
+        inject_activation_trampolines(&mut module).expect("trampolines inject");
+
+        let table = module
+            .exports
+            .iter()
+            .find(|e| e.name == ACTIVATION_TRAMPOLINE_TABLE)
+            .map(|e| match e.item {
+                ExportItem::Table(id) => id,
+                _ => panic!("{ACTIVATION_TRAMPOLINE_TABLE} is not a table"),
+            })
+            .expect("the table is exported");
+
+        let elements: Vec<FunctionId> = module
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Active { table: t, .. } if t == table))
+            .flat_map(|e| match &e.items {
+                ElementItems::Functions(ids) => ids.clone(),
+                _ => panic!("trampoline element is not a function list"),
+            })
+            .collect();
+        assert_eq!(
+            elements.len() as u32,
+            TRAMPOLINE_ACTIVATIONS * TRAMPOLINE_SLOTS,
+            "one entry per activation slot",
+        );
+
+        let targets = [
+            "fm_frame_reserve",
+            "fm_frame_commit",
+            "fm_frame_peek",
+            "fm_frame_next",
+            "fm_resume_peek",
+            "fm_module_state_table_state_owned",
+        ];
+        // Exhaustive, not spot-checked. An off-by-one in the index math, or a
+        // body that folded a fresh counter instead of its own index, routes one
+        // activation's frames into another's arena -- silent corruption that a
+        // single sampled entry would not catch.
+        for activation in 0..TRAMPOLINE_ACTIVATIONS {
+            for (slot, target) in targets.iter().enumerate() {
+                let index = (activation * TRAMPOLINE_SLOTS) as usize + slot;
+                let (folded, called) = folded_activation(&module, elements[index]);
+                assert_eq!(
+                    folded, activation as i32,
+                    "slot {index} must fold activation {activation}",
+                );
+                assert_eq!(
+                    called,
+                    exported_function(&module, target).unwrap(),
+                    "slot {index} must call {target}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_resume_peek_drops_the_guest_argument() {
+        let mut module = fixture_module();
+        add_frame_exports(&mut module);
+        inject_activation_trampolines(&mut module).expect("trampolines inject");
+        // The asymmetry is inherited from the TypeScript this replaced, so it is
+        // pinned rather than left to be re-derived: four entries forward the
+        // guest's argument, `resume_peek` drops it as a diagnostic the module
+        // does not take. Forwarding it would make the call arity wrong.
+        let frame_ty = module.types.get(
+            module
+                .funcs
+                .get(exported_function(&module, "fm_frame_reserve").unwrap())
+                .ty(),
+        );
+        assert_eq!(frame_ty.params().len(), 2, "frame exports take (act, arg)");
+        let resume_ty = module.types.get(
+            module
+                .funcs
+                .get(exported_function(&module, "fm_resume_peek").unwrap())
+                .ty(),
+        );
+        assert_eq!(resume_ty.params().len(), 1, "resume_peek takes (act) only");
     }
 
     /// Count every `any.convert_extern` instruction in a local function body.

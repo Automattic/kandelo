@@ -32,7 +32,7 @@ pure-logic `fork-codec` core:
 
 Plus a coordinator surface (JS→wasm, once per phase, not hot):
 
-- `fm_set_format(pointer_width, fixed_prefix_size)` — seed the linked-frame
+- `fm_set_format(pointer_width, fixed_prefix_size, archive_control_addr, table_owner)` — seed the linked-frame
   geometry ONCE (from the guest's `kandelo.wpk_fork.linked_frames` descriptor)
   before any fork. `pointer_width` is 4 (wasm32 guest) or 8 (wasm64 guest).
 - `fm_begin_unwind(activation_id, arena_base, arena_len)` — begin a fork over a

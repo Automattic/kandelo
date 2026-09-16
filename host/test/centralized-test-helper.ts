@@ -18,6 +18,7 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory,
   type ProcessMemoryLayout,
+  FORK_SAVE_BUFFER_SIZE,
 } from "../src/process-memory";
 import {
   NodeKernelHost,
@@ -32,7 +33,10 @@ import {
   ForkHostImportOwnerRuntime,
   type ForkHostImportOwnerWorker,
 } from "../src/fork-host-import-runtime";
-import { ForkExternrefProcessOwner } from "../src/fork-externref-process-owner";
+import {
+  ForkExternrefProcessOwner,
+  readCapturedExternrefHandover,
+} from "../src/fork-externref-process-owner";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
@@ -854,14 +858,21 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
             `Unknown externref generation for fork parent pid ${parentPid}`,
           );
         }
+        // The PARENT reports which externref handles its capture interned, in
+        // the handover it wrote beside its fork save buffer. This helper used
+        // to call `forkGenerationFromContinuation`, which re-derived the set by
+        // decoding the parked parent's arena; that method is gone -- the scan
+        // moved to the parent worker -- and this call had been stale ever
+        // since, unreachable because no fork got this far.
         const childGeneration =
-          externrefProcessOwner.forkGenerationFromContinuation(
+          externrefProcessOwner.forkGenerationFromCapturedHandles(
             parentGeneration,
             childPid,
-            parentMemory,
-            parentPtrWidth,
-            forkBufAddr,
-            `centralized test fork child pid=${childPid}`,
+            readCapturedExternrefHandover(
+              parentMemory,
+              childLayout.channelOffset - FORK_SAVE_BUFFER_SIZE,
+              `centralized test fork child pid=${childPid}: externref handover`,
+            ),
           ).generation;
         let childWorker:
           ReturnType<NodeWorkerAdapter["createWorker"]>;

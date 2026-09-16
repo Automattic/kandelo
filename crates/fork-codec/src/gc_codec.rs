@@ -78,7 +78,7 @@ pub const CONSTRUCTOR_ARRAY_FIXED: u8 = 4;
 const CONSTRUCTOR_ARRAY_DATA: u8 = 5;
 const CONSTRUCTOR_ARRAY_ELEMENT: u8 = 6;
 
-const LAYOUT_FLAG_REQUIRES_PROVENANCE: u16 = 1 << 0;
+pub(crate) const LAYOUT_FLAG_REQUIRES_PROVENANCE: u16 = 1 << 0;
 /// A defaultable-shell layout is pre-allocated before the identity walk. Public
 /// so the drive-plan hints adapter mirrors the JS `FORK_GC_LAYOUT_DEFAULTABLE_
 /// SHELL` shell pre-allocate.

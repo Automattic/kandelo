@@ -87,7 +87,10 @@ import {
   ForkHostImportOwnerRuntime,
   type ForkHostImportOwnerWorker,
 } from "./fork-host-import-runtime";
-import { ForkExternrefProcessOwner } from "./fork-externref-process-owner";
+import {
+  ForkExternrefProcessOwner,
+  readCapturedExternrefHandover,
+} from "./fork-externref-process-owner";
 import type { ForkExternrefGeneration } from "./fork-reference-broker";
 import type {
   ForkModuleProofMessage,
@@ -2593,13 +2596,18 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
             : undefined;
       const forkBufAddr = activeForkBufAddr;
+      // The PARENT reports which externref handles its capture interned; this
+      // worker no longer decodes the parked parent's arena to re-derive them.
+      // See `forkGenerationFromCapturedHandles` for what that trades.
       const externrefGrant = externrefProcessOwner
-        .forkGenerationFromContinuation(
+        .forkGenerationFromCapturedHandles(
           parentInfo.externrefGeneration,
           childPid,
-          parentMemory,
-          ptrWidth,
-          forkBufAddr,
+          readCapturedExternrefHandover(
+            parentMemory,
+            parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
+            `fork child pid=${childPid}: externref handover`,
+          ),
         );
       childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
@@ -3354,12 +3362,14 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
             ? { ...parentInfo.forkReplayContext, forkBufAddr }
             : undefined;
       const externrefGrant =
-        externrefProcessOwner.forkGenerationFromContinuation(
+        externrefProcessOwner.forkGenerationFromCapturedHandles(
           parentInfo.externrefGeneration,
           childPid,
-          parentMemory,
-          ptrWidth,
-          forkBufAddr,
+          readCapturedExternrefHandover(
+            parentMemory,
+            parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
+            `fork child pid=${childPid}: externref handover`,
+          ),
         );
       childExternrefGeneration = externrefGrant.generation;
       let launchedWorker: W & { start(): boolean };
@@ -4605,6 +4615,20 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           + `drive_steps_executed=${message.driveSteps} `
           + `static_roots_published=${message.staticRoots}`,
       });
+    } else if (message.type === "fork_aborted" && message.pid === pid) {
+      // Say why a fork aborted. The parent survives and `fork()` returns
+      // `-errno`, which is right -- but a guest that does not check the return
+      // then fails somewhere else entirely, and the reason was never spoken.
+      // A warning, because an abort is the correct outcome for a reference
+      // kind the platform refuses to reconstruct.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork",
+          message: `fork aborted with errno=${message.errno}: ${message.reason}`,
+        },
+        "warn",
+      );
     } else if (message.type === "fork_module_region" && message.pid === pid) {
       // Record where this worker placed its co-resident fork-module region so
       // a COPIED fork child reuses the same base instead of double-mapping the

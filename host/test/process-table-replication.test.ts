@@ -5,9 +5,6 @@ import {
 } from "../src/worker-main";
 import type { DylinkLoader, LoaderTableState } from "../src/dylink-loader";
 import type { DylinkTablePatch as DylinkForkTablePatch } from "../src/dylink-planner-wire";
-import type { ForkActivationRegistry } from "../src/fork-activation-registry";
-import type { ForkTableSnapshot } from "../src/fork-table-snapshot";
-import type { ForkModuleStateArena } from "../src/fork-module-state";
 
 interface TestTableReplicationOwner {
   beginMutation(): bigint;
@@ -127,19 +124,6 @@ function dlopenFixture(archive: ArchiveFixture): DlopenSupport {
   };
 }
 
-function arenaFixture(root: number): ForkModuleStateArena {
-  let active = false;
-  return {
-    begin: () => {
-      active = true;
-      return root;
-    },
-    attach: () => { active = true; },
-    release: () => { active = false; },
-    hasActiveArena: () => active,
-  } as unknown as ForkModuleStateArena;
-}
-
 function patch(generation?: number): DylinkForkTablePatch {
   return {
     ...(generation === undefined ? {} : { generation }),
@@ -163,7 +147,7 @@ describe("process table replication publication", () => {
     const registry = {
       captureFuncrefTablePatch: () => typedFallback ? null : patch(),
       applyFuncrefTablePatch: () => {},
-    } as unknown as ForkActivationRegistry;
+    };
     // Path-A A3/A4: the full-checkpoint capture/restore moved to the module-backed
     // `ForkTableSnapshot`; this suite mocks it (it proves the patch-journal /
     // compaction orchestration, NOT the reference engine — see the real-engine
@@ -174,13 +158,12 @@ describe("process table replication publication", () => {
         return 512;
       },
       restore: () => {},
-    } as unknown as ForkTableSnapshot;
+    };
     const owner = __testCreateProcessTableReplicationOwner({
       generationAddress: 64,
-      registry,
-      tableSnapshot,
+      tables: registry,
+      tableCheckpoint: tableSnapshot,
       dlopen,
-      newArena: () => arenaFixture(512),
       materializeModules: () => {},
       restoreSnapshots: true,
       label: "patch writer",
@@ -216,19 +199,18 @@ describe("process table replication publication", () => {
       applyFuncrefTablePatch: (value: DylinkForkTablePatch) => {
         applied.push(value.generation!);
       },
-    } as unknown as ForkActivationRegistry;
+    };
     const tableSnapshot = {
       capture: () => 512,
       restore: () => {
         throw new Error("fork child must use its normal KFMS capture");
       },
-    } as unknown as ForkTableSnapshot;
+    };
     const child = __testCreateProcessTableReplicationOwner({
       generationAddress: 64,
-      registry,
-      tableSnapshot,
+      tables: registry,
+      tableCheckpoint: tableSnapshot,
       dlopen: dlopenFixture(archive),
-      newArena: () => arenaFixture(512),
       materializeModules: () => {},
       restoreSnapshots: false,
       label: "fork child patch reader",
@@ -256,15 +238,14 @@ describe("process table replication publication", () => {
     };
     const child = __testCreateProcessTableReplicationOwner({
       generationAddress: 64,
-      registry: {
+      tables: {
         applyFuncrefTablePatch: () => {},
-      } as unknown as ForkActivationRegistry,
-      tableSnapshot: {
+      },
+      tableCheckpoint: {
         capture: () => 512,
         restore: () => {},
-      } as unknown as ForkTableSnapshot,
+      },
       dlopen,
-      newArena: () => arenaFixture(512),
       materializeModules: () => {
         throw new Error("borrowed snapshot was already materialized");
       },

@@ -1,639 +1,311 @@
-// Instantiate the co-resident `fork-module` PIC side module into a
-// host-reserved region of the guest's shared linear memory.
-//
-// Phase 6 D5: the `fork-module` (crates/fork-module) is built as a
-// POSITION-INDEPENDENT (`--pie`) wasm SIDE MODULE. It imports the guest's
-// single shared `env.memory` plus the placement globals `env.__memory_base`
-// (immutable), `env.__stack_pointer` (mutable), `env.__table_base`
-// (immutable), and `env.__indirect_function_table`. Its data segments are
-// PASSIVE and copied to `__memory_base + offset` by its start function
-// (`__wasm_apply_data_relocs`) during instantiation.
-//
-// Placing the module's static data / BSS heap / shadow stack at a
-// host-chosen region — instead of the fixed low offsets a plain cdylib would
-// use — is the gating fix: those offsets would otherwise COLLIDE with and
-// corrupt live guest data. This mirrors the placement contract `dylink.ts`
-// already uses for shared libraries: reserve a region, then hand the module
-// `__memory_base` / `__table_base` / `__stack_pointer` pointing into it.
-//
-// This module ONLY instantiates and asserts the module. It does NOT flip any
-// guest fork import: the guest still uses the JavaScript `continuationImports`
-// closures. Wiring the import flip is a later D5 step.
+/**
+ * Place and instantiate the co-resident PIC fork-module. Shared by both JS
+ * hosts; nothing here is Node- or browser-specific.
+ *
+ * This is the other half of the host floor, beside
+ * `fork-module-host-capabilities.ts`. That file owns the two host FUNCTIONS a
+ * host must implement; this one owns everything that is about PLACEMENT —
+ * reserving a region in guest memory, deriving the position-independent-code
+ * globals from the module's own `dylink.0` sizing, and creating the three
+ * reference-typed tables the module imports.
+ *
+ * Placement cannot move into the module: a side module cannot choose where it
+ * is placed, and `__memory_base` / `__table_base` are imports by construction.
+ */
 
-import { WASM_PAGE_SIZE } from "./constants";
 import {
-  alignUp,
-  placeSideModule,
-  readSideModuleMemInfo,
-} from "./pic-side-module";
-import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
+  createForkModuleHostCapabilities,
+  type ForkExternrefResolver,
+  type ForkModuleHostCapabilities,
+  type ForkModuleHostImports,
+} from "./fork-module-host-capabilities";
 
-/** Exports the guest-facing continuation ABI plus the module lifecycle hooks. */
+/**
+ * Exports a host must find, or placement succeeded and nothing else will work.
+ *
+ * A FLOOR, not an inventory: the module exports far more, and a host binds
+ * whichever it drives. These are the ones whose absence means the artifact is
+ * not a fork-module at all — the errno channel, the format/catalog seeding a
+ * host must do before any fork, and the module-owned GC transit table the
+ * injector adds (`__wpk_fork_ref_gc_transit`, which is a Table, not a
+ * function).
+ */
 export const FORK_MODULE_REQUIRED_EXPORTS = [
-  "__wpk_fork_frame_reserve",
-  "__wpk_fork_frame_commit",
-  "__wpk_fork_frame_peek",
-  "__wpk_fork_frame_next",
-  "__wpk_fork_resume_peek",
-  // Phase 6 D7a.1a: the activation-parameterized SHARED frame exports the
-  // per-activation trampolines (`fork-module-trampoline.ts`) delegate to. A
-  // dlopen fork has N activations; the frozen guest-facing `__wpk_fork_frame_*`
-  // above are these with `act == primary_activation` (the single-activation
-  // degenerate case). Each activation's frames route to its OWN writer/driver in
-  // the module map while the journal + resume table stay process-wide.
-  "fm_frame_reserve",
-  "fm_frame_commit",
-  "fm_frame_peek",
-  "fm_frame_next",
-  "fm_resume_peek",
+  "fm_last_errno",
   "fm_set_format",
   "fm_set_resume_catalog",
-  // Phase 6 D7a.1a: seed ONE activation's resume catalog (a dlopen fork loads N
-  // modules, each with its own catalog table) so each activation's resume-slot
-  // numbering matches ITS JS `__wpk_fork_resume_table` by construction.
-  "fm_set_activation_resume_catalog",
-  // Phase 6 D7a.1b: seed ONE activation's function-catalog BASE into the merged,
-  // activation-namespaced funcref catalog so `fm_funcref_ordinal` returns the
-  // global slot `base(module_activation) + function_ordinal`. This is what makes
-  // a dlopen fork's multi-activation funcref references reconstruct through the
-  // module (a funcref minted in one activation but held by another's frame
-  // resolves against its own activation's catalog slice).
-  "fm_set_activation_catalog_base",
-  // Control-flow inversion: the coarse capture-BEGIN entry (Option B, the
-  // production capture path). Opens activation 0's fresh capture, adds each side
-  // activation from the seeded (id, fixedPrefix) list, publishes each
-  // activation's arena root into its module-buffer prefix, then drives each guest
-  // `wpk_fork_unwind_begin` through the injected `fm_drive_execute` shim in ONE
-  // module call. The module channel-mmaps each activation's linked frame chunks
-  // on demand via `SYS_mmap` -> the kernel `find_gap` allocator (kernel-tracked
-  // placement, no fork-depth cap, no carved-out guest region). This coarse entry
-  // OWNS the whole begin sequence internally; the former fine-grained
-  // `fm_begin_unwind` / `fm_add_activation_unwind` DRIVE exports were deleted once
-  // every fork phase routed through the coarse entries.
-  "fm_parent_begin_capture",
-  // The coarse begin-capture entry returns only activation 0's module-buffer
-  // anchor; the host reads each SIDE activation's anchor back with this getter to
-  // build the activation-continuation manifest.
-  "fm_activation_module_buffer",
-  // The byte length of the KFRE journal image the coarse capture-seal entry
-  // serialized (paired with the pointer it returns for the `JournalImage` KFMS
-  // record).
-  "fm_journal_image_len",
-  // Release every channel-mapped frame/image chunk on the host abort path.
-  "fm_abort",
-  // Control-flow inversion: the coarse parent REPLAY-begin / ABORT-replay-begin
-  // per-phase entries. Each begins the rewind, builds the per-activation begin
-  // drive plan, then drives each activation's guest `wpk_fork_rewind_begin` /
-  // `wpk_fork_abort_begin` through the injected `fm_drive_execute` shim — the
-  // whole begin sequence in ONE module call. The former fine-grained
-  // `fm_begin_replay` / `fm_begin_abort` DRIVE exports were deleted.
-  "fm_parent_replay",
-  "fm_parent_abort",
-  // Control-flow inversion: the coarse CHILD reconstruct rewind-begin entry (the
-  // child-worker mirror of `fm_parent_replay`). Builds the per-activation
-  // REWIND-begin drive plan from each activation's stored `child_rewind_root`
-  // (COW inherited anchor or borrowed child-private prefix) and drives each
-  // guest `wpk_fork_rewind_begin` through the injected `fm_drive_execute` shim in
-  // ONE module call, replacing the host's per-activation rewind loop in
-  // `attachModuleChild` / `attachBorrowedModuleChild`. The child's replay state
-  // is seeded by the coarse `fm_child_seed` / `fm_child_seed_borrowed` entries
-  // first, so this has NO begin step.
-  "fm_child_reconstruct",
-  // Control-flow inversion: the coarse capture-SEAL entry. Drives each open
-  // activation's guest `wpk_fork_unwind_end` through the injected
-  // `fm_drive_execute` shim, then seals the writers + journal and serializes the
-  // child-inheritable image into a chunk the module channel-mmaps itself, in ONE
-  // module call. A seal-time serialize OOM returns 0 with `fm_last_errno` set so
-  // the host reroutes to abort-replay rather than trapping. Owns the whole seal
-  // sequence internally; the former fine-grained `fm_finish_unwind` /
-  // `fm_serialize_journal_alloc` DRIVE exports were deleted.
-  "fm_parent_seal_capture",
-  // Control-flow inversion: the coarse ABORT-SEAL entry (the mid-unwind sibling
-  // of `fm_parent_seal_capture`). Seals every activation's frame writer + the
-  // process journal WITHOUT driving the guest `wpk_fork_unwind_end` (the guest is
-  // mid-unwind) or serializing a child-inheritable image (no child), so the host
-  // abort path (`sealForAbort`) routes through a coarse phase entry.
-  "fm_parent_abort_seal",
-  // Control-flow inversion: the coarse REPLAY-FINISH entry. Drives each open
-  // activation's guest `wpk_fork_rewind_end` (or `wpk_fork_abort_end`) through
-  // the injected `fm_drive_execute` shim, then finishes the process replay or
-  // abort in ONE module call. The abort finish still asserts the `in_abort`
-  // pairing `fm_parent_abort` set, so a stray `fm_parent_finish(abort=1)` is a
-  // loud `EINVAL`. The former fine-grained `fm_finish_replay` / `fm_finish_abort`
-  // DRIVE exports were deleted.
-  "fm_parent_finish",
-  // Control-flow inversion: the coarse CHILD-SEED entry. Decodes the inherited
-  // JournalImage record from the copied KFMS arena and seeds activation 0's
-  // replay, then seeds each side activation from the host-passed (id, root,
-  // fixedPrefix) list — replacing the host's former `fm_begin_child_replay` +
-  // per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
-  // with ONE module call. The fine-grained `fm_begin_child_replay` DRIVE export
-  // was deleted; `fm_add_activation_child_replay` (below) is retained.
-  "fm_child_seed",
-  // Control-flow inversion: the coarse BORROWED (vfork) CHILD-SEED entry.
-  // Decodes the inherited JournalImage record from the KFMS arena and seeds
-  // activation 0's borrowed replay, then seeds each side activation from the
-  // host-passed (id, root, fixedPrefix, privatePrefix) list — replacing the
-  // host's former `fm_begin_borrowed_child_replay` + per-activation
-  // `fm_add_activation_borrowed_child_replay` loop in `attachBorrowedModuleChild`
-  // with ONE module call. The fine-grained `fm_begin_borrowed_child_replay` DRIVE
-  // export was deleted; `fm_add_activation_borrowed_child_replay` (below) is
-  // retained.
-  "fm_child_seed_borrowed",
-  // Phase 6 item 4: add a dlopen-vfork ("mode-1") SIDE activation to a borrowed
-  // child replay seeded by `fm_child_seed_borrowed`, with its own child-private
-  // prefix (borrowed sibling of `fm_add_activation_child_replay`).
-  "fm_add_activation_borrowed_child_replay",
-  // Phase 6 D7a.1a: add a dlopen fork's SIDE activation to the child replay
-  // seeded by `fm_child_seed`, at its inherited continuation anchor.
-  "fm_add_activation_child_replay",
-  "fm_last_errno",
-  // The single folded proof-of-use counter accessor (fm_stats(field) -> i64),
-  // replacing the former 11 individual fm_* counter exports (frames committed/
-  // replayed, references/externrefs/exnrefs/GC-nodes reconstructed, static roots
-  // published, drive steps executed, ref-feed reads, graphs decoded, handles
-  // scanned). Field indices are the `FmStatField` enum in fork-module-backend.ts.
   "fm_stats",
-  // Phase 6 D6.1 reference reconstruction (funcref + null):
-  //  - `__wpk_fork_ref_decode_funcref` is the funcref-returning export the
-  //    walrus injector adds (Rust cannot emit it); it reads the imported
-  //    `__wpk_fork_function_catalog` table with `table.get`.
-  //  - `fm_begin_reference_replay` seeds the funcref/null reference graph.
-  //  - the folded `fm_stats` accessor's REFERENCES_RECONSTRUCTED field is the
-  //    proof-of-use counter.
-  "__wpk_fork_ref_decode_funcref",
-  "fm_begin_reference_replay",
-  // M2 task 3: the walrus-injected externref decode export — mirrors
-  // `__wpk_fork_ref_decode_funcref` but calls the host `env.resolve_externref`
-  // import instead of `table.get` (a Wasm module cannot hold a live
-  // `externref`, so it cannot decode one without asking the host for it).
-  "__wpk_fork_ref_decode_externref",
-  // Phase 6 item 3a (minimize host surface): the seven RESTORE data-feed exports
-  // the host flips the guest's `__wpk_fork_ref_{vector_get,gc_route,
-  // gc_payload_len,gc_load,exn_route,exn_load,exn_cache_index}` imports to
-  // (per-activation, like `__wpk_fork_ref_decode_funcref`). They serve the
-  // decoded reference graph to the guest's typed-GC/exnref codec during the JS
-  // drive-order, moving that data feed out of the JS reference provider. Pure
-  // i32/i64 signatures (see `host/src/generated/abi.ts`), so plain Rust exports.
-  "fm_ref_vector_get",
-  "fm_ref_gc_route",
-  "fm_ref_gc_payload_len",
-  "fm_ref_gc_load",
-  "fm_ref_exn_route",
-  "fm_ref_exn_load",
-  "fm_ref_exn_cache_index",
-  // Phase 6 item 3b (minimize host surface): the call_indirect drive-shim
-  // mechanism for driving the guest's typed-GC `_gc_allocate`/`_gc_fill` exports
-  // from the module.
-  //  - `fm_drive_execute` is the walrus-injected wasm loop (Rust cannot emit
-  //    `call_indirect`): it strides a serialized drive PLAN, `call_indirect`s the
-  //    host-bound `__wpk_fork_drive_table` slot for each step, and after each
-  //    ALLOC step reads STORE #2 (the guest's shared Wasm-GC transit table
-  //    `__wpk_fork_ref_gc_transit`) at slot `recipe + 1` with a wasm `table.get` +
-  //    `ref.is_null` to assert the guest's `_gc_allocate` published a live GC
-  //    object there, trapping (`unreachable`) otherwise. That post-allocate
-  //    integrity guard is injected wasm, not a Rust export, because Rust holds no
-  //    `anyref`.
-  //  - `fm_drive_table_base` gives the host the first drive-table slot for an
-  //    activation, so the host binds `_gc_allocate`/`_gc_fill` at the slots the
-  //    Rust plan encodes.
-  // The full topological plan-from-graph drive (which flips the JS
-  // `materializeTypedGraph` order to the module) is item 3c.
-  "fm_drive_execute",
-  "fm_drive_table_base",
-  // Phase 6 item 3c (production typed-GC drive flip): the host seeds each
-  // participating activation's raw KFGC codec bytes + the host-exception owner,
-  // then builds the topological drive plan from the decoded reference graph and
-  // executes it through the module — replacing the JS `materializeAllTyped`
-  // typed allocate/fill/exn sub-loop on a flag-on qualifying child.
-  //  - `fm_set_activation_gc_codec` seeds ONE activation's layout catalog.
-  //  - `fm_set_host_exception_owner` seeds the smallest exception-declaring
-  //    activation (the JS `directOwner` for a host exnref).
-  //  - `fm_build_gc_plan` serializes the topological plan; `fm_gc_plan_count`
-  //    is its step count (the `fm_drive_execute` count argument).
-  //  - `fm_drive_bump` bumps the DRIVE proof-of-use counter (the walrus-injected
-  //    shim `call`s it once per driven step), read via `fm_stats`'s
-  //    DRIVE_STEPS_EXECUTED field, distinct from the item-3a GC-nodes feed count.
-  "fm_set_activation_gc_codec",
-  "fm_set_host_exception_owner",
-  // Exnref tag-validity admission gate (moved into the module): seeds ONE
-  // activation's declared exnref tag ordinals, which the child-install entry
-  // (`fm_attach_child` / `fm_attach_borrowed_child`) re-checks every captured
-  // exnref recipe against before building the reconstruction drive plan. A
-  // recipe naming an undeclared tag fails loud (`EINVAL`) rather than being
-  // materialized blindly — the fail-loud boundary that formerly lived in the
-  // host as `assertForkModuleExnrefTagsDeclared`.
-  "fm_set_activation_exception_tags",
-  "fm_build_gc_plan",
-  "fm_gc_plan_count",
-  // Phase 6 (reconstruction-orchestration ENTRY): the module-owned entry that
-  // collapses `fm_begin_reference_replay` + `fm_build_gc_plan` into ONE call —
-  // it seeds the reference driver/feed from the inherited KFMS arena AND builds
-  // the whole topological drive plan, returning the plan's guest address for a
-  // single `fm_drive_execute`. This moves the reference seeding + drive-order
-  // CONSTRUCTION out of the host into the module; the host issues one entry call
-  // then one drive, rather than seeding, then rebuilding the plan inside the
-  // drive closure. Transit SIZING stays the host floor (`prepareTransit`): the
-  // module cannot grow the anyref transit table from Rust.
-  "fm_restore_from_arena",
-  "fm_drive_bump",
-  // Phase 6 (child-install ENTRY): the module-owned attach entries that build the
-  // reconstruction drive plan AND append the two-phase guest restore/finish
-  // install sequencing (`append_attach_steps` -> DRIVE_OP_RESTORE /
-  // DRIVE_OP_FINISH_RESTORE steps). Driving those steps through the existing
-  // `fm_drive_execute` shim (a plain `call_indirect` per step on the host-bound
-  // drive table, no transit assert) moves the JS `restoreModuleState` two-phase
-  // `for act: restore` / `for act: finishRestore` ORDER into the module; the
-  // guest's own layout-specific restore exports still place the reconstructed
-  // identities into the live child. `fm_attach_child` is the COW entry;
-  // `fm_attach_borrowed_child` the byte-identical vfork borrowed entry (its only
-  // borrowed-specific work, the child-private replay prefix, stays host floor).
-  "fm_attach_child",
-  "fm_attach_borrowed_child",
-  // Path-A INC-C (module-owned decoded-graph STRUCTURE readout): make the wire
-  // reference graph resident and read its per-node kind + coordinates from the
-  // module, so the host no longer walks the JS
-  // `decodeSegmentedForkReferenceTransaction` structure for the two structural
-  // consumers (the exnref tag-validity admission gate + the merged static-root
-  // catalog mirror seeding).
-  //  - `fm_decode_reference_graph` decodes the KFMS arena into the resident
-  //    read-only graph and returns its node count (distinct from the replay
-  //    driver `fm_restore_from_arena`/`fm_attach_child` seed; it survives a later
-  //    attach, which does not touch this graph).
-  //  - `fm_decoded_node_count` re-reads that resident node count.
-  //  - `fm_decoded_node_field(index, field)` is the per-node structural accessor
-  //    (node index == canonical node id), selecting kind 0 / module activation 1
-  //    / ordinal 2. It replaced three same-signature `(usize) -> i32` exports
-  //    that expressed the one concept "read a field of a decoded node".
-  "fm_decode_reference_graph",
-  "fm_decoded_node_count",
-  "fm_decoded_node_field",
-  // Static-root binder: admit static-root WasmGC graphs through the module. A
-  // DRIVE_OP_STATIC_ROOT drive step publishes each immutable static root into the
-  // anyref transit at slot `recipe + 1` via a wasm `table.get(static_root_catalog,
-  // fm_static_root_slot(recipe))` + `table.set(transit, recipe+1, v)`.
-  //  - `fm_static_root_slot` maps a recipe to its merged anyref-catalog index
-  //    (per-activation base + ordinal); the injected drive shim `table.get`s it.
-  //  - `fm_set_activation_static_root_base` seeds ONE activation's merged-catalog
-  //    base (the funcref merged-catalog mechanism, for static roots).
-  //  - `fm_stats`'s STATIC_ROOTS_PUBLISHED field is the DRIVE proof-of-use counter.
-  "fm_static_root_slot",
-  "fm_set_activation_static_root_base",
-  // M1 task 2: the fork-module now DEFINES and EXPORTS the shared Wasm-GC
-  // transit table (STORE #2) instead of importing a host-minted one. The
-  // guest still imports `env.__wpk_fork_ref_gc_transit`; the host binds the
-  // guest import to THIS export (see `gcTransitTable` below), so the
-  // module's own drive-time `table.get` and the guest's `_gc_allocate`
-  // publish agree on a single table.
   "__wpk_fork_ref_gc_transit",
-  // Path B P3: the module-owned reference CAPTURE session over the shared
-  // `fork_codec::ReferenceGraphBuilder`. The host's thin capture-import bodies
-  // resolve each live reference to its recipe COORDINATE with the per-host
-  // identity floor and intern it here, so the module is the SOLE capture graph
-  // on V8 (mirrors native's `guest.rs` capture bodies calling `graph.intern_*`).
-  // `fm_capture_serialize` streams the KFRV/KFRS records the host drains into its
-  // module-state arena (the child's wire); `fm_capture_vector_get` serves the
-  // PARENT's own post-fork replay vector reads from the resident builder.
-  "fm_capture_begin",
-  "fm_capture_intern_funcref",
-  "fm_capture_intern_externref",
-  "fm_capture_intern_i31",
-  "fm_capture_intern_static_root",
-  "fm_capture_claim_gc",
-  "fm_capture_gated_placeholder",
-  "fm_capture_define_gc",
-  "fm_capture_begin_vector",
-  "fm_capture_append_vector",
-  "fm_capture_finish_vector",
-  "fm_capture_validate",
-  "fm_capture_serialize",
-  "fm_capture_serialized_len",
-  "fm_capture_record_header_size",
-  "fm_capture_vector_get",
-  "fm_capture_interned",
 ] as const;
 
-/** Required exports whose value is a `WebAssembly.Table`, not a function. */
-const FORK_MODULE_TABLE_EXPORTS: ReadonlySet<string> = new Set([
-  "__wpk_fork_ref_gc_transit",
-]);
-
-export type ForkModuleExportName = (typeof FORK_MODULE_REQUIRED_EXPORTS)[number];
-
-export type ForkModuleExports = Record<
-  Exclude<ForkModuleExportName, "__wpk_fork_ref_gc_transit">,
-  Function
-> &
-  Record<"__wpk_fork_ref_gc_transit", WebAssembly.Table> &
-  WebAssembly.Exports;
-
-export interface InstantiateForkModuleOptions {
-  /** Pre-compiled fork-module (compiled once per kernel host). */
-  module: WebAssembly.Module;
-  /** The guest's single shared linear memory (the frame data plane). */
-  memory: WebAssembly.Memory;
-  /** Guest pointer width: 4 for wasm32, 8 for wasm64. */
-  ptrWidth: 4 | 8;
-  /**
-   * Reserve `size` bytes in the shared linear memory and return the base
-   * offset. Production supplies the channel `continuationMmap`; tests supply a
-   * bump allocator. The base must be at least 16-byte aligned.
-   */
-  reserve: (size: number) => number;
-  /** Diagnostic label (e.g. `pid=NN`). */
-  label: string;
-  /**
-   * The funcref table the module's `__wpk_fork_ref_decode_funcref` reads with
-   * `table.get` (Phase 6 D6.1). The guest's own `__wpk_fork_function_catalog` is
-   * a guest EXPORT that only exists after the guest instance is created — which
-   * is AFTER this module is instantiated (the module must precede the guest to
-   * supply the frame-flip imports). So the host passes a growable, host-owned
-   * mirror table here and populates it from the guest's catalog (identical
-   * funcref identities) once the guest instance exists. When omitted (tests /
-   * non-funcref paths) an empty growable table is created; the module never
-   * reads it unless `fm_begin_reference_replay` succeeds and a funcref recipe is
-   * decoded, so an empty table is inert.
-   */
-  functionCatalog?: WebAssembly.Table;
-  /**
-   * The MUTABLE funcref drive table the module's injected `fm_drive_execute`
-   * `call_indirect`s (Phase 6 item 3b). The guest's `_gc_allocate`/`_gc_fill`
-   * exports only exist AFTER the guest instance is created — which is AFTER this
-   * module is instantiated (the module must precede the guest to supply the
-   * frame-flip imports). So the host passes a growable, host-owned table here and
-   * binds each activation's `_gc_allocate`/`_gc_fill` into it (at
-   * `fm_drive_table_base(activation) + {ALLOC, FILL}`) once the guest instance
-   * exists. When omitted (tests / forks that never run the module drive) an empty
-   * growable table is created; the module never `call_indirect`s it unless the
-   * host both binds the exports and calls `fm_drive_execute`, so an empty table
-   * is inert and flag-off byte-identical.
-   */
-  driveTable?: WebAssembly.Table;
-  /**
-   * @deprecated M1 task 2 moved the shared Wasm-GC transit table (STORE #2)
-   * from a host-minted import into a module-DEFINED and EXPORTED table
-   * (`__wpk_fork_ref_gc_transit`, see `ForkModuleInstance.gcTransitTable`).
-   * The injected module no longer imports this table, so any value supplied
-   * here is IGNORED — it is accepted only so existing callers/tests that
-   * still pass it keep working unchanged. Bind the guest's own
-   * `env.__wpk_fork_ref_gc_transit` import to the returned
-   * `gcTransitTable` instead.
-   */
-  transitTable?: WebAssembly.Table;
-  /**
-   * The merged, host-owned static-root catalog (`anyref`) the module's injected
-   * `fm_drive_execute` reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the
-   * static-root binder). The guest's own `__wpk_fork_static_root_catalog` is a
-   * one-shot harvest EXPORT the registry clears after instantiation, so the host
-   * passes a growable mirror here and populates it from the child's live static
-   * roots (`decodeStaticRoot`) at the fork's merged bases before the drive runs.
-   * When omitted (tests / forks with no static root) a fresh host-owned `anyref`
-   * table is minted through the ABI-43 Wasm-GC transit provider (JavaScript cannot
-   * build an `anyref` table directly on every engine); the module never reads it
-   * unless the host both populates it and drives a DRIVE_OP_STATIC_ROOT step, so an
-   * empty default is inert and flag-off byte-identical.
-   */
-  staticRootCatalog?: WebAssembly.Table;
-  /**
-   * The `env.resolve_externref(handle: i32) -> externref` body (M2). The
-   * module DECLARES this as a plain `env` import (not the deleted
-   * `wpk_fork_host.*` seam, H3, 2026-09-06) because it returns a live
-   * reference. The injected
-   * `__wpk_fork_ref_decode_externref` export and the externref-transit drive
-   * step both call it directly with `fm_externref_handle(recipe)`; production
-   * backs it with `createForkModuleHostCapabilities` (a `ForkExternrefTokenCache`
-   * lookup). When omitted (frame-only / funcref-only forks, and tests that never
-   * drive externref reconstruction) it defaults to a body that throws loudly if
-   * actually called — there is no legitimate "empty" externref resolution, so a
-   * silent stub would hide a real gap rather than fail truthfully.
-   */
-  resolveExternref?: (handle: number) => unknown;
-}
+export type ForkModuleExports = Record<string, unknown>;
 
 export interface ForkModuleInstance {
-  instance: WebAssembly.Instance;
-  exports: ForkModuleExports;
-  /** First byte of the host-reserved region (== `__memory_base`). */
-  memoryBase: number;
-  /** Total reserved bytes: static/BSS footprint, staging slab, and shadow stack. */
-  regionBytes: number;
+  readonly exports: ForkModuleExports;
+  /** Byte offset in guest memory where the module's region was placed. */
+  readonly memoryBase: number;
+  /** Bytes reserved at `memoryBase`: static footprint plus the shadow stack. */
+  readonly regionBytes: number;
+  /** The module-owned `(ref null any)` transit table the injector exports. */
+  readonly gcTransitTable: WebAssembly.Table;
+  /** Host-supplied tables, exposed so a host can publish catalogs into them. */
+  readonly functionCatalog: WebAssembly.Table;
+  readonly driveTable: WebAssembly.Table;
+  readonly staticRootCatalog: WebAssembly.Table;
   /**
-   * First byte of the backend staging slab reserved inside this region (see
-   * `FORK_MODULE_STAGING_BYTES`). The backend stages its small pre-fork guest
-   * buffers here instead of `mmap`ping a fresh, memory-growing region, keeping a
-   * COPIED fork child's `memory.size` equal to the parent's.
+   * A fixed staging slab INSIDE the reserved region, for pre-fork catalog
+   * scratch and GC-codec staging.
+   *
+   * It lives here rather than in a growing channel mmap for a fork-correctness
+   * reason: a growing mmap would permanently enlarge the shared process memory,
+   * and a fork-from-thread child clones that memory, so the child would observe
+   * a different size than its parent. A request larger than the slab falls back
+   * to the channel mmap, whose growth that path does not assert against.
    */
-  stagingBase: number;
-  /** Byte length of the staging slab (== `FORK_MODULE_STAGING_BYTES`). */
-  stagingBytes: number;
-  /** The module's own (empty) indirect function table. */
-  table: WebAssembly.Table;
+  readonly stagingBase: number;
+  readonly stagingBytes: number;
   /**
-   * The funcref catalog table the module's `__wpk_fork_ref_decode_funcref`
-   * reads (Phase 6 D6.1). The host populates this from the guest's
-   * `__wpk_fork_function_catalog` export after the guest instance exists.
+   * Present when the instance derived its host imports from `tokens`, so a
+   * caller can read `resolvedCount` without holding the capabilities itself.
    */
-  functionCatalog: WebAssembly.Table;
+  readonly capabilities?: ForkModuleHostCapabilities;
+}
+
+export interface InstantiateForkModuleOptions {
+  readonly module: WebAssembly.Module;
+  readonly memory: WebAssembly.Memory;
+  readonly ptrWidth: 4 | 8;
+  /** Reserve `size` bytes in guest memory and return the base offset. */
+  readonly reserve: (size: number) => number;
+  /** Included in every thrown message, so a failure names the process. */
+  readonly label: string;
   /**
-   * The MUTABLE funcref drive table the module's injected `fm_drive_execute`
-   * `call_indirect`s (Phase 6 item 3b). The host binds each activation's guest
-   * `_gc_allocate`/`_gc_fill` exports into it once the guest instances exist.
+   * The handle registry. Given this, BOTH host functions are derived from it
+   * together, which is the point: wiring `resolve_externref` while leaving
+   * reference identity a trapping stub is a mistake a caller should not be able
+   * to make, and both earlier call sites made it.
    */
-  driveTable: WebAssembly.Table;
-  /**
-   * The shared Wasm-GC transit table (`anyref`, STORE #2) the module's
-   * injected `fm_drive_execute` reads after each ALLOC step. M1 task 2: the
-   * module DEFINES and EXPORTS this table (`__wpk_fork_ref_gc_transit`)
-   * instead of importing a host-minted one; this is that export. The guest
-   * still imports `env.__wpk_fork_ref_gc_transit` — the host binds the
-   * guest's import to THIS table so the drive's integrity check sees what
-   * the guest's `_gc_allocate` published.
-   */
-  gcTransitTable: WebAssembly.Table;
-  /**
-   * The merged static-root catalog (`anyref`) the module's injected
-   * `fm_drive_execute` reads with `table.get` on a DRIVE_OP_STATIC_ROOT step (the
-   * static-root binder). The host populates this from the child's live static
-   * roots at the fork's merged bases before the drive runs.
-   */
-  staticRootCatalog: WebAssembly.Table;
+  readonly tokens?: ForkExternrefResolver;
+  /** Explicit host functions, overriding `tokens`. Omitted, each traps. */
+  readonly hostImports?: Partial<ForkModuleHostImports>;
+  /** @deprecated The module owns its transit table; supplying one is a no-op. */
+  readonly transitTable?: WebAssembly.Table;
+}
+
+/** The shadow stack reserved above the module's static footprint. */
+const SHADOW_STACK_BYTES = 1024 * 1024;
+
+/**
+ * The staging slab reserved above the shadow stack.
+ *
+ * A tuning choice, not a correctness boundary: the module's own internal
+ * scratch is 64 KiB, and a staging request larger than this slab falls back to
+ * the growing channel mmap. Sized well above that internal scratch while
+ * staying small against the module's ~4 MiB static footprint.
+ */
+const STAGING_SLAB_BYTES = 256 * 1024;
+
+const WASM_PAGE_BYTES = 65536;
+
+/** `dylink.0` subsection id for the memory/table sizing record. */
+const WASM_DYLINK_MEM_INFO = 1;
+
+interface DylinkMemInfo {
+  memorySize: number;
+  memoryAlign: number;
+  tableSize: number;
+  tableAlign: number;
 }
 
 /**
- * Shadow stack for the fork-module's own Rust frames. The dylink `mem_size`
- * covers static data + BSS only; the imported `__stack_pointer` needs a
- * separate host-provided region. 1 MiB is generous for the small continuation
- * codec while staying far below the ~4 MiB static footprint.
+ * Read `dylink.0` sizing via `WebAssembly.Module.customSections`.
+ *
+ * NOT via `parseDylinkSection` in `dylink-artifact.ts`. That reader requires
+ * `dylink.0` to be the module's FIRST section, which the convention does say —
+ * but this module's is the LAST of fourteen, so the reader returns null for it.
+ * `customSections` finds a section by name wherever it sits, which is what lets
+ * this work against the artifact as actually built. (The placement itself is
+ * recorded in census §14; it is a link-step question, not this file's.)
  */
-const FORK_MODULE_SHADOW_STACK_BYTES = 1 << 20;
+function readDylinkMemInfo(
+  module: WebAssembly.Module,
+  label: string,
+): DylinkMemInfo {
+  const sections = WebAssembly.Module.customSections(module, "dylink.0");
+  if (sections.length === 0) {
+    throw new Error(
+      `${label}: not a PIC side module — no dylink.0 custom section. A ` +
+        `fork-module must be linked with --pie; a non-side module cannot be ` +
+        `placed at a host-chosen __memory_base.`,
+    );
+  }
+  const bytes = new Uint8Array(sections[0]);
+  let offset = 0;
+  const leb = (): number => {
+    let result = 0;
+    let shift = 0;
+    for (;;) {
+      const byte = bytes[offset++];
+      if (byte === undefined) {
+        throw new Error(`${label}: truncated dylink.0 section`);
+      }
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return result >>> 0;
+  };
+  while (offset < bytes.length) {
+    const kind = bytes[offset++];
+    const size = leb();
+    const end = offset + size;
+    if (kind === WASM_DYLINK_MEM_INFO) {
+      return {
+        memorySize: leb(),
+        memoryAlign: leb(),
+        tableSize: leb(),
+        tableAlign: leb(),
+      };
+    }
+    offset = end;
+  }
+  throw new Error(
+    `${label}: dylink.0 carries no memory-info subsection, so the module's ` +
+      `static footprint is unknown and it cannot be placed`,
+  );
+}
 
-/**
- * A dedicated, persistent staging slab reserved INSIDE the fork-module region
- * for the backend's small pre-fork guest buffers (the resume-catalog ordinals
- * `setup()`/`setActivationResumeCatalog` copy in, and per-activation GC-codec
- * bytes). Before this slab existed the backend `mmap`'d each staging buffer
- * from the guest syscall channel and released it after the module copied it
- * into its own arena. That transient `mmap` GROWS the process memory and never
- * shrinks (the kernel does not reclaim on munmap), and — critically — a COPIED
- * fork child re-runs this staging at its INHERITED (higher) mmap cursor, so the
- * child's staging landed at the top of the cloned memory and grew it by a page
- * that the parent had staged lower. That broke the fork memory-clone invariant
- * (child `memory.size` must equal the parent's). Staging into a slab that is
- * part of the single reused fork-module region makes it symmetric: the parent
- * and child reuse the SAME slab (a COPIED child reuses the whole region via
- * `forkModuleInheritedBase`), so no staging `mmap` grows either one. The slab
- * holds the full resume catalog (`FORK_MODULE_RESUME_CATALOG_CAP` = 65536
- * ordinals * 4 bytes = 262144 = 4 pages); it MUST stay >= that size so a COPIED
- * child stages its (identical) catalog into the inherited slab in place rather
- * than falling back to a growing `mmap` at its higher inherited cursor, which
- * would break the fork memory-clone size invariant. A staging request larger
- * than the slab (a large GC codec) falls back to the growing channel `mmap` —
- * that path never asserts an exact memory size, so its growth is invisible; see
- * `worker-main`'s backend `reserveRegion`.
- */
-const FORK_MODULE_STAGING_BYTES = 1 << 18;
+function alignUp(value: number, alignPow2: number): number {
+  const alignment = 1 << alignPow2;
+  return Math.ceil(value / alignment) * alignment;
+}
+
+function trap(label: string, name: string): never {
+  throw new Error(
+    `${label}: the fork-module called host import ${name}, which this host did ` +
+      `not supply. A trapping stub is deliberate: a silent no-op would let a ` +
+      `capture continue with a reference it never resolved.`,
+  );
+}
 
 export function instantiateForkModule(
   options: InstantiateForkModuleOptions,
 ): ForkModuleInstance {
-  const { module, memory, ptrWidth, reserve, label } = options;
-  const memInfo = readSideModuleMemInfo(module, `${label}: fork-module`);
+  const { module, memory, reserve, label, hostImports } = options;
+  void options.transitTable; // deprecated; the module owns its transit table
 
-  const staticBytes = alignUp(memInfo.memorySize, memInfo.memoryAlignBytes);
-  // Layout of the reserved region (low -> high):
-  //   [memoryBase, +staticBytes)             static data + BSS
-  //   [+staticBytes, +stagingBytes)          backend staging slab
-  //   [.., +FORK_MODULE_SHADOW_STACK_BYTES)  shadow stack (grows down)
-  //
-  // Option B (dynamic mmap frame allocation): the module channel-mmaps its
-  // per-fork frame chunks + journal image on demand via `SYS_mmap` → the kernel
-  // `find_gap` allocator (kernel-tracked placement above the guest's live
-  // pages), so NO fork-frame arena is carved out of this region and a deep fork
-  // is not capped.
-  const stagingBytes = FORK_MODULE_STAGING_BYTES;
-  const regionBytes =
-    staticBytes +
-    stagingBytes +
-    FORK_MODULE_SHADOW_STACK_BYTES;
+  const info = readDylinkMemInfo(module, label);
+  // Layout, low to high: the module's static/BSS footprint, then the shadow
+  // stack, then the staging slab. `__stack_pointer` starts at the TOP of the
+  // shadow stack and grows DOWN into it, bounded below by the static footprint
+  // -- so it can never reach the staging slab above it, and never leaves the
+  // region at all.
+  const staticBytes = alignUp(info.memorySize, info.memoryAlign);
+  const stackTopOffset = staticBytes + SHADOW_STACK_BYTES;
+  const stagingOffset =
+    Math.ceil(stackTopOffset / WASM_PAGE_BYTES) * WASM_PAGE_BYTES;
+  const regionBytes = stagingOffset + STAGING_SLAB_BYTES;
+  const memoryBase = reserve(regionBytes);
 
-  // Validates the reserved region and mints the three placement globals. The
-  // shadow stack lives above the staging slab and grows DOWN from the top of
-  // the region, which is what `placeSideModule` seeds `__stack_pointer` to.
-  const placement = placeSideModule({
-    memInfo,
-    memory,
-    ptrWidth,
-    memoryBase: reserve(regionBytes),
-    regionBytes,
-    label: `${label}: fork-module`,
-  });
-  const memoryBase = placement.memoryBase;
-  const { memoryBaseGlobal, tableBaseGlobal, stackPointerGlobal } = placement;
-  // The module declares table_size = 0, so it never adds entries. Give it its
-  // own empty table rather than coupling to any guest table this step.
-  const table = new WebAssembly.Table({ element: "anyfunc", initial: 0 });
-  // The funcref catalog the module's `__wpk_fork_ref_decode_funcref` reads
-  // (Phase 6 D6.1). Default to an empty GROWABLE table (no maximum) the host can
-  // grow + populate from the guest's catalog once the guest instance exists.
-  const functionCatalog =
-    options.functionCatalog ??
-    new WebAssembly.Table({ element: "anyfunc", initial: 0 });
-  // The mutable funcref drive table the module's injected `fm_drive_execute`
-  // `call_indirect`s (Phase 6 item 3b). Default to an empty GROWABLE table the
-  // host grows + binds the guest `_gc_allocate`/`_gc_fill` exports into once the
-  // guest instances exist; inert until the host both binds and drives.
-  const driveTable =
-    options.driveTable ??
-    new WebAssembly.Table({ element: "anyfunc", initial: 0 });
-  // The shared Wasm-GC transit table (`anyref`, STORE #2) is now DEFINED and
-  // EXPORTED by the module itself (M1 task 2) rather than imported, so there
-  // is no import to bind or default to mint here. `options.transitTable` is
-  // accepted for backward compatibility but ignored — see the `@deprecated`
-  // note on that option. The module's export is read below, after
-  // instantiation.
-  // The merged static-root catalog (`anyref`) the module's injected
-  // `fm_drive_execute` reads on a DRIVE_OP_STATIC_ROOT step (the static-root
-  // binder). Default to a fresh host-owned `anyref` table minted through the
-  // ABI-43 Wasm-GC transit provider (JavaScript cannot build an `anyref` table
-  // directly on every engine); the host grows + populates it from the child's live
-  // static roots before the drive runs. Inert until the host both populates it and
-  // drives a static-root step, so an empty default is flag-off byte-identical.
-  const staticRootCatalog =
-    options.staticRootCatalog ?? new ForkAnyrefTransitTable().table;
+  if (memoryBase + regionBytes > memory.buffer.byteLength) {
+    throw new Error(
+      `${label}: fork-module region [${memoryBase}, ` +
+        `${memoryBase + regionBytes}) does not fit in the provided memory of ` +
+        `${memory.buffer.byteLength} bytes`,
+    );
+  }
 
-  // `env.resolve_externref` (M2): a plain `env` import, not the deleted
-  // `wpk_fork_host.*` seam (H3, 2026-09-06), because it returns a live
-  // reference. Default to a body that
-  // fails loud if actually invoked — a funcref/null-only fork never decodes an
-  // externref, so the default is inert (never called) on that path, and any
-  // path that DOES reach it without a real body is a genuine caller bug, not a
-  // "nothing to resolve" case.
-  const resolveExternref: (handle: number) => unknown =
-    options.resolveExternref ??
-    ((handle: number) => {
-      throw new Error(
-        `${label}: fork-module called resolve_externref(${handle}) but no ` +
-          `resolveExternref body was supplied`,
-      );
-    });
+  // `anyref`, NOT `externref`, for the static-root catalog: the binder holds
+  // GC-hierarchy values, and `any` and `extern` are disjoint roots, so the
+  // wrong element type is rejected at instantiation.
+  const emptyTable = (element: "anyfunc" | "anyref"): WebAssembly.Table =>
+    // The cast is at a TYPING boundary, not a capability one: every engine
+    // Kandelo runs on accepts an `anyref` table, but lib.dom still declares
+    // `TableKind` as `"anyfunc" | "externref"` -- it predates the GC proposal.
+    // Widening it here rather than in a global augmentation keeps the stale
+    // declaration visible at the one place that has to work around it.
+    new WebAssembly.Table({ element: element as "anyfunc", initial: 0 });
+  const functionCatalog = emptyTable("anyfunc");
+  const driveTable = emptyTable("anyfunc");
+  const staticRootCatalog = emptyTable("anyref");
 
-  const imports: WebAssembly.Imports = {
-    env: {
+  const capabilities =
+    options.tokens !== undefined
+      ? createForkModuleHostCapabilities({ tokens: options.tokens })
+      : undefined;
+  const resolved: Partial<ForkModuleHostImports> = {
+    ...(capabilities?.imports ?? {}),
+    ...(hostImports ?? {}),
+  };
+
+  const env: WebAssembly.ModuleImports = {
       memory,
-      __indirect_function_table: table,
+      __indirect_function_table: new WebAssembly.Table({
+        element: "anyfunc",
+        initial: info.tableSize,
+      }),
+      // The shadow stack grows DOWN from the top of the reserved region.
+      __stack_pointer: new WebAssembly.Global(
+        { value: "i32", mutable: true },
+        memoryBase + stackTopOffset,
+      ),
+      __memory_base: new WebAssembly.Global(
+        { value: "i32", mutable: false },
+        memoryBase,
+      ),
+      __table_base: new WebAssembly.Global({ value: "i32", mutable: false }, 0),
       __wpk_fork_function_catalog: functionCatalog,
       __wpk_fork_drive_table: driveTable,
       __wpk_fork_static_root_catalog: staticRootCatalog,
-      __memory_base: memoryBaseGlobal,
-      __table_base: tableBaseGlobal,
-      __stack_pointer: stackPointerGlobal,
-      resolve_externref: resolveExternref,
-    },
+      resolve_externref:
+        resolved.resolve_externref ?? (() => trap(label, "resolve_externref")),
+      __wpk_fork_host_ref_identity:
+        resolved.__wpk_fork_host_ref_identity ??
+        (() => trap(label, "__wpk_fork_host_ref_identity")),
+      __wpk_fork_host_func_identity:
+        resolved.__wpk_fork_host_func_identity ??
+        (() => trap(label, "__wpk_fork_host_func_identity")),
+      __wpk_fork_host_externref_handle:
+        resolved.__wpk_fork_host_externref_handle ??
+        (() => trap(label, "__wpk_fork_host_externref_handle")),
   };
-
-  // Synchronous instantiation runs the module's start (data-reloc / passive
-  // segment copy into `__memory_base + offset`). Fail loud here, never later.
-  let instance: WebAssembly.Instance;
-  try {
-    instance = new WebAssembly.Instance(module, imports);
-  } catch (error) {
+  // BEFORE instantiating, because after it a missing binding has already
+  // surfaced as a `LinkError` naming an import INDEX. The guest side of this
+  // contract is complete by construction (`buildForkGuestImports`); this side
+  // was not, which is how an import added to the module reached this file's own
+  // tests as an unreadable link failure.
+  const unbound = WebAssembly.Module.imports(module)
+    .filter((i) => i.module === "env" && i.kind === "function")
+    .map((i) => i.name)
+    .filter((name) => !(name in (env as Record<string, unknown>)));
+  if (unbound.length > 0) {
     throw new Error(
-      `${label}: fork-module instantiation failed: ${String(error)}`,
+      `${label}: the fork-module imports ${unbound.length} host function(s) ` +
+        `this host does not bind: ${unbound.join(", ")}`,
     );
   }
-
-  // The staging slab sits directly above the module's static/BSS footprint and
-  // below the shadow stack. Its base inherits `staticBytes`' alignment (>= 8),
-  // which satisfies the 4-byte alignment `fm_set_resume_catalog` needs.
-  const stagingBase = memoryBase + staticBytes;
+  const instance = new WebAssembly.Instance(module, { env });
 
   const exports = instance.exports as ForkModuleExports;
-  const missing = FORK_MODULE_REQUIRED_EXPORTS.filter((name) =>
-    FORK_MODULE_TABLE_EXPORTS.has(name)
-      ? !(exports[name] instanceof WebAssembly.Table)
-      : typeof exports[name] !== "function",
-  );
-  if (missing.length > 0) {
-    throw new Error(
-      `${label}: fork-module is missing required exports: ${missing.join(", ")}`,
-    );
+  for (const name of FORK_MODULE_REQUIRED_EXPORTS) {
+    if (exports[name] === undefined) {
+      throw new Error(
+        `${label}: fork-module is missing required export ${name}; the ` +
+          `artifact placed successfully but is not a usable fork-module`,
+      );
+    }
   }
 
-  // The shared Wasm-GC transit table (STORE #2) is now module-owned (M1 task
-  // 2): read it back from the export instead of binding an import.
-  const gcTransitTable = exports.__wpk_fork_ref_gc_transit;
-
   return {
-    instance,
     exports,
     memoryBase,
     regionBytes,
-    stagingBase,
-    stagingBytes,
-    table,
+    gcTransitTable: exports.__wpk_fork_ref_gc_transit as WebAssembly.Table,
     functionCatalog,
     driveTable,
-    gcTransitTable,
     staticRootCatalog,
+    stagingBase: memoryBase + stagingOffset,
+    stagingBytes: STAGING_SLAB_BYTES,
+    capabilities,
   };
 }

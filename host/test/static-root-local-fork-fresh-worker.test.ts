@@ -52,7 +52,7 @@ describe("Wasm GC static-root binder in a fresh process Worker", () => {
 
     expect(
       result.exitCode,
-      `static-root fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      `static-root fork exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}\nhost:\n${result.hostDiagnostics.map((d) => d.message).join("\n")}`,
     ).toBe(0);
     expect(result.stderr).toBe("");
     const staticRootsPublished = moduleReferenceProof(

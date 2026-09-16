@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -58,20 +58,6 @@ interface Surface {
   slack: number;
   target: number;
   why: string;
-  /**
-   * An argued ceiling raise, held to the reduction it was argued for.
-   *
-   * A raise granted on a promised deletion is a debt until that deletion
-   * lands. This records the grant so the NEXT raise cannot be taken on the
-   * same unpaid argument: the ceiling may exceed `grantedCeiling` only once
-   * `paidBy` has fallen to `requiredAtMost`.
-   */
-  contingency?: {
-    grantedCeiling: number;
-    paidBy: string;
-    requiredAtMost: number;
-    why: string;
-  };
 }
 
 const repoRoot = findRepoRoot();
@@ -86,38 +72,6 @@ function readBudget(): { surfaces: Record<string, Surface>; lanes: Record<string
 
 function budget(): Record<string, Surface> {
   return readBudget().surfaces;
-}
-
-/**
- * Count CODE lines across a shell glob, resolved from the repo root.
- *
- * Blank lines and comment lines do not count. The surfaces below exist to
- * measure how much host behaviour a second host would have to reproduce, and
- * a comment is not behaviour — nobody reimplementing `memory-fs.ts` in Rust
- * has to reproduce its doc comments. Counting them made the budget push in two
- * directions at once: `CLAUDE.md` says documentation is part of the platform
- * contract, and a ceiling on raw `wc -l` charges for honouring it, so the
- * cheapest way to pass was to explain less. That is a bad trade the measure
- * should not be asking anyone to make.
- *
- * Every line-count ceiling was rebaselined against this measure in the commit
- * that introduced it. The rebaseline is not a relaxation: each ceiling was set
- * to the code-line count of the file AS IT STOOD then, so the ratchet holds at
- * exactly the point it held before, in the new unit.
- */
-function lineCount(globs: string[]): number {
-  let total = 0;
-  for (const file of expandGlobs(globs)) {
-    // Per file, not over a concatenation. It keeps comment state from leaking
-    // between files, and it is what lets the guard below name the file that
-    // confused the scanner rather than the whole surface.
-    try {
-      total += countCodeLines(readFileSync(join(repoRoot, file), "utf8"));
-    } catch (error) {
-      throw new Error(`${file}: ${(error as Error).message}`);
-    }
-  }
-  return total;
 }
 
 /**
@@ -207,37 +161,199 @@ function countCodeLines(text: string): number {
   return count;
 }
 
+/**
+ * Code lines across a glob set, counted per file.
+ *
+ * Delegates to the guarded helpers above deliberately: `expandGlobs` fails when
+ * a counted path no longer exists (lane L), and `countCodeLines` refuses a file
+ * that ends inside a block comment (lane S). Lane F's own counter had neither,
+ * and both were argued for and perturbed before they landed, so the merge keeps
+ * them rather than the shorter version.
+ */
+function codeLineCount(globs: string[]): number {
+  let total = 0;
+  for (const file of expandGlobs(globs)) {
+    total += countCodeLines(readFileSync(join(repoRoot, file), "utf8"));
+  }
+  return total;
+}
+
+/**
+ * The declarations in `worker-main.ts` that belong to ANOTHER lane.
+ *
+ * `workerMainTypeScript` measures the whole file, and the whole file is two
+ * lanes' work: at least 2,200 of its lines are the dynamic linker, the kernel
+ * import surface and the pthread bootstrap, none of which this lane would
+ * delete if the fork work finished tomorrow. A ceiling over both populations
+ * cannot be read -- the same structural error that had `forkTypeScript`
+ * globbing every `host/src/fork-*.ts` until it was split.
+ *
+ * NAMED rather than pattern-matched, and named as the EXCLUSIONS rather than
+ * the inclusions, so the default is the right way round: a declaration added
+ * to this file counts against the fork share unless someone deliberately says
+ * it belongs elsewhere. Adding a name here is a visible decision, which is
+ * what the maintainer asked of `forkPlatformTypeScript`'s file list.
+ */
+const WORKER_MAIN_OTHER_LANES = [
+  "buildDlopenImports",
+  "buildImportObject",
+  "buildKernelImports",
+  "assertSupportedKernelFunctionImports",
+  "DlopenSupport",
+  "patchWasmForThread",
+  "detectChannelBaseTlsOffset",
+  "setupChannelBase",
+  "encodeStartupMetadata",
+  "describeMainImage",
+] as const;
+
+/** `worker-main.ts`'s code lines MINUS the declarations named above. */
+function workerMainForkLines(): number {
+  const source = readFileSync(
+    join(repoRoot, "host/src/worker-main.ts"),
+    "utf8",
+  );
+  const lines = source.split("\n");
+  // Top-level declarations only: column-0 `function` / `const` / `interface`
+  // and friends. A nested helper belongs to whatever encloses it, which is the
+  // behaviour wanted -- excluding `buildDlopenImports` excludes its interior.
+  const starts: Array<{ line: number; name: string }> = [];
+  lines.forEach((text, index) => {
+    const match =
+      /^(?:export )?(?:async )?(?:function|const|interface|class|type|enum) ([A-Za-z_][A-Za-z0-9_]*)/
+        .exec(text);
+    if (match) starts.push({ line: index, name: match[1]! });
+  });
+  let excluded = 0;
+  starts.forEach((start, index) => {
+    if (!WORKER_MAIN_OTHER_LANES.includes(start.name as never)) return;
+    const end = index + 1 < starts.length ? starts[index + 1]!.line : lines.length;
+    excluded += codeLinesInSource(lines.slice(start.line, end).join("\n"));
+  });
+  return codeLinesInSource(source) - excluded;
+}
+
+/** @internal Exported shape kept simple so the scanner itself is testable. */
+function codeLinesInSource(source: string): number {
+  let inBlockComment = false;
+  let count = 0;
+  for (const line of source.split("\n")) {
+    let sawCode = false;
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      const next = line[i + 1];
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false;
+          i += 1;
+        }
+        continue;
+      }
+      if (quote !== null) {
+        sawCode = true;
+        if (ch === "\\") {
+          i += 1;
+        } else if (ch === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (ch === "/" && next === "/") {
+        break; // line comment: nothing after it counts
+      }
+      if (ch === "/" && next === "*") {
+        inBlockComment = true;
+        i += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        sawCode = true;
+        continue;
+      }
+      if (!/\s/.test(ch)) {
+        sawCode = true;
+      }
+    }
+    if (sawCode) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function countMatches(relPath: string, pattern: RegExp): number {
   const text = readFileSync(join(repoRoot, relPath), "utf8");
   return text.split("\n").filter((line) => pattern.test(line)).length;
 }
 
-/**
- * The glob set behind every line-count surface, named once.
- *
- * Declared here rather than inline so the counter's own test can run against
- * exactly the files production measures. A second copy would let the test pass
- * on sources the budget does not read.
- */
-const MEASURED_GLOBS: Record<string, string[]> = {
-  forkTypeScript: ["host/src/fork-*.ts", "host/src/vfork-*.ts"],
-  workerMainTypeScript: ["host/src/worker-main.ts"],
-  sffsTypeScript: ["host/src/vfs/sharedfs-vendor.ts"],
-  memoryFsTypeScript: ["host/src/vfs/memory-fs.ts"],
-  kernelWorkerTypeScript: ["host/src/kernel-worker.ts"],
-  kernelHostImportTypeScript: ["host/src/kernel.ts"],
-  hostKernelPlumbingTypeScript: [
-    "host/src/kernel-scratch.ts",
-    "host/src/kernel-entry-gate.ts",
-    "host/src/process-memory.ts",
-    "host/src/worker-protocol.ts",
-  ],
-};
-
 const MEASURED: Record<string, () => number> = {
-  forkTypeScript: () => lineCount(MEASURED_GLOBS.forkTypeScript!),
-  workerMainTypeScript: () => lineCount(MEASURED_GLOBS.workerMainTypeScript!),
-  sffsTypeScript: () => lineCount(MEASURED_GLOBS.sffsTypeScript!),
+  // Split by purpose 2026-09-12: the module-facing half is DONE and banked at
+  // its measurement, the platform half is unstarted. One ceiling over both
+  // mixes a finished population with an empty one and cannot be read — the same
+  // reason `forkModuleEntryPoints` was split into three.
+  // The glob catches the module-facing files by name; `fork-reference-capture-module`
+  // is module-facing too -- "a thin, stateful wrapper over the `fm_capture_*`
+  // exports of ONE resident fork-module instance" -- and is named here because
+  // its filename does not start with `fork-module-`. Leaving it to the
+  // `fork-*.ts` sweep would file it under `forkRestoredHostFloor`, a surface
+  // defined as process lifecycle, cross-worker transport or memory placement
+  // RATHER THAN capture/replay logic, which it is.
+  forkTypeScript: () =>
+    codeLineCount([
+      "host/src/fork-module-*.ts",
+      "host/src/fork-reference-capture-module.ts",
+    ]),
+  // The thin layer this lane AUTHORS, listed file by file rather than globbed.
+  //
+  // A glob over `host/src/fork-*.ts` used to define this, which was right while
+  // every other fork file sat in the attic and wrong the moment any came back:
+  // it then measured newly written code and restored host floor as one number,
+  // which is the population mixing the maintainer had `forkModuleEntryPoints`
+  // split for. Naming the files keeps this surface about what it was set up to
+  // bound, and makes adding a file to it a visible decision.
+  forkPlatformTypeScript: () =>
+    codeLineCount([
+      "host/src/fork-guest-imports.ts",
+      "host/src/fork-mechanism-trace.ts",
+      "host/src/fork-anyref-transit.ts",
+      "host/src/fork-table-state-owners.ts",
+      "host/src/fork-resume-table.ts",
+      "host/src/fork-phase.ts",
+      "host/src/fork-import-identity.ts",
+      "host/src/fork-activations.ts",
+      "host/src/fork-child-imports.ts",
+      "host/src/fork-child-references.ts",
+      "host/src/fork-guest-sections.ts",
+      "host/src/fork-tables.ts",
+      "host/src/fork-merged-catalog.ts",
+    ]),
+  // Host floor restored from the attic: everything the `fork-*.ts` sweep took by
+  // FILENAME that turned out to be process lifecycle, cross-worker transport or
+  // memory placement rather than fork capture/replay logic.
+  forkRestoredHostFloor: () =>
+    codeLineCount(["host/src/fork-*.ts", "host/src/vfork-*.ts"]) -
+    codeLineCount([
+      "host/src/fork-module-*.ts",
+      "host/src/fork-reference-capture-module.ts",
+      "host/src/fork-guest-imports.ts",
+      "host/src/fork-mechanism-trace.ts",
+      "host/src/fork-anyref-transit.ts",
+      "host/src/fork-table-state-owners.ts",
+      "host/src/fork-resume-table.ts",
+      "host/src/fork-phase.ts",
+      "host/src/fork-import-identity.ts",
+      "host/src/fork-activations.ts",
+      "host/src/fork-child-imports.ts",
+      "host/src/fork-child-references.ts",
+      "host/src/fork-guest-sections.ts",
+      "host/src/fork-tables.ts",
+      "host/src/fork-merged-catalog.ts",
+    ]),
+  workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
+  workerMainForkTypeScript: () => workerMainForkLines(),
+  sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),
   hostImportFunctions: () =>
     Number.parseInt(
       /EXPECTED_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
@@ -245,8 +361,21 @@ const MEASURED: Record<string, () => number> = {
       )?.[1] ?? "-1",
       10,
     ),
-  memoryFsTypeScript: () => lineCount(MEASURED_GLOBS.memoryFsTypeScript!),
-  kernelWorkerTypeScript: () => lineCount(MEASURED_GLOBS.kernelWorkerTypeScript!),
+  // The fork-module is a SEPARATE artifact with its own imports, every one of
+  // which a host must satisfy. `hostImportFunctions` above covers only the
+  // kernel, so this half of the host obligation had no gate at all until
+  // 2026-09-12. Read from the same constant the host-native test asserts
+  // against every fork-module artifact on disk, so this number cannot drift
+  // from the built bytes.
+  forkModuleHostImports: () =>
+    Number.parseInt(
+      /EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
+        readFileSync(join(repoRoot, "crates/host-native/src/lib.rs"), "utf8"),
+      )?.[1] ?? "-1",
+      10,
+    ),
+  memoryFsTypeScript: () => codeLineCount(["host/src/vfs/memory-fs.ts"]),
+  kernelWorkerTypeScript: () => codeLineCount(["host/src/kernel-worker.ts"]),
   // 91.6% of kernel-worker.ts is one class. A line gate alone permits
   // shuffling code between methods of the same god class; this does not.
   kernelWorkerClassMethods: () => {
@@ -358,24 +487,146 @@ const MEASURED: Record<string, () => number> = {
     }
     return declared.filter((name) => !asserted.has(name)).length;
   },
-  kernelHostImportTypeScript: () =>
-    lineCount(MEASURED_GLOBS.kernelHostImportTypeScript!),
-  // The worker entries: where host-side sequencing accumulates, and unmeasured
-  // until 2026-09-14, when three deletions in them moved no campaign number.
-  workerEntryTypeScript: () =>
-    lineCount([
-      "host/src/browser-kernel-worker-entry.ts",
-      "host/src/node-kernel-worker-entry.ts",
-      "host/src/browser-kernel-protocol.ts",
-    ]),
-  // The rest of host/src/vfs. memory-fs.ts and sharedfs-vendor.ts are excluded
-  // because memoryFsTypeScript and sffsTypeScript already count them, and a
-  // line counted twice is banked twice.
-  hostVfsTypeScript: () =>
-    lineCount(["host/src/vfs/*.ts"])
-      - lineCount(["host/src/vfs/memory-fs.ts", "host/src/vfs/sharedfs-vendor.ts"]),
+  // Fork imports the guest declares that the fork-module does NOT yet export
+  // under the SAME name.
+  //
+  // # Why verbatim names, and why this is the definition of "done"
+  //
+  // `crates/shared/src/lib.rs` carries the canonical fork ABI as a table of
+  // `ProgramArtifactImport { name, params, results }`. That table is the
+  // contract -- not the host implementation, which is why it survived the host
+  // TypeScript being set aside.
+  //
+  // When the fork-module exports an import under the guest's OWN name, wiring
+  // the two together is a loop with no per-import knowledge in it:
+  //
+  //     for (const name of names) env[name] = forkModule.exports[name];
+  //
+  // `crates/host-native` already does exactly this for the five frame imports.
+  // Every name the module exports under a DIFFERENT spelling (`fm_ref_gc_route`
+  // for `__wpk_fork_ref_gc_route`) forces a mapping table back into the host,
+  // and a hand-maintained mapping beside a generated contract is the defect
+  // three separate censuses in this campaign have already found.
+  //
+  // So this counts what stands between here and a host layer that is pure
+  // wiring. It reaches 0 when the module serves the whole guest fork ABI.
+  forkGuestImportsUnserved: () => {
+    const shared = readFileSync(
+      join(repoRoot, "crates/shared/src/lib.rs"),
+      "utf8",
+    );
+    const constants = new Map<string, string>();
+    for (const m of shared.matchAll(
+      /pub const (WPK_FORK_[A-Z0-9_]+): &str =\s*"([^"]+)"/g,
+    )) {
+      constants.set(m[1], m[2]);
+    }
+    const canonical = new Set<string>();
+    for (const m of shared.matchAll(
+      /ProgramArtifactImport\s*\{\s*module:\s*[A-Z_0-9]+,\s*name:\s*([A-Z_0-9]+),/g,
+    )) {
+      canonical.add(constants.get(m[1]) ?? m[1]);
+    }
+    const served = new Set<string>();
+    const lib = readFileSync(
+      join(repoRoot, "crates/fork-module/src/lib.rs"),
+      "utf8",
+    );
+    for (const m of lib.matchAll(
+      /pub (?:unsafe )?extern "C" fn ([A-Za-z_0-9]+)/g,
+    )) {
+      served.add(m[1]);
+    }
+    // Names the walrus pass injects are exports too: Rust cannot emit a
+    // reference-returning function or a `call_indirect`, so those exports exist
+    // only after injection and are just as real to the guest.
+    const injected = readFileSync(
+      join(repoRoot, "crates/fork-module-inject/src/main.rs"),
+      "utf8",
+    );
+    for (const m of injected.matchAll(/"(__wpk_fork[a-z_0-9]+|fm_[a-z_0-9]+)"/g)) {
+      served.add(m[1]);
+    }
+    return [...canonical].filter((name) => !served.has(name)).length;
+  },
+  // The guest's NON-FUNCTION fork imports the fork-module does not yet supply:
+  // tables, globals and the unwind tag.
+  //
+  // `forkGuestImportsUnserved` above cannot see these. The canonical contract is
+  // a table of `ProgramArtifactImport { name, params, results }`, and that shape
+  // can only describe a FUNCTION -- so the five non-function imports a real
+  // guest declares are absent from it by construction, not by drift. Measured
+  // against a fork-instrumented guest binary: it imports 51 `env.__wpk_fork_*`
+  // entries, the canonical table declares the 46 that are functions.
+  //
+  // They are counted separately rather than folded in, because serving one is
+  // different work: a table or a tag is DEFINED and exported by the module
+  // (`__wpk_fork_ref_gc_transit` and `__wpk_fork_unwind` already are), where a
+  // function is implemented.
+  forkGuestObjectImportsUnserved: () => {
+    const shared = readFileSync(
+      join(repoRoot, "crates/shared/src/lib.rs"),
+      "utf8",
+    );
+    const names = new Set<string>();
+    for (const constant of [
+      "WPK_FORK_UNWIND_TAG_IMPORT_NAME",
+      "WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT",
+      "WPK_FORK_RESUME_TABLE_IMPORT_NAME",
+      "WPK_FORK_MODULE_ACTIVATION_IMPORT_NAME",
+      "WPK_FORK_MODULE_STATE_TABLE_GENERATION_ADDR_IMPORT_NAME",
+    ]) {
+      const m = new RegExp(
+        `pub const ${constant}: &str =\\s*"([^"]+)"`,
+      ).exec(shared);
+      if (m) names.add(m[1]);
+    }
+    // Fall back to the literal spellings for any constant this repo names
+    // differently, so a rename cannot silently shrink the surface to zero.
+    for (const literal of [
+      "__wpk_fork_unwind",
+      "__wpk_fork_ref_gc_transit",
+      "__wpk_fork_resume_table",
+      "__wpk_fork_module_activation",
+      "__wpk_fork_module_state_table_generation_addr",
+    ]) {
+      names.add(literal);
+    }
+    // "Served" is decided by the BUILT ARTIFACT, not by grepping the
+    // injector's source for string literals.
+    //
+    // The grep was a proxy and it could only ever be approximate: a name
+    // mentioned in a COMMENT in `fork-module-inject/src/main.rs` counted as
+    // served, so this surface could silently shrink without the module
+    // exporting anything new. The two agreed when this changed (3 and 3) --
+    // the point is that the artifact cannot disagree with itself, and the
+    // grep can disagree with the artifact in either direction.
+    //
+    // This is the same correction `buildForkGuestImports` made: ask the thing
+    // itself rather than a list, or a grep, of what someone remembered.
+    const artifact = join(repoRoot, "host/wasm/fork_module32.wasm");
+    if (!existsSync(artifact)) {
+      throw new Error(
+        `surface budget: ${artifact} is missing, so what the fork module ` +
+          `serves cannot be measured. Build it with ` +
+          `crates/fork-module/build-wasm.sh.`,
+      );
+    }
+    const served = new Set(
+      WebAssembly.Module.exports(
+        new WebAssembly.Module(readFileSync(artifact)),
+      ).map((entry) => entry.name),
+    );
+    return [...names].filter((name) => !served.has(name)).length;
+  },
+  kernelHostImportTypeScript: () => codeLineCount(["host/src/kernel.ts"]),
   hostKernelPlumbingTypeScript: () =>
-    lineCount(MEASURED_GLOBS.hostKernelPlumbingTypeScript!),
+    codeLineCount([
+      "host/src/kernel-scratch.ts",
+      "host/src/kernel-entry-gate.ts",
+      "host/src/process-memory.ts",
+      "host/src/worker-protocol.ts",
+    ]),
   // Declaration names present in BOTH halves of a browser-/node- pair.
   // Members destructured from the shared createProcessLifecycle factory are
   // excluded: those are the consolidation working, not duplication.
@@ -488,12 +739,102 @@ const MEASURED: Record<string, () => number> = {
       ).trim(),
       10,
     ),
-  // Committed binaries must have a producer that still exists, or a recorded
-  // decision to freeze them. Filename inference is NOT reliable here:
-  // rtfs-v3-lazy.bin is produced by gen-rtfs-v3-fixture.mts, which shares only
-  // a prefix. So this reads an explicit declaration and counts two failures --
-  // an undeclared binary, and a declared producer that has been deleted. The
-  // second is how dylink-archive and rtfs-v3-lazy became fossils unnoticed.
+  parseShebangReferences: () =>
+    codeLineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
+      ? Number.parseInt(
+          execFileSync("/bin/sh", [
+            "-c",
+            "grep -ro 'parseShebang' host/src 2>/dev/null | wc -l",
+          ], { cwd: repoRoot, encoding: "utf8" }).trim(),
+          10,
+        )
+      : 0,
+  setuidLazyWithoutDigest: () => {
+    const emitter = readFileSync(
+      join(repoRoot, "scripts/generate-rootfs-package-manifest.mjs"),
+      "utf8",
+    );
+    // The emitter's lazy branch writes `lazy_url=` and `lazy_size=`. Until it
+    // also writes a digest, every setuid package that ships lazy is fetched
+    // with length as its only check.
+    if (/lazy_sha256=|lazy_digest=/.test(emitter)) return 0;
+    const packages = readFileSync(
+      join(repoRoot, "images/rootfs/PACKAGES.toml"),
+      "utf8",
+    );
+    return packages
+      .split(/\n(?=\[\[packages\]\])/)
+      .filter((b) => /mode = "4755"/.test(b) && !/install = "eager"/.test(b))
+      .length;
+  },
+  // ONE ratchet over the two buckets a reconnection moves entries BETWEEN.
+  //
+  // Splitting host-called from no-production-caller was right when they moved
+  // independently. They stopped: reconnecting the thin layer gives an existing
+  // entry a production caller, so it changes bucket and the two move equal and
+  // opposite. That happened three times, total 46 each time, and each looked
+  // like a raise in isolation. Their SUM only falls when the module absorbs work
+  // or an entry is deleted, which is what this surface is for. The two are still
+  // reported separately below for visibility; neither is ratcheted alone.
+  // Imports in `host/src` that resolve into the attic instead of into
+  // `host/src`.
+  //
+  // THE ONLY SURFACE THAT MEASURES THIS LANE'S ACTUAL GOAL. Every other number
+  // here counts code that EXISTS; this one counts code the host still DEPENDS
+  // on. That distinction was invisible and it mattered: a session spent moving
+  // work into the module and cutting coordinator calls showed up as the host
+  // surfaces GROWING, because the replacement is measured and the 14,035 attic
+  // lines being replaced are measured by nothing. Progress looked like
+  // regression, and the only reason anyone noticed was the maintainer asking.
+  //
+  // It counts distinct modules, not call sites: cutting the last reference to a
+  // file is the event worth ratcheting, and cutting the first four of nine
+  // references to it changes nothing about whether the file can be deleted.
+  forkAtticImports: () => {
+    // THE ATTIC IS GONE (2026-09-15), so this counts what it was always really
+    // after: a `host/src` import that resolves to NOTHING. While the directory
+    // existed those were the same set, because an unresolved fork import was
+    // an attic file by construction. Counting unresolved imports outright
+    // keeps the measure meaningful past the deletion -- and keeps it able to
+    // fail, which a check against a directory that cannot exist could not.
+    if (existsSync(join(repoRoot, "attic/fork-typescript-do-not-use"))) {
+      throw new Error(
+        "the fork attic is back; it was deleted on 2026-09-15 and nothing "
+          + "should restore it (docs/plans/2026-09-12-lane-f-census.md, D1)",
+      );
+    }
+    const sources = execFileSync(
+      "/bin/sh",
+      ["-c", "ls host/src/*.ts 2>/dev/null || true"],
+      { cwd: repoRoot, encoding: "utf8" },
+    )
+      .split("\n")
+      .filter((f) => f.length > 0);
+    const unresolved = new Set<string>();
+    for (const rel of sources) {
+      const text = readFileSync(join(repoRoot, rel), "utf8");
+      for (const [, specifier] of text.matchAll(/from "\.\/([a-z0-9-]+)"/g)) {
+        if (existsSync(join(repoRoot, "host/src", `${specifier}.ts`))) continue;
+        // `./vfs` and `./networking` are DIRECTORIES with an index; they
+        // resolve, and counting them would make this number noise.
+        if (existsSync(join(repoRoot, "host/src", specifier, "index.ts"))) continue;
+        unresolved.add(specifier);
+      }
+    }
+    return unresolved.size;
+  },
+  forkModuleHostEntries: () => {
+    const entries = forkModuleEntries();
+    return entries.hostCalled + entries.noProductionCaller;
+  },
+  forkModuleInjectorHelpers: () => forkModuleEntries().injectorOnly,
+  forkModuleEntriesWithoutProductionCaller: () =>
+    forkModuleEntries().noProductionCaller,
+  sffsModuleEntryPoints: () =>
+    countMatches(
+      "crates/sffs-module/src/lib.rs",
+      /^\s*pub (unsafe )?extern "C" fn sm_/,
+    ),
   committedBinariesWithoutProducer: () => {
     const tracked = execFileSync(
       "/bin/sh",
@@ -521,146 +862,149 @@ const MEASURED: Record<string, () => number> = {
       return !existsSync(join(repoRoot, entry.producer)); // producer deleted
     }).length;
   },
-  parseShebangReferences: () =>
-    lineCount(["host/src/*.ts", "host/src/**/*.ts"]) > 0
-      ? Number.parseInt(
-          execFileSync("/bin/sh", [
-            "-c",
-            "grep -ro 'parseShebang' host/src 2>/dev/null | wc -l",
-          ], { cwd: repoRoot, encoding: "utf8" }).trim(),
-          10,
-        )
-      : 0,
-  setuidLazyWithoutDigest: () => {
-    const emitter = readFileSync(
-      join(repoRoot, "scripts/generate-rootfs-package-manifest.mjs"),
-      "utf8",
-    );
-    // The emitter's lazy branch writes `lazy_url=` and `lazy_size=`. Until it
-    // also writes a digest, every setuid package that ships lazy is fetched
-    // with length as its only check.
-    if (/lazy_sha256=|lazy_digest=/.test(emitter)) return 0;
-    const packages = readFileSync(
-      join(repoRoot, "images/rootfs/PACKAGES.toml"),
-      "utf8",
-    );
-    return packages
-      .split(/\n(?=\[\[packages\]\])/)
-      .filter((b) => /mode = "4755"/.test(b) && !/install = "eager"/.test(b))
-      .length;
-  },
   forkModuleEntryPoints: () =>
     countMatches(
       "crates/fork-module/src/lib.rs",
       /^\s*pub (unsafe )?extern "C" fn fm_/,
     ),
-  sffsModuleEntryPoints: () =>
-    countMatches(
-      "crates/sffs-module/src/lib.rs",
-      /^\s*pub (unsafe )?extern "C" fn sm_/,
-    ),
+  hostVfsTypeScript: () =>
+    codeLineCount(["host/src/vfs/*.ts"])
+      - codeLineCount(["host/src/vfs/memory-fs.ts", "host/src/vfs/sharedfs-vendor.ts"]),
+  workerEntryTypeScript: () =>
+    codeLineCount([
+      "host/src/browser-kernel-worker-entry.ts",
+      "host/src/node-kernel-worker-entry.ts",
+      "host/src/browser-kernel-protocol.ts",
+    ]),
+  // The rest of host/src/vfs. memory-fs.ts and sharedfs-vendor.ts are excluded
+  // because memoryFsTypeScript and sffsTypeScript already count them, and a
+  // line counted twice is banked twice.
 };
 
 /**
- * The counter is itself a measurement, so it gets checked like one.
+ * Source with COMMENTS removed and string literals KEPT.
  *
- * Each case below is a way the naive version of this counter is wrong, and
- * each was wrong in the direction that reads as progress: a string holding
- * `/*` opens a block comment the rest of the file never closes, and every
- * remaining line of a 26,000-line surface stops counting.
+ * Both halves matter for caller classification. A doc comment naming an entry
+ * is not a caller -- mentioning `fm_gc_identity_find` in a comment in
+ * `host/src` once moved it from injector-only to host-called, which is the
+ * whole classification being wrong from one sentence of prose. String literals
+ * must SURVIVE, because `crates/host-native` binds its drive surface by name
+ * inside one (`fm_func!("fm_parent_begin_capture": ...)`), so stripping
+ * strings would hide every real caller it has.
+ *
+ * Quote tracking exists only so a `//` inside a string does not open a
+ * comment; the contents are passed through untouched. Covers Rust `///` and
+ * `//!` doc comments by the same `//` rule.
  */
-describe("the budget's code-line counter", () => {
-  const count = (...lines: string[]) => countCodeLines(lines.join("\n"));
-
-  it("counts a line of code", () => {
-    expect(count("const a = 1;")).toBe(1);
-  });
-
-  it("does not count blank lines or lines that are only whitespace", () => {
-    expect(count("const a = 1;", "", "   ", "\t", "const b = 2;")).toBe(2);
-  });
-
-  it("does not count line comments", () => {
-    expect(count("// why this exists", "const a = 1;", "  // and this")).toBe(1);
-  });
-
-  it("counts a line that carries code AND a trailing comment", () => {
-    expect(count("const a = 1; // why")).toBe(1);
-  });
-
-  it("does not count the body of a block comment", () => {
-    expect(count("/**", " * three lines of prose", " */", "const a = 1;")).toBe(1);
-  });
-
-  it("counts the code on a line that opens or closes a block comment", () => {
-    expect(count("const a = 1; /* trailing", " prose", " */")).toBe(1);
-    expect(count("/* prose", "*/ const a = 1;")).toBe(1);
-  });
-
-  it("does not mistake a comment marker inside a string for a comment", () => {
-    // The failure this prevents is total, not marginal: an unclosed block
-    // swallows the rest of the file.
-    expect(count('const s = "/*";', "const a = 1;", "const b = 2;")).toBe(3);
-    expect(count("const s = '//';", "const a = 1;")).toBe(2);
-    expect(count("const u = \"https://example.test/x\";", "const a = 1;")).toBe(2);
-    expect(count("const e = \"a\\\"/*\";", "const a = 1;")).toBe(2);
-  });
-
-  it("counts the code inside a multi-line template literal's interpolations", () => {
-    // Carrying a backtick across lines dropped 25 real lines from these
-    // surfaces, every one of them an expression the host actually evaluates.
-    expect(count(
-      "throw new Error(",
-      "  `failed: ${",
-      "    error instanceof Error ? error.message : String(error)",
-      "  }`,",
-      ");",
-    )).toBe(5);
-  });
-
-  it("refuses to report a count for text that ends inside a block comment", () => {
-    // Reaching end of input mid-comment means the scanner lost its place, and
-    // the number it would return is an undercount that looks like a deletion.
-    expect(() => count("/* opened and never closed", "const a = 1;"))
-      .toThrow(/ended inside a block comment/);
-  });
-
-  it("counts every real source file the budget measures without losing its place", () => {
-    // The throw above is only a guard if it stays silent on real input.
-    for (const [name, globs] of Object.entries(MEASURED_GLOBS)) {
-      expect(() => lineCount(globs), name).not.toThrow();
+function stripComments(source: string): string {
+  let out = "";
+  let inBlock = false;
+  let inLine = false;
+  let quote: string | null = null;
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLine) {
+      if (ch === "\n") {
+        inLine = false;
+        out += ch;
+      }
+      continue;
     }
-  });
-});
+    if (inBlock) {
+      if (ch === "*" && next === "/") {
+        inBlock = false;
+        i += 1;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      out += ch;
+      if (ch === "\\") {
+        if (next !== undefined) out += next;
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      inLine = true;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      inBlock = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Classify every `fm_*` entry the fork-module declares by WHO CALLS IT.
+ *
+ * One ceiling over all of them could not mean anything, because they move for
+ * opposite reasons: host-called entries should FALL as the drive API coarsens,
+ * injector-only helpers RISE as each shim-backed guest import lands, and
+ * entries with no production caller should fall to zero. A single number mixed
+ * all three and blocked work it had no bearing on.
+ *
+ * No host constructs an `fm_*` name dynamically (checked 2026-09-12), so
+ * matching by name is sound here.
+ */
+function forkModuleEntries(): {
+  hostCalled: number;
+  injectorOnly: number;
+  noProductionCaller: number;
+} {
+  const lib = readFileSync(
+    join(repoRoot, "crates/fork-module/src/lib.rs"),
+    "utf8",
+  );
+  const names = [
+    ...lib.matchAll(/^\s*pub (?:unsafe )?extern "C" fn (fm_[A-Za-z_0-9]+)/gm),
+  ].map((m) => m[1]);
+
+  const readAll = (dir: string, suffix: string): string => {
+    const root = join(repoRoot, dir);
+    return readdirSync(root)
+      .filter((f) => f.endsWith(suffix))
+      .map((f) => readFileSync(join(root, f), "utf8"))
+      .join("\n");
+  };
+  // PRODUCTION hosts only. `host/test` is deliberately excluded: an entry only
+  // a test reaches has no production caller, which is the H-1 signal the third
+  // bucket exists to hold.
+  const production = stripComments(
+    readAll("crates/host-native/src", ".rs") + readAll("host/src", ".ts"),
+  );
+  const injector = stripComments(
+    readFileSync(
+      join(repoRoot, "crates/fork-module-inject/src/main.rs"),
+      "utf8",
+    ),
+  );
+
+  let hostCalled = 0;
+  let injectorOnly = 0;
+  let noProductionCaller = 0;
+  for (const name of names) {
+    const re = new RegExp(`\\b${name}\\b`);
+    if (re.test(production)) hostCalled += 1;
+    else if (re.test(injector)) injectorOnly += 1;
+    else noProductionCaller += 1;
+  }
+  return { hostCalled, injectorOnly, noProductionCaller };
+}
 
 describe("campaign surface budget", () => {
   const surfaces = budget();
-
-  it("no surface configures a banking test that cannot fail", () => {
-    // The banking test below asserts `actual > ceiling - slack - 1`. When
-    // slack reaches the ceiling that reduces to `actual > -1`, which is true
-    // for every possible count -- so the surface can never report an unbanked
-    // reduction, and a real one sits invisible behind it.
-    //
-    // This is not hypothetical. On 2026-09-15 two surfaces were in that state.
-    // `parseShebangReferences` was ceilinged at 12 against a measured 2, and
-    // its slack of 12 is why nothing said so. `setuidLazyWithoutDigest` had
-    // ceiling 2 and slack 2, so if its lane's fix had landed and the count
-    // fell to 0, nothing would have required the ceiling to follow.
-    //
-    // A ceiling of 0 is exempt and correctly so: there is nothing left to
-    // bank, and the ceiling test still pins the surface at 0.
-    const inert = Object.entries(surfaces)
-      .filter(([, s]) => s.ceiling > 0 && s.slack >= s.ceiling)
-      .map(([name, s]) => `${name} (ceiling ${s.ceiling}, slack ${s.slack})`);
-    expect(
-      inert,
-      `These surfaces have a slack at or above their ceiling, so their `
-        + `banking test asserts "actual > -1" and cannot fail. Lower the `
-        + `slack below the ceiling, or the surface reports a cap it is no `
-        + `longer enforcing.`,
-    ).toEqual([]);
-  });
 
   it("measures every surface the budget declares", () => {
     // A budget entry nobody measures is the advisory document this test
@@ -697,30 +1041,6 @@ describe("campaign surface budget", () => {
           + `  Target for this surface is ${surface.target}.`,
       ).toBeGreaterThan(surface.ceiling - surface.slack - 1);
     });
-
-    if (surface.contingency) {
-      const c = surface.contingency;
-      it(`${name} above ${c.grantedCeiling} stays contingent on ${c.paidBy}`, () => {
-        // Deliberately NOT an early return when the ceiling is unraised. A
-        // guard that skips itself in the normal case is unfailable in the
-        // normal case, which is the hazard this whole file exists to refuse.
-        // The implication is asserted instead, so the expectation is
-        // evaluated on every run and the measured value is always read.
-        const raised = surface.ceiling > c.grantedCeiling;
-        const paid = MEASURED[c.paidBy]!();
-        expect(
-          !raised || paid <= c.requiredAtMost,
-          `${name} has a ceiling of ${surface.ceiling}, above the `
-            + `${c.grantedCeiling} that was granted — and the reduction that `
-            + `grant was argued for has not arrived: ${c.paidBy} is ${paid}, `
-            + `and this contingency requires at most ${c.requiredAtMost}.\n`
-            + `  ${c.why}\n`
-            + `  Do not edit this contingency to pass. Either deliver the `
-            + `reduction it names, or put the new argument to the maintainer `
-            + `the way the last one was put.`,
-        ).toBe(true);
-      });
-    }
   }
 });
 

@@ -82,12 +82,12 @@ import {
   wasmImportsKernelFork,
 } from "../src/constants";
 import {
-  FORK_UNWIND_TAG_IMPORT_MODULE,
-  FORK_UNWIND_TAG_IMPORT_NAME,
-  FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY,
-  FORK_UNWIND_TRANSPORT_SECTION,
-  FORK_UNWIND_TRANSPORT_VERSION,
-} from "../src/fork-unwind-transport";
+  WPK_FORK_UNWIND_TAG_IMPORT_MODULE as FORK_UNWIND_TAG_IMPORT_MODULE,
+  WPK_FORK_UNWIND_TAG_IMPORT_NAME as FORK_UNWIND_TAG_IMPORT_NAME,
+  WPK_FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY as FORK_UNWIND_TRANSPORT_PAYLOAD_ARITY,
+  WPK_FORK_UNWIND_TRANSPORT_SECTION as FORK_UNWIND_TRANSPORT_SECTION,
+  WPK_FORK_UNWIND_TRANSPORT_VERSION as FORK_UNWIND_TRANSPORT_VERSION,
+} from "../src/generated/abi";
 import { tryResolveBinary } from "../src/binary-resolver";
 
 // ---------------------------------------------------------------------------

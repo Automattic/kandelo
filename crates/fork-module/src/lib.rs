@@ -149,11 +149,13 @@ mod wasm {
     use fork_codec::{
         decode_journal_image, decode_module_state, decode_replay_events_image,
         decode_segmented_reference_transaction,
-        drive_plan, encode_replay_events, AggregateKind, ChunkAllocator, GcProvenance,
-        LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
+        build_child_import_plan, build_imported_global_bindings, drive_plan,
+        encode_imported_global_bindings,
+        encode_journal_image, encode_module_record, encode_replay_events, AggregateKind, ChunkAllocator,
+        GcProvenance, LinkedFrameFormat, LinkedFrameWriter, ModuleStateFormat, ReconstructionState,
         ReferenceGraphBuilder, ReferenceRecipeNode, ReferenceReplayDriver, ReferenceReplayFeed,
-        ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent, ReplayEventJournal,
-        ResumeSlotTable, RewindDriver, SegmentedReferenceTransaction,
+        ModuleStateWriter, ReferenceSegmentsWriter, ReferenceTransactionRecord, ReplayEvent,
+        ReplayEventJournal, ResumeSlotTable, RewindDriver, SegmentedReferenceTransaction,
     };
     use wasm_posix_shared::{abi, channel, mmap, ChannelStatus, Errno, Syscall};
 
@@ -169,7 +171,7 @@ mod wasm {
 
     // -- Injector-wired drive placeholder (control-flow inversion) ----------
     //
-    // The coarse per-phase entries (`fm_parent_replay` / `fm_parent_abort`)
+    // The coarse per-phase entries (`fm_parent_replay`, rewind or abort)
     // sequence the fine-grained primitives INTERNALLY in Rust — begin the
     // replay, build the per-activation begin drive plan, then DRIVE it — so the
     // host issues ONE module call per phase instead of an `fm_begin_*` call plus
@@ -192,6 +194,199 @@ mod wasm {
         /// Drive a serialized drive plan of `count` steps at guest address
         /// `plan`. Injector-rewritten to forward to the `fm_drive_execute` shim.
         fn __wpk_fork_drive_plan(plan: usize, count: u32);
+
+        /// Encode the constructor-provenance witness at `witness_slot` for
+        /// `activation`, returning its recipe id. Injector-rewritten to a
+        /// `call_indirect` through the drive table (F3 step 2).
+        fn __wpk_fork_capture_witness(activation: u32, witness_slot: u32) -> i32;
+
+        /// Type-test the value staged in anyref transit slot `slot`, returning
+        /// `(type_ordinal << 32) | layout_id`, or 0 when no layout matched.
+        /// Injector-rewritten to a `call_indirect` through the drive table.
+        fn __wpk_fork_capture_probe(activation: u32, slot: u32) -> i64;
+
+        /// Encode the value already staged in anyref transit slot `slot` using
+        /// `activation`'s codec, returning its recipe id. Injector-rewritten to
+        /// a `call_indirect` through the drive table.
+        fn __wpk_fork_capture_encode(activation: u32, slot: u32) -> i32;
+
+        /// Raise the exception `recipe` names inside `activation`, with that
+        /// activation's own tag. Injector-rewritten to a `call_indirect`
+        /// through the drive table. NEVER RETURNS -- the callee throws.
+        fn __wpk_fork_exn_throw(activation: u32, recipe: u32);
+
+        /// Write one funcref table slot during a reconcile: set
+        /// `__indirect_function_table[dest]` from `__wpk_fork_function_catalog[
+        /// catalog_slot]`, or to null when `clear` is non-zero.
+        /// Injector-rewritten into a local thunk.
+        fn __wpk_fork_table_apply(dest: u32, catalog_slot: u32, clear: u32);
+        /// The broker handle the host recorded for the EXTERNREF staged in
+        /// transit `slot`, or 0 when the value is not one the host owns.
+        ///
+        /// Injector-wired: the body is
+        /// `host_externref_handle(extern.convert_any(transit[slot]))`, which
+        /// Rust cannot write -- it cannot hold an externref, let alone convert
+        /// one. The host half is the exact reverse of `resolve_externref`, and
+        /// the capture needs both directions: one to NAME a live host
+        /// reference, the other to bring it back.
+        fn __wpk_fork_externref_handle(slot: u32) -> i32;
+        /// Grow the module-owned anyref transit table to at least `needed`
+        /// slots, answering its size or -1. Injector-wired to the emitted
+        /// `fm_transit_grow`, because `table.grow` on an anyref table needs a
+        /// `ref.null any` Rust has no type for.
+        fn __wpk_fork_transit_grow(needed: u32) -> i32;
+
+        /// `memory.atomic.wait32(addr, expected, timeout_ns) -> i32`.
+        /// Returns 0 "ok", 1 "not-equal", 2 "timed-out". `-1` timeout waits
+        /// forever. Injector-rewritten into a local thunk.
+        fn __wpk_fork_atomic_wait32(addr: u32, expected: i32, timeout_ns: i64) -> i32;
+
+        /// `memory.atomic.notify(addr, count) -> i32`, returning how many
+        /// waiters were woken. Injector-rewritten into a local thunk.
+        fn __wpk_fork_atomic_notify(addr: u32, count: u32) -> i32;
+
+        /// Which merged function-catalog slot holds the function at
+        /// `__indirect_function_table[dest]`: `-1` if the slot is null, `-2` if
+        /// the function is not catalogued. Injector-emitted; see
+        /// `inject_indirect_slot_catalog`.
+        fn fm_indirect_slot_catalog_index(dest: u32) -> i32;
+
+        /// `table.size` of the guest's indirect function table.
+        fn fm_indirect_table_size() -> i32;
+    }
+
+    /// Block until the i32 at `addr` stops being `expected`.
+    ///
+    /// A spin would be correct and unacceptable: the archive writer holds the
+    /// lock across guest bootstrap and constructor calls, so a peer could spin
+    /// for the length of a `dlopen`.
+    fn atomic_wait32(addr: usize, expected: i32) -> i32 {
+        let Ok(addr) = u32::try_from(addr) else {
+            // A wasm64 address above 4 GiB. The thunk widens what it is given,
+            // so refusing here is honest rather than silently waiting on the
+            // wrong word.
+            return -1;
+        };
+        // SAFETY: after injection this is a local thunk performing one
+        // `memory.atomic.wait32` on the guest's shared memory, which traps on an
+        // unaligned or out-of-bounds address rather than reading elsewhere.
+        unsafe { __wpk_fork_atomic_wait32(addr, expected, -1) }
+    }
+
+    /// Wake every waiter on the i32 at `addr`.
+    fn atomic_notify(addr: usize) -> i32 {
+        let Ok(addr) = u32::try_from(addr) else {
+            return -1;
+        };
+        // SAFETY: as `atomic_wait32`.
+        unsafe { __wpk_fork_atomic_notify(addr, u32::MAX) }
+    }
+
+    /// Safe wrapper over the injector-wired table-write placeholder.
+    ///
+    /// One slot per call, with Rust owning the loop. The alternative — a loop
+    /// inside the shim — would put the step striding and bounds logic in
+    /// emitted wasm, where it is far harder to test than in Rust.
+    fn table_apply_via_injector(dest: u32, catalog_slot: u32, clear: bool) {
+        // SAFETY: after injection this is a local thunk doing one `table.get`
+        // on the imported function catalog and one `table.set` on the guest's
+        // indirect function table, both bounds-checked by wasm itself.
+        unsafe { __wpk_fork_table_apply(dest, catalog_slot, u32::from(clear)) }
+    }
+
+    /// Safe wrapper over the injector-wired encode placeholder.
+    ///
+    /// Unlike `capture_witness_via_injector` this stages nothing: the value is
+    /// already in the transit slot, which is the case whenever the GUEST put it
+    /// there before asking the module a question about it.
+    fn capture_encode_via_injector(activation: u32, slot: u32) -> i32 {
+        // SAFETY: after injection this is a local thunk that `call_indirect`s
+        // the guest's `__wpk_fork_ref_gc_encode_slot` through
+        // `drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE]`.
+        unsafe { __wpk_fork_capture_encode(activation, slot) }
+    }
+
+    /// Hand back a capture recipe the GUEST will publish into the anyref
+    /// transit at `recipe + 1` on the instruction after this returns, having
+    /// first made that slot exist.
+    ///
+    /// Every capture entry that returns a recipe to the generator owes this:
+    /// `fork-instrument`'s codec does `table.set(transit, recipe + 1, value)`
+    /// straight after the call, and Rust emits no `table.grow`. The injected
+    /// `__wpk_fork_ref_gc_claim` has always met it; the entries that did not
+    /// trapped the PARENT mid-capture with "table index is out of bounds" --
+    /// visible the moment the host stopped sizing the table for the whole
+    /// graph up front (census section 188).
+    ///
+    /// GATED ON THE i31 PATH as of 2026-09-16: removing this call from
+    /// `__wpk_fork_ref_gc_i31` fails `gc-reference-cycle-fresh-worker`, which
+    /// aliases an i31 beside a struct/array cycle. It went in on an observed
+    /// trap while that fork was still red for a later reason; the fork is green
+    /// now, so the mutant was re-run and it bites.
+    fn capture_recipe_publishable(recipe: i32) -> i32 {
+        if recipe < 0 {
+            return recipe;
+        }
+        if transit_grow_via_injector(recipe as u32 + 2) < 0 {
+            set_err(Errno::ENOMEM);
+            return -1;
+        }
+        recipe
+    }
+
+    /// Safe wrapper over the injector-wired transit-grow placeholder.
+    fn transit_grow_via_injector(needed: u32) -> i32 {
+        // SAFETY: after injection this is a call to the emitted
+        // `fm_transit_grow`, which is `table.size` + `table.grow` and nothing
+        // else.
+        unsafe { __wpk_fork_transit_grow(needed) }
+    }
+
+    /// Safe wrapper over the injector-wired externref-handle placeholder.
+    ///
+    /// Answers "is the value staged in this transit slot a host reference the
+    /// broker owns, and under which handle?" -- 0 for anything else, including
+    /// a GC value that simply matched no layout.
+    fn externref_handle_via_injector(slot: u32) -> i32 {
+        // SAFETY: after injection this is a local thunk doing one `table.get`
+        // on the module's own transit table, an `extern.convert_any`, and one
+        // host call. A null slot answers 0 without calling the host.
+        unsafe { __wpk_fork_externref_handle(slot) }
+    }
+
+    /// Safe wrapper over the injector-wired probe placeholder.
+    fn capture_probe_via_injector(activation: u32, slot: u32) -> i64 {
+        // SAFETY: after injection this is a local thunk that `call_indirect`s
+        // the guest's `__wpk_fork_ref_gc_probe` through
+        // `drive_table[base(activation) + DRIVE_SLOT_GC_PROBE]`. The guest owns
+        // the type test; the module only unpacks the answer.
+        unsafe { __wpk_fork_capture_probe(activation, slot) }
+    }
+
+    /// Safe wrapper over the injector-wired capture placeholder.
+    ///
+    /// Encodes the witness at `witness_slot` and returns its recipe id, or a
+    /// negative value on failure. Injector-rewritten into a local thunk, so the
+    /// emitted module carries no unresolved import for it and the host supplies
+    /// nothing new -- the same arrangement `__wpk_fork_drive_plan` uses.
+    fn capture_witness_via_injector(activation: u32, witness_slot: u32) -> i32 {
+        // SAFETY: after injection this is a local thunk that copies
+        // `witness_table[witness_slot]` into anyref transit slot 0 and
+        // `call_indirect`s the guest's `__wpk_fork_ref_gc_encode_slot` through
+        // `drive_table[base(activation) + DRIVE_SLOT_GC_ENCODE]`. Both tables and
+        // the drive slot are module-known; the guest export owns its own failure.
+        unsafe { __wpk_fork_capture_witness(activation, witness_slot) }
+    }
+
+    /// Safe wrapper over the injector-wired cross-activation throw.
+    ///
+    /// Returns only if the guest's thrower did NOT throw, which is a defect --
+    /// see the caller.
+    fn exn_throw_via_injector(activation: u32, recipe: u32) {
+        // SAFETY: after injection this is a local thunk that `call_indirect`s
+        // `drive_table[base(activation) + DRIVE_SLOT_EXN_THROW_RECIPE]` with
+        // `recipe`. The slot is module-known; the guest export owns the throw.
+        unsafe { __wpk_fork_exn_throw(activation, recipe) }
     }
 
     /// Safe wrapper over the injector-wired drive placeholder. Isolated so the
@@ -342,6 +537,223 @@ mod wasm {
     static ACT_CATALOG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_CATALOG_ORD_USED: AtomicU32 = AtomicU32::new(0);
 
+    // -- The WORKER-LIFETIME resume slot assignment (the single numbering) -----
+    //
+    // WHY THIS EXISTS, and what was wrong before it.
+    //
+    // A resume slot is an index into the funcref table the guest
+    // `call_indirect`s to resume a fork-instrumented frame. Two things had to
+    // agree on that index: the HOST, which places each activation's thunks into
+    // the physical `WebAssembly.Table`, and this MODULE, whose `resume_peek`
+    // returns the index to call. Both implemented the same four rules -- slot 0
+    // reserved, ordinals sorted ascending, repeats rejected, freed slots reused
+    // smallest-first -- and the lane's own guard checked that those four rules
+    // were still SPELLED the same in both places.
+    //
+    // The rules were never the problem. WHEN each table was built was. The host
+    // builds one per WORKER and mutates it as activations come and go; the
+    // module built a fresh one per FORK, so it never had freed slots to reuse.
+    // `dlclose` of a library while a later-loaded one is still open makes those
+    // two disagree:
+    //
+    //   dlopen A (1 target), dlopen B (2), dlclose A, dlopen C (2), then fork.
+    //   host:   B at 4,5   C at 3,6      (3 was freed by A and reused first)
+    //   module: B at 3,4   C at 5,6      (fresh table, ascending activation id)
+    //
+    // Three coordinates disagree, so the guest resumes into another
+    // activation's thunk. Nothing traps: it is a real function of the right
+    // type. A rule-comparison guard cannot see this, because both sides follow
+    // the rules.
+    //
+    // So the numbering moves here and happens ONCE, at the moment the host
+    // seeds an activation's catalog -- which is before any fork, and is the
+    // same moment the host has the thunks to place. The host asks for each
+    // slot (`fm_resume_slots` op 0) instead of computing one. There is one
+    // allocator, so there is nothing left to diverge.
+    //
+    // Fixed BSS like the catalogs above, for the same reason: it must survive
+    // the per-fork bump-heap reset.
+    const RESUME_SLOT_CAP: usize = ACTIVATION_CATALOG_ORD_CAP;
+
+    /// `[activation_id, ordinal, slot]` per assigned coordinate. Only the first
+    /// `RESUME_SLOT_COUNT` entries are live; an entry freed by
+    /// `resume_unregister_impl` is overwritten by the last live one.
+    #[repr(C, align(4))]
+    struct ResumeSlotIndex(UnsafeCell<[[u32; 3]; RESUME_SLOT_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ResumeSlotIndex {}
+    static RESUME_SLOT_INDEX: ResumeSlotIndex =
+        ResumeSlotIndex(UnsafeCell::new([[0u32; 3]; RESUME_SLOT_CAP]));
+    static RESUME_SLOT_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// Slots freed by an unregistered activation, kept SORTED ASCENDING so the
+    /// smallest is reused first -- the fourth of the four rules, and now the
+    /// only implementation of it.
+    #[repr(C, align(4))]
+    struct ResumeFreeSlots(UnsafeCell<[u32; RESUME_SLOT_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ResumeFreeSlots {}
+    static RESUME_FREE_SLOTS: ResumeFreeSlots =
+        ResumeFreeSlots(UnsafeCell::new([0u32; RESUME_SLOT_CAP]));
+    static RESUME_FREE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// The next never-used slot. Starts at 1: slot 0 is the reserved "no event"
+    /// sentinel, which is why the physical table starts at length 1.
+    static RESUME_NEXT_SLOT: AtomicU32 = AtomicU32::new(1);
+
+    /// Smallest free slot, else a freshly grown one. The one allocator.
+    fn resume_allocate_slot() -> u32 {
+        let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
+        if free_count > 0 {
+            // SAFETY: single-threaded; `free_count <= RESUME_SLOT_CAP`.
+            let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
+            let slot = free[0];
+            // Kept sorted, so removing the smallest is a shift by one.
+            free.copy_within(1..free_count, 0);
+            RESUME_FREE_COUNT.store((free_count - 1) as u32, Ordering::Relaxed);
+            return slot;
+        }
+        let slot = RESUME_NEXT_SLOT.load(Ordering::Relaxed);
+        RESUME_NEXT_SLOT.store(slot + 1, Ordering::Relaxed);
+        slot
+    }
+
+    /// Assign this activation's slots from its seeded catalog.
+    ///
+    /// Precedence matches `register_activation_slots`: the activation's own
+    /// catalog, else the process-wide one. A worker that seeded NEITHER gets
+    /// nothing here and falls through to the per-fork committed-ordinal path,
+    /// which is the legacy harness route.
+    ///
+    /// Rejects a re-registered activation and a repeated ordinal with `EINVAL`,
+    /// for the reasons the host class stated: the module refuses the same
+    /// catalog, and accepting a repeat would place N-1 thunks where N are
+    /// expected and shift every later slot by one.
+    fn resume_register_impl(activation_id: u32) -> Result<u32, Errno> {
+        let catalog = match activation_catalog(activation_id) {
+            Some(catalog) => catalog,
+            None => {
+                let global = resume_catalog();
+                if global.is_empty() {
+                    return Ok(0);
+                }
+                global
+            }
+        };
+        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let live = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+        if live[..count].iter().any(|entry| entry[0] == activation_id) {
+            return Err(Errno::EINVAL); // already registered
+        }
+        if count + catalog.len() > RESUME_SLOT_CAP {
+            return Err(Errno::E2BIG);
+        }
+        // Sorted ascending with repeats rejected, which are two of the four
+        // rules. The scratch vector is bump-heap and lives only for this call;
+        // registration happens before any fork, so nothing resets under it.
+        let mut sorted: Vec<u32> = catalog.to_vec();
+        sorted.sort_unstable();
+        for window in sorted.windows(2) {
+            if window[0] == window[1] {
+                return Err(Errno::EINVAL); // repeated ordinal
+            }
+        }
+        let mut assigned = 0u32;
+        for ordinal in sorted {
+            let slot = resume_allocate_slot();
+            // SAFETY: single-threaded; bounded by the cap check above.
+            let index = unsafe { &mut *RESUME_SLOT_INDEX.0.get() };
+            let at = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+            index[at] = [activation_id, ordinal, slot];
+            RESUME_SLOT_COUNT.store((at + 1) as u32, Ordering::Relaxed);
+            assigned += 1;
+        }
+        Ok(assigned)
+    }
+
+    /// Seeding a catalog re-decides that activation's slots.
+    ///
+    /// A re-seed frees the previous assignment first rather than refusing: the
+    /// catalog IS the ordinal set, so replacing it replaces the numbering, and
+    /// a host that seeds twice has changed its mind rather than made an error.
+    /// A first seed has nothing to free, which is the ordinary case.
+    fn resume_reseed(activation_id: u32) -> Result<(), Errno> {
+        let _ = resume_unregister_impl(activation_id);
+        resume_register_impl(activation_id).map(|_| ())
+    }
+
+    /// Free an activation's slots for reuse, keeping the free list sorted.
+    ///
+    /// ZERO SLOTS IS A SUCCESS, not "never registered", and the distinction cost
+    /// a real fork. A side module with no fork-instrumented function seeds an
+    /// EMPTY resume catalog -- `libneeded-provider.so` in
+    /// `fork-from-dlopen-side-module-e2e` is exactly that -- so it holds no
+    /// slots, leaves no entry here, and an emptiness check reads it as unknown.
+    /// The child's `dlclose` then failed, the child exited non-zero, and the
+    /// parent reported only that its child had died.
+    ///
+    /// Whether an activation was registered is a question the HOST already
+    /// answers: `ForkResumeTable.unregisterActivation` refuses one it never
+    /// placed thunks for, by name. Answering it a second time here was the same
+    /// duplication this lane has been removing everywhere else, and this one
+    /// had a wrong answer in it.
+    fn resume_unregister_impl(activation_id: u32) -> Result<u32, Errno> {
+        let mut count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let index = unsafe { &mut *RESUME_SLOT_INDEX.0.get() };
+        let mut freed = 0u32;
+        let mut position = 0usize;
+        while position < count {
+            if index[position][0] != activation_id {
+                position += 1;
+                continue;
+            }
+            let slot = index[position][2];
+            // SAFETY: single-threaded; freed slots never exceed assigned ones.
+            let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
+            let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
+            free[free_count] = slot;
+            RESUME_FREE_COUNT.store((free_count + 1) as u32, Ordering::Relaxed);
+            // Compact: the last live entry takes this one's place.
+            index[position] = index[count - 1];
+            count -= 1;
+            freed += 1;
+        }
+        RESUME_SLOT_COUNT.store(count as u32, Ordering::Relaxed);
+        let free_count = RESUME_FREE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; sorting the live prefix only.
+        let free = unsafe { &mut *RESUME_FREE_SLOTS.0.get() };
+        free[..free_count].sort_unstable();
+        Ok(freed)
+    }
+
+    /// The slot assigned to `(activation_id, ordinal)`, or `None`.
+    fn resume_slot_of(activation_id: u32, ordinal: u32) -> Option<u32> {
+        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+        index[..count]
+            .iter()
+            .find(|entry| entry[0] == activation_id && entry[1] == ordinal)
+            .map(|entry| entry[2])
+    }
+
+    /// Every `(ordinal, slot)` this activation holds, for the per-fork table to
+    /// adopt rather than re-derive.
+    fn resume_assignment_of(activation_id: u32) -> Option<alloc::vec::Vec<(u32, u32)>> {
+        let count = RESUME_SLOT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; `count <= RESUME_SLOT_CAP`.
+        let index = unsafe { &*RESUME_SLOT_INDEX.0.get() };
+        let mut out = alloc::vec::Vec::new();
+        for entry in index[..count].iter() {
+            if entry[0] == activation_id {
+                out.push((entry[1], entry[2]));
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
+    }
+
     fn set_activation_resume_catalog_impl(
         activation_id: u32,
         ptr: u64,
@@ -435,6 +847,15 @@ mod wasm {
         global_catalog: &[u32],
         committed_ordinals: &[u32],
     ) -> Result<(), Errno> {
+        // ADOPT the worker-lifetime assignment when there is one. It was made
+        // at catalog-seed time, before any fork, and it is the numbering the
+        // host placed its thunks by -- re-deriving it here is what let the two
+        // drift after a `dlclose` (see the allocator's comment above). The two
+        // branches below are the legacy no-catalog route, where no assignment
+        // was ever made and the per-fork derivation is the only one there is.
+        if let Some(assignment) = resume_assignment_of(activation_id) {
+            return table.adopt_activation(activation_id, &assignment);
+        }
         if let Some(catalog) = activation_catalog(activation_id) {
             table.register_activation(activation_id, catalog)
         } else if !global_catalog.is_empty() {
@@ -482,6 +903,586 @@ mod wasm {
     static ACT_FUNC_CATALOG_BASE: ActFuncCatalogBase =
         ActFuncCatalogBase(UnsafeCell::new([[0u32; 2]; FUNC_CATALOG_BASE_MAX_ACTS]));
     static ACT_FUNC_CATALOG_BASE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    // -- Global identity groups (host-resolved) -----------------------------
+    //
+    // Which `__wpk_fork_global_N` catalog exports are the SAME JavaScript
+    // object. The host assigns a group id per distinct `WebAssembly.Global` it
+    // finds across the activations' catalogs; entries sharing an id are one
+    // object seen from several activations.
+    //
+    // This is the whole of what wasm cannot do. Everything the old JS did AFTER
+    // grouping -- excluding activations that merely IMPORT a global from being
+    // its provider, and picking the lowest remaining coordinate -- is policy
+    // over data the module already has, and it needs the KFIG section to know
+    // which owners are imported. That section is exactly what the host would
+    // otherwise have had to decode, so the election moves here and the host is
+    // left with identity alone.
+    const GLOBAL_IDENTITY_MAX: usize = 512;
+
+    #[repr(C, align(4))]
+    struct GlobalIdentityGroups(UnsafeCell<[[u32; 4]; GLOBAL_IDENTITY_MAX]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for GlobalIdentityGroups {}
+    /// Each live entry is `[space, activation_id, owner_id, group_id]`.
+    static GLOBAL_IDENTITY: GlobalIdentityGroups =
+        GlobalIdentityGroups(UnsafeCell::new([[0u32; 4]; GLOBAL_IDENTITY_MAX]));
+    static GLOBAL_IDENTITY_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn set_identity_group_impl(
+        space: u32,
+        activation_id: u32,
+        owner_id: u32,
+        group_id: u32,
+    ) -> Result<(), Errno> {
+        if space != IMPORT_SPACE_GLOBAL && space != IMPORT_SPACE_TABLE {
+            return Err(Errno::EINVAL);
+        }
+        if owner_id == 0 {
+            return Err(Errno::EINVAL); // catalog owners are 1-based
+        }
+        let count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &mut *GLOBAL_IDENTITY.0.get() };
+        for entry in table.iter_mut().take(count) {
+            if entry[0] == space && entry[1] == activation_id && entry[2] == owner_id {
+                entry[3] = group_id; // re-publish updates, as provenance does
+                return Ok(());
+            }
+        }
+        if count >= GLOBAL_IDENTITY_MAX {
+            return Err(Errno::E2BIG);
+        }
+        table[count] = [space, activation_id, owner_id, group_id];
+        GLOBAL_IDENTITY_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Publish that `(space, activation, owner)`'s catalog entry is object
+    /// `group_id`.
+    ///
+    /// Entries sharing a group id within a space are the same
+    /// `WebAssembly.Global` or `WebAssembly.Table`. Assigning the ids is the
+    /// host's job because wasm cannot compare object identity; deciding which
+    /// member PROVIDES the object is this module's, because that needs the KFIG
+    /// or KFIT section it is seeded with.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_identity_group(
+        space: u32,
+        activation_id: u32,
+        owner_id: u32,
+        group_id: u32,
+    ) {
+        match set_identity_group_impl(space, activation_id, owner_id, group_id) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    // -- Imported-global provenance (host-resolved) -------------------------
+    //
+    // The one thing about an imported global the module cannot determine. Two
+    // facts, both living only in the host's JavaScript:
+    //
+    //   * whether the import's value is a `WebAssembly.Global`, and if so which
+    //     activation EXPORTS that same object. Wasm cannot compare object
+    //     identity -- there is no `global.eq`, and this module does not import
+    //     the activations' globals at all. In the child, two activations that
+    //     imported one shared Global must be wired back to ONE reconstructed
+    //     object or they silently stop sharing and drift apart.
+    //   * for a plain scalar import, the value itself, which lives in the import
+    //     object rather than in any section or snapshot.
+    //
+    // Everything else a binding needs is derivable here, which is why only this
+    // much crosses: the type code comes from the activation's KFIG section and
+    // the recipe id from the snapshot the guest wrote into the arena.
+    //
+    // Re-seeding a coordinate UPDATES it rather than being refused, matching
+    // `fm_set_activation_table_state_owner` and for the same kind of reason: a
+    // `dlopen` can add an activation that exports a global an earlier one
+    // imported, and the host must be able to correct the provenance it
+    // published before that activation existed.
+    const IMPORTED_GLOBAL_PROVENANCE_MAX: usize = 256;
+
+    #[derive(Clone, Copy)]
+    struct ProvenanceEntry {
+        space: u32,
+        consumer_activation: u32,
+        import_ordinal: u32,
+        kind: u32,
+        group_id: u32,
+        raw_bits: u64,
+    }
+
+    #[repr(C, align(8))]
+    struct ImportedGlobalProvenanceTable(
+        UnsafeCell<[ProvenanceEntry; IMPORTED_GLOBAL_PROVENANCE_MAX]>,
+    );
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ImportedGlobalProvenanceTable {}
+    static IMPORTED_GLOBAL_PROVENANCE: ImportedGlobalProvenanceTable =
+        ImportedGlobalProvenanceTable(UnsafeCell::new(
+            [ProvenanceEntry {
+                space: 0,
+                consumer_activation: 0,
+                import_ordinal: 0,
+                kind: 0,
+                group_id: 0,
+                raw_bits: 0,
+            }; IMPORTED_GLOBAL_PROVENANCE_MAX],
+        ));
+    static IMPORTED_GLOBAL_PROVENANCE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    fn set_import_provenance_impl(
+        space: u32,
+        consumer_activation: u32,
+        import_ordinal: u32,
+        kind: u32,
+        group_id: u32,
+        raw_bits: u64,
+    ) -> Result<(), Errno> {
+        let k = u8::try_from(kind).map_err(|_| Errno::EINVAL)?;
+        let known = if space == IMPORT_SPACE_GLOBAL {
+            matches!(
+                k,
+                abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_NUMBER
+                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_BIGINT
+                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_RAW_REFERENCE
+                    | abi::WPK_FORK_IMPORTED_GLOBAL_BINDING_ACTIVATION_GLOBAL
+            )
+        } else if space == IMPORT_SPACE_TABLE {
+            // A table import is always a `WebAssembly.Table`, so identity is the
+            // only thing the host can say about one. `BASE_IMPORT` is excluded
+            // here for the same reason as in the global space.
+            k == abi::WPK_FORK_IMPORTED_TABLE_BINDING_ACTIVATION_TABLE
+        } else {
+            false
+        };
+        if !known {
+            // `BASE_IMPORT` is excluded on purpose, and it is the interesting
+            // case: it is a DEFINED kind the host may not publish. Saying it
+            // would be saying no activation provides the object, which needs
+            // the KFIG sections only this module reads. The host says "this is
+            // a Global, in identity group G"; the election in
+            // `build_imported_global_bindings` reaches `BASE_IMPORT` on its own
+            // when the group has no non-importing member.
+            //
+            // Refused HERE, where the host's answer enters, rather than at the
+            // capture: the same reason the malformed-section refusal sits at
+            // the seed.
+            return Err(Errno::EINVAL);
+        }
+        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &mut *IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let entry = ProvenanceEntry {
+            space,
+            consumer_activation,
+            import_ordinal,
+            kind,
+            group_id,
+            raw_bits,
+        };
+        for existing in table.iter_mut().take(count) {
+            if existing.space == space
+                && existing.consumer_activation == consumer_activation
+                && existing.import_ordinal == import_ordinal
+            {
+                *existing = entry;
+                return Ok(());
+            }
+        }
+        if count >= IMPORTED_GLOBAL_PROVENANCE_MAX {
+            return Err(Errno::E2BIG);
+        }
+        table[count] = entry;
+        IMPORTED_GLOBAL_PROVENANCE_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Publish what only the host can resolve about one imported global.
+    ///
+    /// The consumer is named by its IMPORT-SECTION ORDINAL, not by owner id, so
+    /// the host never has to decode the guest's KFIG section to publish this:
+    /// `WebAssembly.Module.imports()` enumerates imports in section order, which
+    /// is the same order `fork_instrument` assigned ordinals in. The module maps
+    /// ordinal to owner from the section it was seeded.
+    ///
+    /// `kind` is a `WPK_FORK_IMPORTED_GLOBAL_BINDING_*` value. `source_*` matter
+    /// for `ACTIVATION_GLOBAL`; `raw_bits` for `RAW_NUMBER` / `RAW_BIGINT`.
+    /// Re-publishing a coordinate updates it. `EINVAL` for an undefined kind,
+    /// `E2BIG` past the table.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_import_provenance(
+        space: u32,
+        consumer_activation: u32,
+        import_ordinal: u32,
+        kind: u32,
+        group_id: u32,
+        raw_bits: u64,
+    ) {
+        match set_import_provenance_impl(
+            space,
+            consumer_activation,
+            import_ordinal,
+            kind,
+            group_id,
+            raw_bits,
+        ) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    // -- Per-activation import declarations (KFIG globals, KFIT tables) -----
+    //
+    // The guest's own `kandelo.wpk_fork.imported_globals` and
+    // `.imported_tables` custom sections, one pair per activation. The module
+    // needs them to build the BINDINGS a child reads: a section says which
+    // globals or tables an activation imports, at what type, and under which
+    // private owner ordinal -- and that owner is what every other seed is keyed
+    // by, so without the section a provenance record names nothing.
+    //
+    // Seeded rather than read, and the limit is specific: a custom section lives
+    // in the `WebAssembly.Module`, and only the host can get it out
+    // (`WebAssembly.Module.customSections`). The module cannot reach its own
+    // guests' modules. Same shape and same reason as the GC codec seed above.
+    //
+    // ONE ENTRY OVER BOTH SPACES. The two sections differ only in their decoder,
+    // and the host's obligation is identical for each, so an `space` selector
+    // costs one argument where a second entry would cost a permanent widening of
+    // the surface this lane is trying to shrink. Same reasoning for the identity
+    // groups and the provenance below.
+    //
+    // Storage: a fixed BSS byte arena plus an index, so it survives the per-fork
+    // bump reset. Overflow is a truthful `E2BIG`; a re-seeded activation is
+    // `EINVAL`.
+
+    /// Imported globals -- the KFIG section.
+    const IMPORT_SPACE_GLOBAL: u32 = 0;
+    /// Imported tables -- the KFIT section.
+    const IMPORT_SPACE_TABLE: u32 = 1;
+
+    const ACT_KFIG_BYTES_CAP: usize = 65_536;
+    const ACT_KFIG_MAX_ACTS: usize = 128;
+
+    #[repr(C, align(8))]
+    struct ActKfigBytes(UnsafeCell<[u8; ACT_KFIG_BYTES_CAP]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActKfigBytes {}
+    static ACT_KFIG_BYTES: ActKfigBytes =
+        ActKfigBytes(UnsafeCell::new([0u8; ACT_KFIG_BYTES_CAP]));
+
+    /// Each live entry is `[space, activation_id, offset, byte_len]`.
+    #[repr(C, align(4))]
+    struct ActKfigIndex(UnsafeCell<[[u32; 4]; ACT_KFIG_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActKfigIndex {}
+    static ACT_KFIG_INDEX: ActKfigIndex =
+        ActKfigIndex(UnsafeCell::new([[0u32; 4]; ACT_KFIG_MAX_ACTS]));
+
+    static ACT_KFIG_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
+    static ACT_KFIG_BYTES_USED: AtomicU32 = AtomicU32::new(0);
+
+    fn set_activation_imports_impl(
+        space: u32,
+        activation_id: u32,
+        ptr: u64,
+        byte_len: u64,
+    ) -> Result<(), Errno> {
+        if space != IMPORT_SPACE_GLOBAL && space != IMPORT_SPACE_TABLE {
+            return Err(Errno::EINVAL);
+        }
+        let byte_len = usize::try_from(byte_len).map_err(|_| Errno::EINVAL)?;
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // section runs past the end of memory
+        }
+        // SAFETY: `[start, end)` is inside guest linear memory (checked above);
+        // the base is non-null for any real section offset. An empty section
+        // uses a valid empty slice rather than a raw part at a null base.
+        let incoming: &[u8] = if byte_len == 0 {
+            &[]
+        } else {
+            unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, byte_len)
+            }
+        };
+        // DECODE IT NOW and discard the result. A malformed section is the
+        // host's bug and belongs at the seed, not at the capture that finally
+        // reads it -- by then the fork is mid-flight and the truthful failure
+        // has become a trap.
+        if space == IMPORT_SPACE_GLOBAL {
+            fork_codec::imported_globals::decode_imported_globals(incoming)?;
+        } else {
+            fork_codec::imported_tables::decode_imported_tables(incoming)?;
+        }
+
+        let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        let used = ACT_KFIG_BYTES_USED.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let index = unsafe { &mut *ACT_KFIG_INDEX.0.get() };
+        let arena_ro = unsafe { &*ACT_KFIG_BYTES.0.get() };
+        for entry in index.iter().take(act_count) {
+            if entry[0] == space && entry[1] == activation_id {
+                // IDENTICAL re-seed is a no-op; a CONFLICTING one is `EINVAL`.
+                //
+                // A COW fork child's memory is a clone of its parent's, and this
+                // module's statics live in that memory at `__memory_base` (the
+                // PIC placement). BSS is not re-zeroed when the child
+                // instantiates its own fork-module, so the child sees the
+                // PARENT's seed table -- and its own seeding, which happens
+                // before it instantiates anything, looked like a re-seed and was
+                // refused. That was `errno 22` on 41 test files: every program
+                // whose guest carries a `KFIG`/`KFIT` section and forks.
+                //
+                // Idempotence rather than a reset in `fm_set_format`, where the
+                // other inherited catalogs are cleared, for the reason recorded
+                // beside the GC codec there: a host is free to RE-SEED a child
+                // or to let it INHERIT, and only idempotence is correct under
+                // both. The bytes are the guest module's own custom section, so
+                // a child re-seeding one activation presents the same bytes by
+                // construction. Different bytes under one activation id is the
+                // corruption this check exists for, and stays loud.
+                let at = entry[2] as usize;
+                let stored = arena_ro
+                    .get(at..at + entry[3] as usize)
+                    .ok_or(Errno::EINVAL)?;
+                if stored == incoming {
+                    return Ok(());
+                }
+                return Err(Errno::EINVAL); // conflicting re-seed
+            }
+        }
+        if act_count >= ACT_KFIG_MAX_ACTS {
+            return Err(Errno::E2BIG);
+        }
+        let next = used.checked_add(byte_len).ok_or(Errno::E2BIG)?;
+        if next > ACT_KFIG_BYTES_CAP {
+            return Err(Errno::E2BIG);
+        }
+        // SAFETY: single-threaded per worker; the range is inside the arena.
+        let arena = unsafe { &mut *ACT_KFIG_BYTES.0.get() };
+        arena[used..next].copy_from_slice(incoming);
+        index[act_count] = [space, activation_id, used as u32, byte_len as u32];
+        ACT_KFIG_ACT_COUNT.store(act_count as u32 + 1, Ordering::Relaxed);
+        ACT_KFIG_BYTES_USED.store(next as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// One activation's seeded section bytes, or `None` if none was seeded.
+    fn activation_imports(space: u32, activation_id: u32) -> Option<&'static [u8]> {
+        let act_count = ACT_KFIG_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let index = unsafe { &*ACT_KFIG_INDEX.0.get() };
+        let arena = unsafe { &*ACT_KFIG_BYTES.0.get() };
+        index
+            .iter()
+            .take(act_count)
+            .find(|entry| entry[0] == space && entry[1] == activation_id)
+            .map(|entry| {
+                let at = entry[2] as usize;
+                &arena[at..at + entry[3] as usize]
+            })
+    }
+
+    /// Seed one activation's imported-global (KFIG) or imported-table (KFIT)
+    /// custom section. `space` is 0 for globals, 1 for tables.
+    ///
+    /// `EINVAL` for an unknown space, an out-of-range pointer, a malformed
+    /// section, or a re-seed; `E2BIG` past the arena or activation cap. Check
+    /// `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_imports(
+        space: u32,
+        activation_id: u32,
+        ptr: usize,
+        byte_len: usize,
+    ) {
+        match set_activation_imports_impl(space, activation_id, ptr as u64, byte_len as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    // -- Per-activation module template ids ---------------------------------
+    //
+    // The 32-byte template id identifying the Wasm module behind an activation.
+    // It is a hash of the module BYTES, which only the host holds, so it is
+    // seeded rather than computed here -- the same shape as the catalog bases
+    // above and for the same reason.
+    //
+    // The module needs it because the `Module` record it writes into the KFMS
+    // arena carries it, and that record IS the arena's activation set: the
+    // child-install path filters the arena on kind 1 to decide which
+    // activations to drive. An arena built without them installs nothing.
+    const TEMPLATE_ID_MAX_ACTS: usize = 64;
+    const TEMPLATE_ID_BYTES: usize =
+        abi::WPK_FORK_MODULE_STATE_MODULE_TEMPLATE_ID_SIZE as usize;
+
+    #[repr(C, align(4))]
+    struct ActTemplateIds(UnsafeCell<[(u32, [u8; TEMPLATE_ID_BYTES]); TEMPLATE_ID_MAX_ACTS]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActTemplateIds {}
+    /// Each live entry is `(activation_id, template_id)`; only the first
+    /// `ACT_TEMPLATE_ID_COUNT` entries are live.
+    static ACT_TEMPLATE_IDS: ActTemplateIds =
+        ActTemplateIds(UnsafeCell::new([(0u32, [0u8; TEMPLATE_ID_BYTES]); TEMPLATE_ID_MAX_ACTS]));
+    static ACT_TEMPLATE_ID_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// Seed one activation's module template id, read from `ptr` in guest memory.
+    ///
+    /// Once per activation per worker. A re-seed is refused rather than
+    /// overwriting: the id identifies the module behind the activation, so a
+    /// second different value means the host has confused two activations, and
+    /// silently taking the last one would put the wrong module in the arena's
+    /// activation set.
+    fn set_activation_template_id_impl(activation_id: u32, ptr: u64) -> Result<(), Errno> {
+        // Bounded and read the way every other host-supplied-pointer seed here
+        // does it (`set_activation_gc_codec_impl`): check the range against
+        // guest memory, then build the slice from the raw address. Reading
+        // through `mem_ref()`'s whole-memory slice is NOT equivalent in this
+        // module -- the same range that passes this check comes back `None`
+        // from that slice -- so the established pattern is the one to follow.
+        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(TEMPLATE_ID_BYTES).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // template id runs past the end of memory
+        }
+        // SAFETY: `[start, end)` is inside guest linear memory (checked above).
+        let bytes: &[u8] =
+            unsafe { core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, TEMPLATE_ID_BYTES) };
+        let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &mut *ACT_TEMPLATE_IDS.0.get() };
+        for entry in table.iter().take(count) {
+            if entry.0 == activation_id {
+                // Idempotent on an identical re-seed, for the reason recorded in
+                // `set_activation_imports_impl`: a COW child inherits this table
+                // through the memory clone and re-seeds it with the SAME
+                // template id, because the id is a hash of the same module's
+                // bytes. A DIFFERENT id under one activation is two modules
+                // claiming one coordinate, which is what this refuses.
+                if entry.1 == bytes {
+                    return Ok(());
+                }
+                return Err(Errno::EINVAL);
+            }
+        }
+        if count >= TEMPLATE_ID_MAX_ACTS {
+            return Err(Errno::E2BIG);
+        }
+        table[count].0 = activation_id;
+        table[count].1.copy_from_slice(bytes);
+        ACT_TEMPLATE_ID_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// This activation's seeded template id, or `None` if the host never seeded one.
+    fn activation_template_id(activation_id: u32) -> Option<[u8; TEMPLATE_ID_BYTES]> {
+        let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*ACT_TEMPLATE_IDS.0.get() };
+        table
+            .iter()
+            .take(count)
+            .find(|entry| entry.0 == activation_id)
+            .map(|entry| entry.1)
+    }
+
+    /// Seed one activation's module template id (32 bytes at `ptr`).
+    ///
+    /// `EINVAL` for an out-of-range pointer or a re-seed, `E2BIG` past
+    /// `TEMPLATE_ID_MAX_ACTS`; check `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_template_id(activation_id: u32, ptr: usize) {
+        match set_activation_template_id_impl(activation_id, ptr as u64) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    // -- Table sparse-state ownership ---------------------------------------
+    //
+    // Which `(activation, owner)` coordinate writes a physical table's sparse
+    // state. The host ELECTS: imported aliases name one `WebAssembly.Table`, and
+    // deciding which coordinate is canonical means comparing Table OBJECT
+    // IDENTITY, which wasm cannot observe -- there is no `table.eq` and this
+    // module does not import the activations' tables at all.
+    //
+    // But the host does not have to keep ANSWERING. It seeds the election result
+    // once per coordinate through `fm_set_activation_table_state_owner`, and the
+    // guest's `__wpk_fork_module_state_table_state_owned` import is then served
+    // from here instead of by a host callback. That moves one function off the
+    // host floor while leaving the part that genuinely needs JavaScript -- the
+    // identity comparison -- where it has to be.
+    //
+    // Storage is a flat array of live `[activation_id, owner_id, owns]` triples
+    // rather than a per-activation sub-array, because an activation usually has
+    // exactly ONE table coordinate and a rectangular map would be almost all
+    // padding. Lookup is a linear scan over the live prefix.
+    const TABLE_STATE_OWNER_MAX: usize = 256;
+
+    #[repr(C, align(4))]
+    struct ActTableStateOwners(UnsafeCell<[[u32; 3]; TABLE_STATE_OWNER_MAX]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ActTableStateOwners {}
+    /// Each live entry is `[activation_id, owner_id, owns]`; only the first
+    /// `ACT_TABLE_STATE_OWNER_COUNT` entries are live.
+    static ACT_TABLE_STATE_OWNERS: ActTableStateOwners =
+        ActTableStateOwners(UnsafeCell::new([[0u32; 3]; TABLE_STATE_OWNER_MAX]));
+    static ACT_TABLE_STATE_OWNER_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    /// Seed one coordinate's election result.
+    ///
+    /// Re-seeding an existing coordinate UPDATES it rather than being refused,
+    /// which is the opposite of the once-per-worker catalogs above and is
+    /// deliberate: the host re-elects whenever a lower coordinate registers for
+    /// the same physical table, so the incumbent must be demotable. Refusing the
+    /// second seed would freeze the first election and leave two writers.
+    fn set_activation_table_state_owner_impl(
+        activation_id: u32,
+        owner_id: u32,
+        owns: u32,
+    ) -> Result<(), Errno> {
+        // Owner 0 is not a coordinate; the host rejects it too.
+        if owner_id == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let count = ACT_TABLE_STATE_OWNER_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; the map is a static buffer.
+        let map = unsafe { &mut *ACT_TABLE_STATE_OWNERS.0.get() };
+        for entry in map.iter_mut().take(count) {
+            if entry[0] == activation_id && entry[1] == owner_id {
+                entry[2] = u32::from(owns != 0);
+                return Ok(());
+            }
+        }
+        if count >= TABLE_STATE_OWNER_MAX {
+            return Err(Errno::E2BIG);
+        }
+        map[count] = [activation_id, owner_id, u32::from(owns != 0)];
+        ACT_TABLE_STATE_OWNER_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Answer the guest's `table_state_owned` import for one coordinate.
+    ///
+    /// An UNSEEDED coordinate answers 0, never 1. Answering 1 by default would
+    /// make two aliases both write sparse state for one physical table, and that
+    /// duplicate does not trap -- it surfaces as a child rebuilt wrong.
+    fn table_state_owned_impl(activation_id: u32, owner_id: u32) -> u32 {
+        let count = ACT_TABLE_STATE_OWNER_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded; read-only over the live prefix.
+        let map = unsafe { &*ACT_TABLE_STATE_OWNERS.0.get() };
+        for entry in map.iter().take(count) {
+            if entry[0] == activation_id && entry[1] == owner_id {
+                return entry[2];
+            }
+        }
+        0
+    }
 
     fn set_activation_catalog_base_impl(activation_id: u32, base: u32) -> Result<(), Errno> {
         let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
@@ -664,6 +1665,24 @@ mod wasm {
                 core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, byte_len)
             }
         };
+        // DECODE IT NOW, and discard the result.
+        //
+        // The module owns this wire format, so it is the module that should say
+        // whether a section is well-formed -- and it should say so when the
+        // section ARRIVES, not at the first fork that needs it. Before this, the
+        // host parsed the descriptor in TypeScript purely to get that early
+        // answer, which meant two decoders of one format: the drift
+        // `dylink_archive`'s doc names, where "two readers of the same wire
+        // format drift, and the drift surfaces as a fork child silently
+        // disagreeing with its parent."
+        //
+        // The result is deliberately thrown away. `build_gc_plan` decodes from
+        // the stored bytes when it needs the layouts; holding a decoded copy here
+        // would be a second source of truth for the same bytes, inside the module
+        // this time.
+        if !incoming.is_empty() {
+            fork_codec::gc_codec::decode_gc_codec(incoming)?;
+        }
         // Idempotent re-seed of an already-present activation. A COW fork CHILD
         // inherits the parent's already-seeded catalog through the memory clone
         // (the module's BSS lives inside the shared linear memory and is NOT
@@ -720,7 +1739,7 @@ mod wasm {
     //    gate's seeding) ---------------------------------------------------------
     //
     // The module owns the exnref tag-validity ADMISSION gate at the child-install
-    // entry (`fm_attach_child` / `fm_attach_borrowed_child`): before it builds the
+    // entry (`fm_attach_child`, COW and borrowed alike): before it builds the
     // reconstruction drive plan whose `DRIVE_OP_EXN` step `call_indirect`s the
     // guest exception-materialize export, it re-checks that every captured exnref
     // recipe names a tag its OWNING activation's exception codec declared. This
@@ -766,34 +1785,19 @@ mod wasm {
     static ACT_EXN_TAGS_ACT_COUNT: AtomicU32 = AtomicU32::new(0);
     static ACT_EXN_TAGS_ORD_USED: AtomicU32 = AtomicU32::new(0);
 
-    fn set_activation_exception_tags_impl(
+
+    /// Record one activation's exception tag ordinals.
+    ///
+    /// Split out of the host-facing entry so the codec path can reuse it: the
+    /// storage rules (idempotent re-seed, conflicting re-seed is `EINVAL`, caps
+    /// are `E2BIG`) are the same whoever produced the ordinals.
+    fn store_activation_exception_tags(
         activation_id: u32,
-        ptr: u64,
-        count: u64,
+        incoming: &[u32],
     ) -> Result<(), Errno> {
-        let count = usize::try_from(count).map_err(|_| Errno::EINVAL)?;
+        let count = incoming.len();
         let act_count = ACT_EXN_TAGS_ACT_COUNT.load(Ordering::Relaxed) as usize;
         let ord_used = ACT_EXN_TAGS_ORD_USED.load(Ordering::Relaxed) as usize;
-        // Bound the incoming array against guest memory, then copy it out into a
-        // local buffer through raw pointers (the same aliasing-safe idiom the
-        // resume catalog uses) so the re-seed compare and the store both read a
-        // distinct, owned copy rather than aliasing guest memory.
-        let start = usize::try_from(ptr).map_err(|_| Errno::EINVAL)?;
-        let byte_len = count.checked_mul(4).ok_or(Errno::EINVAL)?;
-        let end = start.checked_add(byte_len).ok_or(Errno::EINVAL)?;
-        if end > mem_len_bytes() {
-            return Err(Errno::EINVAL); // ordinal region past the end of guest memory
-        }
-        let mut incoming: Vec<u32> = Vec::with_capacity(count);
-        // SAFETY: `[start, end)` is within guest linear memory (checked above).
-        let src = core::hint::black_box(start) as *const u8;
-        for i in 0..count {
-            let mut bytes = [0u8; 4];
-            unsafe {
-                core::ptr::copy(src.add(i * 4), bytes.as_mut_ptr(), 4);
-            }
-            incoming.push(u32::from_le_bytes(bytes));
-        }
         // Idempotent re-seed of an already-present activation (see the block
         // comment): identical tags are a no-op; conflicting tags are `EINVAL`.
         // SAFETY: single-threaded; the index/ordinals are static buffers read here.
@@ -804,7 +1808,7 @@ mod wasm {
                 let off = entry[1] as usize;
                 let len = entry[2] as usize;
                 let stored = stored_all.get(off..off + len).ok_or(Errno::EINVAL)?;
-                if stored == incoming.as_slice() {
+                if stored == incoming {
                     return Ok(()); // identical re-seed: no-op
                 }
                 return Err(Errno::EINVAL); // conflicting re-seed of the same activation
@@ -821,12 +1825,68 @@ mod wasm {
         // SAFETY: single-threaded; the destination slice `[ord_used, ord_end)` is
         // bounded by the cap check; `incoming` is a distinct local buffer.
         let ords = unsafe { &mut *ACT_EXN_TAGS_ORDS.0.get() };
-        ords[ord_used..ord_end].copy_from_slice(&incoming);
+        ords[ord_used..ord_end].copy_from_slice(incoming);
         let index = unsafe { &mut *ACT_EXN_TAGS_INDEX.0.get() };
         index[act_count] = [activation_id, ord_used as u32, count as u32];
         ACT_EXN_TAGS_ACT_COUNT.store((act_count + 1) as u32, Ordering::Relaxed);
         ACT_EXN_TAGS_ORD_USED.store(ord_end as u32, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Guest-facing `fm_set_activation_exception_codec(activation, ptr, byte_len)`.
+    ///
+    /// Seed ONE activation's exception codec from its raw
+    /// `kandelo.wpk_fork.exception_codec` section, and derive from it the two
+    /// things the host used to derive for itself.
+    ///
+    /// Replaces `fm_set_activation_exception_tags`, which took a `u32` array the
+    /// HOST produced by decoding this very section -- a second decoder of a format
+    /// this module owns. The module decodes it now.
+    ///
+    /// An empty section is not an error: it is an activation whose codec declares
+    /// no tags, which still makes it a candidate owner.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_exception_codec(
+        activation_id: u32,
+        ptr: usize,
+        byte_len: usize,
+    ) {
+        match set_activation_exception_codec_impl(activation_id, ptr, byte_len) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    fn set_activation_exception_codec_impl(
+        activation_id: u32,
+        ptr: usize,
+        byte_len: usize,
+    ) -> Result<(), Errno> {
+        let end = ptr.checked_add(byte_len).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // section region past the end of memory
+        }
+        let ordinals: Vec<u32> = if byte_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: `[ptr, end)` is inside guest linear memory, checked above,
+            // and the module shares that memory.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(ptr) as *const u8, byte_len)
+            };
+            let codec = fork_codec::exception_codec::decode_exception_codec(bytes)?;
+            codec.tags.iter().map(|tag| tag.tag_ordinal).collect()
+        };
+        store_activation_exception_tags(activation_id, &ordinals)
+        // NOTE: this entry deliberately does NOT derive the host-exception owner,
+        // even though it could -- the owner is the smallest activation that
+        // declared a codec, which is exactly the set of activations that reach
+        // here. It is left host-seeded because nothing can OBSERVE the derivation:
+        // the owner is module-internal state with no accessor, `fm_stats` is a
+        // counter surface rather than a state read, and adding an accessor would
+        // put an entry nothing in production calls into a bucket whose target is
+        // 0. An untested derivation of a value that decides which activation owns
+        // a host exnref is worse than one more host call. See census section 67.
     }
 
     /// The exception tag ordinals `activation_id`'s codec declared, or `None` when
@@ -934,7 +1994,49 @@ mod wasm {
     /// the `DRIVE_PLAN` cell, publish the count via `GC_PLAN_COUNT`, and return the
     /// plan's guest address for `fm_drive_execute`. Shared by every plan producer
     /// (only one plan is live at a time).
+    /// Grow the anyref transit so every RECONSTRUCTION step in `steps` has its
+    /// `recipe + 1` slot before the drive runs.
+    ///
+    /// Only the reconstruction ops are considered: an ALLOC, FILL, EXN,
+    /// STATIC_ROOT or EXTERNREF_TRANSIT step's `recipe` field is a recipe id,
+    /// and each publishes its value into the transit at `recipe + 1` -- the
+    /// injected externref publish `table.set`s there itself, and the others'
+    /// guest exports do on the way back. A frame step's `recipe` is NOT a
+    /// recipe: `pack_root` splits a continuation root across that field and
+    /// `arg`, so sizing a table from it would ask for gigabytes.
+    ///
+    /// The host used to do this -- `ForkActivationRegistry.ensureRecipeSlot`,
+    /// over the decoded graph's largest recipe id. Nothing does now, and an
+    /// ungrown table does not fail anything the module can see: it traps the
+    /// CHILD with "table index is out of bounds" at the first publish. Doing it
+    /// here covers every plan the module builds, which is the point -- the
+    /// child's install plan carries reconstruction steps too, and sizing only
+    /// the GC plan left exactly that case broken.
+    fn size_transit_for(steps: &[drive_plan::DriveStep]) -> Result<(), Errno> {
+        let max = steps
+            .iter()
+            .filter(|step| {
+                matches!(
+                    step.op,
+                    drive_plan::DRIVE_OP_ALLOC
+                        | drive_plan::DRIVE_OP_FILL
+                        | drive_plan::DRIVE_OP_EXN
+                        | drive_plan::DRIVE_OP_STATIC_ROOT
+                        | drive_plan::DRIVE_OP_EXTERNREF_TRANSIT
+                )
+            })
+            .map(|step| step.recipe)
+            .max();
+        if let Some(max) = max {
+            if transit_grow_via_injector(max.saturating_add(2)) < 0 {
+                return Err(Errno::ENOMEM);
+            }
+        }
+        Ok(())
+    }
+
     fn serialize_and_store_plan(steps: &[drive_plan::DriveStep]) -> Result<usize, Errno> {
+        size_transit_for(steps)?;
         let mut buf = Vec::new();
         buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
         drive_plan::serialize_plan(steps, &mut buf)?;
@@ -982,7 +2084,7 @@ mod wasm {
     /// Sequence a parent REPLAY-begin (`abort` false) or ABORT-replay-begin
     /// (`abort` true) phase entirely in the module: begin the (parent) rewind,
     /// build the per-activation begin drive plan, then drive it through the
-    /// injector-wired shim. Shared body of `fm_parent_replay` / `fm_parent_abort`.
+    /// injector-wired shim. Shared body of both `fm_parent_replay` phases.
     ///
     /// Order matches the host loop this replaces: begin FIRST (attach each
     /// driver + register resume slots — abort additionally sets `in_abort`), then
@@ -994,9 +2096,46 @@ mod wasm {
             begin_abort_impl()?;
         } else {
             begin_replay_impl()?;
+            // THE PARENT RESUMES INTO THE SAME GUEST CODE A CHILD DOES, so its
+            // guest asks the module the same reference questions on the way
+            // back up: route this GC value, load that exception's payload,
+            // which cache slot is this exnref. Every one of those reads the
+            // replay feed, and a parent has none -- it captured its graph, it
+            // never decoded one -- so each trapped the parent the moment its
+            // guest touched a reference it had carried.
+            //
+            // Decoding the arena it JUST SEALED gives it the same feed a child
+            // gets, from the same bytes, so one implementation answers both
+            // sides. The alternative was a second set of reads against the
+            // capture builder -- a parallel implementation of the same
+            // semantics, which is the duplication this lane exists to remove,
+            // and the builder cannot answer some of them at all (an exnref's
+            // cache index is replay state, not capture state).
+            //
+            // ONLY on the ordinary replay. An ABORT replay may be recovering
+            // from a seal that never wrote a transaction, so there may be
+            // nothing to decode; the parent's frames are what it needs there,
+            // and they are already sealed.
+            let root = match state().as_ref() {
+                Some(module) => module.module_state.root(),
+                None => 0,
+            };
+            if root != 0 {
+                begin_reference_replay_impl(root, 0)?;
+            }
         }
         let plan = build_rewind_plan_impl(abort)?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
+        // NO "one step per activation" check here, deliberately. A short plan is
+        // a real defect -- an activation never told to rewind leaves its guest
+        // with no rewind in progress, so `wpk_fork_resume_start` runs `_start`
+        // LEXICALLY and the process runs its whole program again from `main`,
+        // with no trap and no errno where it goes wrong. But the count is
+        // derived from the same `st.activations` a step is emitted for, so a
+        // check here could never fire: it is unreachable by construction, and
+        // an unreachable guard is a second opinion on a question the builder
+        // already answers. `fork-module-capture-drive.test.ts` asserts the plan
+        // size instead, where a wrong builder is caught before it ships.
         if count > 0 {
             drive_plan_via_injector(plan, count);
         }
@@ -1095,6 +2234,196 @@ mod wasm {
     /// (e.g. the child-inheritable image chunk could not be channel-mmap'd) is a
     /// truthful errno (`fm_last_errno`) with a 0 return, so the host can reroute a
     /// seal-time OOM to abort-replay rather than trap.
+    /// The per-segment copy window the reference segments writer uses, matching
+    /// the one the JavaScript session passed for as long as it did the writing.
+    const CAPTURE_SEGMENT_WINDOW: usize = 1 << 16;
+
+    /// Write the capture graph into the arena, as the records a child decodes.
+    ///
+    /// **Without this a child cannot be installed at all.** `fm_attach_child`
+    /// begins with `decode_reference_transaction_from_arena`, which reads the
+    /// `KFRS` sections and the `KFRV` manifest out of the arena's records. The
+    /// only thing that ever wrote them was the JavaScript capture session's
+    /// `sealInto`, draining `fm_capture_serialize` into `arena.appendRecord` --
+    /// and that stopped running when the seal moved into this module. The
+    /// serializer stayed; its only caller went. So a module-sealed arena has
+    /// carried no reference transaction since, and every child install would
+    /// have failed on the first record it looked for.
+    ///
+    /// Written here rather than handed back out for the same reason the journal
+    /// image's own record is: the module builds the graph, so the module
+    /// records it, and there is no pair of numbers for a host to carry
+    /// faithfully.
+    ///
+    /// Only for an arena this module owns -- a reserve with no writer root does
+    /// not fail, it starts a second arena nothing reads (census 142).
+    fn write_reference_transaction(segment_window: usize) -> Result<(), Errno> {
+        if !module_owns_arena_now() {
+            return Ok(());
+        }
+        let stream = {
+            let g = capture_builder()?;
+            let writer = ReferenceSegmentsWriter::new(
+                abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER,
+                segment_window,
+            )?;
+            let mut stream: Vec<u8> = Vec::new();
+            let mut sink =
+                |kind: u16, activation_id: u32, owner: u32, payload: &[u8]| -> Result<(), Errno> {
+                    let len = u32::try_from(payload.len()).map_err(|_| Errno::EINVAL)?;
+                    stream.extend_from_slice(&kind.to_le_bytes());
+                    stream.extend_from_slice(&0u16.to_le_bytes());
+                    stream.extend_from_slice(&activation_id.to_le_bytes());
+                    stream.extend_from_slice(&owner.to_le_bytes());
+                    stream.extend_from_slice(&len.to_le_bytes());
+                    stream.extend_from_slice(payload);
+                    Ok(())
+                };
+            writer.write(&mut sink, g)?;
+            stream
+        };
+
+        let mut at = 0usize;
+        while at < stream.len() {
+            let header_end = at.checked_add(CAPTURE_RECORD_HEADER).ok_or(Errno::EINVAL)?;
+            if header_end > stream.len() {
+                return Err(Errno::EINVAL);
+            }
+            let kind = u16::from_le_bytes([stream[at], stream[at + 1]]);
+            let activation_id = u32::from_le_bytes([
+                stream[at + 4],
+                stream[at + 5],
+                stream[at + 6],
+                stream[at + 7],
+            ]);
+            let owner_id = u32::from_le_bytes([
+                stream[at + 8],
+                stream[at + 9],
+                stream[at + 10],
+                stream[at + 11],
+            ]);
+            let len = u32::from_le_bytes([
+                stream[at + 12],
+                stream[at + 13],
+                stream[at + 14],
+                stream[at + 15],
+            ]) as usize;
+            let payload_end = header_end.checked_add(len).ok_or(Errno::EINVAL)?;
+            if payload_end > stream.len() {
+                return Err(Errno::EINVAL);
+            }
+
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem_mut_ref = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            let payload = module_state.reserve(
+                module_state_chunks,
+                mem_mut_ref,
+                kind,
+                activation_id,
+                owner_id,
+                len as u64,
+            )?;
+            let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(len).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let out: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::hint::black_box(start) as *mut u8,
+                    len,
+                )
+            };
+            out.copy_from_slice(&stream[header_end..payload_end]);
+            module_state.commit(mem_mut_ref, payload)?;
+            at = payload_end;
+        }
+        Ok(())
+    }
+
+    /// Write the `ActivationContinuations` (KFAC) manifest: every activation's
+    /// id and the guest offset of its continuation root.
+    ///
+    /// **Without this a multi-activation child cannot be seeded at all.** A
+    /// child reads the launch anchor to find ACTIVATION 0's root, and nothing
+    /// anywhere else says where a SIDE activation's continuation begins -- it is
+    /// a per-fork address, not a static property of the loaded module. The JS
+    /// coordinator wrote this record at seal
+    /// (`arena.appendActivationContinuations`) and read it back on the child
+    /// (`activationRootsFromChildArena`); the write went with the coordinator
+    /// and nothing replaced it, so the record kind has been defined and unused
+    /// since. Census 183.
+    ///
+    /// A single-activation capture writes nothing, exactly as before: the child
+    /// reads the launch anchor, and a manifest would only repeat it.
+    fn write_activation_continuations() -> Result<(), Errno> {
+        if !module_owns_arena_now() {
+            return Ok(());
+        }
+        let roots: Vec<(u32, u64)> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations
+                .iter()
+                .map(|(id, act)| (*id, act.module_buffer))
+                .collect()
+        };
+        if roots.len() < 2 {
+            return Ok(());
+        }
+        let header = u64::from(abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE);
+        let entry = u64::from(abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE);
+        let count = u32::try_from(roots.len()).map_err(|_| Errno::EINVAL)?;
+        let size = header
+            .checked_add(entry.checked_mul(roots.len() as u64).ok_or(Errno::EINVAL)?)
+            .ok_or(Errno::EINVAL)?;
+
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = st;
+        let payload = module_state.reserve(
+            module_state_chunks,
+            mem,
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS,
+            0,
+            abi::WPK_FORK_ACTIVATION_CONTINUATIONS_OWNER,
+            size,
+        )?;
+        let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+        let bytes = usize::try_from(size).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        let out: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(core::hint::black_box(start) as *mut u8, bytes)
+        };
+        out.fill(0);
+        out[0..4].copy_from_slice(&abi::WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC);
+        out[4..6]
+            .copy_from_slice(&abi::WPK_FORK_ACTIVATION_CONTINUATIONS_VERSION.to_le_bytes());
+        out[6..8].copy_from_slice(
+            &abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE.to_le_bytes(),
+        );
+        out[8..10].copy_from_slice(
+            &abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE.to_le_bytes(),
+        );
+        out[12..16].copy_from_slice(&count.to_le_bytes());
+        let header_bytes = usize::try_from(header).map_err(|_| Errno::EINVAL)?;
+        let entry_bytes = usize::try_from(entry).map_err(|_| Errno::EINVAL)?;
+        for (index, (id, root)) in roots.iter().enumerate() {
+            let at = header_bytes + index * entry_bytes;
+            out[at..at + 4].copy_from_slice(&id.to_le_bytes());
+            out[at + 8..at + 16].copy_from_slice(&root.to_le_bytes());
+        }
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem = unsafe { mem_mut() };
+        st.module_state.commit(mem, payload)?;
+        Ok(())
+    }
+
     fn seal_capture_impl(channel_base: u64) -> Result<u64, Errno> {
         let plan = build_seal_plan_impl()?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
@@ -1102,7 +2431,332 @@ mod wasm {
             drive_plan_via_injector(plan, count);
         }
         finish_unwind_impl()?;
-        serialize_journal_alloc_impl(channel_base)
+        // BEFORE the journal image, because the graph must be complete and
+        // validated before anything else claims the capture is sealed. The
+        // builder owns that validation (pending GC placeholders, open vectors,
+        // edge bounds) and fails loud on any fault.
+        capture_builder()?.validate()?;
+        write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
+        // Where each activation's continuation begins, for a child that has
+        // more than one and so cannot read them all off the launch anchor.
+        write_activation_continuations()?;
+        let image = serialize_journal_alloc_impl(channel_base)?;
+        // Announce where the image landed, in the arena, as the child reads it.
+        //
+        // The module channel-mmaps the image chunk itself, so it is the only
+        // party that knows the address -- and the record saying so was still
+        // written by the host, which meant handing the pair back out and
+        // trusting it to be recorded faithfully. `journal_image_from_arena` is
+        // the reader on the other side, in this same file.
+        //
+        // Only for an arena the module owns, for the reason the Module records
+        // above have: a writer with no root does not fail a reserve, it starts a
+        // second arena nothing reads.
+        if module_owns_arena_now() {
+            let len = match state().as_ref() { Some(st) => st.journal_image_len, None => 0 };
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            let size = u64::from(abi::WPK_FORK_JOURNAL_IMAGE_PAYLOAD_SIZE);
+            let payload = module_state.reserve(
+                module_state_chunks,
+                mem,
+                abi::WPK_FORK_MODULE_STATE_RECORD_KIND_JOURNAL_IMAGE,
+                0,
+                0,
+                size,
+            )?;
+            let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size as usize).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: `[start, end)` is inside guest memory (checked above) and
+            // the base is non-null for any real payload offset.
+            let out: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::hint::black_box(start) as *mut u8,
+                    size as usize,
+                )
+            };
+            encode_journal_image(out, image, len)?;
+            module_state.commit(mem, payload)?;
+        }
+        Ok(image)
+    }
+
+    /// Assemble and write this capture's imported-global BINDINGS record.
+    ///
+    /// The four pieces meeting: the declarations the host seeded from each
+    /// activation's KFIG section, the snapshots the guest's save walk just wrote
+    /// into the arena, the provenance only JavaScript could resolve, and the
+    /// builder and encoder in `fork_codec`.
+    ///
+    /// Runs at the END of capture-begin, after the save drive, because the
+    /// snapshots have to exist first — which is exactly where the JS
+    /// `appendTo` ran relative to the loop it replaces.
+    ///
+    /// A capture with no imported globals writes no record, matching the arena a
+    /// guest without imports produced before.
+    /// One space's identity groups, in the shape the election takes them.
+    fn identity_groups(space: u32) -> Vec<fork_codec::GlobalIdentityGroup> {
+        let count = GLOBAL_IDENTITY_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*GLOBAL_IDENTITY.0.get() };
+        table
+            .iter()
+            .take(count)
+            .filter(|g| g[0] == space)
+            .map(|g| fork_codec::GlobalIdentityGroup {
+                activation: g[1],
+                owner: g[2],
+                group_id: g[3],
+            })
+            .collect()
+    }
+
+    /// Write the `KFBT` imported-table binding record for this capture.
+    ///
+    /// The table twin of `write_imported_global_bindings`, and the same split:
+    /// the host published which catalog tables are one `WebAssembly.Table`, and
+    /// the election here decides which activation provides each. No snapshots
+    /// are consulted -- a table's contents travel as the sparse-table records,
+    /// not as part of its binding.
+    ///
+    /// Writes nothing when no activation imports a table, so an arena gains a
+    /// record only when there is something in it.
+    fn write_imported_table_bindings() -> Result<(), Errno> {
+        let activations: Vec<u32> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations.keys().copied().collect()
+        };
+        let mut declarations: Vec<fork_codec::ImportedTableDeclaration> = Vec::new();
+        // (activation, import_ordinal) -> owner_id, the translation the host is
+        // spared; see the global twin for why an ordinal is enough.
+        let mut by_ordinal: Vec<(u32, u32, u32)> = Vec::new();
+        for activation in activations {
+            let Some(bytes) = activation_imports(IMPORT_SPACE_TABLE, activation) else {
+                continue; // an activation with no imported tables seeds nothing
+            };
+            let decoded = fork_codec::imported_tables::decode_imported_tables(bytes)?;
+            for table in &decoded.tables {
+                declarations.push(fork_codec::ImportedTableDeclaration {
+                    activation,
+                    owner: table.owner_id,
+                });
+                by_ordinal.push((activation, table.import_ordinal, table.owner_id));
+            }
+        }
+
+        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let mut provenance: Vec<fork_codec::ImportedTableProvenance> = Vec::new();
+        for e in table.iter().take(count).filter(|e| e.space == IMPORT_SPACE_TABLE) {
+            let owner = by_ordinal
+                .iter()
+                .find(|(a, o, _)| *a == e.consumer_activation && *o == e.import_ordinal)
+                .map(|(_, _, owner)| *owner)
+                .ok_or(Errno::EINVAL)?;
+            provenance.push(fork_codec::ImportedTableProvenance {
+                consumer_activation: e.consumer_activation,
+                consumer_owner: owner,
+                group_id: e.group_id,
+            });
+        }
+        if provenance.is_empty() {
+            return Ok(()); // nothing imports a table: no record to write
+        }
+        if !module_owns_arena_now() {
+            return Err(Errno::EINVAL); // see the global twin
+        }
+
+        let groups = identity_groups(IMPORT_SPACE_TABLE);
+        let bindings =
+            fork_codec::build_imported_table_bindings(&provenance, &declarations, &groups)?;
+        let size = fork_codec::imported_table_bindings_size(bindings.len())? as u64;
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem_mut_ref = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = st;
+        let payload = module_state.reserve(
+            module_state_chunks,
+            mem_mut_ref,
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS,
+            0,
+            abi::WPK_FORK_IMPORTED_TABLE_BINDINGS_OWNER,
+            size,
+        )?;
+        let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(size as usize).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        let out: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(
+                core::hint::black_box(start) as *mut u8,
+                size as usize,
+            )
+        };
+        fork_codec::encode_imported_table_bindings(out, &bindings)?;
+        module_state.commit(mem_mut_ref, payload)?;
+        Ok(())
+    }
+
+    fn write_imported_global_bindings() -> Result<(), Errno> {
+        let count = IMPORTED_GLOBAL_PROVENANCE_COUNT.load(Ordering::Relaxed) as usize;
+        if count == 0 {
+            return Ok(()); // nothing imports a global: no record to write
+        }
+        if !module_owns_arena_now() {
+            // The host published provenance AND supplied its own arena, so the
+            // facts have nowhere to go: a reserve here would start a second
+            // arena nothing reads, and skipping the write quietly would hand
+            // the child a binding record it never got.
+            //
+            // Loud rather than silent, because the silent version is a child
+            // whose imported globals are simply absent -- reconstructed against
+            // whatever its base imports happen to hold. The two halves of this
+            // port move together or not at all.
+            return Err(Errno::EINVAL);
+        }
+        // Declarations, from each activation's seeded KFIG section. Built first
+        // because the provenance below is keyed by IMPORT ORDINAL and has to be
+        // translated to owner ids through them.
+        let activations: Vec<u32> = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.activations.keys().copied().collect()
+        };
+        let mut declarations: Vec<fork_codec::ImportedGlobalDeclaration> = Vec::new();
+        // (activation, import_ordinal) -> owner_id, the translation the host is
+        // spared. `WebAssembly.Module.imports()` enumerates in section order and
+        // `fork_instrument` assigned ordinals from the same enumeration, so the
+        // host can name an import without reading this section at all.
+        let mut by_ordinal: Vec<(u32, u32, u32)> = Vec::new();
+        for activation in activations {
+            let Some(bytes) = activation_imports(IMPORT_SPACE_GLOBAL, activation) else {
+                continue; // an activation with no imported globals seeds nothing
+            };
+            let decoded = fork_codec::imported_globals::decode_imported_globals(bytes)?;
+            for global in &decoded.globals {
+                declarations.push(fork_codec::ImportedGlobalDeclaration {
+                    activation,
+                    owner: global.owner_id,
+                    type_code: global.type_code,
+                });
+                by_ordinal.push((activation, global.import_ordinal, global.owner_id));
+            }
+        }
+
+        // SAFETY: single-threaded per worker.
+        let table = unsafe { &*IMPORTED_GLOBAL_PROVENANCE.0.get() };
+        let mut provenance: Vec<fork_codec::ImportedGlobalProvenance> =
+            Vec::with_capacity(count);
+        for e in table.iter().take(count).filter(|e| e.space == IMPORT_SPACE_GLOBAL) {
+            // An ordinal the activation's section does not declare as a global
+            // is the host naming an import that is not one.
+            //
+            // This refusal is for the ERROR MESSAGE, not for safety, and the
+            // distinction is worth stating because perturbing it away changes
+            // nothing observable: owner ids are required nonzero, so a missing
+            // ordinal defaulting to 0 could never match a declaration, and
+            // `build_imported_global_bindings` refuses it one step later
+            // regardless. Failing here says "that ordinal is not a declared
+            // global"; failing there says "no declaration for owner 0", which is
+            // the same fact after a confusing translation.
+            let owner = by_ordinal
+                .iter()
+                .find(|(a, o, _)| *a == e.consumer_activation && *o == e.import_ordinal)
+                .map(|(_, _, owner)| *owner)
+                .ok_or(Errno::EINVAL)?;
+            provenance.push(fork_codec::ImportedGlobalProvenance {
+                consumer_activation: e.consumer_activation,
+                consumer_owner: owner,
+                kind: e.kind as u8,
+                group_id: e.group_id,
+                raw_bits: e.raw_bits,
+            });
+        }
+
+        // The identity groups the host published, verbatim; the election over
+        // them happens in `build_imported_global_bindings`, where it can be
+        // tested without a worker.
+        let groups = identity_groups(IMPORT_SPACE_GLOBAL);
+
+        // Snapshots, from the arena this module owns.
+        let root = {
+            let st = state().as_ref().ok_or(Errno::EINVAL)?;
+            st.module_state.root()
+        };
+        let fmt = module_state_format()?;
+        let mem = unsafe { mem_ref() };
+        let decoded = decode_module_state(mem, root, &fmt)?;
+        let mut snapshots: Vec<fork_codec::ImportedGlobalSnapshotFact> = Vec::new();
+        for record in &decoded.records {
+            if record.kind != abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL {
+                continue;
+            }
+            let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+            let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
+            let snapshot = fork_codec::decode_mutable_global(payload)?;
+            snapshots.push(fork_codec::ImportedGlobalSnapshotFact {
+                activation: record.activation_id,
+                owner: record.owner_id,
+                type_code: snapshot.type_code,
+                recipe_id: snapshot.recipe_id,
+            });
+        }
+
+        let bindings =
+            build_imported_global_bindings(&provenance, &declarations, &snapshots, &groups)?;
+        let size = fork_codec::imported_global_bindings_size(bindings.len())? as u64;
+        let st = state().as_mut().ok_or(Errno::EINVAL)?;
+        let mem_mut_ref = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = st;
+        let payload = module_state.reserve(
+            module_state_chunks,
+            mem_mut_ref,
+            abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS,
+            0,
+            abi::WPK_FORK_IMPORTED_GLOBAL_BINDINGS_OWNER,
+            size,
+        )?;
+        let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(size as usize).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        let out: &mut [u8] = unsafe {
+            core::slice::from_raw_parts_mut(
+                core::hint::black_box(start) as *mut u8,
+                size as usize,
+            )
+        };
+        encode_imported_global_bindings(out, &bindings)?;
+        module_state.commit(mem_mut_ref, payload)?;
+        Ok(())
+    }
+
+    /// Whether the arena this fork is using was allocated by the module.
+    ///
+    /// The writer's root is only ever set by a reserve here or by `adopt`, so a
+    /// nonzero root that was not adopted means the module built it.
+    fn module_owns_arena_now() -> bool {
+        match state().as_ref() {
+            Some(module) => {
+                module.module_state.root() != 0 && !module.module_state.is_adopted()
+            }
+            None => false,
+        }
     }
 
     /// Build a REPLAY-FINISH drive plan: one `DRIVE_OP_REWIND_END` (`abort` false)
@@ -1134,7 +2788,7 @@ mod wasm {
     /// `fm_finish_replay` / `fm_finish_abort` — into ONE module call. Order is
     /// identical to that host sequence: drive FIRST (every activation to `NORMAL`),
     /// THEN finish. The abort finish still asserts the `in_abort` pairing
-    /// `fm_parent_abort` set (`finish_abort_impl`), so a `fm_parent_finish(abort=1)`
+    /// `fm_parent_replay(abort=1)` set (`finish_abort_impl`), so a `fm_parent_finish(abort=1)`
     /// without a matching abort begin is a loud `EINVAL`, never a silent no-op.
     ///
     /// A guest end flip that traps (e.g. finishing before the rewind consumed
@@ -1339,6 +2993,23 @@ mod wasm {
         unsafe { &mut *DECODED_GRAPH.0.get() }
     }
 
+    // -- Resident child import plan -----------------------------------------
+    //
+    // One activation's plan at a time, exactly like the decoded graph above and
+    // for the same reason: the host builds it, walks it, and moves on to the
+    // next activation. Holding several would mean the module deciding when a
+    // plan stops being interesting, which it cannot know.
+    struct ImportPlanCell(UnsafeCell<Option<Vec<fork_codec::ImportPlanEntry>>>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for ImportPlanCell {}
+    static IMPORT_PLAN: ImportPlanCell = ImportPlanCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn import_plan() -> &'static mut Option<Vec<fork_codec::ImportPlanEntry>> {
+        // SAFETY: single-threaded per worker; one host drives build/read.
+        unsafe { &mut *IMPORT_PLAN.0.get() }
+    }
+
     // Monotonic count of reference graphs the module has DECODED from a KFMS
     // arena since worker start. Proof-of-use for the decode flip: after the host
     // routes wire-graph decode through `fm_decode_reference_graph` this has
@@ -1392,6 +3063,72 @@ mod wasm {
     // reads (no further reset occurs on the parent path).
     static CAPTURE_ARMED: AtomicU32 = AtomicU32::new(0);
 
+    /// Host-assigned reference identity -> recipe, for the current capture.
+    ///
+    /// Wasm can COMPARE two GC references (`ref.eq` validates on `eqref`) but
+    /// cannot HASH one: there is no `ref.hash`, so a reference cannot key a map
+    /// inside the module and the only in-module algorithm is a linear scan of
+    /// every value published so far -- O(n) per lookup, O(n^2) over a capture.
+    /// The host hands back a stable small integer per distinct reference and
+    /// this maps it, which is O(1) amortised.
+    ///
+    /// Per-CAPTURE, so bump-backed and reclaimed with the fork is correct here
+    /// -- unlike the dirty-page set, which records mutations made long before
+    /// any fork and therefore cannot live in the bump.
+    struct IdentityCell(UnsafeCell<Option<BTreeMap<u32, u32>>>);
+    // SAFETY: single-threaded per worker, as `state()`.
+    unsafe impl Sync for IdentityCell {}
+    static GC_IDENTITY: IdentityCell = IdentityCell(UnsafeCell::new(None));
+
+    #[allow(clippy::mut_from_ref)]
+    fn gc_identity() -> &'static mut Option<BTreeMap<u32, u32>> {
+        unsafe { &mut *GC_IDENTITY.0.get() }
+    }
+
+    /// In-flight guest reference-vector: `(handle + 1, promised, appended)`.
+    /// Zero in slot 0 means no vector is open.
+    ///
+    /// The guest declares its slot count up front — `fork-instrument` emits
+    /// `i32.const slots.len()` immediately before `__wpk_fork_ref_vector_begin`
+    /// — and then appends exactly that many recipes. Recording the promise is
+    /// what lets `__wpk_fork_ref_vector_finish` reject a vector that did not
+    /// receive the appends it declared, which matters because the guest-facing
+    /// `append` returns NOTHING: without this, a failed append would be visible
+    /// only as a short vector at replay, in the child, long after the cause.
+    ///
+    /// THE BUILDS NEST, which one slot could not hold. The claim here used to
+    /// be that the sequence is straight-line -- `begin`, N x (`encoder`,
+    /// `append`), `finish`, with no guest call between, because the encoders
+    /// re-enter this module and never the guest -- and that second half is
+    /// wrong: encoding an aggregate re-enters the GUEST's own codec through the
+    /// drive table, and that codec opens its own field vector while the outer
+    /// one is still open.
+    ///
+    /// The refusal that assumption produced was invisible. `begin` answered
+    /// EINVAL and -1; the guest cannot see it (append returns nothing), so it
+    /// appended into handle -1, finished a vector that was never open, and
+    /// defined the aggregate against vector ordinal 0xFFFFFFFF. That define
+    /// failed, its claimed placeholder stayed pending, and the CAPTURE refused
+    /// to seal -- four layers downstream, with `fork()` returning an errno the
+    /// program never checked (census section 189).
+    ///
+    /// So they are a stack now, innermost last, and `append`/`finish` name
+    /// their own handle rather than assuming the only one.
+    /// How deeply reference-vector builds may NEST. Eight is far past what the
+    /// emitted code reaches (a frame vector holding an aggregate whose field
+    /// vector holds another aggregate is depth three), and an overflow is a
+    /// loud refusal rather than a silently mis-counted vector.
+    const VECTOR_STACK_DEPTH: usize = 8;
+    #[repr(C, align(4))]
+    struct VectorInFlight(UnsafeCell<[[u32; 3]; VECTOR_STACK_DEPTH]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for VectorInFlight {}
+    /// The OPEN reference-vector builds, innermost last. Each entry is
+    /// `[handle + 1, promised, appended]`.
+    static VECTOR_IN_FLIGHT: VectorInFlight =
+        VectorInFlight(UnsafeCell::new([[0u32; 3]; VECTOR_STACK_DEPTH]));
+    static VECTOR_IN_FLIGHT_DEPTH: AtomicU32 = AtomicU32::new(0);
+
     /// The resident capture builder for the current fork. `fm_capture_begin`
     /// creates it eagerly; this is the accessor the capture exports use. As a
     /// defensive fallback it also creates the builder if a session is armed but
@@ -1443,26 +3180,13 @@ mod wasm {
     unsafe impl Sync for DrivePlanCell {}
     static DRIVE_PLAN: DrivePlanCell = DrivePlanCell(UnsafeCell::new(None));
 
-    fn build_trivial_plan_impl(activation: u32, recipe: u32, _pid: u32) -> Result<usize, Errno> {
-        // The injected shim's post-ALLOC integrity guard reads STORE #2 (the
-        // guest's Wasm-GC transit table) directly, so no host generation is opened
-        // here.
-        // Serialize the trivial ALLOC-then-FILL plan into a module-owned buffer;
-        // its guest address is what `fm_drive_execute` strides over.
-        let steps = drive_plan::trivial_struct_plan(activation, recipe);
-        let mut buf = Vec::new();
-        buf.resize(drive_plan::DRIVE_STEP_SIZE * steps.len(), 0u8);
-        drive_plan::serialize_plan(&steps, &mut buf)?;
-        let ptr = buf.as_ptr() as usize;
-        // SAFETY: single-threaded per worker; rooting the backing bytes so the
-        // returned pointer stays valid for the shim's reads.
-        unsafe {
-            *DRIVE_PLAN.0.get() = Some(buf);
-        }
-        Ok(ptr)
-    }
-
-    fn set_format_impl(pointer_width: u32, fixed_prefix_size: u32) -> Result<(), Errno> {
+    fn set_format_impl(
+        pointer_width: u32,
+        fixed_prefix_size: u32,
+        archive_control_addr: usize,
+        table_owner: u32,
+        channel_base: usize,
+    ) -> Result<(), Errno> {
         // The ABI only defines linked-frame geometry for 32- and 64-bit guests.
         if abi::wpk_fork_linked_chunk_header_size(pointer_width as u8).is_none() {
             return Err(Errno::EINVAL);
@@ -1497,10 +3221,65 @@ mod wasm {
         // without a reset. See that function.
         ACT_CATALOG_ACT_COUNT.store(0, Ordering::Relaxed);
         ACT_CATALOG_ORD_USED.store(0, Ordering::Relaxed);
+        // The slot assignment goes with the catalogs it was derived from. A COW
+        // child re-seeds, and re-seeding into a table that still held the
+        // parent's assignment would either refuse as already-registered or
+        // number the child's activations after the parent's -- and the child's
+        // physical table, which it inherits nothing of, starts empty.
+        RESUME_SLOT_COUNT.store(0, Ordering::Relaxed);
+        RESUME_FREE_COUNT.store(0, Ordering::Relaxed);
+        RESUME_NEXT_SLOT.store(1, Ordering::Relaxed);
         ACT_FUNC_CATALOG_BASE_COUNT.store(0, Ordering::Relaxed);
         ACT_STATIC_ROOT_BASE_COUNT.store(0, Ordering::Relaxed);
+        // Table-state ownership resets for the same COW reason: a child
+        // inheriting the parent's election would answer for coordinates that
+        // belong to a table it no longer shares.
+        ACT_TABLE_STATE_OWNER_COUNT.store(0, Ordering::Relaxed);
+        // Also per-capture state a COW child inherits. `begin_capture_impl`
+        // already clears it, and today every read follows a capture -- but that
+        // is a reasoning dependency, and this block exists so a COW child starts
+        // clean without anyone having to trace call orders.
+        reset_captured_externrefs();
         HOST_EXCEPTION_OWNER.store(u32::MAX, Ordering::Relaxed);
         RESUME_CATALOG_LEN.store(0, Ordering::Relaxed);
+        // The dylink archive coordinates reset for the same COW reason as the
+        // catalogs above, but with a worse failure mode if they did not: a child
+        // inheriting the parent's APPLIED generation would decide it is already
+        // coherent and skip writes its own table never received. That is a
+        // silent wrong answer rather than an errno, so the reset matters more
+        // here than anywhere else in this block.
+        //
+        // Re-seeded, not just cleared, and this is why the coordinates are
+        // arguments to THIS call rather than to an entry of their own: a
+        // borrowed fork child does not use its own channel's control block, it
+        // uses its OWNER's, so the address is not derivable inside the module
+        // and has to arrive with the rest of the per-worker setup.
+        ARCHIVE_CONTROL.store(archive_control_addr, Ordering::Relaxed);
+        ARCHIVE_OWNER.store(table_owner, Ordering::Relaxed);
+        CHANNEL_BASE.store(channel_base, Ordering::Relaxed);
+        ARCHIVE_APPLIED[0].store(0, Ordering::Relaxed);
+        ARCHIVE_APPLIED[1].store(0, Ordering::Relaxed);
+        // THE PHASE ITSELF is inherited too, and it is the worst of them.
+        //
+        // A COW child's memory is cloned while its parent is MID-CAPTURE, so the
+        // child's fresh fork-module instance reads `PHASE == PHASE_CAPTURE` out
+        // of the inherited BSS. Every child-install entry requires
+        // `PHASE_IDLE`, so `fm_child_seed` answered `EBUSY` and the child died
+        // before replay -- which is what a re-forking COW child (a shell's
+        // nested command substitution) hit.
+        //
+        // A worker that has just seeded its format has no fork in flight by
+        // definition: `fm_set_format` is called ONCE, at worker setup, before
+        // any capture or install. Anything else in this static is the previous
+        // owner's. A BORROWED vfork child is unaffected either way -- it
+        // instantiates its own module into a FRESH region, whose BSS starts
+        // zeroed, and `PHASE_IDLE` is 0.
+        enter_phase(PHASE_IDLE);
+        // Per-worker like everything above it: a borrowed child seeds its own
+        // admitted region, and an inherited base would name the parent's.
+        BORROWED_PREFIX_BASE.store(0, Ordering::Relaxed);
+        BORROWED_PREFIX_BYTES.store(0, Ordering::Relaxed);
+        BORROWED_PREFIX_CURSOR.store(0, Ordering::Relaxed);
         FMT_POINTER_WIDTH.store(pointer_width, Ordering::Relaxed);
         FMT_FIXED_PREFIX.store(fixed_prefix_size, Ordering::Relaxed);
         Ok(())
@@ -1585,6 +3364,173 @@ mod wasm {
         offset: AtomicUsize::new(0),
     };
 
+    /// Transient exchange storage for the guest's recursive payload codecs.
+    ///
+    /// `fork-instrument` reserves a staging buffer before encoding an
+    /// aggregate's payloads and releases it after `define`, strictly nested:
+    /// reserve, recurse, define, release. So this is a LIFO STACK, not a bump —
+    /// and it is deliberately NOT the module bump heap above, which never
+    /// reclaims (`dealloc` is a no-op). Routing scratch through the bump would
+    /// make a deep object graph consume the same 4 MiB the capture builder
+    /// needs, and never give it back until the next fork.
+    ///
+    /// **Exhaustion and misuse TRAP rather than returning an error, because the
+    /// generator does not check.** The emitted code is
+    /// `call scratch_reserve ; local.set $staging` followed directly by writes
+    /// through `$staging`; there is no null test. A 0 return would therefore be
+    /// written through as an address, corrupting low guest memory. A trap is the
+    /// truthful failure — the same choice the drive shim's post-allocate
+    /// integrity guard makes.
+    /// Dirty table pages for THIS worker, keyed by the physical table's OWNER
+    /// id. Worker-level and durable, NOT per-fork.
+    ///
+    /// # Why not in `ForkModule`
+    ///
+    /// It was, and that was wrong. `fork-instrument` wraps EVERY `table.set`,
+    /// `table.copy`, `table.fill`, `table.init` and `table.grow` in the program
+    /// with a mark, gated only on a non-empty range and a last-page cache --
+    /// there is no fork-active condition. Marks therefore happen throughout
+    /// ordinary execution, because the set has to record what changed SINCE
+    /// INSTANTIATION so that whenever a fork does happen the sparse overlay is
+    /// correct. A per-fork home dropped almost every mark, and a `BTreeMap` in
+    /// the bump heap would not have survived `reset_bump_heap` anyway.
+    ///
+    /// # Why a fixed bitmap rather than a map
+    ///
+    /// The bump heap is reclaimed wholesale at each fork, so anything durable
+    /// cannot allocate from it. This is a fixed region with a SATURATION flag:
+    /// if a page or an owner does not fit, the worker records "everything is
+    /// dirty" instead of recording less. Over-approximating the overlay makes a
+    /// capture larger; under-approximating makes it WRONG, so saturation is the
+    /// only safe direction to fail in.
+    const DIRTY_OWNERS: usize = 32;
+    const DIRTY_PAGES_PER_OWNER: usize = 4096;
+    const DIRTY_WORDS_PER_OWNER: usize = DIRTY_PAGES_PER_OWNER / 64;
+
+    struct DirtyCell(UnsafeCell<DirtyState>);
+    // SAFETY: one guest drives these exports per worker, as with every other
+    // module static here.
+    unsafe impl Sync for DirtyCell {}
+
+    struct DirtyState {
+        /// Owner id per slot, `u32::MAX` when the slot is free.
+        owners: [u32; DIRTY_OWNERS],
+        bits: [[u64; DIRTY_WORDS_PER_OWNER]; DIRTY_OWNERS],
+        /// Set when a mark could not be recorded exactly. Every query then
+        /// answers as if all pages of every table are dirty.
+        saturated: bool,
+    }
+
+    static DIRTY: DirtyCell = DirtyCell(UnsafeCell::new(DirtyState {
+        owners: [u32::MAX; DIRTY_OWNERS],
+        bits: [[0u64; DIRTY_WORDS_PER_OWNER]; DIRTY_OWNERS],
+        saturated: false,
+    }));
+
+    #[allow(clippy::mut_from_ref)]
+    fn dirty() -> &'static mut DirtyState {
+        // SAFETY: single-threaded per worker, as `state()` above.
+        unsafe { &mut *DIRTY.0.get() }
+    }
+
+    impl DirtyState {
+        fn slot(&mut self, owner: u32) -> Option<usize> {
+            if let Some(i) = self.owners.iter().position(|o| *o == owner) {
+                return Some(i);
+            }
+            let free = self.owners.iter().position(|o| *o == u32::MAX)?;
+            self.owners[free] = owner;
+            Some(free)
+        }
+
+        fn mark(&mut self, owner: u32, first_page: u64, page_count: u64) {
+            let Some(last) = first_page.checked_add(page_count) else {
+                self.saturated = true;
+                return;
+            };
+            if last > DIRTY_PAGES_PER_OWNER as u64 {
+                self.saturated = true;
+                return;
+            }
+            let Some(slot) = self.slot(owner) else {
+                self.saturated = true;
+                return;
+            };
+            for page in first_page..last {
+                let page = page as usize;
+                self.bits[slot][page / 64] |= 1u64 << (page % 64);
+            }
+        }
+
+        fn count(&self, owner: u32) -> u32 {
+            if self.saturated {
+                return DIRTY_PAGES_PER_OWNER as u32;
+            }
+            match self.owners.iter().position(|o| *o == owner) {
+                Some(slot) => self.bits[slot].iter().map(|w| w.count_ones()).sum(),
+                None => 0,
+            }
+        }
+
+        fn page(&self, owner: u32, ordinal: u32) -> Option<u64> {
+            if self.saturated {
+                return (ordinal < DIRTY_PAGES_PER_OWNER as u32).then_some(u64::from(ordinal));
+            }
+            let slot = self.owners.iter().position(|o| *o == owner)?;
+            let mut seen = 0u32;
+            for (word_index, word) in self.bits[slot].iter().enumerate() {
+                let mut w = *word;
+                while w != 0 {
+                    let bit = w.trailing_zeros() as usize;
+                    if seen == ordinal {
+                        return Some((word_index * 64 + bit) as u64);
+                    }
+                    seen += 1;
+                    w &= w - 1;
+                }
+            }
+            None
+        }
+    }
+
+    const SCRATCH_SIZE: usize = 64 * 1024;
+
+    #[repr(C, align(16))]
+    struct ScratchCell(UnsafeCell<[u8; SCRATCH_SIZE]>);
+    // SAFETY: single-threaded per worker, exactly as HeapCell above.
+    unsafe impl Sync for ScratchCell {}
+    static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new([0u8; SCRATCH_SIZE]));
+    static SCRATCH_TOP: AtomicUsize = AtomicUsize::new(0);
+
+    /// The deepest `SCRATCH_TOP` reached since the last per-fork reset.
+    ///
+    /// The scratch stack is strictly nested (reserve/release around a recursive
+    /// encode), so its CURRENT top is 0 again by the time a capture seals and
+    /// says nothing about how much room the encode actually needed. A vfork
+    /// BORROWED child re-runs the decode side of that same graph in memory it
+    /// must own privately, and the capture high-water is the bound the host
+    /// reserves from. Kept beside the allocator that moves it, and reset with
+    /// it, because a high-water carried across forks would over-reserve every
+    /// later child by the worst fork the worker ever ran.
+    static SCRATCH_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
+
+    // The vfork BORROWED child's admitted workspace, seeded by the host.
+    //
+    // The host knows ONE thing about it that this module cannot derive: where
+    // the kernel put it. Everything else -- how much prefix each activation
+    // needs, in what order, with what alignment -- this module already computes,
+    // and `fm_borrowed_replay_workspace` has been answering that question for
+    // the host since it existed. Carving the prefixes here rather than in
+    // JavaScript removes the only reason the host had to do that arithmetic
+    // twice.
+    static BORROWED_PREFIX_BASE: AtomicUsize = AtomicUsize::new(0);
+    static BORROWED_PREFIX_BYTES: AtomicUsize = AtomicUsize::new(0);
+    static BORROWED_PREFIX_CURSOR: AtomicUsize = AtomicUsize::new(0);
+
+    fn scratch_align(len: usize) -> usize {
+        (len.wrapping_add(15)) & !15
+    }
+
     /// Clear a resident bump-backed static WITHOUT running its `Drop`.
     ///
     /// This is the reclaim primitive for the module's resident fork statics
@@ -1637,12 +3583,23 @@ mod wasm {
     fn reset_bump_heap() {
         abandon_resident(state());
         abandon_resident(capture_state());
+        // Bump-backed like the capture builder, so it is abandoned rather than
+        // dropped: its `BTreeMap` nodes live in memory the reset reclaims.
+        abandon_resident(gc_identity());
+        // A capture that trapped or aborted mid-encode leaves its staging frames
+        // on the scratch stack. Reclaim them with the bump, or the next fork in
+        // this worker starts with a stack that never comes back down.
+        SCRATCH_TOP.store(0, Ordering::Relaxed);
+        SCRATCH_HIGH_WATER.store(0, Ordering::Relaxed);
         CAPTURE_ARMED.store(0, Ordering::Relaxed);
         // SAFETY: single-threaded per worker; only one fork drives these at a time.
         unsafe {
             abandon_resident(&mut *CAPTURE_SERIALIZED.0.get());
             abandon_resident(&mut *DRIVE_PLAN.0.get());
         }
+        // Bump-backed like the two above. Reading a plan built before the reset
+        // would read bytes the next allocation has overwritten.
+        abandon_resident(import_plan());
         ALLOC.reset();
     }
 
@@ -1675,7 +3632,31 @@ mod wasm {
         // visible null literal — the same guest-offset-as-pointer reality the
         // kernel relies on, expressed without tripping the null-argument lint.
         let base = core::hint::black_box(0usize) as *mut u8;
-        unsafe { core::slice::from_raw_parts_mut(base, mem_len_bytes()) }
+        // THE SLICE GOES THROUGH `black_box` TOO, and that is load-bearing.
+        //
+        // Hiding only the BASE is not enough. `from_raw_parts` promises a
+        // non-null pointer, wasm offset 0 is genuinely null to the abstract
+        // machine, and wherever the optimiser can trace a slice back to that
+        // construction it takes the promise at face value and folds the bounds
+        // check. Measured from inside the module on a 16 MiB memory, before
+        // this line existed (census section 146):
+        //
+        //   mem_ref().len()                     = 16777216
+        //   mem_ref().get(0..32)                = None
+        //   black_box(mem_ref()).get(0..32)     = Some
+        //
+        // Same slice, same range, same build. The only difference is whether
+        // the provenance is visible at the point of use. That is also why this
+        // looked non-deterministic for a while: reads separated from the
+        // construction by an opaque call or a crate boundary already had the
+        // chain broken for them and worked, and the ones that failed were the
+        // ones the optimiser could see all the way through.
+        //
+        // This is a MITIGATION, not a fix. The construction is still unsound and
+        // a future compiler may see through it. `fork_codec::GuestMemory` is the
+        // sound shape -- per-access slices based at a real offset -- and callers
+        // move to it as they are touched.
+        core::hint::black_box(unsafe { core::slice::from_raw_parts_mut(base, mem_len_bytes()) })
     }
 
     /// An immutable view of the whole guest linear memory. See [`mem_mut`].
@@ -1685,7 +3666,9 @@ mod wasm {
     unsafe fn mem_ref() -> &'static [u8] {
         // See [`mem_mut`] for the opaque-zero base rationale.
         let base = core::hint::black_box(0usize) as *const u8;
-        unsafe { core::slice::from_raw_parts(base, mem_len_bytes()) }
+        // The SLICE goes through `black_box` too, not just the base. See
+        // `mem_mut` for the measurement that made this necessary.
+        core::hint::black_box(unsafe { core::slice::from_raw_parts(base, mem_len_bytes()) })
     }
 
     // -- In-realm channel SYS_MMAP (Option B) --------------------------------
@@ -1824,7 +3807,21 @@ mod wasm {
     // never calls `allocate` (its `replay_only` guard rejects reserve/commit), so
     // the child mmaps nothing; its `chunks` stays empty and `release_all` is a
     // no-op there.
-    struct FrameArena {
+    /// The fork's chunk list: a doubly-linked run of page-rounded mappings, each
+    /// `SYS_MMAP`'d from the kernel on demand at capture time.
+    ///
+    /// NOT an arena, despite what this type was called until 2026-09-12 and what
+    /// several of the comments around it still imply. There is no fixed region
+    /// and no cap: `allocate` issues a fresh `SYS_MMAP` per chunk through the
+    /// guest syscall channel, the kernel's `find_gap` allocator places it, and
+    /// the chunks link to each other (`ModuleStateChunk` carries `previous` and
+    /// `next`). Fork depth is bounded by what the kernel will map, nothing more.
+    ///
+    /// The name mattered: a 2 MiB bounded arena WAS the design briefly, was
+    /// reverted when its cap turned out to be a fixture artefact, and the word
+    /// outlived it — after which agents kept re-deriving a fixed-size constraint
+    /// that no longer exists.
+    struct ForkChunkList {
         /// Channel mode: issue each chunk's `SYS_MMAP` through this guest syscall
         /// channel base (page-aligned). `0` on a replay-only child (allocates
         /// nothing).
@@ -1832,15 +3829,23 @@ mod wasm {
         chunks: Vec<(u64, u64)>,
     }
 
-    impl FrameArena {
-        /// The production growing arena: each chunk is `SYS_MMAP`'d through the
+    impl ForkChunkList {
+        /// The production growing chunk list: each chunk is `SYS_MMAP`'d through the
         /// guest syscall channel at `channel_base`, growing shared memory on
         /// demand. `0` = a replay-only child that allocates nothing.
         fn new_channel(channel_base: u64) -> Self {
-            FrameArena {
+            ForkChunkList {
                 channel_base,
                 chunks: Vec::new(),
             }
+        }
+
+        /// How many chunks this allocator has mapped and not yet released.
+        ///
+        /// Zero means it owns nothing to free -- either it never allocated, or
+        /// it is a `new_channel(0)` allocator that cannot.
+        fn release_count(&self) -> usize {
+            self.chunks.len()
         }
 
         /// Best-effort release of every chunk this allocator mapped. Called after
@@ -1853,7 +3858,7 @@ mod wasm {
         }
     }
 
-    impl ChunkAllocator for FrameArena {
+    impl ChunkAllocator for ForkChunkList {
         fn allocate(&mut self, capacity: u64) -> Result<u64, Errno> {
             let addr = channel_mmap(self.channel_base, capacity)?;
             self.chunks.push((addr, capacity));
@@ -1884,7 +3889,7 @@ mod wasm {
     struct ActivationFrames {
         format: LinkedFrameFormat,
         writer: LinkedFrameWriter,
-        arena: FrameArena,
+        arena: ForkChunkList,
         driver: Option<RewindDriver>,
         committed_ordinals: Vec<u32>,
         module_buffer: u64,
@@ -1925,6 +3930,12 @@ mod wasm {
         /// `JournalImage` KFMS record so the child can find the inherited image.
         journal_image_ptr: u64,
         journal_image_len: u64,
+        /// Process-wide KFMS chunk list: the module-state records the guest
+        /// writes during `wpk_fork_module_state_save`, and the chunks they live
+        /// in. The host owned this until 2026-09-12; the module owns it now, so
+        /// the format has one implementation rather than two.
+        module_state: ModuleStateWriter,
+        module_state_chunks: ForkChunkList,
         /// Process-wide replay-event journal (records `(activation_id, ordinal)`
         /// commits across every activation; replays the global reverse order).
         journal: ReplayEventJournal,
@@ -1978,6 +3989,96 @@ mod wasm {
         LAST_ERRNO.store(errno as i32, Ordering::Relaxed);
     }
 
+    // -- Fork lifecycle phase ------------------------------------------------
+    //
+    // Which capture/replay step the process is in, and which entry points are
+    // legal from it. This lived in TypeScript (`ForkProcessContinuationCoordinator`
+    // in attic/fork-typescript-do-not-use/fork-process-continuation.ts) as a
+    // `requirePhase(expected, operation)` guard in front of every coarse call.
+    //
+    // It is POLICY, not host floor: nothing about "you cannot seal a capture you
+    // never began" needs to observe a JavaScript object. Leaving it in the host
+    // meant every host reimplemented the same state machine, and a host that got
+    // it wrong called the module out of order -- which the module then had no way
+    // to refuse. That is the decoder-drift shape this campaign exists to remove,
+    // applied to control flow instead of a wire format.
+    //
+    // A wrong-phase call answers EBUSY, an errno the module uses for NOTHING else,
+    // so a test asserting it cannot be satisfied by an unrelated failure. EINVAL
+    // would not have that property: 207 sites already answer it.
+
+    const PHASE_IDLE: u32 = 0;
+    const PHASE_CAPTURE: u32 = 1;
+    const PHASE_SEALED_PARENT: u32 = 2;
+    const PHASE_PARENT_REPLAY: u32 = 3;
+    const PHASE_CHILD_REPLAY: u32 = 4;
+    const PHASE_ABORT_REPLAY: u32 = 5;
+
+    static PHASE: AtomicU32 = AtomicU32::new(PHASE_IDLE);
+
+    /// Refuse an entry point that is not legal from the current phase.
+    fn require_phase(expected: u32) -> Result<(), Errno> {
+        if PHASE.load(Ordering::Relaxed) == expected {
+            Ok(())
+        } else {
+            Err(Errno::EBUSY)
+        }
+    }
+
+    /// Refuse an entry point legal from either of two phases.
+    ///
+    /// Two shapes need this, and neither is "accept every phase":
+    ///
+    /// - The replay-FINISH entries: a parent replay and a child replay both end
+    ///   at idle through the same call.
+    /// - The child-INSTALL entries: a COW/borrowed child install is ONE arrival
+    ///   at `PHASE_CHILD_REPLAY` spread over two calls (`fm_child_seed` seeds
+    ///   the per-activation replay drivers, `fm_attach_child` seeds the
+    ///   reference graph and builds the install plan), so whichever runs first
+    ///   makes the transition and the second must be legal from the phase its
+    ///   sibling just entered. Accepting `PHASE_CHILD_REPLAY` here still
+    ///   refuses an attach during capture, sealed-parent, parent replay, or
+    ///   abort replay -- everything the single-phase guard refused.
+    fn require_phase_either(first: u32, second: u32) -> Result<(), Errno> {
+        let current = PHASE.load(Ordering::Relaxed);
+        if current == first || current == second {
+            Ok(())
+        } else {
+            Err(Errno::EBUSY)
+        }
+    }
+
+    fn enter_phase(next: u32) {
+        PHASE.store(next, Ordering::Relaxed);
+    }
+
+    /// Read the coordinator phase: one of the `PHASE_*` values above.
+    ///
+    /// This is a READ of state the module already owns, not a second copy of
+    /// it. The host used to keep its own `phase` field and answer from that,
+    /// which is precisely the drift this machine exists to end: two authorities
+    /// for one fact, and the module unable to refuse a host that had gotten it
+    /// wrong. The module stays the single authority; the host asks.
+    ///
+    /// Deliberately infallible and not errno-reporting. Every other entry here
+    /// answers `EBUSY` when the phase is wrong, but "what phase are we in" has
+    /// no wrong phase to be in, and a host branching on the answer must not
+    /// have to distinguish "idle" from "the call failed". `PHASE_IDLE` before
+    /// any activation exists is the truthful answer, not a default.
+    ///
+    /// PREFER ACTING TO ASKING. A read followed by the call it guards is two
+    /// steps the module cannot make atomic, so the answer is stale in principle
+    /// by the time the host branches on it; the refusal is not. This exists for
+    /// the host decisions that are not a prelude to a call -- choosing WHICH
+    /// entry point to run, and asserting an invariant -- where there is nothing
+    /// to attempt and catch. `host/test/fork-module-phase.test.ts` deliberately
+    /// does not use it: a behavioural refusal test is the stronger claim,
+    /// because an accessor can agree with a broken machine.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_phase() -> u32 {
+        PHASE.load(Ordering::Relaxed)
+    }
+
     // -- Coordinator (JS→wasm, once per phase, not hot) ---------------------
 
     /// Register a fresh unwind activation into `module` over its own MODULE-OWNED
@@ -1989,7 +4090,7 @@ mod wasm {
         module: &mut ForkModule,
         activation_id: u32,
         fmt: LinkedFrameFormat,
-        mut arena: FrameArena,
+        mut arena: ForkChunkList,
     ) -> Result<u64, Errno> {
         if module.activations.contains_key(&activation_id) {
             return Err(Errno::EINVAL); // activation already open in this fork
@@ -2060,6 +4161,8 @@ mod wasm {
             extra_chunks: Vec::new(),
             journal_image_ptr: 0,
             journal_image_len: 0,
+            module_state: ModuleStateWriter::new(module_state_format()?),
+            module_state_chunks: ForkChunkList::new_channel(channel_base),
             journal: ReplayEventJournal::new(),
             table: ResumeSlotTable::new(),
             replay_events: Vec::new(),
@@ -2068,7 +4171,7 @@ mod wasm {
         // One capture spans every activation: commits from all activations are
         // recorded in the single process-wide journal in interleaved order.
         module.journal.begin_capture()?;
-        let arena = FrameArena::new_channel(channel_base);
+        let arena = ForkChunkList::new_channel(channel_base);
         let module_buffer = register_unwind_activation(&mut module, activation_id, fmt, arena)?;
 
         *state() = Some(module);
@@ -2101,7 +4204,7 @@ mod wasm {
         if channel_base != st.channel_base {
             return Err(Errno::EINVAL);
         }
-        let arena = FrameArena::new_channel(channel_base);
+        let arena = ForkChunkList::new_channel(channel_base);
         register_unwind_activation(st, activation_id, fmt, arena)
     }
 
@@ -2167,9 +4270,46 @@ mod wasm {
         sides_ptr: u64,
         sides_count: u64,
     ) -> Result<u64, Errno> {
+        // A fresh capture records a fresh externref set. Without this a COW child,
+        // which inherits this module's memory, would report the handles its
+        // PARENT interned and lease references it does not hold.
+        reset_captured_externrefs();
         // Activation 0: open the fresh capture (reclaims prior fork state) and
         // publish its arena root.
         let root0 = begin_unwind_impl(0, channel_base)?;
+        // `arena_root == 0` asks the module to allocate the KFMS arena root
+        // itself, instead of the host allocating it and handing the address in.
+        //
+        // That handoff is the ownership split census section 133 found: the host
+        // mapped chunk one, the module mapped every later chunk as the guest
+        // reserved records, and the host freed them ALL by walking the linked
+        // list back out of guest memory to rediscover addresses it never held.
+        // Allocating here is what lets the module free exactly what it mapped,
+        // from a list the guest cannot reach -- which retires the cycle check,
+        // the chain-length bound, the per-chunk validation and the
+        // publish-only-after-validation ordering the host needed to keep a
+        // malformed arena from steering a munmap.
+        //
+        // A nonzero `arena_root` keeps the old contract, so `crates/host-native`
+        // is unaffected and the two hosts can differ while the JS side moves.
+        // The host reads the allocated root back with `fm_module_state_arena(0)`
+        // rather than it being returned here, because this entry's return value
+        // is already activation 0's module-buffer anchor.
+        // Whether the MODULE owns this arena. It decides who declares the
+        // activation set below: a host that supplies its own root also writes
+        // its own `Module` records, and the module writing a second set would
+        // not overwrite them -- the writer's root is still 0, so `reserve` would
+        // start a SEPARATE arena on the same channel, and the records would land
+        // somewhere nothing reads while the host's arena stayed empty.
+        let module_owns_arena = arena_root == 0;
+        let arena_root = if arena_root == 0 {
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            module_state.begin(module_state_chunks, mem)?
+        } else {
+            arena_root
+        };
         write_module_state_root(root0, arena_root)?;
 
         // Side activations (a dlopen fork): read each (id, fixed_prefix) pair from
@@ -2205,13 +4345,104 @@ mod wasm {
                 .map(|(id, act)| (*id, act.module_buffer))
                 .collect()
         };
+        // Declare the activation set into the arena before anything writes to
+        // it. One `Module` record per activation, carrying the template id the
+        // host seeded -- and the arena has no activation set without them: the
+        // child-install path filters the arena on this record kind to decide
+        // which activations to drive, so an arena missing them installs nothing
+        // rather than failing. This replaces the JS registry's
+        // `arena.appendModule({ activationId, templateId })` loop, which ran at
+        // exactly this point and for the same reason.
+        //
+        // ONLY when the module allocated the arena. A caller that passed its own
+        // root writes its own records into it, and this block cannot add to that
+        // arena anyway -- see `module_owns_arena` above.
+        //
+        // A host that seeded no template id for an activation is a host bug, not
+        // an activation without a module, so it is `EINVAL` rather than a record
+        // with a zero id.
+        if module_owns_arena {
+            let ids: Vec<u32> = {
+                let st = state().as_ref().ok_or(Errno::EINVAL)?;
+                st.activations.keys().copied().collect()
+            };
+            let payload_size =
+                u64::from(abi::WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE);
+            for id in ids {
+                let template_id = activation_template_id(id).ok_or(Errno::EINVAL)?;
+                let st = state().as_mut().ok_or(Errno::EINVAL)?;
+                let mem = unsafe { mem_mut() };
+                let ForkModule { module_state, module_state_chunks, .. } = st;
+                let payload = module_state.reserve(
+                    module_state_chunks,
+                    mem,
+                    abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE,
+                    id,
+                    0,
+                    payload_size,
+                )?;
+                let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+                let end = start
+                    .checked_add(payload_size as usize)
+                    .ok_or(Errno::EINVAL)?;
+                if end > mem_len_bytes() {
+                    return Err(Errno::EINVAL);
+                }
+                // NOT `mem.get_mut(start..end)`. That is the shape census
+                // section 140 measured returning `None` for an in-bounds range
+                // -- including `0..32` on a 16 MiB memory -- because the
+                // whole-memory slice is built from a null base and the bounds
+                // check gets folded. This write would have failed `EINVAL` on
+                // the first real capture, and the errno would have looked like a
+                // bad argument rather than a miscompiled read.
+                //
+                // SAFETY: `[start, end)` is inside guest linear memory (checked
+                // above), and the base is non-null for any real payload offset.
+                let out: &mut [u8] = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        core::hint::black_box(start) as *mut u8,
+                        payload_size as usize,
+                    )
+                };
+                encode_module_record(
+                    out,
+                    &fork_codec::ModuleDescriptor { template_id, flags: 0 },
+                )?;
+                module_state.commit(mem, payload)?;
+            }
+        }
+
         let mut steps = Vec::new();
+        // The CAPTURE-side guest save walk, driven before any unwind begins.
+        //
+        // This is what a module-driven capture was missing. The module could
+        // drive the child's RESTORE (`append_attach_steps`) and never the
+        // parent's SAVE, because no drive op existed for it -- so a capture
+        // sequenced entirely by the module produced an arena with no global or
+        // table records in it, silently. The JS `ForkActivationRegistry`
+        // `beginCapture` loop was the only thing calling
+        // `wpk_fork_module_state_save`.
+        //
+        // Order matters both ways and matches that loop. AFTER the arena root
+        // is published above, because the guest save reserves its records
+        // through the module's own record-reserve import and there must be an
+        // arena to reserve into. BEFORE `wpk_fork_unwind_begin`, because the
+        // save is capturing the state the unwind is about to walk away from.
+        let save_activations: Vec<u32> = roots.iter().map(|(id, _)| *id).collect();
+        drive_plan::append_module_state_save_steps(&mut steps, &save_activations);
         drive_plan::append_unwind_begin_steps(&mut steps, &roots);
         let plan = serialize_and_store_plan(&steps)?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
         if count > 0 {
             drive_plan_via_injector(plan, count);
         }
+        // AFTER the drive, because the guest's save walk is what produces the
+        // snapshots this reads. Same position in the sequence the JS
+        // `importedStateCapture.appendTo(arena)` held: immediately after the
+        // capture opened and the save ran, before anything else touches the
+        // arena.
+        write_imported_global_bindings()?;
+        write_imported_table_bindings()?;
         Ok(root0)
     }
 
@@ -2382,6 +4613,15 @@ mod wasm {
         }
         finish_replay_impl()?;
         if let Some(st) = state().as_mut() {
+            // The ABORT finish releases the metadata arena too, for the reason
+            // `abort_impl` does: an aborted fork has no child to read it and
+            // no host call left that will. The ordinary finish deliberately
+            // does not -- a completed fork's arena is still read afterwards
+            // (a vfork borrower reads its owner's), and freeing it there would
+            // be pulling a live mapping out from under a reader.
+            if !st.module_state.is_adopted() {
+                st.module_state_chunks.release_all();
+            }
             st.in_abort = false;
         }
         Ok(())
@@ -2393,6 +4633,20 @@ mod wasm {
     fn abort_impl() -> Result<(), Errno> {
         if let Some(st) = state().as_mut() {
             release_fork_chunks(st);
+            // AND THE METADATA ARENA, which `release_fork_chunks` does not
+            // touch because a successful fork's arena outlives the replay that
+            // reads it. An ABORTED fork has no such reader: no child was
+            // created, and the parent is about to carry on with the arena's
+            // pages still mapped -- which `p_11_fork_continuation_enomem`
+            // catches by mmap'ing the three pages an aborted transaction
+            // touched and finding one of them unavailable.
+            //
+            // ONLY when this module mapped them. An adopted arena belongs to
+            // the process that did, and freeing another's mapping is the
+            // ownership error the whole chunk-list design exists to prevent.
+            if !st.module_state.is_adopted() {
+                st.module_state_chunks.release_all();
+            }
             st.in_abort = false;
         }
         Ok(())
@@ -2592,7 +4846,7 @@ mod wasm {
                 // A replay-only child mmaps nothing: `channel_base == 0` and the
                 // `replay_only` guard rejects any reserve/commit, so `allocate`
                 // is never called.
-                arena: FrameArena::new_channel(0),
+                arena: ForkChunkList::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -2610,6 +4864,12 @@ mod wasm {
             extra_chunks: Vec::new(),
             journal_image_ptr: 0,
             journal_image_len: 0,
+            // A replay-only child never writes module state: it DECODES the
+            // list it inherited. The writer is present but its chunk list
+            // allocates nothing (`channel_base == 0`), so a stray guest reserve
+            // here fails truthfully instead of writing into an unowned region.
+            module_state: ModuleStateWriter::new(module_state_format()?),
+            module_state_chunks: ForkChunkList::new_channel(0),
             journal,
             table,
             replay_events: decoded.events,
@@ -2773,7 +5033,7 @@ mod wasm {
                 format: fmt,
                 writer: LinkedFrameWriter::new(fmt),
                 // Borrowed side activation: mmaps nothing, releases nothing.
-                arena: FrameArena::new_channel(0),
+                arena: ForkChunkList::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -2850,7 +5110,7 @@ mod wasm {
                 format: fmt,
                 writer: LinkedFrameWriter::new(fmt),
                 // Replay-only side activation: mmaps nothing (see the primary).
-                arena: FrameArena::new_channel(0),
+                arena: ForkChunkList::new_channel(0),
                 driver: Some(driver),
                 committed_ordinals,
                 module_buffer,
@@ -2895,7 +5155,17 @@ mod wasm {
             let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
             let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
             let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
-            let payload = mem.get(start..end).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // NOT `mem.get(start..end)` -- see census section 140. The
+            // whole-memory slice is built from a null base, and `.get` on it was
+            // measured returning `None` for ranges that are plainly in bounds.
+            // SAFETY: `[start, end)` is inside guest linear memory (checked
+            // above); the base is non-null for any real payload offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
             found = Some(decode_journal_image(payload)?);
         }
         found.ok_or(Errno::EINVAL)
@@ -2920,6 +5190,73 @@ mod wasm {
     /// (only activation 0 is seeded from the launch anchor + journal image).
     /// Truthful failure: a malformed inheritance or an already-seeded activation is
     /// a `fm_last_errno`.
+    /// A side activation's inherited continuation root, from the `KFAC`
+    /// manifest the parent's seal wrote into this arena.
+    ///
+    /// The host cannot supply this and should not try: it is a PER-FORK address
+    /// the parent allocated, not a static property of the side module the child
+    /// loaded. The host owns the other half of the pair -- `fixed_prefix` --
+    /// which is static and which no inherited record carries. So each side
+    /// tells the other exactly what only it knows.
+    fn activation_continuation_root(
+        module_state_root: u64,
+        activation_id: u32,
+    ) -> Result<u64, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+        let header = usize::from(abi::WPK_FORK_ACTIVATION_CONTINUATIONS_HEADER_SIZE);
+        let entry = usize::from(abi::WPK_FORK_ACTIVATION_CONTINUATION_ENTRY_SIZE);
+        for record in &module_state.records {
+            if record.kind != abi::WPK_FORK_MODULE_STATE_RECORD_KIND_ACTIVATION_CONTINUATIONS
+            {
+                continue;
+            }
+            let payload = record_payload(record)?;
+            if payload.len() < header {
+                return Err(Errno::EINVAL);
+            }
+            if payload[0..4] != abi::WPK_FORK_ACTIVATION_CONTINUATIONS_MAGIC {
+                return Err(Errno::EINVAL);
+            }
+            let count = u32::from_le_bytes([
+                payload[12], payload[13], payload[14], payload[15],
+            ]) as usize;
+            let need = header
+                .checked_add(entry.checked_mul(count).ok_or(Errno::EINVAL)?)
+                .ok_or(Errno::EINVAL)?;
+            if payload.len() < need {
+                return Err(Errno::EINVAL);
+            }
+            for index in 0..count {
+                let at = header + index * entry;
+                let id = u32::from_le_bytes([
+                    payload[at], payload[at + 1], payload[at + 2], payload[at + 3],
+                ]);
+                if id != activation_id {
+                    continue;
+                }
+                let mut root = [0u8; 8];
+                root.copy_from_slice(&payload[at + 8..at + 16]);
+                let root = u64::from_le_bytes(root);
+                if root == 0 {
+                    return Err(Errno::EINVAL); // a manifest entry with no root
+                }
+                return Ok(root);
+            }
+        }
+        Err(Errno::EINVAL) // no manifest, or it does not name this activation
+    }
+
     fn child_seed_impl(
         module_state_root: u64,
         act0_root: u64,
@@ -2930,23 +5267,28 @@ mod wasm {
         begin_child_replay_impl(act0_root, image_ptr, image_len)?;
         let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
         if count > 0 {
-            let bytes = (count as u64).checked_mul(16).ok_or(Errno::EINVAL)?;
+            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
             let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
             if sides_ptr == 0 || end > mem_len_bytes() as u64 {
                 return Err(Errno::EINVAL);
             }
             for i in 0..count {
-                let base = (i as u64) * 16;
+                let base = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
                 let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
-                let root_lo = unsafe { ch_read_u32(sides_ptr, (base + 8) as usize) };
-                let root_hi = unsafe { ch_read_u32(sides_ptr, (base + 12) as usize) };
-                let root = ((root_hi as u64) << 32) | root_lo as u64;
                 if id == 0 {
                     // Activation 0 is seeded from the launch anchor + journal image
                     // above; a side entry naming it is a host bug.
                     return Err(Errno::EINVAL);
                 }
+                // The host knows this activation's `fixed_prefix` -- a static
+                // property of the module it loaded -- and CANNOT know its
+                // continuation root, which is a per-fork address the parent
+                // recorded at seal. So the record carries only what the host
+                // owns, and the root comes from the manifest; see
+                // `activation_continuation_root`. Same `(id, fixed_prefix)`
+                // layout the capture side reads, for the same reason.
+                let root = activation_continuation_root(module_state_root, id)?;
                 add_activation_child_replay_impl(id, root, fixed_prefix)?;
             }
         }
@@ -2981,38 +5323,59 @@ mod wasm {
     fn child_seed_borrowed_impl(
         module_state_root: u64,
         act0_root: u64,
-        act0_private_prefix: u64,
         sides_ptr: u64,
         sides_count: u64,
     ) -> Result<(), Errno> {
         let (image_ptr, image_len) = journal_image_from_arena(module_state_root)?;
+        // Activation 0's private prefix is CARVED, not passed. The host seeded
+        // the region the kernel admitted (`fm_set_borrowed_workspace`); the
+        // walk that divides it among activations is this module's, and it was
+        // already reporting the total for that walk through
+        // `fm_borrowed_replay_workspace`. Carving in the same order the total
+        // was computed in is what makes the two agree.
+        let act0_prefix_size = borrowed_fixed_prefix(module_state_root, 0)?;
+        let act0_private_prefix = carve_borrowed_prefix(act0_prefix_size)?;
         begin_borrowed_child_replay_impl(act0_root, image_ptr, image_len, act0_private_prefix)?;
         let count = usize::try_from(sides_count).map_err(|_| Errno::EINVAL)?;
         if count > 0 {
-            let bytes = (count as u64).checked_mul(24).ok_or(Errno::EINVAL)?;
+            // The SAME `(id, fixed_prefix)` 8-byte record the COW seed and the
+            // capture side read. A borrowed child's records used to be 24 bytes
+            // because they also carried a root and a private prefix; the module
+            // reads the root from its own manifest and carves the prefix, so
+            // neither is the host's to say.
+            let bytes = (count as u64).checked_mul(8).ok_or(Errno::EINVAL)?;
             let end = sides_ptr.checked_add(bytes).ok_or(Errno::EINVAL)?;
             if sides_ptr == 0 || end > mem_len_bytes() as u64 {
                 return Err(Errno::EINVAL);
             }
             for i in 0..count {
-                let base = (i as u64) * 24;
+                let base = (i as u64) * 8;
                 let id = unsafe { ch_read_u32(sides_ptr, base as usize) };
                 let fixed_prefix = unsafe { ch_read_u32(sides_ptr, (base + 4) as usize) };
-                let root_lo = unsafe { ch_read_u32(sides_ptr, (base + 8) as usize) };
-                let root_hi = unsafe { ch_read_u32(sides_ptr, (base + 12) as usize) };
-                let priv_lo = unsafe { ch_read_u32(sides_ptr, (base + 16) as usize) };
-                let priv_hi = unsafe { ch_read_u32(sides_ptr, (base + 20) as usize) };
-                let root = ((root_hi as u64) << 32) | root_lo as u64;
-                let private_prefix = ((priv_hi as u64) << 32) | priv_lo as u64;
                 if id == 0 {
                     // Activation 0 is seeded from the launch anchor + journal image
                     // above; a side entry naming it is a host bug.
                     return Err(Errno::EINVAL);
                 }
+                let root = activation_continuation_root(module_state_root, id)?;
+                let private_prefix = carve_borrowed_prefix(fixed_prefix as u64)?;
                 add_activation_borrowed_child_replay_impl(id, root, fixed_prefix, private_prefix)?;
             }
         }
         Ok(())
+    }
+
+    /// One activation's fixed prefix size, as the SEEDED format reports it.
+    ///
+    /// Activation 0's comes from the worker's own `fm_set_format`; a side
+    /// activation's arrives in its `(id, fixed_prefix)` record, because a side
+    /// module's prefix is a static property of the module THIS child loaded and
+    /// no inherited record carries it.
+    fn borrowed_fixed_prefix(_module_state_root: u64, activation_id: u32) -> Result<u64, Errno> {
+        if activation_id != 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(FMT_FIXED_PREFIX.load(Ordering::Relaxed) as u64)
     }
 
     // -- Reference reconstruction impls (Phase 6 D6.1) ----------------------
@@ -3067,7 +5430,17 @@ mod wasm {
             let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
             let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
             let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
-            let payload = mem.get(start..end).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // NOT `mem.get(start..end)` -- see census section 140. The
+            // whole-memory slice is built from a null base, and `.get` on it was
+            // measured returning `None` for ranges that are plainly in bounds.
+            // SAFETY: `[start, end)` is inside guest linear memory (checked
+            // above); the base is non-null for any real payload offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
             records.push(ReferenceTransactionRecord {
                 kind: record.kind,
                 activation_id: record.activation_id,
@@ -3078,7 +5451,35 @@ mod wasm {
         decode_segmented_reference_transaction(&records, abi::WPK_FORK_REFERENCE_TRANSACTION_OWNER)
     }
 
+    /// The sealed module-state arena root of the most recent reference replay.
+    ///
+    /// Remembered ONLY so `__wpk_fork_ref_exn_broker_throw_recipe` can decode
+    /// the graph on demand. The throw path needs to know which activation owns
+    /// a recipe, which is a field of the decoded graph -- and the graph is
+    /// NOT a by-product of replay: `begin_reference_replay_impl` moves its
+    /// decoded transaction into the driver rather than leaving it resident.
+    ///
+    /// Decoding eagerly per fork would charge every fork for a path most never
+    /// take (it walks the arena and abandons the previous resident graph), so
+    /// the root is kept and the decode happens on the first throw. That is the
+    /// same laziness the host broker had, with the host no longer holding the
+    /// root on the module's behalf.
+    static LAST_REPLAY_ROOT: AtomicU64 = AtomicU64::new(0);
+
+    /// The arena root the currently resident decoded graph was decoded from.
+    ///
+    /// The staleness check, and the reason it is a comparison rather than an
+    /// invalidation. The host used to hold this: `ForkExceptionBroker` had an
+    /// `invalidate()` the fork path called at the two moments a new graph
+    /// exists. Abandoning the graph here instead would be wrong -- the host
+    /// decodes it for its OWN admission gates and reads node fields back
+    /// through `fm_decoded_node_field`, so dropping one it is still using would
+    /// turn its reads into `EINVAL`. Comparing roots notices the same staleness
+    /// without touching anything the host owns.
+    static DECODED_GRAPH_ROOT: AtomicU64 = AtomicU64::new(0);
+
     fn begin_reference_replay_impl(module_state_root: u64, _pid: u32) -> Result<(), Errno> {
+        LAST_REPLAY_ROOT.store(module_state_root, Ordering::Relaxed);
         // Reclaim any prior fork's reference state WITHOUT running Drop: a COW
         // child inherits these statics (each owning a `SegmentedReferenceTransaction`
         // or replay feed whose `Vec`/`BTreeMap` interiors point into the parent's
@@ -3200,6 +5601,10 @@ mod wasm {
         let transaction = decode_reference_transaction_from_arena(module_state_root)?;
         let node_count = u32::try_from(transaction.nodes.len()).map_err(|_| Errno::EINVAL)?;
         *decoded_graph() = Some(transaction);
+        // Which arena this graph describes. Read by the exception throw path to
+        // notice a graph that belongs to a PREVIOUS fork -- see
+        // `make_replay_graph_resident`.
+        DECODED_GRAPH_ROOT.store(module_state_root, Ordering::Relaxed);
         REFERENCE_GRAPHS_DECODED.fetch_add(1, Ordering::Relaxed);
         Ok(node_count)
     }
@@ -3207,16 +5612,20 @@ mod wasm {
     // -- Module-owned decoded-graph STRUCTURE readout (orchestration migration
     //    increment C) -----------------------------------------------------------
     //
-    // The host's fork wiring (`worker-main.ts`) keeps a `decodedChildReferences`
-    // decode ONLY for two structural consumers that the count/handle-scan
-    // surface above cannot serve: the HOST-owned exnref tag-validity admission
-    // gate (`assertForkModuleExnrefTagsDeclared`, needs each exnref node's
-    // `moduleActivation` + `tagOrdinal`) and the merged static-root catalog
-    // mirror seeding (needs each static-root node's `moduleActivation` +
-    // `staticRootOrdinal`, plus the per-activation max ordinal it derives from
-    // them). These per-node accessors expose exactly that decoded structure over
-    // the resident graph (`fm_decode_reference_graph`), so a later increment can
-    // retire the JS `decodeSegmentedForkReferenceTransaction` structural decode.
+    // BOTH CONSUMERS THIS COMMENT USED TO NAME ARE GONE, and it named them as
+    // reasons these accessors exist -- so read the list below, not the history.
+    // The exnref tag-validity gate moved INTO this module (see the tag catalog
+    // above, which supersedes `assertForkModuleExnrefTagsDeclared`), and the
+    // merged static-root mirror seeding stopped walking nodes when that layout
+    // became a single map settled at registration (census 201). A comment that
+    // justifies a surface by its callers outlives them by default; this one
+    // did, in the same file that elsewhere says the gate is the module's.
+    //
+    // THE LIVE CONSUMER is `ForkChildReferences`, which asks a recipe's KIND
+    // and its MODULE_ACTIVATION -- the ordinal selector and the node count have
+    // no host caller left. They stay exported because the wire format is frozen
+    // and a reader is cheap; nothing here should be read as a claim that
+    // something calls them.
     // The wire format is FROZEN and no new algorithm is introduced: they read
     // the SAME decoded `ReferenceRecipeNode` the shared `reference_segments.rs`
     // decode already produced.
@@ -3368,8 +5777,63 @@ mod wasm {
         Ok(activations)
     }
 
-    /// Child-install ENTRY (the module-owned `fm_attach_child` /
-    /// `fm_attach_borrowed_child`). Seeds the reference replay driver/feed AND
+    /// Decode the imported-binding records this child inherited, and refuse a
+    /// record it cannot read.
+    ///
+    /// The bytes come out of an arena the PARENT mapped and this process
+    /// inherited -- shared memory another process wrote -- so they are checked
+    /// rather than trusted. Checked HERE, beside the exnref admission gate,
+    /// for the same reason that one is here: a record that decodes to nonsense
+    /// would otherwise be read much later, when a child builds its imports from
+    /// coordinates describing nothing, and by then the failure is a wrong child
+    /// rather than a refused fork.
+    ///
+    /// Decoding and discarding is the point. Nothing here needs the bindings
+    /// yet -- the host builds the child's import object, because only
+    /// JavaScript can construct a `WebAssembly.Global` -- so this is the
+    /// admission check, not the read.
+    fn assert_inherited_bindings_decodable(module_state_root: u64) -> Result<(), Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+        for record in &module_state.records {
+            let globals =
+                record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS;
+            let tables =
+                record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS;
+            if !globals && !tables {
+                continue;
+            }
+            let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+            let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let payload: &[u8] = unsafe {
+                core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+            };
+            if globals {
+                fork_codec::decode_imported_global_bindings(payload)?;
+            } else {
+                fork_codec::decode_imported_table_bindings(payload)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Child-install ENTRY (the module-owned `fm_attach_child`, which serves the
+    /// COW and the vfork borrowed child alike). Seeds the reference replay driver/feed AND
     /// builds ONE drive plan that first reconstructs the reference graph
     /// (Phase 0/0b/3/4/5, identical to `restore_from_arena_impl`) and THEN — as the
     /// child-install tail — drives every activation's guest
@@ -3381,11 +5845,16 @@ mod wasm {
     /// global/table layout), but the ORDER and DRIVE are now module-owned. Returns
     /// the plan's guest address; the step count is read from `fm_gc_plan_count`.
     ///
-    /// The COW (`fm_attach_child`) and vfork borrowed (`fm_attach_borrowed_child`)
-    /// children share this identical install plan: the only borrowed-specific work
-    /// is the host-side child-private replay-prefix reservation (raw memory floor,
-    /// no reference values), so both entries delegate here.
+    /// The COW and the vfork borrowed child share this identical install plan, which
+    /// is why there is ONE entry rather than two: the only borrowed-specific work is
+    /// the host-side child-private replay-prefix reservation (raw memory floor, no
+    /// reference values), and that never entered this module.
     fn attach_from_arena_impl(module_state_root: u64, pid: u32) -> Result<usize, Errno> {
+        // FIRST, before the reference graph is decoded: a pure structural read
+        // of bytes another process wrote, depending on nothing the seed below
+        // establishes. The cheapest check that can refuse a corrupt inheritance
+        // should be the one that does.
+        assert_inherited_bindings_decodable(module_state_root)?;
         begin_reference_replay_impl(module_state_root, pid)?;
         // Exnref tag-validity ADMISSION gate (fail-loud SECURITY boundary). Runs
         // right after the graph is decoded and BEFORE the reconstruction drive plan
@@ -3395,9 +5864,68 @@ mod wasm {
         // (`assertForkModuleExnrefTagsDeclared`); the host seeds each activation's
         // declared tags via `fm_set_activation_exception_tags` before this entry.
         assert_exnref_tags_admissible()?;
+        // ADOPT THE INHERITED ARENA before anything drives the guest's restore.
+        //
+        // `__wpk_fork_module_state_record_find` searches from the WRITER's root,
+        // and a child's writer has never built one -- its arena was mapped by
+        // its parent. Its own doc comment predicted this exactly: "That
+        // asymmetry is inert today because nothing in production drives the
+        // guest's `wpk_fork_module_state_restore` ... It stops being inert the
+        // moment that drive is wired up -- the guest would then load its
+        // restored global from linear address 0. Whoever wires it must give this
+        // function the replay root first."
+        //
+        // This lane wired that drive up, and the prediction came true as a trap
+        // inside the guest's `finish_restore`: every `record_find` answered 0,
+        // so the sparse table overlay loaded its page header from address 0 and
+        // `emit_trap_if` refused the nonsense that came back. Census 182.
+        //
+        // Adopting rather than building also keeps ownership honest:
+        // `is_adopted()` makes `module_owns_arena_now()` false, so this child
+        // never frees chunks its parent mapped.
+        //
+        // NOT YET REACHABLE, and that is the other half of the defect: a child
+        // arrives here with NO `ForkModule` state at all, because
+        // `fm_child_seed` -- the entry that builds it -- lost its only caller
+        // when the fork coordinator was deleted (`18762e9cb`). `record_find`
+        // then fails at its FIRST check (`state()` is `None`) rather than on the
+        // root. Wiring the seed is what makes this line run; both halves are
+        // needed and neither is sufficient. Census 183.
+        if let Some(module) = state().as_mut() {
+            if module.module_state.root() == 0 {
+                module.module_state.adopt(module_state_root)?;
+            }
+        }
         let mut steps = build_reconstruction_steps()?;
         let activations = arena_module_activations(module_state_root)?;
         drive_plan::append_attach_steps(&mut steps, &activations);
+        // ...and then the REWIND BEGIN that puts each guest into replay.
+        //
+        // Without it the child's guest is never told to rewind: its
+        // `wpk_fork_resume_start` finds no rewind in progress and runs `_start`
+        // LEXICALLY, so the program begins again from `main` instead of
+        // resuming after `fork()`. That is not a trap and not an errno -- the
+        // child simply runs the whole program a second time, which is how it
+        // surfaced (a `dlsym` in a re-run `main` failing in the child, census
+        // 185). `crates/host-native` drives this through `fm_child_reconstruct`
+        // as a separate call; putting the steps in the install plan instead
+        // means a JS host needs no third entry and cannot order the two wrong.
+        //
+        // AFTER the restore/finish tail on purpose: a guest rewind reads the
+        // globals and tables those steps installed (`append_rewind_begin_steps`
+        // states the same rule).
+        //
+        // The roots come from the replay drivers `fm_child_seed` built, which is
+        // the other half of why the seed must precede the attach.
+        let roots: alloc::vec::Vec<(u32, u64)> = match state().as_ref() {
+            Some(st) => st
+                .activations
+                .iter()
+                .map(|(id, act)| (*id, act.child_rewind_root))
+                .collect(),
+            None => alloc::vec::Vec::new(),
+        };
+        drive_plan::append_rewind_begin_steps(&mut steps, &roots);
         serialize_and_store_plan(&steps)
     }
 
@@ -3440,6 +5968,30 @@ mod wasm {
     }
 
     fn ref_vector_get_impl(ordinal: u32, index: u32) -> i32 {
+        // TWO SOURCES, ONE IMPORT. A CHILD reads the decoded transaction it
+        // inherited. A PARENT, resuming after its own fork, reads back a vector
+        // it interned moments ago -- the capture builder is still resident and
+        // is the only thing that HAS it: the parent never decodes its own
+        // arena, so its replay feed is empty and every read answered EINVAL and
+        // trapped the parent the instant its guest walked a saved frame's
+        // reference vector.
+        //
+        // The phase is what distinguishes them, and the module is what knows
+        // the phase. The host used to make this choice by binding the guest's
+        // import to a different function for a parent than for a child; making
+        // it here means the two workers instantiate identically and one less
+        // thing can be wired wrong.
+        if answering_from_capture() {
+            let recipe = fm_capture_vector_get(ordinal, index);
+            if recipe < 0 {
+                // Same contract as the feed path below: the guest ABI has no
+                // failure value here, so an unreadable vector is a trap rather
+                // than a recipe id the guest would then decode.
+                wasm_intr::unreachable()
+            }
+            REFERENCE_FEED_READS.fetch_add(1, Ordering::Relaxed);
+            return recipe;
+        }
         let (feed, transaction) = feed_and_transaction();
         feed_read(feed.vector_get(transaction, ordinal, index))
     }
@@ -3532,7 +6084,88 @@ mod wasm {
     /// the canonical Null reference, and TRAPS on any inconsistency (missing
     /// reference state, out-of-range recipe, non-funcref kind, or an ordinal that
     /// does not fit `i32`). Every success bumps `REFERENCES_RECONSTRUCTED`.
+    /// Whether a guest-facing reference read should answer from the resident
+    /// CAPTURE graph rather than a decoded one.
+    ///
+    /// Three callers, and the rule has to serve all three:
+    ///
+    ///   * a PARENT resuming after its own fork -- capture resident, no decoded
+    ///     graph of its own. It must read the capture, and reading a driver
+    ///     that is not there trapped it;
+    ///   * a fork CHILD -- decoded graph resident, and a capture builder too,
+    ///     because it inherited the parent's through the memory clone. That
+    ///     inherited builder is the PARENT's and must never answer, which is
+    ///     what the phase test rules out;
+    ///   * a caller that decodes an arena and replays it without a child
+    ///     install (the module's own tests, and `fm_restore_from_arena`) --
+    ///     driver resident, no capture. It reads the driver, and it is not in
+    ///     child-replay phase, so the capture test is what rules it out.
+    fn answering_from_capture() -> bool {
+        PHASE.load(Ordering::Relaxed) != PHASE_CHILD_REPLAY && capture_state().is_some()
+    }
+
+    /// One node of the resident CAPTURE graph -- the parent's side of the split
+    /// above. `None` when no capture is resident or the id is out of range.
+    fn captured_node(recipe_id: u32) -> Option<&'static ReferenceRecipeNode> {
+        capture_state()
+            .as_ref()
+            .and_then(|g| g.nodes().get(recipe_id as usize))
+    }
+
+    /// The MERGED-catalog global slot for one funcref coordinate:
+    /// `base(module_activation) + function_ordinal`.
+    ///
+    /// The base map is EMPTY for a single-activation worker, so `base` defaults
+    /// to 0 and the mapping is the byte-identical raw ordinal. A NON-empty map
+    /// missing this funcref's activation is corruption -- the host seeds a base
+    /// for every funcref activation before replay -- so it TRAPS rather than
+    /// read slot 0 or another activation's catalog.
+    fn merged_catalog_slot(module_activation: u32, function_ordinal: u32) -> i32 {
+        let base = match func_catalog_base(module_activation) {
+            Some(base) => base,
+            None if func_catalog_base_map_empty() => 0,
+            None => wasm_intr::unreachable(),
+        };
+        let slot = match base.checked_add(function_ordinal) {
+            Some(slot) => slot,
+            None => wasm_intr::unreachable(),
+        };
+        match i32::try_from(slot) {
+            Ok(ordinal) if ordinal >= 0 => {
+                REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                ordinal
+            }
+            // A global slot that does not fit a non-negative i32 cannot index
+            // the imported funcref table -- a corrupt graph, not a value.
+            _ => wasm_intr::unreachable(),
+        }
+    }
+
     fn funcref_ordinal_impl(recipe_id: u32) -> i32 {
+        // THE PARENT reads its own capture. It never decodes its arena -- the
+        // child does that -- so its replay driver is absent, and reading one
+        // here trapped every parent whose guest held a funcref across `fork()`.
+        // The recipe it asks about is one it interned moments ago, and the
+        // funcref it names is the SAME function in this same worker, so the
+        // answer comes from the builder and the catalog arithmetic below is
+        // identical.
+        if answering_from_capture() {
+            let target = match captured_node(recipe_id) {
+                Some(ReferenceRecipeNode::Null) => {
+                    REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
+                    return NULL_ORDINAL;
+                }
+                Some(ReferenceRecipeNode::Funcref {
+                    module_activation,
+                    function_ordinal,
+                }) => (*module_activation, *function_ordinal),
+                // No capture resident, or a recipe of another kind: the guest
+                // asked for a funcref that this graph does not hold, which is
+                // corruption rather than a value.
+                _ => wasm_intr::unreachable(),
+            };
+            return merged_catalog_slot(target.0, target.1);
+        }
         let driver = match reference_state().as_ref() {
             Some(driver) => driver,
             None => wasm_intr::unreachable(),
@@ -3550,25 +6183,7 @@ mod wasm {
                 // funcref's activation is corruption — the host gate seeds a base
                 // for every funcref activation before replay — so it TRAPS rather
                 // than read slot 0 / the wrong activation's catalog.
-                let base = match func_catalog_base(target.module_activation) {
-                    Some(base) => base,
-                    None if func_catalog_base_map_empty() => 0,
-                    None => wasm_intr::unreachable(),
-                };
-                let slot = match base.checked_add(target.function_ordinal) {
-                    Some(slot) => slot,
-                    None => wasm_intr::unreachable(),
-                };
-                match i32::try_from(slot) {
-                    Ok(ordinal) if ordinal >= 0 => {
-                        REFERENCES_RECONSTRUCTED.fetch_add(1, Ordering::Relaxed);
-                        ordinal
-                    }
-                    // A global slot that does not fit a non-negative i32 cannot
-                    // index the imported funcref table — a corrupt graph, not a
-                    // value.
-                    _ => wasm_intr::unreachable(),
-                }
+                merged_catalog_slot(target.module_activation, target.function_ordinal)
             }
             // Out-of-range recipe or a kind D6.1 does not admit: the host gate
             // should have kept this fork on JS, so reaching here is corruption.
@@ -3674,6 +6289,19 @@ mod wasm {
     // TRAMPOLINE that folds in the activation id and calls the shared
     // `fm_frame_*(act, ...)` exports below — so these exports are unchanged and
     // no guest re-instrumentation is required.
+
+    /// `__wpk_fork_module_state_table_state_owned(owner) -> i32` for the
+    /// single-activation path, which binds the guest's frozen one-argument
+    /// signature straight to this export rather than through a trampoline.
+    ///
+    /// The multi-activation path reaches `fm_module_state_table_state_owned`
+    /// through `__wpk_fork_activation_trampolines` instead, which folds the
+    /// activation in. Both answer from the same seeded election; this one just
+    /// assumes the primary activation, exactly as the frame exports below do.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_state_owned(owner_id: u32) -> u32 {
+        table_state_owned_impl(primary_activation(), owner_id)
+    }
 
     /// `__wpk_fork_frame_reserve(size) -> payload`. Reserve the next frame node
     /// and return its payload pointer (0 on failure; check `fm_last_errno`).
@@ -3843,8 +6471,20 @@ mod wasm {
     /// module's `kandelo.wpk_fork.linked_frames` descriptor) before any
     /// `fm_begin_unwind`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_format(pointer_width: u32, fixed_prefix_size: u32) {
-        match set_format_impl(pointer_width, fixed_prefix_size) {
+    pub extern "C" fn fm_set_format(
+        pointer_width: u32,
+        fixed_prefix_size: u32,
+        archive_control_addr: usize,
+        table_owner: u32,
+        channel_base: usize,
+    ) {
+        match set_format_impl(
+            pointer_width,
+            fixed_prefix_size,
+            archive_control_addr,
+            table_owner,
+            channel_base,
+        ) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -3881,7 +6521,14 @@ mod wasm {
     /// backend's `abort()` releasing the frame arena). Idempotent.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_abort() {
-        match abort_impl() {
+        // Deliberately legal from EVERY phase, including idle: this is the
+        // teardown a failed fork unwinds through, and a teardown that can itself
+        // be refused leaves the process stuck in the phase it was trying to
+        // leave. It returns to idle whether or not the impl succeeded, for the
+        // same reason.
+        let result = abort_impl();
+        enter_phase(PHASE_IDLE);
+        match result {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -3906,9 +6553,11 @@ mod wasm {
     /// record). Folds the host's former `fm_begin_child_replay` +
     /// per-activation `fm_add_activation_child_replay` loop in `attachModuleChild`
     /// into ONE module call. `act0_root` is activation 0's inherited launch anchor.
-    /// A single-activation fork passes `sides_count == 0`. Check `fm_last_errno`;
-    /// the fine-grained `fm_begin_child_replay` / `fm_add_activation_child_replay`
-    /// remain exported for the module unit tests + host-native.
+    /// A single-activation fork passes `sides_count == 0`. Check `fm_last_errno`.
+    /// Both fine-grained exports this replaced -- `fm_begin_child_replay` and
+    /// `fm_add_activation_child_replay` -- have been deleted; the side-activation
+    /// seeding they performed is `add_activation_child_replay_impl` below, which
+    /// this entry calls directly.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_child_seed(
         module_state_root: usize,
@@ -3916,13 +6565,18 @@ mod wasm {
         sides_ptr: usize,
         sides_count: usize,
     ) {
-        match child_seed_impl(
-            module_state_root as u64,
-            act0_root as u64,
-            sides_ptr as u64,
-            sides_count as u64,
-        ) {
-            Ok(()) => set_ok(),
+        match require_phase(PHASE_IDLE).and_then(|()| {
+            child_seed_impl(
+                module_state_root as u64,
+                act0_root as u64,
+                sides_ptr as u64,
+                sides_count as u64,
+            )
+        }) {
+            Ok(()) => {
+                enter_phase(PHASE_CHILD_REPLAY);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -3938,75 +6592,69 @@ mod wasm {
     /// into ONE module call — the borrowed sibling of `fm_child_seed`. `act0_root`
     /// is activation 0's borrowed launch anchor; `act0_private_prefix` its
     /// child-private prefix. A single-activation vfork passes `sides_count == 0`.
-    /// Check `fm_last_errno`; the fine-grained `fm_begin_borrowed_child_replay` /
-    /// `fm_add_activation_borrowed_child_replay` remain exported for the module
-    /// unit tests + host-native.
+    /// Check `fm_last_errno`. Both fine-grained exports this replaced --
+    /// `fm_begin_borrowed_child_replay` and
+    /// `fm_add_activation_borrowed_child_replay` -- have been deleted; the
+    /// side-activation seeding they performed is
+    /// `add_activation_borrowed_child_replay_impl` below, which this entry calls
+    /// directly.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_child_seed_borrowed(
         module_state_root: usize,
         act0_root: usize,
-        act0_private_prefix: usize,
         sides_ptr: usize,
         sides_count: usize,
     ) {
-        match child_seed_borrowed_impl(
-            module_state_root as u64,
-            act0_root as u64,
-            act0_private_prefix as u64,
-            sides_ptr as u64,
-            sides_count as u64,
-        ) {
+        match require_phase(PHASE_IDLE).and_then(|()| {
+            child_seed_borrowed_impl(
+                module_state_root as u64,
+                act0_root as u64,
+                sides_ptr as u64,
+                sides_count as u64,
+            )
+        }) {
+            Ok(()) => {
+                enter_phase(PHASE_CHILD_REPLAY);
+                set_ok()
+            }
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Seed one table coordinate's sparse-state election result.
+    ///
+    /// The HOST elects -- it compares `WebAssembly.Table` object identity, which
+    /// wasm cannot do -- and tells the module the answer here, once per
+    /// coordinate. The guest's `__wpk_fork_module_state_table_state_owned`
+    /// import is then served by `fm_module_state_table_state_owned` below instead of by a
+    /// host callback, which takes one function off every JS host's floor.
+    ///
+    /// Re-seeding a known coordinate UPDATES it. The host re-elects when a lower
+    /// coordinate registers for the same physical table, so an incumbent must be
+    /// demotable; refusing the second seed would freeze the first election and
+    /// leave the table with two writers. `owner_id` 0 is rejected (`EINVAL`) and
+    /// a 257th distinct coordinate is `E2BIG`. Check `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_set_activation_table_state_owner(
+        activation_id: u32,
+        owner_id: u32,
+        owns: u32,
+    ) {
+        match set_activation_table_state_owner_impl(activation_id, owner_id, owns) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
     }
 
-    /// Add a dlopen-vfork ("mode-1") SIDE activation to a BORROWED child replay
-    /// begun by `fm_begin_borrowed_child_replay` (Phase 6 item 4). The borrowed
-    /// sibling of `fm_add_activation_child_replay`: read-only rewind over the
-    /// parent's borrowed continuation at `module_buffer`, with this activation's
-    /// fixed prefix copied into its own child-private `private_prefix`. Owns no
-    /// chunks. Check `fm_last_errno`.
+    /// Guest-facing `env.__wpk_fork_module_state_table_state_owned(owner) -> i32`,
+    /// reached through the per-activation trampoline that folds the activation in.
+    ///
+    /// Infallible: an unseeded coordinate is 0, not an error. It does not touch
+    /// `fm_last_errno`, because the guest calls it on the table-mutation path and
+    /// a reader must not clobber the errno a caller is about to inspect.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_add_activation_borrowed_child_replay(
-        activation_id: u32,
-        module_buffer: usize,
-        fixed_prefix: u32,
-        private_prefix: usize,
-    ) {
-        match add_activation_borrowed_child_replay_impl(
-            activation_id,
-            module_buffer as u64,
-            fixed_prefix,
-            private_prefix as u64,
-        ) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Add a dlopen fork's SIDE activation to a child replay begun by
-    /// `fm_begin_child_replay` (Phase 6 D7a.1a — the multi-activation child).
-    /// `activation_id` is the side activation (must not already be seeded);
-    /// `module_buffer` is ITS continuation anchor, inherited at the same guest
-    /// offset via the fork memory copy; `fixed_prefix` is ITS own module-buffer
-    /// fixed runtime prefix (side modules carry their own — the child-side mirror
-    /// of `fm_add_activation_unwind`, and required to decode this activation's
-    /// linked-frame chain). The process-wide journal is NOT reseeded: this
-    /// attaches the activation's replay-only frame state and registers its resume
-    /// slots against the SAME journal + table `fm_begin_child_replay` created.
-    /// On success the guest then drives this activation's per-activation
-    /// trampoline (`fm_frame_peek/next(act, ...)`) in lockstep with the others.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_add_activation_child_replay(
-        activation_id: u32,
-        module_buffer: usize,
-        fixed_prefix: u32,
-    ) {
-        match add_activation_child_replay_impl(activation_id, module_buffer as u64, fixed_prefix) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
+    pub extern "C" fn fm_module_state_table_state_owned(activation_id: u32, owner_id: u32) -> u32 {
+        table_state_owned_impl(activation_id, owner_id)
     }
 
     /// Seed the FULL resume catalog for this worker: `[ptr, ptr + count*4)` is a
@@ -4019,7 +6667,12 @@ mod wasm {
     /// the host then keeps the JavaScript continuation for that program.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_resume_catalog(ptr: usize, count: usize) {
-        match set_resume_catalog_impl(ptr as u64, count as u64) {
+        // Seeding IS registering. The catalog is the ordinal set, and the slot
+        // for each ordinal is decided here, once, so the host can ask for it
+        // (`fm_resume_slots` op 0) rather than compute a second answer.
+        match set_resume_catalog_impl(ptr as u64, count as u64)
+            .and_then(|()| resume_reseed(0))
+        {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -4043,7 +6696,10 @@ mod wasm {
         ptr: usize,
         count: usize,
     ) {
-        match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64) {
+        // Seeding IS registering; see `fm_set_resume_catalog`.
+        match set_activation_resume_catalog_impl(activation_id, ptr as u64, count as u64)
+            .and_then(|()| resume_reseed(activation_id))
+        {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
@@ -4109,43 +6765,54 @@ mod wasm {
         }
     }
 
-    /// Seed ONE activation's declared exnref tag ordinals for this worker (the
-    /// exnref tag-validity admission gate): `[ptr, ptr + count*4)` is a
-    /// little-endian `u32` array of the tag ordinals that activation's
-    /// `kandelo.wpk_fork.exception_codec` section declares. The child-install
-    /// entry (`fm_attach_child` / `fm_attach_borrowed_child`) re-checks every
-    /// captured exnref recipe against these before building the reconstruction
-    /// drive plan, so a recipe naming an undeclared tag fails loud (`EINVAL`)
-    /// rather than being materialized blindly. Called ONCE per activation per
-    /// worker, before any fork drives reference reconstruction, alongside
-    /// `fm_set_activation_gc_codec`. An identical re-seed (a COW child on the host
-    /// that re-seeds) is a no-op; a conflicting re-seed fails `EINVAL`; too many
-    /// activations, or catalogs that jointly exceed the module's arena, fail
-    /// `E2BIG` (check `fm_last_errno`). An activation that declares no exnref tags
-    /// need not be seeded at all — any exnref naming it then fails the gate.
+    // `fm_set_activation_exception_tags` was DELETED here: it took a `u32` array
+    // the host produced by decoding the exception codec section, which made the
+    // host a second decoder of a module-owned format.
+    // `fm_set_activation_exception_codec` above takes the raw section instead.
+
+    /// Seed which activation owns a HOST exnref (one with no activation of its
+    /// own): the smallest activation that declared an exception codec, or
+    /// `u32::MAX` for "none". `build_gc_plan_impl` leaves an exnref ownerless when
+    /// this is `u32::MAX` so `build_drive_plan` fails loudly rather than guessing.
+    ///
+    /// Still host-seeded, and the module COULD derive it -- the owning set is
+    /// exactly the activations that reach `fm_set_activation_exception_codec`. It
+    /// is not derived because nothing could observe that it had been: see census
+    /// section 67.
+    /// Seed the vfork BORROWED child's admitted replay workspace.
+    ///
+    /// `base` is where the kernel put the region and `bytes` is how much it
+    /// admitted. That is the whole of what a host knows about it and this module
+    /// cannot derive -- the address comes from the child's launch message, and a
+    /// borrowed child does not use its own channel's control block. Everything
+    /// else about the workspace is already this module's: how much prefix each
+    /// activation needs, in what order, with what alignment. It has been
+    /// answering exactly that through `fm_borrowed_replay_workspace` since that
+    /// entry existed, so the host was performing the same walk a second time to
+    /// hand the answers back.
+    ///
+    /// With this seeded, `fm_child_seed_borrowed` carves each activation's
+    /// private prefix itself and its side records shrink to the `(id,
+    /// fixed_prefix)` pair the COW path and the capture path already use.
+    ///
+    /// Seeded ONCE per borrowed child, before its seed. `base == 0` or
+    /// `bytes == 0` is `EINVAL`: a borrowed child with no admitted prefix cannot
+    /// isolate its own active-frame writes and would scribble on the parked
+    /// parent's storage, which is a wrong value rather than a trap.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_set_activation_exception_tags(
-        activation_id: u32,
-        ptr: usize,
-        count: usize,
-    ) {
-        match set_activation_exception_tags_impl(activation_id, ptr as u64, count as u64) {
+    pub extern "C" fn fm_set_borrowed_workspace(base: usize, bytes: usize) {
+        match set_borrowed_workspace_impl(base, bytes) {
             Ok(()) => set_ok(),
             Err(errno) => set_err(errno),
         }
     }
 
-    /// Seed the `hostExceptionOwner` for this worker (Phase 6 item 3c): the
-    /// smallest activation that declared an exception descriptor, which
-    /// `fm_build_gc_plan` uses to remap a HOST-exception exnref's owner exactly as
-    /// the JS `directOwner`. Pass `u32::MAX` (0xffff_ffff) when there is no such
-    /// owner (the JS `null`). Called ONCE per worker; a single-activation program
-    /// with no host exceptions need not call it at all (the default is "none").
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_set_host_exception_owner(owner: u32) {
         HOST_EXCEPTION_OWNER.store(owner, Ordering::Relaxed);
         set_ok();
     }
+
 
     /// Seed the reference graph for this fork from the KFMS module-state arena
     /// rooted at `module_state_root` and run its bookkeeping reconstruction pass
@@ -4225,19 +6892,19 @@ mod wasm {
 
     /// `__wpk_fork_ref_vector_get(ordinal, index) -> recipe_id`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_vector_get(ordinal: u32, index: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_vector_get(ordinal: u32, index: u32) -> i32 {
         ref_vector_get_impl(ordinal, index)
     }
 
     /// `__wpk_fork_ref_gc_route(recipe_id, expected_activation) -> layout|0|-1`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_gc_route(recipe_id: u32, expected_activation: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_gc_route(recipe_id: u32, expected_activation: u32) -> i32 {
         ref_gc_route_impl(recipe_id, expected_activation)
     }
 
     /// `__wpk_fork_ref_gc_payload_len(recipe_id, activation, layout) -> len`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_gc_payload_len(
+    pub extern "C" fn __wpk_fork_ref_gc_payload_len(
         recipe_id: u32,
         expected_activation: u32,
         expected_layout_id: u32,
@@ -4248,7 +6915,7 @@ mod wasm {
     /// `__wpk_fork_ref_gc_load(recipe_id, activation, type, layout, kind, dst,
     /// len) -> vector_ordinal|0`. `dst` is an absolute guest byte offset (`ptr`).
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_gc_load(
+    pub extern "C" fn __wpk_fork_ref_gc_load(
         recipe_id: u32,
         module_activation: u32,
         type_ordinal: u32,
@@ -4270,7 +6937,7 @@ mod wasm {
 
     /// `__wpk_fork_ref_exn_route(recipe_id, expected_activation) -> layout|-1`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_exn_route(recipe_id: u32, expected_activation: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_exn_route(recipe_id: u32, expected_activation: u32) -> i32 {
         ref_exn_route_impl(recipe_id, expected_activation)
     }
 
@@ -4278,7 +6945,7 @@ mod wasm {
     /// scalar_len, ref_ids_dst, ref_count) -> 1`. Both `dst` args are absolute
     /// guest byte offsets (`ptr`).
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_exn_load(
+    pub extern "C" fn __wpk_fork_ref_exn_load(
         recipe_id: u32,
         module_activation: u32,
         tag_ordinal: u32,
@@ -4302,7 +6969,7 @@ mod wasm {
 
     /// `__wpk_fork_ref_exn_cache_index(recipe_id) -> index`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_ref_exn_cache_index(recipe_id: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_exn_cache_index(recipe_id: u32) -> i32 {
         ref_exn_cache_index_impl(recipe_id)
     }
 
@@ -4346,45 +7013,6 @@ mod wasm {
         GC_PLAN_COUNT.load(Ordering::Relaxed) as i32
     }
 
-    /// Serialize a TRIVIAL single-struct drive plan (ALLOC then FILL for one
-    /// `recipe` in `activation`) into a module-owned scratch buffer and return its
-    /// guest address for `fm_drive_execute`. The shim's post-ALLOC integrity guard
-    /// reads STORE #2 (the guest's Wasm-GC transit table) directly, so no host
-    /// generation is opened here. Returns 0 on failure (check `fm_last_errno`).
-    ///
-    /// RETENTION: this is a test-only plan builder — no production or native path
-    /// calls it. It survives ONLY to enable the sole runtime regression test of
-    /// the injected `fm_drive_execute` shim's store-#2 GC-integrity trap
-    /// (`host/test/fork-module-drive-shim.test.ts`): the load-bearing
-    /// `table.get`+`ref.is_null` guard that turns a guest `_gc_allocate` that
-    /// failed to publish a live GC object into a truthful trap instead of a silent
-    /// wrong reconstruction. That coverage is wasmtime-runnable (the guard is in
-    /// the injected wasm, not V8-specific) and should migrate to a host-native
-    /// wasmtime instantiation test built on `fork_codec::drive_plan`'s public
-    /// `trivial_struct_plan` + `serialize_plan`; once it does, this export and
-    /// `fm_trivial_plan_count` can be deleted.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_build_trivial_plan(activation: u32, recipe: u32, pid: u32) -> usize {
-        match build_trivial_plan_impl(activation, recipe, pid) {
-            Ok(ptr) => {
-                set_ok();
-                ptr
-            }
-            Err(errno) => {
-                set_err(errno);
-                0
-            }
-        }
-    }
-
-    /// The step count of the plan `fm_build_trivial_plan` wrote (the `count`
-    /// argument for `fm_drive_execute`). The trivial plan is exactly ALLOC + FILL.
-    /// Test-only; see the retention note on `fm_build_trivial_plan`.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_trivial_plan_count() -> i32 {
-        2
-    }
-
     /// Sequence a whole PARENT REPLAY-begin phase in the module (control-flow
     /// inversion): begin the parent rewind (`begin_replay_impl` — attach every
     /// activation's driver + register its resume slots), build the per-activation
@@ -4403,31 +7031,43 @@ mod wasm {
     /// activation state or a plan-build failure is a truthful errno
     /// (`fm_last_errno`); a guest reconstruction failure traps inside the shim
     /// exactly as it did under the host loop.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_replay() {
-        match parent_replay_impl(false) {
-            Ok(()) => set_ok(),
-            Err(errno) => set_err(errno),
-        }
-    }
-
-    /// Sequence a whole PARENT ABORT-replay-begin phase in the module (mirror of
-    /// [`fm_parent_replay`], abort-tagged). Runs `begin_abort_impl` (the shared
-    /// `begin_replay_impl` plus the `in_abort` pairing flag `fm_finish_abort`
-    /// asserts), builds the per-activation ABORT-begin drive plan
-    /// (`DRIVE_OP_ABORT_BEGIN`), then drives each activation's guest
-    /// `wpk_fork_abort_begin(root)` through the injector-wired shim. Replaces the
-    /// host's `fm_begin_abort` + per-activation `wpk_fork_abort_begin` loop.
     ///
-    /// Abort replay drives the parent's already-committed frames from the SAME
-    /// continuation root parent replay uses (the module's per-activation
-    /// `module_buffer`), so the plan is byte-identical to the rewind plan except
-    /// for the op tag. The host must have bound `wpk_fork_abort_begin` at
-    /// `fm_drive_table_base(activation) + DRIVE_SLOT_ABORT_BEGIN`.
+    /// `abort != 0` selects the ABORT-replay phase instead: `begin_abort_impl`
+    /// rather than `begin_replay_impl`, and `DRIVE_OP_ABORT_BEGIN` steps driving
+    /// the guest's `wpk_fork_abort_begin(root)` (bound at `DRIVE_SLOT_ABORT_BEGIN`)
+    /// rather than `wpk_fork_rewind_begin`. Both phases take the SAME continuation
+    /// root — the module's per-activation `module_buffer` — so the two plans are
+    /// byte-identical except for the op tag.
+    ///
+    /// This replaced a separate `fm_parent_abort()` export. The flag is safe to
+    /// carry at the boundary because `parent_replay_impl` already took it, both
+    /// values drive the guest (they differ only in which drive-table slot), and a
+    /// mismatched flag is caught LOUDLY: `fm_parent_finish` asserts the `in_abort`
+    /// pairing this call armed, so a replay begun here and finished as an abort is
+    /// `EINVAL`, not silent divergence. `fm_parent_finish(abort: u32)` is the
+    /// precedent — the same flag, at the same layer, for the paired finish.
+    ///
+    /// Contrast `fm_parent_abort_seal`, which is deliberately NOT folded into
+    /// `fm_parent_seal_capture`: there the two entries differ in whether they
+    /// drive the guest AT ALL, and a wrong flag would corrupt the guest's unwind
+    /// state machine silently. Two names are the guard there. Here they are not.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_parent_abort() {
-        match parent_replay_impl(true) {
-            Ok(()) => set_ok(),
+    pub extern "C" fn fm_parent_replay(abort: u32) {
+        match require_phase(PHASE_SEALED_PARENT)
+            .and_then(|()| parent_replay_impl(abort != 0))
+        {
+            Ok(()) => {
+                // The two replays END differently -- an abort replay finishes
+                // with `fm_parent_finish(abort=1)` and returns `-errno` to the
+                // guest's `kernel_fork`, an ordinary one with `abort=0` -- so
+                // they are separate phases rather than one "replaying".
+                enter_phase(if abort != 0 {
+                    PHASE_ABORT_REPLAY
+                } else {
+                    PHASE_PARENT_REPLAY
+                });
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4491,16 +7131,62 @@ mod wasm {
     /// rather than trapping.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_seal_capture(channel_base: usize) -> usize {
-        match seal_capture_impl(channel_base as u64) {
+        match require_phase(PHASE_CAPTURE)
+            .and_then(|()| seal_capture_impl(channel_base as u64))
+        {
             Ok(ptr) => {
+                enter_phase(PHASE_SEALED_PARENT);
                 set_ok();
                 ptr as usize
             }
             Err(errno) => {
+                // A seal that failed AFTER the journal sealed is STILL a sealed
+                // parent, and the phase has to say so. `seal_capture_impl`
+                // drives the guest's unwind-end and seals every frame writer
+                // before it validates the reference graph or writes the journal
+                // image, so a failure in those later steps leaves the parent's
+                // committed frames whole and replayable -- which is exactly what
+                // the host's abort path then has to do, so that `fork()` returns
+                // `-errno` and the parent survives.
+                //
+                // Leaving the phase at CAPTURE made that impossible:
+                // `fm_parent_replay` requires SEALED_PARENT, so the abort
+                // answered EBUSY and took the worker down with errno 16 -- a
+                // number about the cleanup, hiding the number about the fork.
+                // That is how the externref fork's real failure stayed hidden
+                // (census section 188).
+                //
+                // `fm_parent_abort_seal` cannot be the host's answer here: it
+                // seals the journal too, and `ReplayEventJournal::seal_capture`
+                // refuses a second seal. The state is already what the abort
+                // needs; only the phase disagreed.
+                if journal_sealed_now() {
+                    enter_phase(PHASE_SEALED_PARENT);
+                }
                 set_err(errno);
                 0
             }
         }
+    }
+
+    /// Whether this fork's replay journal has sealed -- the point after which
+    /// the parent's committed frames are replayable whatever else fails.
+    ///
+    /// ITS CONDITION IS UNGATED, and that is worth knowing before trusting it.
+    /// Removing the phase advance it guards fails
+    /// `fork-module-capture-drive`'s seal-failure test; replacing this body
+    /// with `true` does not, because nothing today reaches a seal that fails
+    /// BEFORE `finish_unwind_impl` runs -- the steps before it are a plan
+    /// build and a drive, and no test makes either fail. So what is proven is
+    /// that a failed seal must leave a replayable phase, not yet that an
+    /// early-failing seal must leave CAPTURE. Both mutants were real rebuilds
+    /// (`1fc06afe…` against `2c22a504…`), so the survivor is a survivor and
+    /// not an unchanged artifact.
+    fn journal_sealed_now() -> bool {
+        matches!(
+            state().as_ref().map(|st| st.journal.phase()),
+            Some(fork_codec::JournalPhase::SealedParent)
+        )
     }
 
     /// Sequence a whole capture BEGIN in the module (control-flow inversion): open
@@ -4529,17 +7215,43 @@ mod wasm {
         sides_ptr: usize,
         sides_count: usize,
     ) -> usize {
-        match begin_capture_impl(
-            channel_base as u64,
-            arena_root as u64,
-            sides_ptr as u64,
-            sides_count as u64,
-        ) {
+        match require_phase(PHASE_IDLE).and_then(|()| {
+            begin_capture_impl(
+                channel_base as u64,
+                arena_root as u64,
+                sides_ptr as u64,
+                sides_count as u64,
+            )
+        }) {
             Ok(root) => {
+                enter_phase(PHASE_CAPTURE);
                 set_ok();
                 root as usize
             }
             Err(errno) => {
+                // RELEASE WHAT THE FAILED BEGIN ALREADY MAPPED. Opening a
+                // capture channel-mmaps the arena root and each activation's
+                // first frame chunk, so a failure part-way through leaves live
+                // mappings that nothing else will ever reach: the phase never
+                // advanced, so the host's abort path does not run, and the
+                // guest never unwinds to one.
+                //
+                // Leaking them is not abstract -- it is the SECOND fork after
+                // an ENOMEM failing with ENOMEM too, which is exactly what
+                // `p_11_fork_continuation_enomem` calls a leaked transaction.
+                //
+                // NOTHING GATES THIS PARTICULAR RELEASE TODAY. Removing it
+                // leaves P-11 passing, because P-11's allocation failures land
+                // in the frame reserve DURING the unwind, which the abort
+                // finish cleans up -- it never fails the begin itself. The
+                // release is here on the same reasoning as that one, not on a
+                // failing test, and the fixture that would gate it is one whose
+                // memory runs out at the first chunk of a capture.
+                // This is the same reclaim `fm_abort` performs, and the same
+                // principle `begin_capture_impl` states about the arena: the
+                // module frees exactly what the module mapped.
+                let _ = abort_impl();
+                enter_phase(PHASE_IDLE);
                 set_err(errno);
                 0
             }
@@ -4577,13 +7289,16 @@ mod wasm {
     /// directly. It has NO guest drive and NO serialize to fold, so unlike the other
     /// coarse entries it is a single-step phase entry, parallel to
     /// `fm_parent_seal_capture`. After this the host drives the ordinary module
-    /// abort-replay (`fm_parent_abort`). A failed reserve leaves no pending frame
+    /// abort-replay (`fm_parent_replay(abort=1)`). A failed reserve leaves no pending frame
     /// (`LinkedFrameWriter::reserve_frame` sets `pending` only after a successful
     /// chunk allocation), so the committed chain is complete and seal-able.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_abort_seal() {
-        match finish_unwind_impl() {
-            Ok(()) => set_ok(),
+        match require_phase(PHASE_CAPTURE).and_then(|()| finish_unwind_impl()) {
+            Ok(()) => {
+                enter_phase(PHASE_SEALED_PARENT);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4606,12 +7321,23 @@ mod wasm {
     /// DRIVE_SLOT_{REWIND,ABORT}_END` before calling this (the ref-typed table bind
     /// is a host floor). Behaviourally identical to the old host sequence: same
     /// guest export, same ascending order, drive FIRST then finish. The abort finish
-    /// still asserts the `in_abort` pairing `fm_parent_abort` set, so a stray
+    /// still asserts the `in_abort` pairing `fm_parent_replay(abort=1)` set, so a stray
     /// `fm_parent_finish(abort=1)` is a loud `EINVAL`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_parent_finish(abort: u32) {
-        match finish_transaction_impl(abort != 0) {
-            Ok(()) => set_ok(),
+        // An ordinary finish ends EITHER a parent replay or a child replay --
+        // the same call closes both, which is why this takes two phases rather
+        // than one. An abort finish ends only an abort replay.
+        let allowed = if abort != 0 {
+            require_phase(PHASE_ABORT_REPLAY)
+        } else {
+            require_phase_either(PHASE_PARENT_REPLAY, PHASE_CHILD_REPLAY)
+        };
+        match allowed.and_then(|()| finish_transaction_impl(abort != 0)) {
+            Ok(()) => {
+                enter_phase(PHASE_IDLE);
+                set_ok()
+            }
             Err(errno) => set_err(errno),
         }
     }
@@ -4638,13 +7364,23 @@ mod wasm {
     // live-value identity layering stays host-side (Bucket C), exactly as native
     // keeps it in `guest.rs` while calling `graph.intern_*`. Recipe ids are
     // `>= 1` (id 0 is the canonical null the builder seeds); every ID-returning
-    // export returns `-1` on failure with the reason in `fm_capture_last_errno`.
+    // export returns `-1` on failure with the reason in `fm_last_errno`.
 
     /// GC aggregate kind discriminants `fm_capture_define_gc` accepts. Mirror the
     /// host's `defineGc` kind argument (struct=1, array=2) plus exnref=3.
     const CAPTURE_KIND_STRUCT: u32 = 1;
     const CAPTURE_KIND_ARRAY: u32 = 2;
     const CAPTURE_KIND_EXNREF: u32 = 3;
+
+    /// `fm_capture_intern`'s leaf-reference discriminants. These select which
+    /// `ReferenceGraphBuilder::intern_*` the one entry dispatches to; they are a
+    /// SEPARATE numbering from the `CAPTURE_KIND_*` aggregate kinds above, which
+    /// `fm_capture_define_gc` uses. Mirrored by `FORK_INTERN_KIND_*` in
+    /// `host/src/fork-reference-capture-module.ts`.
+    const INTERN_KIND_FUNCREF: u32 = 1;
+    const INTERN_KIND_EXTERNREF: u32 = 2;
+    const INTERN_KIND_I31: u32 = 3;
+    const INTERN_KIND_STATIC_ROOT: u32 = 4;
 
     /// Fixed header of one record in the `fm_capture_serialize` record stream:
     /// `u16 kind, u16 reserved, u32 activation_id, u32 owner_id, u32 payload_len`.
@@ -4714,7 +7450,7 @@ mod wasm {
     }
 
     /// Fold a builder `Result<()>` into the VOID-return convention: `0` on
-    /// success, `-1` on failure (reason in `fm_capture_last_errno`).
+    /// success, `-1` on failure (reason in `fm_last_errno`).
     fn capture_ok_void(result: Result<(), Errno>) -> i32 {
         match result {
             Ok(()) => {
@@ -4771,56 +7507,221 @@ mod wasm {
         set_ok();
     }
 
-    /// Intern a function reference by its catalog coordinate. Returns its recipe
-    /// id (`>= 1`) or `-1`. The host resolves `(activation, ordinal)` from the
-    /// funcref catalog (floor) before calling.
+    /// Turn a MERGED function-catalog slot into a funcref recipe.
+    ///
+    /// The injected `__wpk_fork_ref_encode_funcref` scan finds which catalog slot
+    /// holds the funcref it was handed, and this turns that slot into the
+    /// `(activation, ordinal)` coordinate the graph records. The split is the one
+    /// `fm_capture_intern`'s doc already describes -- the host resolves identity,
+    /// the module owns the recipe -- except that with
+    /// `__wpk_fork_host_func_identity` the SCAN is the module's too, and the host
+    /// answers only "are these the same function?".
+    ///
+    /// The owning activation is the one with the LARGEST base not above `slot`:
+    /// bases partition the merged catalog, so that is the slice `slot` falls in.
+    /// A worker that seeded no bases at all is the single-activation case, where
+    /// activation 0 owns everything.
+    /// Turn a MERGED static-root catalog slot into a static-root recipe.
+    ///
+    /// The capture-side twin of `fm_static_root_slot`, which goes the other way
+    /// for replay. The injected `__wpk_fork_ref_gc_lookup` scan finds which
+    /// slot of the merged table holds the reference the guest is encoding, and
+    /// this turns that slot into the `(activation, ordinal)` coordinate the
+    /// graph records -- so the CHILD reconstructs the reference its own
+    /// instantiation already made, instead of a structural copy beside it.
+    ///
+    /// The owning activation is the one with the LARGEST base not above `slot`,
+    /// the same partition `fm_funcref_slot_to_recipe` inverts, and the same
+    /// default: a worker that seeded no base at all is the single-activation
+    /// case, where activation 0 owns everything.
+    ///
+    /// Returns 0 -- "not a static root", the answer `gc_lookup` gives for a
+    /// value it does not know -- when the bases and the scan disagree about the
+    /// table's shape, rather than recording a coordinate in the wrong
+    /// activation. A wrong static-root recipe is not a failure the child can
+    /// see: it would decode to another activation's root and pass every
+    /// structural check.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_funcref(activation: u32, ordinal: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_funcref(activation, ordinal)),
-            Err(e) => {
-                set_err(e);
-                -1
+    pub extern "C" fn fm_static_root_recipe(slot: u32) -> i32 {
+        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
+        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
+        let mut owner: Option<(u32, u32)> = None;
+        for entry in map.iter().take(count) {
+            let (activation, base) = (entry[0], entry[1]);
+            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
+                owner = Some((activation, base));
             }
         }
+        if count > 0 && owner.is_none() {
+            return 0;
+        }
+        let (activation, base) = owner.unwrap_or((0, 0));
+        capture_recipe_publishable(fm_capture_intern(
+            INTERN_KIND_STATIC_ROOT,
+            activation,
+            slot - base,
+        ))
     }
 
-    /// Intern a durable host externref by broker handle (`1..=0xffff_ffff`). The
-    /// host resolves the handle from its externref identity floor (V8 `WeakMap`
-    /// provenance) before calling; the module never sees the live externref.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_externref(handle: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_externref(handle)),
-            Err(e) => {
-                set_err(e);
-                -1
+    pub extern "C" fn fm_funcref_slot_to_recipe(slot: u32) -> i32 {
+        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
+        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        let mut owner: Option<(u32, u32)> = None;
+        for entry in map.iter().take(count) {
+            let (activation, base) = (entry[0], entry[1]);
+            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
+                owner = Some((activation, base));
             }
         }
+        let (activation, base) = owner.unwrap_or((0, 0));
+        if count > 0 && owner.is_none() {
+            // Bases were seeded but none covers this slot, so the catalog and the
+            // scan disagree about the table's shape. Guessing activation 0 here
+            // would record a recipe that decodes to another activation's function.
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        fm_capture_intern(INTERN_KIND_FUNCREF, activation, slot - base)
     }
 
-    /// Intern an `i31ref` by its signed 31-bit payload.
+    /// A funcref the scan could not find in the merged catalog.
+    ///
+    /// Its own entry rather than a sentinel from the scan, so the errno is set by
+    /// the same code that owns every other capture failure. A function the loader
+    /// never catalogued has no coordinate to record, and inventing one would put
+    /// a recipe in the graph that decodes to the WRONG function in the child.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_i31(value: i32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_i31(value)),
-            Err(e) => {
-                set_err(e);
-                -1
-            }
-        }
+    pub extern "C" fn fm_funcref_uncatalogued() -> i32 {
+        set_err(Errno::EINVAL);
+        -1
     }
 
-    /// Intern a statically-rooted reference by its catalog coordinate.
+    /// Intern one LEAF reference into the capture graph by its already-resolved
+    /// coordinate, dispatched on `kind`. Returns its recipe id (`>= 1`), or `-1`
+    /// with `fm_last_errno` set.
+    ///
+    /// | `kind` | meaning | `a` | `b` |
+    /// |---|---|---|---|
+    /// | `INTERN_KIND_FUNCREF` (1) | function reference | catalog activation | catalog ordinal |
+    /// | `INTERN_KIND_EXTERNREF` (2) | durable host externref | broker handle (`1..=0xffff_ffff`) | must be 0 |
+    /// | `INTERN_KIND_I31` (3) | `i31ref` | signed 31-bit payload, bit-cast to `u32` | must be 0 |
+    /// | `INTERN_KIND_STATIC_ROOT` (4) | statically-rooted reference | catalog activation | catalog ordinal |
+    ///
+    /// This ONE entry replaces the four per-type exports
+    /// `fm_capture_intern_{funcref,externref,i31,static_root}`. They expressed a
+    /// single concept — "intern a leaf reference at a coordinate the host already
+    /// resolved" — as four exports with four host-side marshalling wrappers, which
+    /// is the per-type-variant multiplication the fork transport is large because
+    /// of. The same fold already happened one export over: `fm_decoded_node_field`
+    /// replaced three same-signature accessors.
+    ///
+    /// The host resolves every coordinate with its per-host identity floor (the
+    /// funcref catalog, the externref broker's `WeakMap` provenance) BEFORE
+    /// calling. The module never sees a live reference, only scalars.
+    ///
+    /// An unknown `kind`, or a non-zero `b` where the table says it must be 0, is
+    /// `EINVAL` and `-1`. The `b` check is not pedantry: it is what stops a caller
+    /// that passes `(EXTERNREF, activation, ordinal)` — funcref argument order,
+    /// wrong kind — from silently interning the activation id as a broker handle.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_intern_static_root(activation: u32, ordinal: u32) -> i32 {
-        match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_static_root(activation, ordinal)),
+    pub extern "C" fn fm_capture_intern(kind: u32, a: u32, b: u32) -> i32 {
+        let g = match capture_builder() {
+            Ok(g) => g,
             Err(e) => {
                 set_err(e);
-                -1
+                return -1;
             }
+        };
+        let id = match kind {
+            INTERN_KIND_FUNCREF => g.intern_funcref(a, b),
+            INTERN_KIND_STATIC_ROOT => g.intern_static_root(a, b),
+            INTERN_KIND_EXTERNREF | INTERN_KIND_I31 if b != 0 => {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+            INTERN_KIND_EXTERNREF => {
+                record_captured_externref(a);
+                g.intern_externref(a)
+            }
+            INTERN_KIND_I31 => g.intern_i31(a as i32),
+            _ => {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+        };
+        capture_ok_id(id)
+    }
+
+    // -- Captured externref handles -----------------------------------------
+    //
+    // Every broker handle interned into this capture, in intern order.
+    //
+    // The KERNEL worker needs this set to lease the parent's externrefs to the
+    // child's generation. Today it derives the set itself, by reading the parked
+    // parent's KFMS arena and running the full segmented-transaction parser and
+    // semantic validator over it -- roughly 4,956 lines of host decoder that
+    // duplicate what this module already did when the handle was interned here.
+    //
+    // Recording it at intern time removes that decode entirely rather than
+    // relocating it: the parent knows its own externrefs, and the kernel worker
+    // is the one thread every process's syscalls serialize through, so parsing
+    // there blocks unrelated processes.
+    //
+    // Capture-scoped: cleared when a capture begins, so a child that inherits
+    // this module's memory does not report its parent's handles.
+    const CAPTURED_EXTERNREF_MAX: usize = 4096;
+
+    #[repr(C, align(4))]
+    struct CapturedExternrefs(UnsafeCell<[u32; CAPTURED_EXTERNREF_MAX]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for CapturedExternrefs {}
+    static CAPTURED_EXTERNREFS: CapturedExternrefs =
+        CapturedExternrefs(UnsafeCell::new([0u32; CAPTURED_EXTERNREF_MAX]));
+    static CAPTURED_EXTERNREF_COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Set when a capture interned more handles than the arena holds, so the
+    /// host is told to fall back rather than silently leasing a truncated set.
+    static CAPTURED_EXTERNREF_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+
+    fn record_captured_externref(handle: u32) {
+        let count = CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed) as usize;
+        if count >= CAPTURED_EXTERNREF_MAX {
+            CAPTURED_EXTERNREF_OVERFLOW.store(1, Ordering::Relaxed);
+            return;
         }
+        // SAFETY: single-threaded; `count < CAPTURED_EXTERNREF_MAX` above.
+        let arena = unsafe { &mut *CAPTURED_EXTERNREFS.0.get() };
+        arena[count] = handle;
+        CAPTURED_EXTERNREF_COUNT.store(count as u32 + 1, Ordering::Relaxed);
+    }
+
+    fn reset_captured_externrefs() {
+        CAPTURED_EXTERNREF_COUNT.store(0, Ordering::Relaxed);
+        CAPTURED_EXTERNREF_OVERFLOW.store(0, Ordering::Relaxed);
+    }
+
+    /// How many externref handles this capture interned, or -1 if it interned
+    /// more than the module can record (the host must then not trust the list).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_captured_externref_count() -> i32 {
+        if CAPTURED_EXTERNREF_OVERFLOW.load(Ordering::Relaxed) != 0 {
+            return -1;
+        }
+        CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed) as i32
+    }
+
+    /// One recorded handle by index, or -1 if the index is past the count.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_captured_externref(index: u32) -> i64 {
+        let count = CAPTURED_EXTERNREF_COUNT.load(Ordering::Relaxed);
+        if index >= count {
+            return -1;
+        }
+        // SAFETY: single-threaded; `index < count <= CAPTURED_EXTERNREF_MAX`.
+        let arena = unsafe { &*CAPTURED_EXTERNREFS.0.get() };
+        i64::from(arena[index as usize])
     }
 
     /// Claim a fresh graph identity for a GC value before its fields are known,
@@ -4928,34 +7829,1671 @@ mod wasm {
         capture_ok_void(assembled)
     }
 
-    /// Open a reference-vector builder, returning its handle (`>= 0`).
+    /// Read entry `index` of interned reference vector `ordinal` from the RESIDENT
+    /// capture builder (the graph `fm_capture_*` is still building/has built this
+    /// fork), returning the recipe id or `-1` on out-of-bounds. This is the
+    /// PARENT's own post-fork replay read: after the parent seals, its frame
+    /// rewind asks which recipe ids each frame's reference vector holds so it can
+    /// hand back the ORIGINAL live values (kept host-side in `capturedValues`, and
+    /// in the module-owned transit table). Unlike `__wpk_fork_ref_vector_get` — which
+    /// reads a DECODED transaction a child reconstructs from the wire — this reads
+    /// the live capture builder directly, so the parent never re-decodes its own
+    /// graph and never reconstructs (its live references keep their identity by
+    /// construction). Requires an active capture session.
+    /// The KFMS geometry for this guest's pointer width. Derived, never
+    /// host-supplied: the chunk header size is a pure function of the width.
+    fn module_state_format() -> Result<ModuleStateFormat, Errno> {
+        let pointer_width = core::mem::size_of::<usize>() as u8;
+        let chunk_header_size = abi::wpk_fork_module_state_chunk_header_size(pointer_width)
+            .ok_or(Errno::EINVAL)?;
+        Ok(ModuleStateFormat { pointer_width, chunk_header_size })
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_dirty_mark(owner,
+    /// first_page, page_count)`.
+    ///
+    /// Records that pages `[first_page, first_page + page_count)` of the
+    /// physical table `owner` have been mutated since instantiation.
+    ///
+    /// **This runs during ORDINARY execution, not only during a fork.**
+    /// `fork-instrument` wraps every `table.set`, `table.copy`, `table.fill`,
+    /// `table.init` and `table.grow` with a call to it, gated only on a
+    /// non-empty range and a last-page cache. That is the whole point: the set
+    /// has to record what changed since instantiation so that WHENEVER a fork
+    /// happens, the sparse overlay it serialises is correct. So there is no
+    /// fork-state requirement here, and a mark with no fork in flight is the
+    /// normal case rather than an error.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_begin_vector() -> i32 {
+    pub extern "C" fn __wpk_fork_module_state_table_dirty_mark(
+        owner: u32,
+        first_page: u64,
+        page_count: u64,
+    ) {
+        dirty().mark(owner, first_page, page_count);
+        set_ok();
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_dirty_count(owner)`.
+    ///
+    /// How many distinct pages of this physical table are dirty. The guest
+    /// sizes its table record from this, then walks
+    /// `__wpk_fork_module_state_table_dirty_page` from 0 to this count.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_dirty_count(owner: u32) -> i32 {
+        set_ok();
+        i32::try_from(dirty().count(owner)).unwrap_or(i32::MAX)
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_dirty_page(owner,
+    /// ordinal) -> page`.
+    ///
+    /// The `ordinal`-th dirty page, ascending, so the walk order matches the
+    /// count. An out-of-range ordinal is `EINVAL` rather than 0, because page 0
+    /// is a legitimate answer and the two cannot share a return value.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_dirty_page(owner: u32, ordinal: u32) -> u64 {
+        match dirty().page(owner, ordinal) {
+            Some(page) => {
+                set_ok();
+                page
+            }
+            None => {
+                set_err(Errno::EINVAL);
+                0
+            }
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_record_reserve(kind,
+    /// activation, owner, payload_size) -> payload_ptr`.
+    ///
+    /// Carves a KFMS record and hands back the address the guest writes its
+    /// payload into. The record is invisible to any decoder until
+    /// `__wpk_fork_module_state_record_commit`, so a guest that traps midway
+    /// leaves a chunk list a child can still read.
+    ///
+    /// Returns 0 with `fm_last_errno` set on failure, matching every other
+    /// pointer-returning entry in this module.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_record_reserve(
+        kind: u32,
+        activation_id: u32,
+        owner_id: u32,
+        payload_size: usize,
+    ) -> usize {
+        let Ok(kind) = u16::try_from(kind) else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let Some(module) = state().as_mut() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let mem = unsafe { mem_mut() };
+        let ForkModule { module_state, module_state_chunks, .. } = module;
+        match module_state.reserve(
+            module_state_chunks,
+            mem,
+            kind,
+            activation_id,
+            owner_id,
+            payload_size as u64,
+        ) {
+            Ok(payload) => {
+                set_ok();
+                payload as usize
+            }
+            Err(e) => {
+                set_err(e);
+                0
+            }
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_record_commit(payload_ptr)`.
+    ///
+    /// Publishes the reserved record. Returns nothing — the guest ABI has no
+    /// error channel here — so a failure is latched in `fm_last_errno`, the
+    /// same shape `__wpk_fork_ref_vector_append` uses.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_record_commit(payload: usize) {
+        let Some(module) = state().as_mut() else {
+            set_err(Errno::EINVAL);
+            return;
+        };
+        let mem = unsafe { mem_mut() };
+        match module.module_state.commit(mem, payload as u64) {
+            Ok(()) => set_ok(),
+            Err(e) => set_err(e),
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_record_find(kind, activation,
+    /// owner, ordinal) -> payload_ptr`, or 0 when there is no such record.
+    ///
+    /// **`ordinal` is a design decision, not a recovered fact.** The guest DOES
+    /// call this — `fork-instrument`'s `find_record` emits `call(imports.find)`
+    /// from three sites (`emit_restore_helper` per restorable global,
+    /// `emit_restore_segments`, `emit_restore_table`) — but every one of
+    /// them passes a literal `0`, so no call site constrains the fourth
+    /// argument. It is taken as "the Nth record matching the first three",
+    /// which is the only reading that makes the triple useful when a kind
+    /// repeats per activation (table pages do). A guest that starts passing a
+    /// nonzero ordinal should be checked against that choice rather than
+    /// assumed to agree with it.
+    ///
+    /// **A child always gets 0 from this, whatever it asks for.** `root` below
+    /// is the writer's, and a replay-only child's writer is deliberately inert
+    /// (`ModuleStateWriter::new` + `new_channel(0)`; see the child construction
+    /// in `begin_child_replay_impl`), so `root == 0` and every lookup misses.
+    /// The parent's arena root IS known during replay, but only as the
+    /// `module_state_root` ARGUMENT threaded through `attach_from_arena_impl`
+    /// and friends — it is never stored anywhere this function can see. That
+    /// asymmetry is inert today because nothing in production drives the
+    /// guest's `wpk_fork_module_state_restore`: its only entries,
+    /// `fm_attach_child` / `fm_attach_borrowed_child`, have no caller in
+    /// `host/src`, and the scalar globals a live fork actually depends on
+    /// (`__stack_pointer` among them) are restored by the continuation buffer
+    /// instead, via `fork_instrument::runtime::emit_restore_globals`. It stops
+    /// being inert the moment that drive is wired up — the guest would then
+    /// load its restored global from linear address 0. Whoever wires it must
+    /// give this function the replay root first.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_record_find(
+        kind: u32,
+        activation_id: u32,
+        owner_id: u32,
+        ordinal: u32,
+    ) -> usize {
+        let Ok(kind) = u16::try_from(kind) else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let Some(module) = state().as_ref() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let root = module.module_state.root();
+        if root == 0 {
+            set_ok();
+            return 0;
+        }
+        let Ok(format) = module_state_format() else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let mem = unsafe { mem_ref() };
+        let Ok(decoded) = decode_module_state(mem, root, &format) else {
+            set_err(Errno::EINVAL);
+            return 0;
+        };
+        let mut seen = 0u32;
+        for record in &decoded.records {
+            if record.kind == kind
+                && record.activation_id == activation_id
+                && record.owner_id == owner_id
+            {
+                if seen == ordinal {
+                    set_ok();
+                    return record.payload_offset as usize;
+                }
+                seen += 1;
+            }
+        }
+        set_ok();
+        0
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_scratch_reserve(len) -> ptr`.
+    ///
+    /// Hands back `len` bytes of transient exchange storage, 16-byte aligned.
+    /// The pointer is a guest linear-memory address because the module is
+    /// co-resident in the guest's memory — its BSS lives at `__memory_base`
+    /// inside that same memory, which is what lets the guest write through the
+    /// result directly.
+    ///
+    /// Traps on exhaustion. See `SCRATCH_SIZE` for why an error return is not
+    /// available: the generator does not check this result.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_scratch_reserve(len: usize) -> usize {
+        let need = scratch_align(len);
+        let top = SCRATCH_TOP.load(Ordering::Relaxed);
+        let next = match top.checked_add(need) {
+            Some(next) if next <= SCRATCH_SIZE => next,
+            _ => wasm_intr::unreachable(),
+        };
+        SCRATCH_TOP.store(next, Ordering::Relaxed);
+        if next > SCRATCH_HIGH_WATER.load(Ordering::Relaxed) {
+            SCRATCH_HIGH_WATER.store(next, Ordering::Relaxed);
+        }
+        (SCRATCH.0.get() as usize).wrapping_add(top)
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_scratch_release(ptr, len)`.
+    ///
+    /// Pops the stack. The release must name the TOP frame: the generator emits
+    /// reserve/release strictly nested around a recursive encode, so a release
+    /// that does not match the top means the nesting the whole scheme assumes
+    /// has been violated, and continuing would hand the next reserve a region
+    /// that overlaps a live one. That is silent capture corruption, so it traps.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_scratch_release(ptr: usize, len: usize) {
+        let need = scratch_align(len);
+        let base = SCRATCH.0.get() as usize;
+        let top = SCRATCH_TOP.load(Ordering::Relaxed);
+        if need > top || ptr != base.wrapping_add(top - need) {
+            wasm_intr::unreachable();
+        }
+        SCRATCH_TOP.store(top - need, Ordering::Relaxed);
+    }
+
+    /// Recipe already bound to this host-assigned reference identity, or 0.
+    ///
+    /// Called by the injected `__wpk_fork_ref_gc_lookup` shim, which resolves
+    /// the identity through the host import first. Rust holds the map because
+    /// Rust can hold a map; wasm holds the reference because only wasm can.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_identity_find(identity: u32) -> i32 {
+        set_ok();
+        gc_identity()
+            .as_ref()
+            .and_then(|map| map.get(&identity))
+            .map_or(0, |recipe| *recipe as i32)
+    }
+
+    /// Claim a fresh recipe and bind it to this reference identity.
+    ///
+    /// The bind is what makes a later `fm_gc_identity_find` hit, which is what
+    /// terminates a cyclic object graph: the generator publishes identity
+    /// BEFORE recursing into fields precisely so the walk back finds it.
+    ///
+    /// Re-binding an identity already claimed is `EINVAL`: it would mean the
+    /// same object was claimed twice, giving the child two objects where the
+    /// parent had one -- a fork-only identity split, and silent.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_identity_claim(identity: u32) -> i32 {
+        let recipe = match capture_builder() {
+            Ok(g) => capture_ok_id(g.claim_gc()),
+            Err(e) => {
+                set_err(e);
+                return -1;
+            }
+        };
+        if recipe < 0 {
+            return recipe;
+        }
+        let map = gc_identity().get_or_insert_with(BTreeMap::new);
+        if map.insert(identity, recipe as u32).is_some() {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        set_ok();
+        recipe
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_broker_encode(slot) -> recipe`.
+    ///
+    /// The UNKNOWN-tag path: `fork-instrument` calls this when a caught
+    /// exception matched none of this module's declared tag layouts. Refuses,
+    /// loudly, with `EOPNOTSUPP` and a poisoned recipe.
+    ///
+    /// # Why it cannot do better yet
+    ///
+    /// A foreign exception is opaque to the module on every axis. Its payload
+    /// needs `catch_ref` against the tag that threw it, which by definition this
+    /// module does not have; it cannot be identified (`ref.eq` does not validate
+    /// on `exnref`); and it cannot be handed to a host to inspect (an `exnref`
+    /// value cannot cross into a JS import). Real handling means routing to the
+    /// activation whose codec DOES own the tag, which needs the module to drive
+    /// the capture walk across activations -- there is no capture-side drive
+    /// today, and that is F3's work. See census sections 26, 28a and 28b.
+    ///
+    /// # Why loud rather than a gated placeholder
+    ///
+    /// `fm_capture_gated_placeholder` is the designed mechanism for a value with
+    /// no recoverable provenance, but its contract is that the HOST notices and
+    /// gates the fork -- and no signal for that is exported (`fm_stats` has no
+    /// gated counter). A placeholder here would therefore be silent: the child
+    /// would rebuild the `i31(0)` sentinel where an exception had been, and
+    /// nothing would say so. Returning a poisoned recipe instead makes the
+    /// failure structural. The value is not a valid recipe id, so any edge
+    /// naming it is rejected by `define_gc`'s bounds check and by
+    /// `fm_capture_validate`, and the capture cannot seal.
+    ///
+    /// That is a real restriction -- a fork cannot be taken while a foreign
+    /// exception is live -- and it is stated as one rather than hidden. It is
+    /// also not a regression: an unserved import leaves the same case to a host
+    /// that cannot inspect the exception either.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_broker_encode(_slot: u32) -> i32 {
+        set_err(Errno::EOPNOTSUPP);
+        -1
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_ingress_throw(token)`.
+    ///
+    /// The other half of the ingress pair, and the half that can never run.
+    ///
+    /// An ingress token is minted by ONE thing: the encode side of the
+    /// unknown-tag path, `__wpk_fork_ref_exn_broker_encode` above, which
+    /// refuses with `EOPNOTSUPP` and a poisoned recipe. Nothing else mints one
+    /// anywhere in the tree. So a guest reaching this has been handed a token
+    /// that no code path produced, and the honest answer is the bound it ran
+    /// into, not an invented exception.
+    ///
+    /// # Why it traps rather than returning
+    ///
+    /// The instrumenter emits `unreachable` immediately after this call
+    /// (`module_exception_codec.rs`), because the import's contract is that it
+    /// does not come back. Returning normally would therefore trap one
+    /// instruction later in the GUEST, with the guest's own frame and no
+    /// errno set. Trapping here sets `EOPNOTSUPP` first, so a host that reads
+    /// `fm_last_errno()` after the trap learns which refusal it hit.
+    ///
+    /// This replaces a `fork-guest-host-floor` member that threw a JavaScript
+    /// `Error`. The message is gone and the errno replaces it -- a fair trade
+    /// for an import no JS host has to implement any more, on a path nothing
+    /// can reach. Census section 191.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_ingress_throw(_token: u32) -> () {
+        set_err(Errno::EOPNOTSUPP);
+        wasm_intr::unreachable()
+    }
+
+    /// The activation id the wire format reserves for an exception no
+    /// activation's codec claimed. Above `i32::MAX` on purpose, so a host
+    /// reading it through `fm_decoded_node_field` gets a refusal rather than a
+    /// plausible activation number.
+    const HOST_EXCEPTION_ACTIVATION_ID: u32 =
+        fork_codec::drive_plan_hints::FORK_HOST_EXCEPTION_ACTIVATION_ID;
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_broker_throw_recipe(recipe)`.
+    ///
+    /// Raise the exception `recipe` names, with the tag of whichever activation
+    /// captured it -- which is not, in general, the activation asking.
+    ///
+    /// # Why this cannot be done here, and is done anyway
+    ///
+    /// Re-entering wasm THROWING is the one thing neither this module nor a
+    /// JavaScript import can do for another module. The module has no tag of
+    /// its own to raise, and a JS `throw` crosses back as a foreign exception
+    /// with the WRONG tag, which the guest's `try_table` then fails to catch
+    /// (census section 109). Only the owning activation's exported
+    /// `__wpk_fork_ref_exn_throw_recipe` raises the right exception.
+    ///
+    /// So the module does not throw: it CALLS the activation that can. That is
+    /// the same act the host floor performed, moved to the side of the boundary
+    /// that already knows the answer. The owner is `module_activation` on the
+    /// recipe's node in the graph this module decoded; the host had to read it
+    /// back out through `fm_decoded_node_field` to do the same job.
+    ///
+    /// The call goes through the drive table, at
+    /// `base(owner) + DRIVE_SLOT_EXN_THROW_RECIPE` -- the same mechanism that
+    /// drives allocate, fill and materialize, with one more slot. The raised
+    /// exception propagates out through this frame to the calling guest exactly
+    /// as it propagated through the JavaScript import frame before.
+    ///
+    /// # Every failure traps, and states why first
+    ///
+    /// `fork-instrument` emits `unreachable` after this call: the import is
+    /// declared never to return. So there is no error value to return and no
+    /// caller to read one. Each refusal sets the sticky errno and traps, which
+    /// is what `fm_last_errno()` is for.
+    ///
+    ///   * not a recipe id, or a node of the wrong kind -> `EINVAL`
+    ///   * owned by `HOST_EXCEPTION_ACTIVATION_ID` -> `EOPNOTSUPP`:
+    ///     materializing one needs that node's externref payload edge, which no
+    ///     module entry exposes. The host said the same thing and could do no
+    ///     better.
+    ///   * no graph to ask, or the owner's slot is unbound -> `EINVAL`
+    ///   * the thrower RETURNED -> `EINVAL`. A replay continuing past an
+    ///     exception it never delivered is silent corruption.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_broker_throw_recipe(recipe: u32) -> () {
+        let errno = throw_recipe_impl(recipe).unwrap_err();
+        set_err(errno);
+        wasm_intr::unreachable()
+    }
+
+    /// The body, written to return only on failure so every path above traps.
+    fn throw_recipe_impl(recipe: u32) -> Result<core::convert::Infallible, Errno> {
+        make_replay_graph_resident()?;
+        // NO SEPARATE RANGE GUARD, deliberately. One stood here, refusing
+        // `recipe == 0` (node 0 is never a recipe -- the encoders return `>= 1`)
+        // and `recipe > i32::MAX` (a poisoned recipe from a refusing encoder is
+        // `-1`, which arrives as a u32 above the band). Perturbing it away
+        // changed NOTHING observable, because both cases already fail below:
+        // `with_decoded_node` bounds-checks the index, and node 0 decodes as
+        // `Null`, which the kind check refuses. It was a second opinion on a
+        // question the graph lookup already answers -- the duplication this
+        // lane removed from the GC and exception codecs -- so it is gone rather
+        // than kept as a guard no test can distinguish.
+        let index = recipe as usize;
+        // Checked BEFORE the owner, because a kind that carries no activation
+        // is a truthful `EINVAL` from the accessor too -- and "not an
+        // exception" and "a host-owned exception" must not arrive as one error.
+        if decoded_node_kind_impl(index)? != WIRE_NODE_KIND_EXNREF {
+            return Err(Errno::EINVAL);
+        }
+        let owner = decoded_node_module_activation_impl(index)?;
+        if owner == HOST_EXCEPTION_ACTIVATION_ID {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        exn_throw_via_injector(owner, recipe);
+        // Reached only if the guest's thrower returned without throwing.
+        Err(Errno::EINVAL)
+    }
+
+    /// `wire_node_kind`'s discriminant for `Exnref`.
+    const WIRE_NODE_KIND_EXNREF: u8 = 3;
+
+    /// Make the graph of the most recent replay resident, if it is not already.
+    ///
+    /// Lazy for the reason `LAST_REPLAY_ROOT` records: decoding walks the arena
+    /// and abandons the previous resident graph, so a fork that throws nothing
+    /// should pay nothing. Already-resident FOR THIS REPLAY'S ROOT is the
+    /// ordinary case in a child -- the host decodes the same arena during child
+    /// setup for its own admission gates -- so this usually does nothing.
+    fn make_replay_graph_resident() -> Result<(), Errno> {
+        let root = LAST_REPLAY_ROOT.load(Ordering::Relaxed);
+        if root == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if decoded_graph().is_some() && DECODED_GRAPH_ROOT.load(Ordering::Relaxed) == root {
+            return Ok(());
+        }
+        decode_reference_graph_impl(root)?;
+        Ok(())
+    }
+
+    /// Intern every witness this layout recorded, newest-first ordinal order,
+    /// returning their recipe ids.
+    ///
+    /// Lazy and cached: a witness is shared by EVERY object of its layout, so
+    /// the encode happens once and a thousand objects reference one recipe.
+    ///
+    /// An empty result is the ordinary case — a layout with no mutable non-null
+    /// internal reference field records no witness — and is NOT an error.
+    fn intern_layout_witnesses(activation: u32, layout: u32) -> Result<Vec<u32>, Errno> {
+        if layout > 0x00ff_ffff {
+            return Err(Errno::E2BIG);
+        }
+        let mut ids = Vec::new();
+        for ordinal in 0u32..=0xff {
+            let key = (layout << 8) | ordinal;
+            let slot = {
+                let w = witness();
+                match w.keys.iter().position(|k| *k == key) {
+                    Some(slot) if w.occupied[slot] => slot,
+                    // Ordinals are dense from 0, so the first gap ends the list.
+                    _ => break,
+                }
+            };
+            let cached = witness().recipes[slot];
+            if cached != 0 {
+                ids.push(cached);
+                continue;
+            }
+            let recipe = capture_witness_via_injector(activation, slot as u32);
+            if recipe <= 0 {
+                // 0 is the canonical NULL recipe, which a witness can never be:
+                // it was stored from a live constructor argument. Treat it as
+                // failure rather than silently seeding a child with null.
+                return Err(Errno::EINVAL);
+            }
+            witness().recipes[slot] = recipe as u32;
+            ids.push(recipe as u32);
+        }
+        Ok(ids)
+    }
+
+    /// Guest linear memory as archive storage.
+    ///
+    /// The archive's record pointers are absolute offsets into the guest's
+    /// memory, and the module shares that memory, so a record is readable in
+    /// place. Raw-pointer slicing rather than indexing a whole-memory slice is
+    /// deliberate, for the reason `read_capture_bytes` documents: a slice based
+    /// at wasm address 0 miscompiles under range indexing in release.
+    struct GuestArchiveBytes;
+
+    impl fork_codec::dylink_archive::ArchiveBytes for GuestArchiveBytes {
+        fn len(&self) -> u64 {
+            mem_len_bytes() as u64
+        }
+
+        fn slice(&self, offset: u64, len: u64) -> Result<&[u8], Errno> {
+            let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+            let count = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
+            let end = start.checked_add(count).ok_or(Errno::EINVAL)?;
+            // UNREACHABLE BY CONSTRUCTION, and kept anyway. `decode_dylink_archive`
+            // bounds-checks every range it asks for against `self.len()`, which is
+            // this same value, so no perturbation of the archive bytes reaches this
+            // branch -- it is not a guard in the H-2 sense and no test can make it
+            // fail. It stays because the failure it prevents is not an error: the
+            // raw-pointer slice below is UB on an out-of-range address, not a trap,
+            // so a future decoder bug would corrupt the guest instead of erroring.
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: bounds-checked above, and the module shares the guest's
+            // linear memory, so `start` is a readable address in it.
+            Ok(unsafe { core::slice::from_raw_parts(start as *const u8, count) })
+        }
+    }
+
+    /// Resolve a patch's `(activation, ordinal)` to a merged function-catalog
+    /// slot, the same coordinate `funcref_ordinal_impl` produces.
+    fn catalog_slot(activation_id: u32, ordinal: u32) -> Result<u32, Errno> {
+        let base = match func_catalog_base(activation_id) {
+            Some(base) => base,
+            // No seeded base at all is the single-activation worker, where the
+            // base is 0 by definition. A MISSING base when others were seeded is
+            // a graph naming an activation this worker never registered, which
+            // is corruption rather than a default.
+            None if func_catalog_base_map_empty() => 0,
+            None => return Err(Errno::EINVAL),
+        };
+        base.checked_add(ordinal).ok_or(Errno::EINVAL)
+    }
+
+    // ---- Funcref table replication -----------------------------------------
+    //
+    // `crates/dylink` owns the protocol; `fork_codec::dylink_table_plan` decides
+    // what a reconcile must write; this applies it. See census §32 and §34.
+
+    /// Byte offset of the archive HEAD slot below the dlopen control address,
+    /// by guest pointer width.
+    ///
+    /// DUPLICATED from `host/src/worker-main.ts` (`DLOPEN_HEAD_OFFSET_WASM32` /
+    /// `_WASM64`), which is the source of truth for this host-private control
+    /// block. The duplication is deliberate: these are not ABI constants and
+    /// putting them in the generated ABI surface would make a host-private
+    /// layout part of the versioned contract.
+    /// `host/test/fork-module-control-block.test.ts` fails if the copies drift.
+    const DLOPEN_HEAD_OFFSET_WASM32: usize = 12;
+    const DLOPEN_HEAD_OFFSET_WASM64: usize = 24;
+
+    /// This worker's dlopen control-block address, or 0 for a worker with no
+    /// archive at all -- which a reconcile reports as generation 0 rather than
+    /// as an error. `AtomicUsize`, not `AtomicU32`: this is a guest ADDRESS, and
+    /// truncating it would silently point a wasm64 worker at the wrong block.
+    static ARCHIVE_CONTROL: AtomicUsize = AtomicUsize::new(0);
+    /// The physical table whose patches this worker applies. Per worker rather
+    /// than per activation, because the module writes exactly one table: the
+    /// `__indirect_function_table` it imports.
+    static ARCHIVE_OWNER: AtomicU32 = AtomicU32::new(0);
+    /// This worker's syscall channel base; 0 until `fm_set_format` seeds it.
+    static CHANNEL_BASE: AtomicUsize = AtomicUsize::new(0);
+    /// The generation this worker has applied, low and high halves.
+    static ARCHIVE_APPLIED: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+    /// Read the published archive head out of the control block.
+    ///
+    /// The head is stored at a fixed negative offset from the control address,
+    /// so no host call is needed to learn it -- only the control address, which
+    /// arrives once with the rest of the per-worker format seed.
+    fn archive_head() -> Result<u64, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        if control == 0 {
+            return Ok(0);
+        }
+        let width = format()?.pointer_width;
+        let offset = match width {
+            4 => DLOPEN_HEAD_OFFSET_WASM32,
+            8 => DLOPEN_HEAD_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
+        };
+        let slot = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        let end = slot.checked_add(usize::from(width)).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds-checked above, and the module shares the guest's
+        // linear memory, so `slot` is a readable address in it.
+        Ok(unsafe {
+            match width {
+                4 => u64::from((slot as *const u32).read_unaligned()),
+                _ => (slot as *const u64).read_unaligned(),
+            }
+        })
+    }
+
+    /// Byte offset of the archive reader/writer lock below the control address.
+    ///
+    /// DUPLICATED from `host/src/worker-main.ts` (`DLOPEN_LOCK_OFFSET_WASM32` /
+    /// `_WASM64`) for the reason `DLOPEN_HEAD_OFFSET_*` is, and pinned by the
+    /// same test.
+    const DLOPEN_LOCK_OFFSET_WASM32: usize = 20;
+    const DLOPEN_LOCK_OFFSET_WASM64: usize = 40;
+
+    /// Lock states. Zero is free, negative is the single writer, and any
+    /// positive value counts concurrent readers. These are the host's values,
+    /// not this module's: the word is ONE protocol shared by every participant
+    /// in the process, so a module that invented its own encoding would
+    /// deadlock against a host holding the same word.
+    const DLOPEN_LOCK_IDLE: i32 = 0;
+    const DLOPEN_LOCK_WRITER: i32 = -1;
+
+    /// The lock word as an atomic, or `EINVAL` when this worker has no archive.
+    fn archive_lock() -> Result<&'static AtomicI32, Errno> {
+        let control = ARCHIVE_CONTROL.load(Ordering::Relaxed);
+        if control == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let offset = match format()?.pointer_width {
+            4 => DLOPEN_LOCK_OFFSET_WASM32,
+            8 => DLOPEN_LOCK_OFFSET_WASM64,
+            _ => return Err(Errno::EINVAL),
+        };
+        let addr = control.checked_sub(offset).ok_or(Errno::EINVAL)?;
+        if addr % 4 != 0 || addr.checked_add(4).ok_or(Errno::EINVAL)? > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds- and alignment-checked above, in the guest's shared
+        // linear memory, which the module imports. The host writes this same
+        // word with `Atomics.compareExchange`, which is the same operation on
+        // the same bytes.
+        Ok(unsafe { &*(addr as *const AtomicI32) })
+    }
+
+    /// Take the exclusive archive writer, blocking until it is free.
+    fn acquire_archive_writer() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        loop {
+            match lock.compare_exchange(
+                DLOPEN_LOCK_IDLE,
+                DLOPEN_LOCK_WRITER,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                // Someone else holds it -- a writer, or one or more readers.
+                // Wait on the value we OBSERVED rather than on a constant: the
+                // wait is a no-op if it changed in between, which is exactly the
+                // race `memory.atomic.wait32`'s compare-and-block closes.
+                Err(observed) => {
+                    let addr = lock as *const AtomicI32 as usize;
+                    if atomic_wait32(addr, observed) < 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Release the exclusive archive writer and wake whoever is waiting.
+    ///
+    /// Fails loud rather than forcing the word to idle: not holding the writer
+    /// here means some other participant's view of the protocol is already
+    /// wrong, and stamping IDLE over it would hand the lock to two owners.
+    fn release_archive_writer() -> Result<(), Errno> {
+        let lock = archive_lock()?;
+        lock.compare_exchange(
+            DLOPEN_LOCK_WRITER,
+            DLOPEN_LOCK_IDLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| Errno::EPERM)?;
+        atomic_notify(lock as *const AtomicI32 as usize);
+        Ok(())
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_begin() -> i64`.
+    ///
+    /// Take the process writer, bring this worker up to the newest published
+    /// state, and report the generation it now reflects. Ownership stays live
+    /// until a commit or an abort releases it.
+    ///
+    /// Reconciling INSIDE the lock is the point: a mutation applied on top of a
+    /// stale table would publish a patch describing slots the writer never saw.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_mutation_begin() -> i64 {
+        if let Err(errno) = acquire_archive_writer() {
+            set_err(errno);
+            return -1;
+        }
+        let reached = __wpk_fork_module_state_table_reconcile();
+        if reached < 0 {
+            // Hold nothing on the way out. A failed begin that kept the writer
+            // would wedge every other worker in the process.
+            let _ = release_archive_writer();
+            // `reconcile` already set the errno that explains this.
+            return -1;
+        }
+        set_ok();
+        reached
+    }
+
+    /// The guest's indirect function table length, read rather than told.
+    fn indirect_table_length() -> u32 {
+        // SAFETY: after injection this is one `table.size` on the imported table.
+        let size = unsafe { fm_indirect_table_size() };
+        if size < 0 { 0 } else { size as u32 }
+    }
+
+    /// This worker's syscall channel base, seeded with the rest of the
+    /// per-worker format. Needed because publishing a patch allocates its record
+    /// with `SYS_MMAP` through the same channel the guest uses, and a borrowed
+    /// fork child cannot derive it from the archive control address -- that one
+    /// belongs to its owner.
+    fn channel_base() -> Result<u64, Errno> {
+        let base = CHANNEL_BASE.load(Ordering::Relaxed);
+        if base == 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(base as u64)
+    }
+
+    /// Address of the archive's LAST table-patch record, or `None` when it has
+    /// none.
+    ///
+    /// Read from the header's own tail cursor rather than by walking the chain:
+    /// the decoder does not retain record addresses, and re-deriving the tail by
+    /// walking would be a second reader of the same pointers.
+    fn archive_table_patch_tail(
+        archive: &fork_codec::dylink_archive::DylinkArchive,
+        head: u64,
+        _pointer_width: u8,
+    ) -> Result<Option<u64>, Errno> {
+        if archive.table_patches.is_empty() {
+            return Ok(None);
+        }
+        const HEADER_LAST_PATCH_OFFSET: u64 = 64;
+        let at = head.checked_add(HEADER_LAST_PATCH_OFFSET).ok_or(Errno::EINVAL)?;
+        let bytes = fork_codec::dylink_archive::ArchiveBytes::slice(&GuestArchiveBytes, at, 8)?;
+        let tail = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EINVAL)?);
+        if tail == 0 {
+            // The header says there are patches but names no tail, so the image
+            // is inconsistent with itself.
+            return Err(Errno::EINVAL);
+        }
+        Ok(Some(tail))
+    }
+
+    /// Write bytes into guest linear memory, bounds-checked.
+    fn write_guest_bytes(address: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let start = usize::try_from(address).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(bytes.len()).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        // SAFETY: bounds-checked above, into the guest's shared linear memory.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                core::hint::black_box(start) as *mut u8,
+                bytes.len(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_commit(owner,
+    /// first_index, length)`.
+    ///
+    /// Publish what the guest just wrote into `__indirect_function_table`, then
+    /// release the archive writer `begin` took.
+    ///
+    /// Every step is the module's: read each changed slot, resolve the function
+    /// there to a catalog coordinate, coalesce equal neighbours into runs, size
+    /// and allocate the record with `SYS_MMAP` through the guest's own channel,
+    /// plan the append, apply it, and publish the generation LAST. The host's
+    /// only contribution is answering "are these the same function?" while the
+    /// coordinates are resolved.
+    ///
+    /// The writer is released on EVERY exit, including the failing ones. A commit
+    /// that failed while holding it would wedge every other worker in the
+    /// process, which is worse than the mutation being lost.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_mutation_commit(
+        owner: u32,
+        first_index: u64,
+        length: u64,
+    ) {
+        let result = commit_table_mutation_impl(owner, first_index, length);
+        // Release before reporting, so a caller that ignores errno still does not
+        // leave the process wedged.
+        let released = release_archive_writer();
+        match result.and(released) {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    fn commit_table_mutation_impl(
+        owner: u32,
+        first_index: u64,
+        length: u64,
+    ) -> Result<(), Errno> {
+        let first = u32::try_from(first_index).map_err(|_| Errno::EINVAL)?;
+        let count = u32::try_from(length).map_err(|_| Errno::EINVAL)?;
+        if count == 0 {
+            // Nothing changed. Not an error -- a zero-length `table.fill` is
+            // legal -- and publishing an empty patch would burn a generation
+            // every peer then reconciles against for no reason.
+            return Ok(());
+        }
+        first.checked_add(count).ok_or(Errno::EINVAL)?;
+
+        // One run per maximal stretch of slots holding the same coordinate, which
+        // is what makes a bulk `table.fill` one record instead of `count` of them.
+        let mut runs: Vec<fork_codec::dylink_archive::DylinkTablePatchRun> = Vec::new();
+        for offset in 0..count {
+            let index = fm_indirect_slot_catalog_index_safe(first + offset)?;
+            let function = match index {
+                None => None,
+                Some(slot) => Some(catalog_slot_coordinate(slot)?),
+            };
+            match runs.last_mut() {
+                Some(last) if last.function == function => last.length += 1,
+                _ => runs.push(fork_codec::dylink_archive::DylinkTablePatchRun {
+                    length: 1,
+                    function,
+                }),
+            }
+        }
+
+        let head = archive_head()?;
+        if head == 0 {
+            return Err(Errno::EINVAL); // nothing published to append to
+        }
+        let pointer_width = format()?.pointer_width;
+        let archive = fork_codec::dylink_archive::decode_dylink_archive(
+            &GuestArchiveBytes,
+            head,
+            pointer_width,
+        )?;
+        let patch = fork_codec::dylink_archive::DylinkTablePatch {
+            generation: archive.generation.checked_add(1).ok_or(Errno::EINVAL)?,
+            // The guest's import signature carries no activation, and the planner
+            // reads each RUN's own activation rather than this field, so recording
+            // a guessed one would be a fiction nothing consumes.
+            activation_id: 0,
+            owner_id: owner,
+            start: u64::from(first),
+            table_length: u64::from(indirect_table_length()),
+            runs,
+        };
+        let size = fork_codec::dylink_archive::table_append::appended_record_size(&patch)?;
+        let record_at = channel_mmap(channel_base()?, size)?;
+        let plan = fork_codec::dylink_archive::table_append::plan_table_patch_append(
+            &archive,
+            head,
+            archive_table_patch_tail(&archive, head, pointer_width)?,
+            record_at,
+            &patch,
+        )?;
+        // Every write lands BEFORE the generation. A peer that saw the newer
+        // generation first would follow a `next` pointer into memory this
+        // mutation had not filled in yet.
+        for write in &plan.writes {
+            write_guest_bytes(write.address, &write.bytes)?;
+        }
+        write_guest_bytes(plan.generation_address, &plan.generation.to_le_bytes())?;
+        // This worker wrote it, so it already reflects it.
+        ARCHIVE_APPLIED[0].store((plan.generation & 0xffff_ffff) as u32, Ordering::Relaxed);
+        ARCHIVE_APPLIED[1].store((plan.generation >> 32) as u32, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Safe wrapper over the injected indirect-slot lookup. `None` is a null
+    /// slot; an uncatalogued function is `EINVAL`.
+    fn fm_indirect_slot_catalog_index_safe(dest: u32) -> Result<Option<u32>, Errno> {
+        // SAFETY: after injection this reads one indirect-table slot and scans
+        // the imported catalog, both bounds-checked by wasm itself.
+        match unsafe { fm_indirect_slot_catalog_index(dest) } {
+            -1 => Ok(None),
+            // A function the loader never catalogued cannot be described as a
+            // coordinate, and a patch that omitted it would tell peers the slot
+            // was cleared.
+            //
+            // ENOENT rather than EINVAL, deliberately: "no such catalog entry" is
+            // a different event from "bad argument", and every other way this
+            // commit can fail reports EINVAL. Sharing one code made the two
+            // indistinguishable to a test -- which is how a perturbation that
+            // treated an uncatalogued function as a CLEARED SLOT passed.
+            -2 => Err(Errno::ENOENT),
+            slot => Ok(Some(slot as u32)),
+        }
+    }
+
+    /// Merged catalog slot -> the `(activation, ordinal)` a patch run records.
+    fn catalog_slot_coordinate(
+        slot: u32,
+    ) -> Result<fork_codec::dylink_archive::DylinkTableFunction, Errno> {
+        let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
+        let map = unsafe { &*ACT_FUNC_CATALOG_BASE.0.get() };
+        let mut owner: Option<(u32, u32)> = None;
+        for entry in map.iter().take(count) {
+            let (activation, base) = (entry[0], entry[1]);
+            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
+                owner = Some((activation, base));
+            }
+        }
+        match owner {
+            Some((activation, base)) => Ok(fork_codec::dylink_archive::DylinkTableFunction {
+                activation_id: activation,
+                ordinal: slot - base,
+            }),
+            None if count == 0 => Ok(fork_codec::dylink_archive::DylinkTableFunction {
+                activation_id: 0,
+                ordinal: slot,
+            }),
+            None => Err(Errno::EINVAL),
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_mutation_abort()`.
+    ///
+    /// Release the writer after a guest mutation that changed nothing -- a
+    /// failed `dlopen`, or a `table.fill` of length zero.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_mutation_abort() {
+        match release_archive_writer() {
+            Ok(()) => set_ok(),
+            Err(errno) => set_err(errno),
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_module_state_table_reconcile() -> i64`.
+    ///
+    /// Brings this worker's `__indirect_function_table` up to the newest
+    /// published generation and returns the generation it reached.
+    ///
+    /// The generation is published only AFTER every write lands: storing it
+    /// first would let a peer observe a generation whose entries are not there
+    /// yet. `-1` on failure, with the reason in `fm_last_errno`.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_module_state_table_reconcile() -> i64 {
+        let head = match archive_head() {
+            Ok(head) => head,
+            Err(errno) => {
+                set_err(errno);
+                return -1;
+            }
+        };
+        let owner = ARCHIVE_OWNER.load(Ordering::Relaxed);
+        let applied = (u64::from(ARCHIVE_APPLIED[1].load(Ordering::Relaxed)) << 32)
+            | u64::from(ARCHIVE_APPLIED[0].load(Ordering::Relaxed));
+        if head == 0 {
+            // Nothing published yet: coherent by definition.
+            set_ok();
+            return applied as i64;
+        }
+        let reconciled = (|| -> Result<u64, Errno> {
+            let pointer_width = format()?.pointer_width;
+            let archive = fork_codec::dylink_archive::decode_dylink_archive(
+                &GuestArchiveBytes,
+                head,
+                pointer_width,
+            )?;
+            let steps = fork_codec::dylink_table_plan::plan_table_patches(
+                &archive.table_patches,
+                owner,
+                applied,
+            )?;
+            // The generation this worker has REACHED is the snapshot's, not the
+            // highest one its own owner appears in. The guest caches whatever
+            // this returns and compares it against the shared fence on the next
+            // table access: returning the owner-filtered generation would leave
+            // the cached value permanently below the fence whenever some OTHER
+            // owner published last, and the guard would then re-enter on every
+            // single table access forever. Applying every patch for this owner
+            // up to `archive.generation` is exactly what makes the worker
+            // coherent with that snapshot, which is what the fence names.
+            let reached = archive.generation.max(
+                fork_codec::dylink_table_plan::planned_generation(
+                    &archive.table_patches,
+                    owner,
+                    applied,
+                ),
+            );
+            for step in &steps {
+                let slot = if step.clear {
+                    0
+                } else {
+                    catalog_slot(step.activation_id, step.ordinal)?
+                };
+                table_apply_via_injector(step.dest, slot, step.clear);
+            }
+            Ok(reached)
+        })();
+        match reconciled {
+            Ok(reached) => {
+                ARCHIVE_APPLIED[0].store((reached & 0xffff_ffff) as u32, Ordering::Relaxed);
+                ARCHIVE_APPLIED[1].store((reached >> 32) as u32, Ordering::Relaxed);
+                set_ok();
+                reached as i64
+            }
+            Err(errno) => {
+                set_err(errno);
+                -1
+            }
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_broker_encode(slot) -> recipe`.
+    ///
+    /// The cross-activation path: `fork-instrument` calls this when a GC value
+    /// staged in the transit slot matched none of the CALLING activation's
+    /// layouts. A structurally canonical value can enter through another
+    /// dynamically loaded module, and its codec is the one that can encode it.
+    ///
+    /// Probes each registered activation's codec in turn through the drive
+    /// table, and routes to the first that claims the value. Both steps are the
+    /// guest's own generated functions; the module only chooses who to ask.
+    ///
+    /// # Why this is a loop and not a lookup
+    ///
+    /// Which activation owns a value is a property of the VALUE's type, and the
+    /// module cannot inspect a reference. Asking each codec is the only way to
+    /// find out, and it is bounded by the number of registered activations —
+    /// a handful even for a program that dlopens heavily, not a per-object cost.
+    ///
+    /// Refuses with `EOPNOTSUPP` when no activation claims the value, rather
+    /// than inventing a recipe. The returned `-1` is not a valid recipe id, so
+    /// an edge naming it is rejected at `define_gc` and the capture cannot seal
+    /// — the same structural refusal `__wpk_fork_ref_exn_broker_encode` uses.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_broker_encode(slot: u32) -> i32 {
+        let act_count = ACT_GC_CODEC_ACT_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives the borrow.
+        let index = unsafe { &*ACT_GC_CODEC_INDEX.0.get() };
+        for entry in index.iter().take(act_count) {
+            let activation = entry[0];
+            if capture_probe_via_injector(activation, slot) == 0 {
+                continue; // this codec does not recognise the value
+            }
+            let recipe = capture_encode_via_injector(activation, slot);
+            if recipe < 0 {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+            set_ok();
+            return recipe;
+        }
+        // NOT an unclaimed GC value: a live HOST externref, which is what
+        // `any.convert_extern` in the guest's `__wpk_fork_ref_encode_externref`
+        // hands this path. No activation's codec can ever claim one -- it has
+        // no type to test -- so probing them all and refusing was the wrong
+        // answer to the right question.
+        //
+        // The host owns its identity and issued its handle, and the module can
+        // now ask for it (the reverse of `resolve_externref`, which brings it
+        // back in the child). With the handle the value is an ordinary
+        // externref recipe, interned exactly as a directly-held one is.
+        //
+        // Before this, an externref reachable from a reference LOCAL made the
+        // guest append recipe -1 to its reference vector, which failed the
+        // vector's count check, which left the vector open, which failed the
+        // capture's graph validation at seal -- four layers between the cause
+        // and the errno a reader saw (census section 188).
+        let handle = externref_handle_via_injector(slot);
+        if handle > 0 {
+            let recipe =
+                capture_recipe_publishable(fm_capture_intern(INTERN_KIND_EXTERNREF, handle as u32, 0));
+            if recipe >= 0 {
+                set_ok();
+            }
+            return recipe;
+        }
+        set_err(Errno::EOPNOTSUPP);
+        -1
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_capture_layout(slot, activation,
+    /// layout) -> selected_layout`.
+    ///
+    /// Answers "which layout is the value staged in transit slot `slot`" by
+    /// driving the guest's own TYPE-TEST probe, which `ref.test`s the value
+    /// against each dispatch layout and returns
+    /// `(type_ordinal << 32) | layout_id`.
+    ///
+    /// # Why this needs no per-object bookkeeping
+    ///
+    /// A layout is a per-OBJECT fact — two objects of one base type can be made
+    /// by different constructors — so the witness trick that made provenance
+    /// bounded does not apply. Recording it per object is the unbounded storage
+    /// problem census §20 ran into.
+    ///
+    /// Asking the guest instead costs nothing and stores nothing: the value is
+    /// already in the transit slot, and the guest's generated codec can test it.
+    /// The module holds no map at all.
+    ///
+    /// Returns 0 when no layout matched, which is the probe's own answer for a
+    /// value this codec does not handle. 0 is not a valid layout id, so a
+    /// `gc_define` that used it fails rather than defining against layout zero.
+    /// The `layout` argument is the guest's static guess and is deliberately
+    /// NOT trusted over the type test.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_capture_layout(
+        slot: u32,
+        activation: u32,
+        _layout: u32,
+    ) -> i32 {
+        let packed = capture_probe_via_injector(activation, slot);
+        set_ok();
+        // Low 32 bits are the layout id; the high half is the type ordinal,
+        // which `gc_define` receives separately from the guest.
+        (packed as u64 & 0xffff_ffff) as i32
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_define(...)`.
+    ///
+    /// Completes a claimed GC placeholder into its final aggregate recipe, and
+    /// is where constructor provenance finally becomes readable: the witnesses
+    /// recorded at `__wpk_fork_ref_gc_provenance_ref` are interned here, through
+    /// the injected capture shim, and their recipe ids become this node's
+    /// provenance edges.
+    ///
+    /// §21 established this export must not be served WITHOUT that: serving it
+    /// alone would pass `has_provenance = 0` for every object and bake in
+    /// "provenance is always absent", which is true today only because nothing
+    /// interned the witnesses.
+    ///
+    /// The guest ABI returns nothing, so a failure latches in `fm_last_errno`
+    /// and the claimed-but-undefined placeholder it leaves is what
+    /// `fm_capture_validate` refuses to seal.
+    #[allow(clippy::too_many_arguments)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_define(
+        recipe_id: u32,
+        activation: u32,
+        type_ordinal: u32,
+        layout_id: u32,
+        kind: u32,
+        scalar_ptr: usize,
+        scalar_len: u32,
+        reference_vector_ordinal: u32,
+    ) {
+        let kind_enum = match kind {
+            CAPTURE_KIND_STRUCT => AggregateKind::Struct,
+            CAPTURE_KIND_ARRAY => AggregateKind::Array,
+            _ => {
+                set_err(Errno::EINVAL);
+                return;
+            }
+        };
+        let assembled = (|| -> Result<(), Errno> {
+            let scalars = read_capture_bytes(scalar_ptr, scalar_len as usize)?;
+            let prov_ids = intern_layout_witnesses(activation, layout_id)?;
+            let g = capture_builder()?;
+            // Edges are provenance ids first, then the interned field vector —
+            // the order `gc_allocation_dependencies` reads, where the leading
+            // `provenance_reference_count` entries are the allocation deps.
+            let field_vector = g
+                .vectors()
+                .get(reference_vector_ordinal as usize)
+                .ok_or(Errno::EINVAL)?
+                .clone();
+            let mut edges = prov_ids.clone();
+            edges.extend_from_slice(&field_vector);
+            let provenance = if prov_ids.is_empty() {
+                None
+            } else {
+                Some(GcProvenance {
+                    reference_ids: prov_ids,
+                })
+            };
+            g.define_gc(
+                recipe_id,
+                activation,
+                type_ordinal,
+                layout_id,
+                kind_enum,
+                &scalars,
+                &edges,
+                provenance,
+            )
+        })();
+        capture_ok_void(assembled);
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_lookup(slot) -> recipe`.
+    ///
+    /// Always reports NOT FOUND, so every catch takes a fresh recipe. That is a
+    /// deliberate decision with a proof, not a shortcut.
+    ///
+    /// # Why dedup is impossible here
+    ///
+    /// Deduping needs to tell two exception references apart, and nothing can:
+    ///
+    /// * Wasm cannot. `exn` is a disjoint hierarchy, so `ref.eq` on two
+    ///   `exnref`s does not validate, an `exnref` cannot be stored in an
+    ///   `anyref` table, and no cast rescues one into the eq hierarchy. Only
+    ///   `ref.is_null` accepts an `exnref`, and that separates null from
+    ///   non-null, not one exception from another.
+    /// * A JS host cannot. An `exnref` VALUE cannot cross into a JS import: the
+    ///   module compiles and instantiates, then throws
+    ///   `TypeError: type incompatibility when transforming from/to JS` at the
+    ///   first call. So the host cannot be asked to do it either.
+    ///
+    /// Both measured with `wasm-tools validate`, against a positive and a
+    /// negative control — see docs/plans/2026-09-12-lane-f-census.md sections
+    /// 28a and 28b.
+    ///
+    /// # Why that costs nothing observable
+    ///
+    /// The SAME limitation makes the duplication undetectable. A guest has no
+    /// instruction that distinguishes two `exnref`s and no way to hand one to
+    /// JavaScript to be compared there. A child that rebuilds two exception
+    /// objects where the parent had one is therefore indistinguishable, from
+    /// inside the guest, from one that rebuilt a single object.
+    ///
+    /// Their PAYLOADS do not duplicate: those are captured as ordinary
+    /// references and dedup through the normal identity path, so two exnref
+    /// recipes reference the same payload objects.
+    ///
+    /// # Why it cannot recurse
+    ///
+    /// A never-hit lookup would loop forever on a self-referential exception.
+    /// None exists: an exception payload is fixed at `throw`, so building a
+    /// cycle would need each exception to exist before the other. Exception
+    /// payload graphs are acyclic by construction, the same argument that makes
+    /// constructor seeds acyclic (section 25).
+    ///
+    /// The `slot` argument is accepted and ignored: with no identity to read,
+    /// the staged reference is not needed. It stays in the signature because
+    /// the guest ABI declares it.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_lookup(_slot: u32) -> i32 {
+        set_ok();
+        0
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_claim(slot) -> recipe`.
+    ///
+    /// Reserves a placeholder recipe for an exception the guest is about to
+    /// describe with `__wpk_fork_ref_exn_define`. Pairs with the lookup above:
+    /// since lookup never hits, every catch claims once.
+    ///
+    /// Like the GC claim this only reserves identity, not content — but unlike
+    /// it, there is nothing to bind the identity TO, for the reasons on
+    /// `__wpk_fork_ref_exn_lookup`. `slot` is accepted and ignored.
+    ///
+    /// A claimed recipe that is never defined is refused by
+    /// `fm_capture_validate`, so a dropped `exn_define` cannot seal.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_claim(_slot: u32) -> i32 {
         match capture_builder() {
+            Ok(g) => capture_ok_id(g.claim_gc()),
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_exn_define(...)`.
+    ///
+    /// Completes a claimed exception placeholder into its final recipe. Unlike
+    /// the GC `define`, this one is SELF-CONTAINED: `fork-instrument`'s
+    /// exception codec stores every payload into one scratch staging span
+    /// before the call -- scalars at their field offsets, and each reference
+    /// payload as the `i32` recipe id its own encoder returned, at
+    /// `references_ptr + index * 4` (`module_exception_codec.rs`). So both
+    /// spans arrive as plain guest linear memory and the module needs no
+    /// transit table, no host import, and no separate transaction to read them.
+    ///
+    /// The guest ABI returns NOTHING, so a failure cannot be reported at the
+    /// call. It is latched in `fm_last_errno`, and the claimed-but-undefined
+    /// placeholder it leaves behind is what `fm_capture_validate` refuses to
+    /// seal ("a claimed GC identity was never defined"). That is the guard
+    /// which makes a void return safe: a dropped `define` cannot reach a child
+    /// as a silently missing exception payload, it stops the seal instead.
+    #[allow(clippy::too_many_arguments)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_exn_define(
+        recipe_id: u32,
+        activation: u32,
+        type_ordinal: u32,
+        layout_id: u32,
+        scalar_ptr: usize,
+        scalar_len: u32,
+        reference_ptr: usize,
+        reference_count: u32,
+    ) {
+        let assembled = (|| -> Result<(), Errno> {
+            let scalars = read_capture_bytes(scalar_ptr, scalar_len as usize)?;
+            // Edge order is the layout's declared payload order, which is what
+            // the child replays; it is NOT an interned vector ordinal, so there
+            // is nothing to look up.
+            let edges = read_capture_u32_array(reference_ptr, reference_count as usize)?;
+            let g = capture_builder()?;
+            g.define_gc(
+                recipe_id,
+                activation,
+                type_ordinal,
+                layout_id,
+                AggregateKind::Exnref,
+                &scalars,
+                &edges,
+                None,
+            )
+        })();
+        capture_ok_void(assembled);
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_i31(payload) -> recipe`.
+    ///
+    /// The ONE member of the GC capture family that carries no reference at
+    /// all: `fork-instrument` emits `ref.cast i31` then `i31.get_s` BEFORE the
+    /// call (`module_gc_codec.rs`), so the module receives the signed 31-bit
+    /// payload as a plain scalar and interns it in the same recipe space as
+    /// every other leaf.
+    ///
+    /// The guest then publishes i31 identity into the transit table itself, at
+    /// `recipe + 1` — the generator's comment gives the reason: "JavaScript
+    /// receives only its scalar payload and cannot manufacture an `i31ref`".
+    /// That is this module's job now, and it needs no host at all.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_i31(payload: i32) -> i32 {
+        match capture_builder() {
+            Ok(g) => capture_recipe_publishable(capture_ok_id(g.intern_i31(payload))),
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
+    // ---- Constructor provenance: a WITNESS per (layout, ordinal) -----------
+    //
+    // A non-defaultable GC shape cannot be `struct.new_default`'d, so replay's
+    // allocate step must pass a type-correct non-null value for each mutable
+    // internal-reference field before the true edge target may exist. That
+    // seed is then OVERWRITTEN: the edge vector is
+    // `[ ...provenance refs, ...snapshot refs ]` and phase two fills the real
+    // edges over it.
+    //
+    // So the requirement is a type-correct CAPTURABLE instance of the field's
+    // type -- not the specific one the original constructor used. The original
+    // is what fork-instrument records only because an instance of an
+    // application-defined type cannot be conjured from nothing, and a value the
+    // program actually used is by construction one that existed.
+    //
+    // Hence a WITNESS: one retained instance per (layout, provenance ordinal),
+    // rather than one record per allocated object. The count is a static
+    // property of the guest's layouts, so this is bounded where a per-object
+    // record is not -- and the witness is stored by the injected shim with a
+    // plain `table.set`, so there is no host call on the allocation path.
+    //
+    // See docs/plans/2026-09-12-lane-f-census.md sections 21 and 22.
+    const WITNESS_SLOTS: usize = 256;
+
+    struct WitnessCell(UnsafeCell<WitnessState>);
+    // SAFETY: one guest drives these exports per worker, as with every other
+    // module static here.
+    unsafe impl Sync for WitnessCell {}
+
+    struct WitnessState {
+        /// `(layout << 8) | ordinal` per slot; `u32::MAX` when free.
+        keys: [u32; WITNESS_SLOTS],
+        /// Set once a slot has actually been written by the shim.
+        occupied: [bool; WITNESS_SLOTS],
+        /// Recipe id this witness encoded to, or 0 before it is interned.
+        ///
+        /// Cached because a witness is shared by EVERY object of its layout: a
+        /// thousand objects must reference one witness recipe, not intern the
+        /// same reference a thousand times.
+        recipes: [u32; WITNESS_SLOTS],
+    }
+
+    static WITNESS: WitnessCell = WitnessCell(UnsafeCell::new(WitnessState {
+        keys: [u32::MAX; WITNESS_SLOTS],
+        occupied: [false; WITNESS_SLOTS],
+        recipes: [0u32; WITNESS_SLOTS],
+    }));
+
+    #[allow(clippy::mut_from_ref)]
+    fn witness() -> &'static mut WitnessState {
+        // SAFETY: single-threaded per worker, as `state()` above.
+        unsafe { &mut *WITNESS.0.get() }
+    }
+
+    /// The open provenance transaction: `[token + 1, layout, declared, seen]`.
+    ///
+    /// One slot is enough for the same reason `VECTOR_IN_FLIGHT` needs one: the
+    /// wrapper fork-instrument emits is straight-line -- `begin`, N x `ref`,
+    /// `end` -- with no guest call between them.
+    static PROVENANCE_IN_FLIGHT: [AtomicU32; 4] = [
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+        AtomicU32::new(0),
+    ];
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_provenance_begin(...) -> token`.
+    ///
+    /// Pure scalars, so this needs no shim: the object fork-instrument stages in
+    /// the transit slot is the NEWLY CONSTRUCTED one, and a witness design has
+    /// no use for it. Only the seeds matter, and those arrive at
+    /// `__wpk_fork_ref_gc_provenance_ref`.
+    ///
+    /// `_slot` and the constructor scalars are accepted and ignored for the same
+    /// reason: an array's length is the one constructor scalar that is not
+    /// overwritten by the fill, and it is recoverable at capture by inspecting
+    /// the array, so no scalar needs recording here. They stay in the signature
+    /// because the guest ABI declares them.
+    #[allow(clippy::too_many_arguments)]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_provenance_begin(
+        _slot: u32,
+        _activation: u32,
+        _base_layout: u32,
+        layout: u32,
+        _scalar_lo: u64,
+        _scalar_hi: u64,
+        reference_count: u32,
+    ) -> i32 {
+        if PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed) != 0 {
+            // A second `begin` before an `end` means the emitted shape changed.
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        if layout > 0x00ff_ffff || reference_count > 0xff {
+            // The witness key packs layout and ordinal into one u32.
+            set_err(Errno::E2BIG);
+            return -1;
+        }
+        let token = 1u32;
+        PROVENANCE_IN_FLIGHT[0].store(token + 1, Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[1].store(layout, Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[2].store(reference_count, Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[3].store(0, Ordering::Relaxed);
+        set_ok();
+        token as i32
+    }
+
+    /// The witness table slot `(token, ordinal)` names, allocating one on first
+    /// use. Returns `-1` on failure, or `-2` for "slot already witnessed, do
+    /// not store" -- which is not an error.
+    ///
+    /// Called by the injected `__wpk_fork_ref_gc_provenance_ref` shim, which
+    /// then `table.set`s the guest's staged seed into that slot. Rust picks the
+    /// slot because Rust can hold the map; wasm does the store because only
+    /// wasm can hold the reference.
+    ///
+    /// # Why the FIRST seed wins, and never a later one
+    ///
+    /// Replay orders allocation by constructor dependency and fails
+    /// `EINVAL` on "an unallocatable constructor cycle"
+    /// (`crates/fork-codec/src/drive_plan.rs`). A provenance-eligible field is
+    /// mutable, NON-NULL and an internal GC reference, so seeding one always
+    /// requires an instance that already existed: the original program's
+    /// construction order over provenance edges is therefore acyclic.
+    ///
+    /// Keeping the FIRST witness preserves that order -- the first object of a
+    /// layout was seeded by something built before any object of that layout.
+    /// Keeping the LATEST does NOT: witness(A) may be an object whose own
+    /// layout's latest witness is a LATER object, which closes a cycle that the
+    /// original execution never had, and replay then refuses the whole graph.
+    /// This is the one place where a witness pool can differ from per-object
+    /// recording, and first-wins is what makes it equivalent.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_gc_provenance_witness_slot(token: u32, ordinal: u32) -> i32 {
+        let open = PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed);
+        if open == 0 || open - 1 != token {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        let declared = PROVENANCE_IN_FLIGHT[2].load(Ordering::Relaxed);
+        if ordinal >= declared || ordinal > 0xff {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        let layout = PROVENANCE_IN_FLIGHT[1].load(Ordering::Relaxed);
+        let key = (layout << 8) | ordinal;
+        let w = witness();
+        let slot = match w.keys.iter().position(|k| *k == key) {
+            Some(i) => i,
+            None => match w.keys.iter().position(|k| *k == u32::MAX) {
+                Some(free) => {
+                    w.keys[free] = key;
+                    free
+                }
+                None => {
+                    // Bounded, and a truthful failure: a witness that cannot be
+                    // stored would make the child allocate with a seed of the
+                    // wrong type, which is worse than refusing here.
+                    set_err(Errno::E2BIG);
+                    return -1;
+                }
+            },
+        };
+        // Count the store as seen either way: `end` is checking that the guest
+        // made the calls it declared, not that each one wrote.
+        PROVENANCE_IN_FLIGHT[3].fetch_add(1, Ordering::Relaxed);
+        set_ok();
+        if w.occupied[slot] {
+            return -2; // already witnessed; keep the first seed
+        }
+        w.occupied[slot] = true;
+        slot as i32
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_gc_provenance_end(token)`.
+    ///
+    /// Closes the transaction. The guest ABI returns nothing, so a mismatch
+    /// between the declared reference count and the stores actually made is
+    /// latched in `fm_last_errno` rather than reported here -- but it still
+    /// matters, because a missing witness means some later object of this
+    /// layout would be allocated with no type-correct seed at all.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_gc_provenance_end(token: u32) {
+        let open = PROVENANCE_IN_FLIGHT[0].load(Ordering::Relaxed);
+        if open == 0 || open - 1 != token {
+            set_err(Errno::EINVAL);
+            return;
+        }
+        let declared = PROVENANCE_IN_FLIGHT[2].load(Ordering::Relaxed);
+        let seen = PROVENANCE_IN_FLIGHT[3].load(Ordering::Relaxed);
+        PROVENANCE_IN_FLIGHT[0].store(0, Ordering::Relaxed);
+        if declared != seen {
+            set_err(Errno::EINVAL);
+            return;
+        }
+        set_ok();
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_vector_begin(count) -> handle`.
+    ///
+    /// Opens a reference vector for one call site's live references. `count` is
+    /// the number of appends the guest promises to make; it is recorded and
+    /// checked by `__wpk_fork_ref_vector_finish`.
+    ///
+    /// Returns `-1` with `fm_last_errno` set on failure, including when a
+    /// vector is already open (see `VECTOR_IN_FLIGHT`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn __wpk_fork_ref_vector_begin(count: u32) -> i32 {
+        let depth = VECTOR_IN_FLIGHT_DEPTH.load(Ordering::Relaxed) as usize;
+        if depth >= VECTOR_STACK_DEPTH {
+            set_err(Errno::E2BIG);
+            return -1;
+        }
+        let handle = match capture_builder() {
             Ok(g) => capture_ok_id(g.begin_vector()),
             Err(e) => {
                 set_err(e);
                 -1
             }
+        };
+        if handle < 0 {
+            return handle;
         }
+        // SAFETY: single-threaded per worker; `depth < VECTOR_STACK_DEPTH`.
+        let open = unsafe { &mut *VECTOR_IN_FLIGHT.0.get() };
+        open[depth] = [handle as u32 + 1, count, 0];
+        VECTOR_IN_FLIGHT_DEPTH.store(depth as u32 + 1, Ordering::Relaxed);
+        handle
     }
 
-    /// Append a recipe id to an open vector builder. Returns `0` or `-1`.
+    /// The index of the open build for `handle`, innermost first.
+    fn vector_in_flight_index(handle: u32) -> Option<usize> {
+        let depth = VECTOR_IN_FLIGHT_DEPTH.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; `depth <= VECTOR_STACK_DEPTH`.
+        let open = unsafe { &*VECTOR_IN_FLIGHT.0.get() };
+        (0..depth)
+            .rev()
+            .find(|&index| open[index][0] == handle.wrapping_add(1))
+    }
+
+    /// Guest-facing `env.__wpk_fork_ref_vector_append(handle, recipe_id)`.
+    ///
+    /// Returns NOTHING — that is the guest ABI, not a choice — so a failure is
+    /// latched in `fm_last_errno` and surfaces at
+    /// `__wpk_fork_ref_vector_finish`, which fails loud rather than interning a
+    /// short vector the child would reconstruct with missing references.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_append_vector(handle: u32, recipe_id: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_vector_append(handle: u32, recipe_id: u32) {
+        let Some(index) = vector_in_flight_index(handle) else {
+            // Appending into a build that is not open cannot be counted, and
+            // counting it against another one would make a DIFFERENT vector
+            // finish wrong.
+            set_err(Errno::EINVAL);
+            return;
+        };
         match capture_builder() {
-            Ok(g) => capture_ok_void(g.append_vector(handle, recipe_id)),
-            Err(e) => {
-                set_err(e);
-                -1
+            Ok(g) => {
+                if capture_ok_void(g.append_vector(handle, recipe_id)) == 0 {
+                    // SAFETY: single-threaded per worker; `index` came from the
+                    // live prefix of the stack.
+                    let open = unsafe { &mut *VECTOR_IN_FLIGHT.0.get() };
+                    open[index][2] += 1;
+                }
             }
+            Err(e) => set_err(e),
         }
     }
 
-    /// Finish an open vector builder, interning it and returning its stable
-    /// ordinal (`>= 1`; identical vectors dedup to one ordinal).
+    /// Guest-facing `env.__wpk_fork_ref_vector_finish(handle) -> ordinal`.
+    ///
+    /// Interns the vector and returns the DURABLE canonical ordinal the frame
+    /// stores — never the transaction-local handle, which is why the guest
+    /// overwrites its saved handle with this result.
+    ///
+    /// Fails (`-1`, `EINVAL`) when the appends did not match the count the
+    /// guest declared at `begin`, or when this names a handle that is not the
+    /// open one.
     #[unsafe(no_mangle)]
-    pub extern "C" fn fm_capture_finish_vector(handle: u32) -> i32 {
+    pub extern "C" fn __wpk_fork_ref_vector_finish(handle: u32) -> i32 {
+        let Some(index) = vector_in_flight_index(handle) else {
+            set_err(Errno::EINVAL);
+            return -1;
+        };
+        // SAFETY: single-threaded per worker; `index` is inside the live prefix.
+        let open = unsafe { &mut *VECTOR_IN_FLIGHT.0.get() };
+        let [_, promised, appended] = open[index];
+        // Finishing an OUTER build while an inner one is still open would mean
+        // the emitted nesting is not a stack; drop everything at or above it
+        // rather than leave an entry a later handle could match by accident.
+        VECTOR_IN_FLIGHT_DEPTH.store(index as u32, Ordering::Relaxed);
+        if promised != appended {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
         match capture_builder() {
             Ok(g) => capture_ok_id(g.finish_vector(handle)),
             Err(e) => {
@@ -4965,17 +9503,6 @@ mod wasm {
         }
     }
 
-    /// Read entry `index` of interned reference vector `ordinal` from the RESIDENT
-    /// capture builder (the graph `fm_capture_*` is still building/has built this
-    /// fork), returning the recipe id or `-1` on out-of-bounds. This is the
-    /// PARENT's own post-fork replay read: after the parent seals, its frame
-    /// rewind asks which recipe ids each frame's reference vector holds so it can
-    /// hand back the ORIGINAL live values (kept host-side in `capturedValues`, and
-    /// in the module-owned transit table). Unlike `fm_ref_vector_get` — which
-    /// reads a DECODED transaction a child reconstructs from the wire — this reads
-    /// the live capture builder directly, so the parent never re-decodes its own
-    /// graph and never reconstructs (its live references keep their identity by
-    /// construction). Requires an active capture session.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_capture_vector_get(ordinal: u32, index: u32) -> i32 {
         let Some(g) = capture_state().as_ref() else {
@@ -5025,7 +9552,7 @@ mod wasm {
     }
 
     /// Serialize the built graph into a module-owned KFRV/KFRS record stream and
-    /// return its guest address (0 on failure; reason in `fm_capture_last_errno`).
+    /// return its guest address (0 on failure; reason in `fm_last_errno`).
     /// The stream is a sequence of records, each `CAPTURE_RECORD_HEADER` bytes
     /// (`u16 kind, u16 reserved, u32 activation_id, u32 owner_id, u32 payload_len`)
     /// followed by `payload_len` payload bytes, in the exact emit order of the
@@ -5115,7 +9642,7 @@ mod wasm {
     /// Decode the sealed KFMS module-state arena rooted at `module_state_root`
     /// into the module-owned decoded reference graph. Returns the graph's node
     /// count (`>= 0`) or `-1` (reason in `fm_last_errno`). The decoded graph
-    /// stays resident for `fm_decoded_node_count` / `fm_decoded_node_*`
+    /// stays resident for the `fm_decoded_node_field` selectors
     /// until the next decode or replay. See `decode_reference_graph_impl`.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_decode_reference_graph(module_state_root: usize) -> i32 {
@@ -5135,11 +9662,13 @@ mod wasm {
         }
     }
 
-    /// The node count of the resident decoded graph (`fm_decode_reference_graph`
-    /// result), or `-1` if none is resident. Lets the host size a per-node
-    /// readout buffer without re-decoding.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_decoded_node_count() -> i32 {
+    /// The node count of the resident decoded graph, or `-1` with no graph.
+    ///
+    /// WAS `fm_decoded_node_count`, its own export. It is a field of the
+    /// resident graph like the three below it, and `fm_decoded_node_field`
+    /// already dispatches over them -- so it is a selector there now, and the
+    /// contract is one entry shorter. Census 202.
+    fn decoded_node_count_impl() -> i32 {
         match decoded_graph().as_ref() {
             Some(t) => match i32::try_from(t.nodes.len()) {
                 Ok(n) => {
@@ -5207,11 +9736,357 @@ mod wasm {
             },
             1 => clamp_decoded_u32(decoded_node_module_activation_impl(index)),
             2 => clamp_decoded_u32(decoded_node_ordinal_impl(index)),
+            // The graph's own node count, which takes no index -- a property of
+            // the resident graph rather than of a node, but the same question
+            // asked of the same resident thing, and it had its own export for
+            // no better reason than that it was written first.
+            3 => decoded_node_count_impl(),
             _ => {
                 set_err(Errno::EINVAL);
                 -1
             }
         }
+    }
+
+    // -- Child import plan (what a fresh child puts in each import object) ---
+    //
+    // The two entries census 175 argues for, and the argument in one line: the
+    // host's irreducible act at child instantiation is assembling a JavaScript
+    // import object, NOT deciding what belongs in it. Everything that decides
+    // -- matching each KFIG/KFIT declaration to the binding record the parent
+    // sealed, cross-checking their types, finding the saved scalar behind a
+    // base import, refusing the combinations a child cannot reconstruct -- is a
+    // decision over byte images, and it lives in
+    // `fork_codec::child_import_plan`. These expose its result.
+
+    /// Read one arena record's payload as a slice of guest memory.
+    fn record_payload(record: &fork_codec::ModuleStateRecord) -> Result<&'static [u8], Errno> {
+        let start = usize::try_from(record.payload_offset).map_err(|_| Errno::EINVAL)?;
+        let size = usize::try_from(record.payload_size).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(size).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL);
+        }
+        if size == 0 {
+            return Ok(&[]);
+        }
+        // SAFETY: inside guest memory (checked); non-null for a real offset.
+        Ok(unsafe {
+            core::slice::from_raw_parts(core::hint::black_box(start) as *const u8, size)
+        })
+    }
+
+    fn build_child_import_plan_impl(activation: u32, module_state_root: u64) -> Result<u32, Errno> {
+        let pw = FMT_POINTER_WIDTH.load(Ordering::Relaxed);
+        if pw == 0 {
+            return Err(Errno::EINVAL); // no format seeded, so no arena to read
+        }
+        let chunk_header_size =
+            abi::wpk_fork_module_state_chunk_header_size(pw as u8).ok_or(Errno::EINVAL)?;
+        let fmt = ModuleStateFormat {
+            pointer_width: pw as u8,
+            chunk_header_size,
+        };
+        let mem = unsafe { mem_ref() };
+        let module_state = decode_module_state(mem, module_state_root, &fmt)?;
+
+        // An activation with no KFIG/KFIT section imports no global or table.
+        // That is the ordinary case for a program that never dlopens, and an
+        // EMPTY CATALOG rather than a refusal: the section is emitted only when
+        // there is something to describe.
+        let globals = match activation_imports(IMPORT_SPACE_GLOBAL, activation) {
+            Some(bytes) => fork_codec::imported_globals::decode_imported_globals(bytes)?,
+            None => fork_codec::ImportedGlobals { globals: Vec::new() },
+        };
+        let tables = match activation_imports(IMPORT_SPACE_TABLE, activation) {
+            Some(bytes) => fork_codec::imported_tables::decode_imported_tables(bytes)?,
+            None => fork_codec::ImportedTables { tables: Vec::new() },
+        };
+
+        let mut global_bindings = Vec::new();
+        let mut table_bindings = Vec::new();
+        let mut snapshots = Vec::new();
+        for record in &module_state.records {
+            if record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_GLOBAL_BINDINGS {
+                global_bindings
+                    .extend(fork_codec::decode_imported_global_bindings(record_payload(record)?)?);
+            } else if record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_IMPORTED_TABLE_BINDINGS
+            {
+                table_bindings
+                    .extend(fork_codec::decode_imported_table_bindings(record_payload(record)?)?);
+            } else if record.kind == abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MUTABLE_GLOBAL
+                && record.activation_id == activation
+            {
+                snapshots.push((
+                    record.activation_id,
+                    record.owner_id,
+                    fork_codec::decode_mutable_global(record_payload(record)?)?,
+                ));
+            }
+        }
+        let snapshot_view: Vec<fork_codec::PlanSnapshot<'_>> = snapshots
+            .iter()
+            .map(|(activation, owner, snapshot)| fork_codec::PlanSnapshot {
+                activation: *activation,
+                owner: *owner,
+                snapshot,
+            })
+            .collect();
+
+        let plan = build_child_import_plan(
+            activation,
+            &globals,
+            &tables,
+            &global_bindings,
+            &table_bindings,
+            &snapshot_view,
+        )?;
+        let count = u32::try_from(plan.len()).map_err(|_| Errno::EINVAL)?;
+        // Abandoned rather than dropped, for the reason `reset_bump_heap`
+        // states: a previous plan's `Vec` lives in bump memory a fork may
+        // already have reclaimed, and walking it to drop it is the trap.
+        abandon_resident(import_plan());
+        *import_plan() = Some(plan);
+        Ok(count)
+    }
+
+    // -- Peer-table checkpoint (cross-worker dylink table replication) -------
+    //
+    // NOT a fork. A worker that loads a side module publishes its table state so
+    // its peers can replicate it, and a peer whose archive generation moves
+    // restores from that publication. The two halves are asymmetric on purpose:
+    //
+    //   - CAPTURE has to be one module call, because it opens an arena and a
+    //     capture graph, drives the guest's table save into them, and seals --
+    //     and nothing outside the module can hold those three open across calls.
+    //   - RESTORE is already host-sequenced (it runs when a peer's generation
+    //     changes, not inside a module-driven replay), so it needs no entry:
+    //     `fm_restore_from_arena` seeds the driver, and the host calls each
+    //     activation's `wpk_fork_module_table_state_restore` on its instance the
+    //     way it calls `wpk_fork_module_bootstrap`.
+    //
+    // This is what the 2,098-line `ForkActivationRegistry`'s `captureTableState`
+    // did, minus everything that was bookkeeping: the JS built a function
+    // catalog, opened a `ForkCaptureSession`, appended `Module` records, looped
+    // `saveTables` per activation and sealed into a host-owned arena.
+
+    fn capture_peer_tables_impl(channel_base: u64) -> Result<u64, Errno> {
+        if channel_base == 0 || channel_base % PAGE != 0 {
+            return Err(Errno::EINVAL); // the syscall channel is page-aligned
+        }
+        // The format must be seeded; a peer-table capture reads the same
+        // pointer width and chunk geometry a fork does.
+        let fmt = format()?;
+        let _ = fmt;
+
+        // The activation set is the SEEDED one, not a fork's. There is no fork
+        // here, so `state().activations` (which `begin_unwind_impl` fills) is
+        // empty and stays empty -- this path allocates no frames at all.
+        let activations: Vec<u32> = {
+            let count = ACT_TEMPLATE_ID_COUNT.load(Ordering::Relaxed) as usize;
+            // SAFETY: single-threaded per worker.
+            let table = unsafe { &*ACT_TEMPLATE_IDS.0.get() };
+            let mut ids: Vec<u32> = table.iter().take(count).map(|e| e.0).collect();
+            ids.sort_unstable();
+            ids
+        };
+        if activations.is_empty() {
+            return Err(Errno::EINVAL); // nothing to check point
+        }
+
+        // A fresh bump for the capture builder, exactly as `fm_capture_begin`
+        // does and for the same reason: the previous fork's builder lives in
+        // memory the reset reclaims, so it is abandoned before rather than
+        // dropped after.
+        reset_bump_heap();
+        let module = ForkModule {
+            activations: BTreeMap::new(),
+            channel_base,
+            extra_chunks: Vec::new(),
+            journal_image_ptr: 0,
+            journal_image_len: 0,
+            module_state: ModuleStateWriter::new(module_state_format()?),
+            module_state_chunks: ForkChunkList::new_channel(channel_base),
+            journal: ReplayEventJournal::new(),
+            table: ResumeSlotTable::new(),
+            replay_events: Vec::new(),
+            in_abort: false,
+        };
+        *state() = Some(module);
+        *capture_state() = Some(ReferenceGraphBuilder::begin());
+        CAPTURE_ARMED.store(1, Ordering::Relaxed);
+        reset_captured_externrefs();
+
+        // The arena the publication names. Module-owned, so the module frees
+        // exactly what it mapped -- and NOT freed here: the root is handed to
+        // the dlopen loader and outlives this call.
+        let arena_root = {
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            module_state.begin(module_state_chunks, mem)?
+        };
+
+        // One `Module` record per activation, before anything writes records:
+        // the arena has no activation set without them, and a restore filters
+        // on exactly this kind to decide which activations to drive.
+        let payload_size = u64::from(abi::WPK_FORK_MODULE_STATE_MODULE_RECORD_PAYLOAD_SIZE);
+        for id in &activations {
+            let template_id = activation_template_id(*id).ok_or(Errno::EINVAL)?;
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            let ForkModule { module_state, module_state_chunks, .. } = st;
+            let payload = module_state.reserve(
+                module_state_chunks,
+                mem,
+                abi::WPK_FORK_MODULE_STATE_RECORD_KIND_MODULE,
+                *id,
+                0,
+                payload_size,
+            )?;
+            let start = usize::try_from(payload).map_err(|_| Errno::EINVAL)?;
+            let end = start
+                .checked_add(payload_size as usize)
+                .ok_or(Errno::EINVAL)?;
+            if end > mem_len_bytes() {
+                return Err(Errno::EINVAL);
+            }
+            // SAFETY: inside guest memory (checked); non-null for a real offset.
+            let out: &mut [u8] = unsafe {
+                core::slice::from_raw_parts_mut(
+                    core::hint::black_box(start) as *mut u8,
+                    payload_size as usize,
+                )
+            };
+            fork_codec::encode_module_record(
+                out,
+                &fork_codec::ModuleDescriptor {
+                    template_id,
+                    flags: 0,
+                },
+            )?;
+            let st = state().as_mut().ok_or(Errno::EINVAL)?;
+            let mem = unsafe { mem_mut() };
+            st.module_state.commit(mem, payload)?;
+        }
+
+        // Drive the guest's TABLE save, which reserves its records through the
+        // module's own record-reserve import into the arena opened above.
+        let mut steps = Vec::new();
+        drive_plan::append_table_state_save_steps(&mut steps, &activations);
+        let plan = serialize_and_store_plan(&steps)?;
+        drive_plan_via_injector(plan, activations.len() as u32);
+
+        // Seal: the references the save interned become the `KFRS`/`KFRV`
+        // segments a restore decodes. Without this the publication carries
+        // tables whose funcref and externref slots name nothing.
+        capture_builder()?.validate()?;
+        write_reference_transaction(CAPTURE_SEGMENT_WINDOW)?;
+        Ok(arena_root)
+    }
+
+    /// Capture a PEER-TABLE checkpoint into a fresh module-owned arena and
+    /// return its root (`> 0`), or 0 with the reason in `fm_last_errno`.
+    ///
+    /// Legal only at idle: this opens a capture graph of its own, and doing that
+    /// mid-fork would discard the fork's. Every activation the host has seeded a
+    /// template id for is included -- that seeded set, not a fork's activation
+    /// list, is what a peer-table checkpoint means by "this worker's modules".
+    ///
+    /// The returned arena is NOT released here. Its root goes to the dlopen
+    /// loader as a publication that peers read long after this call returns; the
+    /// module frees it when the next capture reclaims the chunk list.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_capture_peer_tables(channel_base: usize) -> usize {
+        match require_phase(PHASE_IDLE)
+            .and_then(|()| capture_peer_tables_impl(channel_base as u64))
+        {
+            Ok(root) => {
+                set_ok();
+                root as usize
+            }
+            Err(errno) => {
+                set_err(errno);
+                0
+            }
+        }
+    }
+
+    /// Build the import plan for ONE activation of the child rooted at
+    /// `module_state_root`, and return how many entries it has (`>= 0`), or `-1`
+    /// with the reason in `fm_last_errno`.
+    ///
+    /// Building and counting are one entry rather than two because the count is
+    /// not a fact about the arena until the plan exists -- the same shape
+    /// `fm_decode_reference_graph` has, which also returns the node count of the
+    /// graph it just made resident. The plan stays resident for
+    /// `fm_child_import_plan_field` until the next build or bump reset.
+    ///
+    /// The activation's `KFIG`/`KFIT` sections must already be seeded through
+    /// `fm_set_activation_imports`; an activation with neither imports no global
+    /// or table, which is the ordinary single-module case rather than an error.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_import_plan(activation: u32, module_state_root: usize) -> i32 {
+        match build_child_import_plan_impl(activation, module_state_root as u64) {
+            Ok(count) => match i32::try_from(count) {
+                Ok(count) => {
+                    set_ok();
+                    count
+                }
+                Err(_) => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            },
+            Err(e) => {
+                set_err(e);
+                -1
+            }
+        }
+    }
+
+    /// One field of the resident import plan's entry at `index`:
+    ///
+    /// - `0` IMPORT_ORDINAL     -- position in the activation's whole import section
+    /// - `1` SPACE              -- 0 globals, 1 tables
+    /// - `2` KIND               -- a binding kind, read UNDER `space`: the two
+    ///   numberings overlap, so `kind` alone names two different things
+    /// - `3` TYPE_CODE          -- declared value type (globals) or element type (tables)
+    /// - `4` FLAGS              -- `IMPORT_PLAN_FLAG_SAVED` when `BITS` is a saved scalar
+    /// - `5` BITS               -- a BIT PATTERN, not a magnitude: raw global bits,
+    ///   a recipe id, or the saved scalar. All 64 bits are meaningful and `-1`
+    ///   is a legal value here, so a caller must read `fm_last_errno` rather
+    ///   than test the result
+    /// - `6` SOURCE_ACTIVATION  -- provider activation for the `ACTIVATION_*` kinds
+    /// - `7` SOURCE_OWNER       -- provider catalog ordinal for those kinds
+    ///
+    /// `EINVAL` with `-1` for an unknown field, an out-of-range index, or no
+    /// resident plan.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_child_import_plan_field(index: usize, field: u32) -> i64 {
+        let entry = match import_plan().as_ref().and_then(|plan| plan.get(index)) {
+            Some(entry) => *entry,
+            None => {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+        };
+        let value = match field {
+            0 => i64::from(entry.import_ordinal),
+            1 => i64::from(entry.space),
+            2 => i64::from(entry.kind),
+            3 => i64::from(entry.type_code),
+            4 => i64::from(entry.flags),
+            5 => entry.bits as i64,
+            6 => i64::from(entry.source_activation),
+            7 => i64::from(entry.source_owner),
+            _ => {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+        };
+        set_ok();
+        value
     }
 
     /// Shared tail for the `u32`-valued `fm_decoded_node_field` selectors: a
@@ -5261,33 +10136,41 @@ mod wasm {
     /// Supersedes a separate `fm_restore_from_arena` call on the module-on child
     /// attach path: it does the same reconstruction seed + plan build and then
     /// appends the module-owned restore/finish sequencing.
+    ///
+    /// This is ALSO the vfork BORROWED child-install entry. A separate
+    /// `fm_attach_borrowed_child` export existed and its body was identical to
+    /// this one, character for character, because the install plan IS identical:
+    /// the reconstructed reference values and the guest restore/finish
+    /// sequencing do not depend on whether the child is COW or borrowed. Its
+    /// stated reason to exist was to give "any future borrowed-specific install
+    /// divergence a home" — a home for a divergence that has not appeared, paid
+    /// for now in the surface every new host must implement.
+    ///
+    /// The borrowed path is still explicit where its borrowed-specific work
+    /// actually lives: reserving the child-private replay prefix, so the guest's
+    /// rewind never writes the parked parent's storage. That is raw host memory
+    /// management with no reference values in it, it is done by the coordinator,
+    /// and it never entered this module. `ForkModuleBackend.attachBorrowedChild`
+    /// remains a named host entry point for it.
+    ///
+    /// If borrowed-specific install work ever does appear, re-splitting is a
+    /// smaller change than carrying a duplicate export until then.
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_attach_child(module_state_root: usize, pid: u32) -> usize {
-        match attach_from_arena_impl(module_state_root as u64, pid) {
+        // A child install arrives at `PHASE_CHILD_REPLAY` through TWO calls, and
+        // the host is free to order them: `fm_child_seed` seeds each
+        // activation's replay driver from the inherited journal image, this
+        // entry seeds the reference graph and builds the install plan. A host
+        // that seeds first (the JS hosts do -- the plan's restore/finish tail
+        // is built per activation, so the activations must exist) finds the
+        // phase already at `PHASE_CHILD_REPLAY`; one that attaches first (the
+        // shape the module's own unit tests drive) finds it idle. Both are the
+        // same install, so both are legal here; every other phase is not.
+        match require_phase_either(PHASE_IDLE, PHASE_CHILD_REPLAY)
+            .and_then(|()| attach_from_arena_impl(module_state_root as u64, pid))
+        {
             Ok(ptr) => {
-                set_ok();
-                ptr
-            }
-            Err(e) => {
-                set_err(e);
-                0
-            }
-        }
-    }
-
-    /// Child-install ENTRY for a vfork BORROWED module-backed child. The install
-    /// plan is byte-identical to `fm_attach_child`: the reconstructed reference
-    /// values and the guest restore/finish sequencing are the same for a borrowed
-    /// child as for a COW child. The only borrowed-specific work — reserving the
-    /// child-private replay prefix so the guest's rewind never writes the parked
-    /// parent's storage — is raw host memory management (no reference values), so it
-    /// stays on the host and this entry delegates to the shared install impl. It is
-    /// a distinct export so the host has a named borrowed entry point and any future
-    /// borrowed-specific install divergence has a home.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn fm_attach_borrowed_child(module_state_root: usize, pid: u32) -> usize {
-        match attach_from_arena_impl(module_state_root as u64, pid) {
-            Ok(ptr) => {
+                enter_phase(PHASE_CHILD_REPLAY);
                 set_ok();
                 ptr
             }
@@ -5326,6 +10209,260 @@ mod wasm {
     ///
     /// Returns the counter value, or `-1` for an unknown field index (the
     /// counters are monotonic non-negative, so `-1` is an unambiguous sentinel).
+    /// Child-private workspace a vfork BORROWED child will need, by field:
+    /// `0` continuation-prefix bytes, `1` reference-scratch bytes.
+    ///
+    /// Ported from `ForkProcessContinuationCoordinator.borrowedReplayWorkspaceRequirements`.
+    /// A vfork child runs a FRESH module instance inside the SAME shared memory
+    /// as the still-parked parent, so it cannot write the parent's fixed
+    /// runtime prefix or reuse the parent's scratch. The host reserves it a
+    /// private region and needs its size BEFORE issuing the fork syscall, which
+    /// is why this is a read rather than something the child asks for later.
+    ///
+    /// The two halves are measured differently because they behave differently.
+    /// Prefixes stay LIVE through the whole inherited-frame rewind, so every
+    /// active activation needs its own simultaneously and they sum. Reference
+    /// scratch is stack-disciplined -- reserve and release nest around a
+    /// recursive encode -- so its current top is back to 0 at seal and only its
+    /// capture HIGH-WATER bounds what the child's decode will need. Summing the
+    /// scratch too would over-reserve; taking the prefix high-water instead of
+    /// the sum would under-reserve, and under-reserving means one activation's
+    /// rewind writing into another's prefix.
+    ///
+    /// Why the module and not the host. The host had to reach into each
+    /// activation's frame format for `fixedPrefixSize` and into the capture
+    /// session for the scratch high-water, which is per-activation module state
+    /// and the module's own allocator respectively. Neither is host knowledge;
+    /// the host was reading the module's bookkeeping through a JS mirror of it.
+    ///
+    /// Legal only at `PHASE_SEALED_PARENT`, which is the same rule the JS
+    /// `requirePhase("sealed-parent", ...)` enforced -- now enforced by the
+    /// phase machine instead of a copy of it. Earlier than that the activation
+    /// set is still growing and the scratch high-water has not peaked, so an
+    /// answer would be an undercount rather than an error, which is the worst
+    /// kind. Answers `EBUSY` and `-1` off-phase, `EINVAL` and `-1` for an
+    /// unknown field.
+    /// The module-state (KFMS) arena, by operation:
+    ///
+    /// - `0` ROOT    — the arena root address, or `0` when there is none.
+    /// - `1` ADOPT   — adopt the arena at `arg` (a child taking over the
+    ///                 parent's inherited records). Returns `0`.
+    /// - `2` RELEASE — `munmap` every arena chunk THIS module mapped. Returns
+    ///                 how many were released.
+    /// - `3` OWNED   — `1` when this module mapped the chunks and may free
+    ///                 them, `0` when the arena was adopted or absent.
+    ///
+    /// One field-indexed entry rather than four exports, the shape `fm_stats`
+    /// established. The surface budget drives this population toward five, so a
+    /// port that needs four operations should cost one entry.
+    ///
+    /// **This is the module half of the arena port** (census sections 132 and
+    /// 133) and it is deliberately the half that changes nothing yet. The host's
+    /// `ForkModuleStateArena` still owns the live path. What section 133 found
+    /// is that the two cannot be switched a method at a time: the module
+    /// ALLOCATES the KFMS chunks (through `__wpk_fork_module_state_record_`
+    /// `reserve`) and the host FREES them, having rediscovered the addresses by
+    /// walking the linked chunk list in guest memory from the root. If both
+    /// sides free, a fork double-munmaps; if neither does, it leaks the arena.
+    /// So RELEASE exists here, tested, and stays uncalled until the host's
+    /// `release()` goes away in the same change.
+    ///
+    /// OWNED is what makes that switch checkable rather than hopeful, and it is
+    /// also the borrowed case for free: a vfork child's arena allocator is
+    /// `new_channel(0)`, which maps nothing, so it owns nothing and releases
+    /// nothing — which is exactly what the host's `detachBorrowed` does by
+    /// hand. The distinction the host draws with an `ownership` field falls out
+    /// of which allocator the child was built with.
+    ///
+    /// Answers `-1` with `EINVAL` for an unknown operation or a refused adopt.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_module_state_arena(op: u32, arg: usize) -> i64 {
+        // No `op > 3` pre-check. It would be a guard no test can show failing:
+        // in every configuration a test can reach, an unknown op is already
+        // refused by one of the two matches below, so removing the pre-check
+        // changes nothing observable. What it WOULD do is let a catch-all arm
+        // mis-dispatch op 4 as OWNED once module state exists -- so the arms are
+        // exhaustive instead, and unknown ops are refused in exactly one way.
+        let Some(module) = state().as_mut() else {
+            // No module state means no fork has begun unwinding in this worker,
+            // so there is genuinely no arena. For the two QUERIES that is the
+            // truthful answer, not a default -- the same reasoning `fm_phase`
+            // uses for answering IDLE before any activation exists. ADOPT and
+            // RELEASE mutate, and a mutation against state that does not exist
+            // is a caller error rather than a no-op.
+            return match op {
+                0 | 3 => {
+                    set_ok();
+                    0
+                }
+                _ => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            };
+        };
+        match op {
+            0 => match i64::try_from(module.module_state.root()) {
+                Ok(root) => {
+                    set_ok();
+                    root
+                }
+                Err(_) => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            },
+            1 => match module.module_state.adopt(arg as u64) {
+                Ok(()) => {
+                    set_ok();
+                    0
+                }
+                Err(e) => {
+                    set_err(e);
+                    -1
+                }
+            },
+            2 => {
+                let released = module.module_state_chunks.release_count();
+                module.module_state_chunks.release_all();
+                set_ok();
+                released as i64
+            }
+            3 => {
+                // Adopted means another process mapped these chunks; absent
+                // means nobody did. Only a list this module built is safe to
+                // free, which is the whole point of asking.
+                let owned = !module.module_state.is_adopted()
+                    && module.module_state_chunks.release_count() > 0;
+                set_ok();
+                if owned { 1 } else { 0 }
+            }
+            _ => {
+                set_err(Errno::EINVAL);
+                -1
+            }
+        }
+    }
+
+    fn set_borrowed_workspace_impl(base: usize, bytes: usize) -> Result<(), Errno> {
+        if base == 0 || bytes == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let end = base.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > mem_len_bytes() {
+            return Err(Errno::EINVAL); // admitted region past the end of memory
+        }
+        BORROWED_PREFIX_BASE.store(base, Ordering::Relaxed);
+        BORROWED_PREFIX_BYTES.store(bytes, Ordering::Relaxed);
+        BORROWED_PREFIX_CURSOR.store(base, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Carve one activation's private prefix out of the admitted workspace.
+    ///
+    /// The same alignment walk `fm_borrowed_replay_workspace` reports the total
+    /// for, run for real: align the cursor, take `fixed_prefix` bytes, refuse to
+    /// cross the admitted end. Ascending activation id, because that is the
+    /// order the total was computed in and the two must agree or the last
+    /// activation runs off the end of a region that was sized for it.
+    ///
+    /// NOT GATED BY ANY TEST TODAY, and stated here rather than left to be
+    /// discovered. All three of this function's refusals -- no workspace
+    /// seeded, a prefix crossing the admitted end, and the cursor advance that
+    /// keeps two activations from carving the same bytes -- were perturbed and
+    /// all three SURVIVED, because every vfork path that runs today is
+    /// single-activation: the workspace is always seeded, one prefix always
+    /// fits, and with one activation the cursor never has to move. The gate is a
+    /// MULTI-activation borrowed child (dlopen plus vfork), which nothing
+    /// exercises yet. Census D9 records it as owed.
+    fn carve_borrowed_prefix(fixed_prefix: u64) -> Result<u64, Errno> {
+        let base = BORROWED_PREFIX_BASE.load(Ordering::Relaxed);
+        let bytes = BORROWED_PREFIX_BYTES.load(Ordering::Relaxed);
+        if base == 0 || bytes == 0 {
+            return Err(Errno::EINVAL); // no workspace was seeded
+        }
+        let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as usize;
+        if alignment == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let want = usize::try_from(fixed_prefix).map_err(|_| Errno::EINVAL)?;
+        let cursor = BORROWED_PREFIX_CURSOR.load(Ordering::Relaxed);
+        let aligned = cursor
+            .checked_add(alignment - 1)
+            .map(|v| v / alignment * alignment)
+            .ok_or(Errno::EINVAL)?;
+        let end = aligned.checked_add(want).ok_or(Errno::EINVAL)?;
+        let admitted_end = base.checked_add(bytes).ok_or(Errno::EINVAL)?;
+        if end > admitted_end {
+            return Err(Errno::EINVAL); // more prefix than the kernel admitted
+        }
+        BORROWED_PREFIX_CURSOR.store(end, Ordering::Relaxed);
+        Ok(aligned as u64)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_borrowed_replay_workspace(field: u32) -> i64 {
+        // Field BEFORE phase, deliberately. Which fields exist is a static
+        // property of this entry, true in every phase, so a caller asking for
+        // one that does not exist is wrong now and would still be wrong after a
+        // seal. Checking the phase first would answer `EBUSY` to that caller and
+        // invite it to retry forever -- and would make the two refusals
+        // indistinguishable from idle, which is the only phase a test can reach
+        // this entry from without driving a whole capture.
+        if field > 1 {
+            set_err(Errno::EINVAL);
+            return -1;
+        }
+        // Propagated, not re-minted: `require_phase` is the one place that names
+        // the wrong-phase errno, and a second literal here would break the pin
+        // keeping that errno to exactly one meaning.
+        if let Err(e) = require_phase(PHASE_SEALED_PARENT) {
+            set_err(e);
+            return -1;
+        }
+        let bytes = if field == 0 {
+            let Some(module) = state().as_ref() else {
+                set_err(Errno::EINVAL);
+                return -1;
+            };
+            let alignment = abi::WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT as u64;
+            if alignment == 0 {
+                set_err(Errno::EINVAL);
+                return -1;
+            }
+            let mut total: u64 = 0;
+            // Ascending activation id, matching the host's `orderedActivations()`
+            // sort. The running total is aligned BEFORE each prefix is added, so
+            // the order is part of the answer and both sides must walk it alike.
+            for frames in module.activations.values() {
+                total = match total
+                    .checked_add(alignment - 1)
+                    .map(|v| v / alignment * alignment)
+                    .and_then(|v| v.checked_add(frames.format.fixed_prefix_size as u64))
+                {
+                    Some(next) => next,
+                    None => {
+                        set_err(Errno::EINVAL);
+                        return -1;
+                    }
+                };
+            }
+            total
+        } else {
+            SCRATCH_HIGH_WATER.load(Ordering::Relaxed) as u64
+        };
+        match i64::try_from(bytes) {
+            Ok(value) => {
+                set_ok();
+                value
+            }
+            Err(_) => {
+                set_err(Errno::EINVAL);
+                -1
+            }
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_stats(field: u32) -> i64 {
         // Index a table of references rather than `match`-ing over the eleven
@@ -5354,6 +10491,51 @@ mod wasm {
         match stats.get(field as usize) {
             Some(counter) => counter.load(Ordering::Relaxed) as i64,
             None => -1,
+        }
+    }
+
+    /// The worker-lifetime resume-slot assignment, read and released.
+    ///
+    /// ONE entry with an `op` rather than two, following `fm_module_state_arena`:
+    /// both operations are the host's view of the same small table, and a lane
+    /// whose target is five entries should not spend two on it.
+    ///
+    ///   * op 0 -- the slot assigned to `(activation, ordinal)`, or -1 with
+    ///     `EINVAL` when that coordinate has none. This is what the host places
+    ///     its thunk at; it does NOT compute an answer of its own any more.
+    ///   * op 1 -- release `activation`'s slots for reuse (`ordinal` ignored),
+    ///     returning how many were freed. The host calls this on `dlclose`.
+    ///
+    /// Slots are assigned when the host SEEDS the catalog
+    /// (`fm_set_resume_catalog` / `fm_set_activation_resume_catalog`), which is
+    /// before any fork and is the same moment the host has thunks to place.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_resume_slots(op: u32, activation: u32, ordinal: u32) -> i32 {
+        match op {
+            0 => match resume_slot_of(activation, ordinal) {
+                Some(slot) => {
+                    set_ok();
+                    slot as i32
+                }
+                None => {
+                    set_err(Errno::EINVAL);
+                    -1
+                }
+            },
+            1 => match resume_unregister_impl(activation) {
+                Ok(freed) => {
+                    set_ok();
+                    freed as i32
+                }
+                Err(errno) => {
+                    set_err(errno);
+                    -1
+                }
+            },
+            _ => {
+                set_err(Errno::EINVAL);
+                -1
+            }
         }
     }
 

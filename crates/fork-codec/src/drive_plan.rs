@@ -122,6 +122,26 @@ pub const DRIVE_OP_RESTORE: u32 = 5;
 /// activation's restore step so the two-phase order matches the JS loop
 /// (`for act: restore` then `for act: finishRestore`).
 pub const DRIVE_OP_FINISH_RESTORE: u32 = 6;
+
+/// Drive a guest's `wpk_fork_module_state_save(activation)` — the CAPTURE-side
+/// walk that writes an activation's mutable globals and table state into the
+/// KFMS arena as records.
+///
+/// It sits at 7, inside the `(i32) -> ()` band with RESTORE and FINISH_RESTORE,
+/// and everything above was shifted up by one to make room. The value is not a
+/// label: `fork-module-inject`'s shim decides how to CALL a guest export from
+/// which band the op falls in, so an activation-argument op numbered above
+/// `DRIVE_OP_REWIND_BEGIN` would be called as a pointer drive, and one above
+/// `DRIVE_OP_UNWIND_END` as a no-argument drive. Appending it at the end was the
+/// obvious move and would have done exactly that;
+/// `host/test/fork-drive-op-bands.test.ts` is the check that catches it.
+///
+/// Why it did not exist before: the guest save walk was driven from JavaScript,
+/// by `ForkActivationRegistry.beginCapture` looping
+/// `activation.moduleState.save(id)` over each activation. The module could
+/// drive the child's RESTORE and not the parent's SAVE, so a module-driven
+/// capture produced an arena with no global or table records in it.
+pub const DRIVE_OP_MODULE_STATE_SAVE: u32 = 7;
 /// `op` value: run one activation's guest `wpk_fork_rewind_begin(root)` — the
 /// parent/child REPLAY begin drive. UNLIKE every op above it drives a guest
 /// export whose single parameter is a POINTER (the continuation `root`), so it
@@ -135,14 +155,14 @@ pub const DRIVE_OP_FINISH_RESTORE: u32 = 6;
 /// state-flip, not a reference reconstruction). Mirrors the host loop that
 /// called `wpk_fork_rewind_begin` per activation, moving the guest DRIVE into
 /// the module.
-pub const DRIVE_OP_REWIND_BEGIN: u32 = 7;
+pub const DRIVE_OP_REWIND_BEGIN: u32 = 8;
 /// `op` value: run one activation's guest `wpk_fork_abort_begin(root)` — the
 /// ABORT-replay begin drive. Same shape and pointer-argument convention as
 /// [`DRIVE_OP_REWIND_BEGIN`] (`(ptr) -> ()`, root packed in `recipe`/`arg`), but
 /// bound at `base(activation) + DRIVE_SLOT_ABORT_BEGIN` and driving the guest's
 /// abort-tagged state flip. Mirrors the host loop that called
 /// `wpk_fork_abort_begin` per activation.
-pub const DRIVE_OP_ABORT_BEGIN: u32 = 8;
+pub const DRIVE_OP_ABORT_BEGIN: u32 = 9;
 /// `op` value: run one activation's guest `wpk_fork_unwind_begin(root)` — the
 /// capture-BEGIN drive that moves the activation from `NORMAL` into `UNWINDING`
 /// so the guest starts committing its continuation frames. Same shape and
@@ -155,7 +175,7 @@ pub const DRIVE_OP_ABORT_BEGIN: u32 = 8;
 /// counter (a control state-flip, not a reference reconstruction). Mirrors the
 /// host loop that called `wpk_fork_unwind_begin(root)` per activation to open the
 /// capture.
-pub const DRIVE_OP_UNWIND_BEGIN: u32 = 9;
+pub const DRIVE_OP_UNWIND_BEGIN: u32 = 10;
 /// `op` value: run one activation's guest `wpk_fork_unwind_end()` — the
 /// capture-SEAL state flip that returns the activation from `UNWINDING` to
 /// `NORMAL` once every frame is committed. UNLIKE every other guest-drive op it
@@ -171,7 +191,7 @@ pub const DRIVE_OP_UNWIND_BEGIN: u32 = 9;
 /// emitted ONLY for a COMPLETE capture (every frame committed), never for a
 /// partial/aborted capture (that path stays on the host's `sealForAbort` +
 /// abort-replay, which must NOT drive unwind-end mid-unwind).
-pub const DRIVE_OP_UNWIND_END: u32 = 10;
+pub const DRIVE_OP_UNWIND_END: u32 = 11;
 /// `op` value: run one activation's guest `wpk_fork_rewind_end()` — the
 /// parent/child REPLAY-FINISH state flip that returns the activation from
 /// `REWINDING` to `NORMAL` once every inherited frame has been replayed. Same
@@ -186,7 +206,7 @@ pub const DRIVE_OP_UNWIND_END: u32 = 10;
 /// branch. Mirrors the host loop that called `wpk_fork_rewind_end()` per
 /// activation before the process replay finish (now folded into the coarse
 /// `fm_parent_finish`).
-pub const DRIVE_OP_REWIND_END: u32 = 11;
+pub const DRIVE_OP_REWIND_END: u32 = 12;
 /// `op` value: run one activation's guest `wpk_fork_abort_end()` — the
 /// ABORT-replay-FINISH state flip (the abort-tagged sibling of
 /// [`DRIVE_OP_REWIND_END`]) that returns the activation from `ABORT_UNWINDING`
@@ -194,7 +214,7 @@ pub const DRIVE_OP_REWIND_END: u32 = 11;
 /// `base(activation) + DRIVE_SLOT_ABORT_END`. Mirrors the host loop that called
 /// `wpk_fork_abort_end()` per activation before the process abort finish (now
 /// folded into the coarse `fm_parent_finish`).
-pub const DRIVE_OP_ABORT_END: u32 = 12;
+pub const DRIVE_OP_ABORT_END: u32 = 13;
 
 /// Drive-table slots reserved per activation, in slot-offset order:
 /// `DRIVE_OP_ALLOC` (0) + `DRIVE_OP_FILL` (1) + `DRIVE_OP_EXN` (2) +
@@ -212,7 +232,7 @@ pub const DRIVE_OP_ABORT_END: u32 = 12;
 /// this count stays consistent as long as every side derives its slots from
 /// `drive_table_base`. This is an EPHEMERAL runtime host<->module table-binding
 /// contract (not a wire/ABI format, not serialized), so growing it is additive.
-pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 11;
+pub const DRIVE_SLOTS_PER_ACTIVATION: u32 = 16;
 
 /// Drive-table slot offset (within an activation's slice) the host binds that
 /// activation's `wpk_fork_module_state_restore` into, and a `DRIVE_OP_RESTORE`
@@ -251,6 +271,79 @@ pub const DRIVE_SLOT_ABORT_END: u32 = 9;
 /// unchanged; a single drive table can hold an activation's capture-begin,
 /// replay-begin, and every end target simultaneously.
 pub const DRIVE_SLOT_UNWIND_BEGIN: u32 = 10;
+
+/// Drive-table slot offset the host binds `__wpk_fork_ref_gc_encode_slot` into.
+///
+/// The CAPTURE-side counterpart to `DRIVE_OP_ALLOC`/`DRIVE_OP_FILL`. Everything
+/// else in this slice is replay: the module drives the guest to rebuild a graph.
+/// This one lets the module drive the guest to ENCODE one — stage a value in
+/// the anyref transit slot, call through here, and the guest's generated codec
+/// returns its recipe id.
+///
+/// Appended at offset 11 so every existing assignment is unchanged. Growing the
+/// slice is additive precisely because both sides derive their slots from
+/// `drive_table_base` rather than hardcoding the stride; the test below pins
+/// that every offset stays distinct and inside the slice, so a future addition
+/// that forgets to bump the count fails rather than aliasing another entry.
+pub const DRIVE_SLOT_GC_ENCODE: u32 = 11;
+
+/// Drive-table slot offset the host binds `__wpk_fork_ref_gc_probe` into.
+///
+/// The second CAPTURE slot. The guest's probe is a TYPE TEST: it reads the
+/// value from the anyref transit slot, runs `ref.test` against each dispatch
+/// layout, and returns `(type_ordinal << 32) | layout_id`, or 0 when nothing
+/// matched.
+///
+/// That is what lets the module answer `__wpk_fork_ref_gc_capture_layout`
+/// WITHOUT any per-object bookkeeping. The alternative — recording which
+/// constructor made each object — is the unbounded per-object storage problem
+/// census §20 ran into; asking the guest to type-test the value it is holding
+/// costs nothing and stores nothing.
+pub const DRIVE_SLOT_GC_PROBE: u32 = 12;
+
+/// Drive-table slot offset the host binds `wpk_fork_module_state_save` into,
+/// and a `DRIVE_OP_MODULE_STATE_SAVE` step's `slot` field points at.
+///
+/// Appended rather than inserted: slot offsets are independent of op values
+/// (that is why `DRIVE_SLOT_RESTORE` is 3 while `DRIVE_OP_RESTORE` is 5), so a
+/// new slot costs a wider stride and renumbers nothing.
+pub const DRIVE_SLOT_MODULE_STATE_SAVE: u32 = 13;
+
+/// Drive-table slot the host binds the guest's
+/// `wpk_fork_module_table_state_save` into.
+///
+/// A PEER-TABLE checkpoint, not a fork: a worker publishing its dylink table
+/// state to its peers saves only the tables, and does it outside any fork. It
+/// needs its own slot because it is a different guest export from
+/// `wpk_fork_module_state_save` -- that one walks globals, tables and the
+/// reference graph, and using it here would publish far more than a table
+/// checkpoint means.
+///
+/// There is deliberately NO matching restore slot. A peer-table RESTORE is
+/// host-sequenced already (it runs when a peer's archive generation changes,
+/// not inside a module-driven replay), so the host calls each activation's
+/// `wpk_fork_module_table_state_restore` on its instance directly, the way it
+/// calls `wpk_fork_module_bootstrap`. A slot would buy nothing: there is no
+/// module-owned control flow for it to sit inside.
+pub const DRIVE_SLOT_MODULE_TABLE_STATE_SAVE: u32 = 14;
+
+/// Drive-table slot the host binds the guest's `__wpk_fork_ref_exn_throw_recipe`
+/// into: the export that RAISES a captured exception with that guest's own tag.
+///
+/// The one thing about an exception a module cannot do for another module. A
+/// replay reconstructing an `exnref` has to re-enter wasm THROWING, and the tag
+/// belongs to whichever activation's codec declared it -- so the throw must
+/// happen inside that activation, not in the module and not in a JavaScript
+/// import (a JS `throw` crosses back as a foreign exception with the wrong
+/// tag). Binding the export here lets the module `call_indirect` it exactly as
+/// it drives allocate/fill/materialize, with the owner read out of its own
+/// decoded graph.
+///
+/// NOT a `DRIVE_OP_*`: no plan step names it. The module calls it directly when
+/// a guest asks it to re-throw a recipe whose tag that guest does not own,
+/// which is a request that arrives mid-replay rather than a step a plan can
+/// schedule ahead of time.
+pub const DRIVE_SLOT_EXN_THROW_RECIPE: u32 = 15;
 
 /// One drive step: which guest export to `call_indirect` (via `slot`) with which
 /// `arg`, tagged by `op` so the shim knows whether to run the R1 assert.
@@ -674,8 +767,8 @@ pub fn build_drive_plan<H: DrivePlanHints>(
     Ok(walk.steps)
 }
 
-/// Append the child-install steps (the module-owned `fm_attach_child` /
-/// `fm_attach_borrowed_child` tail) to a drive plan: one `DRIVE_OP_RESTORE` step
+/// Append the child-install steps (the module-owned `fm_attach_child` tail, for
+/// COW and vfork borrowed children alike) to a drive plan: one `DRIVE_OP_RESTORE` step
 /// per activation, THEN one `DRIVE_OP_FINISH_RESTORE` step per activation, in the
 /// caller's activation order. This reproduces the JS
 /// `ForkActivationRegistry.restoreModuleState` sequencing —
@@ -690,6 +783,48 @@ pub fn build_drive_plan<H: DrivePlanHints>(
 /// multi-activation dlopen fork still restores its globals/tables). The steps are
 /// appended AFTER the reconstruction steps so every restore reads identities the
 /// Phase 0/0b/3/4/5 steps already rooted.
+/// Append one `DRIVE_OP_MODULE_STATE_SAVE` step per activation — the CAPTURE-side
+/// walk that writes each activation's mutable globals and table state into the
+/// KFMS arena, driven by the module instead of by a host loop.
+///
+/// This replaces `ForkActivationRegistry.beginCapture`'s
+/// `for act: activation.moduleState.save(act.activationId)`, and it runs at the
+/// same point in the sequence that loop did: after the arena exists and its root
+/// is published, BEFORE any activation's `wpk_fork_unwind_begin`. The guest save
+/// walk reserves its records through the module's own record-reserve import, so
+/// the arena has to be open first; and it has to complete before the unwind
+/// starts, because the unwind is what the save is capturing the state ahead of.
+///
+/// `activations` is the full ordered set, not only reference-bearing ones: an
+/// activation with no references still has globals and tables to save.
+pub fn append_module_state_save_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) {
+    for &activation in activations {
+        steps.push(DriveStep {
+            op: DRIVE_OP_MODULE_STATE_SAVE,
+            slot: drive_table_base(activation) + DRIVE_SLOT_MODULE_STATE_SAVE,
+            recipe: 0,
+            arg: activation,
+        });
+    }
+}
+
+/// The peer-table checkpoint's save walk: one step per activation, driving
+/// `wpk_fork_module_table_state_save` rather than the full save.
+///
+/// Same op as the full save -- the op says "call a `(i32) -> ()` guest entry
+/// with this activation id", and the SLOT says which one. Adding an op would
+/// mean two names for one shape.
+pub fn append_table_state_save_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) {
+    for &activation in activations {
+        steps.push(DriveStep {
+            op: DRIVE_OP_MODULE_STATE_SAVE,
+            slot: drive_table_base(activation) + DRIVE_SLOT_MODULE_TABLE_STATE_SAVE,
+            recipe: 0,
+            arg: activation,
+        });
+    }
+}
+
 pub fn append_attach_steps(steps: &mut Vec<DriveStep>, activations: &[u32]) {
     for &activation in activations {
         steps.push(DriveStep {
@@ -833,15 +968,91 @@ mod tests {
     use super::*;
     use alloc::vec;
 
+    /// Every drive slot is distinct and inside the per-activation slice.
+    ///
+    /// Exhaustive rather than pairwise on purpose. The `assert_ne!` pairs
+    /// elsewhere in this file check the collisions someone thought of; this
+    /// checks all of them, so ADDING a slot without bumping
+    /// `DRIVE_SLOTS_PER_ACTIVATION` fails here instead of silently aliasing
+    /// another activation's first entry.
+    #[test]
+    fn every_drive_slot_is_distinct_and_inside_the_slice() {
+        let slots = [
+            ("ALLOC", DRIVE_OP_ALLOC),
+            ("FILL", DRIVE_OP_FILL),
+            ("EXN", DRIVE_OP_EXN),
+            ("RESTORE", DRIVE_SLOT_RESTORE),
+            ("FINISH_RESTORE", DRIVE_SLOT_FINISH_RESTORE),
+            ("REWIND_BEGIN", DRIVE_SLOT_REWIND_BEGIN),
+            ("ABORT_BEGIN", DRIVE_SLOT_ABORT_BEGIN),
+            ("UNWIND_END", DRIVE_SLOT_UNWIND_END),
+            ("REWIND_END", DRIVE_SLOT_REWIND_END),
+            ("ABORT_END", DRIVE_SLOT_ABORT_END),
+            ("UNWIND_BEGIN", DRIVE_SLOT_UNWIND_BEGIN),
+            ("GC_ENCODE", DRIVE_SLOT_GC_ENCODE),
+            ("GC_PROBE", DRIVE_SLOT_GC_PROBE),
+            ("MODULE_STATE_SAVE", DRIVE_SLOT_MODULE_STATE_SAVE),
+            ("MODULE_TABLE_STATE_SAVE", DRIVE_SLOT_MODULE_TABLE_STATE_SAVE),
+            ("EXN_THROW_RECIPE", DRIVE_SLOT_EXN_THROW_RECIPE),
+        ];
+        for (name, offset) in slots {
+            assert!(
+                offset < DRIVE_SLOTS_PER_ACTIVATION,
+                "{name} at {offset} is outside the {DRIVE_SLOTS_PER_ACTIVATION}-slot slice, \
+                 so it would alias the next activation",
+            );
+        }
+        for (i, (a_name, a)) in slots.iter().enumerate() {
+            for (b_name, b) in &slots[i + 1..] {
+                assert_ne!(a, b, "{a_name} and {b_name} share slot {a}");
+            }
+        }
+        assert_eq!(
+            slots.len() as u32,
+            DRIVE_SLOTS_PER_ACTIVATION,
+            "a slot was added or removed without updating the count",
+        );
+    }
+
     #[test]
     fn drive_table_base_reserves_slots_per_activation() {
-        // Eleven slots per activation (ALLOC, FILL, EXN, RESTORE, FINISH_RESTORE,
-        // REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END, ABORT_END,
-        // UNWIND_BEGIN).
-        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 11);
+        // Fifteen slots per activation (ALLOC, FILL, EXN, RESTORE,
+        // FINISH_RESTORE, REWIND_BEGIN, ABORT_BEGIN, UNWIND_END, REWIND_END,
+        // ABORT_END, UNWIND_BEGIN, GC_ENCODE, GC_PROBE, MODULE_STATE_SAVE,
+        // MODULE_TABLE_STATE_SAVE, EXN_THROW_RECIPE).
+        //
+        // The bases are spelled as literals rather than computed from the
+        // constant, so that widening the stride cannot quietly agree with
+        // itself: this test is one of the three readers of the geometry, and
+        // the other two (the host's `bindActivationDrive` and the injector's
+        // emitted thunks) are what it stands in for. Census 178 is the drift
+        // that happened when one of them kept its own copy.
+        assert_eq!(DRIVE_SLOTS_PER_ACTIVATION, 16);
         assert_eq!(drive_table_base(0), 0);
-        assert_eq!(drive_table_base(1), 11);
-        assert_eq!(drive_table_base(3), 33);
+        assert_eq!(drive_table_base(1), 16);
+        assert_eq!(drive_table_base(3), 48);
+    }
+
+    #[test]
+    fn append_module_state_save_steps_drives_each_activation_in_the_i32_band() {
+        // The op's VALUE is what tells the injected shim to call the guest
+        // export with an activation id rather than a pointer or nothing, so the
+        // band membership is part of what this builder has to get right -- not
+        // just the slot.
+        let mut steps = Vec::new();
+        append_module_state_save_steps(&mut steps, &[0, 2]);
+        assert_eq!(steps.len(), 2);
+        for (step, activation) in steps.iter().zip([0u32, 2]) {
+            assert_eq!(step.op, DRIVE_OP_MODULE_STATE_SAVE);
+            assert!(step.op >= DRIVE_OP_RESTORE, "must not count as reconstruction");
+            assert!(step.op < DRIVE_OP_REWIND_BEGIN, "must take an i32, not a pointer");
+            assert_eq!(step.arg, activation, "the guest save takes its activation id");
+            assert_eq!(step.recipe, 0);
+            assert_eq!(
+                step.slot,
+                drive_table_base(activation) + DRIVE_SLOT_MODULE_STATE_SAVE,
+            );
+        }
     }
 
     #[test]
@@ -1064,10 +1275,13 @@ mod tests {
 
     #[test]
     fn trivial_struct_plan_uses_the_activation_base_slots() {
-        // Activation 2 -> base 22 (11 slots/activation): ALLOC slot 22, FILL slot 23.
+        // DERIVED from `drive_table_base`, not hardcoded. The slice is allowed
+        // to grow, and this test hardcoded 22/23 until it did — which is the
+        // failure the contract's "every side derives its slots" rule exists to
+        // prevent, reproduced inside the file that states the rule.
         let plan = trivial_struct_plan(2, 9);
-        assert_eq!(plan[0].slot, 22);
-        assert_eq!(plan[1].slot, 23);
+        assert_eq!(plan[0].slot, drive_table_base(2) + DRIVE_OP_ALLOC);
+        assert_eq!(plan[1].slot, drive_table_base(2) + DRIVE_OP_FILL);
     }
 
     #[test]
@@ -1401,10 +1615,15 @@ mod tests {
                 (DRIVE_OP_FILL, drive_table_base(2) + DRIVE_OP_FILL, 1),
             ]
         );
-        // Activation 5's base (55) and activation 2's base (22) do not overlap
-        // (eleven slots per activation).
-        assert_eq!(drive_table_base(5), 55);
-        assert_eq!(drive_table_base(2), 22);
+        // Activation slices do not overlap. Stated as the invariant rather than
+        // as two literals, so growing `DRIVE_SLOTS_PER_ACTIVATION` cannot make
+        // this test wrong without making the invariant wrong.
+        assert_eq!(drive_table_base(5), 5 * DRIVE_SLOTS_PER_ACTIVATION);
+        assert_eq!(drive_table_base(2), 2 * DRIVE_SLOTS_PER_ACTIVATION);
+        assert!(
+            drive_table_base(2) + DRIVE_SLOTS_PER_ACTIVATION <= drive_table_base(5),
+            "activation 2's slice must end before activation 5's begins",
+        );
     }
 
     #[test]

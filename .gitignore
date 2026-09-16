@@ -161,3 +161,8 @@ packages/registry/*/package.pr.toml
 /.nix-dev-shell/
 # Subagent-driven-development scratch (ledger, briefs, review packages)
 /.superpowers/
+
+# Transaction temp dirs the program-package index writes while staging. They are
+# short-lived, so a `git add -A` during a build sweeps one in and it is committed
+# before anyone notices it existed.
+packages/registry/.program-packages.json.index-transaction-*/

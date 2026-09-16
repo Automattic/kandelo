@@ -223,6 +223,113 @@ pub const KERNEL_MEMORY_MAX_PAGES: u32 = 16384;
 /// the same artifact, which is the off-by-one to avoid when re-measuring.
 pub const EXPECTED_HOST_IMPORT_COUNT: usize = 72;
 
+/// The fork-module's HOST OBLIGATION: how many things a host must implement or
+/// provide before the co-resident fork module can be instantiated.
+///
+/// `EXPECTED_HOST_IMPORT_COUNT` above pins the KERNEL's obligation and has
+/// never let an import change through unnoticed. The fork module's obligation
+/// had no equivalent. It is a separate wasm artifact with its own imports, and
+/// a host must satisfy every one of them, so an import added here grew what
+/// every host must implement with nothing asserting it -- exactly the shape
+/// `docs/surface-budget.json` says the ratchet exists to prevent.
+///
+/// Measured from the built artifact, not inferred: `fork_module32.wasm`
+/// declares **10 import entries**, which split into two populations that must
+/// not be added together.
+///
+/// FIVE are position-independent-code linking boilerplate that any `--pie`
+/// side module has, and that a host supplies mechanically without knowing
+/// anything about fork: `env.memory`, `env.__indirect_function_table`,
+/// `env.__stack_pointer`, `env.__memory_base`, `env.__table_base`. Counting
+/// these as host surface would overstate the obligation and, worse, would make
+/// the number move for reasons that have nothing to do with fork.
+///
+/// All SEVEN are the real obligation, and each is a Wasm capability floor
+/// rather than a design choice:
+///
+/// * `env.resolve_externref` (function) -- materializes a host reference from
+///   a handle. Wasm cannot manufacture an externref.
+/// * `env.__wpk_fork_host_ref_identity` (function) -- decides whether two
+///   references are the same object. `ref.eq` validates only on `eqref`, there
+///   is no `ref.hash`, and no cast rescues a host reference into the eq
+///   hierarchy, so the module cannot answer this for itself.
+/// * `env.__wpk_fork_host_func_identity` (function) -- the same question for
+///   `funcref`, which is a disjoint hierarchy from `anyref`, so one oracle
+///   cannot serve both.
+/// * `env.__wpk_fork_host_externref_handle` (function) -- the INVERSE of
+///   `resolve_externref`: which handle does this live reference already carry?
+///   Capture needs that direction, and only the host can look inside an
+///   externref to answer it.
+/// * `env.__wpk_fork_function_catalog`, `env.__wpk_fork_drive_table`,
+///   `env.__wpk_fork_static_root_catalog` (tables) -- reference-typed tables.
+///   Rust cannot declare or hold one; the module reaches their contents only
+///   through injected `table.get`/`table.set`.
+///
+/// WENT 6 -> 7 when the externref-handle import arrived. This host leaves it
+/// to `define_unknown_imports_as_traps`, exactly as it leaves
+/// `resolve_externref`: a native fork carries no host externref today, so
+/// calling either is a boundary rather than a path, and the inert-stub test
+/// asserts they are never reached. The COUNT is the obligation a new host
+/// reads, so it tracks the module whether or not this host implements each
+/// entry.
+///
+/// If any of the seven is ever shown NOT to be a floor, this number and the
+/// matching budget target should both fall. Until then they are equal, which
+/// is why this surface's target is not below its ceiling.
+pub const EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT: usize = 7;
+
+/// The number of PIC linking imports excluded from the count above. Pinned so
+/// that a change in linking shape is visible instead of silently rebalancing
+/// the two populations.
+pub const EXPECTED_FORK_MODULE_PIC_IMPORT_COUNT: usize = 5;
+
+/// The import surface a host must satisfy to instantiate the fork module,
+/// split so the fork obligation is never conflated with PIC boilerplate.
+#[derive(Debug, Clone, Default)]
+pub struct ForkModuleImportSurface {
+    /// Fork-specific FUNCTION imports a host must implement, without `env.`.
+    pub host_fn_imports: Vec<String>,
+    /// Fork-specific TABLE imports a host must provide, without `env.`.
+    pub host_table_imports: Vec<String>,
+    /// Position-independent-code linking imports: the memory, the indirect
+    /// function table, and the three placement globals.
+    pub pic_imports: Vec<String>,
+    /// Anything that is neither. Expected to be empty; a non-empty value means
+    /// the module grew an import neither population describes.
+    pub other_imports: Vec<String>,
+}
+
+/// Classify every import of a fork-module artifact. Takes the module rather
+/// than a path so a caller can inspect bytes it already loaded.
+pub fn inspect_fork_module(module: &Module) -> ForkModuleImportSurface {
+    const PIC_NAMES: [&str; 4] = [
+        "memory",
+        "__indirect_function_table",
+        "__stack_pointer",
+        "__memory_base",
+    ];
+    let mut surface = ForkModuleImportSurface::default();
+    for import in module.imports() {
+        let name = import.name().to_string();
+        if import.module() != "env" {
+            surface
+                .other_imports
+                .push(format!("{}.{}", import.module(), name));
+            continue;
+        }
+        if PIC_NAMES.contains(&name.as_str()) || name == "__table_base" {
+            surface.pic_imports.push(name);
+            continue;
+        }
+        match import.ty() {
+            ExternType::Func(_) => surface.host_fn_imports.push(name),
+            ExternType::Table(_) => surface.host_table_imports.push(name),
+            _ => surface.other_imports.push(format!("env.{name}")),
+        }
+    }
+    surface
+}
+
 /// The observed shape of the kernel's `env.memory` import.
 #[derive(Debug, Clone)]
 pub struct MemoryImport {
@@ -1071,6 +1178,346 @@ mod tests {
             EXPECTED_HOST_IMPORT_COUNT,
             "env.host_* import count changed (surface pinned so ABI drift is visible): {:?}",
             surface.host_fn_imports
+        );
+        Ok(())
+    }
+
+    /// The fork-module's host obligation, pinned against EVERY fork-module
+    /// artifact on disk.
+    ///
+    /// The goal this guards is not "few imports" for its own sake: it is that a
+    /// host's responsibilities stay FEW, CLEARLY DEFINED, and THIN to
+    /// implement, with the shared Wasm module doing everything else. An import
+    /// added here is a new responsibility every host must take on, so it must
+    /// be a deliberate, argued change rather than a side effect.
+    ///
+    /// **Why it checks every copy rather than the resolved one (H-9).**
+    /// `crates/fork-module/build-wasm.sh` stages into `local-binaries/` and
+    /// `host/wasm/`, but `artifact_path` resolves `local-binaries/source-only-v1/`
+    /// FIRST, and that tier is written later by a local-build projection. So a
+    /// module you just built is not the module this crate loads, and a test
+    /// that asked only the resolver would report on bytes nobody rebuilt. The
+    /// first run of this test found exactly that: the resolved artifact was
+    /// seven hours older than the staged one and was missing an import. The
+    /// tiers module's own header records the same drift costing 39 of 53
+    /// host-native tests.
+    ///
+    /// Disagreement between copies is therefore a failure in its own right, and
+    /// is reported differently from an obligation change so the two are never
+    /// confused.
+    ///
+    /// The two import populations are asserted separately on purpose. Folding
+    /// PIC linking boilerplate into the fork obligation would both overstate it
+    /// and make the number move for reasons unrelated to fork.
+    #[test]
+    /// Can a native host answer "are these the same function?"
+    ///
+    /// This is the precondition for `__wpk_fork_host_func_identity`, the import
+    /// that would let the fork module serve `table_mutation_commit` and
+    /// `__wpk_fork_ref_encode_funcref`. Wasm itself cannot: `ref.eq` validates
+    /// only on `eqref` and `funcref` is a disjoint hierarchy (census section 58).
+    /// So the question is whether wasmtime can, since the browser host's WeakMap
+    /// answer says nothing about the native one.
+    ///
+    /// Two things have to hold, and neither is obvious from the types:
+    /// a host function must be able to TAKE a `funcref` parameter at all, and
+    /// two references to the same guest function must be distinguishable from
+    /// references to a different one. `wasmtime::Func` is not `PartialEq`.
+    #[test]
+    fn a_native_host_can_identify_funcrefs() -> wasmtime::Result<()> {
+        let engine = kernel_engine()?;
+        let module = Module::new(
+            &engine,
+            r#"(module
+                (func $a (result i32) (i32.const 1))
+                (func $b (result i32) (i32.const 2))
+                (table (export "t") 3 funcref)
+                (elem (i32.const 0) $a $b $a))"#,
+        )?;
+        let mut store = wasmtime::Store::new(&engine, ());
+        let linker = wasmtime::Linker::new(&engine);
+        let instance = linker.instantiate(&mut store, &module)?;
+        let table = instance.get_table(&mut store, "t").expect("the table is exported");
+
+        let at = |store: &mut wasmtime::Store<()>, i: u64| -> *mut core::ffi::c_void {
+            let entry = table.get(&mut *store, i).expect("slot is in range");
+            let func = entry.as_func().expect("slot holds a funcref").expect("not null");
+            func.to_raw(&mut *store)
+        };
+
+        // Slots 0 and 2 are the SAME function; slot 1 is a different one. An
+        // identity scheme that answered "same" for everything, or "different"
+        // for everything, would pass one of these assertions and fail the other.
+        let zero = at(&mut store, 0);
+        let one = at(&mut store, 1);
+        let two = at(&mut store, 2);
+        assert_eq!(zero, two, "the same guest function must have one identity");
+        assert_ne!(zero, one, "distinct guest functions must differ");
+
+        // And a host import can take a funcref, which is the other half: without
+        // it the identity is unreachable from wasm no matter how stable it is.
+        let mut linker = wasmtime::Linker::new(&engine);
+        linker.func_wrap(
+            "env",
+            "__wpk_fork_host_func_identity",
+            |mut caller: wasmtime::Caller<'_, ()>, f: Option<wasmtime::Func>| -> i32 {
+                match f {
+                    Some(f) => (f.to_raw(&mut caller) as usize as u32 % 0x7fff_ffff) as i32,
+                    None => 0,
+                }
+            },
+        )?;
+        let caller_module = Module::new(
+            &engine,
+            r#"(module
+                (import "env" "__wpk_fork_host_func_identity"
+                  (func $id (param funcref) (result i32)))
+                (func $x)
+                (elem declare func $x)
+                (func (export "probe") (result i32) (ref.func $x) (call $id)))"#,
+        )?;
+        let caller = linker.instantiate(&mut store, &caller_module)?;
+        let probe = caller.get_typed_func::<(), i32>(&mut store, "probe")?;
+        let id = probe.call(&mut store, ())?;
+        assert_ne!(id, 0, "a real funcref must get a non-zero identity");
+        Ok(())
+    }
+
+    /// A guest importing the unwind tag links against the MODULE's tag.
+    ///
+    /// This is the end-to-end link census section 62 recorded as uncovered:
+    /// both hosts bind `env.__wpk_fork_unwind`, and no fixture guest in this
+    /// crate imports it, so a probe confirmed neither binding site is ever
+    /// reached by these tests. A broken lookup passed all 61 of them.
+    ///
+    /// The fork module is not instantiated here -- that needs a laid-out guest
+    /// memory and the whole placement dance. Its tag is taken from a module
+    /// compiled from the real artifact, which is what a host binds and is the
+    /// part that can differ.
+    #[test]
+    fn a_guest_links_against_the_modules_unwind_tag() -> wasmtime::Result<()> {
+        let root = crate::repo_root();
+        let path = root.join("host/wasm/fork_module32.wasm");
+        if !path.exists() {
+            // Provisioning, not a defect: build-wasm.sh stages this.
+            return Ok(());
+        }
+        let engine = kernel_engine()?;
+        let fork_module = Module::from_file(&engine, &path)?;
+        let mut store = wasmtime::Store::new(&engine, ());
+
+        // A guest shaped like an instrumented one at this boundary: it imports
+        // the tag and throws it, which is what the capture path does.
+        let guest_src = r#"(module
+            (import "env" "__wpk_fork_unwind" (tag $unwind))
+            (func (export "escape") (throw $unwind)))"#;
+        let guest = Module::new(&engine, guest_src)?;
+
+        let tag_ty = guest
+            .imports()
+            .find(|i| i.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME)
+            .map(|i| i.ty())
+            .expect("the guest imports the unwind tag");
+        let wasmtime::ExternType::Tag(guest_tag) = tag_ty else {
+            panic!("the guest's unwind import is not a tag");
+        };
+
+        // The module's exported tag must be the one a host hands over.
+        let exported = fork_module
+            .exports()
+            .find(|e| e.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME)
+            .expect("the fork module exports the unwind tag");
+        let wasmtime::ExternType::Tag(module_tag) = exported.ty() else {
+            panic!("the fork module's unwind export is not a tag");
+        };
+        assert_eq!(
+            module_tag.ty().params().len(),
+            guest_tag.ty().params().len(),
+            "the module's tag and the guest's import must agree on arity",
+        );
+        assert_eq!(module_tag.ty().results().len(), guest_tag.ty().results().len());
+
+        // And linking actually succeeds: a tag created to the module's declared
+        // type satisfies the guest, which is what makes binding the module's own
+        // tag sound rather than merely plausible.
+        let mut linker = wasmtime::Linker::new(&engine);
+        let tag = wasmtime::Tag::new(&mut store, &module_tag)?;
+        linker.define(
+            &mut store,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+            tag,
+        )?;
+        linker
+            .instantiate(&mut store, &guest)
+            .expect("a guest importing the unwind tag links against the module's type");
+
+        // Negative control: a tag carrying a payload must NOT satisfy it. Without
+        // this the assertions above would pass against a linker that accepted
+        // anything, and prove nothing about the type at all.
+        let payload_ty = wasmtime::TagType::new(wasmtime::FuncType::new(
+            &engine,
+            [wasmtime::ValType::I32],
+            [],
+        ));
+        let payload_tag = wasmtime::Tag::new(&mut store, &payload_ty)?;
+        let mut wrong = wasmtime::Linker::new(&engine);
+        wrong.define(
+            &mut store,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
+            wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+            payload_tag,
+        )?;
+        assert!(
+            wrong.instantiate(&mut store, &guest).is_err(),
+            "a tag with a payload must not satisfy the unwind transport",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fork_module_host_obligation_is_pinned() -> wasmtime::Result<()> {
+        let root = crate::repo_root();
+        let mut candidates = crate::artifact_search_paths("fork_module32.wasm");
+        candidates.push(root.join("local-binaries/fork_module32.wasm"));
+        candidates.push(root.join("host/wasm/fork_module32.wasm"));
+        candidates.sort();
+        candidates.dedup();
+
+        let engine = kernel_engine()?;
+        let mut seen: Vec<(PathBuf, Vec<String>, Vec<String>, usize)> = Vec::new();
+        for path in &candidates {
+            if !path.exists() {
+                continue;
+            }
+            let module = Module::from_file(&engine, path)?;
+
+            // The module must EXPORT the guest's unwind tag, type-correct.
+            //
+            // `fork-module-inject` defines and exports it so that a host does
+            // not have to mint one, which is a host responsibility removed --
+            // but only if a host actually binds it. Both hosts now do, and this
+            // is what makes that binding safe to perform: without it, a module
+            // built without the pass would leave the host reaching for an
+            // export that is not there.
+            //
+            // What this does NOT cover, and nothing currently does: linking the
+            // tag into a guest that imports it, end to end. No host-native
+            // fixture imports `env.__wpk_fork_unwind`, so neither binding site
+            // is reached by this crate's tests -- verified by probe, not
+            // assumed. See docs/plans/2026-09-12-lane-f-census.md section 62.
+            let unwind = module
+                .exports()
+                .find(|e| e.name() == wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} does not export the guest's unwind tag",
+                        path.display()
+                    )
+                });
+            match unwind.ty() {
+                wasmtime::ExternType::Tag(tag) => {
+                    let sig = tag.ty();
+                    assert!(
+                        sig.params().len() == 0 && sig.results().len() == 0,
+                        "{}: the unwind transport carries no payload, but its tag is {sig:?}",
+                        path.display(),
+                    );
+                }
+                other => panic!(
+                    "{}: {} is a {other:?}, not a tag",
+                    path.display(),
+                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                ),
+            }
+
+            let surface = inspect_fork_module(&module);
+            assert!(
+                surface.other_imports.is_empty(),
+                "{} has an import neither population describes: {:?}",
+                path.display(),
+                surface.other_imports
+            );
+            assert_eq!(
+                surface.pic_imports.len(),
+                EXPECTED_FORK_MODULE_PIC_IMPORT_COUNT,
+                "{} PIC linking import shape changed: {:?}",
+                path.display(),
+                surface.pic_imports
+            );
+            let mut functions = surface.host_fn_imports.clone();
+            functions.sort();
+            let mut tables = surface.host_table_imports.clone();
+            tables.sort();
+            let obligation = functions.len() + tables.len();
+            seen.push((path.clone(), functions, tables, obligation));
+        }
+
+        if seen.is_empty() {
+            // Provisioning, not a defect: build with
+            // `crates/fork-module/build-wasm.sh`. Failing here would make a
+            // missing artifact look like an obligation change.
+            eprintln!("skipping: no fork_module32.wasm in {candidates:?}");
+            return Ok(());
+        }
+
+        // Every copy must agree. A disagreement means one of them is stale, and
+        // whichever this crate resolves is the one a native host would run.
+        let (first_path, first_fns, first_tables, _) = &seen[0];
+        for (path, functions, tables, _) in &seen[1..] {
+            assert!(
+                functions == first_fns && tables == first_tables,
+                "fork-module artifacts DISAGREE -- one tier is stale, so a host \
+                 would load a different obligation than you just built. \
+                 Re-project before believing any fork result (master-plan H-9).\n  \
+                 {}: fns={:?} tables={:?}\n  {}: fns={:?} tables={:?}",
+                first_path.display(),
+                first_fns,
+                first_tables,
+                path.display(),
+                functions,
+                tables,
+            );
+        }
+
+        let (_, functions, tables, obligation) = &seen[0];
+        assert_eq!(
+            *obligation, EXPECTED_FORK_MODULE_HOST_IMPORT_COUNT,
+            "the fork-module host obligation changed -- every host must now \
+             implement a different set. functions={functions:?} tables={tables:?}",
+        );
+        assert_eq!(
+            functions.as_slice(),
+            [
+                // The INVERSE of `resolve_externref`: which handle does this
+                // live reference already carry? Capture needs that direction,
+                // and only the host can look inside an externref to answer it.
+                // Arrived with the lane-F capture work; this host leaves it to
+                // `define_unknown_imports_as_traps` exactly as it leaves
+                // `resolve_externref`, because a native fork carries no host
+                // externref today.
+                "__wpk_fork_host_externref_handle",
+                // Answers "are these the same function?" for funcref capture.
+                // Wasm cannot: `ref.eq` validates only on `eqref` and the
+                // reference hierarchies are disjoint. Maintainer-approved
+                // 2026-09-13 on the condition that a native host CAN supply it,
+                // which `a_native_host_can_identify_funcrefs` proves.
+                "__wpk_fork_host_func_identity",
+                // The same question for `anyref`, approved earlier.
+                "__wpk_fork_host_ref_identity",
+                // handle -> externref materialization.
+                "resolve_externref",
+            ],
+            "the fork-module host FUNCTIONS changed",
+        );
+        assert_eq!(
+            tables.as_slice(),
+            [
+                "__wpk_fork_drive_table",
+                "__wpk_fork_function_catalog",
+                "__wpk_fork_static_root_catalog",
+            ],
+            "the fork-module host TABLES changed",
         );
         Ok(())
     }

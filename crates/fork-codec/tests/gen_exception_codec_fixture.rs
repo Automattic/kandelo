@@ -7,9 +7,10 @@
 //! section has NO TypeScript encoder. It is emitted only by the Rust
 //! instrumenter (`fork_instrument::module_exception_codec`, specifically its
 //! `replace_descriptor`, reached here through the public
-//! `module_exception_codec::inject`); the host runtime merely DECODES that
-//! section (`readForkExceptionCodecDescriptor` in
-//! `host/src/fork-exception-provider.ts`).
+//! `module_exception_codec::inject`). The host no longer decodes this section
+//! at all — it stages the raw bytes into the fork-module through
+//! `fm_set_activation_exception_codec` and the module decodes them with
+//! `fork_codec::exception_codec`.
 //!
 //! To keep the fixture genuine (real encoder output, never hand-authored
 //! bytes), this `#[ignore]`d test drives the real injector over a real module
@@ -17,11 +18,11 @@
 //! (i32/i64/f32/f64/v128), and an all-reference tag (extern/func/exn/any) — the
 //! same module the fork-instrument conformance test uses, then extracts the
 //! emitted descriptor bytes with `wasmparser`, exactly as that suite reads the
-//! section back. The committed bytes are then cross-checked two ways: the Rust
-//! `fork-codec` decoder decodes them field-for-field (see `exception_codec.rs`
-//! tests), and the real host TypeScript decoder decodes them field-for-field
-//! (see `testdata/gen-exception-codec-fixture.mts`). Agreement of both decoders
-//! against the same real encoder output is the drift guard.
+//! section back. The committed bytes are then decoded field-for-field by the
+//! Rust `fork-codec` decoder (see `exception_codec.rs` tests). A second,
+//! TypeScript decoder used to assert against the same bytes; it was deleted
+//! with `host/src/fork-exception-provider.ts`, and with only one decoder left
+//! there is no cross-language drift left to guard.
 //!
 //! Regenerate with (from repo root):
 //!   cargo test -p fork-codec --features gen-fixtures \

@@ -5772,6 +5772,21 @@ pub(crate) struct GuestForkFormat {
     /// order, for the `i`-th target — the KFRC section's own file order,
     /// since it is already validated strictly increasing by ordinal).
     pub catalog_local_slots: Vec<u32>,
+    /// This guest's fork TEMPLATE ID: a plain SHA-256 over its module bytes.
+    ///
+    /// The module writes a `Module` record per activation when a capture
+    /// seals, and refuses the seal for an activation whose template id it was
+    /// never given (`activation_template_id(id).ok_or(Errno::EINVAL)`) --
+    /// because that record is what a child reads to know the activation
+    /// exists. Computed here for the reason `gc_codec_descriptor` is:
+    /// "read once from raw bytes, valid for this guest's whole lifetime", and
+    /// the raw bytes are only in hand at this one point.
+    ///
+    /// Matches `computeForkModuleTemplateId` in
+    /// `host/src/fork-guest-sections.ts` byte for byte -- SHA-256 of the
+    /// module image, no prefix and no framing -- so a native parent and a
+    /// JavaScript child would agree about which module an activation is.
+    pub template_id: [u8; 32],
     /// N1-F6: the guest's own `kandelo.wpk_fork.gc_codec` custom section
     /// bytes (verbatim — see [`read_gc_codec_descriptor_section`]), or
     /// `None` for a guest with no GC codec at all. Read here (piggybacking
@@ -5896,7 +5911,7 @@ struct ForkCoordState {
     mode: AtomicU32,
     /// Whether the PARENT's pending replay is an ABORT-replay (`1`) rather than
     /// a NORMAL rewind-replay (`0`). Set when the entry loop drives the parent
-    /// through `fm_parent_abort` — an unsupported-reference (gated) fork or a
+    /// through `fm_parent_replay(abort=1)` — an unsupported-reference (gated) fork or a
     /// failed child launch, mirroring TS `beginAbortReplay` — so the
     /// `Replaying`-phase finish drives `fm_parent_finish(1)` (the guest's
     /// `wpk_fork_abort_end` flip) instead of `fm_parent_finish(0)`
@@ -6304,11 +6319,18 @@ pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Opt
     let catalog_ordinals = records.iter().map(|r| r.function_ordinal).collect();
     let catalog_local_slots = records.iter().map(|r| r.local_catalog_slot).collect();
     let gc_codec_descriptor = read_gc_codec_descriptor_section(wasm_bytes)?;
+    let template_id: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(wasm_bytes);
+        hasher.finalize().into()
+    };
     Ok(Some(GuestForkFormat {
         fixed_prefix_size,
         catalog_ordinals,
         catalog_local_slots,
         gc_codec_descriptor,
+        template_id,
     }))
 }
 
@@ -6488,11 +6510,21 @@ pub struct ForkModule {
     /// declared a GC codec at all; otherwise the page is reserved but
     /// unwritten.
     pub gc_codec_scratch_base: u32,
+    /// Where this worker's activation template id lives; see the carve site.
+    pub template_id_scratch_base: u32,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
     // not at instantiation) -----------------------------------------------
-    pub fm_set_format: wasmtime::TypedFunc<(u32, u32), ()>,
+    /// `(pointer_width, fixed_prefix_size, archive_control_addr, table_owner)`.
+    ///
+    /// The last two are the worker's dlopen archive coordinates. This host does
+    /// not implement dlopen -- it runs single-activation guests -- so it passes
+    /// 0, which the module reads as "no archive", not as an error. A host that
+    /// grows dlopen support must pass its real control address here or its
+    /// function table will never reconcile.
+    pub fm_set_format: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
+    pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     pub fm_set_resume_catalog: wasmtime::TypedFunc<(u32, u32), ()>,
     pub fm_journal_image_len: wasmtime::TypedFunc<(), i64>,
     pub fm_last_errno: wasmtime::TypedFunc<(), i32>,
@@ -6519,8 +6551,10 @@ pub struct ForkModule {
     /// Seed activation `activation_id`'s raw `kandelo.wpk_fork.gc_codec`
     /// section bytes (`ptr`, `byte_len`, both guest byte offsets/lengths).
     pub fm_set_activation_gc_codec: wasmtime::TypedFunc<(u32, u32, u32), ()>,
+    /// Seeds one activation's template id, which the module requires before it
+    /// will seal a capture for that activation.
+    pub fm_set_activation_template_id: wasmtime::TypedFunc<(u32, u32), ()>,
     /// Seed the worker's `hostExceptionOwner` (`u32::MAX` == none).
-    pub fm_set_host_exception_owner: wasmtime::TypedFunc<u32, ()>,
     /// Build the real topological GC drive plan for the fork's whole
     /// reference graph; returns a guest address for `fm_drive_execute`, or
     /// `0` + `fm_last_errno` on failure.
@@ -6575,6 +6609,11 @@ pub struct ForkModule {
     /// `fm_parent_begin_capture(channel_base, arena_root, sides_ptr,
     /// sides_count) -> act0_root` — opens the capture and drives each guest
     /// `wpk_fork_unwind_begin(root)`.
+    /// Arms the module's reference-graph builder for this fork and resets its
+    /// bump heap. Separate from `fm_parent_begin_capture`, which begins the
+    /// UNWIND: `begin_capture_impl` does not arm the builder, so a host that
+    /// calls only the latter seals with no builder at all.
+    pub fm_capture_begin: wasmtime::TypedFunc<(), ()>,
     pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32, u32, u32), u32>,
     /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` — drives each
     /// guest `wpk_fork_unwind_end()`, seals, and serializes the child image
@@ -6583,12 +6622,13 @@ pub struct ForkModule {
     /// `fm_parent_abort_seal()` — the mid-unwind seal (no guest drive, no
     /// serialize) for a partial/aborted capture.
     pub fm_parent_abort_seal: wasmtime::TypedFunc<(), ()>,
-    /// `fm_parent_replay()` — begins the parent rewind and drives each guest
-    /// `wpk_fork_rewind_begin(root)`.
-    pub fm_parent_replay: wasmtime::TypedFunc<(), ()>,
-    /// `fm_parent_abort()` — the abort-tagged mirror of `fm_parent_replay`,
-    /// driving each guest `wpk_fork_abort_begin(root)`.
-    pub fm_parent_abort: wasmtime::TypedFunc<(), ()>,
+    /// `fm_parent_replay(abort)` — begins the parent rewind and drives each
+    /// guest `wpk_fork_rewind_begin(root)`, or with `abort != 0` the abort-tagged
+    /// phase driving `wpk_fork_abort_begin(root)`. ONE entry for both: the module
+    /// used to export a separate `fm_parent_abort` that was the same impl with the
+    /// flag flipped, and `fm_parent_finish(abort)` below was already the precedent
+    /// for carrying the phase as an argument.
+    pub fm_parent_replay: wasmtime::TypedFunc<u32, ()>,
     /// `fm_parent_finish(abort)` — drives each guest `wpk_fork_rewind_end()`
     /// (abort==0) or `wpk_fork_abort_end()` (abort!=0), then finishes the
     /// replay/abort.
@@ -6599,7 +6639,15 @@ pub struct ForkModule {
     /// `fm_child_seed_borrowed(module_state_root, act0_root,
     /// act0_private_prefix, sides_ptr, sides_count)` — the vfork borrowed
     /// sibling of `fm_child_seed`.
-    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32, u32, u32, u32), ()>,
+    pub fm_child_seed_borrowed: wasmtime::TypedFunc<(u32, u32, u32, u32), ()>,
+    /// Seed the vfork BORROWED child's admitted replay workspace.
+    ///
+    /// The host knows where the kernel put the region; the module knows how much
+    /// prefix each activation needs and in what order -- it has been reporting
+    /// exactly that total through `fm_borrowed_replay_workspace`. Seeding the
+    /// region lets the module carve the prefixes itself, so neither host has to
+    /// run that walk a second time.
+    pub fm_set_borrowed_workspace: wasmtime::TypedFunc<(u32, u32), ()>,
     /// `fm_child_reconstruct()` — drives each guest `wpk_fork_rewind_begin(root)`
     /// from the child's seeded per-activation `child_rewind_root`.
     pub fm_child_reconstruct: wasmtime::TypedFunc<(), ()>,
@@ -6866,6 +6914,19 @@ pub(crate) fn instantiate_fork_module(
     );
     let gc_codec_scratch_base = u32::try_from(gc_codec_scratch_base)
         .map_err(|_| anyhow::anyhow!("GC-codec-descriptor scratch address {gc_codec_scratch_base:#x} does not fit in wasm32"))?;
+
+    // The activation TEMPLATE ID's 32 bytes, in the page after the GC codec's
+    // and with the SAME lifetime: it must outlive every capture, because the
+    // module re-reads it on every seal to write that activation's `Module`
+    // record. That is why it is not in `capture_scratch_base`, which is a
+    // per-capture bump reset to empty at the start of every fork.
+    let template_id_scratch_base = gc_codec_scratch_base as usize + WASM_PAGE_SIZE;
+    anyhow::ensure!(
+        template_id_scratch_base + WASM_PAGE_SIZE <= memory_base + region_bytes,
+        "fork-module template-id scratch page does not fit in the module's shadow-stack padding"
+    );
+    let template_id_scratch_base = u32::try_from(template_id_scratch_base)
+        .map_err(|_| anyhow::anyhow!("template-id scratch address {template_id_scratch_base:#x} does not fit in wasm32"))?;
     if let Some(descriptor) = gc_codec_descriptor {
         anyhow::ensure!(
             descriptor.len() <= WASM_PAGE_SIZE,
@@ -7010,7 +7071,8 @@ pub(crate) fn instantiate_fork_module(
         memory_base,
         region_bytes,
         catalog_scratch_base,
-        fm_set_format: fm_func!("fm_set_format": (u32, u32) => ()),
+        fm_set_format: fm_func!("fm_set_format": (u32, u32, u32, u32, u32) => ()),
+        fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
         fm_set_resume_catalog: fm_func!("fm_set_resume_catalog": (u32, u32) => ()),
         fm_journal_image_len: fm_func!("fm_journal_image_len": () => i64),
         fm_last_errno: fm_func!("fm_last_errno": () => i32),
@@ -7019,29 +7081,30 @@ pub(crate) fn instantiate_fork_module(
         fm_set_activation_catalog_base: fm_func!("fm_set_activation_catalog_base": (u32, u32) => ()),
         fm_set_activation_static_root_base: fm_func!("fm_set_activation_static_root_base": (u32, u32) => ()),
         fm_set_activation_gc_codec: fm_func!("fm_set_activation_gc_codec": (u32, u32, u32) => ()),
-        fm_set_host_exception_owner: fm_func!("fm_set_host_exception_owner": u32 => ()),
+        fm_set_activation_template_id: fm_func!("fm_set_activation_template_id": (u32, u32) => ()),
         fm_build_gc_plan: fm_func!("fm_build_gc_plan": u32 => u32),
         fm_gc_plan_count: fm_func!("fm_gc_plan_count": () => i32),
         fm_drive_execute: fm_func!("fm_drive_execute": (u32, u32) => ()),
         fm_drive_table_base: fm_func!("fm_drive_table_base": u32 => i32),
-        fm_ref_vector_get: fm_func!("fm_ref_vector_get": (u32, u32) => i32),
-        fm_ref_gc_route: fm_func!("fm_ref_gc_route": (u32, u32) => i32),
-        fm_ref_gc_payload_len: fm_func!("fm_ref_gc_payload_len": (u32, u32, u32) => i32),
-        fm_ref_gc_load: fm_func!("fm_ref_gc_load": (u32, u32, u32, u32, u32, u32, u32) => i32),
-        fm_ref_exn_route: fm_func!("fm_ref_exn_route": (u32, u32) => i32),
-        fm_ref_exn_load: fm_func!("fm_ref_exn_load": (u32, u32, u32, u32, u32, u32, u32, u32) => i32),
-        fm_ref_exn_cache_index: fm_func!("fm_ref_exn_cache_index": u32 => i32),
+        fm_ref_vector_get: fm_func!("__wpk_fork_ref_vector_get": (u32, u32) => i32),
+        fm_ref_gc_route: fm_func!("__wpk_fork_ref_gc_route": (u32, u32) => i32),
+        fm_ref_gc_payload_len: fm_func!("__wpk_fork_ref_gc_payload_len": (u32, u32, u32) => i32),
+        fm_ref_gc_load: fm_func!("__wpk_fork_ref_gc_load": (u32, u32, u32, u32, u32, u32, u32) => i32),
+        fm_ref_exn_route: fm_func!("__wpk_fork_ref_exn_route": (u32, u32) => i32),
+        fm_ref_exn_load: fm_func!("__wpk_fork_ref_exn_load": (u32, u32, u32, u32, u32, u32, u32, u32) => i32),
+        fm_ref_exn_cache_index: fm_func!("__wpk_fork_ref_exn_cache_index": u32 => i32),
         fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
         fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
         fm_externref_handle: fm_func!("fm_externref_handle": u32 => i32),
+        fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32, u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
         fm_parent_abort_seal: fm_func!("fm_parent_abort_seal": () => ()),
-        fm_parent_replay: fm_func!("fm_parent_replay": () => ()),
-        fm_parent_abort: fm_func!("fm_parent_abort": () => ()),
+        fm_parent_replay: fm_func!("fm_parent_replay": u32 => ()),
         fm_parent_finish: fm_func!("fm_parent_finish": u32 => ()),
         fm_child_seed: fm_func!("fm_child_seed": (u32, u32, u32, u32) => ()),
-        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32, u32) => ()),
+        fm_child_seed_borrowed: fm_func!("fm_child_seed_borrowed": (u32, u32, u32, u32) => ()),
+        fm_set_borrowed_workspace: fm_func!("fm_set_borrowed_workspace": (u32, u32) => ()),
         fm_child_reconstruct: fm_func!("fm_child_reconstruct": () => ()),
         gc_transit_table,
         function_catalog_table,
@@ -7050,6 +7113,7 @@ pub(crate) fn instantiate_fork_module(
         empty_module_state_root: reference_scratch_base,
         capture_scratch_base,
         gc_codec_scratch_base,
+        template_id_scratch_base,
     };
 
     // N1-F6: the guest's GC-layout catalog descriptor bytes are staged into
@@ -7492,6 +7556,12 @@ fn spawn_guest_thread(
                 fork_format.as_ref().and_then(|f| f.gc_codec_descriptor.as_deref()),
             ) {
                 Ok(fm) => {
+                    // The five frame imports, bound by name because each is
+                    // the module's own entry point for a guest frame call. The
+                    // GENERAL fill-in for every other `__wpk_fork_*` function
+                    // the module serves runs at the END of this wiring block,
+                    // after the conditional bindings that have a reason for the
+                    // exact function they choose.
                     const FRAME_IMPORT_NAMES: [&str; 5] = [
                         "__wpk_fork_frame_reserve",
                         "__wpk_fork_frame_commit",
@@ -7563,7 +7633,7 @@ fn spawn_guest_thread(
                     // import goes through the OLD direct-passthrough branch
                     // below).
                     if let Some(fmt) = fork_format.as_ref() {
-                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size)) {
+                        if let Err(e) = fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0)) {
                             eprintln!("fm_set_format failed: {e:#}");
                             return;
                         }
@@ -7614,6 +7684,14 @@ fn spawn_guest_thread(
                         // Without it the child's replay (and the parent's own
                         // post-fork rewind) hits `fm_build_gc_plan` with an empty
                         // codec map and fails `EINVAL`.
+                        // The activation template id; see the helper for why
+                        // it must run here and what fails without it.
+                        if let Err(e) =
+                            seed_activation_template_id(&mut store, &fm, &guest_mem, &fmt.template_id)
+                        {
+                            eprintln!("{e:#}");
+                            return;
+                        }
                         if let Some(descriptor) = fmt.gc_codec_descriptor.as_deref() {
                             if let Err(e) = fm.fm_set_activation_gc_codec.call(
                                 &mut store,
@@ -7904,6 +7982,15 @@ fn spawn_guest_thread(
                                 // UNWIND_BEGIN)` + direct call. Native is single-
                                 // activation, so no side activations are passed
                                 // (`sides_count == 0`).
+                                // ARM the module's reference-graph builder first.
+                                // `fm_parent_begin_capture` begins the UNWIND; it does not create
+                                // the builder, and `capture_builder()` refuses to make one lazily
+                                // unless the capture was armed. Without this the fork runs to
+                                // completion and `fm_parent_seal_capture` answers EINVAL with its
+                                // frames already committed. The JavaScript hosts call the same entry
+                                // here (`processCaptureModule.begin()` right before
+                                // `parentBeginCapture`).
+                                fm.fm_capture_begin.call(&mut caller, ())?;
                                 let root = fm.fm_parent_begin_capture.call(
                                     &mut caller,
                                     (ch as u32, fm.empty_module_state_root, 0, 0),
@@ -8184,25 +8271,30 @@ fn spawn_guest_thread(
             // externref_typed`) that bypasses this real module export for a
             // gated fork's own placeholder recipe ids, then falls through to
             // exactly this same `decode_funcref` export for everything else.
-            let flips: [(&str, wasmtime::Func); 8] = [
-                (
-                    wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
-                    decode_funcref,
-                ),
-                (wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET, *fm.fm_ref_vector_get.func()),
-                (wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE, *fm.fm_ref_gc_route.func()),
-                (
-                    wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
-                    *fm.fm_ref_gc_payload_len.func(),
-                ),
-                (wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD, *fm.fm_ref_gc_load.func()),
-                (wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ROUTE, *fm.fm_ref_exn_route.func()),
-                (wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOAD, *fm.fm_ref_exn_load.func()),
-                (
-                    wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
-                    *fm.fm_ref_exn_cache_index.func(),
-                ),
-            ];
+            // The seven reference-feed imports are now exported by the
+            // fork-module under the GUEST'S OWN NAMES, so there is nothing to
+            // map: look each up by the name the guest asked for and define it
+            // under that same name. `decode_funcref` stays explicit because it
+            // is wrapped (see above), not because its name differs.
+            let mut flips: Vec<(&str, wasmtime::Func)> = vec![(
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_DECODE_FUNCREF,
+                decode_funcref,
+            )];
+            for name in [
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_VECTOR_GET,
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_ROUTE,
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_PAYLOAD_LEN,
+                wasm_posix_shared::abi::WPK_FORK_REFERENCE_IMPORT_GC_LOAD,
+                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ROUTE,
+                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_LOAD,
+                wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_CACHE_INDEX,
+            ] {
+                let Some(f) = fm.instance.get_func(&mut store, name) else {
+                    eprintln!("fork-module missing expected export {name}");
+                    return;
+                };
+                flips.push((name, f));
+            }
             for (name, f) in flips {
                 if guest_declares(name) {
                     if let Err(e) = linker.define(&mut store, "env", name, f) {
@@ -9254,6 +9346,48 @@ fn spawn_guest_thread(
                     return;
                 }
             }
+
+            // THE GENERAL FILL-IN, last, after every conditional wire above.
+            //
+            // Each binding before this point chooses a specific function for a
+            // specific reason -- a wrapped decode, a capture-scratch closure, a
+            // provenance recorder. This loop takes what is LEFT: any
+            // `__wpk_fork_*` function the guest imports that the module exports
+            // under the same name and nobody has bound yet.
+            //
+            // It replaces a hand-written list of five frame imports, which was
+            // right while the module served only those. The module now serves
+            // all 46 of the guest's fork imports -- the JavaScript hosts bind
+            // them exactly this way in `buildForkGuestImports` -- and the rest
+            // fell to `define_unknown_imports_as_traps`. The first one the
+            // module actually drove was
+            // `__wpk_fork_module_state_record_reserve`, reached from
+            // `wpk_fork_module_state_save`: "unknown import ... has not been
+            // defined", inside a fork that had already committed its frames.
+            //
+            // Driven off the ARTIFACT's own import list rather than a copy of
+            // the contract, so an import the module starts serving needs no
+            // edit here -- the defect a hand-kept list has by construction.
+            for import in module.imports() {
+                if import.module() != "env" || !import.name().starts_with("__wpk_fork_") {
+                    continue;
+                }
+                let name = import.name();
+                // Already bound above, with a reason: leave it alone.
+                if linker.get(&mut store, "env", name).is_ok() {
+                    continue;
+                }
+                // Functions only. The guest's non-function fork imports (the
+                // transit table, the unwind tag, the resume table, the
+                // per-process globals) are bound where each is created.
+                let Some(func) = fm.instance.get_func(&mut store, name) else {
+                    continue;
+                };
+                if let Err(e) = linker.define(&mut store, "env", name, func) {
+                    eprintln!("wiring fork-module export {name} into env failed: {e:#}");
+                    return;
+                }
+            }
         }
 
         // The fork-exec import set is imported but never reached on this
@@ -9404,10 +9538,30 @@ fn spawn_guest_thread(
             }
 
             // -- Drive-table bind (activation 0 only) ------------------------
-            let gc_allocate =
-                instance.get_func(&mut store, wasm_posix_shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE);
-            let gc_fill = instance.get_func(&mut store, wasm_posix_shared::abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL);
-            if let (Some(gc_allocate), Some(gc_fill)) = (gc_allocate, gc_fill) {
+            //
+            // EVERY SLOT THE MODULE DRIVES, not just the typed-GC three.
+            //
+            // This used to bind ALLOC/FILL/EXN and size the table to
+            // `base + 3`, gated on the guest exporting `_gc_allocate` and
+            // `_gc_fill` -- so a guest with no typed-GC codec bound NOTHING,
+            // including the lifecycle slots. That was correct when the module
+            // drove only reconstruction. It stopped being correct when the
+            // module took over the unwind/rewind/abort sequence and began
+            // `call_indirect`-ing those slots itself: eleven host-native fork
+            // smoke tests trapped with `undefined element: out of bounds table
+            // access` inside `__wpk_fork_unwind_transport_*`, because slot 10
+            // was null and the table was three long.
+            //
+            // The JavaScript hosts carry the same table as
+            // `FORK_ACTIVATION_DRIVE_BINDINGS`; this is that list, in Rust,
+            // with the offsets read from `fork_codec` rather than copied. A
+            // REQUIRED slot whose export is missing is a broken artifact and
+            // says so -- the module WILL drive it, and an unbound slot is a
+            // `call_indirect` on null.
+            {
+                use fork_codec::drive_plan as slots;
+                use wasm_posix_shared::abi as fork_abi;
+
                 let base = match fm.fm_drive_table_base.call(&mut store, 0) {
                     Ok(b) => b,
                     Err(e) => {
@@ -9419,7 +9573,10 @@ fn spawn_guest_thread(
                     eprintln!("fm_drive_table_base(0) returned a negative base {base}");
                     return;
                 };
-                let needed = base + 3; // ALLOC=0, FILL=1, EXN=2.
+                // Sized to the WHOLE stride, so a slot the module derives from
+                // `fm_drive_table_base` is always addressable even when this
+                // host binds nothing into it.
+                let needed = base + u64::from(slots::DRIVE_SLOTS_PER_ACTIVATION);
                 let current = fm.drive_table.size(&mut store);
                 if needed > current {
                     if let Err(e) = fm.drive_table.grow(&mut store, needed - current, Ref::Func(None)) {
@@ -9427,25 +9584,69 @@ fn spawn_guest_thread(
                         return;
                     }
                 }
-                if let Err(e) = fm.drive_table.set(&mut store, base, Ref::Func(Some(gc_allocate))) {
-                    eprintln!("binding __wpk_fork_drive_table[{base}] (ALLOC) failed: {e:#}");
-                    return;
-                }
-                if let Err(e) = fm.drive_table.set(&mut store, base + 1, Ref::Func(Some(gc_fill))) {
-                    eprintln!("binding __wpk_fork_drive_table[{}] (FILL) failed: {e:#}", base + 1);
-                    return;
-                }
-                // The exception-materialize slot is optional: a guest with
-                // no exception codec (no captured exnref) does not export
-                // it, and the slot is simply never driven.
-                if let Some(exception_materialize) = instance
-                    .get_func(&mut store, wasm_posix_shared::abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE)
-                {
-                    if let Err(e) =
-                        fm.drive_table.set(&mut store, base + 2, Ref::Func(Some(exception_materialize)))
-                    {
-                        eprintln!("binding __wpk_fork_drive_table[{}] (EXN) failed: {e:#}", base + 2);
-                        return;
+
+                // `required`: the instrumentation runtime emits these for every
+                // fork-capable guest, so a missing one is a broken artifact.
+                // The rest are conditional on what the guest contains -- no
+                // typed-GC codec means no allocate/fill, no exception codec
+                // means no materialize or thrower -- and the module emits no
+                // step for what a guest does not have.
+                let bindings: [(u32, &str, bool); 16] = [
+                    (slots::DRIVE_OP_ALLOC, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE, false),
+                    (slots::DRIVE_OP_FILL, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_FILL, false),
+                    (slots::DRIVE_OP_EXN, fork_abi::WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE, false),
+                    (slots::DRIVE_SLOT_RESTORE, fork_abi::WPK_FORK_EXPORT_MODULE_STATE_RESTORE, true),
+                    (
+                        slots::DRIVE_SLOT_FINISH_RESTORE,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
+                        true,
+                    ),
+                    (slots::DRIVE_SLOT_REWIND_BEGIN, fork_abi::WPK_FORK_EXPORT_REWIND_BEGIN, true),
+                    (slots::DRIVE_SLOT_ABORT_BEGIN, fork_abi::WPK_FORK_EXPORT_ABORT_BEGIN, true),
+                    (slots::DRIVE_SLOT_UNWIND_END, fork_abi::WPK_FORK_EXPORT_UNWIND_END, true),
+                    (slots::DRIVE_SLOT_REWIND_END, fork_abi::WPK_FORK_EXPORT_REWIND_END, true),
+                    (slots::DRIVE_SLOT_ABORT_END, fork_abi::WPK_FORK_EXPORT_ABORT_END, true),
+                    (slots::DRIVE_SLOT_UNWIND_BEGIN, fork_abi::WPK_FORK_EXPORT_UNWIND_BEGIN, true),
+                    (
+                        slots::DRIVE_SLOT_GC_ENCODE,
+                        fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_ENCODE_SLOT,
+                        false,
+                    ),
+                    (slots::DRIVE_SLOT_GC_PROBE, fork_abi::WPK_FORK_REFERENCE_EXPORT_GC_PROBE, false),
+                    (
+                        slots::DRIVE_SLOT_MODULE_STATE_SAVE,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_STATE_SAVE,
+                        true,
+                    ),
+                    (
+                        slots::DRIVE_SLOT_MODULE_TABLE_STATE_SAVE,
+                        fork_abi::WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
+                        false,
+                    ),
+                    (
+                        slots::DRIVE_SLOT_EXN_THROW_RECIPE,
+                        fork_abi::WPK_FORK_EXCEPTION_EXPORT_THROW_RECIPE,
+                        false,
+                    ),
+                ];
+
+                for (slot, export, required) in bindings {
+                    let at = base + u64::from(slot);
+                    match instance.get_func(&mut store, export) {
+                        Some(func) => {
+                            if let Err(e) = fm.drive_table.set(&mut store, at, Ref::Func(Some(func))) {
+                                eprintln!("binding __wpk_fork_drive_table[{at}] ({export}) failed: {e:#}");
+                                return;
+                            }
+                        }
+                        None if required => {
+                            eprintln!(
+                                "fork-instrumented guest exports no {export}; the module drives \
+                                 drive-table slot {slot} and an unbound slot is a call_indirect on null"
+                            );
+                            return;
+                        }
+                        None => {}
                     }
                 }
             }
@@ -10113,9 +10314,32 @@ fn run_fork_capable_entry(
         // Folds the former `fm_begin_borrowed_child_replay(root, image_ptr,
         // image_len, private_prefix)`. Single-activation vfork: `sides_count
         // == 0`.
+        // Seed the admitted workspace FIRST: the module carves each
+        // activation's private prefix out of it rather than being handed one.
+        // `compute_vfork_borrowed_region` reserves exactly one page below the
+        // child's private channel for this, which is the region -- and the only
+        // fact about it this host knows that the module cannot derive.
+        if let Err(e) = fm.fm_set_borrowed_workspace.call(
+            &mut *store,
+            (private_prefix, WASM_PAGE_SIZE as u32),
+        ) {
+            eprintln!("fm_set_borrowed_workspace failed: {e:#}");
+            return;
+        }
+        match fm.fm_last_errno.call(&mut *store, ()) {
+            Ok(0) => {}
+            Ok(errno) => {
+                eprintln!("fm_set_borrowed_workspace failed: errno {errno}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("fm_last_errno after fm_set_borrowed_workspace failed: {e:#}");
+                return;
+            }
+        }
         if let Err(e) = fm.fm_child_seed_borrowed.call(
             &mut *store,
-            (arena_root, root, private_prefix, 0, 0),
+            (arena_root, root, 0, 0),
         ) {
             eprintln!("fm_child_seed_borrowed failed: {e:#}");
             return;
@@ -10311,6 +10535,47 @@ fn run_fork_capable_entry(
 /// without ever calling `wpk_fork_resume_start` — a genuine module/guest bug
 /// at this point has no honest way to resume, so a loud stop beats a wrong
 /// resume.
+/// Seed one activation's template id into the co-resident module.
+///
+/// The module writes a `Module` record per activation when a capture seals,
+/// and refuses the seal for an activation whose template id it was never given
+/// (`activation_template_id(id).ok_or(Errno::EINVAL)`) -- that record is what a
+/// child reads to know the activation exists. Left unseeded,
+/// `fm_parent_seal_capture` answers `errno 22` and the fork dies with its
+/// frames already committed, which is exactly how this surfaced.
+///
+/// MUST run after `fm_set_format`, which resets the per-worker seeded
+/// catalogs: anything seeded before it is wiped. Same ordering rule the GC
+/// codec seed documents.
+///
+/// A free function because the two production launch paths
+/// (`spawn_guest_thread` and `run_worker_thread`) both need it, and the first
+/// version of this fix seeded only one of them -- the seal ran on the other
+/// and still answered 22.
+fn seed_activation_template_id(
+    store: &mut Store<()>,
+    fm: &ForkModule,
+    guest_mem: &SharedMemory,
+    template_id: &[u8; 32],
+) -> anyhow::Result<()> {
+    let at = fm.template_id_scratch_base as usize;
+    anyhow::ensure!(
+        guest_mem.data().len() >= at + template_id.len(),
+        "template-id scratch {at:#x} is outside guest memory"
+    );
+    // SAFETY: the range is inside the shared memory (checked above), and this
+    // worker is the only writer of its own fork-module scratch pages.
+    unsafe {
+        let dst = guest_mem.data().as_ptr() as *mut u8;
+        core::ptr::copy_nonoverlapping(template_id.as_ptr(), dst.add(at), template_id.len());
+    }
+    fm.fm_set_activation_template_id
+        .call(&mut *store, (0, fm.template_id_scratch_base))?;
+    let errno = fm.fm_last_errno.call(&mut *store, ())?;
+    anyhow::ensure!(errno == 0, "fm_set_activation_template_id failed: errno {errno}");
+    Ok(())
+}
+
 fn drive_fork_capture_seal_and_launch_child(
     store: &mut Store<()>,
     guest_mem: &SharedMemory,
@@ -10543,18 +10808,20 @@ fn drive_fork_capture_seal_and_launch_child(
         // `Replaying`-phase finish then drives `fm_parent_finish(1)` (the
         // guest's `wpk_fork_abort_end` flip), so `coord` records the abort here.
         coord.set_abort_replay(true);
-        if let Err(e) = fm.fm_parent_abort.call(&mut *store, ()) {
-            eprintln!("fm_parent_abort (gated fork abort) failed: {e:#}");
+        if let Err(e) = fm.fm_parent_replay.call(&mut *store, 1) {
+            eprintln!("fm_parent_replay(abort) (gated fork abort) failed: {e:#}");
             return false;
         }
         match fm.fm_last_errno.call(&mut *store, ()) {
             Ok(0) => {}
             Ok(errno) => {
-                eprintln!("fm_parent_abort (gated fork abort) failed: errno {errno}");
+                eprintln!("fm_parent_replay(abort) (gated fork abort) failed: errno {errno}");
                 return false;
             }
             Err(e) => {
-                eprintln!("fm_last_errno after fm_parent_abort (gated fork abort) failed: {e:#}");
+                eprintln!(
+                    "fm_last_errno after fm_parent_replay(abort) (gated fork abort) failed: {e:#}"
+                );
                 return false;
             }
         }
@@ -10631,19 +10898,23 @@ fn drive_fork_capture_seal_and_launch_child(
     // + direct guest-export call. `root` (== each activation's stored
     // `module_buffer`, smuggled to the child above) is what the module's plan
     // drives from internally. A FAILED child launch (`fork_result < 0`) resumes
-    // the parent at `fork()` with the errno via ABORT-replay (`fm_parent_abort`),
+    // the parent at `fork()` with the errno via ABORT-replay
+    // (`fm_parent_replay(abort=1)`),
     // mirroring TS `beginAbortReplay(-childPid)`; a successful launch resumes via
     // NORMAL rewind-replay (`fm_parent_replay`). `coord` records which, so the
     // paired `Replaying`-phase finish drives the matching `wpk_fork_{rewind,
     // abort}_end` via `fm_parent_finish(abort)`.
     let abort = fork_result < 0;
     coord.set_abort_replay(abort);
-    let (entry, name): (&wasmtime::TypedFunc<(), ()>, &str) = if abort {
-        (&fm.fm_parent_abort, "fm_parent_abort")
+    // ONE module entry, phase as an argument. This used to select between two
+    // exports; the module folded them, because both bodies were the same impl
+    // with this same flag flipped.
+    let name = if abort {
+        "fm_parent_replay(abort)"
     } else {
-        (&fm.fm_parent_replay, "fm_parent_replay")
+        "fm_parent_replay"
     };
-    if let Err(e) = entry.call(&mut *store, ()) {
+    if let Err(e) = fm.fm_parent_replay.call(&mut *store, u32::from(abort)) {
         eprintln!("{name} failed: {e:#}");
         return false;
     }
@@ -10912,7 +11183,40 @@ fn run_worker_thread(
                     wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
                 ),
             };
-            let tag = wasmtime::Tag::new(&mut store, &tag_ty)?;
+            // The MODULE owns this tag. `fork-module-inject` defines and
+            // exports it precisely so a host does not have to mint one:
+            // "It was minted in JavaScript, which made every host responsible
+            // for creating one and handing it over. It does not have to be."
+            // Minting here instead left that export dead and the responsibility
+            // in place -- and, worse, meant the module and the guest would not
+            // agree on the tag the moment the module throws one itself.
+            let tag = fm
+                .instance
+                .get_tag(
+                    &mut store,
+                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME,
+                )
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "fork-module does not export {}; it cannot supply the \
+                         guest's unwind tag",
+                        wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                    )
+                })?;
+            // `TagType` is not comparable, so compare the signature it carries.
+            // The transport is `() -> ()`; a module whose tag took a payload
+            // would link and then mismatch at the first throw.
+            let module_sig = tag.ty(&store);
+            let module_sig = module_sig.ty();
+            let guest_sig = tag_ty.ty();
+            if module_sig.params().len() != guest_sig.params().len()
+                || module_sig.results().len() != guest_sig.results().len()
+            {
+                anyhow::bail!(
+                    "fork-module's {} tag does not match the type the guest imports",
+                    wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_NAME
+                );
+            }
             linker.define(
                 &mut store,
                 wasm_posix_shared::abi::WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
@@ -10921,9 +11225,10 @@ fn run_worker_thread(
             )?;
         }
         if let Some(fmt) = fork_format.as_ref() {
-            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size))?;
+            fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0))?;
             let errno = fm.fm_last_errno.call(&mut store, ())?;
             anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
+            seed_activation_template_id(&mut store, &fm, guest_mem, &fmt.template_id)?;
             if !fmt.catalog_ordinals.is_empty() {
                 let mut buf = Vec::with_capacity(fmt.catalog_ordinals.len() * 4);
                 for ordinal in &fmt.catalog_ordinals {
@@ -11049,6 +11354,15 @@ fn run_worker_thread(
                         // Coarse capture-begin (worker-thread mirror of the main
                         // closure): open the capture + drive the guest's
                         // `wpk_fork_unwind_begin(root)` in one module call.
+                        // ARM the module's reference-graph builder first.
+                        // `fm_parent_begin_capture` begins the UNWIND; it does not create
+                        // the builder, and `capture_builder()` refuses to make one lazily
+                        // unless the capture was armed. Without this the fork runs to
+                        // completion and `fm_parent_seal_capture` answers EINVAL with its
+                        // frames already committed. The JavaScript hosts call the same entry
+                        // here (`processCaptureModule.begin()` right before
+                        // `parentBeginCapture`).
+                        fm.fm_capture_begin.call(&mut caller, ())?;
                         let root = fm.fm_parent_begin_capture.call(
                             &mut caller,
                             (ch as u32, fm.empty_module_state_root, 0, 0),
@@ -14338,9 +14652,9 @@ mod fork_module_tests {
         // genuinely executable: the call reaches real fork-module code,
         // which itself only works if the module's start function already
         // relocated its passive data segments into the reserved region.
-        fork_module.fm_set_format.call(&mut fm_store, (4, 0))?;
+        fork_module.fm_set_format.call(&mut fm_store, (4, 0, 0, 0, 0))?;
         let errno = fork_module.fm_last_errno.call(&mut fm_store, ())?;
-        assert_eq!(errno, 0, "fm_set_format(4, 0) must succeed on a wasm32 guest");
+        assert_eq!(errno, 0, "fm_set_format(4, 0, 0, 0, 0) must succeed on a wasm32 guest");
 
         Ok(())
     }
@@ -14477,6 +14791,9 @@ mod fork_module_tests {
             catalog_ordinals: Vec::new(),
             catalog_local_slots: Vec::new(),
             gc_codec_descriptor: Some(GC_CODEC_FIXTURE.to_vec()),
+            // Not under test here; this unit exercises the GC-provenance
+            // registry, which never reads the template id.
+            template_id: [0u8; 32],
         };
         let registry = GcProvenanceRegistry::new(Some(&format));
 

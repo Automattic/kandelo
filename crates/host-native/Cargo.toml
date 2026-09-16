@@ -67,6 +67,12 @@ wasm-artifact = { path = "../wasm-artifact" }
 # it entirely, so `fork-codec` stays a dependency solely for the live
 # portable core above.
 fork-codec = { path = "../fork-codec" }
+# The guest's fork TEMPLATE ID is a plain SHA-256 over its module bytes, which
+# is what `computeForkModuleTemplateId` in `host/src/fork-guest-sections.ts`
+# computes and what the co-resident module compares at every seal. Same crate
+# and version `fork-codec` and `fork-instrument` already use, so this adds no
+# new third-party code to the tree -- only a second consumer of it.
+sha2 = { version = "0.10", default-features = false }
 
 # Ergonomic error propagation for the pump (`bail!`, `?` across the many
 # fallible kernel-export calls). Wasmtime already pulls anyhow into the tree.

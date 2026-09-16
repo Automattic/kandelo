@@ -1,8 +1,40 @@
 import { expect, test } from "@playwright/test";
-import {
-  FORK_ANYREF_TRANSIT_IMPORT,
-  forkAnyrefTransitProviderBytes,
-} from "../../../host/src/fork-anyref-transit";
+import { WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT } from "../../../host/src/generated/abi";
+
+/**
+ * A closed module exporting one `(ref null any)` table and a `_clear` that
+ * `table.fill`s it with null:
+ *
+ *     (module
+ *       (table (export "__wpk_fork_ref_gc_transit") 1 anyref)
+ *       (func (export "__wpk_fork_ref_gc_transit_clear")
+ *         i32.const 0
+ *         ref.null any
+ *         table.size 0
+ *         table.fill 0))
+ *
+ * IT LIVES HERE NOW. The host used to mint the transit table from this binary,
+ * and this spec borrowed the bytes to pin the ENGINE behaviour they depend on.
+ * The fork-module owns the table today, so the host no longer carries a
+ * provider -- but the engine question this spec asks is unchanged: does an
+ * anyref table preserve GC identity across a round trip in THIS browser? That
+ * needs a table and nothing else, so the fixture moved to the only file that
+ * still wants it. Hand-assembled because the dev shell's WABT cannot parse
+ * typed GC references (see the fixture above, for the same reason).
+ */
+function anyrefTransitProviderBytes(): Uint8Array {
+  return Uint8Array.of(
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60,
+    0x00, 0x00, 0x03, 0x02, 0x01, 0x00, 0x04, 0x04, 0x01, 0x6e, 0x00, 0x01,
+    0x07, 0x3f, 0x02, 0x19, 0x5f, 0x5f, 0x77, 0x70, 0x6b, 0x5f, 0x66, 0x6f,
+    0x72, 0x6b, 0x5f, 0x72, 0x65, 0x66, 0x5f, 0x67, 0x63, 0x5f, 0x74, 0x72,
+    0x61, 0x6e, 0x73, 0x69, 0x74, 0x01, 0x00, 0x1f, 0x5f, 0x5f, 0x77, 0x70,
+    0x6b, 0x5f, 0x66, 0x6f, 0x72, 0x6b, 0x5f, 0x72, 0x65, 0x66, 0x5f, 0x67,
+    0x63, 0x5f, 0x74, 0x72, 0x61, 0x6e, 0x73, 0x69, 0x74, 0x5f, 0x63, 0x6c,
+    0x65, 0x61, 0x72, 0x00, 0x00, 0x0a, 0x0e, 0x01, 0x0c, 0x00, 0x41, 0x00,
+    0xd0, 0x6e, 0xfc, 0x10, 0x00, 0xfc, 0x11, 0x00, 0x0b,
+  );
+}
 
 // WHY: the dev shell's WABT release cannot parse typed Wasm GC references.
 // This is the Rust `wat` crate's deterministic encoding of the adjacent
@@ -24,7 +56,7 @@ test("browser preserves GC identity through weak harvest and anyref transit", as
   baseURL,
 }) => {
   const bytes = fixtureBytes();
-  const providerBytes = Array.from(forkAnyrefTransitProviderBytes());
+  const providerBytes = Array.from(anyrefTransitProviderBytes());
   await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
   const result = await page.evaluate(async ({
     moduleBytes,
@@ -87,7 +119,7 @@ test("browser preserves GC identity through weak harvest and anyref transit", as
   }, {
     moduleBytes: bytes,
     transitProviderBytes: providerBytes,
-    transitExport: FORK_ANYREF_TRANSIT_IMPORT,
+    transitExport: WPK_FORK_REFERENCE_IMPORT_GC_TRANSIT,
   });
 
   expect(result).toEqual({

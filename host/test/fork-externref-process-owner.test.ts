@@ -1,105 +1,46 @@
-import { describe, expect, it, vi } from "vitest";
+// `ForkExternrefProcessOwner`: who may resolve a broker handle, and when.
+//
+// THE GRANT NO LONGER PARSES AN ARENA. This file used to build a sealed KFMS
+// continuation in TypeScript and hand it to `forkGenerationFromContinuation`,
+// which walked the parked parent's arena -- in the KERNEL worker, the one
+// thread every process's syscalls serialize through -- to re-derive which
+// externref handles the fork carried. The parent already knows them: it
+// records each broker handle as `fm_capture_intern` interns it, and hands the
+// list over after the seal. So the work disappeared rather than moved, and
+// with it went ~4,956 lines of host decoder and this file's arena fixture.
+//
+// What is left is the part that was always the subject: aliasing collapses to
+// one lease, a failed grant leaves no child generation behind, exec retires
+// PID-stable authority, and one generation serves the main and pthread import
+// adapters.
+
+import { describe, expect, it } from "vitest";
 import { ForkExternrefProcessOwner } from "../src/fork-externref-process-owner";
-import {
-  ForkModuleStateArena,
-  ForkModuleStateRecordKind,
-  writeForkModuleStateRoot,
-} from "../src/fork-module-state";
-import {
-  type ForkReferenceRecipeGraph,
-} from "../src/fork-reference-recipes";
-import { FORK_REFERENCE_TRANSACTION_OWNER_ID } from "../src/fork-reference-wire";
-import {
-  encodeSegmentedForkReferenceRecords,
-  PagedForkReferenceVector,
-} from "../src/fork-reference-segments";
-
-function copiedContinuation(
-  graph: ForkReferenceRecipeGraph,
-): {
-  memory: WebAssembly.Memory;
-  moduleBufferAddress: number;
-} {
-  const memory = new WebAssembly.Memory({ initial: 8 });
-  let next = 0x2_0000;
-  const arena = new ForkModuleStateArena(
-    memory,
-    4,
-    (size) => {
-      const address = next;
-      next += Math.ceil(Number(size) / 0x1_0000) * 0x1_0000;
-      return address;
-    },
-    () => {},
-    "externref owner test arena",
-  );
-  const root = arena.begin();
-  arena.appendModule({
-    activationId: 0,
-    templateId: new Uint8Array(32).fill(0x71),
-  });
-  for (const record of encodeSegmentedForkReferenceRecords(
-    FORK_REFERENCE_TRANSACTION_OWNER_ID,
-    graph.nodes,
-    [PagedForkReferenceVector.empty],
-    { segmentDataBytes: 17 },
-  )) {
-    arena.appendRecord(record);
-  }
-  arena.seal();
-
-  const moduleBufferAddress = 0x1_0000;
-  writeForkModuleStateRoot(memory, moduleBufferAddress, 4, root);
-  return { memory, moduleBufferAddress };
-}
-
-function graphForHandles(handles: readonly number[]): ForkReferenceRecipeGraph {
-  return {
-    roots: [0, ...handles.map((_, index) => index + 1)],
-    nodes: [
-      { id: 0, node: { kind: "null" } },
-      ...handles.map((handle, index) => ({
-        id: index + 1,
-        node: { kind: "externref" as const, handle },
-      })),
-    ],
-  };
-}
 
 describe("ForkExternrefProcessOwner", () => {
   it("leases each aliased handle once before a fresh child starts", () => {
     const owner = new ForkExternrefProcessOwner();
     const parent = owner.startGeneration(41);
     const value = { opaque: true };
-    const handle = owner.registerForWire(
-      41,
-      owner.generationId(parent),
-      value,
-    );
-    const copied = copiedContinuation(
-      graphForHandles([handle, handle, handle]),
-    );
+    const handle = owner.registerForWire(41, owner.generationId(parent), value);
 
-    const grant = owner.forkGenerationFromContinuation(
-      parent,
-      42,
-      copied.memory,
-      4,
-      copied.moduleBufferAddress,
-    );
+    // The capture interns the same value three times; the recorded set is what
+    // the parent hands over, and aliases collapse to ONE lease.
+    const grant = owner.forkGenerationFromCapturedHandles(parent, 42, [
+      handle,
+      handle,
+      handle,
+    ]);
     expect(grant.handleCount).toBe(1);
-    expect(
-      owner.authorizeForWire(42, grant.generation.id, handle),
-    ).toBe(value);
+    expect(owner.authorizeForWire(42, grant.generation.id, handle)).toBe(value);
 
+    // The child's lease outlives the parent's generation: a forked child holds
+    // the reference in its own right, not through its parent.
     owner.releaseGeneration(parent);
-    expect(
-      owner.authorizeForWire(42, grant.generation.id, handle),
-    ).toBe(value);
+    expect(owner.authorizeForWire(42, grant.generation.id, handle)).toBe(value);
     owner.releaseGeneration(grant.generation);
-    expect(() =>
-      owner.authorizeForWire(42, grant.generation.id, handle)
-    ).toThrow("stale");
+    expect(() => owner.authorizeForWire(42, grant.generation.id, handle))
+      .toThrow("stale");
   });
 
   it("retires PID-stable authority exactly when exec replaces an image", () => {
@@ -111,31 +52,37 @@ describe("ForkExternrefProcessOwner", () => {
     const afterExec = owner.replaceGeneration(beforeExec);
     expect(afterExec.pid).toBe(51);
     expect(afterExec.id).not.toBe(beforeId);
-    expect(() => owner.authorizeForWire(51, beforeId, handle)).toThrow(
-      "stale",
-    );
-    expect(() =>
-      owner.authorizeForWire(51, afterExec.id, handle)
-    ).toThrow("retired");
+    expect(() => owner.authorizeForWire(51, beforeId, handle)).toThrow("stale");
+    expect(() => owner.authorizeForWire(51, afterExec.id, handle))
+      .toThrow("retired");
   });
 
-  it("rolls back a provisional child generation when its graph is not owned", () => {
+  it("rolls back a provisional child generation when a handle is not the parent's", () => {
     const owner = new ForkExternrefProcessOwner();
     const parent = owner.startGeneration(61);
-    const copied = copiedContinuation(graphForHandles([900]));
 
-    expect(() =>
-      owner.forkGenerationFromContinuation(
-        parent,
-        62,
-        copied.memory,
-        4,
-        copied.moduleBufferAddress,
-      )
-    ).toThrow("unknown externref handle");
+    // THE BOUND ON TRUSTING THE PARENT'S LIST. The kernel worker no longer
+    // derives the set itself, so it takes a process worker's word for it --
+    // and the broker is what makes that safe: a handle the parent does not
+    // hold is refused, so a wrong list can only over- or under-claim within
+    // the parent's own generation, never reach another process's references.
+    expect(() => owner.forkGenerationFromCapturedHandles(parent, 62, [900]))
+      .toThrow("unknown externref handle");
 
     // A failed grant leaves no hidden child generation behind.
     expect(owner.startGeneration(62).pid).toBe(62);
+  });
+
+  it("refuses a malformed handle rather than leasing something else", () => {
+    const owner = new ForkExternrefProcessOwner();
+    const parent = owner.startGeneration(63);
+    for (const bad of [0, -1, 1.5, 0x1_0000_0000]) {
+      expect(
+        () => owner.forkGenerationFromCapturedHandles(parent, 64, [bad]),
+        `handle ${bad}`,
+      ).toThrow("invalid captured externref handle");
+    }
+    expect(owner.startGeneration(64).pid).toBe(64);
   });
 
   it("uses one process generation for main and pthread import adapters", () => {
@@ -145,38 +92,7 @@ describe("ForkExternrefProcessOwner", () => {
     const idForPthreadWorker = owner.generationId(generation);
     const handle = owner.registerForWire(71, idForMainWorker, "shared");
 
-    expect(
-      owner.authorizeForWire(71, idForPthreadWorker, handle),
-    ).toBe("shared");
-  });
-
-  it("does not adopt or copy the complete module-state arena to grant a lease", () => {
-    const owner = new ForkExternrefProcessOwner();
-    const parent = owner.startGeneration(81);
-    const handle = owner.registerForWire(81, parent.id, { opaque: true });
-    const copied = copiedContinuation(graphForHandles([handle]));
-    const attach = vi.spyOn(ForkModuleStateArena.prototype, "attach")
-      .mockImplementation(() => {
-        throw new Error("full arena attachment is not allowed in the grant path");
-      });
-    const records = vi.spyOn(ForkModuleStateArena.prototype, "records")
-      .mockImplementation(() => {
-        throw new Error("full arena copying is not allowed in the grant path");
-      });
-    try {
-      const grant = owner.forkGenerationFromContinuation(
-        parent,
-        82,
-        copied.memory,
-        4,
-        copied.moduleBufferAddress,
-      );
-      expect(grant.handleCount).toBe(1);
-      owner.releaseGeneration(grant.generation);
-    } finally {
-      attach.mockRestore();
-      records.mockRestore();
-      owner.releaseGeneration(parent);
-    }
+    expect(owner.authorizeForWire(71, idForPthreadWorker, handle))
+      .toBe("shared");
   });
 });

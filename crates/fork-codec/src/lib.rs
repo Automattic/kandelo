@@ -40,16 +40,20 @@ extern crate wasm_posix_shared;
 // `drive_plan`, `reference_replay`, etc.) depended on it.
 
 pub mod catalogs;
+pub mod child_import_plan;
 pub mod drive_plan;
 pub mod drive_plan_hints;
 pub mod dylink_archive;
+pub mod dylink_table_plan;
 pub mod exception_codec;
 pub mod gc_codec;
+pub mod guest_memory;
 pub mod imported_globals;
 pub mod imported_tables;
 pub mod linked_frames;
 pub mod linked_frames_writer;
 pub mod module_state;
+pub mod module_state_writer;
 pub mod module_state_records;
 pub mod reference_feed;
 pub mod reference_graph_builder;
@@ -77,6 +81,10 @@ pub use exception_codec::{
 pub use drive_plan_hints::{GcCodecHints, FORK_HOST_EXCEPTION_ACTIVATION_ID};
 pub use gc_codec::{decode_gc_codec, GcCodec, GcFieldDescriptor, GcLayoutDescriptor};
 pub use imported_globals::{decode_imported_globals, ImportedGlobal, ImportedGlobals};
+pub use child_import_plan::{
+    build_child_import_plan, ImportPlanEntry, PlanSnapshot, IMPORT_PLAN_FLAG_SAVED,
+    IMPORT_SPACE_GLOBAL, IMPORT_SPACE_TABLE,
+};
 pub use imported_tables::{decode_imported_tables, ImportedTable, ImportedTables};
 pub use linked_frames::{
     DescriptorRejection,
@@ -84,16 +92,27 @@ pub use linked_frames::{
     LinkedFrames,
 };
 pub use linked_frames_writer::{ChunkAllocator, LinkedFrameWriter};
+pub use module_state_writer::ModuleStateWriter;
 pub use module_state::{
     decode_module_state, ModuleState, ModuleStateChunk, ModuleStateFormat, ModuleStateRecord,
 };
 pub use module_state_records::{
-    decode_data_segments, decode_element_segments, decode_journal_image, decode_module_record,
-    decode_mutable_global,
-    decode_record_payload, decode_table_descriptor, decode_table_page, record_payload_bytes,
+    build_imported_global_bindings, build_imported_table_bindings, decode_data_segments,
+    decode_element_segments,
+    decode_imported_global_bindings, decode_imported_table_bindings,
+    decode_journal_image, decode_module_record, decode_mutable_global,
+    encode_imported_table_bindings, imported_table_bindings_size,
+    ImportedTableBinding, ImportedTableDeclaration, ImportedTableProvenance,
+    encode_imported_global_bindings, imported_global_bindings_size, ImportedGlobalBinding,
+    GlobalIdentityGroup, ImportedGlobalDeclaration, ImportedGlobalProvenance,
+    ImportedGlobalSnapshotFact,
+    decode_record_payload, decode_table_descriptor, decode_table_page, encode_journal_image,
+    encode_module_record,
+    record_payload_bytes,
     GlobalSnapshot, ModuleDescriptor, ModuleStateRecordPayload, SegmentBitmap, SparseTablePage,
     SparseTableRun, TableDescriptor,
 };
+pub use guest_memory::GuestMemory;
 pub use reference_feed::ReferenceReplayFeed;
 pub use reference_graph_builder::{AggregateKind, GcProvenance, ReferenceGraphBuilder};
 pub use reference_recipes::{ReferenceRecipeEntry, ReferenceRecipeNode};

@@ -1,56 +1,59 @@
 // Orchestration migration increment C — the module-owned decoded-graph
 // STRUCTURE readout, proven end to end in a real WebAssembly engine (Node/V8).
 //
-// `fm_decoded_node_field(index, field)` is an additive scalar accessor over the SAME resident
+// `fm_decoded_node_field(index, field)` is a scalar accessor over the resident
 // decoded graph `fm_decode_reference_graph` produces (the shared
-// `fork_codec::reference_segments` decode). They expose exactly the decoded
-// structure the host's fork wiring (`worker-main.ts`) still consumes from its
-// `decodedChildReferences` decode:
-//   * the HOST-owned exnref tag-validity admission gate
-//     (`assertForkModuleExnrefTagsDeclared`) reads each exnref node's
+// `fork_codec::reference_segments` decode). It exposes the decoded structure
+// the host's fork wiring still consumes from a decode of its own:
+//   * the exnref tag-validity admission gate reads each exnref node's
 //     `moduleActivation` + `tagOrdinal`;
 //   * the merged static-root catalog mirror seeding reads each static-root
 //     node's `moduleActivation` + `staticRootOrdinal` (and the per-activation
 //     max ordinal it derives).
-// A later capture-session + severance increment can then retire the JS
-// `decodeSegmentedForkReferenceTransaction` structural decode on the module path.
 //
-// This test builds ONE sealed KFMS arena with the PRODUCTION TypeScript encoder
-// (`ForkModuleStateArena` + `appendSegmentedForkReferenceTransaction`), decodes
-// the SAME wire bytes two ways — the JS `decodeSegmentedForkReferenceTransaction`
-// and the module's `fm_decode_reference_graph` + the new accessors — and asserts
-// STRUCTURAL PARITY node-for-node (kind discriminant, module activation, kind-
-// specific ordinal). Because both decodes read identical bytes, matching output
-// proves the module exposes the same structure the JS decode does. It also
-// asserts the truthful `EINVAL` boundaries (kinds without an activation/ordinal,
-// out-of-range index, no resident graph).
+// THE ARENA IS CAPTURED, AND THE CAPTURE IS THE ORACLE. This file used to build
+// one sealed KFMS arena with the set-aside TypeScript encoder, decode the same
+// bytes with the set-aside TypeScript decoder, and assert the module's readout
+// matched that decode node-for-node. Both halves of the comparison were the
+// same set-aside implementation, so it could only prove the two agreed.
+//
+// What the readout must report is what was CAPTURED. A parent interns each kind
+// at a coordinate chosen here -- in a fork that dlopen'd three side modules, so
+// most nodes name an activation that is not activation 0 -- and those
+// coordinates are what the assertions compare against.
 
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { resolveBinary } from "../src/binary-resolver";
-import { instantiateForkModule } from "../src/fork-module-instance";
-import { createForkModuleHostCapabilities } from "../src/fork-module-host-capabilities";
-import { ForkExternrefTokenCache } from "../src/fork-reference-broker";
-import { ForkModuleStateArena } from "../src/fork-module-state";
-import type { ForkReferenceRecipeEntry } from "../src/fork-reference-recipes";
 import {
-  appendSegmentedForkReferenceTransaction,
-  decodeSegmentedForkReferenceTransaction,
-  PagedForkReferenceVector,
-  type ForkReferenceVector,
-} from "../src/fork-reference-segments";
-import { WPK_FORK_REFERENCE_TRANSACTION_OWNER } from "../src/generated/abi";
+  CAPTURE_KIND_ARRAY,
+  CAPTURE_KIND_EXNREF,
+  CAPTURE_KIND_STRUCT,
+  INTERN_KIND_EXTERNREF,
+  INTERN_KIND_FUNCREF,
+  INTERN_KIND_I31,
+  INTERN_KIND_STATIC_ROOT,
+  captureGraph,
+  childModule,
+  fixture,
+} from "./fork-module-capture-fixture";
 
-const PAGE = 65536;
-const PTR_WIDTH = 4 as const;
+/**
+ * `fm_decoded_node_field` selector 3: the resident graph's node count.
+ *
+ * It had its own export, `fm_decoded_node_count`, until that entry folded into
+ * this one -- a property of the same resident graph, asked the same way, with
+ * the index ignored. Census 202.
+ */
+const DECODED_FIELD_COUNT = 3;
+
 const EINVAL = 22;
-const GENERATION_ID = 7;
 const EXTERNREF_HANDLE = 0xabcd;
+/** Side modules this fork dlopen'd: a node naming one of these would read back
+ *  as activation 0 if the accessor dropped the activation it decoded. */
+const SIDE_ACTIVATIONS = [1, 2, 3];
 
-// The wire node-kind discriminants, mirroring the TS `WireNodeKind` const enum
-// (`fork-reference-recipes.ts`) and the Rust `wire_node_kind` mapping.
-const WIRE_KIND: Record<string, number> = {
+/** The wire node-kind discriminants, mirroring the Rust `wire_node_kind`. */
+const WIRE_KIND = {
   null: 0,
   funcref: 1,
   externref: 2,
@@ -58,276 +61,198 @@ const WIRE_KIND: Record<string, number> = {
   i31: 4,
   struct: 5,
   array: 6,
-  "static-root": 7,
-};
+  staticRoot: 7,
+} as const;
 
-// A graph exercising every accessor arm: the two PRIMARY host consumers (exnref
-// with `moduleActivation`+`tagOrdinal`, static-root with
-// `moduleActivation`+`staticRootOrdinal`), plus funcref/struct/array (the other
-// kinds that carry an activation + ordinal) and the activation/ordinal-free
-// kinds (null/externref/i31). Aggregate nodes (exnref/struct/array) name a
-// reference edge to the externref (id 1); the encoder appends their shared
-// edge/scalar ranges canonically in id order.
-const NODES: ForkReferenceRecipeEntry[] = [
-  { id: 0, node: { kind: "null" } },
-  { id: 1, node: { kind: "externref", handle: EXTERNREF_HANDLE } },
-  { id: 2, node: { kind: "funcref", moduleActivation: 3, functionOrdinal: 7 } },
-  { id: 3, node: { kind: "i31", value: 42 } },
-  {
-    id: 4,
-    node: {
-      kind: "exnref",
-      moduleActivation: 5,
-      tagOrdinal: 9,
-      layoutId: 0,
-      scalars: new Uint8Array(0),
-      payloads: [1],
-    },
-  },
-  {
-    id: 5,
-    node: {
-      kind: "struct",
-      moduleActivation: 2,
-      typeOrdinal: 13,
-      layoutId: 0,
-      scalars: new Uint8Array(0),
-      fields: [1],
-    },
-  },
-  {
-    id: 6,
-    node: {
-      kind: "array",
-      moduleActivation: 4,
-      typeOrdinal: 17,
-      layoutId: 0,
-      scalars: new Uint8Array(0),
-      elements: [1],
-    },
-  },
-  {
-    id: 7,
-    node: { kind: "static-root", moduleActivation: 6, staticRootOrdinal: 11 },
-  },
-];
-
-/** Build a sealed KFMS arena covering every node kind; return its root. */
-function buildArena(memory: WebAssembly.Memory): number {
-  let next = PAGE;
-  const allocate = (size: number): number => {
-    const addr = next;
-    next += size;
-    if (next > memory.buffer.byteLength) {
-      memory.grow(Math.ceil((next - memory.buffer.byteLength) / PAGE));
-    }
-    return addr;
-  };
-  const arena = new ForkModuleStateArena(
-    memory,
-    PTR_WIDTH,
-    allocate,
-    () => {},
-    "decoded-structure-test",
-  );
-  const vectors: ForkReferenceVector[] = [PagedForkReferenceVector.empty];
-  const root = arena.begin();
-  arena.appendModule({
-    activationId: 0,
-    templateId: new Uint8Array(32).fill(0xd0),
-  });
-  appendSegmentedForkReferenceTransaction(
-    arena,
-    WPK_FORK_REFERENCE_TRANSACTION_OWNER,
-    NODES,
-    vectors,
-    // Force multi-segment reassembly so the module's decode is exercised.
-    { segmentDataBytes: 48 },
-  );
-  arena.seal();
-  return root;
-}
+/** `fm_decoded_node_field` fields. */
+const FIELD_KIND = 0;
+const FIELD_ACTIVATION = 1;
+const FIELD_ORDINAL = 2;
 
 interface StructureExports {
-  fm_set_format: (pw: number, fixedPrefix: number) => void;
   fm_decode_reference_graph: (root: number) => number;
-  fm_decoded_node_count: () => number;
   fm_decoded_node_field: (index: number, field: number) => number;
   fm_last_errno: () => number;
 }
 
-function instantiate(memory: WebAssembly.Memory): { x: StructureExports } {
-  const tokens = new ForkExternrefTokenCache(GENERATION_ID);
-  const hostCapabilities = createForkModuleHostCapabilities({ tokens });
-  const module = new WebAssembly.Module(
-    readFileSync(resolveBinary("fork_module32.wasm")),
-  );
-  const fm = instantiateForkModule({
-    module,
-    memory,
-    ptrWidth: PTR_WIDTH,
-    reserve: () => 8 * 1024 * 1024,
-    label: "decoded-structure-test",
-    resolveExternref: hostCapabilities.imports.resolve_externref,
-  });
-  const x = fm.exports as unknown as StructureExports;
-  x.fm_set_format(PTR_WIDTH, 0);
-  expect(x.fm_last_errno()).toBe(0);
-  return { x };
+/**
+ * What the readout must report for one captured node: its wire kind, and the
+ * (activation, ordinal) the capture named -- or `null` for the kinds carrying
+ * neither, where the readout must refuse rather than answer a zero.
+ */
+interface Expected {
+  readonly kind: number;
+  readonly coordinate:
+    | { readonly activation: number; readonly ordinal: number }
+    | null;
 }
 
-/** The (moduleActivation, ordinal) the accessors must report for a JS node, or
- *  `null` when the kind carries neither (null/externref/i31). */
-function expectedFields(
-  node: ForkReferenceRecipeEntry["node"],
-): { moduleActivation: number; ordinal: number } | null {
-  switch (node.kind) {
-    case "funcref":
-      return { moduleActivation: node.moduleActivation, ordinal: node.functionOrdinal };
-    case "exnref":
-      return { moduleActivation: node.moduleActivation, ordinal: node.tagOrdinal };
-    case "struct":
-    case "array":
-      return { moduleActivation: node.moduleActivation, ordinal: node.typeOrdinal };
-    case "static-root":
-      return {
-        moduleActivation: node.moduleActivation,
-        ordinal: node.staticRootOrdinal,
-      };
-    default:
-      return null;
-  }
+/**
+ * Capture one graph covering every accessor arm: the two primary host consumers
+ * (exnref, static-root), the other kinds carrying an activation + ordinal
+ * (funcref, struct, array), and the kinds carrying neither (null, externref,
+ * i31). Each aggregate names the externref leaf as its one edge, so the graph
+ * is connected the way a real one is rather than a list of isolated nodes.
+ */
+function captureInto(
+  f: ReturnType<typeof fixture>,
+): { root: number; expected: Map<number, Expected> } {
+  const { root, recipes, aggregateRecipes } = captureGraph(
+    f,
+    [
+      [INTERN_KIND_EXTERNREF, EXTERNREF_HANDLE, 0],
+      [INTERN_KIND_FUNCREF, 3, 7],
+      [INTERN_KIND_I31, 42, 0],
+      [INTERN_KIND_STATIC_ROOT, 2, 11],
+    ],
+    [
+      {
+        kind: CAPTURE_KIND_EXNREF,
+        activation: 1,
+        typeOrdinal: 9,
+        edges: ({ leaves }) => [leaves[0]!],
+      },
+      {
+        kind: CAPTURE_KIND_STRUCT,
+        activation: 2,
+        typeOrdinal: 13,
+        edges: ({ leaves }) => [leaves[0]!],
+      },
+      {
+        kind: CAPTURE_KIND_ARRAY,
+        activation: 3,
+        typeOrdinal: 17,
+        edges: ({ leaves }) => [leaves[0]!],
+      },
+    ],
+    { sideActivations: SIDE_ACTIVATIONS },
+  );
+
+  const expected = new Map<number, Expected>([
+    // Node 0 is the canonical null every capture reserves.
+    [0, { kind: WIRE_KIND.null, coordinate: null }],
+    [recipes[0]!, { kind: WIRE_KIND.externref, coordinate: null }],
+    [
+      recipes[1]!,
+      { kind: WIRE_KIND.funcref, coordinate: { activation: 3, ordinal: 7 } },
+    ],
+    [recipes[2]!, { kind: WIRE_KIND.i31, coordinate: null }],
+    [
+      recipes[3]!,
+      { kind: WIRE_KIND.staticRoot, coordinate: { activation: 2, ordinal: 11 } },
+    ],
+    [
+      aggregateRecipes[0]!,
+      { kind: WIRE_KIND.exnref, coordinate: { activation: 1, ordinal: 9 } },
+    ],
+    [
+      aggregateRecipes[1]!,
+      { kind: WIRE_KIND.struct, coordinate: { activation: 2, ordinal: 13 } },
+    ],
+    [
+      aggregateRecipes[2]!,
+      { kind: WIRE_KIND.array, coordinate: { activation: 3, ordinal: 17 } },
+    ],
+  ]);
+  return { root, expected };
+}
+
+/** A child instance with the captured graph decoded and resident. */
+function decodedChild(
+  f: ReturnType<typeof fixture>,
+  root: number,
+  label: string,
+): StructureExports {
+  const x = childModule(f, { label }) as unknown as StructureExports;
+  const count = x.fm_decode_reference_graph(root);
+  expect(x.fm_last_errno(), "the child decodes the sealed graph").toBe(0);
+  expect(count, "and finds every captured node").toBeGreaterThan(0);
+  return x;
 }
 
 describe("fork-module decoded-graph structure readout (orchestration migration increment C)", () => {
-  it("reports node kind / module activation / ordinal with structural parity to the JS decode", () => {
-    const memory = new WebAssembly.Memory({
-      initial: 256,
-      maximum: 16384,
-      shared: true,
-    });
-    const root = buildArena(memory);
-    const { x } = instantiate(memory);
+  it("reports the kind / activation / ordinal each node was captured with", () => {
+    const f = fixture();
+    const { root, expected } = captureInto(f);
+    const x = decodedChild(f, root, "decoded-structure-child");
 
-    // JS decode of the SAME wire bytes: the structure the host consumes today.
-    const jsDecoded = decodeSegmentedForkReferenceTransaction(
-      arenaRecords(memory, root),
-      WPK_FORK_REFERENCE_TRANSACTION_OWNER,
-    );
-    const jsNodes = [...jsDecoded.graph.nodes];
-    expect(jsNodes.length).toBe(NODES.length);
+    expect(x.fm_decoded_node_field(0, DECODED_FIELD_COUNT)).toBe(expected.size);
 
-    // Module decode of the SAME wire bytes.
-    const moduleCount = x.fm_decode_reference_graph(root);
-    expect(x.fm_last_errno()).toBe(0);
-    expect(moduleCount).toBe(NODES.length);
-    expect(x.fm_decoded_node_count()).toBe(NODES.length);
-
-    // Node-for-node structural parity.
-    for (const entry of jsNodes) {
-      const index = entry.id;
-      const expectedKind = WIRE_KIND[entry.node.kind];
-      expect(x.fm_decoded_node_field(index, 0)).toBe(expectedKind);
+    for (const [index, want] of expected) {
+      expect(
+        x.fm_decoded_node_field(index, FIELD_KIND),
+        `node ${index} kind`,
+      ).toBe(want.kind);
       expect(x.fm_last_errno()).toBe(0);
 
-      const fields = expectedFields(entry.node);
-      if (fields === null) {
-        // A kind without an activation/ordinal is a truthful EINVAL.
-        expect(x.fm_decoded_node_field(index, 1)).toBe(-1);
+      if (want.coordinate === null) {
+        // A kind without an activation/ordinal is a truthful EINVAL, not a zero.
+        expect(x.fm_decoded_node_field(index, FIELD_ACTIVATION)).toBe(-1);
         expect(x.fm_last_errno()).toBe(EINVAL);
-        expect(x.fm_decoded_node_field(index, 2)).toBe(-1);
+        expect(x.fm_decoded_node_field(index, FIELD_ORDINAL)).toBe(-1);
         expect(x.fm_last_errno()).toBe(EINVAL);
       } else {
-        expect(x.fm_decoded_node_field(index, 1)).toBe(
-          fields.moduleActivation,
-        );
+        expect(
+          x.fm_decoded_node_field(index, FIELD_ACTIVATION),
+          `node ${index} activation`,
+        ).toBe(want.coordinate.activation);
         expect(x.fm_last_errno()).toBe(0);
-        expect(x.fm_decoded_node_field(index, 2)).toBe(fields.ordinal);
+        expect(
+          x.fm_decoded_node_field(index, FIELD_ORDINAL),
+          `node ${index} ordinal`,
+        ).toBe(want.coordinate.ordinal);
         expect(x.fm_last_errno()).toBe(0);
       }
     }
   });
 
   it("proves the two primary host consumers can source their structure from the module", () => {
-    const memory = new WebAssembly.Memory({
-      initial: 256,
-      maximum: 16384,
-      shared: true,
-    });
-    const root = buildArena(memory);
-    const { x } = instantiate(memory);
-    expect(x.fm_decode_reference_graph(root)).toBe(NODES.length);
+    const f = fixture();
+    const { root } = captureInto(f);
+    const x = decodedChild(f, root, "decoded-structure-consumers");
 
-    // The exnref admission gate collects {moduleActivation, tagOrdinal}.
-    const exnrefFromModule: { moduleActivation: number; tagOrdinal: number }[] =
-      [];
-    // The static-root mirror seeding collects {moduleActivation, staticRootOrdinal}.
-    const staticRootFromModule: {
-      moduleActivation: number;
-      staticRootOrdinal: number;
-    }[] = [];
-    for (let i = 0; i < x.fm_decoded_node_count(); i++) {
-      const kind = x.fm_decoded_node_field(i, 0);
+    // The exnref admission gate collects {activation, tagOrdinal}.
+    const exnrefs: { activation: number; tagOrdinal: number }[] = [];
+    // The static-root mirror seeding collects {activation, staticRootOrdinal}.
+    const staticRoots: { activation: number; staticRootOrdinal: number }[] = [];
+    for (let i = 0; i < x.fm_decoded_node_field(0, DECODED_FIELD_COUNT); i++) {
+      const kind = x.fm_decoded_node_field(i, FIELD_KIND);
       if (kind === WIRE_KIND.exnref) {
-        exnrefFromModule.push({
-          moduleActivation: x.fm_decoded_node_field(i, 1),
-          tagOrdinal: x.fm_decoded_node_field(i, 2),
+        exnrefs.push({
+          activation: x.fm_decoded_node_field(i, FIELD_ACTIVATION),
+          tagOrdinal: x.fm_decoded_node_field(i, FIELD_ORDINAL),
         });
-      } else if (kind === WIRE_KIND["static-root"]) {
-        staticRootFromModule.push({
-          moduleActivation: x.fm_decoded_node_field(i, 1),
-          staticRootOrdinal: x.fm_decoded_node_field(i, 2),
+      } else if (kind === WIRE_KIND.staticRoot) {
+        staticRoots.push({
+          activation: x.fm_decoded_node_field(i, FIELD_ACTIVATION),
+          staticRootOrdinal: x.fm_decoded_node_field(i, FIELD_ORDINAL),
         });
       }
     }
 
-    expect(exnrefFromModule).toEqual([{ moduleActivation: 5, tagOrdinal: 9 }]);
-    expect(staticRootFromModule).toEqual([
-      { moduleActivation: 6, staticRootOrdinal: 11 },
-    ]);
+    expect(exnrefs).toEqual([{ activation: 1, tagOrdinal: 9 }]);
+    expect(staticRoots).toEqual([{ activation: 2, staticRootOrdinal: 11 }]);
   });
 
   it("fails cleanly on an out-of-range index and with no resident graph", () => {
-    const memory = new WebAssembly.Memory({
-      initial: 256,
-      maximum: 16384,
-      shared: true,
-    });
-    const root = buildArena(memory);
-    const { x } = instantiate(memory);
+    const f = fixture();
+    const { root } = captureInto(f);
+    const x = childModule(f, {
+      label: "decoded-structure-boundaries",
+    }) as unknown as StructureExports;
 
-    // No resident graph yet.
-    expect(x.fm_decoded_node_field(0, 0)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_field(0, 1)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_field(0, 2)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
+    // No resident graph yet: every field refuses.
+    for (const field of [FIELD_KIND, FIELD_ACTIVATION, FIELD_ORDINAL]) {
+      expect(x.fm_decoded_node_field(0, field)).toBe(-1);
+      expect(x.fm_last_errno()).toBe(EINVAL);
+    }
 
-    // After decode, an out-of-range index is a truthful EINVAL.
-    expect(x.fm_decode_reference_graph(root)).toBe(NODES.length);
-    expect(x.fm_decoded_node_field(NODES.length, 0)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_field(NODES.length, 1)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
-    expect(x.fm_decoded_node_field(NODES.length, 2)).toBe(-1);
-    expect(x.fm_last_errno()).toBe(EINVAL);
+    const count = x.fm_decode_reference_graph(root);
+    expect(x.fm_last_errno()).toBe(0);
+    // After decode, one past the end is a truthful EINVAL.
+    for (const field of [FIELD_KIND, FIELD_ACTIVATION, FIELD_ORDINAL]) {
+      expect(x.fm_decoded_node_field(count, field)).toBe(-1);
+      expect(x.fm_last_errno()).toBe(EINVAL);
+    }
   });
 });
-
-/** The sealed arena's record views, read back for the JS decode. Attaches
- *  BORROWED so the read-back never deallocates the arena we still drive the
- *  module against. */
-function arenaRecords(memory: WebAssembly.Memory, root: number) {
-  const view = new ForkModuleStateArena(
-    memory,
-    PTR_WIDTH,
-    () => {
-      throw new Error("read-only");
-    },
-    () => {},
-    "decoded-structure-readback",
-  );
-  view.attachBorrowed(root);
-  return view.recordViews();
-}
