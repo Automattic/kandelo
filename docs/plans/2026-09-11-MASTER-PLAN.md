@@ -3234,6 +3234,69 @@ HONEST: after it, every file still importing the module is one that actually
 wants the filesystem, and the count stops being inflated by a wire format that
 happens to be declared there.
 
+#### THE MOVE WAS BUILT, REFUSED BY THE BUDGET, AND REVERTED — a decision for the maintainer
+
+It is written, it typechecks, and it is not landed. The patch is kept at
+`scratchpad/wire-move.patch` (487 lines) rather than committed, because
+landing it needs a call this lane does not get to make.
+
+**What it does.** A new `host/src/vfs/lazy-archive-wire.ts` holds the 17
+declarations — `SerializedLazyArchiveEntry` and its alias, `LazyFileEntry`,
+the `LazyTree*` cluster, `LazyArchive*`, and the `unique symbol` that brands
+`DeferredTreeMaterializationHandle`, which must travel with the type it brands
+or the brand stops being unique. `memory-fs.ts` imports them BACK, because it
+implements the contract, and re-exports NOTHING, because a re-export is how the
+`LazyDownloadEvent` move stayed invisible for a week. Thirteen files repoint.
+`tsc` goes from 25 diagnostics to 25 — the same pre-existing set.
+
+**Why it is worth doing.** Eight `host/src` files currently break the moment
+`memory-fs.ts` is deleted, for types alone. After it, none do. That is step 5
+preparation, not tidying.
+
+**Why it cannot land as written.** `hostVfsTypeScript` goes **8801 → 8910**,
+and the budget refuses it. The lines were not written; they CROSSED a boundary
+the budget draws:
+
+| surface | before | after | ceiling |
+|---|---|---|---|
+| `memoryFsTypeScript` | 7142 | **7009** | 7123 |
+| `hostVfsTypeScript` | 8801 | **8910** | 8801 |
+
+`hostVfsTypeScript`'s own measure says it counts `host/src/vfs/*.ts`
+**excluding** `memory-fs.ts`, "which `memoryFsTypeScript` already counts". That
+exclusion exists to stop double-counting — and its side effect is that **any**
+relocation out of `memory-fs.ts` reads as pure growth, with no credit for the
+shrink on the other side. The work step 5 requires is, under this structure,
+unmeasurable as progress and measurable only as regression.
+
+**I looked for an export that could go first, as the rule says, and there is
+not one.** A census of every `export function|const|class` in
+`host/src/vfs/*.ts` outside the two excluded files found six with no external
+importer — `parseOverlayExportTree`, `kernelTmpfsOwnsMountPath`,
+`validateClosedLazyAssetSources`, `KERNEL_LAZY_MAGIC`, `KERNEL_LAZY_VERSION`,
+`IMAGE_MEMFS_MAX_BYTES` — and **every one is called inside its own file**.
+Dropping the keyword narrows the surface conceptually and removes zero counted
+lines. There is no 109-line deletion sitting there.
+
+**THE ASK.** One of:
+
+1. **A transfer, not a raise** — lower `memoryFsTypeScript` to exactly its new
+   measurement (7009, a permanent tightening that drift cannot undo) and raise
+   `hostVfsTypeScript` by what the move adds. The campaign total is conserved
+   and one ceiling ratchets down.
+2. **Merge the two surfaces** into one `hostVfsTypeScript` that counts
+   `memory-fs.ts` too, so a move between them is arithmetically invisible and
+   only a real deletion moves the number. Costs the ability to watch the two
+   halves separately.
+3. **Don't move them** — accept that deleting `memory-fs.ts` will break eight
+   `host/src` files on types, and repair them at that moment instead.
+
+**I did not pick.** Editing `docs/surface-budget.json` to make my own check
+pass is the one thing the standing rules name outright, and (1) and (2) are
+both that in substance however the arithmetic is framed. The gate did its job:
+it stopped a change that would otherwise have gone in under a plausible
+explanation.
+
 ### THE GATING QUESTION WAS THE WRONG QUESTION — answered 2026-09-16
 
 It was recorded as "where is the image reader allowed to live?", a packaging
