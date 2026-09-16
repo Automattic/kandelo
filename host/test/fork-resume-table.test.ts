@@ -132,13 +132,21 @@ describe("ForkResumeTable", () => {
     ).toThrow(/is not a Wasm function/);
   });
 
-  it("implements the same four rules the Rust allocator states", () => {
+  it("trips when the Rust allocator's four stated rules are edited", () => {
     // The placement rule is duplicated between this class and
     // `ResumeSlotTable` in crates/fork-codec, because the module cannot write a
-    // `WebAssembly.Table` and the host cannot be the numbering authority. This
-    // pins the duplication to the Rust the module actually compiles: if someone
-    // changes the allocator there, this fails rather than the guest silently
-    // resuming into the wrong function.
+    // `WebAssembly.Table` and the host cannot be the numbering authority.
+    //
+    // WHAT THIS IS AND IS NOT. It matches source text, so it fails if someone
+    // edits these four lines -- and PASSES if someone changes the allocator's
+    // behaviour without touching them. A tripwire, not a parity test, and the
+    // name says so now: it used to claim it implemented the same rules, which
+    // read as a behavioural comparison this has never performed.
+    //
+    // A real parity test would drive the same registration sequences through
+    // both implementations, which needs the module to expose its slot for an
+    // (activation, ordinal) coordinate -- it does not. The cheaper and better
+    // end state is for this class to stop existing; see the file header.
     const rust = readFileSync(
       join(repoRoot, "crates/fork-codec/src/replay_journal.rs"),
       "utf8",

@@ -984,49 +984,97 @@ not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
 - **F5 (new) — `kernel_exit` as a tagged exception.** Scoped in census §7,
   not built. Closes F-D2 and dissolves the entry/catch half of the floor. See
   the open decision below: it may belong to lane P, not here.
-- **F6 (new) — the inversion, worked from the guest's import list.** The lane
-  was re-scoped 2026-09-12: set the fork TypeScript aside
-  (`attic/fork-typescript-do-not-use/`, which is **not** a specification) and
-  implement everything in the module, serving the guest's own imports. The
-  measure is `forkGuestImportsUnserved` — canonical fork imports the module
-  does not export under the same name — now **18 of 46**, with
-  `forkGuestObjectImportsUnserved` at 3 of 5.
+- **F6 — the inversion, worked from the guest's import list. THE MEASURE IS
+  MET.** The lane was re-scoped 2026-09-12: set the fork TypeScript aside
+  (`attic/fork-typescript-do-not-use/`, which was **not** a specification) and
+  implement everything in the module, serving the guest's own imports.
 
-  **Landed on `brandonpayton/lane-f-fork-inversion`** (worktree
-  `/Users/brandon/kandelo-lane-f`):
+  `forkGuestImportsUnserved` is **0 of 46**, as of 2026-09-16. The attic is
+  deleted (23,174 lines). `buildForkGuestImports` no longer takes a host floor
+  at all: `ForkGuestHostFloor`, `FORK_GUEST_HOST_FLOOR_NAMES`,
+  `host/src/fork-guest-host-floor.ts` and `host/src/fork-exception-broker.ts`
+  are gone, and a pthread worker supplies nothing for fork exceptions.
 
-  * GC-reference identity. The module imports one new host function,
-    `env.__wpk_fork_host_ref_identity(anyref) -> i32`, taking module imports
-    9 -> 10 — maintainer-approved, and the only host-contract growth in the
-    lane so far. `gc_lookup`/`gc_claim` moved off an O(n) scan onto it.
-    **Why a host import at all:** `ref.eq` validates only on `eqref`, there is
-    no `ref.hash`, and no cast rescues a host reference into the eq hierarchy,
-    so deciding whether two references are the same object is the one question
-    Wasm cannot answer for itself. Proven by hand-encoded modules on V8 with a
-    passing `eqref` control — an earlier wat2wasm attempt had a control that
-    also failed, and was discarded.
-  * `__wpk_fork_ref_exn_define` served. The one `define` in the family needing
-    nothing but guest linear memory, because the exception codec stages scalars
-    and payload recipe ids into a single scratch span before the call. 19 -> 18.
-  * The unguarded `fm_capture_*_vector` twin **deleted** — no production caller,
-    and it would intern a SHORT vector where the guest-facing trio refuses to.
-    `forkModuleEntryPoints` 55 -> 54, banked.
-  * **A capture-correctness defect fixed in `ReferenceGraphBuilder::define_gc`.**
-    It removed the pending-placeholder marker on ENTRY, then ran four checks
-    that can each reject. `claim_gc` publishes the id early by pushing a
-    ZEROED `Struct`, so a rejected define left that empty struct behind with
-    nothing marking it: `validate()` sealed clean and **the child rebuilt an
-    empty object where the parent had a populated one**, with no error on the
-    path. This reached the long-standing `fm_capture_define_gc` GC path too.
+  **The finding worth carrying to other lanes.** The set went 6 -> 4 -> 3 -> 2
+  -> 1 -> 0, and **not one entry left because a new WebAssembly capability
+  appeared.** Every time, the stated reason the entry needed JavaScript turned
+  out to name something the module could already reach:
 
-  **Blocked on open decisions 2 and 3 above.** Every one of the remaining 18
-  imports needs one of them. The breakdown in `docs/surface-budget.json` is
-  grounded — read at each emission site in `crates/fork-instrument`, not
-  inferred from signatures — and records which need a shim, which must THROW
-  (the emitter puts `unreachable` after the call, so returning normally is a
-  bug), and that `encode_funcref` is the one remaining import that grows the
-  host contract, because funcref is not a subtype of anyref and the approved
-  identity import cannot serve it.
+  * `encode_funcref` / `table_mutation_commit` — wasm cannot compare two
+    funcrefs. True, and the host only had to answer THAT
+    (`__wpk_fork_host_func_identity`); the scan moved into an injected shim.
+  * `table_state_owned` — the host elects which coordinate owns a physical
+    table. True, and electing is not answering: it seeds the answer once
+    through `fm_set_activation_table_state_owner`.
+  * `provenance_externref` — provenance must be recorded at the production
+    site. The recording had no reader anywhere; what remained was `|v| v`,
+    which the injector emits and Rust cannot (census 191).
+  * `exn_ingress_throw` — it must re-enter wasm with a tagged exception.
+    Nothing can mint an ingress token, so it only ever stated a refusal the
+    module states itself.
+  * `exn_broker_throw_recipe` — same, and this one is the honest case. Neither
+    the module nor a JS import can RAISE a tagged exception. The resolution is
+    that neither has to throw: both can CALL a guest export that throws. The
+    module reaches it through a sixteenth drive slot (census 192).
+
+  Also landed: GC-reference identity (`env.__wpk_fork_host_ref_identity`,
+  maintainer-approved, imports 9 -> 10); `__wpk_fork_ref_exn_define`; the
+  unguarded `fm_capture_*_vector` twin deleted; and a capture-correctness
+  defect in `ReferenceGraphBuilder::define_gc` where a rejected define left a
+  zeroed struct behind that `validate()` sealed clean — **the child rebuilt an
+  empty object where the parent had a populated one**, with no error on the
+  path.
+
+### What is required to close lane F
+
+Measured 2026-09-16 in `/Users/brandon/kandelo-lane-f`. Ceilings and reasons
+are in `docs/surface-budget.json`; the argument for each is in
+`docs/plans/2026-09-12-lane-f-census.md`.
+
+| surface | now | target | what closing it needs |
+|---|---|---|---|
+| `forkGuestImportsUnserved` | **0** | 0 | **met** |
+| `forkAtticImports` | **0** | 0 | **met** |
+| `forkGuestObjectImportsUnserved` | 3 | 0 | see below |
+| `forkModuleEntriesWithoutProductionCaller` | 2 | 0 | both are pending capability, not dead code |
+| `forkModuleHostEntries` | 58 | 5 | coarsening, not deletion — a design stride |
+| `forkTypeScript` | 887 | 484 | module-facing half; mostly the backend wrapper |
+| `forkPlatformTypeScript` | 1629 | 500 | the resume table and the child-import plan dominate |
+| `forkRestoredHostFloor` | 3949 | 3894 | process lifecycle and transport, largely out of scope |
+| `workerMainTypeScript` | 5501 | 2400 | the largest single item left |
+
+**The three object imports.** `__wpk_fork_module_activation` is genuinely the
+host's: it is per-activation and known only at instantiation, and one module
+instance serves every activation. The other two are open:
+`__wpk_fork_resume_table` could be module-owned exactly as the anyref transit
+table now is (the injector defines and exports it; M1 proved the pattern), and
+`__wpk_fork_module_state_table_generation_addr` is a placement the module could
+make in its own statics. Neither is done.
+
+**The resume-slot double numbering is the one hazard that closing the lane
+should remove, and it is still live.** `host/src/fork-resume-table.ts` and
+`fork_codec::ResumeSlotTable` both implement "slot 0 reserved; each
+activation's ordinals sorted ascending take the smallest free slots, freed
+before freshly grown". The host's copy exists only to PLACE funcrefs, which
+Rust cannot hold. Moving the table into the module — an injected
+`(activation, ordinal, funcref) -> slot` binder over a module-owned funcref
+table — deletes the duplication and takes `forkGuestObjectImportsUnserved` to
+2. Divergence here is silent: `call_indirect` reaches the wrong thunk.
+
+**Three owed fixtures, all wanting the same thing: a worker that forks twice,
+with more than one activation.** Census 191 and 192 name them — an end-to-end
+fork through a direct externref-returning host import, a successful
+cross-activation exception throw, and the decoded-graph staleness comparison.
+Each is a guard that exists and is argued; none has a test that fails when it
+is perturbed away.
+
+**Maintainer decisions outstanding.** Nine provisional ceiling raises are
+recorded in `docs/surface-budget.json`, each with its reason and what it
+bought. The two lanes' budget ledgers disagree: a trial merge of the parent
+conflicts in exactly two files, `docs/surface-budget.json` and
+`host/test/surface-budget.test.ts`, because both lanes evolved the same
+surfaces. That reconciliation is the maintainer's and is the one thing standing
+between this branch and a clean merge.
 
 ## Acceptance evidence
 
@@ -1055,12 +1103,18 @@ not worth that trade.** If the maintainer disagrees it is a one-commit collapse.
   the guest's `wpk_fork_unwind_end` when a reserve failed mid-unwind — it
   corrupts the state machine. **Two naive attempts trapped or hung.** Inherit
   the discipline; do not rediscover it.
-- **Two resume-slot numberings run concurrently.** `replay_journal.rs:15` says
-  "validated-but-unused. TypeScript still drives every fork" — **stale**. The
-  module uses `ReplayEventJournal` and `ResumeSlotTable` while the JS
-  `ForkResumeTable` is live, and divergence means `call_indirect` reaches the
-  wrong thunk: **silent corruption, not a loud error.** Verify, then either
-  finish the cutover or guard the two numberings.
+- **Two resume-slot numberings run concurrently. STILL TRUE 2026-09-16, and
+  now guarded rather than merely noticed.** The module uses `ResumeSlotTable`
+  while the JS `ForkResumeTable` places the funcrefs, and divergence means
+  `call_indirect` reaches the wrong thunk: **silent corruption, not a loud
+  error.** What guards it today is WEAKER than the file claims:
+  `host/test/fork-resume-table.test.ts` pins four rules by matching REGEXES
+  against `crates/fork-codec/src/replay_journal.rs`, so it fails if someone
+  edits that allocator's text — and passes if someone changes its behaviour
+  without touching those four lines. It is a tripwire, not a parity test. The
+  cutover (a module-owned funcref table with an injected
+  `(activation, ordinal, funcref) -> slot` binder) is what removes the
+  duplication rather than watching it. See "What is required to close lane F".
 - `module_state_records.rs` is **483 dead Rust lines whose live twin is 3,860
   TypeScript lines**. The fork TS growing and the fork Rust never running are
   plausibly one phenomenon.

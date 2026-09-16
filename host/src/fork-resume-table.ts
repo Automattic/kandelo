@@ -29,8 +29,21 @@
  * `call_indirect` never targets the wrong thunk". Getting it wrong is silent: the
  * guest resumes into a real function that is the wrong one.
  *
- * `host/test/fork-resume-table.test.ts` drives the same sequences through this
- * class and through the Rust allocator's own rules and requires them to agree.
+ * WHAT GUARDS IT, STATED ACCURATELY. `host/test/fork-resume-table.test.ts`
+ * does NOT drive the same sequences through both -- this comment used to say it
+ * did. It matches four REGEXES against
+ * `crates/fork-codec/src/replay_journal.rs` (numbering starts at 1, ordinals
+ * sorted ascending, a repeated ordinal rejected, freed slots reused
+ * smallest-first). So it fails if someone edits those four lines, and passes if
+ * someone changes the allocator's BEHAVIOUR without touching their text. That
+ * is a tripwire, and worth having; it is not parity.
+ *
+ * The fix is not a better test. It is for this class to stop existing: the
+ * module can own the funcref table the way it already owns the anyref transit
+ * table (the injector defines and exports it), with an injected
+ * `(activation, ordinal, funcref) -> slot` binder doing the `table.set` Rust
+ * cannot. Then there is one numbering. See "What is required to close lane F"
+ * in docs/plans/2026-09-11-MASTER-PLAN.md.
  */
 
 /** One fork-instrumented function a guest can be resumed into. */
