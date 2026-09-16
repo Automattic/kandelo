@@ -3788,6 +3788,34 @@ both that in substance however the arithmetic is framed. The gate did its job:
 it stopped a change that would otherwise have gone in under a plausible
 explanation.
 
+### THE DELETION LANDED — `f75f7806e`, 2026-09-16
+
+2,317 lines gone, and `hostVfsTypeScript` **8801 → 7710 with the ceiling
+lowered to match**, which the budget demanded in the same commit: *"An unbanked
+reduction silently funds the next change's growth."* The same check that
+refused the relocation for adding 109 lines required this one to be banked —
+right both times, and the contrast is the point. The move was the wrong shape;
+the deletion was the right one.
+
+**The importer census, re-run with the IDENTICAL matcher** (a census is only
+comparable to itself):
+
+| | before | after |
+|---|---|---|
+| `host/src` files importing `memory-fs` | 14 | **12** |
+| …of those, using the class as a VALUE | 6 | 6 |
+| `host/test` importers | 55 | **52** |
+| `apps/browser-demos` importers | 11 | 11 |
+
+The six genuine value-users are untouched, which is the right shape: what left
+was type-level coupling and dead code, not anything that wants a filesystem.
+
+**A method note, because it nearly went in wrong.** The first re-census used a
+looser grep (dropping a trailing quote, so prose mentions matched) and reported
+"18, was 14" — an increase that did not happen. Comparing two different
+matchers' outputs is the same error as comparing counts instead of sets, one
+layer down, and it happened minutes after landing a commit about exactly that.
+
 ### THE GATING QUESTION WAS THE WRONG QUESTION — answered 2026-09-16
 
 It was recorded as "where is the image reader allowed to live?", a packaging
