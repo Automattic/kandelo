@@ -2862,6 +2862,51 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+## V-NAME — give `SFFS` a name that means something
+
+**Maintainer-requested, 2026-09-15.** `SFFS` is documented as
+*"SharedFileSystem"* (`crates/runtime-core/src/sffs.rs:1`), and that name is
+wrong twice over.
+
+* **The letters do not spell the words.** "SharedFileSystem" is SFS. Nobody can
+  derive the acronym from the expansion or the expansion from the acronym.
+* **"Shared" describes a transport that is gone.** It meant
+  `SharedArrayBuffer`-backed, which is what `MemoryFileSystem` was. The Rust
+  reader is a positioned cursor over a `BlockSource` and shares nothing;
+  `tools/mkrootfs` had its `SharedArrayBuffer` deleted outright. The name
+  preserves the one property the format no longer has.
+
+It is also three initialisms deep in one format — `VFSI` the container, `SFFS`
+the filesystem, `SDEF` the deferred section, plus `KLZY` the legacy one — and
+only `SDEF` says what it is.
+
+**A long name is fine; a clear one is the requirement.** The thing being named
+is the on-image filesystem the kernel mounts and reads directly: its
+superblock, inode table, directory blocks and indirect blocks. Something like
+`KandeloImageFs` / `ImageFileSystem` is the shape to aim at — what it IS, not
+how it once travelled.
+
+**The constraint that bounds this work, found before proposing it.** `SFFS` is
+not only a code name: `SFFS_MAGIC = 0x5346_4653` is the four ASCII bytes
+`"SFFS"` in the superblock of every image ever built
+(`sffs.rs:304`, `sffs.rs:387`). Changing those bytes is a FORMAT break — every
+existing image stops mounting — and this campaign is explicitly not taking an
+`ABI_VERSION` bump. So:
+
+* the wire constant keeps its bytes, and gains a comment saying the name is
+  historical and what it used to claim to mean;
+* everything else moves — module and file names (`sffs.rs`, `sffs_write.rs`,
+  `sffs_deferred.rs`, `images/vfs/lib/sffs-image-fs.ts`), types (`Sffs`,
+  `SffsWriter`, `SffsConfig`, `SffsImageFs`, `SffsImageError`), the `sffs-module`
+  crate, and the prose.
+
+**Scale, measured rather than guessed: 74 files** under `crates/`, `host/`,
+`images/` and `tools/` mention it. This is mostly mechanical, but it is not
+free, and it touches a crate name — so it wants its own commit, landed when no
+other lane is mid-flight in those files, rather than being folded into a
+behaviour change.
+
+
 ## V AFTER THE MERGE — the debt, and three findings that make it harder
 
 ### THE CORPUS, MEASURED BY WHAT EACH FILE CALLS — 2026-09-14
