@@ -1,4 +1,3 @@
-import type { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 
 // Keep this module limited to the canonical rootfs package dependency closure.
 // Focused consumers such as the PHP PHPT runner must not need every optional
@@ -141,10 +140,8 @@ export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
 const ROOTFS_LAZY_SOURCE_URL_SET = new Set(ROOTFS_LAZY_ASSET_URLS.keys());
 const ROOTFS_LAZY_ASSET_URL_SET = new Set(ROOTFS_LAZY_ASSET_URLS.values());
 
-export function isRootfsLazyFileUrl(url: string): boolean {
-  return ROOTFS_LAZY_SOURCE_URL_SET.has(url) || ROOTFS_LAZY_ASSET_URL_SET.has(url);
-}
-
-export function rewriteRootfsLazyFileUrls(fs: MemoryFileSystem): void {
-  fs.rewriteLazyFileUrls((url) => ROOTFS_LAZY_ASSET_URLS.get(url) ?? url);
-}
+// `isRootfsLazyFileUrl` and `rewriteRootfsLazyFileUrls` were here. One asked
+// whether a URL was "ours"; the other rewrote every lazy URL inside an image.
+// Both are gone with the rewriting: the image keeps its canonical addresses and
+// the deployment maps them when it fetches. `ROOTFS_LAZY_ASSET_URLS` above is
+// the whole of what this module contributes now, and always was the content.
