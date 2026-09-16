@@ -2996,6 +2996,39 @@ before starting — if it does, that is a snapshot regeneration, which the
 maintainer has already said is fine ("rebuilding the snapshot is fine") but
 which is off-limits to a lane that has been told not to touch it.
 
+### The rename's actual inventory, enumerated 2026-09-15
+
+Thirteen paths carry `sffs` in the NAME:
+
+```
+crates/runtime-core/src/sffs.rs            -> kandelo_image_fs.rs
+crates/runtime-core/src/sffs_write.rs      -> kandelo_image_write.rs
+crates/runtime-core/src/sffs_deferred.rs   -> sdef.rs          (see below)
+crates/runtime-core/src/sffs_container.rs  -> vfsi_container.rs (see below)
+crates/sffs-module/                        -> kandelo-image-module/
+images/vfs/lib/sffs-image-fs.ts            -> kandelo-image-fs.ts
+host/test/sffs-image-fs.test.ts            -> kandelo-image-fs.test.ts
+host/scripts/gen-sffs-rust-fixture.mts     -> gen-kandelo-image-rust-fixture.mts
+host/scripts/gen-sffs-writer-fixture.mts   -> gen-kandelo-image-writer-fixture.mts
+crates/runtime-core/src/testdata/sffs-{slots,small,tail,wide}.sffs.deflate
+```
+
+**Two of those are not the filesystem, and the rename is the moment to say so.**
+`sffs_container.rs` holds the `VFSI` CONTAINER — a different layer, filed under
+the filesystem's name. `sffs_deferred.rs` holds the `SDEF` section, which
+already has its own magic and its own name. Both should be filed under what
+they are, which removes two of the three places the current name misleads.
+
+**The four `.deflate` files are BINARY fixtures carrying the old magic**, so
+changing the magic invalidates them — they will fail to parse rather than
+silently pass, which is the right failure. They are regenerable:
+`host/scripts/gen-sffs-rust-fixture.mts` and `gen-sffs-writer-fixture.mts`
+produce them. Regenerating them is part of the commit, not a follow-up.
+
+Identifier weight, for sequencing: `SffsImageFs` appears in **68 files** and is
+the bulk of the work; `SffsWriter` 7, `SffsConfig` 6, `SffsImageError` 5,
+`SffsStat` 2, and the three magic/version constants 2-3 each.
+
 **Scale, measured rather than guessed: 74 files** under `crates/`, `host/`,
 `images/` and `tools/` mention it. This is mostly mechanical, but it is not
 free, and it touches a crate name — so it wants its own commit, landed when no
