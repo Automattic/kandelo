@@ -13138,6 +13138,41 @@ against the Rust corpus rather than counted:
   this file removes an assertion that is now wrong**, which is a different
   and much cheaper conclusion than "coverage is lost".
 
+### THE BROWSER VERDICT FOR THE EXPORT CUTOVER, AND WHAT THE DIFF ACTUALLY SAID
+
+**Chromium, 2026-09-16 after `e7f6936d2`: 162 passed / 19 failed / 6 skipped /
+9 did not run**, against the 2026-09-16 13:44 closing baseline's 165 / 14 / 6
+/ 9. Three numbers moved and none of them is a regression, but reading that
+took a diff rather than a glance — which is the point of keeping the baseline
+as a SET of names and not as a count.
+
+* **The 14 baseline failures are byte-identical.** None fixed, none added.
+  That is the host-parity evidence the two commits owed, since both touch
+  `browser-kernel-worker-entry.ts`.
+* **Five new failures are specs the baseline never ran.** Every one is
+  `@slow`, and the baseline has zero `@slow` entries — it was a `test:fast`
+  run. They are not a regression; they are newly-executed coverage.
+* **Three baseline passes are gone, and they were DELETED, not broken.** "a
+  corrupt cached Vim archive fails SHA validation without materializing",
+  "browsers retry transient lazy package trees and consume the exact ZIP" and
+  "browsers verify imported seals before atomically activating package
+  trees" left in `f75f7806eb`, the deferred-tree cluster deletion the
+  maintainer authorised as *"Delete now, file the coverage loss"*. `git log
+  -S` on each name says so. A count alone would have read this as three
+  regressions in the lazy-archive area the same commits touch, which is
+  exactly the wrong conclusion to reach quickly.
+
+**What the five `@slow` failures DO reveal is worth filing.** All five time
+out after 180 s waiting for the demo iframe, and the page's own syslog says
+`lamp.vfs.zst is not built. Run: ./run.sh fetch` — while `lamp.vfs.zst` is
+built, sitting in `local-binaries/source-only-v1/programs/wasm32/`. The demo's
+fallback importer globs `local-binaries/programs/wasm32/`, the pre-projection
+path, and reaches that message only because `canonicalProductUrl` is
+undefined outside canonical mode. So `npx playwright test` — the package's own
+`test` script — cannot boot the WordPress demos in a local worktree, and says
+"not built" about an artefact that is built. `test:fast` never tries, which is
+why it has stayed invisible. **Unowned; browser/product lane, not V or Y.**
+
 ### STEP 5 HAD A PRECONDITION NOBODY HAD NAMED — `56f708bc2`, 2026-09-16
 
 **`vfs-image.test.ts`'s sixty claims are not all about `MemoryFileSystem`.**
