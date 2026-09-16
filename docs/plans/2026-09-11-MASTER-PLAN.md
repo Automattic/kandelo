@@ -3061,10 +3061,11 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
-## The perturbation round for the night's guards — 6 trials, and one that took three tries
+## The perturbation round for the night's guards — 10 trials, and one that took three tries
 
-`image-writer-install` (3) and `rootfs-overlay-not-found` (3), all killed. The
-corpus is **382 trials**, all anchoring.
+`image-writer-install` (3), `rootfs-overlay-not-found` (3) and
+`demo-login-not-found` (4), all killed — `4 trial(s), 0 survived, 0 invalid, 0
+timed out` for the last of them. The corpus is **386 trials**, all anchoring.
 
 **Writing the trials found a third untested guard.** `installModuleBytes`
 refuses a second, DIFFERENT module rather than swapping it, and nothing
@@ -3089,6 +3090,23 @@ That is a seventh cause of a surviving mutant, distinct from the six recorded:
 the test asserts an outcome both versions produce. The remedy is not a second
 test from the same reasoning — it is to RUN the mutated code and watch what it
 does differently.
+
+**The same shape appeared a third time, in the images half.**
+`hasConfiguredDemoLogin` answered `false` for every failure — a blanket
+`catch { return false }` around the `/etc/passwd` read. So an unreadable image,
+a bridge that was never installed, and a genuinely absent file were one answer,
+and the two that mean "I could not ask" were reported as "it is not
+configured": the image builder would then write a login it had been told not
+to, or skip one it should have written, with nothing in the log. The fix
+narrows the catch to ENOENT and lets everything else propagate, through an
+`isNotFound` that reads both sign conventions — `errno === 2` from the bridge
+and `code === -2` from `vfs-errors.ts`, plus the string `"ENOENT"` — because
+this function sits between them and sees whichever the caller's stack produced.
+
+Four trials, all killed: widening it to swallow everything, dropping each of
+the two numeric shapes, and dropping the string shape. `demo-login-image` is 6
+passed, the surface budget 101 passed. Landed as *"Not there is an answer; I
+could not ask is not"* (`5db1c46f5`), pushed for backup.
 
 ## V5's REMAINDER, MEASURED 2026-09-16 — it is two call sites, not eighty-four
 
