@@ -10138,3 +10138,45 @@ below.
   that did not capture it. It joins §191's and §192's owed fixtures, all three
   of which want the same thing -- a worker that forks twice, with more than one
   activation.
+
+## §193 -- Three reductions the ratchet could not see, and the slack that hid them
+
+Reading the budget after §192 landed, three surfaces were below their ceilings
+by more than their own "reduction banked" check could notice. That check is
+`actual > ceiling - slack - 1`, so a surface's SLACK is exactly how large an
+unbanked reduction it tolerates -- and this file's own preamble says an
+unbanked reduction is what funds the next lane's growth.
+
+| surface | ceiling | slack | actual | banked to |
+|---|---|---|---|---|
+| `forkModuleEntriesWithoutProductionCaller` | 46 | **46** | 2 | 2, slack 0 |
+| `forkPlatformTypeScript` | 1770 | **450** | 1629 | 1629, slack 0 |
+| `workerMainTypeScript` | 5570 | 150 | 5501 | 5501, slack 150 |
+
+The first is the instructive one. **A ceiling equal to its own slack is not a
+ratchet at all**: the check reads `actual > -1`, which every value satisfies.
+The number had fallen from 27 to 2 with nothing recording any of it, and both
+directions of the ratchet were silent the whole way.
+
+The two entries that remain are named rather than deleted, because neither is
+dead in the sense the measure is looking for:
+
+- `fm_activation_module_buffer` takes an explicit `activation_id` where the
+  guest-facing `__wpk_fork_frame_*` counterpart calls the identical `*_impl`
+  with `primary_activation()`. It is the multi-activation (dlopen fork)
+  variant: pending capability, not dead code.
+- `fm_module_state_arena` lost its last production caller tonight, when
+  `moduleStateArenaRoot()` went with the exception broker. The module chooses
+  its own arena now.
+
+Both are covered by tests, and the measure deliberately merges "test-only" with
+"never called" so deleting a test can never bank a reduction.
+
+`forkPlatformTypeScript`'s slack of 450 on a 1770 ceiling is the same shape at
+a smaller scale: a quarter of the surface could disappear unbanked, and 141
+lines had. It ratchets at slack 0 now, like every other fork surface here. The
+glob that justified a wide slack is gone -- it is a named file list.
+
+`workerMainTypeScript` keeps its 150. That file is the one still under active
+reduction, and its churn allowance is what lets a refactor land without a
+ceiling commit. The ceiling itself still ratchets.
