@@ -338,6 +338,12 @@ describe("SffsImageFs", () => {
       ino: 40,
       archiveBytes: 0,
       archiveDescriptor: url,
+      // The digest is not decoration here. This registration is set-user-ID
+      // with its bytes deferred, which the builder now refuses outright — see
+      // "set-ID on deferred bytes is refused by the producer" below. Writing
+      // the test without one was writing down the defect lane S filed.
+      archiveUri: "https://example.invalid/sudo",
+      archiveDigest: new Uint8Array(32).fill(0xab),
     });
     const st = fs.lstat("/sudo");
     expect(st.deferred).toBe(true);
@@ -932,5 +938,79 @@ describe("owner-carrying creation, against MemoryFileSystem", () => {
     }
     expect(bridge.lstat("/home/maker").uid).toBe(1000);
     expect(bridge.lstat("/home/maker").gid).toBe(1001);
+  });
+});
+
+describe("set-ID on deferred bytes is refused by the producer", () => {
+  // The kernel already answers this combination by DEMOTING the bits
+  // (`demote_unverifiable_setid`), because by the time it sees an image the
+  // image exists and may have come from a shared link — refusing it there would
+  // let one bad inode deny a whole boot. This is the other half: in a builder,
+  // the image does not exist yet, nothing is denied by refusing, and the person
+  // who can fix it is the one running the build.
+  const digest = "c".repeat(64);
+
+  it("refuses a set-user-ID lazy file with no digest", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    expect(() => fs.registerLazyFile("/usr/bin/sudo", "bin/sudo.wasm", 120, 0o4755))
+      .toThrow(/no digest was declared/);
+  });
+
+  it("refuses a set-group-ID lazy file with no digest", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    expect(() => fs.registerLazyFile("/usr/bin/wall", "bin/wall.wasm", 40, 0o2755))
+      .toThrow(/set-group-ID/);
+  });
+
+  it("names both bits when both are set, so the message matches the file", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    expect(() => fs.registerLazyFile("/usr/bin/both", "bin/both.wasm", 40, 0o6755))
+      .toThrow(/set-user-ID and set-group-ID/);
+  });
+
+  it("accepts the same registration once a digest is declared", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.registerLazyFile("/usr/bin/sudo", "bin/sudo.wasm", 120, 0o4755, digest);
+    expect(fs.lstat("/usr/bin/sudo").mode & 0o7777).toBe(0o4755);
+  });
+
+  // The refusal is about bytes arriving from elsewhere, not about set-ID. A
+  // resident setuid binary is carried BY the image, so the image vouches for it
+  // by containing it, and asking for a digest would be asking a file to hash
+  // itself.
+  it("leaves a resident set-user-ID file alone", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/usr", 0o755);
+    fs.mkdir("/usr/bin", 0o755);
+    fs.writeFile("/usr/bin/sudo", new TextEncoder().encode("resident"), 0o4755);
+    expect(fs.lstat("/usr/bin/sudo").mode & 0o7777).toBe(0o4755);
+  });
+
+  // An archive MEMBER is defended by its ARCHIVE's digest: the member is
+  // extracted from bytes that were verified whole, so the check belongs on the
+  // archive and one rule covers both shapes.
+  it("refuses a set-user-ID archive member whose archive declares no digest", () => {
+    const fs = SffsImageFs.create();
+    fs.mkdir("/opt", 0o755);
+    expect(() =>
+      fs.registerArchiveMember({
+        path: "/opt/sudo",
+        archiveId: 1,
+        sourcePath: "bin/sudo",
+        size: 120,
+        mode: 0o4755,
+        ino: 4242,
+        archiveBytes: 5000,
+        archiveUri: "archives/tools.zip",
+      })
+    ).toThrow(/no digest was declared/);
   });
 });

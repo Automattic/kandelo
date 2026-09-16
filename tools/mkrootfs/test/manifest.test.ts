@@ -53,6 +53,38 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
     it("rejects lazy files combined with src=", () => {
       expect(() => parseManifest("/usr/bin/find  f  0755  0  0  src=find.wasm  lazy_url=binaries/find.wasm  lazy_size=12345\n")).toThrow(/cannot combine/);
     });
+
+    // The manifest is the earliest place "set-ID, and the bytes come from
+    // somewhere else" is expressible, so it is where that combination is
+    // refused. The kernel demotes rather than refuses, because by then the
+    // image already exists and may not be ours; here it does not exist yet.
+    it("rejects a set-user-ID lazy file that declares no digest", () => {
+      expect(() =>
+        parseManifest("/usr/bin/sudo  f  4755  0  0  lazy_url=binaries/sudo.wasm  lazy_size=12345\n")
+      ).toThrow(/no lazy_sha256=/);
+    });
+
+    it("rejects a set-group-ID lazy file that declares no digest", () => {
+      expect(() =>
+        parseManifest("/usr/bin/wall  f  2755  0  0  lazy_url=binaries/wall.wasm  lazy_size=99\n")
+      ).toThrow(/no lazy_sha256=/);
+    });
+
+    it("accepts a set-user-ID lazy file once it declares one", () => {
+      const [node] = parseManifest(
+        "/usr/bin/sudo  f  4755  0  0  lazy_url=binaries/sudo.wasm  lazy_size=12345  lazy_sha256="
+          + "b".repeat(64) + "\n",
+      );
+      expect(node).toMatchObject({ path: "/usr/bin/sudo", mode: 0o4755, lazyDigest: "b".repeat(64) });
+    });
+
+    // The refusal is about DEFERRED bytes, not about set-ID. A resident setuid
+    // binary is in the image, so the image vouches for it by carrying it, and
+    // demanding a digest there would be asking a file to hash itself.
+    it("leaves a resident set-user-ID file alone", () => {
+      const [node] = parseManifest("/usr/bin/sudo  f  4755  0  0  src=sudo.wasm\n");
+      expect(node).toMatchObject({ path: "/usr/bin/sudo", mode: 0o4755 });
+    });
   });
 
   describe("symlinks", () => {

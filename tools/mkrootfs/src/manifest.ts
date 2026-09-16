@@ -265,6 +265,26 @@ function validateRequiredExtras(node: ManifestNode, lineNumber: number, sourcePa
     if (node.lazySize === undefined) {
       throw err(lineNumber, sourcePath, `"${node.path}" requires lazy_size= with lazy_url=`);
     }
+    // Set-ID on bytes this image cannot vouch for. Refused in the MANIFEST,
+    // which is the earliest place it is expressible and the place a person can
+    // fix it. The kernel meets the same combination as a property of an image
+    // already handed to it and demotes the bits instead of refusing the image,
+    // because refusing lets one bad entry deny a whole boot — the same split
+    // `SffsImageFs.registerArchiveMember` makes, for the same reason.
+    //
+    // `lazy_size=` is not a substitute for `lazy_sha256=`: a substituting host,
+    // a poisoned cache or a network position supplies a different file of the
+    // right length for free, and it then runs as root inside the guest.
+    if ((node.mode & 0o6000) !== 0 && node.lazyDigest === undefined) {
+      throw err(
+        lineNumber,
+        sourcePath,
+        `"${node.path}" is mode ${node.mode.toString(8)} (set-ID) and lazy, `
+          + "but has no lazy_sha256=. Deferred bytes cannot be vouched for by "
+          + "length alone. Add lazy_sha256=, ship it resident with src=, or "
+          + "drop the set-ID bits.",
+      );
+    }
   }
   if (node.type === "c" || node.type === "b") {
     if (node.major === undefined) {

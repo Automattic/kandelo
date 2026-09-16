@@ -803,6 +803,38 @@ export class SffsImageFs {
         `lazy archive digest must be 32 bytes (SHA-256), got ${archiveDigest.byteLength}`,
       );
     }
+    // Set-ID plus deferred plus no digest is refused HERE, in the producer,
+    // where it is still a build that can be fixed.
+    //
+    // The kernel meets the same combination as a fact about an image it has
+    // already been handed, possibly from a shared link, and answers it by
+    // demoting the bits (`demote_unverifiable_setid`) rather than refusing the
+    // image — because refusing would let one bad inode deny the whole boot,
+    // and because dropping set-ID on a mount you cannot vouch for is what
+    // `nosuid` does. Both answers are right for their layer, and they are not
+    // in tension: the builder's job is that no such image is ever produced,
+    // the kernel's is that one produced elsewhere cannot escalate.
+    //
+    // There is no legitimate case this refuses. A digest cannot be computed
+    // only when the bytes are not known at build time — and bytes nobody can
+    // pin are exactly the bytes that must not run as root. Length is not a
+    // substitute: a substituting host, a poisoned cache or a network position
+    // supplies a different file of the same length for free.
+    const SET_ID_BITS = 0o6000;
+    if ((args.mode & SET_ID_BITS) !== 0 && archiveDigest.byteLength === 0) {
+      const which = (args.mode & 0o4000) !== 0
+        ? ((args.mode & 0o2000) !== 0 ? "set-user-ID and set-group-ID" : "set-user-ID")
+        : "set-group-ID";
+      throw new Error(
+        `${args.path} is registered ${which} with mode ${
+          args.mode.toString(8)
+        } and its bytes are deferred, but no digest was declared for them. `
+          + "Deferred bytes arrive from somewhere this image cannot vouch for, "
+          + "so bytes of the right length would execute with elevated privilege. "
+          + "Declare the SHA-256 of the bytes that will be served, or register "
+          + "the file resident, or drop the set-ID bits.",
+      );
+    }
     this.withPath(args.path, (p, pl) =>
       this.withPath(args.sourcePath, (s, sl) =>
         this.withBytes(descriptor, (d, dl) =>
