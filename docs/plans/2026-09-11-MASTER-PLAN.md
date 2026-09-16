@@ -1088,12 +1088,21 @@ Rust cannot hold. Moving the table into the module — an injected
 table — deletes the duplication and takes `forkGuestObjectImportsUnserved` to
 2. Divergence here is silent: `call_indirect` reaches the wrong thunk.
 
-**Three owed fixtures, all wanting the same thing: a worker that forks twice,
-with more than one activation.** Census 191 and 192 name them — an end-to-end
-fork through a direct externref-returning host import, a successful
-cross-activation exception throw, and the decoded-graph staleness comparison.
-Each is a guard that exists and is argued; none has a test that fails when it
-is perturbed away.
+**Owed fixtures: two closed 2026-09-16, one left.** Census 196 records the
+two. The decoded-graph staleness comparison is reached by two forks in one
+worker with an `fm_abort()` between them, and two graphs naming the SAME recipe
+id with different KINDS. The successful cross-activation exception throw is
+reached by an exnref owned by activation 1 in a worker where activation 0 also
+has a thrower bound — activation 0 being exactly the one a module ignoring the
+owner would reach. Four mutations, all caught, build keys recorded.
+
+The one left is census 191's: an end-to-end fork through a DIRECT
+externref-returning host import. `fork-instrument`'s provenance pass rewrites
+direct calls only, and nothing in the tree has one — the gated-externref
+fixture mints through `call_indirect` and the GC fixtures internalize with no
+host call to wrap. Closing it needs an instrumented guest built for the
+purpose, through `scripts/run-wasm-fork-instrument.sh`, not a rearrangement of
+the fixtures that exist.
 
 **Maintainer decisions outstanding.** Nine provisional ceiling raises are
 recorded in `docs/surface-budget.json`, each with its reason and what it
