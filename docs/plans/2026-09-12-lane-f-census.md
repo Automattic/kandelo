@@ -10570,12 +10570,12 @@ it as a function and have the host read it (that is an `fm_*` entry, trading an
 object import for a module entry), or make the guest import an i32 on wasm32
 (an instrumenter change, and the ABI's business).
 
-**Conclusion: both remaining object imports are the real floor.**
-`__wpk_fork_module_activation` is per-activation while one module instance
-serves every activation, and this one is blocked by a type mismatch that only
-the ABI can remove. `forkGuestObjectImportsUnserved`'s target of 0 should be
-restated to 2 -- which is the maintainer's call, and is now a fact rather than a
-guess.
+**Conclusion at the time: both remaining object imports are the real floor**,
+with this one blocked by a type mismatch only the ABI could remove.
+
+**CORRECTED the same day, in section 203.** The width mismatch is a red
+herring. The fence's address is not the module's to choose at all, for a reason
+that has nothing to do with types -- read 203 rather than this paragraph.
 
 Worth saying why this was worth twenty minutes: the previous three entries in
 this file each recorded a floor argument that turned out to be wrong when
@@ -10755,3 +10755,71 @@ count is not a counter, and putting it there would have meant either lying
 about its type or breaking the structure that exists because of a real
 codegen bug. `fm_decoded_node_field` dispatches over distinct *functions*,
 which its own comment records as the safe shape.
+
+## §203 -- "We are mid-ABI-epoch. What ABI change would close these?"
+
+The maintainer's question on the two remaining object imports, and the right
+one to ask: ABI-44 is open, so an ABI change is cheap right now in a way it
+will not be later. The answer is different for each, and for one of them it
+overturns what §199 recorded.
+
+### `__wpk_fork_module_state_table_generation_addr` — no ABI change helps
+
+§199 said the module could hold the fence in its own statics and was blocked
+only from EXPRESSING the address: `__memory_base` is i32 on wasm32, the guest
+wants an i64 global, and no const-expression converts. That framing suggested
+an obvious ABI fix — declare the import pointer-width instead of always i64,
+and let extended-const compute `__memory_base + offset`.
+
+**The width was never the real obstacle.** The address is
+
+```ts
+const tableGenerationAddress = dlopenArchiveControlAddr - tableGenerationOffset;
+```
+
+— inside the **process-wide dlopen archive control region**, which every worker
+in the process shares, because table replication across peer workers is the
+whole point of the fence. Each worker runs its OWN fork-module instance at its
+own `__memory_base`. A module-placed fence would therefore be a *different
+address in every worker*, which is the one thing this value cannot be.
+
+So the pointer-width ABI change would let the module express an address, and
+the address it could express is the wrong one. **This is a genuine host
+placement**, and it would remain one under any import typing.
+
+Worth noting how the wrong reason survived: §199 probed the thing it doubted
+(does extended-const work? yes) and reasoned about the thing it assumed (can
+the module own the fence? "a maybe"). The probe was real and answered a
+question that did not matter.
+
+### `__wpk_fork_module_activation` — an ABI change exists, and is a bad trade
+
+This one is closable. The guest reads its own activation id at **eleven**
+sites (three in the exception codec, eight in the GC codec), every one of them
+pushing it as an argument to a fork import. If those imports were bound
+per-activation instead, the argument and the global both disappear — and the
+mechanism already exists and is already used: `__wpk_fork_activation_trampolines`,
+indexed `activation * TRAMPOLINE_SLOTS + slot`, which the host binds a slice of
+per activation through `forkActivationFrameImports` for the six frame imports.
+
+**Why it is not worth doing:**
+
+- The host's work does not go away, it changes shape. It already binds a
+  per-activation slice; it would bind a bigger one. What a new host must
+  implement is unchanged.
+- The artifact gets worse. The trampoline table grows from `6 x 64` to roughly
+  `14 x 64` injected functions — about five hundred more — to remove one
+  `new WebAssembly.Global({ value: "i32", mutable: false }, id)`, which is the
+  cheapest obligation on the whole contract.
+
+Trading ~500 injected functions for one two-line host expression makes the
+module bigger to make a number smaller. That is the same test §202 settled for
+folds, applied to an ABI change: **does a host end up knowing less?** Here it
+does not.
+
+### Ruled
+
+`forkGuestObjectImportsUnserved`'s target is restated **0 -> 2** by maintainer
+decision. Both remaining imports are the floor, now for reasons that were
+checked rather than assumed — and one of those reasons had to be corrected
+first.

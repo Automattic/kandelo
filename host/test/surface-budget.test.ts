@@ -125,6 +125,61 @@ function codeLineCount(globs: string[]): number {
   return total;
 }
 
+/**
+ * The declarations in `worker-main.ts` that belong to ANOTHER lane.
+ *
+ * `workerMainTypeScript` measures the whole file, and the whole file is two
+ * lanes' work: at least 2,200 of its lines are the dynamic linker, the kernel
+ * import surface and the pthread bootstrap, none of which this lane would
+ * delete if the fork work finished tomorrow. A ceiling over both populations
+ * cannot be read -- the same structural error that had `forkTypeScript`
+ * globbing every `host/src/fork-*.ts` until it was split.
+ *
+ * NAMED rather than pattern-matched, and named as the EXCLUSIONS rather than
+ * the inclusions, so the default is the right way round: a declaration added
+ * to this file counts against the fork share unless someone deliberately says
+ * it belongs elsewhere. Adding a name here is a visible decision, which is
+ * what the maintainer asked of `forkPlatformTypeScript`'s file list.
+ */
+const WORKER_MAIN_OTHER_LANES = [
+  "buildDlopenImports",
+  "buildImportObject",
+  "buildKernelImports",
+  "assertSupportedKernelFunctionImports",
+  "DlopenSupport",
+  "patchWasmForThread",
+  "detectChannelBaseTlsOffset",
+  "setupChannelBase",
+  "encodeStartupMetadata",
+  "describeMainImage",
+] as const;
+
+/** `worker-main.ts`'s code lines MINUS the declarations named above. */
+function workerMainForkLines(): number {
+  const source = readFileSync(
+    join(repoRoot, "host/src/worker-main.ts"),
+    "utf8",
+  );
+  const lines = source.split("\n");
+  // Top-level declarations only: column-0 `function` / `const` / `interface`
+  // and friends. A nested helper belongs to whatever encloses it, which is the
+  // behaviour wanted -- excluding `buildDlopenImports` excludes its interior.
+  const starts: Array<{ line: number; name: string }> = [];
+  lines.forEach((text, index) => {
+    const match =
+      /^(?:export )?(?:async )?(?:function|const|interface|class|type|enum) ([A-Za-z_][A-Za-z0-9_]*)/
+        .exec(text);
+    if (match) starts.push({ line: index, name: match[1]! });
+  });
+  let excluded = 0;
+  starts.forEach((start, index) => {
+    if (!WORKER_MAIN_OTHER_LANES.includes(start.name as never)) return;
+    const end = index + 1 < starts.length ? starts[index + 1]!.line : lines.length;
+    excluded += codeLinesInSource(lines.slice(start.line, end).join("\n"));
+  });
+  return codeLinesInSource(source) - excluded;
+}
+
 /** @internal Exported shape kept simple so the scanner itself is testable. */
 function codeLinesInSource(source: string): number {
   let inBlockComment = false;
@@ -244,6 +299,7 @@ const MEASURED: Record<string, () => number> = {
       "host/src/fork-merged-catalog.ts",
     ]),
   workerMainTypeScript: () => codeLineCount(["host/src/worker-main.ts"]),
+  workerMainForkTypeScript: () => workerMainForkLines(),
   sffsTypeScript: () => codeLineCount(["host/src/vfs/sharedfs-vendor.ts"]),
   hostImportFunctions: () =>
     Number.parseInt(

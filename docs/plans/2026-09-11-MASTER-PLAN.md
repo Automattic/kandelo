@@ -1035,13 +1035,14 @@ are in `docs/surface-budget.json`; the argument for each is in
 |---|---|---|---|
 | `forkGuestImportsUnserved` | **0** | 0 | **met** |
 | `forkAtticImports` | **0** | 0 | **met** |
-| `forkGuestObjectImportsUnserved` | **2** | 0 (see below) | the two left look like the real floor |
+| `forkGuestObjectImportsUnserved` | **2** | **2** | **met** — both are the floor, ABI included (census 203) |
 | `forkModuleEntriesWithoutProductionCaller` | 2 | 0 | both are pending capability, not dead code |
 | `forkModuleHostEntries` | 58 | 5 (**suspect**) | move section-parsing into the module — **deferred to a follow-up** |
 | `forkTypeScript` | 886 | 484 | module-facing half; mostly the backend wrapper |
 | `forkPlatformTypeScript` | 1631 | 500 | the child-import plan and the guest-section readers dominate |
 | `forkRestoredHostFloor` | **3940** | 3894 | **at its floor** — every file is live cross-worker transport or process lifecycle |
-| `workerMainTypeScript` | 5356 | 2400 (**suspect**) | ~40% of the file is not fork — census 200 |
+| `workerMainTypeScript` | 5356 | **5356** | a growth bound now, not a gap — the file is two lanes' work |
+| `workerMainForkTypeScript` | **3152** | 1200 (proposed) | the half lane F owns; the fork run loop, install, and their pthread mirror |
 
 Numbers are the banked ceilings in `docs/surface-budget.json` as of the last
 commit on this branch; the ratchet is the authority on each, and a local
