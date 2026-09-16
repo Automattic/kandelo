@@ -11,6 +11,7 @@ import { zipSync, type Zippable } from "fflate";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import {
   derivePackageDeferredZipTree,
   materializePackageDeferredZipTree,
@@ -83,16 +84,21 @@ async function lazyImage(groups: Array<{
   url: string;
   archive: Uint8Array;
 }>): Promise<Uint8Array> {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
+  // Built by `KandeloImageFs`, the producer that ships. The call is the same
+  // one argument for argument -- `registerLazyArchiveFromEntries(url, entries,
+  // prefix, symlinks, integrity)` is `registerLazyArchive({ ... })` -- which is
+  // why this fixture cost a swap rather than a rewrite. What the five tests
+  // below assert is unchanged: they are about the BROWSER, and the image is
+  // their input.
+  const fs = KandeloImageFs.create();
   fs.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION });
   for (const group of groups) {
-    fs.registerLazyArchiveFromEntries(
-      group.url,
-      parseZipCentralDirectory(group.archive),
-      "/",
-      undefined,
-      identity(group.archive),
-    );
+    fs.registerLazyArchive({
+      url: group.url,
+      entries: parseZipCentralDirectory(group.archive),
+      mountPrefix: "/",
+      integrity: identity(group.archive),
+    });
   }
   return fs.saveImage();
 }
