@@ -9723,3 +9723,80 @@ change.
 revert -- so the module this lane ships is byte-identical to the one it
 started the trace with, and "ARTIFACT UNCHANGED" is a checked fact rather than
 an assumption.
+
+## §189 -- Seven of the sixteen forks are back, and the four that are not
+
+Three commits took the reference-carrying forks from eleven red to four:
+the host externref fork, the funcref fork, a Wasm-GC reference-state fork,
+both shell command-substitution forks, the exnref local fork and the
+reference-bearing catch fork all pass again. The baseline went 105 -> 93.
+
+The defects behind them, in the order they surfaced -- each one hidden by the
+one in front of it:
+
+1. **The capture could not NAME a host reference.** No seam existed from a live
+   externref to its broker handle, so the guest's encode answered -1 and the
+   capture failed validation at seal. ONE host import closed it
+   (`__wpk_fork_host_externref_handle`, the reverse of `resolve_externref`).
+2. **Nothing sized the anyref transit.** The host used to size it for the whole
+   graph; after the attic move nothing did, and an unsized table traps with
+   "table index is out of bounds" rather than failing anything the module can
+   see. The module sizes it now from every plan it builds, and at the two
+   capture entries that hand the guest a recipe it publishes at `recipe + 1`.
+3. **A parent replayed a graph it never decoded.** It resumes into the same
+   guest code its child does and gets asked the same reference questions, with
+   no replay feed to answer from. It decodes the arena it just sealed.
+
+### What is left, and what each one is
+
+**`static-root-local` and `static-root-bare-local`** -- the same gap, now
+diagnosed. A host-side probe in the child's attach says it plainly:
+
+    PROBE-SR pid=101 nodes=[] decoded=2 roots=0
+
+The child's decoded graph holds TWO nodes and NEITHER is a static root, so the
+mirror seeding does nothing and the child rebuilds a fresh struct where the
+parent held the module's own statically initialised one. `ref.eq` against the
+child's canonical static root then fails and the child exits 91.
+
+The cause is on the CAPTURE side: **nothing recognises a static root when the
+parent encodes it.** `fork-instrument`'s catalog is a harvest buffer, and the
+recognition it was built for is a host-side weak object-to-ordinal map
+(`static_reference_catalog.rs` says so in its own header). On the module path
+that lookup has no caller, so the value falls through `encode_anyref`'s layout
+tests and is captured as an ordinary struct -- structurally correct, and
+exactly the fork-only identity split that file exists to prevent.
+
+The shape that closes it is already in this codebase twice: the merged
+funcref catalog scan (`__wpk_fork_ref_encode_funcref` walks the imported
+catalog with a host identity compare) and the merged static-root catalog the
+CHILD already uses (`fm_static_root_slot` + the injected `table.get`). Capture
+needs the same table walked the other way -- find the slot holding this
+reference, invert the base map to `(activation, ordinal)`, and
+`fm_capture_intern(INTERN_KIND_STATIC_ROOT, ...)`. Two things follow from
+that: the mirror must be populated on the PARENT as well (today the seeding
+block runs only on the child path), and `ref.eq` is the comparison, which only
+injected wasm can do.
+
+**`gc-reference-cycle`** -- past its capture-side trap (the i31 sizing above)
+and now failing in the child with the same silent exit the static-root pair
+has. Its fixture aliases an i31 and a struct/array cycle through module-owned
+GLOBALS, which is the static-root shape again, so it is likely the same cause
+and should be re-measured after the static-root capture lands rather than
+chased separately.
+
+**`externref-gated`** -- asserts the ABORT path: a gated reference kind must
+abort cleanly with the parent surviving. Not yet diagnosed. The seal-phase fix
+(§188) changed exactly this path, so it is worth re-reading that first.
+
+### Two things owed, recorded so they are not lost
+
+- The i31 transit sizing is UNGATED: removing it leaves every green test
+  green, because the fork that showed its trap is still red for a later
+  reason. `gc-reference-cycle-fresh-worker` is the test that will gate it.
+- A child's failure is INVISIBLE from the host. Both static-root tests and the
+  GC cycle fail as "the parent waited and did not get its child back", with an
+  empty stdout and stderr and no diagnostic anywhere. Every diagnosis above
+  needed a temporary probe compiled into the worker. A child that dies during
+  replay should say so on the error channel, the way a launch failure already
+  does.
