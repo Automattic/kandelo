@@ -3296,6 +3296,19 @@ module completes the seal at export, and the kernel verifies it. `expectedCount`
 is declared rather than counted for a reason the bridge records — a count taken
 from the archives that were registered cannot notice the one that was not.
 
+**And so does OWNERSHIP, which nearly went unnoticed.** The fixtures declare
+`owner: { uid: 1000, gid: 1000 }`, and `registerLazyArchive` — the bulk helper
+a repoint reaches for first — takes no owner. `registerArchiveMember` does
+(`uid?`, `gid?`), per member rather than per archive. A repoint that used the
+bulk helper would have produced a root-owned tree where the test expects uid
+1000, and the tests that exec out of that tree could have changed meaning
+without failing. Checked before writing the repoint rather than after.
+
+**The ordering this forces.** The chromium baseline runs with the specs
+UNCHANGED, and the repoint follows it. A browser failure observed after both
+changes at once is unattributable, and this branch has already paid for that
+lesson twice.
+
 #### THE MOVE WAS BUILT, REFUSED BY THE BUDGET, AND REVERTED — a decision for the maintainer
 
 It is written, it typechecks, and it is not landed. The patch is kept at
