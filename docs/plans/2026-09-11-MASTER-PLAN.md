@@ -1037,11 +1037,16 @@ are in `docs/surface-budget.json`; the argument for each is in
 | `forkAtticImports` | **0** | 0 | **met** |
 | `forkGuestObjectImportsUnserved` | **2** | 0 (see below) | the two left look like the real floor |
 | `forkModuleEntriesWithoutProductionCaller` | 2 | 0 | both are pending capability, not dead code |
-| `forkModuleHostEntries` | 59 | 5 (see below) | move section-parsing into the module — **deferred to a follow-up** |
-| `forkTypeScript` | 887 | 484 | module-facing half; mostly the backend wrapper |
-| `forkPlatformTypeScript` | 1629 | 500 | the resume table and the child-import plan dominate |
-| `forkRestoredHostFloor` | 3949 | 3894 | process lifecycle and transport, largely out of scope |
-| `workerMainTypeScript` | 5409 | 2400 (**suspect**) | ~40% of the file is not fork — census 200 |
+| `forkModuleHostEntries` | 58 | 5 (**suspect**) | move section-parsing into the module — **deferred to a follow-up** |
+| `forkTypeScript` | 886 | 484 | module-facing half; mostly the backend wrapper |
+| `forkPlatformTypeScript` | 1631 | 500 | the child-import plan and the guest-section readers dominate |
+| `forkRestoredHostFloor` | **3940** | 3894 | **at its floor** — every file is live cross-worker transport or process lifecycle |
+| `workerMainTypeScript` | 5356 | 2400 (**suspect**) | ~40% of the file is not fork — census 200 |
+
+Numbers are the banked ceilings in `docs/surface-budget.json` as of the last
+commit on this branch; the ratchet is the authority on each, and a local
+re-implementation of one of these measures disagreed once, which is why a bank
+taken on a second opinion was reverted rather than kept.
 
 **`forkModuleHostEntries` and the fold that is NOT worth doing.** Collapsing
 the thirteen `fm_set_*` seeders into one `fm_seed(kind, a0..a4)` takes the
