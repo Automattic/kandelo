@@ -2308,16 +2308,21 @@ mod tests {
             Ok(0),
         );
 
-        // And the requests this module cannot serve stay unserved. A blob or
-        // an archive is a HOST transport; answering one out of the image would
-        // hand back whatever bytes happen to sit at that offset, which is the
-        // most dangerous possible wrong answer because it looks like data.
+        // And the requests this module cannot serve stay unserved. Deferred
+        // bytes are a HOST transport; answering one out of the image would hand
+        // back whatever bytes happen to sit at that offset, which is the most
+        // dangerous possible wrong answer because it looks like data.
+        //
+        // ONE case where there were two. A base file's blob and a lazy
+        // archive's bytes used to be separate variants because the kernel
+        // addressed them by a number from separate namespaces; under URI
+        // addressing they are the same request at different addresses, so the
+        // refusal has one shape to cover rather than two.
         assert_eq!(
-            image_source(rootfs::ByteReq::Base { blob_id: 1, offset: 0 }, &mut buf),
-            Err(Errno::EIO),
-        );
-        assert_eq!(
-            image_source(rootfs::ByteReq::Archive { archive_id: 1, offset: 0 }, &mut buf),
+            image_source(
+                rootfs::ByteReq::Deferred { uri: b"test:blob/1".to_vec(), offset: 0 },
+                &mut buf,
+            ),
             Err(Errno::EIO),
         );
     }

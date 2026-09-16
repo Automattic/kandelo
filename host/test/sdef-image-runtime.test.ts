@@ -131,22 +131,20 @@ describe.skipIf(!available)("an SDEF image at runtime", () => {
     }
   }, 120_000);
 
-  // `it.fails` because this is a KNOWN DEFECT (B43), pinned rather than
-  // hidden. The control below fetches the same bytes through the same
-  // transport from a `KLZY` image, so the format is the only difference.
+  // This was `it.fails` — defect B43, pinned rather than hidden — until the URI
+  // relay landed. The cause was the host's id->URL table:
+  // `configureRootfsOverlay` handed the kernel the image bytes (so the kernel
+  // parsed `SDEF` itself and knew the file's real length — `SIZE_OK` proves
+  // that), while the table turning a `host_fetch_deferred(kind, id)` back into
+  // a URL was built from `baseImage.exportLazyEntries()`, which reads
+  // host-side JSON sections an `SDEF` image does not carry. The kernel asked
+  // and the host could not answer.
   //
-  // The cause is the host's id->URL table: `configureRootfsOverlay` hands the
-  // kernel the image bytes (so the kernel parses `SDEF` itself and knows the
-  // file's real length — `SIZE_OK` proves that), while the table that turns a
-  // `host_fetch_deferred(kind, id)` back into a URL is built from
-  // `baseImage.exportLazyEntries()`, which reads the host-side JSON sections an
-  // `SDEF` image does not carry. The kernel asks; the host cannot answer.
-  //
-  // The fix is the URI relay (B42): when the kernel names the resource by the
-  // URI its image recorded, the table has nothing to hold. THIS TEST WILL START
-  // FAILING when that lands — that is the point. Turn it back into a plain
-  // `it` then, and delete this comment.
-  it.fails("fetches a deferred file's bytes through the host transport", async () => {
+  // Now the kernel names the resource by the URI its own image recorded, so
+  // there is no table to be empty. The control below fetches the same bytes
+  // through the same transport from a `KLZY` image, which is what keeps this a
+  // test of the FORMAT rather than of the harness.
+  it("fetches a deferred file's bytes through the host transport", async () => {
     // The other half, and the one B43 was actually about. The kernel knowing a
     // file's length proves it read the section; it does not prove the bytes can
     // be obtained. The kernel asks the host for them, and for an SDEF image the

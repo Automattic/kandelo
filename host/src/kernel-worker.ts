@@ -2754,15 +2754,18 @@ export class CentralizedKernelWorker {
    * hands this in via {@link configureRootfsOverlay} before `init()`;
    * `#maybeLoadKernelRootfs` installs it once the kernel instance exists.
    *
-   * It answers for what the `/` image does not carry: a URL-backed lazy file
-   * and a lazy archive. An image-backed file is not deferred and never reaches
-   * it — the kernel reads those bytes out of the image itself. Null until
+   * It answers for what the `/` image does not carry, addressed by the URI the
+   * image recorded. An image-backed file is not deferred and never reaches it —
+   * the kernel reads those bytes out of the image itself. Null until
    * configured.
+   *
+   * Type-only participation: this worker stores the provider and forwards it to
+   * `setRootfsDeferredProvider`, and does not call it. The address replaced a
+   * `(kind, id)` pair in the seam's contract, so the annotation moved with it.
    */
   #rootfsDeferredProvider:
     | ((
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => number)
@@ -5118,8 +5121,7 @@ export class CentralizedKernelWorker {
    */
   configureRootfsOverlay(
     deferredProvider: (
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => number,

@@ -132,7 +132,6 @@ import type {
 } from "./exec-target";
 import {
   buildRootfsLazyWiring,
-  createDeferredUrlReader,
   type DeferredProgress,
 } from "./vfs/rootfs-lazy-archives";
 import type { RootfsOverlayBaseImage } from "./vfs/rootfs-lazy-archives";
@@ -4465,19 +4464,21 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           throw error;
         }
       };
+    // NO `exportLazyEntries()`. That call produced the host's inode -> URL
+    // table, and handing it over made this host a second author for where a
+    // deferred file's bytes live — with the image, which already recorded an
+    // address, as the first. The kernel now reads that address itself and names
+    // it in the fetch, so there is nothing for a table to hold. An SDEF image,
+    // whose table was EMPTY, stops loading as an image with no deferred files
+    // (defect B43) for the same reason.
+    //
+    // The archive entries stay, read for transport POLICY only: which alternate
+    // URLs may stand in for an address, and what length to believe. Never for
+    // which resource is being read.
     const { deferredProvider } = buildRootfsLazyWiring(
       options.baseImage.exportLazyArchiveEntries(),
       lazyArchiveFetcher,
-      // THE PIPE. Was `createDeferredFileReader(options.baseImage, ...)`, which
-      // read through a MemoryFileSystem whose `open` kicked an async
-      // materialization and threw EAGAIN until it landed — putting
-      // materialization STATUS in the host. The kernel owns that status; the
-      // host answers "bytes for this inode?" and reports the transfer.
-      createDeferredUrlReader(
-        options.baseImage.exportLazyEntries(),
-        fetchUrlBytes,
-        onProgress,
-      ),
+      onProgress,
     );
     host.kernel().configureRootfsOverlay(
       deferredProvider,

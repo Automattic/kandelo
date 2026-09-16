@@ -325,20 +325,27 @@ describe("a module-backed base image", () => {
     expect(archive.entries[0].sourcePath).toBe("bin/vim");
     expect(archive.entries[0].vfsPath).toBe("/opt/bin/vim");
 
-    // And the whole point: the consumer accepts it. The wiring no longer
-    // reports a manifest -- the kernel parses its own KLZY section -- so the
-    // observable result is that the deferred provider recognises the archive
-    // and starts fetching it rather than refusing an unknown id.
-    const { buildRootfsLazyWiring, HOST_DEFERRED_KIND_ARCHIVE } =
+    // And the whole point: the consumer accepts it. The wiring reports no
+    // manifest -- the kernel parses its own section -- so the observable result
+    // is that asking for the archive's ADDRESS starts a fetch, and starts it at
+    // the rebased URL rather than the raw one the image recorded.
+    const { buildRootfsLazyWiring } =
       await import("../src/vfs/rootfs-lazy-archives");
+    const fetched: string[] = [];
     const { deferredProvider } = buildRootfsLazyWiring(
       baseImage.exportLazyArchiveEntries(),
-      async () => new Uint8Array(4242),
+      async (url) => {
+        fetched.push(url);
+        return new Uint8Array(4242);
+      },
     );
-    // -11 is EAGAIN: the id was known and a fetch began. -5 would mean the
-    // reconstruction produced an archive the provider never minted.
-    expect(deferredProvider(HOST_DEFERRED_KIND_ARCHIVE, 1n, 0n, new Uint8Array(8)))
+    // -11 is EAGAIN: a fetch began. Asserting the address that was FETCHED is
+    // what makes this a test — a provider handed any address at all answers
+    // EAGAIN, so the return value alone would pass without the reconstruction
+    // being right.
+    expect(deferredProvider("/kandelo/archives/tool.zip", 0n, new Uint8Array(8)))
       .toBe(-11);
+    expect(fetched).toEqual(["/kandelo/archives/tool.zip"]);
   });
 
   it("keeps each archive's members its own, and standalone files out of both", async () => {

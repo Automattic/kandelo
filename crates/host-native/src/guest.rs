@@ -4447,25 +4447,59 @@ fn define_kernel_host_imports(
             )?;
         }
     }
-    // host_fetch_deferred(kind, id_lo, id_hi, buf_ptr, buf_len, offset_lo,
-    // offset_hi) -> i32 (N1-I2): a positioned read of a resource the `/` image
-    // does not carry. `kind` is `abi::HOST_DEFERRED_KIND_*`; `id` and `offset`
-    // are 64-bit values split into lo/hi 32-bit words for the (JS-shaped) ABI,
-    // matching `host_pread`'s offset convention — mirrors `wasm_api.rs`'s
-    // declaration exactly.
+    // host_fetch_deferred(uri_ptr, uri_len, buf_ptr, buf_len, offset_lo,
+    // offset_hi) -> i32: a positioned read of a resource the `/` image does not
+    // carry, named by the URI the image recorded. `offset` is a 64-bit value
+    // split into lo/hi 32-bit words for the (JS-shaped) ABI, matching
+    // `host_pread`'s convention — mirrors `wasm_api.rs`'s declaration exactly.
     //
-    // This host serves only `KIND_FILE`, and its id space is the blob map a
-    // `BaseImage` manifest was built with (see the "in-memory base VFS image"
-    // section above): every `BaseRegular` entry the manifest loader placed is
-    // host-backed, because this host hands the kernel a manifest rather than a
-    // real VFS image. Returns bytes written into `buf_ptr` (0 at EOF), or a
-    // negated errno: ENOENT for an id with no entry in the map (never expected
-    // once a manifest has been loaded correctly, since every `BaseRegular`
-    // entry's blob_id came from this same map — but a real, truthful boundary
-    // if it ever happens), and ENOSYS for `KIND_ARCHIVE`, which this host has
-    // no lazy-archive transport for. With no `BaseImage` loaded (`base_blobs`
-    // empty, T1's and N1-I1's default), this import is simply never reached:
-    // the overlay has no `BaseRegular` entries to read.
+    // The `kind` discriminator and the id are gone. They existed because the
+    // kernel addressed a resource by a number from one of two namespaces, and
+    // a host could only resolve that by keeping its own table mapping numbers
+    // back to addresses — a second author for where a file's bytes live, with
+    // the image as the first. A URI is a complete address, so the table has
+    // nothing to hold and a base file's blob and a lazy archive's raw bytes
+    // stop being different requests.
+    //
+    // This host answers ENOENT at every address, and that is the whole truthful
+    // implementation rather than a stub standing in for one. `build_base_image`
+    // writes every file RESIDENT into the container, so nothing in an image this
+    // host builds is deferred and no correct kernel ever asks. The import still
+    // has to exist — `wasm_api.rs` declares it, and an undeclared import fails
+    // instantiation — so a kernel that asks anyway gets a loud, specific refusal
+    // at the boundary instead of bytes this host was never given. Deferred
+    // fetching is exercised where a host really serves it:
+    // `host/test/sdef-image-runtime.test.ts`, over loopback HTTP.
+    {
+        let mem = kernel_mem.clone();
+        linker.func_wrap(
+            "env",
+            "host_fetch_deferred",
+            move |_c: Caller<'_, ()>,
+                  uri_ptr: i32,
+                  uri_len: i32,
+                  buf_ptr: i32,
+                  buf_len: i32,
+                  _offset_lo: u32,
+                  _offset_hi: u32|
+                  -> i32 {
+                if buf_len < 0 || uri_len < 0 {
+                    return -libc_errno::EINVAL;
+                }
+                // Read the address before refusing it. An import that rejects
+                // without looking cannot report WHICH address went unserved,
+                // and that is the one fact a failure here needs to carry.
+                let uri = unsafe { read_bytes(&mem, uri_ptr as u32 as usize, uri_len as usize) };
+                let _ = (&uri, buf_ptr);
+                eprintln!(
+                    "[host-native] host_fetch_deferred({}) — this host builds \
+                     fully-resident images and serves no deferred bytes",
+                    String::from_utf8_lossy(&uri),
+                );
+                -libc_errno::ENOENT
+            },
+        )?;
+    }
     {
         // `host_image_read(buf_ptr, buf_len, offset_lo, offset_hi) -> i32`: a
         // positioned window onto the ONE container this kernel booted from, so

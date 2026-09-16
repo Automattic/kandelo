@@ -3,40 +3,38 @@
  * resources the `/` image does NOT carry.
  *
  * The kernel owns the `/` tree and reads an image-backed file's content out of
- * the image itself, through its own SFFS reader. Two things are left over, and
- * they are the same shape — fetch from a host transport, serve positioned
- * bytes, report `EAGAIN` while the fetch is in flight — so one provider answers
- * both behind one import, `host_fetch_deferred(kind, id, offset, dest)`:
+ * the image itself, through its own SFFS reader. What is left over is one
+ * shape — fetch from a host transport, serve positioned bytes, report `EAGAIN`
+ * while the fetch is in flight — behind one import,
+ * `host_fetch_deferred(uri, offset, dest)`.
  *
- *  - `HOST_DEFERRED_KIND_ARCHIVE`: a lazy archive, addressed by the
- *    image-assigned `archive_id`. Fetched whole, once, and cached; the kernel
- *    decodes the zip and extracts the member.
- *  - `HOST_DEFERRED_KIND_FILE`: a URL-backed lazy file, addressed by its inode
- *    number. The image records only its real size (`KLZY`, `archive_id == 0`),
- *    and the fetch is the `MemoryFileSystem`'s own materialization — opening
- *    the path starts it and throws `EAGAIN` until it lands.
+ * # One address, no kinds
  *
- * `buildRootfsLazyWiring` consumes `MemoryFileSystem.exportLazyArchiveEntries()`
- * output and produces, from one pass over the groups:
- *  - a `deferredProvider` closure (fed to `configureRootfsOverlay`) — the
- *    production output, and
- *  - the archive fetch table (the kernel parses its own KLZY section, so
- *    manifest walker. Since the boot cutover the kernel learns which files are
- *    lazy from the image's own `KLZY` section, so this half has no production
- *    consumer left; it survives because the differential gates in
- *    `host/test/support/rootfs-manifest-oracle.ts` compare the image's section
- *    against exactly this reconstruction.
+ * There used to be two kinds of deferred resource here, a URL-backed lazy file
+ * addressed by its INODE and a lazy archive addressed by its image-assigned
+ * ARCHIVE ID, and this module's real content was the two tables that turned
+ * those numbers back into URLs. Those tables were a second author for where a
+ * file's bytes live, with the image as the first: the image said a file was
+ * deferred, and the host said where it actually came from. Nothing made the two
+ * agree, and when they disagreed the kernel fetched bytes the image never
+ * described — or, for an SDEF image, found an EMPTY table and fetched nothing
+ * at all, which is defect B43.
  *
- * Both outputs share ONE `Map<archiveId, ...>` and one reduction pass over
- * `entries`, so the two can never drift relative to each other — which is what
- * makes the comparison a real check rather than a tautology.
+ * A URI is a complete address, so the tables have no identity left to hold. The
+ * kernel reads the address the image recorded and hands it over; this module
+ * fetches it. A base file's blob and a lazy archive's raw bytes stop being
+ * different requests, and the `kind` discriminator that distinguished them has
+ * nothing left to discriminate.
  *
- * That reduction -- which groups are fetchable, which members are byte ranges,
- * and what `archiveId` each group gets -- lives in `reduceLazyArchiveGroups`
- * (`./kernel-lazy-section`), because the image's own binary `KLZY` section
- * encodes the same ids. Sharing one definition is what makes "the image's
- * archive table and the host's fetch table are the same table" structural
- * rather than a coincidence between two copies of a filter rule.
+ * # What the host still decides
+ *
+ * How to fetch an address is still the host's business, and that is the one
+ * table that survives: a URI may have alternate transports (a CORS proxy, a
+ * mirror) and a declared length to sanity-check a mirror against. That is
+ * transport POLICY, not identity — it never decides WHICH resource is being
+ * read, only how to go and get the one the kernel named. An address with no
+ * policy entry is fetched directly, which is the courier contract working
+ * rather than a gap in a table.
  */
 
 import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
@@ -46,13 +44,6 @@ import type {
   SerializedLazyArchiveEntry,
 } from "./memory-fs";
 
-/**
- * Which deferred resource a `host_fetch_deferred` call is about. Mirrors
- * `abi::HOST_DEFERRED_KIND_*` in `crates/shared/src/lib.rs`, which documents
- * the contract.
- */
-export const HOST_DEFERRED_KIND_FILE = 0;
-export const HOST_DEFERRED_KIND_ARCHIVE = 1;
 /** Total byte size of a lazy archive, recorded in the trailing archive table
  * so the kernel can validate/plan reads before the archive is fetched. */
 export interface RootfsLazyArchive {
@@ -134,41 +125,43 @@ function report(
 }
 
 /**
- * A deferred-file reader that fetches URLs directly, with no filesystem behind
- * it.
+ * Build the `host_fetch_deferred` provider: fetch a URI, cache it, serve
+ * positioned bytes of it.
  *
- * # Why this exists
+ * `entries` is not an identity table. It is read once for transport POLICY —
+ * which alternate URLs may stand in for an address, and what length a mirror's
+ * answer must have to be believed — keyed by the address the image recorded.
+ * An address absent from it is fetched directly.
  *
- * The reader this replaced went through a filesystem — a `MemoryFileSystem`
- * whose `open` kicked an async materialization and threw `EAGAIN` until it
- * landed. That put materialization STATUS in the host: a preparation state
- * machine, retry and integrity handling, progress events, abort plumbing.
- * Roughly 500 lines of it, none of which the kernel was asking for.
+ * `fetcher` is the exact transport already wired for lazy assets (closed-asset
+ * fetcher, CORS-proxy fetcher, etc.); this module never invents its own.
  *
- * The kernel already owns that status. An inode is a `LazyMember` until it is
- * written through, at which point it becomes `Regular`; `ensure_materialized`
- * is synchronous and the guest retries on `EAGAIN`. **So the host does not need
- * to track whether a file is materialized. It needs to answer "bytes for this
- * inode?" with bytes, "not yet", or "it failed".**
- *
- * That is all this does. Fetch in flight is `EAGAIN` — the same answer the
- * kernel's own byte source gives, and the guest retry loop is already built for
- * it. A failed fetch is `EIO` once and stays failed, because a pipe that
- * silently retries forever is a hang rather than a failure.
+ * A fetch in flight is `EAGAIN` — the same answer the kernel's own byte source
+ * gives, and the guest retry loop is already built for it. A failed fetch is
+ * `EIO` once and stays failed, because a pipe that silently retries forever is
+ * a hang rather than a failure.
  */
-export function createDeferredUrlReader(
-  lazyEntries: readonly LazyFileEntry[],
-  fetchBytes: DeferredUrlFetch,
+export function buildRootfsLazyWiring(
+  entries: SerializedLazyArchiveEntry[],
+  fetcher: (url: string) => Promise<Uint8Array>,
   onProgress?: DeferredProgress,
-): (ino: number, offset: bigint, dest: Uint8Array) => number {
-  const urls = new Map<number, string>();
-  const details = new Map<number, { url: string; path: string; size: number }>();
-  for (const entry of lazyEntries) {
-    urls.set(entry.ino, entry.url);
-    details.set(entry.ino, {
-      url: entry.url,
-      path: entry.path,
-      size: entry.size,
+): {
+  deferredProvider: (
+    uri: string,
+    offset: bigint,
+    dest: Uint8Array,
+  ) => number;
+} {
+  // Transport policy, keyed by ADDRESS. Built from the archive groups because
+  // they are the only deferred resources that carry alternates today; a lazy
+  // file has one URL and needs no entry.
+  const policy = new Map<string, { transports: string[]; size: number }>();
+  for (const group of reduceLazyArchiveGroups(entries)) {
+    const [address] = group.transports;
+    if (address === undefined) continue;
+    policy.set(address, {
+      transports: group.transports,
+      size: group.archiveBytes,
     });
   }
 
@@ -176,46 +169,49 @@ export function createDeferredUrlReader(
     | { state: "pending" }
     | { state: "ready"; bytes: Uint8Array }
     | { state: "failed" };
-  const slots = new Map<number, Slot>();
+  const slots = new Map<string, Slot>();
 
-  return (ino, offset, dest) => {
-    const url = urls.get(ino);
-    // The kernel only asks for inodes the image declared URL-backed lazy, so an
-    // unknown one is a contract violation between image and table, not a
-    // missing file.
-    if (url === undefined) return ENOENT;
+  const deferredProvider = (
+    uri: string,
+    offset: bigint,
+    dest: Uint8Array,
+  ): number => {
+    // An empty address is the kernel telling us the image declared none. There
+    // is no table left to guess from, and guessing is what this change exists
+    // to remove, so it is a refusal rather than a lookup.
+    if (uri === "") return EIO;
 
-    const slot = slots.get(ino);
+    const slot = slots.get(uri);
     if (slot === undefined) {
-      const detail = details.get(ino);
+      const known = policy.get(uri);
+      slots.set(uri, { state: "pending" });
       const base = {
-        id: `file:${ino}`,
-        kind: "file" as const,
-        url,
-        path: detail?.path,
-        totalBytes: detail?.size,
+        id: uri,
+        // Policy entries exist only for archives, so this reports what the
+        // host actually knows rather than a kind it would have to invent.
+        kind: (known === undefined ? "file" : "archive") as "file" | "archive",
+        url: uri,
+        totalBytes: known?.size,
       };
-      slots.set(ino, { state: "pending" });
       report(onProgress, { ...base, status: "started", loadedBytes: 0 });
-      void fetchBytes(url).then(
-        (bytes) => {
-          slots.set(ino, { state: "ready", bytes });
-          report(onProgress, {
-            ...base,
-            status: "complete",
-            loadedBytes: bytes.byteLength,
-          });
-        },
-        (error: unknown) => {
-          slots.set(ino, { state: "failed" });
+      void fetchDeferred(uri, known, fetcher).then((bytes) => {
+        if (bytes === undefined) {
+          slots.set(uri, { state: "failed" });
           report(onProgress, {
             ...base,
             status: "error",
             loadedBytes: 0,
-            error: error instanceof Error ? error.message : String(error),
+            error: `no transport for ${uri} returned usable bytes`,
           });
-        },
-      );
+          return;
+        }
+        slots.set(uri, { state: "ready", bytes });
+        report(onProgress, {
+          ...base,
+          status: "complete",
+          loadedBytes: bytes.byteLength,
+        });
+      });
       return EAGAIN;
     }
     if (slot.state === "pending") return EAGAIN;
@@ -223,141 +219,41 @@ export function createDeferredUrlReader(
 
     const at = Number(offset);
     if (!Number.isSafeInteger(at) || at < 0) return EIO;
-    if (at >= slot.bytes.byteLength) return 0; // end of file
+    if (at >= slot.bytes.byteLength) return 0; // end of resource
     const n = Math.min(dest.byteLength, slot.bytes.byteLength - at);
     dest.set(slot.bytes.subarray(at, at + n));
     return n;
-  };
-}
-
-type ArchiveState = "idle" | "fetching" | Uint8Array | { error: true };
-
-interface ArchiveRecord {
-  readonly transports: string[];
-  readonly size: number;
-  state: ArchiveState;
-}
-
-/**
- * Build the
- * `host_fetch_deferred` provider from one export snapshot of
- * `MemoryFileSystem`'s lazy archive groups.
- *
- * `fetcher` is the exact transport already wired to
- * `MemoryFileSystem.setLazyFetcher` (closed-asset fetcher, CORS-proxy
- * fetcher, etc.) — the provider never invents its own transport.
- *
- * `deferredFileReader` answers the other kind, URL-backed lazy files; see
- * {@link createDeferredUrlReader}. Omitting it is the no-URL-lazy boot: such
- * a read is reported as the unbacked seam it is (`ENOSYS`) rather than as a
- * missing file.
- */
-export function buildRootfsLazyWiring(
-  entries: SerializedLazyArchiveEntry[],
-  fetcher: (url: string) => Promise<Uint8Array>,
-  deferredFileReader?: (
-    ino: number,
-    offset: bigint,
-    dest: Uint8Array,
-  ) => number,
-): {
-  deferredProvider: (
-    kind: number,
-    id: bigint,
-    offset: bigint,
-    dest: Uint8Array,
-  ) => number;
-} {
-  // NO `lazyInput`. This used to also return a RootfsLazyInput — a lazy
-  // manifest of files and archives — and nothing in production ever read it:
-  // the kernel parses the image's own KLZY section and does not want a
-  // manifest from the host. What the host is genuinely for here is FETCHING,
-  // so the only state built is the fetch table.
-  const records = new Map<number, ArchiveRecord>();
-
-  for (const group of reduceLazyArchiveGroups(entries)) {
-    const { archiveId, archiveBytes: size, transports } = group;
-    records.set(archiveId, { transports, size, state: "idle" });
-  }
-
-  const archiveProvider = (
-    archiveId: number,
-    offset: bigint,
-    dest: Uint8Array,
-  ): number => {
-    const record = records.get(archiveId);
-    if (!record) {
-      // The kernel only asks for ids this builder minted; an unknown id is a
-      // contract violation between the manifest and the provider.
-      return EIO;
-    }
-
-    const { state } = record;
-    if (state instanceof Uint8Array) {
-      const start = Number(offset);
-      if (start >= state.length) return 0;
-      const n = Math.min(dest.length, state.length - start);
-      dest.set(state.subarray(start, start + n));
-      return n;
-    }
-
-    if (state === "idle") {
-      record.state = "fetching";
-      void fetchArchive(record, fetcher);
-      return EAGAIN;
-    }
-
-    if (state === "fetching") {
-      return EAGAIN;
-    }
-
-    // { error: true }
-    return EIO;
-  };
-
-  const deferredProvider = (
-    kind: number,
-    id: bigint,
-    offset: bigint,
-    dest: Uint8Array,
-  ): number => {
-    if (kind === HOST_DEFERRED_KIND_ARCHIVE) {
-      return archiveProvider(Number(id), offset, dest);
-    }
-    if (kind === HOST_DEFERRED_KIND_FILE) {
-      if (deferredFileReader === undefined) {
-        return ENOSYS; // no URL-backed lazy files were wired
-      }
-      return deferredFileReader(Number(id), offset, dest);
-    }
-    // A kind this host does not implement. Truthfully unsupported rather than
-    // silently served as one of the kinds it does.
-    return ENOSYS;
   };
 
   return { deferredProvider };
 }
 
-/** Try each transport in order; on the first successful fetch whose length
- * matches the declared archive size, publish it as the cached raw archive.
- * A size mismatch is treated as a failed mirror, not a fatal error, so the
- * next transport gets a chance. Never throws — errors are recorded on the
- * record itself for the synchronous provider to observe. */
-async function fetchArchive(
-  record: ArchiveRecord,
+/**
+ * Try the address, then any alternate transports policy allows, and return the
+ * first answer that is usable. A declared length that does not match is treated
+ * as a failed mirror rather than a fatal error, so the next transport gets a
+ * chance. `undefined` means every transport failed.
+ *
+ * Never throws: a transport error is a value here, because the provider that
+ * observes it is synchronous.
+ */
+async function fetchDeferred(
+  uri: string,
+  known: { transports: string[]; size: number } | undefined,
   fetcher: (url: string) => Promise<Uint8Array>,
-): Promise<void> {
-  for (const url of record.transports) {
+): Promise<Uint8Array | undefined> {
+  const transports = known?.transports ?? [uri];
+  for (const url of transports) {
     try {
       const bytes = await fetcher(url);
-      if (bytes.length === record.size) {
-        record.state = bytes;
-        return;
-      }
-      // Wrong/corrupt mirror: fall through and try the next transport.
+      // A length is checked only where one was declared. An address with no
+      // policy entry has nothing to check against, and inventing a check would
+      // mean inventing the expectation.
+      if (known !== undefined && bytes.length !== known.size) continue;
+      return bytes;
     } catch {
-      // Failed transport: fall through and try the next transport.
+      // Failed transport: fall through and try the next one.
     }
   }
-  record.state = { error: true };
+  return undefined;
 }

@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
 import { parseZipCentralDirectory } from "../src/vfs/zip";
 
 // Phase 5 Increment 3b-wiring.4 (exec-target EAGAIN retry, see
@@ -23,11 +23,21 @@ import { parseZipCentralDirectory } from "../src/vfs/zip";
 // transient EAGAIN instead of throwing and cancelling the prepared-exec
 // token on the very first read attempt.
 //
-// This MUST use `registerLazyArchiveFromEntries` (the zip-archive-group
-// format that feeds `buildRootfsLazyWiring` / the overlay's `KIND_LAZY_FILE`
-// archive provider), NOT `registerLazyTree` (fully materialized ahead of
-// time by `io.preparePath` before `readPreparedExecTarget` ever runs, which
-// would make this a false positive that never exercises the EAGAIN path).
+// This MUST use `registerLazyArchive` (the zip-archive-group format that feeds
+// the overlay's deferred provider), NOT `registerLazyTree` (fully materialized
+// ahead of time by `io.preparePath` before `readPreparedExecTarget` ever runs,
+// which would make this a false positive that never exercises the EAGAIN path).
+//
+// The image is built by `SffsImageFs`, which writes the `SDEF` section, and the
+// format is load-bearing here rather than incidental. Under URI addressing the
+// kernel fetches a deferred resource by the address ITS OWN image recorded, and
+// `SDEF` has a typed field for that address. The `KLZY` section this fixture
+// used to be built with has no such field: an archive described that way
+// carries no address at all, so the kernel refuses the read with EIO rather
+// than asking a host table where the bytes went. That refusal is the truthful
+// outcome of removing the host's id->URL table, not a gap — but it does mean a
+// `KLZY` fixture can no longer prove anything about exec, which is why this
+// test moved to the format production actually ships.
 //
 // Stale-kernel guard: a `local-binaries/kernel.wasm` built before the Rust
 // `KIND_LAZY_FILE`/materialization support landed can silently no-op the
@@ -102,14 +112,13 @@ describe.skipIf(!available)(
         }
         const archiveUrl = `http://127.0.0.1:${address.port}/archive.zip`;
 
-        const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
-        fs.registerLazyArchiveFromEntries(
-          archiveUrl,
-          parseZipCentralDirectory(dataArchive),
-          "/",
-          undefined,
-          integrity(dataArchive),
-        );
+        const fs = SffsImageFs.create();
+        fs.registerLazyArchive({
+          url: archiveUrl,
+          entries: parseZipCentralDirectory(dataArchive),
+          mountPrefix: "/",
+          integrity: integrity(dataArchive),
+        });
         const image = await fs.saveImage();
 
         let stdout = "";
@@ -148,12 +157,13 @@ describe.skipIf(!available)(
           expect(stdout).toContain("EMPTY_ENV_PASS");
 
           // The stale-kernel guard: the archive's one real HTTP transport
-          // must have been hit at least once. If a kernel predates
-          // KIND_LAZY_FILE support and silently no-ops the overlay for this
-          // path, the archive provider (rootfs-lazy-archives.ts) is never
-          // invoked, fetchArchive() never runs, and this stays at 0 — this
-          // assertion is what turns that into a truthful failure instead of
-          // a false green.
+          // must have been hit at least once. If a kernel silently no-ops the
+          // overlay for this path, the deferred provider
+          // (rootfs-lazy-archives.ts) is never invoked, no fetch runs, and this
+          // stays at 0 — this assertion is what turns that into a truthful
+          // failure instead of a false green. It also now proves the ADDRESS
+          // survived the round trip through the image: the kernel could only
+          // have named this URL by reading it back out of the `SDEF` record.
           expect(requestCount).toBeGreaterThan(0);
         } finally {
           await host.destroy().catch(() => {});
