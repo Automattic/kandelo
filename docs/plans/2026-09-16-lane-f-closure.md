@@ -129,8 +129,9 @@ mutation that had passed the entire fork suite now fails on the first call.
   `56020b54a` is GREEN: "host suite matches its baseline: 64 expected
   failures, nothing new, nothing unbanked", exit 0, 64 failed / 378 passed /
   4 skipped of 446 files.
-- **Browser**: 18/18 fork specs in Chromium at `9bc5309e1`, re-verified after
-  each change to the module up to that point. **The 18 are these six files**,
+- **Browser**: 18/18 fork specs in Chromium at `d3099c7c1`, the head carrying
+  the staging-slab fix; and at `9bc5309e1` before it, re-verified after each
+  change to the module up to that point. **The 18 are these six files**,
   named because "18/18" with no file list is a number nobody can refute:
   `fork-continuation` (5), `vfork-lifecycle` (9),
   `fork-module-worker-instantiation` (1), `funcref-fork-module-worker` (1),
