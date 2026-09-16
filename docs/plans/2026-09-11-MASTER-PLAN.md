@@ -4022,7 +4022,40 @@ all read as pure fixtures and all fail identically:
 maintainer already deferred behind `mount(2)`. **The deferral is therefore
 load-bearing for step 4, not only for step 5** — a fact neither had recorded.
 
-### A FOURTH CONSTRAINT: AN IMAGE CARRYING LAZY ENTRIES CANNOT BE REPOINTED YET
+### THE FOURTH CONSTRAINT IS GONE — the URI relay removed it, 2026-09-16
+
+**`exec-lazy-archive-binary.test.ts` now builds its image with
+`KandeloImageFs` and passes**, registering a lazy ARCHIVE and exec'ing a binary
+out of it. That is the exact test this constraint was written from.
+
+The constraint's reasoning was: *"built through the module it is recorded in
+KLZY instead, the section is absent, `exportLazyArchiveEntries()` answers `[]`,
+and the archive the exec needs was never wired."* Every clause of that depended
+on the HOST enumerating the image to learn where bytes live. The relay deleted
+that enumeration — the kernel reads the address out of the image's own `SDEF`
+record and asks for it by URI — so there is nothing left for an empty host-side
+list to break.
+
+**So the rule it set is repealed.** "Any test whose image carries lazy files or
+archives stays on `MemoryFileSystem`" was true and is not. The repointable
+population is much larger than this section has been telling readers, and step
+4 is correspondingly smaller.
+
+**What still blocks a repoint is the THIRD constraint, which is unchanged and
+real**: a test that needs the 30-method `FileSystemBackend` surface — `login`,
+`sudo-lite`, `secure-exec`, `nosuid-exec`, `reusable-kernel-export-stack`, all
+failing with `TypeError: backend.statfs is not a function`. `KandeloImageFs`
+describes an IMAGE and owes none of `append`, `seek`, `fpathconf`. That is the
+same boundary `host/src/vfs/load-image.ts` was split along: building an image
+and backing a live mount are two jobs, and only the first has moved.
+
+**And one category is legitimately not step 4 at all**: the tests whose SUBJECT
+is `MemoryFileSystem` — `vfs-image`, `sharedfs-safety`, `lazy-vfs`,
+`vfs-image-helpers`. They are not waiting on a capability; they go when the
+class goes, which is step 5.
+
+### The constraint as originally recorded
+
 
 `exec-lazy-archive-binary.test.ts` repoints cleanly, typechecks, builds its
 image — and fails at exec with `KernelScratchError: rootfs read failed`.
