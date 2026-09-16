@@ -383,9 +383,18 @@ describe("product image capacity and headroom contract", () => {
 
     expect(() => assertVfsImageCapacity(image, maxByteLength, "test image"))
       .not.toThrow();
-    // Drift in the direction that matters: a product asking for more room
-    // than the image it was handed declares.
+    // BOTH directions, because the contract is a match and not a floor.
+    //
+    // A product asking for more room than the image declares is the obvious
+    // one. The other is the masked ceiling: an image whose encoded growth
+    // ceiling EXCEEDS what its profile permits boots into a buffer it can
+    // outgrow, which is the failure `assertVfsImageFitsProfile` reports as
+    // "requires 8388608 VFS bytes, but its profile permits 4194304". A trial
+    // that relaxed this comparison to `<` survived an assertion that only
+    // probed the first direction.
     expect(() => assertVfsImageCapacity(image, maxByteLength + 4096, "test image"))
+      .toThrow(/test image has a .* VFS capacity; .* required/);
+    expect(() => assertVfsImageCapacity(image, maxByteLength - 4096, "test image"))
       .toThrow(/test image has a .* VFS capacity; .* required/);
   });
 
