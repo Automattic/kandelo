@@ -3417,17 +3417,34 @@ against what already exists:
 
 Two of the three have a silenced counterpart; the third has a live one.
 
-**The third's counterpart has the same fixture problem, and it is smaller than
-it looks.** `vfs-import-seal-boundary` asserts KERNEL behaviour — its expected
-error is `Kernel worker init failed: Lazy atomic activation …` — but its
-forged images are built by `apps/browser-demos/pages/vfs-import-seal-boundary.ts`
-with `MemoryFileSystem`. So the port for guarantee three is repointing that
-ONE page's fixture onto `registerArchiveMember`'s `cohort`, not writing a test.
+**THE THIRD HAS NO KERNEL-PATH COUNTERPART, and I claimed it did.** The first
+version of this table said guarantee three was "repointing ONE page's fixture,
+not writing a test". That is wrong, and both reasons were one layer below where
+I stopped reading:
 
-Which makes the whole of the maintainer's chosen option, if the silenced file
-passes: **re-enable one spec, repoint one page's fixture, then delete the
-legacy trio and the module they exercise.** No new tests. That is worth
-confirming before anything is deleted, which is what the run in flight does.
+* `forgeLazyAtomicSeal` rewrites the **host-side JSON archive section** —
+  `SerializedLazyArchiveEntry[]`, `kind: "kandelo-deferred-tree-v3"`,
+  `activation.atomicGroup.{descriptorSha256, cohortSha256}`. A
+  `KandeloImageFs`-built image carries no such section; its cohort seal is in
+  the module's format (`crates/kandelo-image-module/src/seal.rs`). The forgery
+  helper needs rewriting against a different encoding, not repointing.
+* The error the test asserts — `Lazy atomic activation …` — originates in
+  **`memory-fs.ts`** (2711, 2720, 2742, 2785, 3565). It is not a kernel refusal
+  wearing a kernel-shaped message; it is the legacy class's own verifier,
+  reached during worker init. **There is no kernel-path equivalent to port
+  to.**
+
+So the maintainer's option holds for two guarantees and not the third. Porting
+the seal guarantee means deciding whether the KERNEL should verify cohort seals
+at image load — a design question, not test work, and one this lane should put
+to the maintainer rather than answer.
+
+**The lesson, because it is now twice in one session.** Both times I sized a
+port by reading one layer and stopping: the spec without its worker fixture,
+then the page without its forgery helper and that helper's error source. Both
+times the layer I skipped was the one that decided the answer. **A fixture is
+not understood until the thing it forges and the code that rejects it have both
+been read.**
 
 **Four specs excluded with no recorded reason is worth someone's attention.**
 It is the same failure shape as a green baseline that hides how much actually
