@@ -13173,7 +13173,29 @@ below it, with every individual frame a quarter of that either way.
 
 **The general rule this produces, for the rest of step 5**: before deleting a
 test file with the class it exercises, ask which of its claims are about
-something ELSE that the deletion leaves standing. `vfs-image.test.ts` still
+something ELSE that the deletion leaves standing. Measured for the rest of
+`vfs-image.test.ts` the same afternoon, and it is not one more guard but
+three more modules:
+
+| claim group | module it really tests | other home? |
+|---|---|---|
+| decompression bound, header refusals (7) | `host/src/vfs/vfs-image-transport.ts` | **none — now `vfs-image-transport.test.ts`** |
+| capacity contract, drift, free blocks vs free inodes, declared reserve (6) | `images/vfs/scripts/vfs-image-helpers.ts` | **none** |
+| `SOURCE_DATE_EPOCH` parsing and its refusals (2 `it.each` groups) | same | **none** |
+| detached-image timestamp normalisation (3) | same, plus the bridge's `setExportTimestamp` | partly — `shell-vfs-build.test.ts` drives `normalizeTimestampsMs` |
+| 512 MiB main-shell profile, fits-profile refusals (1) | `web-libs/kandelo-session/src/vfs-capacity.ts` | **yes** — `kandelo-session.test.ts:2268` asserts the same constant and refusals |
+| kernel-ABI declaration and metadata round-trip (6) | the bridge + `image_policy.rs` | yes — the declared-ABI gate moved to the kernel (`b04528668`) |
+| `SharedArrayBuffer` getters, growable/non-growable backing (5) | `MemoryFileSystem` itself | n/a — these die with the class, correctly |
+| "restored filesystem is independent from original" (3) | `MemoryFileSystem.fromImage` copy semantics | n/a — `loadImage` takes OWNERSHIP rather than copying, so this describes a property the module deliberately does not have |
+
+`assertVfsImageCapacity`, `assertVfsImageHeadroom` and
+`sourceDateEpochMilliseconds` are each called by four or more builder
+scripts and tested in exactly one place, which is the file step 5 would
+delete. **That is the same loss as the decompression bomb, three times
+over**, and it is the next increment: those claims belong in
+`vfs-image-helpers.test.ts`, which is already that module's test file and
+which this section has just established is a step-4 repoint rather than a
+step-5 deletion. `vfs-image.test.ts` still
 owes that pass for its capacity, timestamp-normalisation and metadata
 claims; its SharedArrayBuffer claims genuinely die with the class, and its
 "restored filesystem is independent from original" claims describe a property
