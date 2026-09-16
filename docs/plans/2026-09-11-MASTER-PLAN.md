@@ -882,6 +882,43 @@ filesystem's error, so a path that module still owns), and
 `kernel-allocator-churn` (1). These are where a reviewer should look first, and
 where I would look next.
 
+#### `default-maker-profile` IS DIAGNOSED — 2026-09-16, and it is the same defect as `node-demo-workspace`
+
+Not "a path that module still owns". The opposite: a path the module no longer
+owns, in a test that still asks it.
+
+The spec builds mounts with `resolveForBrowser(DEFAULT_MOUNT_SPEC, image,
+{ scratchSabBytes })` — passing a scratch SAB size for **every** entry whose
+`source` is `"scratch"`, `/home/maker` among them — and then writes through a
+bare `VirtualPlatformIO`:
+
+```ts
+const fd = io.open("/home/maker/profile.txt", 0x241, 0o644);
+```
+
+`resolveForBrowser` calls `filterMountSpecForKernelTmpfs`, which drops every
+scratch mount in `KERNEL_TMPFS_OWNED_PREFIXES` — `/tmp`, `/var/tmp`,
+`/var/log`, `/var/run`, **`/home/maker`**, `/root`, `/srv`. So the mount the
+write needs was deliberately removed, the router has nothing for that path, and
+`SFSError: No such file or directory` is the honest answer to a question that
+stopped making sense in Phase 5 increment 1a.
+
+**It is the same expired premise as `node-demo-workspace`**, which this session
+diagnosed and ported: a test asserting a HOST mount for a path the KERNEL took.
+Two tests, one root cause, on two different hosts — which is worth more than
+either fix, because it says the Phase 5 scratch cutover left a class of tests
+behind rather than one.
+
+**What the fix must preserve.** "Default browser profiles use the writable
+canonical maker home" is a real product claim and should not be downgraded to
+"the mount is absent". The write has to go through a BOOTED kernel, which is
+the only thing that can now serve `/home/maker`; asserting the mount's absence
+is the fallback if booting a kernel in that spec proves heavy, and it is
+strictly weaker because it tests the plumbing instead of the promise.
+
+Filed rather than fixed in this tick: the chromium baseline is mid-run and the
+worktree must not move under it.
+
 ### The browser bar, measured — and my earlier verdict was wrong
 
 I wrote that the bar was not met, on the reasoning that 19 failures is not 14.
