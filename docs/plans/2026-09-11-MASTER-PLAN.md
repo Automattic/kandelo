@@ -1041,7 +1041,7 @@ are in `docs/surface-budget.json`; the argument for each is in
 | `forkTypeScript` | 887 | 484 | module-facing half; mostly the backend wrapper |
 | `forkPlatformTypeScript` | 1629 | 500 | the resume table and the child-import plan dominate |
 | `forkRestoredHostFloor` | 3949 | 3894 | process lifecycle and transport, largely out of scope |
-| `workerMainTypeScript` | 5501 | 2400 | the largest single item left |
+| `workerMainTypeScript` | 5409 | 2400 (**suspect**) | ~40% of the file is not fork — census 200 |
 
 **`forkModuleHostEntries` and the fold that is NOT worth doing.** Collapsing
 the thirteen `fm_set_*` seeders into one `fm_seed(kind, a0..a4)` takes the
@@ -1091,6 +1091,19 @@ for it, not an assumption either way.
 `forkModuleHostEntries`' target of 5**: possibly unreachable without diluting,
 and worth restating rather than leaving as a number someone will eventually
 meet the wrong way.
+
+**Three targets are now flagged, and it is one finding.** `forkModuleHostEntries`
+at 5 is reachable only by collapsing typed entries into an untyped dispatch
+(census 195). `forkGuestObjectImportsUnserved` at 0 asks for something the wasm
+type system forbids and one module instance cannot do (census 199, probed).
+`workerMainTypeScript` at 2400 measures a file that is ~40% dynamic linker,
+kernel imports and pthread bootstrap — at least 2,200 lines this lane does not
+own (census 200). Each number was set when the shape of the remaining work was
+less clear than it is now.
+
+None is changed here. **Restating a target is the maintainer's call**, and the
+argument for each is written down so the decision is a decision rather than an
+archaeology exercise.
 
 **The resume-slot double numbering is the one hazard that closing the lane
 should remove, and it is still live.** `host/src/fork-resume-table.ts` and

@@ -10582,3 +10582,59 @@ this file each recorded a floor argument that turned out to be wrong when
 checked. The prior is genuinely "check it". This one checked out, and the
 difference between a floor that has been probed and one that has been asserted
 is the whole subject of sections 109, 191 and 198.
+
+## §200 -- `workerMainTypeScript`'s target measures a population it does not own
+
+`workerMainTypeScript` is 5,409 against a target of 2,400 -- the largest gap
+left in the lane, and the master plan calls it "the largest single item". Before
+anyone budgets three thousand lines of deletion against it, here is what the
+file is actually made of. Measured by top-level declaration, code lines only:
+
+| declaration | lines | is it fork? |
+|---|---|---|
+| `centralizedWorkerMain` | 1,397 | mixed -- the process worker's whole lifecycle |
+| `buildDlopenImports` | 1,054 | **no** -- the dynamic linker's import surface |
+| `centralizedThreadWorkerMain` | 850 | mixed -- the pthread worker's lifecycle |
+| `buildImportObject` | 332 | **no** -- general import assembly |
+| `patchWasmForThread` | 317 | **no** -- pthread bootstrap wasm patching |
+| `createProcessDylinkActivationOwner` | 246 | fork-adjacent (dylink fork roles) |
+| `buildKernelImports` | 164 | **no** -- kernel syscall imports |
+| `detectChannelBaseTlsOffset` | 164 | **no** -- channel/TLS layout |
+| `createProcessTableReplicationOwner` | 155 | fork-adjacent (peer tables) |
+| 60 smaller declarations | 730 | mixed |
+
+**At least 2,200 lines -- roughly 40% -- are dlopen, kernel-import and pthread
+plumbing that this lane does not own and would not delete if the fork work
+finished tomorrow.** `buildDlopenImports` alone is 1,054 lines with eighteen
+mentions of fork in it, all of them hooks: the linker takes a
+`forkActivationOwner` and a `forkUnwindTag` and otherwise knows nothing about
+capture or replay.
+
+So a target of 2,400 for the whole file asks the dynamic linker and the thread
+bootstrap to shrink as a condition of closing lane F. They may well deserve to;
+that is lane-D-and-neighbours business, and their reduction would be recorded
+against a surface that means it.
+
+**This is the same structural error twice over.** `forkTypeScript` used to be a
+glob over every `host/src/fork-*.ts`, which "mixed a finished population with an
+unstarted one, and a ceiling over both cannot be read" -- the maintainer split
+it, and `forkPlatformTypeScript` exists because of that split. `forkRestoredHostFloor`
+exists because of the same cut. `workerMainTypeScript` is one file rather than a
+glob, so the mixing is less visible, but the file IS the population and it holds
+two lanes' work.
+
+**Proposed, not done** -- changing what a surface measures is the maintainer's
+call, and this is the third such flag tonight (with `forkModuleHostEntries`'
+target of 5 and `forkGuestObjectImportsUnserved`' target of 0):
+
+- keep `workerMainTypeScript` as the whole-file growth bound, ceiling only, no
+  target -- it is a real guard against this file absorbing work;
+- add a fork-share measure that the lane can actually close against, and set ITS
+  target.
+
+Either way the useful next question for this file is not "which 3,000 lines go"
+but "which of `centralizedWorkerMain`'s 1,397 lines are fork ORCHESTRATION the
+module could drive" -- which is the same question the deferred
+`fm_admit_activation` work asks, and the same answer: the host's irreducible
+act is assembling an import object and spawning a worker, not deciding what
+goes in them.
