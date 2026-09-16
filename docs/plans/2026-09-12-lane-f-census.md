@@ -10455,3 +10455,37 @@ A guard's test should reach the guard, not the largest scenario containing it.
   (EINVAL), which §196's fixture hit from the other direction.
 
 **All three owed guards from §191 and §192 are now gated.**
+
+### §194 addendum -- there was a THIRD copy of the numbering, and it is in the native host
+
+`crates/host-native/src/guest.rs` places its resume thunks like this:
+
+```rust
+// Slot `i + 1`, not `i` -- slot `0` is the reserved "no resume event" sentinel
+let slot = i as u64 + 1;
+```
+
+That is a third implementation of the same rule, and the most abbreviated one:
+it assumes the module numbers slots 1..N in the seeded catalog's order, with no
+freed slots to reuse. For the native host that holds -- one activation, nothing
+ever unregistered -- so the cutover did not change its behaviour and
+`cargo check -p host-native` is clean.
+
+But the abbreviation is only correct BY CIRCUMSTANCE. It encodes "there are no
+frees" as an arithmetic assumption rather than reading the answer, which is the
+same shape of mistake the JavaScript host made: a rule that is right until the
+inputs change. The native host gains dlopen forks eventually, and on that day
+`i + 1` is wrong in the way the JS copy was wrong, silently.
+
+**The fix is six lines and belongs with the follow-up that moves the physical
+table into the module**: call `fm_resume_slots` op 0 per ordinal and place
+where it says, exactly as `ForkResumeTable` now does. Recorded rather than done
+here, because `crates/host-native` is not built by the host suite -- it needs
+its own `cargo check` and its own tests, and this stride's validation surface
+was the JavaScript hosts.
+
+The general point is worth keeping separate from the fix: **when one
+implementation of a shared rule is shorter than the others, ask what it is
+assuming rather than admiring the brevity.** Two of the three copies here had
+the full rule; the short one was the one that had quietly decided a case could
+not arise.
