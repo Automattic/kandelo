@@ -7,7 +7,7 @@ direction to treat the lane as closeable.
 **Status: closeable, and validated on both hosts.** The measure is met, the
 three owed guards are gated, and the one thing that reopened it —
 `crates/host-native` — is repaired here for the damage this lane did and handed
-to **Lane N (native fork reconstruction)** for the subsystem underneath, by
+to **Lane J (native fork reconstruction)** for the subsystem underneath, by
 maintainer decision.
 
 Node: the host baseline is GREEN (64 expected failures, nothing new, nothing
@@ -335,7 +335,7 @@ ruled OUT of scope when the instruction was "make the 12 pass, nothing more".
 When the scope was set to "make the 12 pass, nothing more", neither of us knew
 that 8 of the 12 need native reference reconstruction to work at all. The five
 fixed here were genuinely bounded; these eight are a subsystem, and the
-maintainer opened **Lane N (native fork reconstruction)** for them.
+maintainer opened **Lane J (native fork reconstruction)** for them.
 
 Lane N also carries the two smaller pieces this trace turned up: the
 swallowed-fault visibility defect — which is why a lane-caused regression

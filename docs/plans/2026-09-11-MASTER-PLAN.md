@@ -69,7 +69,7 @@ exact hazard `run.sh`'s `KANDELO_SOURCE_CACHE_ROOT` documentation describes.
 |---|---|---|---|
 | **Y** image builders *(CLOSED, merged `221c5050c`)* | `/Users/brandon/kandelo-lane-y` | `brandonpayton/lane-y-image-writer` | 2026-09-12, from `1d9dad8b2` |
 | **S** setuid integrity *(deferred; budget change merged `6e795232e`)* | `/Users/brandon/kandelo-lane-s` | `brandonpayton/lane-s-setuid-integrity` | 2026-09-12, from `002149196` |
-| **N** native fork reconstruction | `/Users/brandon/kandelo-lane-n` | `brandonpayton/lane-n-native-fork` | 2026-09-16, from lane F's HEAD |
+| **J** native fork reconstruction | `/Users/brandon/kandelo-lane-n` | `brandonpayton/lane-n-native-fork` | 2026-09-16, from lane F's HEAD |
 
 **The lane S worktree holds one commit and it is not lane S's.** The lane was
 deferred mid-flight; what survives on that branch is the code-line budget
@@ -426,36 +426,45 @@ Writing them caught one error worth repeating: **lane I's target is 2100 code
 lines, not the 1200 that still appears in older prose here.** 1200 is a
 whole-line figure predating the unit change. Read gates from the budget.
 
-## LEDGER COLLISION — B40 through B43 each name two different defects
+## LEDGER COLLISION — RESOLVED 2026-09-16 by renumbering the later entries
 
-Found 2026-09-15. Two sessions filed defects concurrently and both started
-from B40, so **four numbers mean two things each**. Nothing is lost and no
-entry is wrong; the numbering is. Until it is resolved, cite these by TITLE,
-never by number.
+Two sessions filed defects concurrently and both started at B40, so B40 through
+B43 each named two different defects. Resolved on the maintainer's ruling:
+**the later entry of each pair was renumbered**, first-filed keeps the number.
 
-| number | one entry | the other |
+| number | kept it (filed first) | renumbered to |
 |---|---|---|
-| **B40** | the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd` | a dead mirror stopped the build — RESOLVED `8e5dbfc26` |
-| **B41** | `setuidLazyWithoutDigest` can be closed without fixing anything | three perturb trials stopped anchoring when the graph moved |
-| **B42** | the URI relay — LANDED 2026-09-15 | a survivor declared observable is still surviving |
-| **B43** | the host's lazy table is empty for an SDEF image — CLOSED by B42 | the Xcode licence blocked spidermonkey — RESOLVED |
+| **B40** | a dead mirror stopped the build — 09-15 11:43 | `ld64.lld` cannot read this Xcode's `libSystem.tbd` → **B46** |
+| **B41** | three perturb trials stopped anchoring — 09-14 17:41 | `setuidLazyWithoutDigest` can be closed without fixing anything → **B47** |
+| **B42** | a survivor declared observable — 09-15 00:32 | the URI relay → **B48** |
+| **B43** | the Xcode licence blocked spidermonkey — 09-15 11:53 | the host's lazy table is empty for an SDEF image → **B49** |
 
-`B39` and `B44` are unique.
+Filing order was taken from `git log -S` on each entry's own heading text, not
+from position in this file.
 
-**Not renumbered here, deliberately.** Both sets are cited from commit
-messages, lane briefs and other plan sections, so a renumber has to fix every
-reference or it trades a collision for a set of dangling ones. This file is
-also being edited by more than one session at a time — H-24 — so a sweeping
-rewrite of it is the operation most likely to lose someone's work. It is a
-maintainer decision: renumber the later set, or keep both and disambiguate by
-title.
+**Reading an older commit message.** Commits written before 2026-09-16 cite the
+pre-renumber names. If one cites B40–B43 and the entry it describes does not
+match the heading you find, it means the renumbered entry: map it through the
+right-hand column above. Nothing was deleted and no entry's content changed.
 
-**Note also that one collision is a duplicate diagnosis, not just a number.**
-"B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`" and
-"B44 — spidermonkey cannot rebuild: lld cannot read Xcode 27's SDK" are the
-same root cause reached twice. B44 carries the fix.
+**Every B number is now unique**, B39 through B49.
 
-## B41 — `setuidLazyWithoutDigest` can be closed without fixing anything
+**The lane letters collided too, and are resolved the same way.** Lane F's
+closure opened a lane it labelled **N — native fork reconstruction**, while
+**N — committed binaries** already existed from 2026-09-14. The later one is
+now **lane J**. Its branch `brandonpayton/lane-n-native-fork` and worktree
+`/Users/brandon/kandelo-lane-n` are deliberately NOT renamed: they are real
+paths that an agent may already be working in, and renaming a checked-out
+branch to tidy a label is how you lose someone's work. The letter is the
+reference; the paths are just where it lives.
+
+**One pair was a duplicate diagnosis, not merely a number.** B46 (`ld64.lld`
+cannot read the `libSystem.tbd`) and B44 (spidermonkey cannot rebuild) are the
+same root cause reached independently by two sessions. B44 carries the fix and
+is the one to read; B46 is kept for its own evidence and because its commits
+cite it.
+
+## B47 — `setuidLazyWithoutDigest` can be closed without fixing anything
 
 **CLOSED the same day, and honestly.** The migration of `tools/mkrootfs` to the
 Rust writer removed the reason the fix could not work, so the same four-hop
@@ -571,7 +580,7 @@ What is new here is the MEASURED reason the fix cannot work today — that
 record has no digest field — rather than the judgement that it should not be
 landed alone.
 
-## B42 — the URI relay — LANDED 2026-09-15
+## B48 — the URI relay — LANDED 2026-09-15
 
 **RESOLVED.** The maintainer chose option 2 ("host-native depends on
 `runtime-core` and builds a real SDEF image") after asking why the alternative
@@ -664,7 +673,7 @@ writer. The relay re-applies onto whichever answer comes back.
 hunks — two of them textual accidents where git spliced the relay's rewrite of
 `host_fetch_deferred` into the `host_image_read` block that had replaced it.)*
 
-## B43 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
+## B49 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
 
 **CLOSED by the URI relay (B42), as a side effect rather than as a fix.** The
 table that was empty no longer exists: the kernel names the resource by the URI
@@ -1298,7 +1307,7 @@ day: `host/test/exec-lazy-archive-binary.test.ts` built its fixture with
 to `SffsImageFs`. The browser has the identical defect in product code rather
 than in a fixture, and B40 is why nothing reported it.
 
-## B40 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
+## B46 — the bundled `ld64.lld` cannot read this Xcode's `libSystem.tbd`
 
 OPEN, and it blocks **all six browser products** exactly as B39 did.
 

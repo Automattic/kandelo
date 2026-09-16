@@ -1,4 +1,4 @@
-# Lane N — native fork reconstruction
+# Lane J — native fork reconstruction
 
 Dedicated lane, opened 2026-09-16 by maintainer decision ("native forking
 should be dedicated lane") when lane F's closure found the work was a subsystem
