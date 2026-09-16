@@ -13,7 +13,7 @@ const browserKernelModulePath = resolve(
 // so a page can transform it like any other module.
 const sffsImageFsModulePath = resolve(
   here,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
 const sffsModuleWasmPath = resolve(
   here,
@@ -55,10 +55,10 @@ test("ordinary startup receives the kernel-owned non-secure marker", async ({
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { SffsImageFs } = await import(
+    const { KandeloImageFs } = await import(
       /* @vite-ignore */ sffsImageFsModuleUrl
     );
-    const image = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+    const image = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
     let stdout = "";
     let stderr = "";
     const hostDiagnostics: unknown[] = [];
@@ -130,11 +130,11 @@ test("browser worker preserves postcommit secure-exec state", async ({
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { SffsImageFs } = await import(
+    const { KandeloImageFs } = await import(
       /* @vite-ignore */ sffsImageFsModuleUrl
     );
     const probe = Uint8Array.from(probeBytes);
-    const imageFs = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+    const imageFs = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
     imageFs.mkdir("/bin", 0o755);
     imageFs.mkdir("/usr", 0o755);
     imageFs.mkdir("/usr/bin", 0o755);

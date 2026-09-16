@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { parseZipCentralDirectory } from "../src/vfs/zip";
 
 // Phase 5 Increment 3b-wiring.4 (exec-target EAGAIN retry, see
@@ -28,7 +28,7 @@ import { parseZipCentralDirectory } from "../src/vfs/zip";
 // ahead of time by `io.preparePath` before `readPreparedExecTarget` ever runs,
 // which would make this a false positive that never exercises the EAGAIN path).
 //
-// The image is built by `SffsImageFs`, which writes the `SDEF` section, and the
+// The image is built by `KandeloImageFs`, which writes the `SDEF` section, and the
 // format is load-bearing here rather than incidental. Under URI addressing the
 // kernel fetches a deferred resource by the address ITS OWN image recorded, and
 // `SDEF` has a typed field for that address. The `KLZY` section this fixture
@@ -112,7 +112,7 @@ describe.skipIf(!available)(
         }
         const archiveUrl = `http://127.0.0.1:${address.port}/archive.zip`;
 
-        const fs = SffsImageFs.create();
+        const fs = KandeloImageFs.create();
         fs.registerLazyArchive({
           url: archiveUrl,
           entries: parseZipCentralDirectory(dataArchive),

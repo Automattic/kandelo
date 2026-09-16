@@ -289,8 +289,8 @@ git commit -m "VFS: SFFS superblock mount/validate (Phase 5 Inc 3b.1)"
 **Interfaces:**
 - Consumes: `Sffs`, `r32`, `r64`, `inode_table_start` (Task 3).
 - Produces:
-  - `pub struct SffsStat { pub ino: u32, pub mode: u32, pub nlink: u32, pub size: u64, pub mtime_ms: u64, pub ctime_ms: u64, pub atime_ms: u64, pub uid: u32, pub gid: u32, pub generation: u64 }`
-  - `pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno>`
+  - `pub struct KandeloImageStat { pub ino: u32, pub mode: u32, pub nlink: u32, pub size: u64, pub mtime_ms: u64, pub ctime_ms: u64, pub atime_ms: u64, pub uid: u32, pub gid: u32, pub generation: u64 }`
+  - `pub fn stat_ino(&self, ino: u32) -> Result<KandeloImageStat, Errno>`
   - private `fn inode_offset(&self, ino: u32) -> usize`
   - `pub const ROOT_INO: u32 = 1;` and `pub fn file_type(mode: u32) -> u32 { mode & 0xf000 }`
 
@@ -323,7 +323,7 @@ const INO_UID: usize = 96;
 const INO_GID: usize = 100;
 const INO_GENERATION: usize = 104;
 
-pub struct SffsStat {
+pub struct KandeloImageStat {
     pub ino: u32, pub mode: u32, pub nlink: u32, pub size: u64,
     pub mtime_ms: u64, pub ctime_ms: u64, pub atime_ms: u64,
     pub uid: u32, pub gid: u32, pub generation: u64,
@@ -335,13 +335,13 @@ impl<'a> Sffs<'a> {
         let block = self.inode_table_start + ino / INODES_PER_BLOCK;
         block as usize * BLOCK_SIZE + (ino % INODES_PER_BLOCK) as usize * INODE_SIZE
     }
-    pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno> {
+    pub fn stat_ino(&self, ino: u32) -> Result<KandeloImageStat, Errno> {
         if ino == 0 { return Err(Errno::ENOENT); }
         let o = self.inode_offset(ino);
         let mode = r32(self.bytes, o + INO_MODE).ok_or(Errno::EIO)?;
         let nlink = r32(self.bytes, o + INO_LINK_COUNT).ok_or(Errno::EIO)?;
         if nlink == 0 { return Err(Errno::ENOENT); } // free/orphaned slot
-        Ok(SffsStat {
+        Ok(KandeloImageStat {
             ino, mode, nlink,
             size: r64(self.bytes, o + INO_SIZE).ok_or(Errno::EIO)?,
             mtime_ms: r64(self.bytes, o + INO_MTIME).ok_or(Errno::EIO)?,
@@ -860,5 +860,5 @@ git commit -m "VFS: SFFS real-image integration test (Phase 5 Inc 3b.1)"
 
 - **Spec coverage:** Container unwrap (Task 2), superblock (3), inode/stat (4), block map incl. indirect/double-indirect (5), positioned read w/ holes + EOF clamp (6), dirent iteration + validation (7), lookup (8), readlink inline+block (9), path resolve + symlink + ENOTDIR + ELOOP (10), real-image (11). All read-path methods from the SFFS spec §6 are covered except `statfs` (a later wiring concern) and `..`-parent-walk (deferred with a documented limit — the kernel resolver owns `..` above this layer).
 - **Deferred, on purpose:** device/special files (SFFS has none — spec §5), the `DirIndex` cache (in-process only), all mutations, `statfs`, full `..`. Each is noted where relevant.
-- **Type consistency:** `Sffs<'a>`, `SffsStat`, `SffsDirent`, `unwrap_vfsi`, `mount`, `stat_ino`, `block_map`, `read_at`, `read_dir`, `lookup`, `read_link`, `resolve`, `file_type`, `ROOT_INO` — names are used consistently across tasks.
+- **Type consistency:** `Sffs<'a>`, `KandeloImageStat`, `SffsDirent`, `unwrap_vfsi`, `mount`, `stat_ino`, `block_map`, `read_at`, `read_dir`, `lookup`, `read_link`, `resolve`, `file_type`, `ROOT_INO` — names are used consistently across tasks.
 - **Open confirmations for the executor (verify before/at Task 2-3, do not guess):** (a) the exact `runtime-core` package name for `-p`; (b) the `Errno` import path and that `EINVAL/ENOENT/EIO/ENOTDIR/ELOOP` variants exist; (c) `MemoryFileSystem.saveImage()` returns uncompressed VFSI bytes and `symlink(target, path)` arg order (Task 1). If `saveImage()` compresses, emit uncompressed via the memory-fs raw image path and confirm against `memory-fs.ts`.

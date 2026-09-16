@@ -13,9 +13,9 @@
  *
  * That class does two jobs: it BUILDS images, and it serves as a live
  * `FileSystemBackend` a mount can be backed by. Only the first job moved to
- * `SffsImageFs` (defect B45 — the legacy writer cannot express the `SDEF`
+ * `KandeloImageFs` (defect B45 — the legacy writer cannot express the `SDEF`
  * section, so a build-time round trip through it emptied the image's deferred
- * half). The backend job stays here, because `SffsImageFs` describes an image
+ * half). The backend job stays here, because `KandeloImageFs` describes an image
  * and owes none of `append`, `seek`, `fpathconf` or the rest of the runtime
  * surface a backend must provide.
  *

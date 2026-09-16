@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { openVfsProductBuild } from "../../images/vfs/scripts/vfs-product-builder-contract";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const SNAPSHOT_SHA256 = "b".repeat(64);
 const cleanupDirectories = new Set<string>();
@@ -452,7 +452,7 @@ async function createFixture(
   const inputsPath = join(directory, "resolved-inputs.json");
   writeFileSync(inputsPath, canonicalJson(inputs));
 
-  const vfs = SffsImageFs.create();
+  const vfs = KandeloImageFs.create();
   const outputBytes = await vfs.saveImage({
     metadata: {
       version: 1,

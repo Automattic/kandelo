@@ -12,7 +12,7 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
   browserKernel: resolve(repoRoot, "host/src/browser-kernel-host.ts"),
-  sffsImageFs: resolve(repoRoot, "images/vfs/lib/sffs-image-fs.ts"),
+  sffsImageFs: resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts"),
   sffsModuleWasm: resolve(repoRoot, "local-binaries/sffs_module32.wasm"),
   experimentalTerminalSession: resolve(
     repoRoot,
@@ -75,7 +75,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { SffsImageFs } = await import(
+      const { KandeloImageFs } = await import(
         /* @vite-ignore */ sffsImageFsUrl
       );
       const {
@@ -96,7 +96,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         fetchBytes(loginUrl),
         fetchBytes(credentialsUrl),
       ]);
-      const fs = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+      const fs = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
       for (const path of [
         "/etc",
         "/bin",

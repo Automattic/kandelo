@@ -1,6 +1,6 @@
 {
-  "file": "images/vfs/lib/sffs-image-fs.ts",
-  "verify": "cd host && npx vitest run test/sffs-image-fs.test.ts >/dev/null 2>&1",
+  "file": "images/vfs/lib/kandelo-image-fs.ts",
+  "verify": "cd host && npx vitest run test/kandelo-image-fs.test.ts >/dev/null 2>&1",
   "trials": [
     {
       "name": "the memory view is cached instead of taken fresh",
@@ -13,7 +13,7 @@
       "name": "a negative errno is not thrown",
       "scope": "  private check(rc: number",
       "scope_end": "\n  }\n",
-      "find": "    if (rc < 0) throw new SffsImageError(-rc, operation, path);",
+      "find": "    if (rc < 0) throw new KandeloImageError(-rc, operation, path);",
       "replace": ""
     },
     {
@@ -102,21 +102,21 @@
     },
     {
       "name": "stat does not follow symlinks",
-      "scope": "  stat(path: string): SffsStat {",
+      "scope": "  stat(path: string): KandeloImageStat {",
       "scope_end": "\n  }\n",
       "find": "      if ((st.mode & 0o170000) !== 0o120000) return st;",
       "replace": "      return st;"
     },
     {
       "name": "a relative symlink is resolved against the root instead of its own directory",
-      "scope": "  stat(path: string): SffsStat {",
+      "scope": "  stat(path: string): KandeloImageStat {",
       "scope_end": "\n  }\n",
       "find": "      current = target.startsWith(\"/\")\n        ? target\n        : `${current.slice(0, current.lastIndexOf(\"/\") + 1)}${target}`;",
       "replace": "      current = target.startsWith(\"/\") ? target : `/${target}`;"
     },
     {
       "name": "a symlink cycle is followed forever",
-      "scope": "  stat(path: string): SffsStat {",
+      "scope": "  stat(path: string): KandeloImageStat {",
       "scope_end": "\n  }\n",
       "find": "    for (let hop = 0; hop < 40; hop += 1) {",
       "replace": "    for (let hop = 0; hop < 4000000; hop += 1) {"

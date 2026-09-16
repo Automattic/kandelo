@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { refuseImageThisReaderCannotSee } from "../src/cli/sdef-reader-guard.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -244,7 +244,7 @@ describe("image builder — pass 2: regular files", () => {
       // one — an image full of deferred files loading as an image with none,
       // which is exactly the failure the format change exists to prevent. A
       // test that kept the old reader would have asserted that failure.
-      const reader = SffsImageFs.create();
+      const reader = KandeloImageFs.create();
       reader.loadImage(image);
 
       const st = reader.stat("/usr/bin/find");
@@ -933,7 +933,7 @@ describe("image builder — round-trip", () => {
       const blind = MemoryFileSystem.fromImage(image);
       expect(blind.exportLazyEntries()).toHaveLength(0);
       // ...and the reader that can says otherwise, which is the whole disagreement.
-      const truth = SffsImageFs.create();
+      const truth = KandeloImageFs.create();
       truth.loadImage(image);
       expect(truth.lazyEntries().files).toHaveLength(1);
 
@@ -961,7 +961,7 @@ describe("image builder — round-trip", () => {
   });
 
   it("lets a KLZY reader answer about a KLZY image it CAN see", async () => {
-    // The other control, and the one that matters most. `SffsImageFs` reads
+    // The other control, and the one that matters most. `KandeloImageFs` reads
     // `KLZY` too, so a guard that skipped the "does this reader already see
     // them?" check would consult the truth reader, find deferred files, and
     // refuse an image the caller reads perfectly well — breaking every
@@ -996,7 +996,7 @@ describe("image builder — round-trip", () => {
         maxSizeBytes: declared,
       });
 
-      const reader = SffsImageFs.create();
+      const reader = KandeloImageFs.create();
       reader.loadImage(image);
       expect(reader.exportCapacityBytes()).toBe(declared);
       // And it is a FLOOR on growth, not a description of the artifact: the

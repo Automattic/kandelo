@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { findRepoRoot } from "../../../host/src/binary-tiers";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 
 const MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
 const MAX_INPUTS = 4_096;
@@ -276,7 +276,7 @@ async function openVfsProductBuildWithPolicy(
         );
       }
       const outputBytes = readFileSync(absoluteOutputPath);
-      const metadata = SffsImageFs.readImageMetadata(
+      const metadata = KandeloImageFs.readImageMetadata(
         new Uint8Array(
           outputBytes.buffer,
           outputBytes.byteOffset,

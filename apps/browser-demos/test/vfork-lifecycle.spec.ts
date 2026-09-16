@@ -29,7 +29,7 @@ const browserKernelModulePath = resolve(
 // builtins, so a page can transform it like any other module.
 const sffsImageFsModulePath = resolve(
   __dirname,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
 const sffsModuleWasmPath = resolve(
   __dirname,
@@ -139,7 +139,7 @@ async function runBrowserVforkFixture(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { SffsImageFs } = await import(
+      const { KandeloImageFs } = await import(
         /* @vite-ignore */ sffsImageFsModuleUrl
       );
       const decoder = new TextDecoder();
@@ -180,7 +180,7 @@ async function runBrowserVforkFixture(
       let initialized = false;
 
       try {
-        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+        const imageOwner = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
         imageOwner.mkdir("/tmp", 0o755);
         if (execChildFixtureUrl) {
           const childResponse = await fetch(execChildFixtureUrl);

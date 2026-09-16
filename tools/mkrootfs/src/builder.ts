@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   parseZipCentralDirectory,
@@ -111,7 +111,7 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   // this default is computed from, which is what every caller passing one
   // meant by it.
   const maxSizeBytes = opts.maxSizeBytes ?? sabSize * 4;
-  const mfs = SffsImageFs.create();
+  const mfs = KandeloImageFs.create();
   mfs.setImageCapacity(maxSizeBytes);
 
   buildDirectories(mfs, entries);
@@ -158,7 +158,7 @@ function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {
   });
 }
 
-function buildDirectories(mfs: SffsImageFs, entries: ManifestEntry[]): void {
+function buildDirectories(mfs: KandeloImageFs, entries: ManifestEntry[]): void {
   const dirs = entries.filter(
     (e): e is ManifestNode => e.kind === "node" && e.type === "d",
   );
@@ -170,7 +170,7 @@ function buildDirectories(mfs: SffsImageFs, entries: ManifestEntry[]): void {
 }
 
 function buildFiles(
-  mfs: SffsImageFs,
+  mfs: KandeloImageFs,
   entries: ManifestEntry[],
   opts: BuildOptions,
 ): void {
@@ -202,7 +202,7 @@ function buildFiles(
   }
 }
 
-function buildSymlinks(mfs: SffsImageFs, entries: ManifestEntry[]): void {
+function buildSymlinks(mfs: KandeloImageFs, entries: ManifestEntry[]): void {
   const symlinks = entries.filter(
     (e): e is ManifestNode => e.kind === "node" && e.type === "l",
   );
@@ -245,7 +245,7 @@ function loadArchives(
 }
 
 function buildArchives(
-  mfs: SffsImageFs,
+  mfs: KandeloImageFs,
   archives: LoadedArchive[],
   plan: ArchiveExtractionPlan,
 ): void {
@@ -262,7 +262,7 @@ function buildArchives(
 }
 
 function extractArchive(
-  mfs: SffsImageFs,
+  mfs: KandeloImageFs,
   zipBytes: Uint8Array,
   members: PlannedArchiveMember[],
   a: ManifestArchive,
@@ -336,7 +336,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 function ensureParentDirs(
-  mfs: SffsImageFs,
+  mfs: KandeloImageFs,
   filePath: string,
   a: ManifestArchive,
 ): void {
@@ -354,7 +354,7 @@ function ensureParentDirs(
 }
 
 function requireDirectory(
-  mfs: SffsImageFs,
+  mfs: KandeloImageFs,
   path: string,
   a: ManifestArchive,
 ): void {
@@ -366,7 +366,7 @@ function requireDirectory(
   }
 }
 
-function existsAt(mfs: SffsImageFs, path: string): boolean {
+function existsAt(mfs: KandeloImageFs, path: string): boolean {
   try {
     mfs.lstat(path);
     return true;

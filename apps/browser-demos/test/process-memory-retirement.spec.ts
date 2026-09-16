@@ -14,7 +14,7 @@ const browserKernelModulePath = resolve(
 // so a page can transform it like any other module.
 const sffsImageFsModulePath = resolve(
   repoRoot,
-  "images/vfs/lib/sffs-image-fs.ts",
+  "images/vfs/lib/kandelo-image-fs.ts",
 );
 const sffsModuleWasmPath = resolve(
   repoRoot,
@@ -60,7 +60,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { SffsImageFs } = await import(
+      const { KandeloImageFs } = await import(
         /* @vite-ignore */ sffsImageFsUrl
       );
       const decoder = new TextDecoder();
@@ -88,7 +88,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       });
 
       try {
-        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+        const imageOwner = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
         imageOwner.mkdir("/bin", 0o755);
         imageOwner.createFileWithOwner(
           "/bin/exec-child",

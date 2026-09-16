@@ -28,7 +28,7 @@ import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import type { MountSpec } from "../src/vfs/default-mounts";
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -50,7 +50,7 @@ const havePrereqs = existsSync(probePath) && kernelPath !== null;
 
 async function stageImage(): Promise<Uint8Array> {
   const probe = new Uint8Array(readFileSync(probePath));
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   fs.mkdir("/bin", 0o755);
   fs.mkdir("/usr", 0o755);
   fs.mkdir("/usr/bin", 0o755);

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   assertVfsImageCapacity,
   assertVfsImageHeadroom,
@@ -135,7 +135,7 @@ describe("VFS image save/restore", () => {
 
     it("rejects malformed serialized capacity state", () => {
       // The MODULE judges this now — `assertVfsImageCapacity` without a
-      // producer calls `SffsImageFs.readImageCapacity`, because reading a
+      // producer calls `KandeloImageFs.readImageCapacity`, because reading a
       // container header in TypeScript would be format knowledge on the wrong
       // side of the boundary. So the refusal arrives as an errno rather than
       // as the prose the TypeScript parser used to produce, and the errno is
@@ -196,7 +196,7 @@ describe("VFS image save/restore", () => {
       // thresholds from `statfs` and a `MemoryFileSystem` tested the arithmetic
       // that moved into the module, against a filesystem that no longer
       // answers the question.
-      const fs = SffsImageFs.create();
+      const fs = KandeloImageFs.create();
       fs.writeFile("/probe", new Uint8Array(8), 0o644);
       const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
 
@@ -219,7 +219,7 @@ describe("VFS image save/restore", () => {
     });
 
     it("enforces the declared reserve before writing a product image", async () => {
-      const fs = SffsImageFs.create();
+      const fs = KandeloImageFs.create();
       fs.writeFile("/probe", new Uint8Array(8), 0o644);
       const { freeBytes, freeInodes } = fs.checkHeadroom(0, 0);
       const dir = mkdtempSync(join(tmpdir(), "vfs-headroom-"));

@@ -1,4 +1,4 @@
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 
 /**
  * Load the shell's base rootfs image as a filesystem the build may mutate.
@@ -18,8 +18,8 @@ import { SffsImageFs } from "../lib/sffs-image-fs";
 export function restoreTrustedShellRootfs(
   image: Uint8Array,
   maxByteLength: number,
-): SffsImageFs {
-  const fs = SffsImageFs.create();
+): KandeloImageFs {
+  const fs = KandeloImageFs.create();
   fs.loadImage(image);
   // A capacity request the export reads, not a size the tree is poured into.
   fs.setImageCapacity(maxByteLength);

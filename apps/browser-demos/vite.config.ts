@@ -389,7 +389,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
       }
       if (pathPart === SFFS_MODULE32) {
         // The wasm32 image-writer module. The browser BUILDS its boot image
-        // with this — `SffsImageFs` instantiates it — so a missing artifact is
+        // with this — `KandeloImageFs` instantiates it — so a missing artifact is
         // a loud error pointing at the build script rather than a silent
         // fallback to a reader that cannot see an `SDEF` section (B45).
         if (sourceOnlyViteAssets !== null) {

@@ -14,7 +14,7 @@ import {
 } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
@@ -308,7 +308,7 @@ export function assertVfsImageCapacity(
   // exists to draw. Callers that hold only bytes take the second branch.
   const actualMaxByteLength = fs?.exportCapacityBytes
     ? fs.exportCapacityBytes()
-    : SffsImageFs.readImageCapacity(image).maxByteLength;
+    : KandeloImageFs.readImageCapacity(image).maxByteLength;
   if (actualMaxByteLength !== expectedMaxByteLength) {
     throw new Error(
       `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +

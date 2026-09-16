@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { overlayEtcFromRootfs } from "../src/vfs/rootfs-overlay";
 
@@ -28,7 +28,7 @@ describe.skipIf(!existsSync(rootfsImage))("a build-time image round trip", () =>
   /** Every deferred file the KERNEL would see, which is the only view that
    *  decides whether a lazy binary works. */
   function asTheKernelSeesIt(image: Uint8Array) {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(image);
     const { files, archives } = fs.lazyEntries() as {
       files: { uri: string; digest: Uint8Array }[];
@@ -56,7 +56,7 @@ describe.skipIf(!existsSync(rootfsImage))("a build-time image round trip", () =>
     const before = asTheKernelSeesIt(bytes());
 
     // The same SHAPE of work the browser does between load and re-save.
-    const build = SffsImageFs.create();
+    const build = KandeloImageFs.create();
     build.loadImage(bytes());
     // A path the shipped rootfs does not already carry, so the mutation is a
     // real write and not an EEXIST the test would have to forgive.
@@ -70,7 +70,7 @@ describe.skipIf(!existsSync(rootfsImage))("a build-time image round trip", () =>
     expect(after.addressed).toBe(before.files);
     expect(after.digested).toBe(before.files);
     // And the mutations actually landed, so this is not passing by not working.
-    const check = SffsImageFs.create();
+    const check = KandeloImageFs.create();
     check.loadImage(rebuilt);
     expect(check.lstat("/home/round-trip-probe").uid).toBe(1000);
     expect(check.lstat("/etc/demo.conf").size).toBe(7);
@@ -104,12 +104,12 @@ describe.skipIf(!existsSync(rootfsImage))("a build-time image round trip", () =>
     // The shape of the loss, which is worse than the count. Pick any file the
     // original declared deferred: it still EXISTS, is still executable, and now
     // claims to be zero bytes long and fully present.
-    const original = SffsImageFs.create();
+    const original = KandeloImageFs.create();
     original.loadImage(bytes());
     const [sample] = (original.lazyEntries() as { files: { path: string; size: number }[] }).files;
     expect(sample!.size).toBeGreaterThan(0);
 
-    const wrecked = SffsImageFs.create();
+    const wrecked = KandeloImageFs.create();
     wrecked.loadImage(resaved);
     const st = wrecked.lstat(sample!.path) as { size: number; mode: number; deferred?: boolean };
     expect(st.size, `${sample!.path} became an empty file`).toBe(0);
@@ -133,14 +133,14 @@ describe("overlaying /etc onto a fresh image", () => {
   // A sign mismatch is invisible to the typechecker and invisible to a reader
   // who does not already know both conventions, so it is asserted here.
   it("copies /etc in rather than treating a missing target path as fatal", async () => {
-    const source = SffsImageFs.create();
+    const source = KandeloImageFs.create();
     source.mkdir("/etc", 0o755);
     source.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
     const sourceImage = await source.saveImage();
 
     // A fresh target: `/` and nothing else, so `/etc` is absent exactly as it
     // is on the browser's build filesystem.
-    const target = SffsImageFs.create();
+    const target = KandeloImageFs.create();
     await overlayEtcFromRootfs(target, sourceImage);
 
     expect(target.lstat("/etc").mode & 0o7777).toBe(0o755);
@@ -148,12 +148,12 @@ describe("overlaying /etc onto a fresh image", () => {
   });
 
   it("is idempotent, because a path that IS present is the other branch", async () => {
-    const source = SffsImageFs.create();
+    const source = KandeloImageFs.create();
     source.mkdir("/etc", 0o755);
     source.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
     const sourceImage = await source.saveImage();
 
-    const target = SffsImageFs.create();
+    const target = KandeloImageFs.create();
     await overlayEtcFromRootfs(target, sourceImage);
     // Twice. The second pass takes the "target path exists" branch for every
     // entry, which is the branch the broken check never reached.

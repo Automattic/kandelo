@@ -5,7 +5,7 @@
  * transient PHP scripts inside a VFS image containing php-src test assets.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import kernelWasmUrl from "@kernel-wasm?url";
 import { finalizeKernelOwnedImage } from "../../lib/kernel-owned-boot";
@@ -42,12 +42,12 @@ declare global {
 }
 
 let kernelBytes: ArrayBuffer | null = null;
-let initialFs: SffsImageFs | null = null;
+let initialFs: KandeloImageFs | null = null;
 let kernel: BrowserKernel | null = null;
 let kernelInitialization: Promise<BrowserKernel> | null = null;
 let activeOutput: { stdout: string; stderr: string; output: string } | null = null;
 
-async function createFs(vfsImageBytes: Uint8Array): Promise<SffsImageFs> {
+async function createFs(vfsImageBytes: Uint8Array): Promise<KandeloImageFs> {
   // WHY: the test runner rewrites permissions and source files immediately.
   // Authenticate imported lazy-tree seals before any fixture mutation.
   const fs = await restoreVerifiedImageForBuild(vfsImageBytes, {
@@ -62,7 +62,7 @@ async function createFs(vfsImageBytes: Uint8Array): Promise<SffsImageFs> {
 }
 
 function makeTreeWritableByGuest(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   path: string,
 ): void {
   const st = fs.lstat(path);
@@ -90,7 +90,7 @@ function makeTreeWritableByGuest(
 }
 
 function prepareGuestWritableWorkspace(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   _scriptPath: string,
   uid?: number,
   gid?: number,

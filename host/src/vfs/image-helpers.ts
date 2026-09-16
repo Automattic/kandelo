@@ -60,7 +60,7 @@ export function writeVfsBinary(
  * Does this error carry `code`, whatever the filesystem calls the field?
  *
  * The two implementations disagree twice over: `MemoryFileSystem` throws an
- * error with a NEGATIVE `code`, and the module bridge throws `SffsImageError`
+ * error with a NEGATIVE `code`, and the module bridge throws `KandeloImageError`
  * with a POSITIVE `errno`. This helper is what the EEXIST-swallowing wrappers below use, so
  * recognising only one spelling turns "swallow only EEXIST" into "rethrow
  * everything" for the other one — silently, because the wrapper still looks

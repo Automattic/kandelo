@@ -8,7 +8,7 @@
 // Worker.terminate() frees it deterministically. The only main-thread buffer
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
-import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import sffsModuleUrl from "@sffs-module32-wasm?url";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
@@ -75,7 +75,7 @@ export async function settleWebKitReclaim(): Promise<void> {
  * its `buildFs` reference right after; the kernel worker rebuilds and owns the
  * live VFS from these bytes.
  */
-export async function finalizeKernelOwnedImage(buildFs: SffsImageFs): Promise<Uint8Array> {
+export async function finalizeKernelOwnedImage(buildFs: KandeloImageFs): Promise<Uint8Array> {
   const bytes = await buildFs.saveImage();
   trackTransientImageBuffer(buildFs.transientBuffer);
   return bytes;
@@ -92,7 +92,7 @@ export async function finalizeKernelOwnedImage(buildFs: SffsImageFs): Promise<Ui
  * layering fact rather than a preference. That module returns a live mount
  * BACKEND and must stay `MemoryFileSystem`, which owes `append`, `seek`,
  * `fpathconf` and the rest of the runtime surface. This returns an image
- * BUILDER, which must be `SffsImageFs`: the legacy writer cannot express the
+ * BUILDER, which must be `KandeloImageFs`: the legacy writer cannot express the
  * `SDEF` section, so restoring and re-saving through it empties an image's
  * deferred half (defect B45 — 65 lazy binaries became zero-byte files marked
  * complete).
@@ -109,7 +109,7 @@ export async function finalizeKernelOwnedImage(buildFs: SffsImageFs): Promise<Ui
 /**
  * Fetch the image-writer module and install it, once per page.
  *
- * `SffsImageFs.create()` is synchronous and a fetch is not, so the browser
+ * `KandeloImageFs.create()` is synchronous and a fetch is not, so the browser
  * cannot supply module bytes at the call the way Node can (Node reads
  * `local-binaries/sffs_module32.wasm` off disk). It installs them here first,
  * and every later create is as synchronous as Node's.
@@ -132,7 +132,7 @@ export function ensureImageWriterInstalled(): Promise<void> {
           + `from ${sffsModuleUrl}`,
       );
     }
-    SffsImageFs.installModuleBytes(new Uint8Array(await response.arrayBuffer()));
+    KandeloImageFs.installModuleBytes(new Uint8Array(await response.arrayBuffer()));
   })();
   return moduleInstall;
 }
@@ -140,9 +140,9 @@ export function ensureImageWriterInstalled(): Promise<void> {
 export async function restoreVerifiedImageForBuild(
   image: Uint8Array,
   options?: { maxByteLength?: number },
-): Promise<SffsImageFs> {
+): Promise<KandeloImageFs> {
   await ensureImageWriterInstalled();
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   fs.loadImage(image);
   // A declared ceiling, not a reservation: the bridge grows its own memory
   // with the tree, so this is what the exported image DECLARES it may grow to.
@@ -154,13 +154,13 @@ export async function restoreVerifiedImageForBuild(
 
 export async function createEmptyBuildFs(
   maxByteLength = 64 * 1024 * 1024,
-): Promise<SffsImageFs> {
+): Promise<KandeloImageFs> {
   await ensureImageWriterInstalled();
   // No `SharedArrayBuffer`. The bridge owns its own module memory and grows it
   // as the tree does, so `maxByteLength` stops being an up-front reservation
   // and becomes what the exported image DECLARES — the same change
   // `tools/mkrootfs` made when it moved to this writer.
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   fs.setImageCapacity(maxByteLength);
   return fs;
 }
@@ -170,7 +170,7 @@ export async function createEmptyBuildFs(
  * rootfs — the kernel-owned equivalent of the legacy empty-FS + init()-overlay
  * starting point.
  */
-export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<SffsImageFs> {
+export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<KandeloImageFs> {
   const buildFs = await createEmptyBuildFs(maxByteLength);
   await overlayEtcFromRootfs(buildFs, await fetchRootfsBytes());
   return buildFs;

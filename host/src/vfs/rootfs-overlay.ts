@@ -38,7 +38,7 @@ export interface RootfsOverlayReader {
 export interface RootfsOverlayWriter {
   /**
    * Only the fields this module reads. Narrowed from `StatResult` so a writer
-   * that is not a `MemoryFileSystem` can satisfy it: `SffsImageFs` describes an
+   * that is not a `MemoryFileSystem` can satisfy it: `KandeloImageFs` describes an
    * image, and an image records no access or change times to report.
    */
   lstat(path: string): Pick<StatResult, "mode" | "uid" | "gid" | "size">;
@@ -85,8 +85,8 @@ function lstatIfPresent(
 /**
  * "This path is not there" from either filesystem.
  *
- * `MemoryFileSystem` raises `SFSError` with `code`; `SffsImageFs` raises
- * `SffsImageError` with `errno`. Both mean ENOENT and this function is the one
+ * `MemoryFileSystem` raises `SFSError` with `code`; `KandeloImageFs` raises
+ * `KandeloImageError` with `errno`. Both mean ENOENT and this function is the one
  * place that has to know it — an `instanceof` check against one class silently
  * RETHROWS the other's not-found, which turns "copy this path if it is
  * missing" into a crash on the ordinary case.
@@ -94,7 +94,7 @@ function lstatIfPresent(
  * THE TWO USE OPPOSITE SIGNS, and this is the whole reason the function is
  * worth reading. `vfs-errors.ts` numbers errnos NEGATIVELY — `ENOENT` is `-2`,
  * because `SFSError` carries the code a call returned. The bridge raises
- * `SffsImageError` with the POSITIVE errno (`2`), because it negates the
+ * `KandeloImageError` with the POSITIVE errno (`2`), because it negates the
  * return code at the boundary. Comparing one against the other is not a type
  * error and not a runtime error; it is silently always-false. That is how the
  * first version of this escaped its own catch and failed 59 browser tests on

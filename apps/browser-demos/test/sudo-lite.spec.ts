@@ -18,7 +18,7 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(repoRoot, "images/vfs/lib/sffs-image-fs.ts");
+const sffsImageFsModulePath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
 const sffsModuleWasmPath = resolve(repoRoot, "local-binaries/sffs_module32.wasm");
 const shellWasm = resolve(repoRoot, "local-binaries/programs/wasm32/sh.wasm");
 const loginWasm = resolve(
@@ -83,7 +83,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { SffsImageFs } = await import(
+      const { KandeloImageFs } = await import(
         /* @vite-ignore */ sffsImageFsModuleUrl
       );
       const fetchBytes = async (url: string): Promise<Uint8Array> => {
@@ -98,7 +98,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         fetchBytes(sudoWasmUrl),
         fetchBytes(credentialsWasmUrl),
       ]);
-      const fs = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+      const fs = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
       for (const path of [
         "/etc",
         "/bin",

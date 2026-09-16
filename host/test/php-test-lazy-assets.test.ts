@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { imageOwnedRuntimeUrlTable } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
@@ -31,7 +31,7 @@ const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
  */
 describe.skipIf(!existsSync(rootfsImage))("rootfs lazy assets resolve", () => {
   const deferredAddresses = (): string[] => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     return files.map((f) => f.uri);
@@ -51,7 +51,7 @@ describe.skipIf(!existsSync(rootfsImage))("rootfs lazy assets resolve", () => {
 
     // The three this file has always named, by path rather than by count, so a
     // rootfs that grows does not quietly stop checking them.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     for (const path of ["/usr/bin/dash", "/usr/bin/ps", "/usr/bin/pgrep"]) {

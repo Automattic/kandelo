@@ -28,7 +28,7 @@ import type { ZipEntry } from "../src/vfs/zip";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../web-libs/kandelo-session/src/vfs-capacity";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -64,8 +64,8 @@ function readFile(fs: MemoryFileSystem, path: string): string {
  * export reads, so there is no buffer to size and no second argument to keep in
  * step with the first.
  */
-function productFs(maxByteLength: number): SffsImageFs {
-  const fs = SffsImageFs.create();
+function productFs(maxByteLength: number): KandeloImageFs {
+  const fs = KandeloImageFs.create();
   fs.setImageCapacity(maxByteLength);
   return fs;
 }
@@ -150,7 +150,7 @@ function loadedShellImageMetadata(
  * format, which the module does not read -- so it proved nothing here once the
  * loader changed, and asserting on it would have been a test passing for the
  * wrong reason. Activation cohorts are covered where they are now produced and
- * checked: the module's own suite and `sffs-image-fs.test.ts`.
+ * checked: the module's own suite and `kandelo-image-fs.test.ts`.
  */
 async function sourceImage(
   byteLength: number,
@@ -187,7 +187,7 @@ async function sourceImage(
   });
 }
 
-function expectContentsPreserved(fs: SffsImageFs): void {
+function expectContentsPreserved(fs: KandeloImageFs): void {
   expect(readFile(fs, "/ordinary.txt")).toBe("preserved contents");
   expect(fs.stat("/bin/lazy-tool").size).toBe(123_456);
   expect(fs.stat("/bin/lazy-tool").mode & 0o777).toBe(0o755);
@@ -408,7 +408,7 @@ describe("shell VFS base composition", () => {
     // module's business and is tested there.
     const valid = await sourceImage(4 * MiB, 8 * MiB);
     const corrupt = valid.slice(0, Math.floor(valid.byteLength / 2));
-    const setCapacity = vi.spyOn(SffsImageFs.prototype, "setImageCapacity");
+    const setCapacity = vi.spyOn(KandeloImageFs.prototype, "setImageCapacity");
     try {
       await expect(
         loadShellBaseFileSystemFromImage(corrupt, 32 * MiB),
@@ -533,7 +533,7 @@ describe("shell VFS base composition", () => {
     expectContentsPreserved(fs);
 
     // And the snapshot is a loadable image carrying the same tree.
-    const restored = SffsImageFs.create();
+    const restored = KandeloImageFs.create();
     restored.loadImage(snapshot);
     expectContentsPreserved(restored);
   });

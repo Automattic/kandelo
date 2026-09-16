@@ -4,7 +4,7 @@
  * Exposes window.__runSqliteTest("select1.test", timeoutMs) for Playwright.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { writeVfsFile } from "@host/vfs/image-helpers";
 import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
@@ -50,7 +50,7 @@ let kernelBytes: ArrayBuffer | null = null;
 let vfsImageBytes: Uint8Array | null = null;
 let testfixtureBytes: ArrayBuffer | null = null;
 
-function readVfsFile(fs: SffsImageFs, path: string): Uint8Array {
+function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -96,7 +96,7 @@ async function collectArtifactsFromKernel(
   return artifacts.length > 0 ? artifacts : undefined;
 }
 
-function installTestrunnerPatches(fs: SffsImageFs): void {
+function installTestrunnerPatches(fs: KandeloImageFs): void {
   const runnerPath = "/sqlite/test/testrunner.tcl";
   const decoder = new TextDecoder();
   const runner = decoder.decode(readVfsFile(fs, runnerPath));
@@ -110,7 +110,7 @@ function installTestrunnerPatches(fs: SffsImageFs): void {
   ].join("\n"), 0o644);
 }
 
-async function createFs(): Promise<SffsImageFs> {
+async function createFs(): Promise<KandeloImageFs> {
   if (!vfsImageBytes) throw new Error("SQLite test VFS image not loaded");
   // WHY: chmod and Tcl patching mutate imported state before the worker sees
   // it, so a forged sealed cohort must fail before either operation.

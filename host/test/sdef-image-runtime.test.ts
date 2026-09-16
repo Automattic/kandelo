@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { buildImage } from "../../tools/mkrootfs/src/builder";
 
@@ -68,7 +68,7 @@ describe.skipIf(!available)("an SDEF image at runtime", () => {
       expect(Buffer.from(image).toString("latin1")).toContain("SDEF");
 
       // And the kernel's own loader reads all three facts back out of it.
-      const reader = SffsImageFs.create();
+      const reader = KandeloImageFs.create();
       reader.loadImage(image);
       const [file] = reader.lazyEntries().files;
       expect(file.path).toBe("/bin/tool");

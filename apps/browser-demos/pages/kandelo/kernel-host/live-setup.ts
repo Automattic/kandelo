@@ -23,7 +23,7 @@ import {
   WORDPRESS_MARIADB_SOCKET_PATH,
 } from "../../../lib/init/wordpress-mariadb-readiness";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
-import { SffsImageFs } from "../../../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
 import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
@@ -1164,13 +1164,13 @@ async function bootProfile(
   // `readImageMetadata` and `readImageCapacity` look like pure readers and are
   // not: each instantiates the module to read the image, because the module is
   // what knows the layout. Installing after them left the flagship demos
-  // failing to boot with "SffsImageFs.create() has no module bytes", which
+  // failing to boot with "KandeloImageFs.create() has no module bytes", which
   // reads as a missing artifact and is a missing await.
   //
   // `node-image-runtime.test.ts` asserts this ordering, so moving a bridge call
   // above this line fails a test rather than a demo.
   await ensureImageWriterInstalled();
-  const vfsMetadata = SffsImageFs.readImageMetadata(fetchedVfsImageBytes);
+  const vfsMetadata = KandeloImageFs.readImageMetadata(fetchedVfsImageBytes);
   assertVfsImageFitsProfile(
     // `byteLength` is the image as fetched; `maxByteLength` is what it
     // DECLARES it may grow to. The bridge reports only the declaration,
@@ -1178,7 +1178,7 @@ async function bootProfile(
     // hand is something the caller is already holding.
     {
       byteLength: fetchedVfsImageBytes.byteLength,
-      ...SffsImageFs.readImageCapacity(fetchedVfsImageBytes),
+      ...KandeloImageFs.readImageCapacity(fetchedVfsImageBytes),
     },
     profile.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
@@ -1206,7 +1206,7 @@ async function bootProfile(
   //
   // Same reader and writer the image was BUILT with now, so what it says
   // survives being read and written again.
-  const buildFs = SffsImageFs.create();
+  const buildFs = KandeloImageFs.create();
   buildFs.loadImage(fetchedVfsImageBytes);
   buildFs.setImageCapacity(profile.maxVfsByteLength);
   // Track as soon as the caller owns the staged filesystem. This covers every
@@ -1539,7 +1539,7 @@ function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
 }
 
 function stageShellUtilities(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   dashBytes: ArrayBuffer,
   bashBytes: ArrayBuffer,
 ): void {
@@ -1570,14 +1570,14 @@ function stageShellUtilities(
   }
 }
 
-function ensureDemoHomes(fs: SffsImageFs): void {
+function ensureDemoHomes(fs: KandeloImageFs): void {
   ensureDirRecursive(fs, "/home");
   ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
   ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
 }
 
 function ensureOwnedDir(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   path: string,
   mode: number,
   uid: number,
@@ -1589,7 +1589,7 @@ function ensureOwnedDir(
 }
 
 function patchWordPressRuntimeConfig(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   kind: WordPressDatabaseKind,
 ): void {
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
@@ -1630,7 +1630,7 @@ function patchWordPressRuntimeConfig(
   );
 }
 
-function patchMariaDbUnixSocketConfig(fs: SffsImageFs): void {
+function patchMariaDbUnixSocketConfig(fs: KandeloImageFs): void {
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
   ensureDirRecursive(fs, dirname(WORDPRESS_MARIADB_READY_FILE));
@@ -1669,7 +1669,7 @@ function patchMariaDbUnixSocketConfig(fs: SffsImageFs): void {
   patchPhpFpmMariaDbDependency(fs);
 }
 
-function ensureMariaDbReadyService(fs: SffsImageFs): void {
+function ensureMariaDbReadyService(fs: KandeloImageFs): void {
   ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
   writeVfsFile(
     fs,
@@ -1702,7 +1702,7 @@ restart = false
   );
 }
 
-function patchPhpFpmMariaDbDependency(fs: SffsImageFs): void {
+function patchPhpFpmMariaDbDependency(fs: KandeloImageFs): void {
   const phpFpmServicePath = "/etc/dinit.d/php-fpm";
   const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
   if (phpFpmService === null) return;
@@ -1728,7 +1728,7 @@ function patchPhpFpmMariaDbDependency(fs: SffsImageFs): void {
   }
 }
 
-function patchWordPressPersistentMysqli(fs: SffsImageFs): void {
+function patchWordPressPersistentMysqli(fs: KandeloImageFs): void {
   for (const path of [
     "/var/www/html/wp-includes/class-wpdb.php",
     "/var/www/html/wp-includes/wp-db.php",
@@ -2176,7 +2176,7 @@ function isLiveDemoId(id: string): id is LiveDemoId {
 }
 
 function readImageExperimentalTerminalSession(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
 ): ExperimentalTerminalSession {
   let stat;
   try {
@@ -2207,7 +2207,7 @@ function readImageExperimentalTerminalSession(
 }
 
 function assertImageTerminalProgram(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   program: ExperimentalTerminalProgram,
 ): void {
   const path = program.path;
@@ -2225,12 +2225,12 @@ function assertImageTerminalProgram(
   }
 }
 
-function readImageConfig(fs: SffsImageFs): KandeloDemoConfig | null {
+function readImageConfig(fs: KandeloImageFs): KandeloDemoConfig | null {
   return readKandeloDemoConfigFromVfs(fs);
 }
 
 function readOptionalVfsText(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   path: string,
 ): string | null {
   const bytes = readOptionalVfsFile(fs, path);
@@ -2240,7 +2240,7 @@ function readOptionalVfsText(
 }
 
 function readOptionalVfsFile(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   path: string,
 ): ArrayBuffer | null {
   try {
@@ -2261,7 +2261,7 @@ function isMissingVfsPath(err: unknown): boolean {
   return message.includes("No such file or directory");
 }
 
-function readVfsFile(fs: SffsImageFs, path: string): ArrayBuffer {
+function readVfsFile(fs: KandeloImageFs, path: string): ArrayBuffer {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {

@@ -38,7 +38,7 @@ inputs = [
   "host/src/vfs/vfs-image-transport.ts",
   "host/src/wasm-artifact-driver.ts",
   "host/src/wasm-artifact-module-registry.ts",
-  "images/vfs/lib/sffs-image-fs.ts",
+  "images/vfs/lib/kandelo-image-fs.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"

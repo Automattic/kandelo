@@ -32,7 +32,7 @@ import type {
 import { resolveLazyUrl } from "./lazy-url";
 import type { RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
 
-/** What `SffsImageFs.lazyEntries()` answers, named so this file need not import it. */
+/** What `KandeloImageFs.lazyEntries()` answers, named so this file need not import it. */
 export interface ModuleLazyEntries {
   files: readonly {
     path: string;

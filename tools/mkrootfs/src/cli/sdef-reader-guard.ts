@@ -1,4 +1,4 @@
-import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 
 /**
  * Refuse an image whose deferred files this tool cannot see.
@@ -21,7 +21,7 @@ import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
  * worse than one that is absent, because it reads as evidence.
  *
  * This is a boundary, not a fix. The fix is for these verbs to read with
- * `SffsImageFs` throughout — blocked because the seal verification they
+ * `KandeloImageFs` throughout — blocked because the seal verification they
  * perform has no module entry point, and adding one breaches
  * `sffsModuleEntryPoints` (ceiling 22, slack 0).
  */
@@ -31,7 +31,7 @@ export function refuseImageThisReaderCannotSee(
 ): void {
   const seenByThisReader = mfs.exportLazyEntries().length;
   if (seenByThisReader > 0) return;
-  const truth = SffsImageFs.create();
+  const truth = KandeloImageFs.create();
   truth.loadImage(bytes);
   const actual = truth.lazyEntries().files.length;
   if (actual === 0) return;

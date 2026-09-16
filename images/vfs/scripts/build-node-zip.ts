@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { FILE_MODES, OPEN_FLAGS } from "../../../host/src/generated/abi";
 import { walkAndWrite, writeVfsBinary } from "./vfs-image-helpers";
 import { ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
@@ -46,7 +46,7 @@ if (!nodeWasmPath || !npmSourceDir || !outputZip) {
 }
 
 // A memfs large enough for node.wasm (~29 MB) plus the npm dist (~15 MB).
-const fs = SffsImageFs.create();
+const fs = KandeloImageFs.create();
 // The declared capacity the product's publication gate checks the artifact
 // against. The SharedArrayBuffer it used to come from was never anything but
 // the old constructor's first argument.

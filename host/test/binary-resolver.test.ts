@@ -42,7 +42,7 @@ import {
 import { resetWasmArtifactModuleForTesting } from "../src/wasm-artifact-driver";
 import { useNodeWasmArtifactModule } from "../src/wasm-artifact-module-node";
 import type { VfsImageMetadata } from "../src/vfs/memory-fs";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   resolvePolicyBoundVfsWasmArtifact,
   tryResolveVfsArtifact,
@@ -258,7 +258,7 @@ async function vfsImage(
   // exactly one method on it, so which implementation produced the bytes is
   // not something any assertion here is about — and the TypeScript one is
   // being deleted.
-  const mfs = SffsImageFs.create();
+  const mfs = KandeloImageFs.create();
   const image = await mfs.saveImage(
     metadata === undefined ? undefined : { metadata },
   );

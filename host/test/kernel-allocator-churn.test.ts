@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { resolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const churnProgram = resolve(
@@ -22,7 +22,7 @@ function readArrayBuffer(path: string): ArrayBuffer {
 }
 
 async function spawnChurnRootfs(): Promise<Uint8Array> {
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   fs.mkdir("/bin", 0o755);
   fs.createFileWithOwner(
     "/bin/kernel_allocator_churn_test",

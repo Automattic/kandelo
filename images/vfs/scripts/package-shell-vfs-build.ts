@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { SffsImageFs } from "../lib/sffs-image-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import type {
   VfsImageFilesystem,
   VfsImageMetadata,
@@ -109,7 +109,7 @@ export function resolvePolicyBoundVfsWasmArtifact(
 
 export async function loadShellBaseFileSystem(
   maxByteLength: number,
-): Promise<SffsImageFs> {
+): Promise<KandeloImageFs> {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   return loadShellBaseFileSystemFromImage(
     new Uint8Array(readFileSync(shellImagePath)),
@@ -120,11 +120,11 @@ export async function loadShellBaseFileSystem(
 export async function loadShellBaseFileSystemFromImage(
   shellImage: Uint8Array,
   maxByteLength: number,
-): Promise<SffsImageFs> {
+): Promise<KandeloImageFs> {
   // The load AUTHENTICATES, inside the module's `sm_load_image`. There is no
   // window between importing the base and checking its activation cohorts, and
   // no second call for a caller to forget.
-  const fs = SffsImageFs.create();
+  const fs = KandeloImageFs.create();
   fs.loadImage(shellImage);
   const metadata = fs.getImageMetadata();
   const kernelAbi = metadata?.kernelAbi;
@@ -175,7 +175,7 @@ export function saveShellDerivedBuildGuestSnapshot(
 }
 
 export function saveShellDerivedVfsImage(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   outFile: string,
   options: Omit<
     SaveImageOptions,
@@ -300,7 +300,7 @@ function isExactPackageShellComposition(value: unknown): boolean {
   );
 }
 
-function validateExperimentalTerminalSession(fs: SffsImageFs): void {
+function validateExperimentalTerminalSession(fs: KandeloImageFs): void {
   const stat = fs.lstat(EXPERIMENTAL_TERMINAL_SESSION_PATH);
   if ((stat.mode & 0o170000) !== 0o100000) {
     throw new Error(
@@ -320,7 +320,7 @@ function validateExperimentalTerminalSession(fs: SffsImageFs): void {
   );
 }
 
-function readVfsBytes(fs: SffsImageFs, path: string): Uint8Array {
+function readVfsBytes(fs: KandeloImageFs, path: string): Uint8Array {
   const bytes = new Uint8Array(fs.stat(path).size);
   const fd = fs.open(path, 0, 0);
   try {

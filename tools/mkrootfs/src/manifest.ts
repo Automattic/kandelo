@@ -270,7 +270,7 @@ function validateRequiredExtras(node: ManifestNode, lineNumber: number, sourcePa
     // fix it. The kernel meets the same combination as a property of an image
     // already handed to it and demotes the bits instead of refusing the image,
     // because refusing lets one bad entry deny a whole boot — the same split
-    // `SffsImageFs.registerArchiveMember` makes, for the same reason.
+    // `KandeloImageFs.registerArchiveMember` makes, for the same reason.
     //
     // `lazy_size=` is not a substitute for `lazy_sha256=`: a substituting host,
     // a poisoned cache or a network position supplies a different file of the

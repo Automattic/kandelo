@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
-import type { SffsImageFs } from "../lib/sffs-image-fs";
+import type { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
 import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
@@ -24,7 +24,7 @@ export const PACKAGE_ROOTFS_SHELL_COMPOSITION = {
 
 /** Add the package-owned interactive toolset to an imported rootfs image. */
 export function populateSourceRootfsShellOverlay(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   populateShellRuntimeLayout(fs);

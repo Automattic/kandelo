@@ -1,12 +1,12 @@
 import { writeVfsBinary } from "../../../../../host/src/vfs/image-helpers";
-import type { SffsImageFs } from "../../../../../images/vfs/lib/sffs-image-fs";
+import type { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
 import type { DemoAssetConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 
 /** Stage image-declared assets before any privileged product is published. */
 export async function stageConfiguredAssets(
-  fs: SffsImageFs,
+  fs: KandeloImageFs,
   assets: DemoAssetConfig[],
   tick: (message: string) => void,
   assertCurrent: () => void,

@@ -42,7 +42,7 @@ const browserKernelModulePath = resolve(
 // so a page can transform it like any other module.
 const sffsImageFsModulePath = resolve(
   __dirname,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
 const sffsModuleWasmPath = resolve(
   __dirname,
@@ -107,7 +107,7 @@ async function runGcCycleFork(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { SffsImageFs } = await import(
+      const { KandeloImageFs } = await import(
         /* @vite-ignore */ sffsImageFsModuleUrl
       );
       const decoder = new TextDecoder();
@@ -155,7 +155,7 @@ async function runGcCycleFork(
       try {
         // A minimal image keeps this a BrowserKernel integration proof; the
         // fixture is self-contained and needs no rootfs.
-        const imageOwner = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+        const imageOwner = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
         const vfsImage = await imageOwner.saveImage();
         await kernel.initFromImage({ vfsImage });
         initialized = true;

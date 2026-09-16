@@ -13,7 +13,7 @@ const browserKernelModulePath = resolve(
 // so a page can transform it like any other module.
 const sffsImageFsModulePath = resolve(
   here,
-  "../../../images/vfs/lib/sffs-image-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
 const sffsModuleWasmPath = resolve(
   here,
@@ -51,7 +51,7 @@ test("a replacement Worker failure after exact-target commit is fatal", async ({
     const { BrowserKernel } = await import(
       /* @vite-ignore */ browserKernelModuleUrl
     );
-    const { SffsImageFs } = await import(
+    const { KandeloImageFs } = await import(
       /* @vite-ignore */ sffsImageFsModuleUrl
     );
     const decoder = new TextDecoder();
@@ -61,7 +61,7 @@ test("a replacement Worker failure after exact-target commit is fatal", async ({
       source: string;
       message: string;
     }> = [];
-    const image = SffsImageFs.create(new Uint8Array(sffsModuleBytes));
+    const image = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
     image.mkdir("/bin", 0o755);
     image.mkdir("/tmp", 0o755);
     image.createFileWithOwner(

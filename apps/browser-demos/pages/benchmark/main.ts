@@ -13,7 +13,7 @@
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { SffsImageFs } from "../../../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive } from "../../../../host/src/vfs/image-helpers";
 import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import {
@@ -91,7 +91,7 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
   return resp.arrayBuffer();
 }
 
-async function readVfsBytes(fs: SffsImageFs, path: string): Promise<ArrayBuffer> {
+async function readVfsBytes(fs: KandeloImageFs, path: string): Promise<ArrayBuffer> {
   // No `ensureMaterialized`. That asked a filesystem to fetch a deferred file
   // before reading it, which a BUILD-time image has no notion of: it holds what
   // it was given, and anything deferred is deferred for the kernel to fetch
@@ -109,7 +109,7 @@ async function readVfsBytes(fs: SffsImageFs, path: string): Promise<ArrayBuffer>
   }
 }
 
-async function readVfsText(fs: SffsImageFs, path: string): Promise<string> {
+async function readVfsText(fs: KandeloImageFs, path: string): Promise<string> {
   return new TextDecoder().decode(await readVfsBytes(fs, path));
 }
 

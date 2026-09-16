@@ -1,7 +1,7 @@
 import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
-import { SffsImageFs, SffsImageError } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
 import { writeVfsBinary } from "../src/vfs/image-helpers";
 import { OPEN_FLAGS } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
@@ -36,9 +36,9 @@ function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
  * tests ran off-target. This is the other half of that check: the same entry
  * points, reached through real wasm, from the language that will call them.
  */
-describe("SffsImageFs", () => {
+describe("KandeloImageFs", () => {
   it("builds a tree and reads it back", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
 
     fs.mkdir("/etc", 0o755);
     fs.writeFile("/etc/passwd", new TextEncoder().encode("root:x:0:0::/root:/bin/sh\n"), 0o644);
@@ -60,7 +60,7 @@ describe("SffsImageFs", () => {
   });
 
   it("reports metadata changes through chmod and chown", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/opt", 0o700, 1, 2);
     fs.chmod("/opt", 0o751);
     fs.chown("/opt", 5, -1);
@@ -72,7 +72,7 @@ describe("SffsImageFs", () => {
   });
 
   it("clears setuid on chown when asked, and not otherwise", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/keep", 0o755);
     fs.chmod("/keep", 0o4755);
     fs.chown("/keep", 1, 1);
@@ -85,21 +85,21 @@ describe("SffsImageFs", () => {
   });
 
   it("throws a named errno rather than a number", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     let caught: unknown;
     try {
       fs.lstat("/absent");
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(SffsImageError);
+    expect(caught).toBeInstanceOf(KandeloImageError);
     // The name comes from the GENERATED errno table, not a hand-written map.
     expect((caught as Error).message).toContain("ENOENT");
     expect((caught as Error).message).toContain("/absent");
   });
 
   it("reads through POSIX-shaped handles, as the helpers do", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.writeFile("/data", new TextEncoder().encode("hello world"), 0o644);
 
     // The read loop `vfs-image-helpers.ts` actually uses: open, read with a
@@ -132,7 +132,7 @@ describe("SffsImageFs", () => {
   });
 
   it("iterates directories through opendir/readdir/closedir", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/d", 0o755);
     for (const name of ["a", "b", "c"]) {
       fs.writeFile(`/d/${name}`, new Uint8Array(0), 0o644);
@@ -149,13 +149,13 @@ describe("SffsImageFs", () => {
   });
 
   it("rejects a handle it did not issue", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     expect(() => fs.close(999)).toThrow(/bad file handle/);
     expect(() => fs.readdir(999)).toThrow(/bad directory handle/);
   });
 
   it("registers a lazy file whose metadata is readable before any fetch", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.registerArchiveMember({
       path: "/usr/big",
@@ -176,7 +176,7 @@ describe("SffsImageFs", () => {
     // ABI, then drain the finished image. What comes out must be a CONTAINER,
     // because a bare SFFS body is not an image -- nothing can find the
     // filesystem inside it or the sections beside it.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.writeFile("/usr/hello", new TextEncoder().encode("hi"), 0o644);
 
@@ -199,7 +199,7 @@ describe("SffsImageFs", () => {
   });
 
   it("carries image metadata through the export without parsing it", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const metadata = { version: 1, kernelAbi: 44, createdBy: "a test" };
     fs.setImageMetadata(metadata);
     const image = fs.exportImage();
@@ -216,7 +216,7 @@ describe("SffsImageFs", () => {
     // The export is offset-addressable so a 249 MiB image never has to live in
     // the module's linear memory. A one-chunk read would pass even if it were
     // not, so this forces many chunks and checks the result is identical.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/d", 0o755);
     fs.writeFile("/d/big", new Uint8Array(300_000).fill(0x41), 0o644);
 
@@ -237,12 +237,12 @@ describe("SffsImageFs", () => {
     // current tree and streams in order, and seals cohorts at offset 0 — so
     // using it here would rebuild the image per read AND let a read mutate the
     // tree it is reading.
-    const source = SffsImageFs.create();
+    const source = KandeloImageFs.create();
     source.mkdir("/d", 0o755);
     source.writeFile("/d/f", new Uint8Array(9000).fill(0x5a), 0o644);
     const image = source.exportImage();
 
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(image);
 
     // Any offset, and deliberately out of order.
@@ -281,7 +281,7 @@ describe("SffsImageFs", () => {
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(SffsImageError);
+    expect(caught).toBeInstanceOf(KandeloImageError);
     expect((caught as Error).message).toContain("EINVAL");
   });
 
@@ -289,7 +289,7 @@ describe("SffsImageFs", () => {
     // The question builder recipes ask: "is this resident?" They asked it of
     // the TypeScript filesystem, which is the only reason they needed the
     // implementation rather than an interface.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.writeFile("/usr/here", new TextEncoder().encode("bytes"), 0o644);
     fs.registerArchiveMember({
@@ -327,7 +327,7 @@ describe("SffsImageFs", () => {
     // 79 files in the shipped shell image have this shape, and it is the shape
     // lane S's setuid defect is about. The bridge could not express it until
     // the archive declaration stopped being unconditional.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const url = new TextEncoder().encode("https://example.invalid/sudo#sha256:feed");
     fs.registerArchiveMember({
       path: "/sudo",
@@ -356,7 +356,7 @@ describe("SffsImageFs", () => {
     // The assertion builders make — "this image must ship with room to write" —
     // now comes back as a verdict computed in Rust rather than a statfs the
     // caller has to turn into one.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.writeFile("/f", new TextEncoder().encode("hello"), 0o644);
 
     const ok = fs.checkHeadroom(0, 0);
@@ -377,7 +377,7 @@ describe("SffsImageFs", () => {
     // second is what bounds the fetch. Two lengths for one archive would make
     // that bound depend on registration order, so it is refused rather than
     // resolved.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     const member = (ino: number, archiveBytes: number) => ({
       path: `/usr/m${ino}`,
@@ -401,7 +401,7 @@ describe("SffsImageFs", () => {
     // already lazy, and with `lstat` it re-registered `/bin/coreutils` and
     // failed the build on an undeclared dependency — in a product build, which
     // is where this was found. The filesystem this replaces resolves the path.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     fs.mkdir("/bin", 0o755);
@@ -430,12 +430,12 @@ describe("SffsImageFs", () => {
     // large capacity, write files, then save with metadata. The image came out
     // sized to its own tree and failed its product profile at the publication
     // gate — in a product build, which is where it was found.
-    const base = SffsImageFs.create();
+    const base = KandeloImageFs.create();
     base.mkdir("/etc", 0o755);
     base.setImageCapacity(64 * 1024 * 1024);
     const image = base.exportImage();
 
-    const derived = SffsImageFs.create();
+    const derived = KandeloImageFs.create();
     derived.loadImage(image);
     expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
 
@@ -444,7 +444,7 @@ describe("SffsImageFs", () => {
     expect(derived.exportCapacityBytes()).toBe(64 * 1024 * 1024);
 
     // And it reaches the artifact, not just the live tree.
-    expect(SffsImageFs.readImageCapacity(derived.exportImage()).maxByteLength)
+    expect(KandeloImageFs.readImageCapacity(derived.exportImage()).maxByteLength)
       .toBe(64 * 1024 * 1024);
   });
 
@@ -452,7 +452,7 @@ describe("SffsImageFs", () => {
     // What replaces `exportLazyEntries` and `exportLazyArchiveEntries`: the
     // builders' "this step disturbed nothing" check, asked of the module that
     // owns the tree rather than of a second filesystem that mirrored it.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/opt", 0o755);
     fs.registerLazyFile("/opt/solo", "https://example.invalid/solo.wasm", 4242, 0o755);
     fs.registerArchiveMember({
@@ -496,14 +496,14 @@ describe("SffsImageFs", () => {
     // question, and a confusing one to meet from a builder that was handed the
     // bytes of a shipped artifact. Decompression is transport and happens in
     // the bridge, exactly where the filesystem this replaces put it.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/etc", 0o755);
     fs.writeFile("/etc/hello", new TextEncoder().encode("hi"), 0o644);
     const image = fs.exportImage();
     const compressed = new Uint8Array(zstdCompressSync(image));
     expect(compressed).not.toEqual(image);
 
-    const back = SffsImageFs.create();
+    const back = KandeloImageFs.create();
     back.loadImage(compressed);
     expect(new TextDecoder().decode(back.readFile("/etc/hello"))).toBe("hi");
   });
@@ -514,7 +514,7 @@ describe("SffsImageFs", () => {
     // while the first is being registered. The module completes the seal at
     // the export door, and loading the image back is what proves it did --
     // load refuses a cohort that does not authenticate.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/opt", 0o755);
     const encoder = new TextEncoder();
     for (const [id, name] of [[3, "tools"], [4, "docs"]] as const) {
@@ -532,7 +532,7 @@ describe("SffsImageFs", () => {
     }
     const image = fs.exportImage();
 
-    const back = SffsImageFs.create();
+    const back = KandeloImageFs.create();
     expect(() => back.loadImage(image)).not.toThrow();
   });
 
@@ -542,7 +542,7 @@ describe("SffsImageFs", () => {
     // the producer would seal a cohort of one that was meant to be two, every
     // digest would agree, and the image would activate partially -- which is
     // the thing atomic activation exists to prevent.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/opt", 0o755);
     fs.registerArchiveMember({
       path: "/opt/tools",
@@ -562,7 +562,7 @@ describe("SffsImageFs", () => {
     // The bridge takes a FRESH memory view on every access because sm_alloc can
     // grow linear memory and detach older views. A cached view is the classic
     // wasm bridge bug: correct until the first growing allocation.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const big = new Uint8Array(4 * 1024 * 1024).fill(0x41);
     fs.writeFile("/big", big, 0o644);
     const back = fs.readFile("/big");
@@ -576,7 +576,7 @@ describe("SffsImageFs", () => {
     // with O_WRONLY|O_CREAT|O_TRUNC, write the whole buffer, close. Typechecking
     // the bridge against the interface proves the methods EXIST; this proves
     // they work, which is the part the repoint actually depends on.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     writeVfsBinary(fs, "/usr/bin/prog", new Uint8Array([1, 2, 3, 4, 5]), 0o755);
@@ -589,14 +589,14 @@ describe("SffsImageFs", () => {
     // them would not have been harmless: a second build writing a SHORTER file
     // over a longer one would have kept the old file's tail. The image would
     // build, mount and boot, containing bytes nobody wrote.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     writeVfsBinary(fs, "/f", new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]), 0o644);
     writeVfsBinary(fs, "/f", new Uint8Array([1, 2, 3]), 0o644);
     expect(fs.readFile("/f")).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   it("writes at a position past the end by zero-filling the gap", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const fd = fs.open("/sparse", O_WRONLY_CREAT_TRUNC, 0o644);
     fs.write(fd, new Uint8Array([7, 7]), 4, 2);
     fs.close(fd);
@@ -610,7 +610,7 @@ describe("SffsImageFs", () => {
     // because its file is empty and both spellings give the same answer. Only
     // an EXISTING file longer than the write can tell them apart: the mutant
     // truncates everything past the patch.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.writeFile("/patch", new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 0o644);
     const fd = fs.open("/patch", OPEN_FLAGS.O_WRONLY, 0o644);
     fs.write(fd, new Uint8Array([9, 9]), 2, 2);
@@ -624,7 +624,7 @@ describe("SffsImageFs", () => {
     // A caller handing over a larger buffer and a smaller length is how a
     // partial write is expressed. Taking the whole buffer would write bytes
     // the caller did not offer, and report a count it did not ask for.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const fd = fs.open("/partial", O_WRONLY_CREAT_TRUNC, 0o644);
     const took = fs.write(fd, new Uint8Array([1, 2, 3, 4, 5]), 0, 2);
     fs.close(fd);
@@ -633,14 +633,14 @@ describe("SffsImageFs", () => {
   });
 
   it("opens a missing path only when asked to create it", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     expect(() => fs.open("/absent", OPEN_FLAGS.O_RDONLY, 0o644)).toThrow();
     // And the failed open must not have left the file behind.
     expect(() => fs.lstat("/absent")).toThrow();
   });
 
   it("advances its own cursor when no position is given", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const fd = fs.open("/seq", O_WRONLY_CREAT_TRUNC, 0o644);
     fs.write(fd, new Uint8Array([1, 2]), null, 2);
     fs.write(fd, new Uint8Array([3, 4]), null, 2);
@@ -649,7 +649,7 @@ describe("SffsImageFs", () => {
   });
 
   it("follows symlinks for stat and stops at the link for lstat", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.writeFile("/target", new Uint8Array([1, 2, 3]), 0o644);
     fs.symlink("/target", "/link", 0, 0);
     expect(fs.stat("/link").size).toBe(3);
@@ -658,7 +658,7 @@ describe("SffsImageFs", () => {
   });
 
   it("resolves a relative symlink against the link's own directory", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/d", 0o755);
     fs.writeFile("/d/target", new Uint8Array([1, 2, 3, 4]), 0o644);
     fs.symlink("target", "/d/link", 0, 0);
@@ -666,7 +666,7 @@ describe("SffsImageFs", () => {
   });
 
   it("refuses a symlink cycle rather than following it forever", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.symlink("/b", "/a", 0, 0);
     fs.symlink("/a", "/b", 0, 0);
     expect(() => fs.stat("/a")).toThrow();
@@ -677,7 +677,7 @@ describe("SffsImageFs", () => {
     // and the cycle test still passes, just slowly — H-11's mutant detectable
     // only by hanging. A chain measures the bound directly and in bounded time:
     // thirty-nine links resolve, forty-one do not.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.writeFile("/end", new Uint8Array([1]), 0o644);
     fs.symlink("/end", "/hop0", 0, 0);
     for (let i = 1; i < 60; i += 1) {
@@ -688,13 +688,13 @@ describe("SffsImageFs", () => {
   });
 
   it("reads back the metadata an image declared, not what this bridge set", () => {
-    const source = SffsImageFs.create();
+    const source = KandeloImageFs.create();
     source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
     source.writeFile("/f", new Uint8Array([1]), 0o644);
     const image = source.exportImage();
 
     // A different instance, which declared nothing.
-    const derived = SffsImageFs.create();
+    const derived = KandeloImageFs.create();
     expect(derived.getImageMetadata()).toBeNull();
     derived.loadImage(image);
     expect(derived.getImageMetadata()).toEqual({
@@ -711,12 +711,12 @@ describe("SffsImageFs", () => {
     // before the fix it re-sent the bridge's own null and cleared the base's
     // declared ABI — losing, in the same session, the declaration the load had
     // just restored.
-    const source = SffsImageFs.create();
+    const source = KandeloImageFs.create();
     source.setImageMetadata({ version: 1, kernelAbi: 44 });
     source.writeFile("/f", new Uint8Array([1]), 0o644);
     const image = source.exportImage();
 
-    const derived = SffsImageFs.create();
+    const derived = KandeloImageFs.create();
     derived.loadImage(image);
     derived.setImageCapacity(64 * 1024 * 1024);
 
@@ -726,7 +726,7 @@ describe("SffsImageFs", () => {
   });
 
   it("registers a whole archive under its mount prefix", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const id = fs.registerLazyArchive({
       url: "https://example.invalid/tools.zip",
       mountPrefix: "/opt/tools",
@@ -755,7 +755,7 @@ describe("SffsImageFs", () => {
     // The reason the validator is shared rather than reimplemented: a path is
     // resolved AFTER it is joined to the prefix, so this member would land in
     // /etc rather than under /opt/tools.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     expect(() => fs.registerLazyArchive({
       url: "https://example.invalid/evil.zip",
       mountPrefix: "/opt/tools",
@@ -768,7 +768,7 @@ describe("SffsImageFs", () => {
     // Planned before created: a member rejected halfway must not leave a
     // partial tree. A half-registered archive is worse than a refused one,
     // because the image builds and is missing exactly what nobody checked for.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     expect(() => fs.registerLazyArchive({
       url: "https://example.invalid/partial.zip",
       mountPrefix: "/opt/partial",
@@ -785,7 +785,7 @@ describe("SffsImageFs", () => {
     // hex the builders speak becomes the value the format stores. Covered here
     // and not only through `tools/mkrootfs`, because a bridge tested solely by
     // its callers is a bridge whose own failures look like theirs.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     const digest = "a1".repeat(32);
@@ -811,7 +811,7 @@ describe("SffsImageFs", () => {
     // an unverified setuid binary — and the whole value of the field is that
     // its absence is deliberate. The message carries the string because the
     // caller that wrote it is the one that has to find it.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     const register = (digest: string) =>
       fs.registerLazyFile("/x", "https://example.invalid/x", 1, 0o755, digest);
 
@@ -831,7 +831,7 @@ describe("SffsImageFs", () => {
     // `getLazyEntry` that always answered null would collapse the pair into
     // the second half alone and drop exactly the URL-backed case — which is
     // the case the setuid-binary assertions are about.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.writeFile("/eager", new Uint8Array([1, 2, 3]), 0o755);
     fs.registerLazyFile("/lazy-single", "https://example.invalid/x.bin", 4096, 0o755);
     fs.registerLazyArchive({
@@ -863,27 +863,27 @@ describe("SffsImageFs", () => {
     // The static form, for callers that hold bytes and want to know what they
     // declare — a publication gate checking an artifact's ABI, say — rather
     // than callers building a tree.
-    const source = SffsImageFs.create();
+    const source = KandeloImageFs.create();
     source.setImageMetadata({ version: 1, kernelAbi: 44, createdBy: "the test" });
     source.writeFile("/f", new Uint8Array([1]), 0o644);
     const image = source.exportImage();
 
-    expect(SffsImageFs.readImageMetadata(image)).toEqual({
+    expect(KandeloImageFs.readImageMetadata(image)).toEqual({
       version: 1,
       kernelAbi: 44,
       createdBy: "the test",
     });
 
     // An image declaring none says so, rather than throwing.
-    const bare = SffsImageFs.create();
+    const bare = KandeloImageFs.create();
     bare.writeFile("/f", new Uint8Array([1]), 0o644);
-    expect(SffsImageFs.readImageMetadata(bare.exportImage())).toBeNull();
+    expect(KandeloImageFs.readImageMetadata(bare.exportImage())).toBeNull();
   });
 
   it("gives each instance an independent tree", () => {
-    const a = SffsImageFs.create();
+    const a = KandeloImageFs.create();
     a.mkdir("/only-in-a", 0o755);
-    const b = SffsImageFs.create();
+    const b = KandeloImageFs.create();
     expect(() => b.lstat("/only-in-a")).toThrow();
     expect(a.lstat("/only-in-a").mode & 0o7777).toBe(0o755);
   });
@@ -901,7 +901,7 @@ describe("owner-carrying creation, against MemoryFileSystem", () => {
       "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
     );
 
-    const bridge = SffsImageFs.create();
+    const bridge = KandeloImageFs.create();
     bridge.mkdirWithOwner("/usr", 0o755, 0, 0);
     bridge.createFileWithOwner(
       "/usr/sudo", 0o4755, 0, 0, new TextEncoder().encode("x"),
@@ -924,7 +924,7 @@ describe("owner-carrying creation, against MemoryFileSystem", () => {
       "/home/maker/.profile", 0o640, 1000, 1001, new TextEncoder().encode("hi"),
     );
 
-    const bridge = SffsImageFs.create();
+    const bridge = KandeloImageFs.create();
     bridge.mkdirWithOwner("/home", 0o755, 0, 0);
     bridge.mkdirWithOwner("/home/maker", 0o750, 1000, 1001);
     bridge.createFileWithOwner(
@@ -951,7 +951,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   const digest = "c".repeat(64);
 
   it("refuses a set-user-ID lazy file with no digest", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     expect(() => fs.registerLazyFile("/usr/bin/sudo", "bin/sudo.wasm", 120, 0o4755))
@@ -959,7 +959,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   });
 
   it("refuses a set-group-ID lazy file with no digest", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     expect(() => fs.registerLazyFile("/usr/bin/wall", "bin/wall.wasm", 40, 0o2755))
@@ -967,7 +967,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   });
 
   it("names both bits when both are set, so the message matches the file", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     expect(() => fs.registerLazyFile("/usr/bin/both", "bin/both.wasm", 40, 0o6755))
@@ -981,7 +981,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   // Registered WITHOUT set-ID bits, so the refusal under test is the length
   // one and not the set-ID one that follows it.
   it("refuses a digest that is not exactly 32 bytes, rather than treating it as none", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     for (const length of [16, 31, 33, 64]) {
@@ -1001,7 +1001,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   });
 
   it("accepts the same registration once a digest is declared", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     fs.registerLazyFile("/usr/bin/sudo", "bin/sudo.wasm", 120, 0o4755, digest);
@@ -1013,7 +1013,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   // by containing it, and asking for a digest would be asking a file to hash
   // itself.
   it("leaves a resident set-user-ID file alone", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);
     fs.mkdir("/usr/bin", 0o755);
     fs.writeFile("/usr/bin/sudo", new TextEncoder().encode("resident"), 0o4755);
@@ -1024,7 +1024,7 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
   // extracted from bytes that were verified whole, so the check belongs on the
   // archive and one rule covers both shapes.
   it("refuses a set-user-ID archive member whose archive declares no digest", () => {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.mkdir("/opt", 0o755);
     expect(() =>
       fs.registerArchiveMember({

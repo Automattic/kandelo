@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { resolveLazyUrl } from "../src/vfs/lazy-url";
 import type { SerializedLazyArchiveEntry } from "../src/vfs/memory-fs";
-import { SffsImageFs } from "../../images/vfs/lib/sffs-image-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { createBaseImageFromContainer } from "../src/vfs/module-base-image";
 import { imageReadFromContainer } from "../src/vfs/rootfs-lazy-archives";
 
@@ -41,7 +41,7 @@ describe("a module-backed base image", () => {
     source.registerLazyFile("/opt/two.bin", "https://example.test/two", 22, 0o755);
     const container = await source.saveImage();
 
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -71,7 +71,7 @@ describe("a module-backed base image", () => {
     const restored = MemoryFileSystem.fromImage(container);
     const incumbent = bodyWindowOracle(restored);
 
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.loadImage(container);
     const { imageRead } = createBaseImageFromContainer(
       container,
@@ -201,7 +201,7 @@ describe("a module-backed base image", () => {
     // no host-side JSON sections at all. Reading only the sections would give
     // an empty list for an image that has a deferred file, which is a load
     // failure reported as a successful load of nothing.
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyFile("/opt/one.bin", "assets/one.bin", 11, 0o644);
     const container = await module.saveImage();
@@ -214,7 +214,7 @@ describe("a module-backed base image", () => {
     // state step 5 would have shipped.
     expect(blind.baseImage.exportLazyEntries()).toEqual([]);
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -235,7 +235,7 @@ describe("a module-backed base image", () => {
     // Both kinds in one image. A member's bytes come from its archive, and its
     // descriptor is not a URL — reporting it as a standalone lazy file would
     // hand the pipe a fetch target that is not one.
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyFile("/opt/standalone.bin", "assets/one.bin", 11, 0o644);
     module.registerArchiveMember({
@@ -252,7 +252,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -275,7 +275,7 @@ describe("a module-backed base image", () => {
     source.registerLazyFile("/opt/one.bin", "assets/one.bin", 11, 0o644);
     const container = await source.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     // Proves the premise rather than assuming it: the module really does hold
     // an empty descriptor for this image.
@@ -294,7 +294,7 @@ describe("a module-backed base image", () => {
   });
 
   it("reconstructs a module-built image's archives, members included", async () => {
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyArchive({
       url: "archives/tool.zip",
@@ -304,7 +304,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -351,7 +351,7 @@ describe("a module-backed base image", () => {
   it("keeps each archive's members its own, and standalone files out of both", async () => {
     // TWO archives plus a standalone file. With one archive, a grouping bug is
     // invisible: everything lands in the only bucket there is.
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerLazyFile("/opt/loose.bin", "assets/loose.bin", 3, 0o644);
     module.registerLazyArchive({
@@ -368,7 +368,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -400,7 +400,7 @@ describe("a module-backed base image", () => {
     view.setUint32(4, 0xffff, true);
     envelope.set(new TextEncoder().encode("{}"), 8);
 
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerArchiveMember({
       path: "/opt/member",
@@ -418,7 +418,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -431,7 +431,7 @@ describe("a module-backed base image", () => {
   });
 
   it("refuses a module-built archive whose descriptor it cannot parse", async () => {
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerArchiveMember({
       path: "/opt/member",
@@ -450,7 +450,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,
@@ -471,7 +471,7 @@ describe("a module-backed base image", () => {
     // untrusted input, since an image can arrive from a shared link. Now it is
     // a typed field the section decoder already checked, and its absence is a
     // refusal rather than an archive that mounts and silently never activates.
-    const module = SffsImageFs.create();
+    const module = KandeloImageFs.create();
     module.mkdir("/opt", 0o755);
     module.registerArchiveMember({
       path: "/opt/member",
@@ -487,7 +487,7 @@ describe("a module-backed base image", () => {
     });
     const container = await module.saveImage();
 
-    const reader = SffsImageFs.create();
+    const reader = KandeloImageFs.create();
     reader.loadImage(container);
     const { baseImage } = createBaseImageFromContainer(
       container,

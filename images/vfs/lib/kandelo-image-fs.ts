@@ -27,7 +27,7 @@ import { planLazyArchiveEntries } from "../../../host/src/vfs/lazy-archive-paths
  */
 
 /** Metadata a builder reads back, as `lstat` returns it. */
-export interface SffsStat {
+export interface KandeloImageStat {
   mode: number;
   uid: number;
   gid: number;
@@ -115,15 +115,15 @@ const ERRNO_NAMES: ReadonlyMap<number, string> = new Map(
   Object.entries(ERRNO).map(([name, value]) => [value as number, name]),
 );
 
-export class SffsImageError extends Error {
+export class KandeloImageError extends Error {
   constructor(readonly errno: number, operation: string, path: string) {
     const name = ERRNO_NAMES.get(errno) ?? `errno ${errno}`;
     super(`${name}: ${operation} ${path}`);
-    this.name = "SffsImageError";
+    this.name = "KandeloImageError";
   }
 }
 
-export class SffsImageFs {
+export class KandeloImageFs {
   private constructor(private readonly exports: ModuleExports) {}
 
   /**
@@ -151,7 +151,7 @@ export class SffsImageFs {
       const same = installedModuleBytes.byteLength === bytes.byteLength;
       if (!same) {
         throw new Error(
-          "SffsImageFs already has module bytes installed and they differ "
+          "KandeloImageFs already has module bytes installed and they differ "
             + `(${installedModuleBytes.byteLength} bytes vs ${bytes.byteLength}). `
             + "Two trees in one session built by different writers is not a "
             + "state anything downstream can notice.",
@@ -165,7 +165,7 @@ export class SffsImageFs {
   static create(
     moduleBytes: Uint8Array = defaultModuleBytes(),
     rootMode = 0o755,
-  ): SffsImageFs {
+  ): KandeloImageFs {
     // No import object: the module has no import section.
     //
     // `moduleBytes.buffer` rather than the view: since TypeScript 5.7 a
@@ -180,7 +180,7 @@ export class SffsImageFs {
         ) as ArrayBuffer,
       ),
     );
-    const fs = new SffsImageFs(instance.exports as unknown as ModuleExports);
+    const fs = new KandeloImageFs(instance.exports as unknown as ModuleExports);
     fs.check(fs.exports.sm_reset(rootMode, 0, 0), "reset", "/");
     return fs;
   }
@@ -219,7 +219,7 @@ export class SffsImageFs {
   }
 
   private check(rc: number, operation: string, path: string): number {
-    if (rc < 0) throw new SffsImageError(-rc, operation, path);
+    if (rc < 0) throw new KandeloImageError(-rc, operation, path);
     return rc;
   }
 
@@ -352,7 +352,7 @@ export class SffsImageFs {
     this.mkdir(path, mode, uid, gid);
   }
 
-  lstat(path: string): SffsStat {
+  lstat(path: string): KandeloImageStat {
     // `out_len === 0` is the module's one size-probe convention, shared with
     // `sm_read_dir` and `sm_check_headroom`. Queried rather than hardcoded, so
     // nothing here bakes in a record length the module could change.
@@ -505,7 +505,7 @@ export class SffsImageFs {
    * itself already has `lstat`, and a module entry point that differed only by
    * a boolean would be a second spelling of the same question.
    */
-  stat(path: string): SffsStat {
+  stat(path: string): KandeloImageStat {
     // POSIX requires a bounded chain; forty is far above any real tree and far
     // below anything that could hang a build on a symlink cycle.
     let current = path;
@@ -517,7 +517,7 @@ export class SffsImageFs {
         ? target
         : `${current.slice(0, current.lastIndexOf("/") + 1)}${target}`;
     }
-    throw new SffsImageError(ERRNO.ELOOP, "stat", path);
+    throw new KandeloImageError(ERRNO.ELOOP, "stat", path);
   }
 
   /**
@@ -995,7 +995,7 @@ export class SffsImageFs {
       // are the reason, and throwing would discard them. Anything else is a
       // real error.
       if (rc !== 0 && rc !== -ERRNO.EDOM) {
-        throw new SffsImageError(-rc, "checkHeadroom", "");
+        throw new KandeloImageError(-rc, "checkHeadroom", "");
       }
       return {
         met: rc === 0,
@@ -1262,7 +1262,7 @@ export class SffsImageFs {
    */
   static readImageMetadata(image: Uint8Array): VfsImageMetadata | null {
     // `loadImage` decompresses, so this reads a `.vfs.zst` too.
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(image);
     return fs.getImageMetadata();
   }
@@ -1276,7 +1276,7 @@ export class SffsImageFs {
    * base without paying 256 MiB to find out.
    */
   static readImageCapacity(image: Uint8Array): { maxByteLength: number } {
-    const fs = SffsImageFs.create();
+    const fs = KandeloImageFs.create();
     fs.loadImage(image);
     return { maxByteLength: fs.exportCapacityBytes() };
   }
@@ -1590,11 +1590,11 @@ function defaultModuleBytes(): Uint8Array {
     | undefined;
   if (nodeFs === undefined) {
     throw new Error(
-      "SffsImageFs.create() has no module bytes. Outside Node it cannot read "
+      "KandeloImageFs.create() has no module bytes. Outside Node it cannot read "
         + "sffs_module32.wasm from disk, so the host must install them once at "
-        + "boot with SffsImageFs.installModuleBytes(bytes) — the browser does "
+        + "boot with KandeloImageFs.installModuleBytes(bytes) — the browser does "
         + "this in apps/browser-demos/lib/kernel-owned-boot.ts — or pass them "
-        + "per call: SffsImageFs.create(moduleBytes).",
+        + "per call: KandeloImageFs.create(moduleBytes).",
     );
   }
   const root = `${import.meta.dirname}/../../..`;
