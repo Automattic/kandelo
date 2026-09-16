@@ -393,7 +393,7 @@ rather than a fix.
 
 | spec | trials | result |
 |---|---|---|
-| `deferred-url-reader` | 4 | 0 survived, 0 invalid, 0 timed out |
+| `deferred-uri-provider` (was `deferred-url-reader`) | 8 | last run 4/4 clean; 8 trials not yet run after the URI relay |
 | `bridge` | 36 | 0 survived, 0 invalid, 0 timed out |
 | `module-base-image` | 13 | **1 survived** — see B42 |
 
@@ -3068,7 +3068,7 @@ Two tests went with the function. They pinned positioned reads, end-of-file, an
 undeclared inode and the EAGAIN/EIO mapping, and every one is already pinned
 for the pipe against a real fetch rather than against a filesystem's throw.
 The id-overlap guard was repointed and strengthened, and then perturbed:
-`deferred-url-reader.json` now has a fourth trial that widens the archive
+`deferred-uri-provider.json` (then `deferred-url-reader.json`) had a fourth trial widening the archive
 branch to swallow FILE reads. **4 trials, 0 survived.**
 
 **No budgeted surface covers `rootfs-lazy-archives.ts`**, so there was nothing
@@ -7887,6 +7887,22 @@ one that may hold a stale symlink.
 ---
 
 # LANE Y — VFS image builders write the image format in TypeScript
+
+> **2026-09-15 — the lane's Node work is landed, and the browser is not.**
+> `tools/mkrootfs` writes the rootfs with the Rust writer, the URI relay landed
+> (B42), the host's id->URL table is gone, and B43 closed as a side effect. Then
+> reading the browser boot path found **B45**: the browser re-saves that same
+> `SDEF` image through the legacy TypeScript writer, and all 65 lazy binaries
+> become zero-byte files marked complete. It is filed, measured on the real
+> artifact, and scoped — its fix has no API gap and is mostly subtraction.
+>
+> **This lane is not finishable on Node alone, and B45 is the proof.** The
+> stated closure condition — zero files under `images/` importing `memory-fs` —
+> was met while `apps/browser-demos/` still round-trips every image through it.
+> The condition measured one directory; the defect lives in another. That is a
+> lesson about closure conditions, not only about this lane: a condition that
+> names a PATH rather than a PROPERTY closes when the code moves, not when the
+> duplication ends.
 
 > **CLOSED 2026-09-13** on its stated condition: zero files under `images/`
 > import `memory-fs` or `sharedfs-vendor`, down from 36. Two things it does NOT
