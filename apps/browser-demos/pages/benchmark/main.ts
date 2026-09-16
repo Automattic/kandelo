@@ -126,7 +126,7 @@ async function runProgram(
   argv: string[],
 ): Promise<{ exitCode: number; stdout: string }> {
   let stdout = "";
-  const vfsImage = await finalizeKernelOwnedImage(createEmptyBuildFs());
+  const vfsImage = await finalizeKernelOwnedImage(await createEmptyBuildFs());
   const kernel = new BrowserKernel({
     kernelOwnedFs: true,
     maxWorkers: 4,
@@ -162,7 +162,7 @@ async function runProgramWithExecMap(
   let stdout = "";
   // Bake the exec-map entries into the image as lazy files; the worker fetches
   // them on demand when the child execs them.
-  const buildFs = createEmptyBuildFs();
+  const buildFs = await createEmptyBuildFs();
   for (const e of execMap) {
     buildFs.registerLazyFile(e.path, e.url, e.size, 0o755);
   }
@@ -344,7 +344,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const buildFs = restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 256 * 1024 * 1024,
   });
   const vfsImage = await finalizeKernelOwnedImage(buildFs);
@@ -483,7 +483,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   // Assemble the image in a transient build FS: base WP image + config +
   // dynamic wp-config/mu-plugin, minus any stale database. The kernel worker
   // then owns the live VFS (kernelOwnedFs).
-  const buildFs = restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
@@ -647,7 +647,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     fetchWasm(kernelWasmUrl),
     vfsResp.arrayBuffer(),
   ]);
-  const buildFs = restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   const mariadbBytes = await readVfsBytes(buildFs, "/usr/sbin/mariadbd");

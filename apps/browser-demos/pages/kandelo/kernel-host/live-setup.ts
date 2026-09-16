@@ -28,6 +28,7 @@ import {
   resolveBrowserCorsProxyConfig,
 } from "../../../lib/browser-cors-proxy";
 import {
+  ensureImageWriterInstalled,
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
   trackTransientImageBuffer,
@@ -1195,6 +1196,7 @@ async function bootProfile(
   //
   // Same reader and writer the image was BUILT with now, so what it says
   // survives being read and written again.
+  await ensureImageWriterInstalled();
   const buildFs = SffsImageFs.create();
   buildFs.loadImage(fetchedVfsImageBytes);
   buildFs.setImageCapacity(profile.maxVfsByteLength);

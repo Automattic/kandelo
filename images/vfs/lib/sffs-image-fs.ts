@@ -134,6 +134,34 @@ export class SffsImageFs {
    * for no benefit. `WebAssembly.Module` from bytes is fine at build time;
    * the size limit that makes it a problem in a browser does not apply.
    */
+  /**
+   * Install the module bytes every later {@link create} will use.
+   *
+   * For a host that cannot read a file — the browser — called once during boot
+   * with bytes it fetched. Node needs this never: it reads
+   * `local-binaries/sffs_module32.wasm` itself.
+   *
+   * Idempotent for the same bytes and REFUSES a different module once one is
+   * installed. Swapping it mid-session would mean two trees in one process
+   * built by different writers, which nothing downstream is equipped to detect
+   * and which would show up as an unreadable image much later.
+   */
+  static installModuleBytes(bytes: Uint8Array): void {
+    if (installedModuleBytes !== null) {
+      const same = installedModuleBytes.byteLength === bytes.byteLength;
+      if (!same) {
+        throw new Error(
+          "SffsImageFs already has module bytes installed and they differ "
+            + `(${installedModuleBytes.byteLength} bytes vs ${bytes.byteLength}). `
+            + "Two trees in one session built by different writers is not a "
+            + "state anything downstream can notice.",
+        );
+      }
+      return;
+    }
+    installedModuleBytes = bytes;
+  }
+
   static create(
     moduleBytes: Uint8Array = defaultModuleBytes(),
     rootMode = 0o755,
@@ -1538,7 +1566,22 @@ const STAT_FIELD = {
  * string a bundler cannot follow. A browser reaching here gets a clear
  * instruction instead of a missing-module crash three frames deeper.
  */
+/**
+ * Module bytes installed by a host that cannot read a file.
+ *
+ * The browser is that host. `create()` is synchronous — it instantiates a
+ * `WebAssembly.Module` and returns a tree — while fetching an asset is not, so
+ * a browser cannot supply the bytes at the call. It installs them ONCE at boot
+ * instead, and every later `create()` is as synchronous as Node's.
+ *
+ * Deliberately not a "provider" callback: a callback would let the bytes
+ * change between two trees in one session, and two trees built by different
+ * modules is a difference nothing downstream is prepared to notice.
+ */
+let installedModuleBytes: Uint8Array | null = null;
+
 function defaultModuleBytes(): Uint8Array {
+  if (installedModuleBytes !== null) return installedModuleBytes;
   const runtime = (globalThis as {
     process?: { getBuiltinModule?: (id: string) => unknown };
   }).process;
@@ -1547,8 +1590,11 @@ function defaultModuleBytes(): Uint8Array {
     | undefined;
   if (nodeFs === undefined) {
     throw new Error(
-      "SffsImageFs.create() cannot read sffs_module32.wasm outside Node. "
-        + "Pass the module bytes explicitly: SffsImageFs.create(moduleBytes).",
+      "SffsImageFs.create() has no module bytes. Outside Node it cannot read "
+        + "sffs_module32.wasm from disk, so the host must install them once at "
+        + "boot with SffsImageFs.installModuleBytes(bytes) — the browser does "
+        + "this in apps/browser-demos/lib/kernel-owned-boot.ts — or pass them "
+        + "per call: SffsImageFs.create(moduleBytes).",
     );
   }
   const root = `${import.meta.dirname}/../../..`;

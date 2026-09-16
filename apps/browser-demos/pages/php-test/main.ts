@@ -50,7 +50,7 @@ let activeOutput: { stdout: string; stderr: string; output: string } | null = nu
 async function createFs(vfsImageBytes: Uint8Array): Promise<SffsImageFs> {
   // WHY: the test runner rewrites permissions and source files immediately.
   // Authenticate imported lazy-tree seals before any fixture mutation.
-  const fs = restoreVerifiedImageForBuild(vfsImageBytes, {
+  const fs = await restoreVerifiedImageForBuild(vfsImageBytes, {
     maxByteLength: 2 * 1024 * 1024 * 1024,
   });
   // NOT rewritten. This used to resolve the image's canonical rootfs

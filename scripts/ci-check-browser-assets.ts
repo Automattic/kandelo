@@ -11,18 +11,28 @@ import {
 } from "../apps/browser-demos/browser-binary-imports.mjs";
 import {
   browserForkModule32ModuleSpecifier,
+  browserSffsModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRootfsModuleSpecifier,
   browserWasiModule32ModuleSpecifier,
 } from "../apps/browser-demos/browser-module-contract.mjs";
 
-// The co-resident side modules, keyed by the same specifiers the Vite alias
-// plugin resolves. Kept here rather than as bare strings so a new side module
-// cannot be added to the browser contract without this check noticing: the
-// specifier constants are the one place that list is written down.
-const CORESIDENT_SIDE_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
+// The wasm modules the browser needs beyond the kernel, keyed by the same
+// specifiers the Vite alias plugin resolves. Kept here rather than as bare
+// strings so a new module cannot be added to the browser contract without this
+// check noticing: the specifier constants are the one place that list is
+// written down.
+//
+// The first two are CO-RESIDENT in the kernel. The third is not: the image
+// writer runs at BUILD time, in the page, to assemble the boot image. It is on
+// this list anyway because the question the list answers is "will the browser
+// find every wasm module it imports", and the answer for a build-time module is
+// as load-bearing as for a co-resident one — the browser cannot boot without an
+// image.
+const BROWSER_WASM_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
   [browserForkModule32ModuleSpecifier, "fork_module32.wasm"],
   [browserWasiModule32ModuleSpecifier, "wasi_module32.wasm"],
+  [browserSffsModule32ModuleSpecifier, "sffs_module32.wasm"],
 ];
 
 export function browserAssetImportsForPolicy(
@@ -48,7 +58,7 @@ export function browserAssetImportsForPolicy(
     // and would have been green for `@wasi-module32-wasm` too. A gate whose
     // coverage is a hardcoded list silently stops covering whatever is added
     // next to it.
-    ...CORESIDENT_SIDE_MODULE_ARTIFACTS.map(([specifier]) => specifier),
+    ...BROWSER_WASM_MODULE_ARTIFACTS.map(([specifier]) => specifier),
     ...browserImports.map((relPath) =>
       `@binaries/${relPath}`
     ),
@@ -71,7 +81,7 @@ function resolveAssetImport(spec: string): string {
   if (pathPart === "@rootfs-vfs") {
     return resolveRootfsVfs();
   }
-  const sideModule = CORESIDENT_SIDE_MODULE_ARTIFACTS
+  const sideModule = BROWSER_WASM_MODULE_ARTIFACTS
     .find(([specifier]) => specifier === pathPart);
   if (sideModule) {
     return resolveBinary(sideModule[1]);

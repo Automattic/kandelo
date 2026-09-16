@@ -9,6 +9,7 @@
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
 import { SffsImageFs } from "../../../images/vfs/lib/sffs-image-fs";
+import sffsModuleUrl from "@sffs-module32-wasm?url";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
@@ -105,10 +106,42 @@ export async function finalizeKernelOwnedImage(buildFs: SffsImageFs): Promise<Ui
  * the load and unloads on failure, so an unverified loaded image is
  * unrepresentable rather than merely discouraged.
  */
-export function restoreVerifiedImageForBuild(
+/**
+ * Fetch the image-writer module and install it, once per page.
+ *
+ * `SffsImageFs.create()` is synchronous and a fetch is not, so the browser
+ * cannot supply module bytes at the call the way Node can (Node reads
+ * `local-binaries/sffs_module32.wasm` off disk). It installs them here first,
+ * and every later create is as synchronous as Node's.
+ *
+ * MUST be awaited before the first `createEmptyBuildFs` or
+ * `restoreVerifiedImageForBuild` on a page. Forgetting it is loud: the bridge
+ * throws naming this function, rather than falling back to a reader that
+ * cannot see an `SDEF` section, which is what B45 was.
+ */
+let moduleInstall: Promise<void> | null = null;
+export function ensureImageWriterInstalled(): Promise<void> {
+  // One promise per page, not one fetch per call: concurrent boots share it,
+  // and a second demo switching images does not refetch a module that cannot
+  // have changed.
+  moduleInstall ??= (async () => {
+    const response = await fetch(sffsModuleUrl);
+    if (!response.ok) {
+      throw new Error(
+        `failed to fetch the VFS image writer (${response.status} ${response.statusText}) `
+          + `from ${sffsModuleUrl}`,
+      );
+    }
+    SffsImageFs.installModuleBytes(new Uint8Array(await response.arrayBuffer()));
+  })();
+  return moduleInstall;
+}
+
+export async function restoreVerifiedImageForBuild(
   image: Uint8Array,
   options?: { maxByteLength?: number },
-): SffsImageFs {
+): Promise<SffsImageFs> {
+  await ensureImageWriterInstalled();
   const fs = SffsImageFs.create();
   fs.loadImage(image);
   // A declared ceiling, not a reservation: the bridge grows its own memory
@@ -119,7 +152,10 @@ export function restoreVerifiedImageForBuild(
   return fs;
 }
 
-export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): SffsImageFs {
+export async function createEmptyBuildFs(
+  maxByteLength = 64 * 1024 * 1024,
+): Promise<SffsImageFs> {
+  await ensureImageWriterInstalled();
   // No `SharedArrayBuffer`. The bridge owns its own module memory and grows it
   // as the tree does, so `maxByteLength` stops being an up-front reservation
   // and becomes what the exported image DECLARES — the same change
@@ -135,7 +171,7 @@ export function createEmptyBuildFs(maxByteLength = 64 * 1024 * 1024): SffsImageF
  * starting point.
  */
 export async function createBuildFsWithEtc(maxByteLength = 64 * 1024 * 1024): Promise<SffsImageFs> {
-  const buildFs = createEmptyBuildFs(maxByteLength);
+  const buildFs = await createEmptyBuildFs(maxByteLength);
   await overlayEtcFromRootfs(buildFs, await fetchRootfsBytes());
   return buildFs;
 }

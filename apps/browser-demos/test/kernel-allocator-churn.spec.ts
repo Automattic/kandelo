@@ -110,7 +110,7 @@ test("kernel allocations and reusable exports remain bounded under churn in Chro
           if (!Number.isSafeInteger(size) || size <= 0) {
             throw new Error(`program response has invalid content length: ${size}`);
           }
-          const buildFs = createEmptyBuildFs();
+          const buildFs = await createEmptyBuildFs();
           buildFs.registerLazyFile(spawnChildPath, programUrl, size, 0o755);
           vfsImage = await finalizeKernelOwnedImage(buildFs);
         }
