@@ -4951,7 +4951,31 @@ list rather than by reading every assertion. Across the 26:
 |---|---|---|---|
 | **host floor** | **4** | `advisory-lock-kernel`, `host-file-offset`, `node-host-mounts`, `vfs` | **TRIM** — they import `NodePlatformIO` / `HostFileSystem` / `OpfsFileSystem` and test the host's own filesystems. `MemoryFileSystem` is one row among backends. |
 | **lazy/deferred** | **12** | `lazy-tree`, `lazy-archive`, `package-deferred-tree`, the `vfs-image-*` family, … | **BLOCKED** — an image carrying lazy entries stays on `MemoryFileSystem` until the overlay reads module metadata, which is the worker-flip decision. |
-| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `vfs/image-helpers` ✅, `shell-lazy-archive-inputs` | **PORT or DELETE**, assertion by assertion. **Seven done, one left.** |
+| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `vfs/image-helpers` ✅, `shell-lazy-archive-inputs` ⛔ | **PORT or DELETE**, assertion by assertion. **Seven done; the eighth is blocked, see below.** |
+
+**`shell-lazy-archive-inputs` was tried and reverted, and the blocker is a
+VOCABULARY rather than a capability.** The repoint itself is trivial — the
+function under test, `registerDeclaredShellLazyArchive`, already takes
+`VfsImageFilesystem` and already PREFERS `fs.registerLazyArchive`, the bridge's
+form, falling back to the positional one "deleted along with
+`MemoryFileSystem`". So building the fixture with `KandeloImageFs` exercises
+the branch that survives, which is strictly better coverage.
+
+Twelve of its tests then fail on one line: `fs.exportLazyArchiveEntries()`.
+That method returns `SerializedLazyArchiveEntry[]` — the legacy wire shape —
+and the bridge answers the same question through `lazyEntries()` in the
+module's own vocabulary (`path`, `ino`, `size`, `archiveId`, `sourcePath`,
+`descriptor`, `uri`, `digest`). The FACT being asserted is identical: this
+archive was registered at this URL under this prefix with these members.
+
+So the work is rewriting those assertions in the new vocabulary, not adding a
+method. **That matters**, because `exportLazyArchiveEntries` is the plan's own
+"needs surface that does not exist" row, and the honest reading is that it does
+not need to exist — the surface it names is a SHAPE the tests assert in, and
+the bridge already answers the question in its own.
+
+Reverted rather than half-landed, because a file where some fixtures are built
+by one producer and some by another is worse than either.
 
 **Two of those were already done and the table did not know.** Re-measured
 2026-09-16: `derived-vfs-symlink.test.ts` and `wordpress-source-layout.test.ts`
