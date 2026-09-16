@@ -130,11 +130,22 @@ mutation that had passed the entire fork suite now fails on the first call.
   `wasm-gc-reference-transport` (1) — the last of which does not have "fork" in
   its name, so a grep for fork specs misses it and lands on 17.
 
-  NOT re-run for `a5e101770`, which changes `host/src/fork-module-backend.ts` —
-  shared host TypeScript the browser kernel worker loads, not module-only.
-  Under the host-runtime parity contract that makes this line evidence about
-  `9bc5309e1`, not about HEAD. Re-running that set is the one obligation still
-  open on `a5e101770`.
+  RE-RUN for `a5e101770`, which changes `host/src/fork-module-backend.ts` —
+  shared host TypeScript the browser kernel worker loads, not module-only, so
+  the host-runtime parity contract makes it a cross-host change. **18 passed,
+  exit 0, 2.0 minutes**, Chromium, at `d3099c7c1`. Playwright's own
+  "Running 18 tests using 6 workers" confirms the six-file set above IS the 18,
+  independently of counting `test(` calls.
+
+  **What that establishes and what it does not.** It is PARITY evidence: the
+  browser fork paths still work with the changed file. It is not evidence that
+  the REWIND is exercised there — the rewind only matters across multiple forks
+  in one worker, and what these specs' programs do inside the kernel was not
+  established. The rewind itself is verified on the Node side by
+  `host/test/fork-module-staging-rewind.test.ts`, which asserts an identical
+  staging address across 32 forks and fails under both perturbations. Saying
+  "18/18 green" without that distinction would claim the browser proved
+  something it was not asked to.
 - **Surface budget**: 99 checks pass. TWO ceilings were RAISED. The second is
   `forkTypeScript` 886 → 890, four lines for the staging-slab rewind (census
   204), taken after a check for something to bank found every method in
