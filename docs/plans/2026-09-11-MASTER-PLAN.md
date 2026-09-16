@@ -740,7 +740,47 @@ defect again, one layer up. Removing it is host-lane work, not lane Y's.
 `DEFAULT_MOUNT_SPEC` at all, so the browser may be unaffected — but B40 blocks
 the suite that would say.
 
-## B45 — the browser rebuilds the rootfs image through the legacy writer, losing every address
+## B45 — the browser rebuilds the rootfs image through the legacy writer — FIXED 2026-09-15, browser run pending
+
+**Both steps landed.** Step 1 (`83d3e052c`) stopped the browser rewriting lazy
+URLs into the image; step 2 (`812521b23`) made both halves of the round trip
+`SffsImageFs`, the writer the image was built with. `eb7fa1468` deleted what
+step 1 made dead.
+
+**What the fix actually removed, beyond the round trip:**
+
+* `bindImageOwnedRuntimeUrls`, and with it `rewriteLazyFileUrls` /
+  `rewriteLazyArchiveUrls`, whose only remaining callers it was. Addressing now
+  travels beside the image as a TABLE, keyed by the address the image records —
+  computed from what the deployment imports, never from what the image
+  contains, which is the enumeration that made this defect silent.
+* `assertShellLazyUrlsResolved`, which had INVERTED: it failed the boot if a
+  build-time address survived in the image, and a build-time address in the
+  image is now the correct state. A guard that has inverted is worse than one
+  that is dead, because it still runs.
+* `verifyImportedSealsForCurrentBoot`, because `loadImage` verifies cohorts
+  inside the load — taking with it the careful reasoning about not opening a
+  microtask gap between the check and the effects depending on it. There is no
+  await left to open one.
+* `network-demo-worker`'s round trip entirely: nothing replaced its rewriting,
+  because the other branch of the same function already mounted the image as
+  written, so the raw addresses had to work anyway.
+
+**A boundary the migration found rather than imposed.** `MemoryFileSystem` does
+two jobs — it BUILDS images and it serves as a live `FileSystemBackend`.
+`SffsImageFs` does only the first. So `load-image.ts` split along that line:
+the building role moved, the backend role stayed, each under a name that says
+which it is. Migrating the backend role is a separate job with a different end
+state, since the kernel owns `/` and the remaining host backends are the ones
+it does not claim.
+
+**Still owed: the browser run.** Everything above is typecheck-and-Node
+evidence. The bar, set by the maintainer, is NO NEW FAILURES against lane Y's
+fourteen named ones — not a pass count, because a test can change character
+under `SDEF` without anything being wrong.
+
+### The defect as filed
+
 
 **OPEN. Found 2026-09-15 by reading the browser boot path after the URI relay
 landed on Node, then MEASURED on Node rather than left as a reading.** Not yet
