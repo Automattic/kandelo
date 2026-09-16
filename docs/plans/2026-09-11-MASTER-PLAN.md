@@ -4951,7 +4951,7 @@ list rather than by reading every assertion. Across the 26:
 |---|---|---|---|
 | **host floor** | **4** | `advisory-lock-kernel`, `host-file-offset`, `node-host-mounts`, `vfs` | **TRIM** — they import `NodePlatformIO` / `HostFileSystem` / `OpfsFileSystem` and test the host's own filesystems. `MemoryFileSystem` is one row among backends. |
 | **lazy/deferred** | **12** | `lazy-tree`, `lazy-archive`, `package-deferred-tree`, the `vfs-image-*` family, … | **BLOCKED** — an image carrying lazy entries stays on `MemoryFileSystem` until the overlay reads module metadata, which is the worker-flip decision. |
-| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `shell-lazy-archive-inputs`, `vfs/image-helpers` | **PORT or DELETE**, assertion by assertion. **Six done, two left.** |
+| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `vfs/image-helpers` ✅, `shell-lazy-archive-inputs` | **PORT or DELETE**, assertion by assertion. **Seven done, one left.** |
 
 **Two of those were already done and the table did not know.** Re-measured
 2026-09-16: `derived-vfs-symlink.test.ts` and `wordpress-source-layout.test.ts`
@@ -4984,6 +4984,12 @@ than "repoint":
 
 The seventh is the barrel check (`writeBrowserVfsBinary === writeVfsBinary`)
 and touches no filesystem at all.
+
+**Done `bc1ac33d3`, exactly as read.** The four mocks name `VfsImageFilesystem`;
+"stages every byte" is built by `KandeloImageFs` and passes unchanged; the
+ENOSPC test keeps its `MemoryFileSystem` and now carries the reason in a
+comment, so the next reader does not re-derive it. 7 passed, budget 101 passed,
+tsc unchanged at 25.
 | **builder helper** | **1** | `mariadb-image-helpers` | repoint the fixture |
 
 **So the genuine porting work is SIX files, not twenty-six**, and the twelve
