@@ -1035,7 +1035,7 @@ are in `docs/surface-budget.json`; the argument for each is in
 |---|---|---|---|
 | `forkGuestImportsUnserved` | **0** | 0 | **met** |
 | `forkAtticImports` | **0** | 0 | **met** |
-| `forkGuestObjectImportsUnserved` | 3 | 0 | see below |
+| `forkGuestObjectImportsUnserved` | **2** | 0 (see below) | the two left look like the real floor |
 | `forkModuleEntriesWithoutProductionCaller` | 2 | 0 | both are pending capability, not dead code |
 | `forkModuleHostEntries` | 59 | 5 (see below) | move section-parsing into the module — **deferred to a follow-up** |
 | `forkTypeScript` | 887 | 484 | module-facing half; mostly the backend wrapper |
@@ -1070,13 +1070,27 @@ maintainer: it is a coherent piece with its own validation surface, and
 `crates/host-native` is not built by the host suite, so it needs an explicit
 `cargo check`.
 
-**The three object imports.** `__wpk_fork_module_activation` is genuinely the
-host's: it is per-activation and known only at instantiation, and one module
-instance serves every activation. The other two are open:
-`__wpk_fork_resume_table` could be module-owned exactly as the anyref transit
-table now is (the injector defines and exports it; M1 proved the pattern), and
-`__wpk_fork_module_state_table_generation_addr` is a placement the module could
-make in its own statics. Neither is done.
+**The object imports: 3 → 2 on 2026-09-16, and the target of 0 needs a look.**
+`__wpk_fork_resume_table` moved into the module (census 198). It had been
+argued as floor — "Rust cannot hold a funcref, so the table has to exist
+outside the module" — where the premise is true and the conclusion does not
+follow: nothing has to HOLD a funcref for a funcref table to exist, and the
+injector declares it in six lines exactly as it declares the anyref transit
+table.
+
+The two left look like the real floor. `__wpk_fork_module_activation` is a hard
+no: it is per-activation, and ONE module instance serves every activation, so
+the module cannot have a different value per guest.
+`__wpk_fork_module_state_table_generation_addr` is a maybe — the module could
+place the fence in its own statics, but the guest imports its ADDRESS as an
+immutable global, and a global initializer computing `__memory_base + offset`
+needs the extended-const proposal. That is worth a probe before anyone budgets
+for it, not an assumption either way.
+
+**So `forkGuestObjectImportsUnserved`'s target of 0 is in the same position as
+`forkModuleHostEntries`' target of 5**: possibly unreachable without diluting,
+and worth restating rather than leaving as a number someone will eventually
+meet the wrong way.
 
 **The resume-slot double numbering is the one hazard that closing the lane
 should remove, and it is still live.** `host/src/fork-resume-table.ts` and
