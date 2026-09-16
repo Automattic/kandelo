@@ -798,7 +798,13 @@ rule someone forgets, and the typechecker then found all ten call sites.
    produced an alarming "179 failed" that meant nothing. Reconcile against the
    baseline with `--project=chromium`.
 2. **Browser validation must follow the LAST commit that touches `images/`,
-   `tools/` or `crates/`.** Those move the closure cache keys (B38's churn), and
+   `tools/` or `crates/`.** *(Applied 2026-09-16: the chromium run taken
+   today is a BEFORE measurement — it establishes the pre-existing failure set
+   and makes the browser-spec repoint's effect readable — and it does NOT
+   satisfy this rule for the final claim, because the `mountPrefix`
+   normalization and the spec repoints both touch `images/`. The remaining
+   `images/`-touching work is therefore batched and ONE further run closes it,
+   rather than a run per increment.)* Those move the closure cache keys (B38's churn), and
    a stale closure makes vite fail every test with "Package artifact closure is
    incomplete" — which looks like a catastrophic regression and is a
    provisioning state. The first browser attempt of the night was thrown away
