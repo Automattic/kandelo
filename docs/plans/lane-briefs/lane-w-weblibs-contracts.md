@@ -79,9 +79,10 @@ change pulls you into `host/src/`, stop and say so rather than widening.
 - **Gate on exit codes, never on piped output.**
 - Browser-facing changes are not complete from code reasoning. Use
   `./run.sh browser` with `--port N --strictPort` (5401 collides across
-  workspaces). Note `build-rootfs.sh` is currently broken by a 404 from
-  `ftpmirror.gnu.org` in `packages/registry/bash/package.toml`; that is with
-  the maintainer and is not yours.
+  workspaces). The build is GREEN as of 2026-09-15 — `./run.sh setup` reaches
+  real exit code 0 and the browser suite runs to completion at 164 passed /
+  14 failed, all fourteen on the documented pre-existing list. **If you see a
+  build failure, it is probably yours.**
 
 ## When you have something to merge
 
