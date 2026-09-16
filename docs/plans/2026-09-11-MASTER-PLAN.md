@@ -8297,6 +8297,16 @@ calling — `(kind: number, id: bigint, ...)` became `(uri: string, ...)` when t
 seam's contract changed. No logic, one line fewer. The alternative was weakening
 the type to dodge the rule.
 
+**V-NAME changed no behaviour, checked by SET and not by count.** The full host
+suite went 94 failures to 92 across the rename: two newly PASSING
+(`node-lazy-archive-runtime`, `php-test-lazy-assets`, both fixed earlier in the
+night) and one newly failing —
+`tests/package-system/shell-lazy-url-resolution.test.ts`, whose import my
+caller census missed because I swept `apps/`, `host/` and `web-libs/` and not
+`tests/`. Repaired in `6314fc941`, and the property it guards is better asked
+of the mapping than of a fixture. Setup after the rename: `"outcome":"succeeded"`,
+zero failed nodes.
+
 **Open, in the order I would take them**: the four magic bytes (V-NAME's last
 step, deliberately left — see its section); the four image-adjacent browser
 failures; a true Node baseline, which is still owed because every claim about
