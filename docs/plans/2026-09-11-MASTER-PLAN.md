@@ -9715,6 +9715,30 @@ in isolation.
 So the branch introduces no browser failure the baseline does not have, and
 four tests that previously never ran now run and pass.
 
+**THE CLOSING RUN — 2026-09-16, after the `mountPrefix` normalization and a
+re-provision:** `165 passed / 14 failed / 6 skipped / 9 did not run` (17.0m).
+
+Against the morning's `168 / 14 / 6 / 6`, three passes became three
+did-not-runs. **The failure COUNT was identical at 14 both times, and the
+count was hiding a swap** — the failing set diffed by name shows one test
+leaving it and one joining:
+
+* gone: *"WordPress SQLite reaches the installer…"* (moved to did-not-run)
+* new: *"shell command runner executes dash like the browser shell demo"*,
+  which had PASSED at 46.0s that morning.
+
+All four are in `node-host-counterparts.spec.ts`, which runs serially. **Re-run
+in isolation: 3 passed, 1 failed, 1 did not run** — which is the documented
+baseline shape for that file exactly, with the flipped test passing in 44.9s
+and both `nginx` cases that "did not run" passing too. So the whole difference
+is one load-induced timeout on a 45-second kernel boot plus the three tests
+that never ran behind it.
+
+**Nothing regressed across the `mountPrefix` commit**, and comparing counts
+would have said "identical, 14 failures" and been wrong. This is the third time
+this branch has been saved by diffing sets rather than counts, and the first
+where the count was *exactly* right while the set had moved in both directions.
+
 **This is a BEFORE measurement, not the closing one.** The `mountPrefix`
 normalization landed after it and touches `images/`, which moves closure cache
 keys (B38), so one further run closes the claim — see the rule above and the
