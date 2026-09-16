@@ -28,8 +28,13 @@ import {
 /**
  * The imports a JS host must implement itself, because wasm cannot.
  *
- * `provenance_externref` reads a handle off a token and keys a map by object
- * identity.
+ * `provenance_externref` used to be here, to key a `WeakMap` by object
+ * identity at the value's production site. Nothing ever read that map. The
+ * capture asks the host for a handle directly, through
+ * `__wpk_fork_host_externref_handle`, at the moment it needs one -- so the
+ * recording had no reader and the import had no work to do. The injector now
+ * serves it as the identity function it always was, which is the one thing
+ * Rust cannot write and injected wasm can.
  *
  * `table_state_owned` used to be here for a related reason and is not any more.
  * The host still ELECTS which coordinate owns a physical table -- that compares
@@ -63,7 +68,6 @@ import {
 const FORK_IMPORT_PREFIX = "__wpk_fork_";
 
 export interface ForkGuestHostFloor {
-  readonly __wpk_fork_ref_provenance_externref: (value: unknown) => unknown;
   readonly __wpk_fork_ref_exn_ingress_throw: (recipe: number) => void;
   readonly __wpk_fork_ref_exn_broker_throw_recipe: (recipe: number) => void;
 }
@@ -72,7 +76,6 @@ export interface ForkGuestHostFloor {
 export const FORK_GUEST_HOST_FLOOR_NAMES = [
   "__wpk_fork_ref_exn_broker_throw_recipe",
   "__wpk_fork_ref_exn_ingress_throw",
-  "__wpk_fork_ref_provenance_externref",
 ] as const;
 
 /**

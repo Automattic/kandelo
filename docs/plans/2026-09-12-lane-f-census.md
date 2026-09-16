@@ -9920,3 +9920,57 @@ The lane has added nothing to it. Of those 67:
   parent still measures the broad glob at 19,804). That reconciliation is the
   maintainer's, and it is the one thing standing between this branch and a
   clean merge.
+
+## §191 -- A hook whose only job was to remember something nobody recalls
+
+`__wpk_fork_ref_provenance_externref` is one of the 46 fork imports every JS
+host had to implement. `fork-instrument` emits a call to it at each site where
+a host import PRODUCES an externref the guest then holds, and its host body
+did exactly one thing: write `value -> broker handle` into a `WeakMap`, then
+return the value unchanged so the guest's own data flow is undisturbed.
+
+**Nothing ever read that map.** `createForkGuestHostFloor` returned it as
+`provenanceOf`, and `provenanceOf` had no caller anywhere in the tree --
+`worker-main.ts` destructured `.floor` and dropped the rest at all three
+construction sites. This file's own comment argued at length why the recording
+was NOT redundant with a lookup, citing the attic's
+`ForkExternrefProvenanceTable` and native's `ExternrefProvenanceRegistry`: a
+reverse lookup at capture time "cannot distinguish a genuine host-import
+production from a GC-internalized value that merely reached the same code
+path". That argument is sound and it was answering a question nobody was
+asking. Both the argument and the map served a capture design that no longer
+exists.
+
+What replaced it: the module's capture asks the host for a handle at the moment
+it needs one, through `__wpk_fork_host_externref_handle`, which reads the
+handle off the broker token the value already is. The distinction the map
+existed to preserve is preserved differently -- by WHEN the question is asked
+(during the capture of a value the module already decided to claim) rather than
+by what was remembered earlier.
+
+So the import's whole remaining behaviour was `|value| value`. That is not
+something Rust can write -- an externref cannot pass through a Rust function
+signature -- but it is exactly what the walrus injector can emit, and it joins
+the five shims already there for the same reason. `inject_provenance_externref`
+builds a one-instruction `local.get 0` function and exports it under the
+canonical import name; `buildForkGuestImports` binds module exports before it
+ever consults the floor, so the host stops being asked.
+
+**What came off the host:** the `WeakMap` and its production-site body, the
+`tryEncodeExternref` dep and its three wirings in `worker-main.ts`, the
+`provenanceOf` accessor and its interface member, the floor member, its entry
+in `FORK_GUEST_HOST_FLOOR_NAMES`, and three unit tests. `forkGuestImportsUnserved`
+banks 3 -> 2. What is left at 2 is the `exn_*` pair, and §174 already records
+the drive-slot shape that would serve those from the module -- they are a
+maintainer deferral, not a capability limit.
+
+**What went on:** one line, `encode` joining `ForkExternrefResolver`, so the
+capability has the inverse direction it needs. Paid for by deleting
+`createReferenceIdentity`'s `issued` counter, which was `next - 1` written out
+longhand: two tallies of one event, which is a drift bug waiting for the day
+someone increments only one. `forkTypeScript` banks 894 -> 893.
+
+The general shape, worth carrying to the remaining imports: **an import whose
+body reads as bookkeeping is a candidate for having no reader.** Check the
+readers before porting the writer. The comments will argue for the design the
+code used to have.

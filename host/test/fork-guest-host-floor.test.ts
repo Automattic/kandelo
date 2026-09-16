@@ -8,11 +8,7 @@ import {
 import { WPK_FORK_REQUIRED_IMPORTS } from "../src/generated/abi";
 
 function deps(overrides: Partial<Parameters<typeof createForkGuestHostFloor>[0]> = {}) {
-  return {
-    tryEncodeExternref: () => undefined,
-    ownsTableState: () => true,
-    ...overrides,
-  };
+  return { ...overrides };
 }
 
 describe("fork host identity floor", () => {
@@ -45,19 +41,6 @@ describe("fork host identity floor", () => {
         },
       }),
     ).not.toThrow();
-  });
-
-  it("records provenance at the production site and passes the value through", () => {
-    const token = { handle: 42 };
-    const { floor, provenanceOf } = createForkGuestHostFloor(
-      deps({ tryEncodeExternref: (v) => (v === token ? 42 : undefined) }),
-    );
-    const returned = floor.__wpk_fork_ref_provenance_externref(token);
-    // Pass-through matters: this runs at the value's production site, so
-    // returning anything else would substitute a different reference into the
-    // guest's own data flow.
-    expect(returned).toBe(token);
-    expect(provenanceOf(token)).toBe(42);
   });
 
   it("delegates both throws to the activation's exported throwers", () => {
@@ -108,42 +91,13 @@ describe("fork host identity floor", () => {
     );
   });
 
-  it("gives NO provenance to a handle-carrying value that never crossed the production site", () => {
-    // The distinction the whole map exists for, and the one thing that makes it
-    // more than a cache of `tryEncodeExternref`.
-    //
-    // Both values below carry a broker handle, so `tryEncodeExternref` answers
-    // for both. Only `produced` passed through the host-import body. A capture
-    // that treated `internalized` as host-produced would be the unsoundness the
-    // attic's `ForkExternrefProvenanceTable` names: a reverse lookup at capture
-    // time "cannot distinguish a genuine host-import production from a
-    // GC-internalized value that merely reached the same code path".
-    const produced = { tag: "produced" };
-    const internalized = { tag: "internalized" };
-    const { floor, provenanceOf } = createForkGuestHostFloor(
-      deps({
-        tryEncodeExternref: (v) =>
-          v === produced ? 7 : v === internalized ? 9 : undefined,
-      }),
-    );
-    floor.__wpk_fork_ref_provenance_externref(produced);
-    expect(provenanceOf(produced)).toBe(7);
-    // Never passed through the import body -- so no provenance, even though its
-    // handle is readable. Answering 9 here would pass a lookup-only
-    // implementation and lose the distinction entirely.
-    expect(provenanceOf(internalized)).toBeUndefined();
-  });
-
-  it("records nothing for a value with no self-describing handle", () => {
-    const plain = {};
-    const { floor, provenanceOf } = createForkGuestHostFloor(deps());
-    expect(floor.__wpk_fork_ref_provenance_externref(plain)).toBe(plain);
-    expect(provenanceOf(plain)).toBeUndefined();
-    // Primitives are not recordable and must not throw on the way through.
-    expect(floor.__wpk_fork_ref_provenance_externref(5)).toBe(5);
-    expect(floor.__wpk_fork_ref_provenance_externref(null)).toBe(null);
-  });
-
+  // The three provenance tests that stood here are gone with the member. The
+  // import survives; the HOST implementation of it does not. It recorded a
+  // `WeakMap` of value -> handle at the production site that nothing ever read,
+  // so once the capture started asking the host for a handle directly it was a
+  // pure identity function -- and an identity function over an `externref` is
+  // something injected wasm can be, which is where it lives now.
+  //
   // The two `encode_funcref` tests that stood here are gone with the member:
   // the module serves `__wpk_fork_ref_encode_funcref` now, given the one host
   // capability it needed. Its coverage moved to the V8 capture harness, where

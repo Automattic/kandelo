@@ -33,6 +33,17 @@
  */
 export interface ForkExternrefResolver {
   materialize(handle: number): object;
+  /**
+   * The inverse: live host reference -> the handle it already carries, or
+   * `null`/`undefined` when it carries none.
+   *
+   * READ BACK, never minted. A value with no self-describing handle is a
+   * documented boundary, not an error -- the capture records no externref for
+   * it and the drive plan simply has one fewer step. This is the direction
+   * CAPTURE needs, and the module asks for it at the moment it needs it rather
+   * than having the host remember every value that ever crossed an import.
+   */
+  encode(value: unknown): number | null | undefined;
 }
 
 export interface ForkModuleHostCapabilitiesOptions {
@@ -111,7 +122,6 @@ function createReferenceIdentity(importName: string) {
   const objects = new WeakMap<object, number>();
   const primitives = new Map<unknown, number>();
   let next = 1;
-  let issued = 0;
   const identify = (value: unknown): number => {
     if (value === null || value === undefined) {
       // The generator publishes identity only for a value it is about to
@@ -135,10 +145,12 @@ function createReferenceIdentity(importName: string) {
     const id = next++;
     if (isObject) objects.set(value as object, id);
     else primitives.set(value, id);
-    issued += 1;
     return id;
   };
-  return { identify, issued: () => issued };
+  // `issued` is not a second counter: it is `next` read back. Keeping one of
+  // its own would be a second tally of the same event, and two tallies of one
+  // event are a drift bug waiting for the day someone increments only one.
+  return { identify, issued: () => next - 1 };
 }
 
 export function createForkModuleHostCapabilities(
@@ -155,9 +167,6 @@ export function createForkModuleHostCapabilities(
       return value;
     },
     __wpk_fork_host_ref_identity: identity.identify,
-    // A separate pool: `funcref` and `anyref` are disjoint hierarchies, so a
-    // function and a GC object can never be the same value and sharing one
-    // counter would only couple two independent numberings.
     // A SEPARATE pool from the reference one: `funcref` and `anyref` are
     // disjoint hierarchies, so a function and a GC object can never be the same
     // value and one counter would only couple two independent numberings.

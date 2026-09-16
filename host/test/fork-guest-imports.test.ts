@@ -139,14 +139,20 @@ describe("fork guest imports", () => {
     // implementation, the host keeps running TypeScript nobody needs -- and
     // `forkGuestImportsUnserved` in docs/surface-budget.json would disagree with
     // this file. That is the drift this pins.
-    // THREE: one genuine capability floor (externref introspection) and the
-    // two must-throws the maintainer deferred. It was six until the module took
-    // over encode_funcref and table_mutation_commit, and four until
-    // table_state_owned moved -- the host still ELECTS which coordinate owns a
-    // physical table, but it seeds that answer once instead of answering a
-    // callback, so the module serves the import. This number falling is what
-    // the lane's progress looks like.
-    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(3);
+    // TWO, and NEITHER is a capability floor any more: both are the `exn_*`
+    // throws the maintainer deferred, and census section 174 records the
+    // drive-slot shape that would serve them from the module.
+    //
+    // It was six until the module took over encode_funcref and
+    // table_mutation_commit, and four until table_state_owned moved -- the host
+    // still ELECTS which coordinate owns a physical table, but it seeds that
+    // answer once instead of answering a callback, so the module serves the
+    // import. The last genuine capability entry, provenance_externref, left at
+    // three: its host body recorded a `WeakMap` nothing read, so once that was
+    // gone the import was `|value| value` -- and an identity function over an
+    // externref is something the injector emits and Rust cannot (section 191).
+    // This number falling is what the lane's progress looks like.
+    expect(FORK_GUEST_HOST_FLOOR_NAMES.length).toBe(2);
     expect([...FORK_GUEST_HOST_FLOOR_NAMES]).toEqual(
       [...FORK_GUEST_HOST_FLOOR_NAMES].sort(),
     );

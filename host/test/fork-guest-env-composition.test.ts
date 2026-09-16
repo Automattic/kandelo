@@ -94,7 +94,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
     const owners = new ForkTableStateOwners();
     const resume = new ForkResumeTable();
     const { floor } = createForkGuestHostFloor({
-      tryEncodeExternref: () => undefined,
       ownsTableState: (owner) => owners.ownsState(0, owner),
     });
 
@@ -144,7 +143,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
       buildForkGuestImports({
         moduleExports: moduleExportsFor(guest!),
         floor: createForkGuestHostFloor({
-          tryEncodeExternref: () => undefined,
           ownsTableState: () => false,
         }).floor,
         extras: { __wpk_fork_resume_table: new ForkResumeTable().table },
@@ -243,7 +241,6 @@ describe("the thin layer composed against a real instrumented guest", () => {
     const env = buildForkGuestImports({
       moduleExports,
       floor: createForkGuestHostFloor({
-        tryEncodeExternref: () => undefined,
         ownsTableState: () => false,
       }).floor,
       extras: {

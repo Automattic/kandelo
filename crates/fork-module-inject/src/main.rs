@@ -314,6 +314,9 @@ const EXTERNREF_HANDLE_HELPER_EXPORT: &str = "fm_externref_handle";
 /// no null branch: a valid recipe always resolves to the canonical token and the
 /// helper traps on any inconsistency.
 const DECODE_EXTERNREF_EXPORT: &str = "__wpk_fork_ref_decode_externref";
+/// The guest's production-site provenance hook, which the module serves as an
+/// identity function. See `inject_provenance_externref`.
+const PROVENANCE_EXTERNREF_EXPORT: &str = "__wpk_fork_ref_provenance_externref";
 
 fn inject(module: &mut Module) -> Result<()> {
     // Idempotency / sanity: never double-inject.
@@ -801,6 +804,44 @@ fn import_resolve_externref(module: &mut Module) -> FunctionId {
 /// in the module's Rust `fm_externref_handle` helper; this tool only adds the
 /// externref-returning wrapper Rust cannot express and the residual
 /// `env.resolve_externref` import it calls.
+/// Inject `__wpk_fork_ref_provenance_externref(externref) -> externref`: the
+/// identity function.
+///
+/// # Why the guest calls it at all
+///
+/// `fork-instrument` wraps every host-import call site that yields an
+/// externref, so the value passes through this hook at its PRODUCTION site --
+/// the one moment a host could record where it came from. The host did record
+/// it, in a `WeakMap` keyed by the object, because a capture later needed to
+/// ask "which broker handle is this?" and only the production site knew.
+///
+/// # Why it is the identity now
+///
+/// It stopped being the only way to ask. The capture asks the host directly
+/// (`__wpk_fork_host_externref_handle`), which reads the handle off the broker
+/// token the value already is -- so the map was written on every import call
+/// and read by nobody. A hook whose only job is to remember something nobody
+/// recalls is a guest import every host still had to implement.
+///
+/// Wasm cannot pass an externref through a Rust function, which is the only
+/// reason this is emitted here rather than exported from `lib.rs`.
+fn inject_provenance_externref(module: &mut Module) -> Result<()> {
+    if module
+        .exports
+        .iter()
+        .any(|export| export.name == PROVENANCE_EXTERNREF_EXPORT)
+    {
+        bail!("module already exports {PROVENANCE_EXTERNREF_EXPORT}");
+    }
+    let externref = ValType::Ref(RefType::EXTERNREF);
+    let mut builder = FunctionBuilder::new(&mut module.types, &[externref], &[externref]);
+    let value = module.locals.add(externref);
+    builder.func_body().local_get(value);
+    let shim = builder.finish(vec![value], &mut module.funcs);
+    module.exports.add(PROVENANCE_EXTERNREF_EXPORT, shim);
+    Ok(())
+}
+
 fn inject_decode_externref(module: &mut Module) -> Result<()> {
     // Idempotency / sanity: never double-inject.
     if module
@@ -1419,6 +1460,8 @@ fn main() -> Result<()> {
         .context("rewriting __wpk_fork_capture_encode into a thunk")?;
     inject_externref_handle_thunk(&mut module)
         .context("rewriting __wpk_fork_externref_handle into a thunk")?;
+    inject_provenance_externref(&mut module)
+        .context("injecting __wpk_fork_ref_provenance_externref")?;
     inject_transit_grow_thunk(&mut module)
         .context("rewriting __wpk_fork_transit_grow into a thunk")?;
     inject_table_apply_thunk(&mut module)

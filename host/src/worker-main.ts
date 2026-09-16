@@ -4082,12 +4082,9 @@ export async function centralizedWorkerMain(
 
       // The process's host identity floor: the two things a JS host must do
       // itself. Built once and shared by every activation, because both are
-      // process-scoped -- the provenance map is keyed by object identity across
-      // the whole capture, and the broker routes a throw to its owner.
+      // process-scoped -- the broker routes a throw to its owner.
       const forkHostFloor = createForkGuestHostFloor(
         {
-          tryEncodeExternref: (value) =>
-            externrefTokens.encode(value) ?? undefined,
           // Re-enter wasm by calling the guest's exported thrower; a JavaScript
           // throw would reach the guest with the wrong tag. See census 109.
           exceptionThrower: () => exceptionBroker,
@@ -6924,12 +6921,10 @@ export async function centralizedThreadWorkerMain(
             resumeTable: threadResumeTable,
             // A pthread replica gets its own floor over ITS token cache and
             // broker: externref identity is per-worker (the generation id
-            // differs), so sharing the process floor here would key provenance
+            // differs), so sharing the process floor here would route a throw
             // against tokens this worker never minted.
             forkHostFloor: createForkGuestHostFloor(
               {
-                tryEncodeExternref: (value) =>
-                  threadExternrefTokens?.encode(value) ?? undefined,
                 exceptionThrower: () => threadExceptionBroker,
               },
               `pid=${pid} tid=${tid}: fork host floor`,
@@ -7034,8 +7029,6 @@ export async function centralizedThreadWorkerMain(
                   >,
                   floor: createForkGuestHostFloor(
                     {
-                      tryEncodeExternref: (value) =>
-                        threadExternrefTokens?.encode(value) ?? undefined,
                       exceptionThrower: () => threadExceptionBroker,
                     },
                     `pid=${pid} tid=${tid}: fork host floor`,

@@ -47,6 +47,12 @@ function stubResolver(known: Map<number, object> = new Map()): ForkExternrefReso
       }
       return value;
     },
+    encode(value: unknown): number | undefined {
+      for (const [handle, known_value] of known) {
+        if (known_value === value) return handle;
+      }
+      return undefined;
+    },
   };
 }
 

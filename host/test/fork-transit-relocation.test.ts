@@ -42,7 +42,7 @@ function forkModule(): ReturnType<typeof instantiateForkModule> {
 
 /** The one thing the host must answer for itself, and nothing here exercises. */
 const floor = createForkGuestHostFloor(
-  { tryEncodeExternref: () => undefined },
+  {},
   "transit relocation floor",
 ).floor;
 
