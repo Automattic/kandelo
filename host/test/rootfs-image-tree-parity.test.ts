@@ -232,11 +232,26 @@ describe("in-kernel rootfs base tree: image parse vs host-walked manifest", () =
       "a freshly written image must declare a KLZY section",
     ).not.toBe(0);
     const stale = image.slice();
-    new DataView(stale.buffer, stale.byteOffset).setUint32(
-      8,
-      imageFlags(stale) & ~VFS_IMAGE_FLAG_HAS_KERNEL_LAZY,
-      true,
-    );
+    const view = new DataView(stale.buffer, stale.byteOffset);
+    view.setUint32(8, imageFlags(stale) & ~VFS_IMAGE_FLAG_HAS_KERNEL_LAZY, true);
+
+    // AND the deferred section, which clearing the flag no longer removes.
+    //
+    // This test used to clear the `KLZY` flag alone, because that WAS the whole
+    // of how an image described its deferred files. It is not any more: since
+    // the image writer moved to Rust, a current image carries an in-body `SDEF`
+    // section instead, found through a superblock field rather than a container
+    // flag. So the old surgery left a perfectly loadable image and the test
+    // asserted a refusal that should not have happened — it reported the guard
+    // as broken when what had broken was its own way of simulating staleness.
+    //
+    // A genuinely pre-deferred-section image declares NEITHER. `deferred_inode`
+    // at superblock offset 76 is what says "this image carries one"; zeroing it
+    // is the `SDEF` half of the same one-field edit the flag is for the `KLZY`
+    // half.
+    const SB_DEFERRED_INODE = 76;
+    const superblock = findSuperblockOffset(stale);
+    view.setUint32(superblock + SB_DEFERRED_INODE, 0, true);
 
     const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
     const kernel = await instantiateKernel(kernelBytes, stale);
@@ -369,3 +384,18 @@ describe("in-kernel rootfs base tree: image parse vs host-walked manifest", () =
     );
   });
 });
+
+/**
+ * Byte offset of the filesystem superblock inside a VFSI container.
+ *
+ * Found by its magic rather than computed from the header, so this does not
+ * silently move when the container's own layout does — a test that edits a
+ * superblock field needs to be sure it edited a superblock field.
+ */
+function findSuperblockOffset(image: Uint8Array): number {
+  const magic = [0x53, 0x46, 0x46, 0x53]; // "SFFS", little-endian u32 0x5346_4653
+  for (let i = 0; i + 4 <= image.length; i += 4) {
+    if (magic.every((b, k) => image[i + k] === b)) return i;
+  }
+  throw new Error("no filesystem superblock magic in this image");
+}

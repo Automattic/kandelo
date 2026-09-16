@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+// The reader that can SEE a current image's deferred half. The legacy
+// `MemoryFileSystem` reports zero deferred files for an `SDEF` image, so
+// `isPathDeferred` below answered false for a file that is deferred — the
+// same defect as B45, read-side, in a test rather than in the browser.
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   parseExperimentalTerminalSession,
@@ -686,9 +690,7 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
       `/usr/bin/fixture f 0755 0 0 lazy_url=binaries/${binaryRel} lazy_size=13`,
     );
     expect(
-      MemoryFileSystem.fromImage(
-        new Uint8Array(readFileSync(canonicalImage)),
-      ).isPathDeferred("/usr/bin/fixture"),
+      deferredInImage(canonicalImage, "/usr/bin/fixture"),
     ).toBe(true);
   });
 
@@ -720,9 +722,7 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
       `/usr/bin/fixture f 0755 0 0 src=${relative(repoRoot, binary)}`,
     );
     expect(
-      MemoryFileSystem.fromImage(
-        new Uint8Array(readFileSync(eagerImage)),
-      ).isPathDeferred("/usr/bin/fixture"),
+      deferredInImage(eagerImage, "/usr/bin/fixture"),
     ).toBe(false);
   });
 
@@ -1015,4 +1015,11 @@ function sortJson(value: unknown): unknown {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, child]) => [key, sortJson(child)]),
   );
+}
+
+/** Whether the image at `path` describes `vfsPath` as deferred. */
+function deferredInImage(path: string, vfsPath: string): boolean {
+  const fs = KandeloImageFs.create();
+  fs.loadImage(new Uint8Array(readFileSync(path)));
+  return fs.lstat(vfsPath).deferred;
 }
