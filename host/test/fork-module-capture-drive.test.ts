@@ -10,6 +10,7 @@ import {
   INTERN_KIND_EXTERNREF,
   INTERN_KIND_I31,
   captureGraph,
+  openCapture,
   ARENA_ROOT,
   CHANNEL_BASE,
   DRIVE_SLOT_ABORT_BEGIN,
@@ -1695,6 +1696,35 @@ describe("the binding records the module assembles at capture", () => {
     const g = globals!.payload;
     expect(g.getUint8(56), "kind").toBe(KIND_BASE_IMPORT);
     expect([g.getUint32(32, true), g.getUint32(36, true)]).toEqual([0, 0]);
+  });
+
+  it("a seal that fails after the frames sealed still leaves the parent able to abort-replay", () => {
+    // THE FORK THAT FAILS AT THE SEAL. `fm_parent_seal_capture` drives the
+    // guest's unwind-end and seals every frame writer BEFORE it validates the
+    // reference graph, so a graph fault fails the seal with the parent's frames
+    // already committed and replayable. The host's answer to a failed seal is
+    // to abort-replay those frames, so `fork()` returns `-errno` and the parent
+    // survives -- which is only possible if the phase says sealed-parent.
+    //
+    // It did not. The phase advance was on the success arm alone, so the abort
+    // answered EBUSY and the worker died with 16 instead of the fork's own
+    // errno (census section 188, where this cost an afternoon of tracing).
+    const f = fixture();
+    openCapture(f);
+
+    // A reference vector opened and never finished: the graph validator's
+    // "a reference vector was never finished" refusal, which is the exact fault
+    // a guest whose reference encode returned -1 produces.
+    (f.x.__wpk_fork_ref_vector_begin as (n: number) => number)(1);
+    expect(f.errno(), "the vector opens").toBe(0);
+
+    (f.x.fm_parent_seal_capture as (base: number) => number)(CHANNEL_BASE);
+    expect(f.errno(), "and the seal refuses the incomplete graph").toBe(22);
+
+    // BEHAVIOURAL, like every other phase assertion here: the legal next call
+    // succeeds. It can only succeed from sealed-parent.
+    (f.x.fm_parent_replay as (abort: number) => void)(1);
+    expect(f.errno(), "the parent can still abort-replay its frames").toBe(0);
   });
 });
 

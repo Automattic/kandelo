@@ -6637,10 +6637,53 @@ mod wasm {
                 ptr as usize
             }
             Err(errno) => {
+                // A seal that failed AFTER the journal sealed is STILL a sealed
+                // parent, and the phase has to say so. `seal_capture_impl`
+                // drives the guest's unwind-end and seals every frame writer
+                // before it validates the reference graph or writes the journal
+                // image, so a failure in those later steps leaves the parent's
+                // committed frames whole and replayable -- which is exactly what
+                // the host's abort path then has to do, so that `fork()` returns
+                // `-errno` and the parent survives.
+                //
+                // Leaving the phase at CAPTURE made that impossible:
+                // `fm_parent_replay` requires SEALED_PARENT, so the abort
+                // answered EBUSY and took the worker down with errno 16 -- a
+                // number about the cleanup, hiding the number about the fork.
+                // That is how the externref fork's real failure stayed hidden
+                // (census section 188).
+                //
+                // `fm_parent_abort_seal` cannot be the host's answer here: it
+                // seals the journal too, and `ReplayEventJournal::seal_capture`
+                // refuses a second seal. The state is already what the abort
+                // needs; only the phase disagreed.
+                if journal_sealed_now() {
+                    enter_phase(PHASE_SEALED_PARENT);
+                }
                 set_err(errno);
                 0
             }
         }
+    }
+
+    /// Whether this fork's replay journal has sealed -- the point after which
+    /// the parent's committed frames are replayable whatever else fails.
+    ///
+    /// ITS CONDITION IS UNGATED, and that is worth knowing before trusting it.
+    /// Removing the phase advance it guards fails
+    /// `fork-module-capture-drive`'s seal-failure test; replacing this body
+    /// with `true` does not, because nothing today reaches a seal that fails
+    /// BEFORE `finish_unwind_impl` runs -- the steps before it are a plan
+    /// build and a drive, and no test makes either fail. So what is proven is
+    /// that a failed seal must leave a replayable phase, not yet that an
+    /// early-failing seal must leave CAPTURE. Both mutants were real rebuilds
+    /// (`1fc06afe…` against `2c22a504…`), so the survivor is a survivor and
+    /// not an unchanged artifact.
+    fn journal_sealed_now() -> bool {
+        matches!(
+            state().as_ref().map(|st| st.journal.phase()),
+            Some(fork_codec::JournalPhase::SealedParent)
+        )
     }
 
     /// Sequence a whole capture BEGIN in the module (control-flow inversion): open

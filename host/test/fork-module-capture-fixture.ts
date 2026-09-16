@@ -350,7 +350,7 @@ export interface CaptureOptions {
  * `(id, fixedPrefix)` u32 pair in the sides vector `fm_parent_begin_capture`
  * reads -- the same 8-byte record the child seed reads back.
  */
-function openCapture(f: Fixture, sides: readonly number[]): void {
+export function openCapture(f: Fixture, sides: readonly number[] = []): void {
   seedTemplateId(f, 0, 2048);
   expect(f.errno(), "template id for activation 0").toBe(0);
   sides.forEach((activation, index) => {

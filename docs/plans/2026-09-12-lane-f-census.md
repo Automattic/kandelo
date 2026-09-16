@@ -284,6 +284,22 @@ Then, and only then, the rest:
    broker handle, the reverse of `resolve_externref` -- in §188, together with
    the shape that closes it and a second defect (the seal-failure abort replays
    from the wrong phase) found on the way.
+4c. **OWED TEST -- the failed seal's phase condition** (maintainer ruling,
+   2026-09-15: note it here now, and consider a way to test it once the bulk of
+   the lane is done). `fm_parent_seal_capture`'s failure arm moves to
+   SEALED_PARENT only `if journal_sealed_now()` -- did the seal get past the
+   step that closes every activation's frame writer and seals the journal?
+   Past it, the parent's frames are a complete replayable chain and the abort
+   replay is right; before it, the chain can be missing its last frame and the
+   replay must not run. **Removing the phase advance fails the new
+   `fork-module-capture-drive` test; replacing the CONDITION with `true` does
+   not**, because every seal failure reachable today happens after the frame
+   close (the four later steps are graph validation, the transaction write, the
+   continuation manifest and the journal image). Both mutants were real
+   rebuilds (`1fc06afe…` against `2c22a504…`), so the survival is a survival,
+   not an unchanged artifact. Gating it needs a way to make a pre-frame-close
+   step fail on demand, which is test-only machinery in a module whose surface
+   this lane is shrinking -- hence: recorded, not built, and revisited later.
 5. **C5** — regroup and drain.
 6. **D7** — nothing drives `__wpk_fork_ref_exn_clear`/`_abort`. A drive slot,
    not a host call. Still open.
