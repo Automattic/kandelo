@@ -940,6 +940,7 @@ dependencies = [
  "fork-codec",
  "libc",
  "rustix",
+ "sha2",
  "wasm-artifact",
  "wasm-posix-shared",
  "wasmtime",

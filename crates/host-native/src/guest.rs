@@ -4883,6 +4883,21 @@ pub(crate) struct GuestForkFormat {
     /// order, for the `i`-th target — the KFRC section's own file order,
     /// since it is already validated strictly increasing by ordinal).
     pub catalog_local_slots: Vec<u32>,
+    /// This guest's fork TEMPLATE ID: a plain SHA-256 over its module bytes.
+    ///
+    /// The module writes a `Module` record per activation when a capture
+    /// seals, and refuses the seal for an activation whose template id it was
+    /// never given (`activation_template_id(id).ok_or(Errno::EINVAL)`) --
+    /// because that record is what a child reads to know the activation
+    /// exists. Computed here for the reason `gc_codec_descriptor` is:
+    /// "read once from raw bytes, valid for this guest's whole lifetime", and
+    /// the raw bytes are only in hand at this one point.
+    ///
+    /// Matches `computeForkModuleTemplateId` in
+    /// `host/src/fork-guest-sections.ts` byte for byte -- SHA-256 of the
+    /// module image, no prefix and no framing -- so a native parent and a
+    /// JavaScript child would agree about which module an activation is.
+    pub template_id: [u8; 32],
     /// N1-F6: the guest's own `kandelo.wpk_fork.gc_codec` custom section
     /// bytes (verbatim — see [`read_gc_codec_descriptor_section`]), or
     /// `None` for a guest with no GC codec at all. Read here (piggybacking
@@ -5415,11 +5430,18 @@ pub(crate) fn compute_guest_fork_format(wasm_bytes: &[u8]) -> anyhow::Result<Opt
     let catalog_ordinals = records.iter().map(|r| r.function_ordinal).collect();
     let catalog_local_slots = records.iter().map(|r| r.local_catalog_slot).collect();
     let gc_codec_descriptor = read_gc_codec_descriptor_section(wasm_bytes)?;
+    let template_id: [u8; 32] = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(wasm_bytes);
+        hasher.finalize().into()
+    };
     Ok(Some(GuestForkFormat {
         fixed_prefix_size,
         catalog_ordinals,
         catalog_local_slots,
         gc_codec_descriptor,
+        template_id,
     }))
 }
 
@@ -5599,6 +5621,8 @@ pub struct ForkModule {
     /// declared a GC codec at all; otherwise the page is reserved but
     /// unwritten.
     pub gc_codec_scratch_base: u32,
+    /// Where this worker's activation template id lives; see the carve site.
+    pub template_id_scratch_base: u32,
 
     // -- Coordinator (`fm_*`) exports, bound once here so callers never
     // re-look-up a name (a typo would only surface at the FIRST call site,
@@ -5638,6 +5662,9 @@ pub struct ForkModule {
     /// Seed activation `activation_id`'s raw `kandelo.wpk_fork.gc_codec`
     /// section bytes (`ptr`, `byte_len`, both guest byte offsets/lengths).
     pub fm_set_activation_gc_codec: wasmtime::TypedFunc<(u32, u32, u32), ()>,
+    /// Seeds one activation's template id, which the module requires before it
+    /// will seal a capture for that activation.
+    pub fm_set_activation_template_id: wasmtime::TypedFunc<(u32, u32), ()>,
     /// Seed the worker's `hostExceptionOwner` (`u32::MAX` == none).
     /// Build the real topological GC drive plan for the fork's whole
     /// reference graph; returns a guest address for `fm_drive_execute`, or
@@ -5693,6 +5720,11 @@ pub struct ForkModule {
     /// `fm_parent_begin_capture(channel_base, arena_root, sides_ptr,
     /// sides_count) -> act0_root` — opens the capture and drives each guest
     /// `wpk_fork_unwind_begin(root)`.
+    /// Arms the module's reference-graph builder for this fork and resets its
+    /// bump heap. Separate from `fm_parent_begin_capture`, which begins the
+    /// UNWIND: `begin_capture_impl` does not arm the builder, so a host that
+    /// calls only the latter seals with no builder at all.
+    pub fm_capture_begin: wasmtime::TypedFunc<(), ()>,
     pub fm_parent_begin_capture: wasmtime::TypedFunc<(u32, u32, u32, u32), u32>,
     /// `fm_parent_seal_capture(channel_base) -> journal_image_ptr` — drives each
     /// guest `wpk_fork_unwind_end()`, seals, and serializes the child image
@@ -5993,6 +6025,19 @@ pub(crate) fn instantiate_fork_module(
     );
     let gc_codec_scratch_base = u32::try_from(gc_codec_scratch_base)
         .map_err(|_| anyhow::anyhow!("GC-codec-descriptor scratch address {gc_codec_scratch_base:#x} does not fit in wasm32"))?;
+
+    // The activation TEMPLATE ID's 32 bytes, in the page after the GC codec's
+    // and with the SAME lifetime: it must outlive every capture, because the
+    // module re-reads it on every seal to write that activation's `Module`
+    // record. That is why it is not in `capture_scratch_base`, which is a
+    // per-capture bump reset to empty at the start of every fork.
+    let template_id_scratch_base = gc_codec_scratch_base as usize + WASM_PAGE_SIZE;
+    anyhow::ensure!(
+        template_id_scratch_base + WASM_PAGE_SIZE <= memory_base + region_bytes,
+        "fork-module template-id scratch page does not fit in the module's shadow-stack padding"
+    );
+    let template_id_scratch_base = u32::try_from(template_id_scratch_base)
+        .map_err(|_| anyhow::anyhow!("template-id scratch address {template_id_scratch_base:#x} does not fit in wasm32"))?;
     if let Some(descriptor) = gc_codec_descriptor {
         anyhow::ensure!(
             descriptor.len() <= WASM_PAGE_SIZE,
@@ -6147,6 +6192,7 @@ pub(crate) fn instantiate_fork_module(
         fm_set_activation_catalog_base: fm_func!("fm_set_activation_catalog_base": (u32, u32) => ()),
         fm_set_activation_static_root_base: fm_func!("fm_set_activation_static_root_base": (u32, u32) => ()),
         fm_set_activation_gc_codec: fm_func!("fm_set_activation_gc_codec": (u32, u32, u32) => ()),
+        fm_set_activation_template_id: fm_func!("fm_set_activation_template_id": (u32, u32) => ()),
         fm_build_gc_plan: fm_func!("fm_build_gc_plan": u32 => u32),
         fm_gc_plan_count: fm_func!("fm_gc_plan_count": () => i32),
         fm_drive_execute: fm_func!("fm_drive_execute": (u32, u32) => ()),
@@ -6161,6 +6207,7 @@ pub(crate) fn instantiate_fork_module(
         fm_funcref_ordinal: fm_func!("fm_funcref_ordinal": u32 => i32),
         fm_static_root_slot: fm_func!("fm_static_root_slot": u32 => i32),
         fm_externref_handle: fm_func!("fm_externref_handle": u32 => i32),
+        fm_capture_begin: fm_func!("fm_capture_begin": () => ()),
         fm_parent_begin_capture: fm_func!("fm_parent_begin_capture": (u32, u32, u32, u32) => u32),
         fm_parent_seal_capture: fm_func!("fm_parent_seal_capture": u32 => u32),
         fm_parent_abort_seal: fm_func!("fm_parent_abort_seal": () => ()),
@@ -6177,6 +6224,7 @@ pub(crate) fn instantiate_fork_module(
         empty_module_state_root: reference_scratch_base,
         capture_scratch_base,
         gc_codec_scratch_base,
+        template_id_scratch_base,
     };
 
     // N1-F6: the guest's GC-layout catalog descriptor bytes are staged into
@@ -6743,6 +6791,14 @@ fn spawn_guest_thread(
                         // Without it the child's replay (and the parent's own
                         // post-fork rewind) hits `fm_build_gc_plan` with an empty
                         // codec map and fails `EINVAL`.
+                        // The activation template id; see the helper for why
+                        // it must run here and what fails without it.
+                        if let Err(e) =
+                            seed_activation_template_id(&mut store, &fm, &guest_mem, &fmt.template_id)
+                        {
+                            eprintln!("{e:#}");
+                            return;
+                        }
                         if let Some(descriptor) = fmt.gc_codec_descriptor.as_deref() {
                             if let Err(e) = fm.fm_set_activation_gc_codec.call(
                                 &mut store,
@@ -7033,6 +7089,15 @@ fn spawn_guest_thread(
                                 // UNWIND_BEGIN)` + direct call. Native is single-
                                 // activation, so no side activations are passed
                                 // (`sides_count == 0`).
+                                // ARM the module's reference-graph builder first.
+                                // `fm_parent_begin_capture` begins the UNWIND; it does not create
+                                // the builder, and `capture_builder()` refuses to make one lazily
+                                // unless the capture was armed. Without this the fork runs to
+                                // completion and `fm_parent_seal_capture` answers EINVAL with its
+                                // frames already committed. The JavaScript hosts call the same entry
+                                // here (`processCaptureModule.begin()` right before
+                                // `parentBeginCapture`).
+                                fm.fm_capture_begin.call(&mut caller, ())?;
                                 let root = fm.fm_parent_begin_capture.call(
                                     &mut caller,
                                     (ch as u32, fm.empty_module_state_root, 0, 0),
@@ -9577,6 +9642,47 @@ fn run_fork_capable_entry(
 /// without ever calling `wpk_fork_resume_start` — a genuine module/guest bug
 /// at this point has no honest way to resume, so a loud stop beats a wrong
 /// resume.
+/// Seed one activation's template id into the co-resident module.
+///
+/// The module writes a `Module` record per activation when a capture seals,
+/// and refuses the seal for an activation whose template id it was never given
+/// (`activation_template_id(id).ok_or(Errno::EINVAL)`) -- that record is what a
+/// child reads to know the activation exists. Left unseeded,
+/// `fm_parent_seal_capture` answers `errno 22` and the fork dies with its
+/// frames already committed, which is exactly how this surfaced.
+///
+/// MUST run after `fm_set_format`, which resets the per-worker seeded
+/// catalogs: anything seeded before it is wiped. Same ordering rule the GC
+/// codec seed documents.
+///
+/// A free function because the two production launch paths
+/// (`spawn_guest_thread` and `run_worker_thread`) both need it, and the first
+/// version of this fix seeded only one of them -- the seal ran on the other
+/// and still answered 22.
+fn seed_activation_template_id(
+    store: &mut Store<()>,
+    fm: &ForkModule,
+    guest_mem: &SharedMemory,
+    template_id: &[u8; 32],
+) -> anyhow::Result<()> {
+    let at = fm.template_id_scratch_base as usize;
+    anyhow::ensure!(
+        guest_mem.data().len() >= at + template_id.len(),
+        "template-id scratch {at:#x} is outside guest memory"
+    );
+    // SAFETY: the range is inside the shared memory (checked above), and this
+    // worker is the only writer of its own fork-module scratch pages.
+    unsafe {
+        let dst = guest_mem.data().as_ptr() as *mut u8;
+        core::ptr::copy_nonoverlapping(template_id.as_ptr(), dst.add(at), template_id.len());
+    }
+    fm.fm_set_activation_template_id
+        .call(&mut *store, (0, fm.template_id_scratch_base))?;
+    let errno = fm.fm_last_errno.call(&mut *store, ())?;
+    anyhow::ensure!(errno == 0, "fm_set_activation_template_id failed: errno {errno}");
+    Ok(())
+}
+
 fn drive_fork_capture_seal_and_launch_child(
     store: &mut Store<()>,
     guest_mem: &SharedMemory,
@@ -10229,6 +10335,7 @@ fn run_worker_thread(
             fm.fm_set_format.call(&mut store, (4, fmt.fixed_prefix_size, 0, 0, 0))?;
             let errno = fm.fm_last_errno.call(&mut store, ())?;
             anyhow::ensure!(errno == 0, "fm_set_format failed: errno {errno}");
+            seed_activation_template_id(&mut store, &fm, guest_mem, &fmt.template_id)?;
             if !fmt.catalog_ordinals.is_empty() {
                 let mut buf = Vec::with_capacity(fmt.catalog_ordinals.len() * 4);
                 for ordinal in &fmt.catalog_ordinals {
@@ -10354,6 +10461,15 @@ fn run_worker_thread(
                         // Coarse capture-begin (worker-thread mirror of the main
                         // closure): open the capture + drive the guest's
                         // `wpk_fork_unwind_begin(root)` in one module call.
+                        // ARM the module's reference-graph builder first.
+                        // `fm_parent_begin_capture` begins the UNWIND; it does not create
+                        // the builder, and `capture_builder()` refuses to make one lazily
+                        // unless the capture was armed. Without this the fork runs to
+                        // completion and `fm_parent_seal_capture` answers EINVAL with its
+                        // frames already committed. The JavaScript hosts call the same entry
+                        // here (`processCaptureModule.begin()` right before
+                        // `parentBeginCapture`).
+                        fm.fm_capture_begin.call(&mut caller, ())?;
                         let root = fm.fm_parent_begin_capture.call(
                             &mut caller,
                             (ch as u32, fm.empty_module_state_root, 0, 0),
@@ -13737,6 +13853,9 @@ mod fork_module_tests {
             catalog_ordinals: Vec::new(),
             catalog_local_slots: Vec::new(),
             gc_codec_descriptor: Some(GC_CODEC_FIXTURE.to_vec()),
+            // Not under test here; this unit exercises the GC-provenance
+            // registry, which never reads the template id.
+            template_id: [0u8; 32],
         };
         let registry = GcProvenanceRegistry::new(Some(&format));
 

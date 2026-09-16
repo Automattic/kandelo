@@ -144,18 +144,37 @@ Three fixes landed, each independently correct:
 3. **The obligation pin said 6; the module needs 7.**
    `__wpk_fork_host_externref_handle` arrived in this lane.
 
-**Where it stands: 12 failures → 11, and the fork now runs its whole unwind**
-before failing at `fm_parent_seal_capture` with `errno 22`.
+4. **The module's reference-graph builder was never armed.**
+   `fm_parent_begin_capture` begins the UNWIND; it does not create the builder,
+   and `capture_builder()` refuses to make one lazily unless the capture was
+   armed. host-native never called `fm_capture_begin` — the JavaScript hosts
+   call it immediately before `parentBeginCapture`. Without it the fork ran to
+   completion and the seal answered `EINVAL` with its frames already committed.
+5. **The activation template id was never seeded**, which the seal also
+   requires. `GuestForkFormat` now carries a SHA-256 over the guest's module
+   bytes — matching `computeForkModuleTemplateId` byte for byte — written to a
+   scratch page carved beside the GC codec's, with the same "outlives every
+   capture" lifetime.
 
-**The next fix, identified but not made:** the seal writes a `Module` record
-per activation and requires `activation_template_id(id)`, `EINVAL` if never
-seeded — and host-native never calls `fm_set_activation_template_id`. It needs
-a SHA-256 (`sha2` is already in the workspace and `fork-codec` already depends
-on it, but host-native does not), a `TypedFunc` for the entry, and **a
-guest-memory address to write 32 bytes that nothing later overwrites**. That
-last one is a placement decision I stopped short of guessing at: `stage()`'s
-slab is the fork-module's own and `capture_scratch_base` is per-capture, so
-neither is obviously right, and a wrong choice fails only on a specific fork.
+**Where it stands: 12 failures → 8**, 52 → 56 passing. Plain fork, the
+no-reference path and vfork-exit all pass. The remaining 8 are the
+reference-carrying forks (externref, GC, static root) plus vfork-execve, and
+they no longer fail with an errno: the child SPAWNS and then hangs
+(`pump timed out after 30s (2 processes)`). That is a child-replay problem,
+a different and deeper thing than the five above, and it is where this stops.
+
+**How the last two were found, because guessing had stopped working.** Four
+hypotheses in a row each cost a six-minute full-suite run and each was wrong.
+The fifth step was to instrument instead: give every fallible step inside
+`seal_capture_impl` a DISTINCT errno, rebuild, and run **one** test — which
+takes 30 seconds, not 370. It answered `13` on the first try, naming
+`capture_builder()` exactly. The instrumentation was reverted immediately and
+the artifact verified back to its committed bytes.
+
+**The next problem, identified but not diagnosed:** the eight remaining
+failures hang rather than erroring. The child process is created and neither
+side finishes. Nothing in an errno will explain that; it needs tracing the
+child's replay, which is its own piece of work.
 
 ## Still the maintainer's
 
