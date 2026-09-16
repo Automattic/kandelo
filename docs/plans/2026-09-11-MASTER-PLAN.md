@@ -4131,6 +4131,34 @@ repoint was the instrument that found it. A repoint that fails is evidence
 about the BRIDGE at least as often as it is evidence about the test — so the
 next one to fail gets diagnosed, not classified.
 
+### AN OPEN LEAD, found while measuring the above — a nested mount may not be routed
+
+`node-demo-workspace.test.ts` has a RED test on the lane branch today, and it
+is not this lane's filesystem work: it fails inside `MemoryFileSystem`, on the
+incumbent, in a test that never touches `KandeloImageFs`.
+
+**What is measured.** Its two cases differ by one thing. The first mounts only
+`/` and passes. The second mounts a second `MemoryFileSystem` at
+`/home/maker` on top of it, and fails at
+`readVfsText(home, "/package.json")` with ENOENT — after the program under
+test exits 0. The profile it runs does `cd "$HOME"` and creates
+`package.json` only `if [ ! -e package.json ]`, so a zero exit with no file in
+the home backend means either the guard saw a file or the write landed
+somewhere else.
+
+**What is NOT measured, and must be before anyone acts on this.** Whether it is
+red at the merge-base too. The lane has changed `crates/runtime-core/rootfs.rs`
+by ~1,480 lines plus `process.rs` and `syscalls.rs`, so "the kernel now owns
+`/` and a nested host mount stopped being consulted" is a live hypothesis and
+NOT a finding. The cheap discriminator is one probe, not a rebuild: assert
+`rootfs.stat("/home/maker/package.json")` after the run. If it succeeds, the
+bytes went to the parent mount and this is routing; if it does not, the guard
+is what fired and this is something else.
+
+**Recorded rather than fixed** because the loop was mid-perturbation on another
+file and the lane worktree must not be edited while a run is in flight. It is
+the next thing to pick up.
+
 ### The constraint as originally recorded, now closed
 
 `demo-login-image.test.ts` was tried as the second proof of the repeal and
