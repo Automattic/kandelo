@@ -313,13 +313,11 @@ mod wasm {
     /// visible the moment the host stopped sizing the table for the whole
     /// graph up front (census section 188).
     ///
-    /// UNGATED ON THE i31 PATH TODAY. Removing this call from
-    /// `__wpk_fork_ref_gc_i31` leaves every green test green: the fork that
-    /// showed the trap (`gc-reference-cycle-fresh-worker`, an i31 aliased
-    /// beside a struct/array cycle) is still red for a LATER reason, so nothing
-    /// currently reaches an i31 whose slot is past the table's end. It goes in
-    /// on the observed trap, not on a passing test, and the test that will gate
-    /// it is named in the plan's D9.
+    /// GATED ON THE i31 PATH as of 2026-09-16: removing this call from
+    /// `__wpk_fork_ref_gc_i31` fails `gc-reference-cycle-fresh-worker`, which
+    /// aliases an i31 beside a struct/array cycle. It went in on an observed
+    /// trap while that fork was still red for a later reason; the fork is green
+    /// now, so the mutant was re-run and it bites.
     fn capture_recipe_publishable(recipe: i32) -> i32 {
         if recipe < 0 {
             return recipe;

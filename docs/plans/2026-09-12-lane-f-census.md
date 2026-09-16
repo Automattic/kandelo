@@ -9888,8 +9888,9 @@ The lane has added nothing to it. Of those 67:
 ### Owed, and named so it is not lost
 
 - The failed-seal phase condition (§188's owed test) is still ungated.
-- The i31 transit sizing is ungated; `gc-reference-cycle-fresh-worker` is now
-  GREEN, so re-running that mutant against it is the cheap way to close it.
+- ~~The i31 transit sizing is ungated~~ CLOSED the same night: with
+  `gc-reference-cycle-fresh-worker` green, the mutant was re-run against it and
+  it fails (`43892c52…` against `974bbf80…`). The code says so where it lives.
 - The chunk release on a FAILED capture-begin is ungated: P-11's failures land
   in the frame reserve during the unwind, never in the begin.
 - Six provisional ceiling raises are recorded in `docs/surface-budget.json`,
