@@ -3065,7 +3065,8 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 `image-writer-install` (3), `rootfs-overlay-not-found` (3) and
 `demo-login-not-found` (4), all killed — `4 trial(s), 0 survived, 0 invalid, 0
-timed out` for the last of them. The corpus is **386 trials**, all anchoring.
+timed out` for the last of them. The corpus is **391 trials**, all anchoring,
+after `image-open-create-mode` added five more.
 
 **Writing the trials found a third untested guard.** `installModuleBytes`
 refuses a second, DIFFERENT module rather than swapping it, and nothing
@@ -4072,7 +4073,65 @@ is `MemoryFileSystem` — `vfs-image`, `sharedfs-safety`, `lazy-vfs`,
 `vfs-image-helpers`. They are not waiting on a capability; they go when the
 class goes, which is step 5.
 
-### A FIFTH CONSTRAINT, found by trying: some tests are not MECHANICALLY repointable
+### THE FIFTH CONSTRAINT IS GONE — it was a real defect, and the diagnosis named it
+
+**`demo-login-image.test.ts` is repointed and passes** (`ca7d70b52`). The
+constraint below was right that the failure was in the test's own SEQUENCE
+rather than in any single operation, and wrong that the sequence was the
+problem. The sequence was legal; the bridge was not.
+
+**`open`'s `mode` is spent on CREATION only.** POSIX gives `open` a mode so it
+can create a file; an existing file keeps the permissions it has, through a
+truncation and through every write. `KandeloImageFs` applied it every time,
+because the module's `sm_write_file` is the host's "replace this whole file"
+verb and SETS the mode it is handed. So every rewrite stamped the opening
+caller's default onto the file — `writeVfsBinary` defaults to `0o755` and
+`writeVfsText` to `0o644` — and rewriting `/etc/shadow` through the second one
+turned a 0640 shadow file world-readable.
+
+**Nothing reported it.** The bytes were right and the permissions were not, and
+the only symptom anywhere downstream was `hasConfiguredDemoLogin` answering
+"not configured" for an image that was. That is the third find of the same
+shape in two days, after the errno signs and B45: a wrong answer that is
+plausible enough to read as a verdict.
+
+`MemoryFileSystem` has always behaved the POSIX way — its vendor names the
+parameter `createMode` and writes it into the inode only on the creation
+branch, checked rather than assumed — so the fix brings the bridge TO the
+incumbent rather than inventing a rule for both. Two smaller corrections came
+with it: the mode probe follows symlinks, because the write follows one and
+`lstat` would report the LINK's mode and stamp it on the target; and `write`
+reads the file's mode NOW rather than the handle's, because a write is never a
+chmod and a caller that chmod'd between opening and writing meant it.
+
+**The test's second failure was the producer refusing the fixture**, not a
+defect: it registered `/usr/bin/login` set-user-ID deferred with no digest, the
+exact hazard the writer now refuses, so the fixture declares one. What the test
+proves is unchanged — bytes that must be FETCHED are not bytes in the image,
+digest or no digest, and a login that depends on a fetch is not a configured
+login. That is the second fixture found encoding the defect the producer
+refuses, after `kandelo-image-fs.test.ts`'s `/sudo`.
+
+Five trials, all killed, taking the corpus to **391**. One of them —
+`bridge.json`'s O_TRUNC trial — had anchored on the line the fix rewrote and
+was repointed at its successor. `--validate` caught that before the run, which
+is the entire reason it goes first.
+
+Evidence: kandelo-image-fs 58 passed (5 new), demo-login-image 6 passed, the
+surface budget 101 passed, and 22 of the 24 image-facing suites green — 466
+passed. **The three failures are pre-existing and measured, not assumed**:
+`opcache-prewarm` fails identically against the unrevised bridge, checked by
+reverting it and re-running; `node-demo-workspace` fails inside
+`MemoryFileSystem`, which this does not touch.
+
+**The lesson for the rest of step 4.** The constraint below concluded "not
+mechanically repointable" from one failed attempt and shelved the test. What
+the attempt had actually found was a bug in the destination filesystem, and the
+repoint was the instrument that found it. A repoint that fails is evidence
+about the BRIDGE at least as often as it is evidence about the test — so the
+next one to fail gets diagnosed, not classified.
+
+### The constraint as originally recorded, now closed
 
 `demo-login-image.test.ts` was tried as the second proof of the repeal and
 REVERTED. Every primitive it needs works on the bridge — checked one at a time
@@ -4386,7 +4445,7 @@ list rather than by reading every assertion. Across the 26:
 |---|---|---|---|
 | **host floor** | **4** | `advisory-lock-kernel`, `host-file-offset`, `node-host-mounts`, `vfs` | **TRIM** — they import `NodePlatformIO` / `HostFileSystem` / `OpfsFileSystem` and test the host's own filesystems. `MemoryFileSystem` is one row among backends. |
 | **lazy/deferred** | **12** | `lazy-tree`, `lazy-archive`, `package-deferred-tree`, the `vfs-image-*` family, … | **BLOCKED** — an image carrying lazy entries stays on `MemoryFileSystem` until the overlay reads module metadata, which is the worker-flip decision. |
-| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `derived-vfs-symlink`, `demo-login-image`, `node-demo-workspace`, `shell-lazy-archive-inputs`, `vfs/image-helpers`, `wordpress-source-layout` | **PORT or DELETE**, assertion by assertion. Two done. |
+| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink`, `node-demo-workspace`, `shell-lazy-archive-inputs`, `vfs/image-helpers`, `wordpress-source-layout` | **PORT or DELETE**, assertion by assertion. Three done. |
 | **builder helper** | **1** | `mariadb-image-helpers` | repoint the fixture |
 
 **So the genuine porting work is SIX files, not twenty-six**, and the twelve
