@@ -325,6 +325,32 @@ number.
 **Still NOT established here:** the remaining 273 trials of the full perturb
 corpus.
 
+## The branch is fully validated — 2026-09-15, after B44
+
+With B44 merged, `./run.sh setup` reaches **real exit code 0** and
+`"outcome":"succeeded"` — the first fully green setup of the session, and
+better than the B44 branch's own run, which reported 80 of 98 nodes with six
+failures. The difference is this branch also carries B40's mirror list, which
+cleared the GNU-pinned source fetches those six were waiting on.
+
+**`SUCCEEDED spidermonkey/wasm32` reproduced here**, so B44's central claim is
+this branch's number now rather than the lane's.
+
+**Browser suite, in `scripts/dev-shell.sh`: 164 passed / 14 failed / 6 skipped
+/ 10 did not run.** The best of the session, against 162/16 before the third
+tranche and 163/15 after it.
+
+Reconciled against lane Y's fourteen named failures rather than counted:
+
+- **Every one of the 14 is on the named list. Zero failures outside it.**
+- `WordPress SQLite reaches the installer` now PASSES.
+- The two load-flaky specs seen earlier — `accept-signal` and
+  `vite-binary-cache-boundary` — did not fail this run.
+
+So nothing in the browser suite is attributable to any of the three lane Y/V
+tranches, and the merge record for all of them is closed. The remaining 14 are
+the documented pre-existing set.
+
 ## Lane Y/V second tranche merged — `7c2c1806c`, 2026-09-15
 
 28 commits since `5fe08d499`, 44 files, +1592/-576. Where the first merge
