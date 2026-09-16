@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { bindImageOwnedRuntimeUrls } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
 import { NODE_BINARY_SPEC } from "../../images/vfs/lib/init/shell-binaries";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
@@ -10,7 +9,7 @@ const NODE_BYTES = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const BASH_PATH = "/usr/bin/bash";
 
 describe("image-owned Node demo runtime", () => {
-  it("preserves embedded Node bytes and aliases while binding shell transports", async () => {
+  it("preserves embedded Node bytes, aliases and deferred trees through assembly", async () => {
     const fs = runtimeImage();
     const nodeIdentity = fileIdentity(fs, NODE_BINARY_SPEC.vfsPath);
     const aliasIdentities = new Map(
@@ -21,7 +20,15 @@ describe("image-owned Node demo runtime", () => {
     );
     const deferredTrees = structuredClone(fs.exportLazyArchiveEntries());
 
-    bindImageOwnedRuntimeUrls(fs);
+    // `bindImageOwnedRuntimeUrls(fs)` was here, and the assertions below were
+    // what proved it rewrote ONLY lazy URLs: the embedded Node binary stayed
+    // resident and byte-identical, its aliases kept their identities, and the
+    // deferred trees were otherwise untouched.
+    //
+    // Nothing rewrites the image now, so the guarantee is stronger and cheaper
+    // — it holds because no write happens rather than because the write was
+    // careful. The assertions stay, because what they check is that ASSEMBLY
+    // preserves these things, and assembly still runs.
 
     expect(readVfsFile(fs, NODE_BINARY_SPEC.vfsPath)).toEqual(NODE_BYTES);
     expect(fileIdentity(fs, NODE_BINARY_SPEC.vfsPath)).toEqual(nodeIdentity);
@@ -96,19 +103,29 @@ describe("image-owned Node demo runtime", () => {
       ),
       "utf8",
     );
-    expect(liveSetup).toContain(
-      "bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets)",
-    );
     expect(liveSetup).toContain("loadVfsImage(profile)");
-    expect(
-      liveSetup.indexOf("bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets)"),
-    ).toBeLessThan(liveSetup.indexOf("finalizeKernelOwnedImage(buildFs)"));
-    expect(liveSetup).toContain(
-      "// authority copied from the authenticated product activation.\n" +
-        "  bindImageOwnedRuntimeUrls(buildFs, loadedVfs.lazyAssets);\n" +
-        '  tick("assembling kernel-owned VFS image...");',
-    );
-    expect(liveSetup).not.toContain("assertShellLazyUrlsResolved(buildFs)");
+
+    // INVERTED, deliberately. This used to pin that `bindImageOwnedRuntimeUrls`
+    // ran, and ran BEFORE `finalizeKernelOwnedImage`, so no image was
+    // serialized with unbound URLs. Binding rewrote the image's deferred half,
+    // which the writer underneath silently erased once `SDEF` arrived — defect
+    // B45, 65 lazy binaries emptied. There is nothing to bind now and nothing
+    // to order, so the property worth pinning is the opposite one: this path
+    // must not write to the image's deferred half at all.
+    // The CALL form, so this file's own prose explaining what was removed does
+    // not read as the thing it removed.
+    for (const rewriting of [
+      "bindImageOwnedRuntimeUrls(",
+      "rewriteLazyFileUrls(",
+      "rewriteLazyArchiveUrls(",
+      "assertShellLazyUrlsResolved(",
+    ]) {
+      expect(liveSetup, `${rewriting} rewrites the image's deferred half`)
+        .not.toContain(rewriting);
+    }
+    // And the mapping it replaced is computed, so this is a MOVE rather than a
+    // deletion: the addresses still reach the deployment, beside the image.
+    expect(liveSetup).toContain("imageOwnedRuntimeUrlTable(loadedVfs.lazyAssets)");
   });
 });
 

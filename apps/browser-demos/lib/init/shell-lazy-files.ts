@@ -1,15 +1,7 @@
-import type {
-  LazyFileEntry,
-  MemoryFileSystem,
-} from "../../../../host/src/vfs/memory-fs";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
 } from "../../../../images/vfs/lib/init/shell-binaries";
-import {
-  isRootfsLazyFileUrl,
-  rewriteRootfsLazyFileUrls,
-} from "./rootfs-lazy-files";
 
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
@@ -34,10 +26,6 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import sqlite3WasmUrl from "@binaries/programs/wasm32/sqlite3.wasm?url";
-
-export {
-  assertShellLazyUrlsResolved,
-} from "./shell-lazy-url-contract";
 
 const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id"], string> = {
   coreutils: coreutilsWasmUrl,
@@ -72,18 +60,14 @@ export const SHELL_LAZY_PLACEHOLDER_URLS = new Map(
   ]),
 );
 
-const SHELL_LAZY_SOURCE_URL_SET = new Set(SHELL_LAZY_PLACEHOLDER_URLS.keys());
-const SHELL_LAZY_ASSET_URL_SET = new Set(SHELL_LAZY_PLACEHOLDER_URLS.values());
 
-export function rewriteShellLazyFileUrls(fs: MemoryFileSystem): void {
-  rewriteRootfsLazyFileUrls(fs);
-  fs.rewriteLazyFileUrls((url) => SHELL_LAZY_PLACEHOLDER_URLS.get(url) ?? url);
-}
-
-export function shellLazyFileEntries(fs: MemoryFileSystem): LazyFileEntry[] {
-  return fs.exportLazyEntries().filter((entry) => {
-    if (isRootfsLazyFileUrl(entry.url)) return true;
-    if (SHELL_LAZY_SOURCE_URL_SET.has(entry.url)) return true;
-    return SHELL_LAZY_ASSET_URL_SET.has(entry.url);
-  });
-}
+// `rewriteShellLazyFileUrls` and `shellLazyFileEntries` were here. Both wrote
+// to, or read from, an image's deferred half — one rewriting every stored lazy
+// URL, the other enumerating them to decide which were "ours". Nothing calls
+// either since the deployment stopped rewriting the image and started mapping
+// addresses when it fetches them (`imageOwnedRuntimeUrlTable`).
+//
+// `SHELL_LAZY_PLACEHOLDER_URLS` above survives them, and is now the whole of
+// what this module contributes: a table from the placeholder URL an image
+// records to the asset URL this build serves. That table was always the
+// content; walking a filesystem to apply it was the part that could go wrong.

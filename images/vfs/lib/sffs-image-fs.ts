@@ -169,6 +169,27 @@ export class SffsImageFs {
     return new Uint8Array(this.exports.memory.buffer);
   }
 
+  /**
+   * The buffer this tree's bytes actually live in, for a caller that must
+   * REGISTER it rather than read it.
+   *
+   * There is exactly one such caller and it is the reason this is public:
+   * WebKit does not reclaim a large buffer held on the main thread when it
+   * merely goes out of scope, so a build-time image has to be handed to
+   * `trackTransientImageBuffer` to be reclaimed on teardown (the root fix for
+   * the Safari image-switch OOM). The incumbent handed over its
+   * `SharedArrayBuffer`; this hands over the module memory that replaced it,
+   * and the hazard is the same size for the same reason.
+   *
+   * NOT a way to read or write the tree. It is live module memory and it
+   * MOVES: every allocation may grow it and invalidate any view taken of it,
+   * which is why `mem` above is a getter and never a cached field. Take it,
+   * register it, do not keep it.
+   */
+  get transientBuffer(): ArrayBufferLike {
+    return this.exports.memory.buffer;
+  }
+
   private check(rc: number, operation: string, path: string): number {
     if (rc < 0) throw new SffsImageError(-rc, operation, path);
     return rc;
