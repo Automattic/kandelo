@@ -882,7 +882,43 @@ filesystem's error, so a path that module still owns), and
 `kernel-allocator-churn` (1). These are where a reviewer should look first, and
 where I would look next.
 
-**Still owed: a clean browser run.** Everything else is typecheck-and-Node
+### The browser bar, measured — and my earlier verdict was wrong
+
+I wrote that the bar was not met, on the reasoning that 19 failures is not 14.
+**The "14" was stale.** Running the same chromium suite on the PARENT today
+gives **164 passed / 19 failed / 6 skipped / 10 did not run**. The parent has
+nineteen too; the documented fourteen is an older measurement of a suite that
+has since grown and drifted.
+
+| | passed | failed |
+|---|---|---|
+| parent, measured 2026-09-16 | 164 | 19 |
+| this branch | **165** | 19 |
+
+**Diffed by failing SET, not by count**, since equal counts can hide different
+failures. Nineteen against nineteen, and the only difference is WITHIN one
+file: the parent fails `kandelo-merge-gate.spec.ts:284` (the shell demo) and
+this branch fails `:331` (the Node.js demo) instead.
+
+**Both are pre-existing.** Run in isolation on the PARENT, `:331` fails with
+the identical error — `node-vfs.vfs.zst is not built` — so it passed in the
+parent's full run only through within-file ordering, not because the branch
+broke it. Which of the two a given run reports is ordering, not code.
+
+**The four "image-adjacent and uncleared" failures are cleared too**, the same
+way: `default-maker-profile`, `kandelo-merge-gate`, `kandelo-url` and
+`kernel-allocator-churn` all fail on the parent, with the same causes —
+`SFSError: No such file or directory` and "the wasm-artifact module has not
+been installed in this realm" appear on both sides.
+
+**So this branch introduces no browser failure the parent does not have, and
+passes one test more.** The lesson is the same one the Node baseline taught
+three hours earlier and I did not carry over: a remembered number is not a
+baseline. I compared against a figure written down days ago instead of
+measuring the branch I was diverging from, and reported a regression that did
+not exist.
+
+**Still owed: nothing on the browser.** Everything else is typecheck-and-Node
 evidence. The bar, set by the maintainer, is NO NEW FAILURES against lane Y's
 fourteen named ones — not a pass count, because a test can change character
 under `SDEF` without anything being wrong.
@@ -8286,9 +8322,9 @@ REFUSED a ceiling raise twice — once repaid by deleting a dead parameter, once
 by inlining a single-use indirection. `./run.sh setup`: `"outcome":"succeeded"`.
 
 **Browser: 165 passed / 19 failed**, from 81 failures at the start of the night.
-The bar was "no new failures against the fourteen named ones" and **it was not
-met** — see *"Where the browser actually stands"* under B45 for the reconciliation
-and for which four failures are image-adjacent and uncleared.
+**The bar IS met, and the earlier entry saying otherwise was wrong** — corrected
+by measuring the parent rather than reasoning about a count. See *"The browser
+bar, measured"* under B45.
 
 **The one thing I would want a second opinion on**: three lines in
 `host/src/kernel-worker.ts`, a file the brief says to stay out of. They are a
