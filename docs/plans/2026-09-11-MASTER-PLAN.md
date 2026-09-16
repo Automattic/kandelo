@@ -3061,6 +3061,46 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+## V5's REMAINDER, MEASURED 2026-09-16 — it is two call sites, not eighty-four
+
+"Delete `memory-fs.ts`" sounds like 84 files, which is how many still import it.
+Sorted by who is actually coupled, it is much smaller and the shape matters:
+
+| where | real importers | what it means |
+|---|---|---|
+| `host/test` | 53 | tests; step 4 of the pipe plan |
+| `apps/browser-demos` | 11 | demo pages and specs |
+| `host/src` | **2** | the only PRODUCTION coupling |
+| `tools/mkrootfs`, `packages/registry`, scripts, `tests/` | 18 | build-time and fixtures |
+| `images/` | **0** | lane Y's closure condition, still holding |
+
+**`host/src` was six and is now two** (`4a365cca6`). Four of the six imported
+that module for exactly one type, `LazyDownloadEvent`, and nothing else — a
+transport-progress shape describing a FETCH, not a filesystem, which meant both
+kernel PROTOCOLS depended on the implementation lane V is trying to delete in
+order to describe a download. It moved to `vfs/lazy-download-event.ts`.
+
+**The two that remain are the honest ones, and one of them is blocked on a
+decision rather than on effort.**
+
+* `browser-kernel-worker-entry.ts` uses it as a live mount BACKEND. That role is
+  real and `KandeloImageFs` does not fill it: the bridge describes an IMAGE and
+  owes none of `append`, `seek`, `fpathconf` or the rest of a backend's runtime
+  surface. Migrating the backend role is a separate job with a different end
+  state, since the kernel owns `/` and the remaining host backends are the ones
+  it does not claim.
+* `binary-resolver.ts` reads an image's declared ABI for a fail-closed policy
+  gate. It **cannot** be swapped to `KandeloImageFs.readImageMetadata`, which
+  exists and would be the right call, because that reader lives in `images/` and
+  `host/src` may not import from there — enforced by the host package's own
+  `rootDir` during its dts emit, and enforced for a good reason: the host
+  runtime shipping the image BUILDER is the coupling this lane exists to remove.
+
+**So the question that actually gates deleting `memory-fs.ts` is: where is the
+image reader allowed to live?** Either it becomes something `host/src` may
+depend on, or `binary-resolver`'s ABI gate moves out of `host/src`. That is a
+packaging decision and it is the maintainer's, not this lane's.
+
 ## V-NAME — LANDED except the magic, 2026-09-16
 
 Three stages, each green and pushed: the Rust side (`5e9fabc24`), the
