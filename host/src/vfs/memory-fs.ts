@@ -150,23 +150,23 @@ export interface LazyFileEntry {
   size: number;
 }
 
-export type LazyDownloadKind = "file" | "tree" | "archive";
-export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
-
-export interface LazyDownloadEvent {
-  id: string;
-  kind: LazyDownloadKind;
-  status: LazyDownloadStatus;
-  url: string;
-  path?: string;
-  mountPrefix?: string;
-  loadedBytes: number;
-  totalBytes?: number;
-  error?: string;
-  t: number;
-}
-
-export type LazyDownloadListener = (event: LazyDownloadEvent) => void;
+// `LazyDownloadEvent` and friends moved to `./lazy-download-event`. They
+// describe a FETCH, not this filesystem, and four files in `host/src` imported
+// this module for that one type and nothing else — a transport-progress shape
+// was the only reason the kernel protocols depended on the filesystem lane V
+// exists to delete. Re-exported so this module's own consumers are unaffected.
+import type {
+  LazyDownloadEvent,
+  LazyDownloadKind,
+  LazyDownloadListener,
+  LazyDownloadStatus,
+} from "./lazy-download-event";
+export type {
+  LazyDownloadEvent,
+  LazyDownloadKind,
+  LazyDownloadListener,
+  LazyDownloadStatus,
+};
 
 type LazyFetch = (
   url: string,

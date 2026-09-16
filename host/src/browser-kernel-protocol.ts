@@ -84,7 +84,7 @@ import type {
  * lifecycle. The main thread is a thin UI proxy that sends messages here.
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type {
   ForkModuleProofMessage,
   HostDiagnostic,

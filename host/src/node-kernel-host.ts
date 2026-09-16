@@ -32,7 +32,7 @@ import type {
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 import {
   snapshotClosedLazyAssets,
