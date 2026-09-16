@@ -3384,6 +3384,20 @@ module completes the seal at export, and the kernel verifies it. `expectedCount`
 is declared rather than counted for a reason the bridge records — a count taken
 from the archives that were registered cannot notice the one that was not.
 
+**The seal guarantee has a NAMED consumer, found in the same run.**
+`vfs-import-seal-boundary.spec.ts` passes in chromium — both forgeries, member
+and cohort — proving browser worker init refuses a forged seal before ready.
+Its fixture comes from `apps/browser-demos/pages/vfs-import-seal-boundary.ts`,
+which builds the forged images with `MemoryFileSystem`.
+
+That is a PAGE, not a spec: app code importing the class directly, and one of
+the eleven `apps/browser-demos` importers the census counts. So a
+browser-validated security guarantee currently rests on a legacy-built fixture,
+and repointing it is step 5 fallout rather than test tidying. The bridge's
+`cohort: { id, member, expectedCount }` is what makes the repoint possible at
+all — which is the concrete form of "atomic cohorts have a counterpart", stated
+above from the API and now with the consumer named.
+
 **And so does OWNERSHIP, which nearly went unnoticed.** The fixtures declare
 `owner: { uid: 1000, gid: 1000 }`, and `registerLazyArchive` — the bulk helper
 a repoint reaches for first — takes no owner. `registerArchiveMember` does
