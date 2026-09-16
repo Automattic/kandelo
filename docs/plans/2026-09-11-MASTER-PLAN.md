@@ -3234,6 +3234,68 @@ HONEST: after it, every file still importing the module is one that actually
 wants the filesystem, and the count stops being inflated by a wire format that
 happens to be declared there.
 
+#### THE MOVE WAS THE WRONG SHAPE — the maintainer's question found it, 2026-09-16
+
+Asked to approve the move, the maintainer asked instead: *"Why are these types
+needed at all since the kernel is taking over KIFS?"* Tracing the call graph
+rather than answering from the design, the answer is: **mostly they are not.**
+
+| module | lines | who calls its exports |
+|---|---|---|
+| `package-deferred-tree.ts` | 892 | **no production caller for any of its five exports.** Two host tests and two Playwright specs. `parsePackageDeferredZipTreeDescriptor` and `assertPackageDeferredZipTreeState` have no caller at all outside their own file |
+| `package-deferred-tree-contract.ts` | 250 | serves the above |
+| `kernel-lazy-section.ts` | 437 | its `KLZY` encoder, decoder and flag are called by **`memory-fs.ts` and nothing else**. Two small exports survive it: `reduceLazyArchiveGroups` (used by `rootfs-lazy-archives`) and `VFS_IMAGE_MAX_KERNEL_LAZY_BYTES` (used by `vfs-image-transport`) |
+
+And `rootfs.rs` says the Rust export deliberately does NOT emit `KLZY`, because
+"emitting `KLZY` as well would put two descriptions in one image".
+
+**So the same types point at ~1,579 lines that should LEAVE the counted
+surface, not 191 that should enter it.** The budget refusing the move was
+right, and for a better reason than either of us had: the move was the wrong
+SHAPE of change, not the wrong size. Options 1 and 2 below are withdrawn.
+
+The two genuinely live consumers are `module-base-image.ts` (the
+Rust-module-backed path) and `rootfs-lazy-archives.ts` (transport policy).
+They need A shape for what they pass around, and it need not be `memory-fs`'s
+vocabulary — `module-base-image.ts` already proves the point by declaring its
+own `ModuleLazyEntries` with the comment *"named so this file need not import
+it."*
+
+#### WHAT THE BROWSER SPECS ACTUALLY PROVE — checked before touching them
+
+The maintainer's instruction was to delete the dead half but keep the browser
+specs alive, *after* checking whether they test the dead API or test something
+live that merely imports it. Checked: **it is the second.** Both
+`lazy-archive-runtime.spec.ts` and `package-deferred-tree-browser.spec.ts` use
+`derivePackageDeferredZipTree` → `registerPackageDeferredZipTree` →
+`saveImage` purely as a FIXTURE BUILDER, and then assert live browser
+behaviour: booting, reading and exec'ing through verified lazy archives,
+retrying a transient response before surfacing EIO, proxying external archives
+under cross-origin isolation, reporting digest failure without mutation, and
+verifying seals before atomic activation.
+
+So they are repointed, not deleted.
+
+**But a repoint drops one thing, and it is worth saying what.** The fixtures
+declare `activation: { mode: "first-use", capabilities, roots }`, and
+`KandeloImageFs` has no counterpart. Traced rather than assumed: **every
+consumer of `activation.mode`, `activation.capabilities` and
+`activation.roots` is inside `memory-fs.ts` itself.** Neither
+`rootfs-lazy-archives.ts` nor `module-base-image.ts` mentions activation at
+all. It is a `MemoryFileSystem`-internal concept and it dies with the class.
+
+**The BEHAVIOUR survives; the declaration does not.** "Fetch this archive when
+something first reads from it" is what the kernel does through
+`host_fetch_deferred` — first-use activation implemented one layer down.
+Capabilities and roots were a host-side gate on top of it. Dropping them is
+losing coverage of a class being deleted, not coverage of the platform.
+
+**Atomic cohorts DO have a counterpart**, so the seal test survives intact:
+`registerArchiveMember` takes `cohort: { id, member, expectedCount }`, the
+module completes the seal at export, and the kernel verifies it. `expectedCount`
+is declared rather than counted for a reason the bridge records — a count taken
+from the archives that were registered cannot notice the one that was not.
+
 #### THE MOVE WAS BUILT, REFUSED BY THE BUDGET, AND REVERTED — a decision for the maintainer
 
 It is written, it typechecks, and it is not landed. The patch is kept at
