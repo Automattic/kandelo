@@ -245,7 +245,26 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
             // be left mounted for the next call to build on.
             if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {
                 rootfs::reset();
-                release_image();
+                // OWNERSHIP DID NOT TRANSFER, so clear the slot WITHOUT
+                // freeing — exactly what the `Err` arm below does, and what
+                // the contract fifty lines above states in as many words:
+                // "on FAILURE ownership does not transfer and the host still
+                // owns its buffer".
+                //
+                // This called `release_image()`, which FREES.
+                // `KandeloImageFs.loadImage` implements the documented
+                // contract and frees the buffer in its own `catch`, so an
+                // image whose seals did not authenticate was freed twice,
+                // once by each side that believed it owned it — `dealloc`
+                // called on the same pointer, which is heap corruption and
+                // not a refusal. A corrupt image corrupted the builder
+                // reading it.
+                //
+                // The surviving failure path is the one below; this one now
+                // does the same thing, so there is no longer a second
+                // convention to drift from.
+                // SAFETY: single-threaded module.
+                unsafe { *IMAGE.0.get() = None };
                 return err(e);
             }
             i32::try_from(entries).unwrap_or(i32::MAX)
@@ -3240,14 +3259,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_load_refuses_an_image_whose_seals_do_not_authenticate() {
-        // The wiring, not the verifier. `seal::verify_cohorts` has its own ten
-        // trials; this asserts that `sm_load_image` CALLS it — which it did not
-        // for several commits while the verifier sat complete and inert.
-        //
-        // The archive declares a cohort of two and supplies one, which is the
-        // partial activation atomic cohorts exist to prevent.
+    /// An image carrying a cohort that declares two members and supplies one.
+    ///
+    /// Extracted so the refusal and the OWNERSHIP of a refusal can be asserted
+    /// from the same artifact: they are two halves of one contract, and a
+    /// second hand-built fixture would let them drift apart.
+    fn tampered_cohort_image() -> alloc::vec::Vec<u8> {
         assert_eq!(sm_reset(0o755, 0, 0), 0);
         let descriptor: &[u8] = b"{\"url\":\"https://example.invalid/tools.zip\"}";
         let mut identity = alloc::vec![
@@ -3324,6 +3341,18 @@ mod tests {
             image
         };
 
+        image
+    }
+
+    #[test]
+    fn a_load_refuses_an_image_whose_seals_do_not_authenticate() {
+        // The wiring, not the verifier. `seal::verify_cohorts` has its own ten
+        // trials; this asserts that `sm_load_image` CALLS it — which it did not
+        // for several commits while the verifier sat complete and inert.
+        //
+        // The archive declares a cohort of two and supplies one, which is the
+        // partial activation atomic cohorts exist to prevent.
+        let image = tampered_cohort_image();
         assert_eq!(sm_reset(0o755, 0, 0), 0);
         let rc = load_image_bytes(&image);
         assert_eq!(rc, -(Errno::EPERM as i32), "a cohort short of its count");
@@ -3336,6 +3365,63 @@ mod tests {
         assert!(unsafe { sm_lstat(qp, ql, buf, 64) } < 0, "and its tree is gone");
         unsafe { sm_free(qp, ql) };
         unsafe { sm_free(buf, 64) };
+    }
+
+    #[test]
+    fn a_refused_load_leaves_the_hosts_buffer_to_the_host() {
+        // THE OTHER HALF OF THE REFUSAL, and the half that was wrong.
+        //
+        // The ownership contract on `AdoptedImage` says it in as many words:
+        // "on FAILURE ownership does not transfer and the host still owns its
+        // buffer — because a caller that must inspect a return code to know
+        // whether it still owns memory will eventually get it wrong". The
+        // seal-verification arm broke exactly that rule: it called
+        // `release_image()`, which frees, and then returned a negative code to
+        // a caller whose own contract is to free. `KandeloImageFs.loadImage`
+        // frees in its `catch`, so a tampered image was `dealloc`ed twice —
+        // heap corruption reached by handing a builder a corrupt image, which
+        // is the one input a verifier exists to survive.
+        //
+        // NOTHING CAUGHT IT because the Rust helper and the real caller
+        // disagree about ownership in the one direction that matters:
+        // `load_image_bytes` never frees ("ownership transfers on success;
+        // nothing here frees it"), so the Rust tests LEAK where the bridge
+        // frees, and the only path where the two conventions collide is the
+        // only path no test walked.
+        //
+        // The assertion is the allocator's own invariant rather than a read of
+        // freed memory: a LIVE allocation cannot be handed out again. If the
+        // module freed the image under the host, the very next request of the
+        // same size is free to return that block — and with the buffer still
+        // live it cannot.
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        let image = tampered_cohort_image();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+
+        let ptr = sm_alloc(image.len());
+        assert_ne!(ptr, 0, "allocation for a {}-byte image", image.len());
+        unsafe { core::ptr::copy_nonoverlapping(image.as_ptr(), ptr as *mut u8, image.len()) };
+        let rc = unsafe { sm_load_image(ptr, image.len()) };
+        assert_eq!(rc, -(Errno::EPERM as i32), "a cohort short of its count");
+
+        let decoy = sm_alloc(image.len());
+        assert_ne!(decoy, 0, "a second allocation of the same size");
+        assert_ne!(
+            decoy, ptr,
+            "the module freed the host's buffer under it: the allocator handed \
+             the same block back while the host still owned it",
+        );
+        // Belt and braces, and the symptom a caller would actually meet: the
+        // bytes are still the image's after something else has been given
+        // memory to scribble on.
+        unsafe { core::ptr::write_bytes(decoy as *mut u8, 0xAB, image.len()) };
+        let live = unsafe { core::slice::from_raw_parts(ptr as *const u8, image.len()) };
+        assert_eq!(live, &image[..], "the refused image's bytes were overwritten");
+
+        unsafe { sm_free(decoy, image.len()) };
+        // The host's free, and the ONLY free. With the defect this was the
+        // second one.
+        unsafe { sm_free(ptr, image.len()) };
     }
 
     #[test]
