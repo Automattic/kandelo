@@ -3395,15 +3395,30 @@ commit message does not mention them.**
 So this spec RAN until three weeks ago and was switched off inside a large
 unrelated change.
 
-**That matters for the port, because the kernel-path tests already exist.**
-This file's five tests boot a real kernel — `__runLazyVfsAcceptance` execs a
-binary out of the image — and they cover exactly the guarantees the legacy
-`package-deferred-tree-browser` tests cover through `MemoryFileSystem`:
-*"retries a transient lazy-tree response before surfacing EIO"*, *"reports
-digest failure without mutation and retries cleanly"*, *"boots, reads, and
-execs through verified lazy archives"*, plus CORS-proxied external archives.
-**Porting the three legacy tests to the kernel path may be re-enabling work
-that was silenced as collateral rather than writing new tests.**
+**RUN, AND THE ANSWER IS THAT IT CANNOT PASS — the spec is ORPHANED, not
+dormant.** Re-provisioned (`./run.sh prepare-browser`, 7/7), dropped the ignore
+locally, ran the file alone against chromium. **All five failed.** Test 1 spent
+exactly its 120-second poll waiting for `window.__lazyArchiveVfsTestReady`;
+tests 2–5 died on `net::ERR_CONNECTION_REFUSED` at the same URL.
+
+**`/pages/lazy-archive-vfs-test/` does not exist, and never has** — searched by
+path and by name across all refs. The spec navigates to a harness that is not
+in the repository.
+
+**The introducing commit explains it.** `122e62a77f` ("[Homebrew] Load deferred
+VFS software safely when it is first used", #1051) added this spec **alongside
+`apps/browser-demos/pages/homebrew-vfs-test/main.ts`**. When #1307 removed the
+Homebrew fixtures it deleted that page and silenced the spec in the same
+change: the `/homebrew/i` ignore and the `lazy-archive-runtime` ignore were one
+cleanup. The connection was simply never written down.
+
+**So this section's earlier claim — "silenced as collateral with no recorded
+reason" — is retired.** There was a reason. Its harness went with Homebrew.
+
+**And guarantees one and two cannot be ported by re-enabling.** Doing it means
+rebuilding the acceptance page against the kernel-owned boot path, which is new
+work rather than a switch. The local ignore edit has been reverted; the file
+stays ignored, now with the reason recorded beside it.
 
 **THE GUARANTEE MAP, so the deletion is defensible rather than asserted.** The
 maintainer chose "port the three tests to the kernel path first". Matching them
