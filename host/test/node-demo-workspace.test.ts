@@ -90,7 +90,25 @@ printf '%s\\n' \
     }
   }, 30_000);
 
-  it("initializes the starter package inside the mounted canonical maker home", async () => {
+  // `/home/maker` IS NOT A HOST MOUNT ANY MORE, and this test used to say it
+  // was. It mounted a second `MemoryFileSystem` there and read the starter
+  // package back out of that backend. The kernel took `/home/maker` as an
+  // in-kernel tmpfs scratch mount in Phase 5 increment 1a (`e4cc807f2a`,
+  // alongside `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/root`, `/srv`,
+  // `/dev/shm`), so the host mount is shadowed: the guest's write lands in the
+  // kernel and no host backend ever sees it.
+  //
+  // Measured rather than reasoned. With the old mounts in place the shell
+  // traced `cd /home/maker`, `[ ! -e package.json ]` TRUE, `printf ... >
+  // package.json`, and exited 0 -- and afterwards `test -e package.json`
+  // answered YES from inside the guest while BOTH host backends answered
+  // ENOENT. The bytes were never lost; the test was looking in a place the
+  // platform had stopped using.
+  //
+  // So the assertions move to where the file now lives. What the profile owes
+  // is observable to its own guest, which is the only observer that was ever
+  // entitled to it.
+  it("initializes the starter package in the kernel-owned maker home", async () => {
     const rootfs = MemoryFileSystem.create(
       new SharedArrayBuffer(4 * 1024 * 1024),
     );
@@ -101,19 +119,21 @@ printf '%s\\n' \
     ensureDirRecursive(rootfs, "/home/maker");
     stageSpiderMonkeyNpmRuntime(rootfs);
 
-    const home = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-    home.chown("/", 1000, 1000);
-    const io = new VirtualPlatformIO(
-      [
-        { mountPoint: "/home/maker", backend: home },
-        { mountPoint: "/", backend: rootfs },
-      ],
-      new NodeTimeProvider(),
-    );
-
     const result = await runCentralizedProgram({
       programPath: SHELL_WASM,
-      argv: ["sh", NODE_WORKSPACE_PROFILE_PATH],
+      // No `cat` in this image, so the read-back is shell builtins only.
+      argv: [
+        "sh",
+        "-c",
+        `. "$1"
+printf '%s\n' "exists=$([ -e package.json ] && echo yes || echo no)"
+printf '%s\n' "cwd=$(pwd)"
+printf '%s\n' "--begin--"
+while IFS= read -r line; do printf '%s\n' "$line"; done < package.json
+printf '%s\n' "--end--"`,
+        "sh",
+        NODE_WORKSPACE_PROFILE_PATH,
+      ],
       uid: 1000,
       gid: 1000,
       env: [
@@ -122,27 +142,29 @@ printf '%s\\n' \
         "LOGNAME=maker",
         "PATH=/usr/local/bin:/usr/bin:/bin",
       ],
-      io,
+      io: new VirtualPlatformIO(
+        [{ mountPoint: "/", backend: rootfs }],
+        new NodeTimeProvider(),
+      ),
       onKernelReady: (kernel, pid) => kernel.setCwd(pid, "/home/maker"),
       timeout: 20_000,
     });
 
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
-    expect(readVfsText(home, "/package.json")).toBe(STARTER_PACKAGE);
-    expect(home.stat("/package.json")).toMatchObject({ uid: 1000, gid: 1000 });
+    expect(result.stdout).toContain("cwd=/home/maker");
+    expect(result.stdout).toContain("exists=yes");
+    // The exact starter package, read back by the guest that wrote it.
+    expect(
+      result.stdout.slice(
+        result.stdout.indexOf("--begin--\n") + "--begin--\n".length,
+        result.stdout.indexOf("--end--"),
+      ),
+    ).toBe(STARTER_PACKAGE);
+
+    // And the host `/` backend never sees it, which is the invariant that
+    // replaced "it is in the home mount": the kernel owns the scratch prefix,
+    // so nothing leaks down into the image the machine booted from.
     expect(() => rootfs.stat("/home/maker/package.json")).toThrow();
     expect(() => rootfs.stat("/work")).toThrow();
   }, 30_000);
 });
-
-function readVfsText(fs: MemoryFileSystem, path: string): string {
-  const stat = fs.stat(path);
-  const fd = fs.open(path, 0, 0);
-  try {
-    const bytes = new Uint8Array(stat.size);
-    const length = fs.read(fd, bytes, null, bytes.length);
-    return new TextDecoder().decode(bytes.subarray(0, length));
-  } finally {
-    fs.close(fd);
-  }
-}
