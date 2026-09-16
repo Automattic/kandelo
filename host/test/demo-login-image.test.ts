@@ -316,3 +316,41 @@ describe("canonical demo login image policy", () => {
     expect(hasConfiguredDemoLogin(stage(true))).toBe(false);
   });
 });
+
+describe("hasConfiguredDemoLogin distinguishes absent from broken", () => {
+  // The predicate answers a QUESTION about an image, and its `catch` used to
+  // answer it `false` for any reason at all. "There is no /etc/shadow" is the
+  // answer; "I could not ask" is not, and reporting a configured image as
+  // unconfigured is indistinguishable from the real verdict.
+  //
+  // This matters most where it is least visible: a filesystem the predicate
+  // does not fully recognise raises a TypeError, and the old catch turned that
+  // into a plausible "no login here". Same shape as B45, where a loss looked
+  // like a successful boot.
+  function throwing(error: unknown) {
+    return { stat() { throw error; } } as never;
+  }
+
+  it("answers false when the image simply has no login files", () => {
+    // ENOENT under BOTH conventions: the image bridge raises a positive errno,
+    // `vfs-errors.ts` a negative code. Either must read as "not there".
+    for (const notFound of [
+      Object.assign(new Error("ENOENT: stat"), { errno: 2 }),
+      Object.assign(new Error("ENOENT: stat"), { code: -2 }),
+      Object.assign(new Error("ENOENT: stat"), { code: "ENOENT" }),
+    ]) {
+      expect(hasConfiguredDemoLogin(throwing(notFound))).toBe(false);
+    }
+  });
+
+  it("propagates anything else, rather than reporting an unreadable image as unconfigured", () => {
+    for (const broken of [
+      new TypeError("fs.isPathDeferred is not a function"),
+      Object.assign(new Error("EACCES: stat"), { errno: 13 }),
+      Object.assign(new Error("EIO: stat"), { errno: 5 }),
+    ]) {
+      expect(() => hasConfiguredDemoLogin(throwing(broken)))
+        .toThrow(broken.message);
+    }
+  });
+});

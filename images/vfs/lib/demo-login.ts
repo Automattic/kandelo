@@ -169,9 +169,42 @@ export function hasConfiguredDemoLogin(
       sudoers === DEMO_SUDOERS &&
       autologinMotd === DEMO_AUTOLOGIN_MOTD
     );
-  } catch {
-    return false;
+  } catch (error) {
+    // "Not there" is the ANSWER; anything else is a failure to ask.
+    //
+    // An image without `/etc/shadow` is genuinely not configured for login,
+    // and `stat` throwing ENOENT is how this function learns that. Every other
+    // error is different in kind: a missing method on an unfamiliar
+    // filesystem, a permission refusal, a corrupt read. Returning `false` for
+    // those reports a CONFIGURED image as unconfigured, and does it in a shape
+    // no caller can tell from the real answer.
+    //
+    // Found by repointing `demo-login-image.test.ts` at the Rust writer, where
+    // a swallowed error would have read as "this image has no login" — the
+    // same shape as defect B45, where a loss looked like a successful boot.
+    if (isNotFound(error)) return false;
+    throw error;
   }
+}
+
+/**
+ * ENOENT from either filesystem, read structurally rather than by class.
+ *
+ * The two number errnos with OPPOSITE SIGNS — `host/src/vfs/vfs-errors.ts`
+ * uses `-2` because its error carries a returned code, and the image bridge
+ * raises `2` because it negates at its boundary — and comparing one convention
+ * against the other is silently always-false, which cost 59 browser tests once
+ * already. Both are accepted here for that reason.
+ *
+ * Structural rather than `instanceof` because this module is in `images/` and
+ * may be handed either filesystem; importing one side's error class to
+ * recognise the other's would be the coupling, not the fix.
+ */
+function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { errno, code } = error as { errno?: unknown; code?: unknown };
+  if (errno === 2 || code === -2) return true;
+  return typeof code === "string" && code === "ENOENT";
 }
 
 function recordsNamed(content: string, name: string): string[][] {
