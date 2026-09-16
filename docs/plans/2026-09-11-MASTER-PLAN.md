@@ -1096,13 +1096,21 @@ reached by an exnref owned by activation 1 in a worker where activation 0 also
 has a thrower bound — activation 0 being exactly the one a module ignoring the
 owner would reach. Four mutations, all caught, build keys recorded.
 
-The one left is census 191's: an end-to-end fork through a DIRECT
-externref-returning host import. `fork-instrument`'s provenance pass rewrites
-direct calls only, and nothing in the tree has one — the gated-externref
-fixture mints through `call_indirect` and the GC fixtures internalize with no
-host call to wrap. Closing it needs an instrumented guest built for the
-purpose, through `scripts/run-wasm-fork-instrument.sh`, not a rearrangement of
-the fixtures that exist.
+The third closed the same day (census 197). Nothing in the tree calls an
+externref-returning import DIRECTLY — the gated-externref fixture mints through
+`call_indirect` and the GC fixtures internalize with no host call to wrap — so
+the test builds a guest that does: a four-function wat module run through
+`scripts/run-wasm-fork-instrument.sh`, instantiated against the REAL module
+export. The mutation that had passed the entire fork suite, a shim returning
+`ref.null extern`, now fails on the first call.
+
+That test needs NO fork, and §191's framing of it as "an end-to-end fork
+through a direct externref-returning host import" was one step too far: what
+the shim's identity protects is the guest's own data flow, which a plain call
+exercises. **A guard's test should reach the guard, not the largest scenario
+containing it.**
+
+**All three owed guards are gated.**
 
 **Maintainer decisions outstanding.** Nine provisional ceiling raises are
 recorded in `docs/surface-budget.json`, each with its reason and what it

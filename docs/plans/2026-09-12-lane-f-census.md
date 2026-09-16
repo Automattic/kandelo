@@ -10400,3 +10400,58 @@ call to wrap. Closing it needs an instrumented guest artifact built for the
 purpose -- a hand-written module with such a call, run through
 `scripts/run-wasm-fork-instrument.sh` -- rather than a new arrangement of the
 fixtures that exist.
+
+## §197 -- The last owed guard, and the mutation that had walked through everything
+
+§191's mutation -- the injected provenance shim returning `ref.null extern`
+instead of its argument -- survived the entire fork suite. §196 left it owed,
+because the instrumentation pass rewrites DIRECT calls to externref-returning
+imports only, and nothing in the tree has one: the gated-externref fixture
+mints through `call_indirect` (the residual gap that pass records in its own
+header) and the GC fixtures internalize a guest-allocated `anyref` with no host
+call to wrap.
+
+**So build a guest that has one.** `host/test/fork-provenance-externref-wrapper.test.ts`
+writes a four-function wat module whose export calls an externref-returning
+`env` import directly, runs it through `scripts/run-wasm-fork-instrument.sh` --
+the production transform, the same tool every fork-using package build runs --
+and instantiates the result against the REAL fork-module's export, with stubs
+for everything else.
+
+Hand-writing the instrumented output would have been this file's opinion of
+what the pass emits, which is exactly the thing under test.
+
+Then it calls the wrapped export four times, minting a fresh frozen object each
+time, and requires the value that reaches the caller to be the one the host
+import produced. Fresh objects matter: a shim that cached or substituted any
+single value could otherwise pass by coincidence.
+
+Mutation B re-run against it, build key `bfbb5796e8f8` against the baseline
+`d6a094ebcc7b`: **FAILS**, `and its value came back unchanged: expected null to
+be { nth: +0 }`. The mutation that passed four fork specs now fails on the
+first call, naming the value.
+
+### Why no fork is needed, stated so nobody adds one
+
+§191 called the owed test "an end-to-end fork through a direct
+externref-returning host import", and that framing was one step too far. What
+the shim's identity protects is the guest's OWN data flow --
+`externref_provenance.rs` emits `local.get result; call provenance; local.set
+result`, so the hook's return value replaces the produced value before the
+guest's code sees it. That happens on an ordinary call, with no fork anywhere
+near it. A fork would additionally exercise capture asking the host for a
+handle (`__wpk_fork_host_externref_handle`), which is a different seam with its
+own tests, and would not touch the identity at all.
+
+A guard's test should reach the guard, not the largest scenario containing it.
+
+### Two things this cost, worth the next reader's time
+
+- The instrumenter emits `__wpk_fork_module_state_table_generation_addr` as an
+  **i64** immutable global regardless of the guest's pointer width. Supplying
+  an i32 fails instantiation with `imported global does not match the expected
+  type`, which names no type and no fix. The test says so where it binds it.
+- A zero-length edge vector is refused by `__wpk_fork_ref_vector_finish`
+  (EINVAL), which §196's fixture hit from the other direction.
+
+**All three owed guards from §191 and §192 are now gated.**
