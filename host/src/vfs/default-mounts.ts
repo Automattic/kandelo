@@ -33,7 +33,7 @@ export const KERNEL_TMPFS_OWNED_PREFIXES: readonly string[] = [
 ];
 
 /** True when the in-kernel tmpfs owns `mountPath` exactly (a scratch prefix). */
-export function kernelTmpfsOwnsMountPath(mountPath: string): boolean {
+function kernelTmpfsOwnsMountPath(mountPath: string): boolean {
   return KERNEL_TMPFS_OWNED_PREFIXES.includes(mountPath);
 }
 
@@ -102,7 +102,7 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
 ];
 
 /** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
-export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
+const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
 
 /**
  * Default size for a browser scratch memfs SAB (16 MiB).

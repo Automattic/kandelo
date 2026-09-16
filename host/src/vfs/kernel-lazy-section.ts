@@ -34,8 +34,8 @@ import type {
 } from "./memory-fs";
 
 /** "KLZY" — mirrors `abi::VFS_IMAGE_KERNEL_LAZY_MAGIC`. */
-export const KERNEL_LAZY_MAGIC = new Uint8Array([0x4b, 0x4c, 0x5a, 0x59]);
-export const KERNEL_LAZY_VERSION = 1;
+const KERNEL_LAZY_MAGIC = new Uint8Array([0x4b, 0x4c, 0x5a, 0x59]);
+const KERNEL_LAZY_VERSION = 1;
 export const KERNEL_LAZY_HEADER_SIZE = 20;
 export const KERNEL_LAZY_GROUP_HEADER_SIZE = 24;
 export const KERNEL_LAZY_FILE_HEADER_SIZE = 24;

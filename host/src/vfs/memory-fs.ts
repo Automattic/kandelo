@@ -160,6 +160,7 @@ import type {
   LazyDownloadKind,
   LazyDownloadListener,
   LazyDownloadStatus,
+  LazyFetch,
 } from "./lazy-download-event";
 export type {
   LazyDownloadEvent,
@@ -167,11 +168,6 @@ export type {
   LazyDownloadListener,
   LazyDownloadStatus,
 };
-
-type LazyFetch = (
-  url: string,
-  init?: { signal?: AbortSignal },
-) => Promise<Response>;
 
 export interface LazyFetcherOptions {
   /**

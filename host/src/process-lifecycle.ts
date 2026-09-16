@@ -159,7 +159,7 @@ import {
 } from "./thread-worker-disposition";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
-import type { MemoryFileSystem } from "./vfs";
+import type { LazyFetch } from "./vfs/lazy-download-event";
 
 /** The backing a single execution image owns. A PID persists across exec. */
 export interface ProcessGenerationOwnership {
@@ -419,10 +419,16 @@ export interface ProcessLifecycleHost<W extends LifecycleWorkerHandle> {
   isInitReady(): boolean;
 
   /**
-   * The frozen base rootfs image this kernel booted from, if it booted from
-   * one. Null means the kernel has no overlay to write into or export.
+   * Whether this kernel booted from a `/` image, and so has an overlay to
+   * write into or export.
+   *
+   * It used to hand back the base image itself, because the host's rootfs
+   * export cloned that image and replayed the overlay onto the clone. The
+   * kernel exports its own image now, and both remaining callers only ever
+   * asked whether the answer was null — so what the host owes here is the
+   * fact, not a filesystem.
    */
-  rootfsBaseImage(): MemoryFileSystem | null | undefined;
+  hasRootfsImage(): boolean;
 
   /** This kernel's process memory allocator. */
   processMemoryAllocator(): ProcessMemoryAllocator;
@@ -1848,7 +1854,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     data: Uint8Array;
     mode: number;
   }): void {
-    if (!host.rootfsBaseImage()) {
+    if (!host.hasRootfsImage()) {
       respondError(msg.requestId, "VFS is not initialized");
       return;
     }
@@ -1879,8 +1885,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
   async function handleExportRootfsImage(msg: {
     requestId: number;
   }): Promise<void> {
-    const baseImage = host.rootfsBaseImage();
-    if (!baseImage) {
+    if (!host.hasRootfsImage()) {
       respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
       return;
     }
@@ -4422,7 +4427,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     onLazyProgress?: DeferredProgress;
     foreignPrefixes: string[];
     nosuid: boolean;
-    lazyFetcher?: Parameters<MemoryFileSystem["setLazyFetcher"]>[0];
+    lazyFetcher?: LazyFetch;
   }): void {
     const installedLazyFetcher = options.lazyFetcher;
     const onProgress = options.onLazyProgress;

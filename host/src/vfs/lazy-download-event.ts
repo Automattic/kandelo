@@ -14,6 +14,19 @@
  * MATERIALIZED is a property of the filesystem, which is the kernel's.
  */
 
+/**
+ * The host-supplied transport a deferred file's bytes arrive through.
+ *
+ * Declared here for the reason the progress event above is: it describes a
+ * FETCH. It was declared twice -- privately in `memory-fs.ts` and again,
+ * identically, in `browser-lazy-fetcher.ts` -- and reached from three more
+ * files as `Parameters<MemoryFileSystem["setLazyFetcher"]>[0]`, which is a
+ * type-level import of an entire filesystem in order to name a function that
+ * takes a URL and returns a `Response`.
+ */
+export type LazyFetch =
+  (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+
 export type LazyDownloadKind = "file" | "tree" | "archive";
 export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";
 

@@ -43,6 +43,7 @@ import {
   HostFileSystem,
   MemoryFileSystem,
 } from "./vfs";
+import type { LazyFetch } from "./vfs/lazy-download-event";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -325,12 +326,14 @@ let execPrograms: Record<string, string> = {};
 let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
-/** The exact fetcher installed on `rootfsMemfs` via `setLazyFetcher`
- *  (closed-asset bundle, closed-asset-source, or the dev fallback below).
+/** The transport this boot resolves deferred addresses through: a
+ *  closed-asset bundle, a closed-asset source, or the dev fallback below.
  *  Captured here — rather than only as a local in `buildVirtualPlatformIO`
- *  — so the rootfs overlay wiring in `handleInit` can reuse the SAME
- *  transport for `host_fetch_deferred` (Phase 5 3b-wiring.3). */
-let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
+ *  — so the rootfs overlay wiring in `handleInit` can hand the SAME
+ *  transport to `host_fetch_deferred` (Phase 5 3b-wiring.3). It used to be
+ *  installed on the `/` MemoryFileSystem as well; that filesystem is no
+ *  longer mounted and nothing could reach the fetcher through it. */
+let rootfsLazyFetcher: LazyFetch | undefined;
 /** Canonical mount points of the sibling filesystems still mounted under `/`
  *  after the host `/` mount is dropped (e.g. `/dev/shm`, `/run/kandelo-run`
  *  session-seed trees, extra host mounts). Captured in `buildVirtualPlatformIO`
@@ -453,7 +456,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   diagnosticPrefix: "[node-kernel-worker]",
   execMountIO: () => vfsExecIO,
   isInitReady: () => initReady,
-  rootfsBaseImage: () => rootfsMemfs,
+  hasRootfsImage: () => rootfsMemfs != null,
   // Node's worker-'exit' handler and vfork containment path synthesize the
   // crash reap themselves before entering the shared teardown.
   defaultExitCrashSignum: () => undefined,
@@ -828,7 +831,6 @@ async function buildVirtualPlatformIO(
           headers: { "content-length": String(bytes.byteLength) },
         });
       };
-    rootfsMemfs.setLazyFetcher(lazyFetcher);
     rootfsLazyFetcher = lazyFetcher;
   }
   // Phase 5 cutover: the in-kernel rootfs overlay is the unconditional sole

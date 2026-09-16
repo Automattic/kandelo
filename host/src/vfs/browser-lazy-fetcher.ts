@@ -2,15 +2,11 @@ import { corsProxyFetchUrl } from "../networking/cors-proxy-url";
 import type {
   BrowserCorsProxyConfig,
 } from "../networking/browser-cors-proxy";
+import type { LazyFetch } from "./lazy-download-event";
 
 type FetchLike = (
   input: string | URL,
   init?: RequestInit,
-) => Promise<Response>;
-
-type LazyFetch = (
-  url: string,
-  init?: { signal?: AbortSignal },
 ) => Promise<Response>;
 
 /**

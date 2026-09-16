@@ -37,6 +37,7 @@ import {
   VirtualPlatformIO,
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
+import type { LazyFetch } from "./vfs/lazy-download-event";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
@@ -343,7 +344,7 @@ const lifecycle = createProcessLifecycle<ProcessInfo["worker"]>({
   diagnosticPrefix: "[browser-kernel-worker]",
   execMountIO: () => io,
   isInitReady: () => initReady,
-  rootfsBaseImage: () => memfs,
+  hasRootfsImage: () => memfs != null,
   defaultExitCrashSignum: (exitStatus) =>
     signalFromExitStatus(exitStatus) ?? SIGSEGV,
   threadWorkerSettleMs: THREADED_WORKER_TERMINATION_SETTLE_MS,
@@ -699,20 +700,18 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // courier contract working rather than a hole: the image said where the
   // bytes are, and nothing here knows better. An address NO deployment can
   // serve is a build-time defect, and belongs to the builder to refuse.
-  let rootfsLazyFetcher: Parameters<MemoryFileSystem["setLazyFetcher"]>[0] | undefined;
+  let rootfsLazyFetcher: LazyFetch | undefined;
   if (msg.closedLazyAssets !== undefined) {
     // NOT wrapped: a closed-asset bundle is already keyed by the canonical URL
     // the image stores, so it resolves the address itself and a second mapping
     // would look one up that was never put in.
     rootfsLazyFetcher = createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets);
-    memfs.setLazyFetcher(rootfsLazyFetcher);
   } else if (corsProxyLazyFetcher !== undefined) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
     // Lazy VFS must read and verify release-asset bytes, which requires CORS.
     // CORP alone cannot make an opaque response body readable to JavaScript.
     rootfsLazyFetcher = (url, init) =>
       corsProxyLazyFetcher(msg.lazyUrlMap?.[url] ?? url, init);
-    memfs.setLazyFetcher(rootfsLazyFetcher);
   }
   // `/dev/shm` is NOT mounted here. POSIX shared memory moved into the
   // in-kernel tmpfs, which already serves every other scratch prefix, so a
