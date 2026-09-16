@@ -2935,11 +2935,43 @@ It is also three initialisms deep in one format — `VFSI` the container, `SFFS`
 the filesystem, `SDEF` the deferred section, plus `KLZY` the legacy one — and
 only `SDEF` says what it is.
 
-**A long name is fine; a clear one is the requirement.** The thing being named
-is the on-image filesystem the kernel mounts and reads directly: its
-superblock, inode table, directory blocks and indirect blocks. Something like
-`KandeloImageFs` / `ImageFileSystem` is the shape to aim at — what it IS, not
-how it once travelled.
+### DECIDED 2026-09-15: `KIFS` on disk, `KandeloImageFs` in code
+
+The thing being named is the on-image filesystem the kernel mounts and reads
+directly: superblock, inode table, directory blocks, indirect blocks.
+
+```
+magic:   KIFS                     (offset 0, four bytes because the format
+                                   gives it four)
+version: u32 = 1                  (offset 4 — ALREADY EXISTS, see below)
+
+Rust:    KandeloImageFs, KandeloImageWriter, KandeloImageConfig
+TS:      KandeloImageFs, KandeloImageError
+files:   kandelo_image_fs.rs, kandelo_image_write.rs, sdef.rs
+crate:   kandelo-image-module     (was sffs-module)
+```
+
+**The acronym appears only where the format forces four bytes.** Every name a
+human reads is spelled out: `KandeloImageFs`, never `Kifs`. Maintainer's call
+and the right one — an acronym in a type name buys nothing a reader needs, and
+`SFFS` is the cautionary example, since its letters did not even spell its own
+expansion.
+
+**Two candidates were weighed and rejected, with reasons worth keeping.**
+`KBFS` ("Kandelo Block File System") named the property that actually
+distinguishes this layer from its container — but `KBFS` is the **Keybase
+Filesystem**, which is prominent and in use. `KFS` collides with the **Kosmos
+File System** and with the conventional name for teaching kernel projects.
+`KIFS` has no filesystem collision; its only cost is that `VFSI` also means
+"image", so both layers say "image" when they share a sentence.
+
+**No pad byte is needed for versioning, and the idea it came from is already
+built.** The superblock carries `SFFS_VERSION: u32 = 1` at offset 4, checked
+separately from the magic at offset 0 (`sffs.rs:401`, `:404`), exactly as the
+container checks `VFSI_VERSION`. Keeping identity and version in separate
+fields is what lets a reader distinguish "this is not our format" from "this is
+our format, newer than I understand" and give the right error for each. Folding
+a version into the magic collapses both into an unhelpful "bad magic".
 
 **The magic bytes move too.** `SFFS` is not only a code name:
 `SFFS_MAGIC = 0x5346_4653` is the four ASCII bytes `"SFFS"` in the superblock
