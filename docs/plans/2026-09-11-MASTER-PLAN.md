@@ -3232,6 +3232,35 @@ exists"* and its `.vfs` twin. The kernel's gate refuses whatever it is handed;
 it cannot hand back a different file. Deleting the host check would silently
 change which artifact resolves.
 
+**THE GATE WAS MEASURED AGAINST EVERY SHIPPED IMAGE BEFORE BEING TRUSTED.**
+A new refusal in the loader can only be validated by what it refuses, so every
+`.vfs`/`.vfs.zst` in `local-binaries/source-only-v1/` was decoded and its
+declaration read: `rootfs.vfs`, `kandelo-sdk`, `lamp`, `mariadb-test`,
+`nginx-vfs`, `nginx-php-vfs`, `node-vfs`, `shell`, `wordpress` — **nine images,
+every one declaring `kernelAbi: 44`**, the current ABI. The gate refuses none of
+them. That is the difference between shipping a refusal and hoping about one,
+and it matters here because the kernel gates images the RESOLVER never saw: a
+shared URL, a boot descriptor, a product image out of Cache Storage.
+
+**And reading them found a hazard the first implementation had.** A derived
+product's metadata carries the field TWICE:
+
+```json
+{"version":1,"kernelAbi":44,"createdBy":"…","baseImage":{…,"kernelAbi":44}}
+```
+
+The second is the BASE image the product was derived from — not the claim the
+gate is about. A first-match substring scan reads the right one today ONLY
+because the writer happens to emit the top-level key first, so a refactor
+reordering an object literal would silently point the kernel's ABI gate at a
+different image's declaration and nothing would look wrong. Same shape as every
+other defect this lane has found: a plausible wrong answer.
+
+So the scan tracks depth, and tracks strings and their escapes, because a `}`
+inside `"createdBy"` is not a closing brace. It still validates nothing,
+allocates nothing and recurses nowhere — the line the `metadata_span` comment
+draws is against a PARSER, and this stays on the right side of it.
+
 **Which relocates the blocker rather than removing it, and that is progress.**
 Step 5 is no longer waiting on a packaging decision about where a reader may
 live. It is waiting on the REMOTE TIER: with one tier there is nothing to
