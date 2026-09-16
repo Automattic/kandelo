@@ -2886,19 +2886,28 @@ superblock, inode table, directory blocks and indirect blocks. Something like
 `KandeloImageFs` / `ImageFileSystem` is the shape to aim at — what it IS, not
 how it once travelled.
 
-**The constraint that bounds this work, found before proposing it.** `SFFS` is
-not only a code name: `SFFS_MAGIC = 0x5346_4653` is the four ASCII bytes
-`"SFFS"` in the superblock of every image ever built
-(`sffs.rs:304`, `sffs.rs:387`). Changing those bytes is a FORMAT break — every
-existing image stops mounting — and this campaign is explicitly not taking an
-`ABI_VERSION` bump. So:
+**The magic bytes move too.** `SFFS` is not only a code name:
+`SFFS_MAGIC = 0x5346_4653` is the four ASCII bytes `"SFFS"` in the superblock
+(`sffs.rs:304`, `sffs.rs:387`). That was raised as a constraint and the
+maintainer removed it, 2026-09-15: *"we're flexible on the format and not
+committed to any backwards compatibility"*. So the rename reaches the format
+identity itself, which is the only version of this change worth making — a
+format whose own magic says the wrong thing is where the confusion starts.
 
-* the wire constant keeps its bytes, and gains a comment saying the name is
-  historical and what it used to claim to mean;
-* everything else moves — module and file names (`sffs.rs`, `sffs_write.rs`,
-  `sffs_deferred.rs`, `images/vfs/lib/sffs-image-fs.ts`), types (`Sffs`,
-  `SffsWriter`, `SffsConfig`, `SffsImageFs`, `SffsImageError`), the `sffs-module`
-  crate, and the prose.
+What that costs, so it is not discovered mid-rename: every image already built
+stops mounting the moment the magic changes, so the rename has to land together
+with a rebuild of the artifacts that carry it (`host/wasm/rootfs.vfs`, the
+`source-only-v1` tier, every `*.vfs.zst` product). A stale image will fail with
+a bad-magic refusal rather than anything subtle, which is the right failure, but
+it means the commit is "rename + rebuild" and not "rename".
+
+Everything moves: the magic, module and file names (`sffs.rs`, `sffs_write.rs`,
+`sffs_deferred.rs`, `images/vfs/lib/sffs-image-fs.ts`), types (`Sffs`,
+`SffsWriter`, `SffsConfig`, `SffsImageFs`, `SffsImageError`), the `sffs-module`
+crate, and the prose. Check whether the magic reaches `abi/snapshot.json`
+before starting — if it does, that is a snapshot regeneration, which the
+maintainer has already said is fine ("rebuilding the snapshot is fine") but
+which is off-limits to a lane that has been told not to touch it.
 
 **Scale, measured rather than guessed: 74 files** under `crates/`, `host/`,
 `images/` and `tools/` mention it. This is mostly mechanical, but it is not
