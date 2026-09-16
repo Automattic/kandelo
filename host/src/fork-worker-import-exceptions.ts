@@ -1,7 +1,6 @@
 import {
   defineForkExternrefImport,
   type ForkExternrefImportBinding,
-  type ForkExternrefImportDescriptor,
   ForkExternrefImportOwnerCatalog,
   type ForkExternrefImportValue,
   ForkExternrefImportWorkerCaller,

@@ -8,10 +8,7 @@ import {
   WPK_FORK_LINKED_FRAME_RECORD_ALIGNMENT,
   WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS,
 } from "./generated/abi";
-import {
-  checkedWasmGuestPointerOffset,
-  type WasmGuestPointer,
-} from "./wasm-guest-pointer";
+import { type WasmGuestPointer } from "./wasm-guest-pointer";
 
 export const LINKED_FRAME_FORMAT_SECTION = WPK_FORK_LINKED_FRAME_FORMAT_SECTION;
 export const LINKED_FRAME_FORMAT_VERSION = WPK_FORK_LINKED_FRAME_FORMAT_VERSION;
@@ -70,12 +67,6 @@ export class ContinuationAllocationError extends Error {
     super(message);
     this.name = "ContinuationAllocationError";
   }
-}
-
-interface AbortFailure {
-  errno: number;
-  requestedFrame?: number;
-  diagnostic: string;
 }
 
 export function writeForkContinuationAnchor(

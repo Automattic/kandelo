@@ -51,7 +51,6 @@ import {
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
-  CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
   POSIX_ARG_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
@@ -60,17 +59,8 @@ import {
   PROCESS_STARTUP_MAX_ARGV_COUNT,
   PROCESS_STARTUP_MAX_ENVP_COUNT,
   WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
-  WPK_FORK_EXPORT_MODULE_STATE_RESTORE,
-  WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
-  WPK_FORK_EXCEPTION_EXPORT_MATERIALIZE,
   WPK_FORK_EXCEPTION_CODEC_SECTION,
   WPK_FORK_GC_CODEC_SECTION,
-  WPK_FORK_REFERENCE_EXPORT_GC_ALLOCATE,
-  WPK_FORK_REFERENCE_EXPORT_GC_FILL,
-  WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
-  WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
-  WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
-  WPK_FORK_REFERENCE_TRANSACTION_OWNER,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
@@ -99,11 +89,10 @@ import {
   isForkUnwindException,
   requireForkUnwindTag,
 } from "./fork-guest-imports";
-import { type ForkPhase, forkPhase } from "./fork-phase";
+import { forkPhase } from "./fork-phase";
 import { ForkResumeTable } from "./fork-resume-table";
 import { waitForForkReplayCommit } from "./fork-replay-gate";
 import {
-  type ForkModuleExports,
   type ForkModuleInstance,
   instantiateForkModule,
 } from "./fork-module-instance";
@@ -123,7 +112,6 @@ import {
   readForkModuleStatePointerWidth,
   readForkModuleStateRoot,
 } from "./fork-guest-sections";
-import { ForkAnyrefTransitTable } from "./fork-anyref-transit";
 import { writeCapturedExternrefHandover } from "./fork-externref-process-owner";
 import { ForkChildReferences } from "./fork-child-references";
 import {
@@ -132,7 +120,6 @@ import {
 } from "./fork-resume-catalog";
 import {
   ForkExternrefTokenCache,
-  ForkExternrefTokenRecipeProvider,
 } from "./fork-reference-broker";
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import {
@@ -1216,7 +1203,6 @@ export function buildDlopenImports(
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number =>
     typeof v === "bigint" ? Number(v) : v;
-  const resolvedLibraryPaths = new Map<string, string>();
   const requireOwnedMemory = (operation: string): void => {
     if (memoryOwnership === "borrowed") {
       throw new Error(
@@ -1706,26 +1692,10 @@ export function buildDlopenImports(
     });
   };
 
-  const forgetMemoryAllocation = (
-    allocation: Readonly<{
-      address: number;
-      mappingAddress: number;
-      mappingSize: number;
-    }>,
-  ): void => {
-    const existing = linkerAllocations.get(allocation.address);
-    if (!existing) return;
-    if (
-      existing.rawAddr !== allocation.mappingAddress ||
-      existing.length !== allocation.mappingSize
-    ) {
-      throw new Error(
-        `dlopen replay: allocation 0x${allocation.address.toString(16)} ` +
-          "changed before peer unload",
-      );
-    }
-    linkerAllocations.delete(allocation.address);
-  };
+  // WHAT USED TO BE HERE: `forgetMemoryAllocation`, the unload half of the
+  // dlopen linker-allocation bookkeeping. It has no caller: nothing in this
+  // worker unloads a peer's library. Deleted rather than kept as the half of a
+  // pair whose other half nobody calls either.
 
   const readDependencyFile = (path: string): Uint8Array | null => {
     if (path.includes("\0")) {
@@ -1843,42 +1813,9 @@ export function buildDlopenImports(
     return bytes;
   };
 
-  const resolveLibrarySync = (
-    dependency: string,
-    requester?: string,
-  ): Uint8Array | null => {
-    const candidates: string[] = [];
-    const addCandidate = (candidate: string): void => {
-      if (!candidates.includes(candidate)) candidates.push(candidate);
-    };
-    if (dependency.startsWith("/")) {
-      addCandidate(dependency);
-    } else {
-      const requesterPath =
-        requester === undefined
-          ? undefined
-          : (resolvedLibraryPaths.get(requester) ?? requester);
-      const slash = requesterPath?.lastIndexOf("/") ?? -1;
-      if (requesterPath && slash >= 0) {
-        const directory = slash === 0 ? "/" : requesterPath.slice(0, slash);
-        addCandidate(
-          directory === "/" ? `/${dependency}` : `${directory}/${dependency}`,
-        );
-      }
-      addCandidate(dependency);
-      addCandidate(`/lib/${dependency}`);
-      addCandidate(`/usr/lib/${dependency}`);
-      addCandidate(`/usr/local/lib/${dependency}`);
-    }
-
-    for (const candidate of candidates) {
-      const bytes = readDependencyFile(candidate);
-      if (bytes === null) continue;
-      resolvedLibraryPaths.set(dependency, candidate);
-      return bytes;
-    }
-    return null;
-  };
+  // WHAT USED TO BE HERE: `resolveLibrarySync`, a candidate-path walk for a
+  // dlopen dependency. No caller: resolution goes through `readDependencyFile`
+  // and the resolver, which is where the search order belongs.
 
   const getLinker = (): DylinkLoader => {
     if (linker) return linker;
@@ -3529,7 +3466,6 @@ export async function centralizedWorkerMain(
       // module exists) so all three parties — guest import, module export, and
       // this host seam — share one object; on flag-off (no fork-module) it mints
       // its own table, exactly as before.
-      let forkGcTransit: ForkAnyrefTransitTable;
       // Phase 6 D6.2: the real engine-floor `wpk_fork_host.*` seam backing (the
       // externref side table + broker token materialization). Null when the
       // fork-module is not instantiated (flag-off / borrowed child).
@@ -3737,16 +3673,13 @@ export async function centralizedWorkerMain(
             bytes: forkModuleInstance.regionBytes,
           } satisfies WorkerToHostMessage);
         }
-        // STORE #2: wrap the fork-module's OWN exported transit table so the
-        // registry binds the guest's `__wpk_fork_ref_gc_transit` import (and this
-        // host's `host_transit_publish`/`host_transit_read` seam) to the exact
-        // same table the module's drive integrity check reads after each ALLOC
-        // step. Before this, a distinct table was minted here and handed to the
-        // registry while the module used its own — a mismatch on flag-on.
-        forkGcTransit = new ForkAnyrefTransitTable(
-          forkModuleInstance.exports,
-          `pid=${pid}: anyref transit`,
-        );
+        // WHAT USED TO BE HERE: a `ForkAnyrefTransitTable` wrapper built over
+        // the module's exported transit table and then never read. Its
+        // constructor throws when the module exports no
+        // `__wpk_fork_ref_gc_transit`, so discarding it was an accidental
+        // assertion -- and a duplicated one: `buildForkGuestImports` refuses
+        // the same missing table by name, at the same instantiation, listing
+        // every unbound import rather than the first.
         if (borrowedForkChild) {
           // Remember the ON-DEMAND region so the child releases it when its one
           // borrowed replay finishes (channel-munmap; see after `finishReplay`).
@@ -3826,8 +3759,6 @@ export async function centralizedWorkerMain(
           // and inflate the clone. A staging request larger than the slab (a
           // large GC codec) falls back to the growing channel mmap; that path
           // never asserts an exact memory size, so its growth is invisible.
-          const forkModuleStagingBase = forkModuleInstance.stagingBase;
-          const forkModuleStagingBytes = forkModuleInstance.stagingBytes;
           // The instance carries its own exports, drive table and staging
           // slab, so none of those are threaded separately any more -- and the
           // reserve/release region callbacks are gone with them: the backend
@@ -3896,13 +3827,10 @@ export async function centralizedWorkerMain(
           } satisfies WorkerToHostMessage);
         },
       );
-      const externrefRecipes = new ForkExternrefTokenRecipeProvider(
-        externrefTokens,
-        (value) =>
-          processHostImportRuntime!.localExceptions.normalizeUnclaimedForkValue(
-            value,
-          ),
-      );
+      // WHAT USED TO BE HERE: a `ForkExternrefTokenRecipeProvider`, constructed
+      // and never read. Its constructor only stores its two arguments, so this
+      // was a value nobody asked for -- capture reaches the broker token
+      // directly now, through `__wpk_fork_host_externref_handle`.
       // WHAT THE 2,098-LINE REGISTRY WAS, and where each part went: activation
       // bookkeeping to `ForkActivations`; the capture session and reference
       // transaction to the module, which IS the capture; the table methods to
@@ -4416,9 +4344,11 @@ export async function centralizedWorkerMain(
         // Each activation's identity, with no descriptor DECODED here. Both
         // codecs are module-owned formats; the host locates their sections and
         // hands over the raw bytes, and the module decodes them on seed.
-        const declarations = [...modules]
-          .sort(([left], [right]) => left - right)
-          .map(([activationId]) => ({ activationId }));
+        // WHAT USED TO BE HERE: a sorted `declarations` array of
+        // `{ activationId }`, read by nobody since the module began decoding
+        // both codecs from raw section bytes. The comment below already says
+        // no descriptor is decoded here; the array was the last trace of when
+        // one was.
         // Phase 6 item 3c: capture each activation's raw KFGC section bytes and
         // the host-exception owner HERE, where the compiled `modules` (and their
         // custom sections) are in scope, so the later instantiation/attach block
@@ -6190,7 +6120,9 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     if (sec.id === 10 && ctorCodeEntry >= 0) {
       // Code section: replace constructor function body with no-op
       let pos = sec.contentOffset;
-      const [funcCount, funcCountBytes] = readLEB128(src, pos);
+      // The function COUNT is skipped rather than bound: this walk locates one
+      // body by index and never needs the total.
+      const [, funcCountBytes] = readLEB128(src, pos);
       pos += funcCountBytes;
 
       // Locate the constructor function body
@@ -6303,7 +6235,6 @@ export async function centralizedThreadWorkerMain(
     argPtr,
     stackPtr,
     tlsPtr,
-    ctidPtr,
   } = initData;
   const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
   const ptrWidth = initData.ptrWidth ?? 4;
@@ -6429,7 +6360,6 @@ export async function centralizedThreadWorkerMain(
       threadForkCapabilityClaim,
       FORK_CAP_DYLINK_MAIN,
     );
-    let forkBufAddr = 0;
     const forkAnchorAddr = channelOffset - FORK_BUF_SIZE;
     const threadTemplateId = hasForkInstrumentation
       ? computeForkModuleTemplateId(initData.programBytes)
@@ -6480,8 +6410,11 @@ export async function centralizedThreadWorkerMain(
     // options on `prepareActivation`, whose other argument -- the continuation
     // whose entry points the module drives -- has no reader left.
     const publishThreadLaunchRoot = (address: number): void => {
+      // The anchor write IS the publication. A `forkBufAddr` local used to be
+      // assigned here too and read by nothing: on the process path that
+      // variable answers `borrowedForkChild`'s launch-root query, and a pthread
+      // worker never has one.
       writeForkContinuationAnchor(memory, forkAnchorAddr, ptrWidth, address);
-      forkBufAddr = address;
     };
     // Phase 6 D7b: wire the co-resident fork-module into the PTHREAD PARENT
     // worker so a fork issued FROM a thread unwinds/serializes/parent-replays
@@ -6580,9 +6513,6 @@ export async function centralizedThreadWorkerMain(
         // rather than a growing channel mmap (see the process-worker path for
         // the full rationale): keeps the staging from permanently growing the
         // shared process memory a fork-from-thread child would clone.
-        const threadForkModuleStagingBase = threadForkModuleInstance.stagingBase;
-        const threadForkModuleStagingBytes =
-          threadForkModuleInstance.stagingBytes;
         threadForkModuleBackend = new ForkModuleContinuationBackend({
           instance: threadForkModuleInstance,
           memory,
