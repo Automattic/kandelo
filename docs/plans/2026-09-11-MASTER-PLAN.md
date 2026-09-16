@@ -4787,7 +4787,18 @@ list rather than by reading every assertion. Across the 26:
 |---|---|---|---|
 | **host floor** | **4** | `advisory-lock-kernel`, `host-file-offset`, `node-host-mounts`, `vfs` | **TRIM** — they import `NodePlatformIO` / `HostFileSystem` / `OpfsFileSystem` and test the host's own filesystems. `MemoryFileSystem` is one row among backends. |
 | **lazy/deferred** | **12** | `lazy-tree`, `lazy-archive`, `package-deferred-tree`, the `vfs-image-*` family, … | **BLOCKED** — an image carrying lazy entries stays on `MemoryFileSystem` until the overlay reads module metadata, which is the worker-flip decision. |
-| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink`, `node-demo-workspace`, `shell-lazy-archive-inputs`, `vfs/image-helpers`, `wordpress-source-layout` | **PORT or DELETE**, assertion by assertion. Three done. |
+| **filesystem behaviour** | **8** | `sharedfs-uid-gid` ✅, `sharedfs-positioned-io` ✅, `demo-login-image` ✅, `derived-vfs-symlink` ✅, `wordpress-source-layout` ✅, `node-demo-workspace` ✅, `shell-lazy-archive-inputs`, `vfs/image-helpers` | **PORT or DELETE**, assertion by assertion. **Six done, two left.** |
+
+**Two of those were already done and the table did not know.** Re-measured
+2026-09-16: `derived-vfs-symlink.test.ts` and `wordpress-source-layout.test.ts`
+both import `KandeloImageFs` and contain **zero** `MemoryFileSystem`
+references. A row that lists finished work as remaining sends the next tick at
+a job that does not exist, which is the same failure as a status line in a
+`/loop` prompt going stale — cheap to prevent by counting instead of
+remembering.
+
+`node-demo-workspace` is done too, but differently: its premise expired rather
+than its filesystem. See *"`/home/maker` is the kernel's"*.
 | **builder helper** | **1** | `mariadb-image-helpers` | repoint the fixture |
 
 **So the genuine porting work is SIX files, not twenty-six**, and the twelve
