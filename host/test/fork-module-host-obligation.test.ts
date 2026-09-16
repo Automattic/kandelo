@@ -323,18 +323,20 @@ describe("fork-module host obligation", () => {
       expect(typeof throwRecipe, "the module must export the guest's import").toBe(
         "function",
       );
-      // Node 0 is never a recipe: the encoders return >= 1. EINVAL (22).
-      expect(() => throwRecipe(0)).toThrow(WebAssembly.RuntimeError);
-      expect(lastErrno()).toBe(22);
-      // A poisoned recipe from a refusing encoder is -1, which arrives as a
-      // u32 above i32::MAX. It must fail the same bound rather than read some
-      // other node's owner.
-      expect(() => throwRecipe(-1)).toThrow(WebAssembly.RuntimeError);
-      expect(lastErrno()).toBe(22);
-      // A plausible recipe with no replay behind it: there is no graph to ask
-      // who owns it, which is EINVAL and not a guessed activation.
-      expect(() => throwRecipe(1)).toThrow(WebAssembly.RuntimeError);
-      expect(lastErrno()).toBe(22);
+      // Node 0 is never a recipe (the encoders return >= 1), a poisoned recipe
+      // from a refusing encoder is -1, and 1 is plausible but has no replay
+      // behind it. All three are EINVAL (22) HERE for the same reason: with no
+      // graph there is nothing to ask who owns them, and a guessed activation
+      // would be a throw into the wrong module.
+      //
+      // The node-kind refusal needs a graph to be interesting, so it is gated
+      // in `fork-module-gc-replay.test.ts` against a real decoded one.
+      for (const recipe of [0, -1, 1]) {
+        expect(() => throwRecipe(recipe), `recipe ${recipe}`).toThrow(
+          WebAssembly.RuntimeError,
+        );
+        expect(lastErrno(), `recipe ${recipe}`).toBe(22);
+      }
     });
 
     it("serves the guest's ingress throw by refusing it, with an errno", () => {

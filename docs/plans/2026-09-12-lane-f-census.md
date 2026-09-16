@@ -10100,3 +10100,41 @@ the slot arithmetic exhaustively over every activation a trampoline table can
 address (`fork-module-inject`'s emitted-arithmetic test). The missing piece is a
 two-activation dlopen fixture that throws across the boundary, and it belongs
 with the other owed fixture §191 names.
+
+### §192 addendum -- four mutations: two gated, one deleted, one owed
+
+Build keys recorded per mutation, so "artifact unchanged" cannot be mistaken
+for "survived". Baseline `9fb6abc5635b`, and `a44e744f7b5b` after the deletion
+below.
+
+- **Point the injected thunk at the wrong drive slot** (`DRIVE_SLOT_GC_ENCODE`
+  instead of `DRIVE_SLOT_EXN_THROW_RECIPE`) -- FAILED at `cargo test -p
+  fork-module-inject`: "`__wpk_fork_exn_throw` must multiply by the shared
+  stride and add its slot". This is the mutation with no runtime symptom worth
+  the name -- it calls a plausible guest export with an argument that looks
+  right -- so a compile-time gate is the right place for it.
+- **Remove the node-kind check** (`c46f…`-shaped build `0096db0b4d33`) --
+  SURVIVED everything, and closing it took a new test rather than a new
+  assertion. Every other refusal on this path fires before a graph exists, so
+  the check needed a REAL decoded one to exercise. `fork-module-gc-replay` has
+  it: a struct node CARRIES a `module_activation`, so the owner lookup below
+  the check succeeds and would hand a struct's recipe id to an exception
+  thrower. The errno is the assertion, not the trap -- without the check it
+  still traps, on an unbound `call_indirect`, but traps INSIDE the call before
+  any errno is set. 22 can only come from the check.
+- **Remove the recipe range guard** (`8b4a3172b214`) -- SURVIVED, and the right
+  response was to DELETE the guard. `recipe == 0` and `recipe > i32::MAX` both
+  already fail below: `with_decoded_node` bounds-checks the index, and node 0
+  decodes as `Null`, which the kind check refuses. It was a second opinion on a
+  question the graph lookup already answers -- the same duplication this lane
+  removed from the GC and exception codecs. A guard no test can distinguish
+  from its absence is not a guard.
+- **Remove the staleness comparison** (`DECODED_GRAPH_ROOT` against
+  `LAST_REPLAY_ROOT`, build `32f93bd9bd36`) -- **SURVIVED, and is OWED.**
+  Exercising it needs two sealed graphs in one worker with the host not
+  re-decoding between them, which is the second-fork fixture this lane does not
+  have. Worth stating what the mutation costs if it were real: a stale graph
+  answers with the WRONG OWNER, so the exception is raised inside an activation
+  that did not capture it. It joins §191's and §192's owed fixtures, all three
+  of which want the same thing -- a worker that forks twice, with more than one
+  activation.

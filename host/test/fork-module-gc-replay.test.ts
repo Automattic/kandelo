@@ -318,6 +318,36 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     expect(() => x.fm_drive_execute(planPtr, count)).toThrowError(/unreachable/i);
   });
 
+  it("refuses to RAISE a recipe that is not an exception, with a resident graph to ask", () => {
+    // The node-kind check in `__wpk_fork_ref_exn_broker_throw_recipe`, which is
+    // the one guard on that path that needs a REAL decoded graph to exercise:
+    // every other refusal fires before there is a graph at all.
+    //
+    // A struct node is the case that matters. It CARRIES a module_activation --
+    // so the owner lookup below it succeeds and would hand a struct's recipe id
+    // to that activation's exception thrower, which expects an exception
+    // recipe. A null/externref/i31 node would not prove this, because the owner
+    // accessor refuses those on its own.
+    //
+    // The errno is the assertion, not the trap. Without the kind check this
+    // still traps -- the throw slot is unbound in this fixture, so the
+    // `call_indirect` lands on null -- but it traps INSIDE the call, before any
+    // errno is set, leaving `fm_last_errno` at the 0 the replay left. 22 is
+    // EINVAL, and it can only come from the check. Census 192.
+    const f = fixture();
+    const { root, codecPtr, structId } = captureGcCycle(f);
+    const { x } = replayChild(f, () => null);
+    x.fm_set_activation_gc_codec(0, codecPtr, GC_CODEC.byteLength);
+    x.fm_begin_reference_replay(root, PID);
+    expect(x.fm_last_errno()).toBe(0);
+
+    const raise = (x as unknown as Record<string, (recipe: number) => void>)
+      .__wpk_fork_ref_exn_broker_throw_recipe;
+    expect(typeof raise).toBe("function");
+    expect(() => raise(structId)).toThrow(WebAssembly.RuntimeError);
+    expect(x.fm_last_errno()).toBe(22);
+  });
+
   it("serves the typed-GC RESTORE data-feed through the module (item 3a): routes, payload lengths, scalar loads, and edge-vector reads match the decoded graph", () => {
     // Phase 6 item 3a: the SEVEN restore imports the guest's typed-GC codec used
     // to call on the JS reference provider now resolve to the module's `fm_ref_*`

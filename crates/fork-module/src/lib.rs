@@ -8011,14 +8011,17 @@ mod wasm {
 
     /// The body, written to return only on failure so every path above traps.
     fn throw_recipe_impl(recipe: u32) -> Result<core::convert::Infallible, Errno> {
-        // Node 0 is never a recipe (the encoders return `>= 1`), and a poisoned
-        // recipe from a refusing encoder is negative -- which arrives here as a
-        // u32 above `i32::MAX` and fails this same check rather than reading
-        // some other node's owner.
-        if recipe == 0 || recipe > i32::MAX as u32 {
-            return Err(Errno::EINVAL);
-        }
         make_replay_graph_resident()?;
+        // NO SEPARATE RANGE GUARD, deliberately. One stood here, refusing
+        // `recipe == 0` (node 0 is never a recipe -- the encoders return `>= 1`)
+        // and `recipe > i32::MAX` (a poisoned recipe from a refusing encoder is
+        // `-1`, which arrives as a u32 above the band). Perturbing it away
+        // changed NOTHING observable, because both cases already fail below:
+        // `with_decoded_node` bounds-checks the index, and node 0 decodes as
+        // `Null`, which the kind check refuses. It was a second opinion on a
+        // question the graph lookup already answers -- the duplication this
+        // lane removed from the GC and exception codecs -- so it is gone rather
+        // than kept as a guard no test can distinguish.
         let index = recipe as usize;
         // Checked BEFORE the owner, because a kind that carries no activation
         // is a truthful `EINVAL` from the accessor too -- and "not an
