@@ -39,10 +39,10 @@
 
 import { reduceLazyArchiveGroups } from "./kernel-lazy-section";
 import type {
-  LazyDownloadEvent,
   LazyFileEntry,
   SerializedLazyArchiveEntry,
 } from "./memory-fs";
+import type { LazyDownloadEvent } from "./lazy-download-event";
 
 /** Total byte size of a lazy archive, recorded in the trailing archive table
  * so the kernel can validate/plan reads before the archive is fetched. */

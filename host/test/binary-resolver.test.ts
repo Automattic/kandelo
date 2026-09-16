@@ -41,7 +41,7 @@ import {
 } from "../src/generated/abi";
 import { resetWasmArtifactModuleForTesting } from "../src/wasm-artifact-driver";
 import { useNodeWasmArtifactModule } from "../src/wasm-artifact-module-node";
-import type { VfsImageMetadata } from "../src/vfs/memory-fs";
+import type { VfsImageMetadata } from "../src/vfs/vfs-image-filesystem";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   resolvePolicyBoundVfsWasmArtifact,

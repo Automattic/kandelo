@@ -7,10 +7,11 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "./vfs/memory-fs";
+import { MemoryFileSystem } from "./vfs/memory-fs";
+// Not from `memory-fs`, which only re-exports it: this shape describes a
+// FETCH, and reaching it through the filesystem is what `4a365cca6` moved it
+// out of. A move is not finished while a consumer still uses the old address.
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
