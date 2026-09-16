@@ -96,7 +96,7 @@ function registerHostReferenceImports(owner: ForkHostImportOwnerRuntime): void {
   );
 }
 
-describe("module-mode gated externref fork aborts cleanly (P4)", () => {
+describe("externref minted through call_indirect survives the fork", () => {
   let workDir = "";
   let programPath = "";
 
@@ -124,7 +124,7 @@ describe("module-mode gated externref fork aborts cleanly (P4)", () => {
     if (workDir) rmSync(workDir, { recursive: true, force: true });
   });
 
-  it("gated externref -> EOPNOTSUPP through the module abort path, parent survives, no partial child, no hang", async () => {
+  it("completes the fork, the child holds the same host identity, and there is no hang", async () => {
     const started = Date.now();
     const result = await runCentralizedProgram({
       programPath,
@@ -134,46 +134,29 @@ describe("module-mode gated externref fork aborts cleanly (P4)", () => {
     });
     const elapsed = Date.now() - started;
 
-    // Exit 0 is the composite proof carried by the fixture: fork returned
-    // exactly -95 (no child spawned), the parent resumed without trapping or
-    // hanging, and the parent's own externref local still resolves to the
-    // original owner identity. Any nonzero code names a specific failure (see
-    // the fixture's exit-code table); a thrown worker error would surface in
-    // stderr.
     expect(
       result.exitCode,
-      `gated module-mode fork did not abort cleanly with the parent surviving\n` +
-        `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      "the fork completed and both sides held the owner identity\n"
+        + `stdout:\n${result.stdout}\nstderr:\n${result.stderr}\n`
+        + `host:\n${result.hostDiagnostics.map((d) => d.message).join("\n")}`,
     ).toBe(0);
-    // Empty stderr is load-bearing: a `beginModuleAbortReplay` that threw (an
-    // abort path that did not own the gated case under the module) would
-    // surface as a worker error here, not a clean guest-level exit.
     expect(result.stderr).toBe("");
-    // No child was ever launched, so the fixture never printed a child marker
-    // (it has none) and never spawned a second process — proven by the exit-0
-    // parent-only path above.
 
-    // POSITIVE proof-of-use: the module's OWN continuation-journal abort path
-    // drove this gated fork's unwind. The parent worker reports a nonzero
-    // committed-frame count; a silent JS fallback (no module backend) would
-    // emit no `fork-module` frame diagnostic at all (null here). This is what
-    // distinguishes "aborted through the module" from "aborted through the JS
-    // engine that P6 deletes".
-    const framesCommitted = forkModuleFramesCommitted(result.forkModuleDiagnostics);
-    expect(
-      framesCommitted,
-      "expected a fork-module frame proof-of-use diagnostic; the module did " +
-        "not drive the gated fork's abort",
-    ).not.toBeNull();
-    expect(framesCommitted!).toBeGreaterThan(0);
+    // NOT REFUSED. This is the claim that replaced the gate: a reference the
+    // provenance-wrapper pass never saw is still a broker reference, and the
+    // module can now name it. A `fork aborted` diagnostic here means the
+    // refusal came back by another route.
+    const aborts = result.hostDiagnostics.filter((diagnostic) =>
+      diagnostic.message.includes("fork aborted")
+    );
+    expect(aborts, "no abort diagnostic").toEqual([]);
 
-    // The gate-hang regression guard: assert an explicit bounded budget, not
-    // the 30s timeout. A re-introduced pump/gate hang blows past this with a
-    // clear message rather than a timeout artifact.
+    // The ledger's gate-hang regression: a healthy fork completes well under
+    // this, and the budget is comfortably below the vitest timeout so a
+    // re-introduced pump hang fails loud instead of as a timeout artifact.
     expect(
       elapsed,
-      `gated module-mode fork took ${elapsed}ms — the ~30s pump/gate-hang ` +
-        `regression is back`,
+      `fork took ${elapsed}ms, over the ${BOUNDED_WALL_CLOCK_MS}ms budget`,
     ).toBeLessThan(BOUNDED_WALL_CLOCK_MS);
   });
 });

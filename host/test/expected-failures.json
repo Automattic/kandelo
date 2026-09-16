@@ -121,7 +121,6 @@
     "test/dri-cube-pyramid.test.ts",
     "test/exec-brk-base.test.ts",
     "test/exec-state-tracking.test.ts",
-    "test/externref-gated-fork-module-worker.test.ts",
     "test/fork-activation-registry.test.ts",
     "test/fork-capture-session-host-exception.test.ts",
     "test/fork-early-reference-provider.test.ts",

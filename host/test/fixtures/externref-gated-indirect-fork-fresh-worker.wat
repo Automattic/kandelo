@@ -1,48 +1,42 @@
-;; P4 (Path-B flip completion): the Node/V8 analogue of native's
-;; `crates/host-native/fixtures/native_fork_externref_gate_indirect.wat`.
+;; ABI 44 real-worker fixture: a live host externref minted through
+;; `call_indirect` and carried across `kernel_fork`.
 ;;
-;; A REAL host `externref` held LIVE across `kernel_fork` still hits the
-;; platform's one intended gate (`-EOPNOTSUPP`, errno 95) when it carries NO
-;; recorded mint-time provenance, and — the property this fixture proves under
-;; the co-resident fork MODULE (`forkModuleEnabled: true`) — the fork aborts
-;; cleanly through the module's OWN continuation-journal abort path
-;; (`beginModuleAbortReplay` -> the coarse `fm_parent_abort`), the PARENT survives
-;; UNAFFECTED, and no partial child is spawned. It is the module-mode gated-
-;; ABORT end-to-end coverage deferred from P3b (review Finding D) and the
-;; V8 parity mate of native's `smoke_fork_gated_externref_parent_survives`.
+;; WHAT THIS USED TO PROVE, AND WHY IT CHANGED. `call_indirect` exists here to
+;; defeat the fork-instrument provenance-wrapper pass, which rewrites only
+;; DIRECT calls: the reference arrived with no recorded mint-time provenance,
+;; and provenance was the only way the host could learn its broker handle. So
+;; the fork was REFUSED -- EOPNOTSUPP, no child, parent intact -- and this
+;; fixture asserted that refusal.
 ;;
-;; WHY `call_indirect`, NOT a direct `call $get_ext`: the fork-instrument
-;; provenance-wrapper pass
-;; (`crates/fork-instrument/src/externref_provenance.rs`) only rewrites DIRECT
-;; `call` instructions whose static target is a declared externref-returning
-;; host import (see that pass's own module doc comment; it explicitly does not
-;; reason about `call_indirect`/`call_ref`). A direct `call $get_ext` — as in
-;; `externref-local-fork-fresh-worker.wat` — therefore gets its identity
-;; recorded and its fork SUCCEEDS (reconstructs). This fixture instead mints
-;; its externref through a `call_indirect` against a one-element funcref table
-;; whose sole slot is populated (via an ACTIVE element segment) with the SAME
-;; `get_ext` import, so the pass finds no call site to wrap: no provenance is
-;; recorded, `GC_LOOKUP` misses, `encodeGcFromSlot` finds no recognizing
-;; provider, and the fork falls through — exactly as designed — to
-;; `markUnsupportedReferenceKind` + a gated placeholder, then a clean
-;; `-EOPNOTSUPP` abort. The broker import records NO provenance of its own
-;; (the provenance table is fed only by the injected
-;; `__wpk_fork_ref_provenance_externref` import body), so bypassing the direct
-;; call is sufficient to reach the gate on V8, mirroring native.
+;; The module asks the host for the handle now, and the host reads it off the
+;; broker token itself (`__wpk_fork_host_externref_handle`, the reverse of
+;; `resolve_externref`). How the value was minted stopped mattering, so this
+;; same reference is capturable and the fork COMPLETES. The boundary did not
+;; vanish -- a reference the broker never minted still answers 0 and is still
+;; refused -- it moved from "how was it minted" to "is it a broker reference at
+;; all", which no guest program can reach: every externref crossing the import
+;; mailbox is registered for wire. `fork-module-externref-capture-seam.test.ts`
+;; asserts the refusal where it can still be reached, one level down.
 ;;
-;; Exit codes (parent-observed; there is never a child to reap):
-;;   0  = success: fork cleanly EOPNOTSUPP'd (returned exactly -95), no child
-;;        was spawned, the parent resumed WITHOUT hanging, and its externref
-;;        local still resolves to the SAME owner-minted host identity.
-;;   90 = the pre-fork parent reference was null (fixture wiring bug).
-;;   91 = the pre-fork parent reference did not resolve to the owner identity.
-;;   92 = fork() returned something other than exactly -95: either 0 (this is
-;;        actually a running child) or a positive pid (a real child was
-;;        spawned) — the gate did not fire, or fired with the wrong errno.
-;;   93 = the parent's own externref local was NULL after the aborted fork —
-;;        the gated fork corrupted parent state (must-not-happen).
-;;   94 = the parent's own externref local no longer resolves to the original
-;;        owner identity after the aborted fork — parent state was corrupted.
+;; So this fixture now pins the CAPABILITY that replaced the gate, and keeps
+;; every guarantee the old one carried:
+;;
+;;   * the fork completes -- a negative pid means the refusal came back;
+;;   * the CHILD's reconstructed reference resolves to the SAME owner-minted
+;;     host identity (96/97), which is the whole point of capturing it;
+;;   * the PARENT is unaffected (93/94) and reaps its child (95);
+;;   * there is no pump/gate hang: the test holds the run to a bounded budget.
+;;
+;; Exit codes:
+;;   90 = the minted reference was null before the fork.
+;;   91 = it did not resolve to the owner identity before the fork.
+;;   92 = `fork()` returned a NEGATIVE value: the fork was refused, which is
+;;        the behaviour this fixture used to require and now forbids.
+;;   93 = the parent's own reference was null after the fork.
+;;   94 = the parent's reference no longer resolves to the owner identity.
+;;   95 = the parent could not reap its child.
+;;   96 = the CHILD's reconstructed reference was null.
+;;   97 = the CHILD's reference resolved to a DIFFERENT identity.
 (module
   (import "env" "memory" (memory 1 16384 shared))
   (import "env" "__channel_base" (global $__channel_base (mut i32)))
@@ -70,6 +64,104 @@
 
   (func (export "__abi_version") (result i32)
     i32.const 44)
+
+  (func $wait_child (param $pid i32) (result i32)
+    (local $base i32)
+    (local $result i32)
+
+    global.get $__channel_base
+    local.set $base
+
+    ;; SYS_wait4(pid, &status, 0, 0)
+    local.get $base
+    i32.const 4
+    i32.add
+    i32.const 139
+    i32.store
+
+    local.get $base
+    i32.const 8
+    i32.add
+    local.get $pid
+    i64.extend_i32_s
+    i64.store
+
+    local.get $base
+    i32.const 16
+    i32.add
+    i64.const 1024
+    i64.store
+
+    local.get $base
+    i32.const 24
+    i32.add
+    i64.const 0
+    i64.store
+
+    local.get $base
+    i32.const 32
+    i32.add
+    i64.const 0
+    i64.store
+
+    local.get $base
+    i32.const 40
+    i32.add
+    i64.const 0
+    i64.store
+
+    local.get $base
+    i32.const 48
+    i32.add
+    i64.const 0
+    i64.store
+
+    local.get $base
+    i32.const 1
+    i32.atomic.store
+    local.get $base
+    i32.const 1
+    memory.atomic.notify
+    drop
+
+    block $complete
+      loop $wait
+        local.get $base
+        i32.atomic.load
+        i32.const 1
+        i32.ne
+        br_if $complete
+
+        local.get $base
+        i32.const 1
+        i64.const -1
+        memory.atomic.wait32
+        drop
+        br $wait
+      end
+    end
+
+    local.get $base
+    i32.const 64
+    i32.add
+    i32.load
+    if
+      i32.const -1
+      local.set $result
+    else
+      local.get $base
+      i32.const 56
+      i32.add
+      i64.load
+      i32.wrap_i64
+      local.set $result
+    end
+
+    local.get $base
+    i32.const 0
+    i32.atomic.store
+
+    local.get $result)
 
   (func (export "_start")
     (local $ref externref)
@@ -99,30 +191,48 @@
       unreachable
     end
 
-    ;; Fork with the no-provenance externref live across the boundary. Capture
-    ;; marks the fork unsupported and the parent run loop aborts it cleanly
-    ;; with -EOPNOTSUPP after seal, through the module's own abort path.
+    ;; Fork with the reference live across the boundary. It is capturable now,
+    ;; so a child IS created and reconstructs it.
     i32.const 0
     call $kernel_fork
     local.set $pid
 
-    ;; The fork must abort with EOPNOTSUPP (errno 95) BEFORE any child is
-    ;; spawned: `pid` must be EXACTLY -95 — never 0 (would mean this is a
-    ;; running child) and never positive (a real child spawned despite the
-    ;; gate).
     local.get $pid
-    i32.const -95
-    i32.ne
+    i32.eqz
+    if
+      ;; CHILD: the reference is reconstructed by this fresh instance's replay.
+      local.get $ref
+      ref.is_null
+      if
+        i32.const 96
+        call $kernel_exit
+        unreachable
+      end
+      local.get $ref
+      call $check_ext
+      i32.eqz
+      if
+        i32.const 97
+        call $kernel_exit
+        unreachable
+      end
+      i32.const 0
+      call $kernel_exit
+      unreachable
+    end
+
+    ;; A NEGATIVE pid is the old refusal coming back.
+    local.get $pid
+    i32.const 0
+    i32.lt_s
     if
       i32.const 92
       call $kernel_exit
       unreachable
     end
 
-    ;; PARENT survives unaffected: its externref local must still be non-null
-    ;; and still resolve to the SAME owner-minted host identity after the
-    ;; aborted fork's unwind/rewind. A null (93) or divergent (94) value means
-    ;; the gated fork corrupted parent state instead of leaving it alone.
+    ;; PARENT survives unaffected: its own local still resolves to the SAME
+    ;; owner-minted identity after the fork's unwind and rewind.
     local.get $ref
     ref.is_null
     if
@@ -135,6 +245,16 @@
     i32.eqz
     if
       i32.const 94
+      call $kernel_exit
+      unreachable
+    end
+
+    local.get $pid
+    call $wait_child
+    local.get $pid
+    i32.ne
+    if
+      i32.const 95
       call $kernel_exit
       unreachable
     end
