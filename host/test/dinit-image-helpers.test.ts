@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zipSync, type Zippable } from "fflate";
+import { createHash } from "node:crypto";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { parseZipCentralDirectory } from "../src/vfs/zip";
 import { findRepoRoot } from "../src/binary-resolver";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import {
@@ -14,11 +17,6 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "../src/vfs/image-helpers";
-import {
-  derivePackageDeferredZipTree,
-  registerPackageDeferredZipTree,
-  type PackageDeferredZipTreeSpec,
-} from "../src/vfs/package-deferred-tree";
 import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/package-shell-vfs-build";
 import { ABI_VERSION } from "../src/generated/abi";
 import { EXPERIMENTAL_TERMINAL_SESSION_PATH } from "../../web-libs/kandelo-session/src/experimental-terminal-session";
@@ -64,41 +62,33 @@ function createFs(): MemoryFileSystem {
   return MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
 }
 
-function deferredDinitTree(
-  mountPrefix: string,
-  id: string,
-): ReturnType<typeof derivePackageDeferredZipTree> {
+/**
+ * Make `<mountPrefix>/dinitctl` DEFERRED, which is the whole of what this
+ * fixture owes.
+ *
+ * It used to go through `derivePackageDeferredZipTree` +
+ * `registerPackageDeferredZipTree`, carrying a spec with an activation mode,
+ * capabilities and roots. None of that reached the assertion: `addDinitInit`
+ * asks `getLazyEntry(path) !== null || isPathDeferred(path)` and refuses, and
+ * a deferred archive member answers that question by itself. The spec was
+ * scaffolding around a one-bit fact.
+ */
+function registerDeferredDinit(fs: KandeloImageFs, mountPrefix: string): void {
   const archive = zipSync({
     dinitctl: [
       encoder.encode("deferred dinitctl"),
       { os: 3, attrs: (0o100755 << 16) >>> 0 },
     ],
   } satisfies Zippable);
-  const spec = {
-    schema: 1,
-    kind: "kandelo-package-deferred-zip-tree",
-    id,
-    content_role: "runtime-tree",
-    package: {
-      name: "dinit-fixture",
-      output: "dinit-fixture.zip",
+  fs.registerLazyArchive({
+    url: "dinit-fixture.zip",
+    entries: parseZipCentralDirectory(archive),
+    mountPrefix,
+    integrity: {
+      sha256: createHash("sha256").update(archive).digest("hex"),
+      bytes: archive.byteLength,
     },
-    archive: {
-      url: "dinit-fixture.zip",
-      mode_policy: "portable-posix-v1",
-    },
-    mount_prefix: mountPrefix,
-    owner: {
-      uid: 0,
-      gid: 0,
-    },
-    activation: {
-      mode: "first-use",
-      capabilities: ["service-supervisor:dinit"],
-      roots: [`${mountPrefix}/dinitctl`],
-    },
-  } as const satisfies PackageDeferredZipTreeSpec;
-  return derivePackageDeferredZipTree(spec, archive);
+  });
 }
 
 describe("dinit-derived image system databases", () => {
@@ -245,11 +235,13 @@ describe("dinit-derived image binary ownership", () => {
   });
 
   it("rejects a typed deferred Dinit tree", () => {
-    const fs = createFs();
-    registerPackageDeferredZipTree(
-      fs,
-      deferredDinitTree("/sbin", "test/deferred-dinit"),
-    );
+    // Built by `KandeloImageFs` rather than `createFs()`: this is the one case
+    // in the file that needs a DEFERRED path, and the deferred registration
+    // that survives `memory-fs.ts` is the bridge's. What is under test --
+    // `addDinitInit` refusing a deferred dinitctl -- is unchanged, and it takes
+    // `VfsImageFilesystem`, which both producers satisfy.
+    const fs = KandeloImageFs.create();
+    registerDeferredDinit(fs, "/sbin");
     writeVfsBinary(fs, "/sbin/dinit", encoder.encode("resident dinit"));
 
     expect(() => addDinitInit(fs, [])).toThrow(
