@@ -1,0 +1,110 @@
+# Lane F (fork control-flow inversion) — closure report
+
+Branch `brandonpayton/lane-f-fork-inversion`, worktree
+`/Users/brandon/kandelo-lane-f`. Written 2026-09-16 at the maintainer's
+direction to treat the lane as closeable.
+
+## What the lane was for
+
+Set aside all fork TypeScript, implement everything possible in the Rust
+fork-module, and leave one thin TypeScript layer shared by both JS hosts —
+**reducing the host API surface**. The measure the maintainer set was
+`forkGuestImportsUnserved`: how many of the 46 fork imports a real instrumented
+guest declares are NOT served by the co-resident module.
+
+## The measure is met
+
+`forkGuestImportsUnserved` is **0**. Every one of the guest's 46 fork imports
+comes from the module. `buildForkGuestImports` no longer takes a host floor at
+all: `ForkGuestHostFloor`, `FORK_GUEST_HOST_FLOOR_NAMES`,
+`host/src/fork-guest-host-floor.ts` and `host/src/fork-exception-broker.ts` are
+deleted, and a pthread worker supplies nothing for fork exceptions.
+
+`forkAtticImports` is 0 and the attic itself is gone (23,174 lines).
+`forkGuestObjectImportsUnserved` is 2 and **that is its target** as of today's
+ruling: both remaining imports are the floor, for reasons that were probed
+rather than assumed (§199 as corrected by §203).
+
+### The finding worth carrying to the other lanes
+
+The floor went **6 → 4 → 3 → 2 → 1 → 0**, and **not one entry left because a
+new WebAssembly capability appeared.** Every floor argument had the shape
+*"X cannot do Y, therefore Z must be host"* — every premise true, every
+inference wrong:
+
+| entry | the argument | what was actually true |
+|---|---|---|
+| `encode_funcref`, `table_mutation_commit` | wasm cannot compare two funcrefs | true, and the host only had to answer *that*; the scan moved into a shim |
+| `table_state_owned` | the host elects which coordinate owns a table | electing is not answering — seed the answer once |
+| `provenance_externref` | provenance must be recorded at the production site | nothing read the recording; what remained was `\|v\| v` |
+| `exn_ingress_throw` | it must re-enter wasm with a tagged exception | nothing can mint the token, so it only stated a refusal the module states itself |
+| `exn_broker_throw_recipe` | same | **the honest one** — and neither has to *throw*, both can *call* a guest export that throws |
+| `__wpk_fork_resume_table` | Rust cannot hold a funcref | true, and holding is not what a *table* needs |
+
+**`therefore` is the load-bearing word, not `cannot`.**
+
+## Four defects found, three fixed
+
+None of these was the thing the lane set out to do; all four came from one
+question — *are these two derivations of the same value fed the same inputs at
+the same time?*
+
+1. **Two resume-slot allocators diverged (§194).** Same four rules, guarded by a
+   test that compared the rules. `dlopen A, dlopen B, dlclose A, dlopen C,
+   fork` puts three slots out of step; the guest resumes into another
+   activation's thunk — a real function of the right type, so nothing traps.
+   Fixed: one allocator, in the module.
+2. **An activation with no fork-instrumented function could not `dlclose`
+   (§194).** It seeds an empty catalog, holds no slots, and the release path
+   read "no entries" as "never registered". The child exited non-zero and the
+   parent reported only its own `8`. Fixed.
+3. **A second static-root base map filled where nothing looks (§201).** The
+   child-install path recomputed a layout `ForkMergedStaticRoots` had already
+   settled and published; the module reads the registered one. An unfilled slot
+   is a legal `null`, so the child would rebuild a null where a statically
+   initialised reference belonged. Fixed, −82 lines.
+4. **A third copy of the resume rule in `crates/host-native` (§194 addendum).**
+   `let slot = i as u64 + 1;` — correct today only because that host has one
+   activation and never unregisters. **Not fixed**, by maintainer decision: it
+   goes with the follow-up, which has to validate host-native properly anyway.
+
+## What is gated now
+
+All three guards §191 and §192 recorded as owed are gated, each with the
+mutation that proves it (§196, §197). The provenance shim's gate needed a guest
+built for the purpose through `scripts/run-wasm-fork-instrument.sh`, because
+nothing in the tree calls an externref-returning import *directly* — the
+mutation that had passed the entire fork suite now fails on the first call.
+
+## Validation
+
+- **Host suite**: matches its baseline throughout — 64 expected failures,
+  nothing new, nothing unbanked. Run after every commit that touched code.
+- **Browser**: 18/18 fork specs in Chromium, re-verified after each change to
+  the module.
+- **Surface budget**: 99 checks pass. No ceiling was raised to make a check
+  pass; every reduction is banked with its reason.
+- `cargo test -p fork-codec -p fork-module-inject`; `cargo check -p host-native`.
+
+## Still the maintainer's
+
+1. **Provisional ceiling raises.** `docs/surface-budget.json` carries **27**
+   `PROVISIONAL RAISE` markers across the whole lane, of which 3 have an
+   explicit `RULED` marker from 2026-09-15. **Four are from this session**
+   (`forkTypeScript` 887→893, `workerMainTypeScript` 5409→5411,
+   `forkPlatformTypeScript` 1629→1631, `forkModuleHostEntries` 58→59), each
+   with its reason and what it bought. An earlier report of this said
+   "thirteen"; that was a miscount of this session's, corrected here.
+2. **The budget-ledger conflict with the parent branch.** A trial merge
+   conflicts in exactly two files — `docs/surface-budget.json` and
+   `host/test/surface-budget.test.ts` — because both lanes evolved the same
+   surfaces. Not merged, per instruction.
+3. **`forkModuleHostEntries`' target of 5**, which census 195 argues is
+   reachable only by diluting; ~8 is realistic once the follow-up lands.
+4. **`workerMainForkTypeScript`'s target of 1200**, labelled a proposal in the
+   budget because nobody has built the thing that would reveal the real floor.
+
+## The follow-up
+
+`docs/plans/2026-09-16-fork-admit-activation-brief.md` on the stacked branch
+`brandonpayton/lane-f-admit-activation`, cut from this HEAD.
