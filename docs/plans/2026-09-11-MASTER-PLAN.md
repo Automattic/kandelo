@@ -3061,6 +3061,35 @@ reached outside its boundary once tonight for a defect that was blocking it.**
 
 # LANE V — the VFS image, and the filesystem we implement twice
 
+## The perturbation round for the night's guards — 6 trials, and one that took three tries
+
+`image-writer-install` (3) and `rootfs-overlay-not-found` (3), all killed. The
+corpus is **382 trials**, all anchoring.
+
+**Writing the trials found a third untested guard.** `installModuleBytes`
+refuses a second, DIFFERENT module rather than swapping it, and nothing
+exercised that — after the 32-byte digest length check and the `lazy_sha256=`
+format check earlier in the night. Three for three: a guard written in the same
+breath as the code it guards is the guard nobody tests, and predicting the
+survivor is cheaper than watching one.
+
+**One trial survived twice, and the second survival is the lesson.** Widening
+`isNotFound` to accept any errno stayed green through a test written
+specifically to kill it. The test asserted that the call rejects with EACCES —
+which **both versions do**. Swallowing a not-my-error does not stop that error
+escaping: the copy proceeds, recurses, and meets the same refusal a level down.
+The visible outcome was identical; only the path differed.
+
+Instrumenting settled it rather than more reasoning: **one `lstat` attempt when
+the check is right, four when it is widened**, blundering through `/etc` and its
+children treating a permission failure as an absent path. So the assertion
+became the count. "It threw" was never the difference; "it stopped" was.
+
+That is a seventh cause of a surviving mutant, distinct from the six recorded:
+the test asserts an outcome both versions produce. The remedy is not a second
+test from the same reasoning — it is to RUN the mutated code and watch what it
+does differently.
+
 ## V5's REMAINDER, MEASURED 2026-09-16 — it is two call sites, not eighty-four
 
 "Delete `memory-fs.ts`" sounds like 84 files, which is how many still import it.
