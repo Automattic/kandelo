@@ -916,6 +916,35 @@ the only thing that can now serve `/home/maker`; asserting the mount's absence
 is the fallback if booting a kernel in that spec proves heavy, and it is
 strictly weaker because it tests the plumbing instead of the promise.
 
+#### A LEAD ON `kandelo-url`, from the same run — the app globs two tiers and the images are in a third
+
+Circumstantial, and recorded as such: the vite console prints
+`resolveVfsImageUrl failed: Error: node-vfs.vfs.zst is not built. Run:
+./run.sh fetch` immediately before *"Kandelo gallery launch updates the browser
+URL with a VFS image"* fails.
+
+`apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts` globs two
+locations for each optional image:
+
+```
+../../../../../local-binaries/programs/wasm32/node-vfs.vfs.zst
+../../../../../binaries/programs/wasm32/node-vfs.vfs.zst
+```
+
+**Neither is where the image is.** `./run.sh prepare-browser` reports `Output:
+local-binaries/source-only-v1` and 7/7 products, and the file is at
+`local-binaries/source-only-v1/programs/wasm32/node-vfs.vfs.zst`, verified by
+`ls`. `local-binaries/programs/wasm32/` exists with 232 entries, of which none
+is a `.vfs` — they are `binary-resolver-test-*` leftovers plus a few programs.
+And `binaries/` holds ten `shadowed-*.wasm` fixtures (see O-2).
+
+So the glob names two tiers that hold no VFS images while the tier that holds
+them is not globbed. **Whether that is the cause of the failure is not yet
+established** — a console warning next to a failure is a coincidence until the
+run's own error output says otherwise, and this branch has mistaken one for the
+other before. Written down now because the evidence is in a log that will be
+overwritten by the next run.
+
 **And the trap that made the mistake easy is still set.** `DEFAULT_MOUNT_SPEC`
 declares "the eight canonical mount points" — `/` plus the seven the kernel
 tmpfs owns — and `host/test/vfs/default-mounts.test.ts` asserts exactly that
