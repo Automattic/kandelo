@@ -7,8 +7,9 @@
       "name": "L5: a call site restates a length instead of asking the region",
       "scope": "fn run_guest_inner",
       "scope_end": "\n}\n",
-      "find": "(manifest.ptr(), manifest.capacity())",
-      "replace": "(manifest.ptr(), manifest_len)"
+      "find": "(prefix_scratch.ptr(), prefix_scratch.capacity())",
+      "replace": "(prefix_scratch.ptr(), prefixes.len() as u32)",
+      "note": "Re-anchored 2026-09-15: this cited the manifest staging (`manifest.ptr()`/`manifest.capacity()`), which no longer exists — the native host hands the kernel a real image instead of a v3 manifest, so the kernel allocates its own buffer and pulls bytes through `host_image_read`. The invariant is unchanged and `run_guest_inner` still allocates `prefix_scratch` and `root_scratch` through `KernelScratch`, so the trial moved to a surviving site rather than being retired. The deleted site is why the floor in `a_scratch_pointer_never_travels_without_its_own_capacity` went 9 -> 8."
     },
     {
       "name": "L5: a call site passes a DIFFERENT region's capacity",
@@ -42,15 +43,17 @@
       "name": "L5: a capacity that is mentioned but wrong (capacity() - 1)",
       "scope": "fn run_guest_inner",
       "scope_end": "\n}\n",
-      "find": "(manifest.ptr(), manifest.capacity())",
-      "replace": "(manifest.ptr(), manifest.capacity() - 1)"
+      "find": "(root_scratch.ptr(), root_scratch.capacity())",
+      "replace": "(root_scratch.ptr(), root_scratch.capacity() - 1)",
+      "note": "Re-anchored 2026-09-15: this cited the manifest staging (`manifest.ptr()`/`manifest.capacity()`), which no longer exists — the native host hands the kernel a real image instead of a v3 manifest, so the kernel allocates its own buffer and pulls bytes through `host_image_read`. The invariant is unchanged and `run_guest_inner` still allocates `prefix_scratch` and `root_scratch` through `KernelScratch`, so the trial moved to a surviving site rather than being retired. The deleted site is why the floor in `a_scratch_pointer_never_travels_without_its_own_capacity` went 9 -> 8."
     },
     {
       "name": "PROBE: the allocator reached under a different binding name",
       "scope": "fn run_guest_inner",
       "scope_end": "\n}\n",
-      "find": "        manifest.write(&kernel_mem, &base_image.manifest)?;",
-      "replace": "        manifest.write(&kernel_mem, &base_image.manifest)?;\n        {\n            let sneaky = &alloc_scratch;\n            let _bare = sneaky.call(&mut kernel_store, 64u32)?;\n        }"
+      "find": "        prefix_scratch.write(&kernel_mem, &prefixes)?;",
+      "replace": "        prefix_scratch.write(&kernel_mem, &prefixes)?;\n        {\n            let sneaky = &alloc_scratch;\n            let _bare = sneaky.call(&mut kernel_store, 64u32)?;\n        }",
+      "note": "Re-anchored 2026-09-15: this cited the manifest staging (`manifest.ptr()`/`manifest.capacity()`), which no longer exists — the native host hands the kernel a real image instead of a v3 manifest, so the kernel allocates its own buffer and pulls bytes through `host_image_read`. The invariant is unchanged and `run_guest_inner` still allocates `prefix_scratch` and `root_scratch` through `KernelScratch`, so the trial moved to a surviving site rather than being retired. The deleted site is why the floor in `a_scratch_pointer_never_travels_without_its_own_capacity` went 9 -> 8."
     },
     {
       "name": "L-D3: a kernel host import writes through a raw pointer again",

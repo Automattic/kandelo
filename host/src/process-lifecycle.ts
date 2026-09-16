@@ -4428,42 +4428,13 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
         : async () => {
           throw new Error("no lazy transport configured");
         };
-    // ARCHIVES report their transfer too. They did not before: this fetcher
-    // was the only archive path after the host `/` mount was dropped, and it
-    // emitted nothing — so the largest downloads a user waits on, the
-    // interpreter bundles, were silent while individual lazy files still
-    // reported. Same pipe, same events, one vocabulary.
-    const lazyArchiveFetcher: (url: string) => Promise<Uint8Array> =
-      async (url) => {
-        const base = { id: `archive:${url}`, kind: "archive" as const, url };
-        if (onProgress !== undefined) {
-          onProgress({ ...base, status: "started", loadedBytes: 0, t: Date.now() });
-        }
-        try {
-          const bytes = await fetchUrlBytes(url);
-          if (onProgress !== undefined) {
-            onProgress({
-              ...base,
-              status: "complete",
-              loadedBytes: bytes.byteLength,
-              totalBytes: bytes.byteLength,
-              t: Date.now(),
-            });
-          }
-          return bytes;
-        } catch (error) {
-          if (onProgress !== undefined) {
-            onProgress({
-              ...base,
-              status: "error",
-              loadedBytes: 0,
-              error: error instanceof Error ? error.message : String(error),
-              t: Date.now(),
-            });
-          }
-          throw error;
-        }
-      };
+    // NO archive-specific fetcher wrapper. There used to be one here that
+    // reported an archive's transfer, because the deferred provider reported
+    // only files. The provider now answers for both kinds behind one address,
+    // and reports both, so a wrapper reporting again would emit every event
+    // twice — and worse, would stamp `kind: "archive"` on a lazy FILE's
+    // transfer, since one fetcher now serves both. One pipe, one vocabulary,
+    // one place that speaks.
     // NO `exportLazyEntries()`. That call produced the host's inode -> URL
     // table, and handing it over made this host a second author for where a
     // deferred file's bytes live — with the image, which already recorded an
@@ -4477,7 +4448,7 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
     // which resource is being read.
     const { deferredProvider } = buildRootfsLazyWiring(
       options.baseImage.exportLazyArchiveEntries(),
-      lazyArchiveFetcher,
+      fetchUrlBytes,
       onProgress,
     );
     host.kernel().configureRootfsOverlay(

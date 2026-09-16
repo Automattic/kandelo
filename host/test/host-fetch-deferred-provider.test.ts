@@ -10,8 +10,16 @@ const ENOSYS = 38;
 const EIO = 5;
 const EPERM = 1;
 
-const KIND_FILE = 0;
-const KIND_ARCHIVE = 1;
+/** Write a URI into kernel memory and return its (pointer, length) pair.
+ *
+ * The seam now takes an ADDRESS, so a test of it has to put one somewhere the
+ * import can read. 256 is chosen to sit well below the 4096 the destination
+ * tests use, so a URI and a destination never overlap. */
+function writeUri(memory: WebAssembly.Memory, uri: string, at = 256): [number, number] {
+  const bytes = new TextEncoder().encode(uri);
+  new Uint8Array(memory.buffer, at, bytes.byteLength).set(bytes);
+  return [at, bytes.byteLength];
+}
 
 /**
  * Mirrors the `kernelHarness` helper used by the `host_read`/`host_pread`
@@ -57,32 +65,55 @@ describe("host_fetch_deferred provider seam", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
 
-    expect(imports.env.host_fetch_deferred(KIND_ARCHIVE, 7, 0, 4096, 4, 0, 0))
+    const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(-ENOSYS);
   });
 
-  it("passes the kind and the full 64-bit id through to the provider", () => {
+  it("passes the address through to the provider verbatim", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
-    const seen: Array<{ kind: number; id: bigint }> = [];
-    kernel.setRootfsDeferredProvider((kind: number, id: bigint) => {
-      seen.push({ kind, id });
+    const seen: string[] = [];
+    kernel.setRootfsDeferredProvider((uri: string) => {
+      seen.push(uri);
       return 0;
     });
 
-    imports.env.host_fetch_deferred(KIND_FILE, 9, 0, 4096, 4, 0, 0);
-    // A URL-backed lazy file is addressed by its inode number; an archive by
-    // its image-assigned id. Both share the one id argument, and the kind is
-    // what tells them apart — never a reserved range of the id.
-    imports.env.host_fetch_deferred(KIND_ARCHIVE, 9, 0, 4096, 4, 0, 0);
-    // lo/hi words reassemble, so an id above 2^32 is not silently truncated.
-    imports.env.host_fetch_deferred(KIND_FILE, 5, 1, 4096, 4, 0, 0);
+    // There is no `kind` and no id. A lazy file and an archive are the same
+    // request at different addresses, so what this seam must carry is the
+    // address and nothing else — and it must carry it UNCHANGED, because the
+    // host has no table to repair a mangled one against.
+    for (const uri of [
+      "https://example.invalid/file.wasm",
+      "https://example.invalid/archive.zip",
+      // Non-ASCII and a query string: the seam is bytes, not a parsed URL.
+      "https://example.invalid/caf\u00e9.wasm?v=2&x=%20",
+    ]) {
+      const [p, l] = writeUri(memory, uri);
+      imports.env.host_fetch_deferred(p, l, 4096, 4, 0, 0);
+    }
 
     expect(seen).toEqual([
-      { kind: KIND_FILE, id: 9n },
-      { kind: KIND_ARCHIVE, id: 9n },
-      { kind: KIND_FILE, id: 0x1_0000_0005n },
+      "https://example.invalid/file.wasm",
+      "https://example.invalid/archive.zip",
+      "https://example.invalid/caf\u00e9.wasm?v=2&x=%20",
     ]);
+  });
+
+  it("reassembles the full 64-bit offset, so a read past 4 GiB is not truncated", () => {
+    const { kernel, memory } = kernelHarness();
+    const imports = importsOf(kernel, memory);
+    const seen: bigint[] = [];
+    kernel.setRootfsDeferredProvider((_uri: string, offset: bigint) => {
+      seen.push(offset);
+      return 0;
+    });
+
+    const [p, l] = writeUri(memory, "https://example.invalid/big.bin");
+    imports.env.host_fetch_deferred(p, l, 4096, 4, 9, 0);
+    imports.env.host_fetch_deferred(p, l, 4096, 4, 5, 1);
+
+    expect(seen).toEqual([9n, 0x1_0000_0005n]);
   });
 
   it("stages installed provider bytes into the destination exactly once", () => {
@@ -90,13 +121,11 @@ describe("host_fetch_deferred provider seam", () => {
     const imports = importsOf(kernel, memory);
     let retained: Uint8Array | undefined;
     const provider = vi.fn((
-      kind: number,
-      id: bigint,
+      uri: string,
       offset: bigint,
       dest: Uint8Array,
     ) => {
-      expect(kind).toBe(KIND_ARCHIVE);
-      expect(id).toBe(7n);
+      expect(uri).toBe("https://example.invalid/a.zip");
       expect(offset).toBe(0n);
       retained = dest;
       dest.set([0x41, 0x42]);
@@ -104,7 +133,8 @@ describe("host_fetch_deferred provider seam", () => {
     });
     kernel.setRootfsDeferredProvider(provider);
 
-    expect(imports.env.host_fetch_deferred(KIND_ARCHIVE, 7, 0, 4096, 4, 0, 0))
+    const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(2);
     expect(provider).toHaveBeenCalledOnce();
     expect(new Uint8Array(memory.buffer, 4096, 4))
@@ -123,7 +153,8 @@ describe("host_fetch_deferred provider seam", () => {
     const imports = importsOf(kernel, memory);
     kernel.setRootfsDeferredProvider(() => -EPERM);
 
-    expect(imports.env.host_fetch_deferred(KIND_ARCHIVE, 7, 0, 4096, 4, 0, 0))
+    const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(-EPERM);
   });
 
@@ -131,17 +162,17 @@ describe("host_fetch_deferred provider seam", () => {
     const { kernel, memory } = kernelHarness();
     const imports = importsOf(kernel, memory);
     kernel.setRootfsDeferredProvider((
-      _kind: number,
-      _id: bigint,
+      _uri: string,
       _offset: bigint,
       dest: Uint8Array,
     ) => {
       dest.fill(0x6b);
       return dest.byteLength + 1;
     });
+    const [uriPtr, uriLen] = writeUri(memory, "https://example.invalid/a.zip");
     new Uint8Array(memory.buffer, 4096, 8).fill(0xa5);
 
-    expect(imports.env.host_fetch_deferred(KIND_ARCHIVE, 7, 0, 4096, 4, 0, 0))
+    expect(imports.env.host_fetch_deferred(uriPtr, uriLen, 4096, 4, 0, 0))
       .toBe(-EIO);
     expect(new Uint8Array(memory.buffer, 4096, 8))
       .toEqual(new Uint8Array(8).fill(0xa5));

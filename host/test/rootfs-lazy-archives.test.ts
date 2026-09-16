@@ -428,6 +428,49 @@ describe("one address space, so nothing needs routing", () => {
 
     expect(calls).toEqual(["https://example.invalid/node"]);
   });
+
+  // One transfer, ONE pair of events, and the kind the resource actually is.
+  // This exists because the wiring briefly reported twice: the provider gained
+  // reporting for both kinds while an archive-specific fetcher wrapper upstream
+  // was still reporting too, so every archive transfer emitted its events twice
+  // and every FILE transfer was additionally announced as an archive — one
+  // fetcher now serves both, so the wrapper stamped its own kind on everything
+  // passing through it. Asserting the kind is what distinguishes that from a
+  // plain duplicate.
+  it("reports each transfer once, under the kind the address actually is", async () => {
+    const events: { status: string; kind: string; id: string }[] = [];
+    const { deferredProvider } = (() => {
+      const { deferredProvider } = buildRootfsLazyWiring(
+        [
+          makeGroup({
+            kind: "kandelo-legacy-zip-v1",
+            url: "https://example.invalid/pkg.zip",
+            mountPrefix: "/a",
+            integrity: { sha256: "x", bytes: archiveBytes.length },
+            entries: [],
+          }),
+        ],
+        async (url) =>
+          url.endsWith(".zip") ? archiveBytes : new Uint8Array([1, 2]),
+        (e) => events.push({ status: e.status, kind: e.kind, id: e.id }),
+      );
+      return { deferredProvider };
+    })();
+
+    // Ask each address twice, so a report-per-ask would show up as four.
+    deferredProvider("https://example.invalid/pkg.zip", 0n, new Uint8Array(4));
+    deferredProvider("https://example.invalid/pkg.zip", 0n, new Uint8Array(4));
+    deferredProvider("https://example.invalid/node", 0n, new Uint8Array(4));
+    deferredProvider("https://example.invalid/node", 0n, new Uint8Array(4));
+    await flushMicrotasks();
+
+    expect(events).toEqual([
+      { status: "started", kind: "archive", id: "https://example.invalid/pkg.zip" },
+      { status: "started", kind: "file", id: "https://example.invalid/node" },
+      { status: "complete", kind: "archive", id: "https://example.invalid/pkg.zip" },
+      { status: "complete", kind: "file", id: "https://example.invalid/node" },
+    ]);
+  });
 });
 
 describe("the deferred provider as a dumb bytes pipe", () => {
