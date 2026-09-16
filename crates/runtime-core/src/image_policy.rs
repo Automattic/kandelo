@@ -78,6 +78,9 @@ pub enum PolicyViolation {
     /// profile is as wrong as one built smaller, because the profile is what
     /// the product was sized and tested against.
     Capacity { actual_bytes: u64, expected_bytes: u64 },
+    /// The image states in its own metadata that it was built for a different
+    /// kernel ABI than the one about to mount it.
+    DeclaredAbi { declared: u32, expected: u32 },
 }
 
 impl PolicyViolation {
@@ -101,6 +104,7 @@ impl PolicyViolation {
             }
             PolicyViolation::Capacity { .. } => out.push("growth ceiling"),
             PolicyViolation::StaleWasmArtifacts { .. } => out.push("wasm artifacts"),
+            PolicyViolation::DeclaredAbi { .. } => out.push("declared kernel ABI"),
         }
         out
     }
@@ -315,6 +319,98 @@ pub fn check_wasm_artifacts<S: BlockSource>(
     } else {
         Err(PolicyViolation::StaleWasmArtifacts { failures })
     }
+}
+
+/// The kernel ABI an image DECLARES about itself, or `None` when it declares
+/// none.
+///
+/// # Why this scans instead of parsing
+///
+/// `kandelo_image_fs::metadata_span` hands back the metadata section as opaque
+/// bytes, and says why: the section is JSON with a deliberately OPEN shape, so
+/// a reader that parsed it into a struct and re-serialized would silently drop
+/// every field it did not know about. That argument is about a PARSER. It is
+/// not an argument against reading one number.
+///
+/// The same comment's second reason — "teaching the kernel crate to parse JSON
+/// to read three fields it does not act on would buy a parser's attack surface
+/// for nothing" — turns on *does not act on*, and that is what changes here.
+/// The kernel now acts on exactly one of those fields, so it reads exactly one
+/// of them, with a bounded scan that allocates nothing, recurses nowhere, and
+/// cannot consume more than the section it was handed.
+///
+/// # What it deliberately does NOT do
+///
+/// It does not validate that the section is well-formed JSON, and it does not
+/// care what else the section contains. A malformed section simply declares no
+/// ABI, and "declares no ABI" is already a state the caller must handle,
+/// because images predating the field exist. Refusing to load an image because
+/// its metadata had a stray comma would fail the machine for something no part
+/// of the system reads.
+///
+/// It finds the FIRST `"kernelAbi"` key. A section carrying two would be a
+/// malformed artifact, and choosing the first is the same rule every streaming
+/// reader uses; it is not a judgement about which one is true.
+pub fn declared_kernel_abi(metadata: &[u8]) -> Option<u32> {
+    const KEY: &[u8] = b"\"kernelAbi\"";
+    let mut at = 0usize;
+    while at + KEY.len() <= metadata.len() {
+        if &metadata[at..at + KEY.len()] != KEY {
+            at += 1;
+            continue;
+        }
+        let mut cursor = at + KEY.len();
+        while matches!(metadata.get(cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            cursor += 1;
+        }
+        if metadata.get(cursor) != Some(&b':') {
+            at += 1;
+            continue;
+        }
+        cursor += 1;
+        while matches!(metadata.get(cursor), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            cursor += 1;
+        }
+        let start = cursor;
+        let mut value: u32 = 0;
+        while let Some(&byte) = metadata.get(cursor) {
+            if !byte.is_ascii_digit() {
+                break;
+            }
+            // A version that does not fit a u32 is not a version this kernel
+            // could ever match, and saturating would turn it into one.
+            value = value.checked_mul(10)?.checked_add(u32::from(byte - b'0'))?;
+            cursor += 1;
+        }
+        if cursor == start {
+            at += 1;
+            continue;
+        }
+        return Some(value);
+    }
+    None
+}
+
+/// Refuse an image that states it was built for a different kernel ABI.
+///
+/// An image is a product artifact with a long life: it is built once, written
+/// to `local-binaries/`, and survives every `ABI_VERSION` bump after it. So
+/// "the image and the kernel disagree" is not a transport or a packaging
+/// accident, it is the ordinary consequence of not rebuilding, and the ABI
+/// contract says it must fail loudly rather than boot.
+///
+/// An image that declares NOTHING is accepted. That is not a hole: declaring
+/// an ABI is what a builder does to make this check possible, and an image
+/// predating the field makes no claim this could contradict. Refusing it would
+/// be refusing the absence of evidence.
+pub fn check_declared_abi(metadata: Option<&[u8]>, expected: u32) -> Result<(), PolicyViolation> {
+    let Some(declared) = metadata.and_then(declared_kernel_abi) else {
+        return Ok(());
+    };
+    if declared == expected {
+        return Ok(());
+    }
+    Err(PolicyViolation::DeclaredAbi { declared, expected })
 }
 
 #[cfg(test)]
@@ -564,5 +660,67 @@ mod tests {
         )
         .expect_err("inode shortfall must fail");
         assert_eq!(err.breached(), alloc::vec!["free inodes"]);
+    }
+    #[test]
+    fn reads_the_abi_an_image_declares() {
+        assert_eq!(
+            declared_kernel_abi(br#"{"version":1,"kernelAbi":44,"createdBy":"a test"}"#),
+            Some(44)
+        );
+    }
+
+    #[test]
+    fn tolerates_the_whitespace_a_pretty_printer_leaves() {
+        assert_eq!(
+            declared_kernel_abi(b"{\n  \"kernelAbi\" :  44 ,\n  \"version\": 1\n}"),
+            Some(44)
+        );
+    }
+
+    #[test]
+    fn an_image_that_declares_nothing_declares_nothing() {
+        assert_eq!(declared_kernel_abi(br#"{"version":1}"#), None);
+        assert_eq!(declared_kernel_abi(b""), None);
+        // The key present with a non-numeric value is the same answer: this
+        // reads a number or it reads nothing, and it never guesses one.
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbi":"44"}"#), None);
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbi":null}"#), None);
+    }
+
+    #[test]
+    fn a_similarly_named_key_is_not_this_key() {
+        // Scanning for a substring would match `notKernelAbi` and
+        // `kernelAbiExpected`; the quotes are what make the key a key.
+        assert_eq!(declared_kernel_abi(br#"{"notkernelAbi":9}"#), None);
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbiExpected":9}"#), None);
+    }
+
+    #[test]
+    fn a_version_too_large_for_a_u32_is_not_silently_clamped() {
+        // Saturating would turn an impossible declaration into u32::MAX, which
+        // is a number a kernel could in principle equal.
+        assert_eq!(declared_kernel_abi(br#"{"kernelAbi":99999999999}"#), None);
+    }
+
+    #[test]
+    fn an_agreeing_declaration_passes_and_a_disagreeing_one_does_not() {
+        assert_eq!(check_declared_abi(Some(br#"{"kernelAbi":44}"#), 44), Ok(()));
+        assert_eq!(
+            check_declared_abi(Some(br#"{"kernelAbi":43}"#), 44),
+            Err(PolicyViolation::DeclaredAbi { declared: 43, expected: 44 })
+        );
+    }
+
+    #[test]
+    fn absence_of_a_declaration_is_not_a_violation() {
+        // An image predating the field makes no claim this can contradict.
+        assert_eq!(check_declared_abi(None, 44), Ok(()));
+        assert_eq!(check_declared_abi(Some(br#"{"version":1}"#), 44), Ok(()));
+    }
+
+    #[test]
+    fn the_violation_names_the_limit_it_breached() {
+        let err = check_declared_abi(Some(br#"{"kernelAbi":1}"#), 44).expect_err("mismatch");
+        assert_eq!(err.breached(), alloc::vec!["declared kernel ABI"]);
     }
 }

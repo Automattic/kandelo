@@ -1951,6 +1951,39 @@ where
         }
         None => None,
     };
+    // REFUSE AN IMAGE BUILT FOR A DIFFERENT KERNEL, here rather than in the
+    // host that chose the file.
+    //
+    // An image is a product artifact with a long life: built once, written to
+    // `local-binaries/`, and surviving every `ABI_VERSION` bump after it. So
+    // "the image and the kernel disagree" is the ordinary consequence of not
+    // rebuilding, not a transport accident, and the ABI contract says an
+    // ABI-mismatched VFS image must fail loudly and be rebuilt.
+    //
+    // It used to be checked in `host/src/binary-resolver.ts`, which parsed the
+    // image header in TypeScript to read one field while CHOOSING which file
+    // to use. That put a contract the kernel owns in a file chooser, and cost
+    // the host an import of the filesystem implementation lane V is deleting.
+    // The bytes are already in hand here, so the check costs nothing it did
+    // not already pay for.
+    //
+    // `EPROTO` rather than `EINVAL`: the image is not malformed, it speaks a
+    // different version of the contract, and a caller that cannot tell those
+    // apart reports a rebuildable artifact as a corrupt one.
+    // The violation carries the declared and expected numbers; this entry
+    // point has no channel to report them on, so they are dropped here and the
+    // errno carries the kind. Where the numbers ARE usable -- the publication
+    // gate, which formats its own prose -- `check_declared_abi` hands them
+    // over intact.
+    if crate::image_policy::check_declared_abi(
+        declared_metadata.as_deref(),
+        wasm_posix_shared::ABI_VERSION,
+    )
+    .is_err()
+    {
+        return Err(Errno::EPROTO);
+    }
+
     ROOTFS.with(|state| {
         state.image_capacity_bytes = Some(declared_capacity);
         state.image_metadata = declared_metadata;
@@ -8123,6 +8156,69 @@ mod tests {
         assert!(
             php.uri.is_empty(),
             "a member is addressed by its archive, and the export must not invent a second address"
+        );
+    }
+
+    #[test]
+    fn an_image_built_for_another_kernel_abi_is_refused_at_load() {
+        let _guard = TestGuard::acquire();
+        // The check that used to live in `host/src/binary-resolver.ts`, which
+        // parsed the image header in TypeScript while choosing which FILE to
+        // use. An image is built once and outlives every ABI bump after it, so
+        // this is the ordinary consequence of not rebuilding -- and the ABI
+        // contract says it fails loudly rather than boots.
+        let body = |()| {
+            let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(
+                crate::kandelo_image_write::KandeloImageConfig::fixed(128 * 1024),
+            )
+            .expect("mkfs");
+            let root = w.root();
+            w.create_file(root, b"plain", 0o644, crate::kandelo_image_write::Content::Bytes(b"hi"))
+                .expect("a plain file");
+            w.finish()
+                .expect("finish")
+                .to_vec(&crate::kandelo_image_write::NoContent)
+                .expect("materialize")
+        };
+        let empty_klzy = klzy_section(&[], &[]);
+        let wrap_with = |metadata: Option<&[u8]>| {
+            crate::vfsi_container::wrap(
+                &body(()),
+                &crate::vfsi_container::ContainerSections {
+                    lazy_json: b"",
+                    archive_json: None,
+                    metadata_json: metadata,
+                    kernel_lazy: Some(&empty_klzy),
+                },
+            )
+            .expect("wrap")
+        };
+
+        let stale = alloc::format!(r#"{{"version":1,"kernelAbi":{}}}"#, 1u32);
+        let image = wrap_with(Some(stale.as_bytes()));
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            Errno::EPROTO,
+            "an image declaring ABI 1 must not mount on this kernel",
+        );
+
+        // EPROTO and not EINVAL, and the distinction is the point: this image
+        // is well-formed. The SAME bytes with a matching declaration load.
+        let current =
+            alloc::format!(r#"{{"version":1,"kernelAbi":{}}}"#, wasm_posix_shared::ABI_VERSION);
+        let matching = wrap_with(Some(current.as_bytes()));
+        assert!(
+            load_image(matching.len() as u64, image_host(&matching)).is_ok(),
+            "the same image declaring THIS kernel's ABI must load",
+        );
+
+        // And an image that declares nothing still loads: declaring an ABI is
+        // what makes the check possible, and an image predating the field
+        // makes no claim this could contradict.
+        let silent = wrap_with(None);
+        assert!(
+            load_image(silent.len() as u64, image_host(&silent)).is_ok(),
+            "absence of a declaration is not a violation",
         );
     }
 
