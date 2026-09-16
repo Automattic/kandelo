@@ -280,6 +280,15 @@ export interface ChildModuleOptions {
   /** The single residual externref host seam, when the caller decodes one. */
   readonly resolveExternref?: (handle: number) => unknown;
   readonly label?: string;
+  /**
+   * Where this child's module region goes.
+   *
+   * A test with TWO children needs two: the module's statics live in the
+   * guest's memory at `__memory_base`, so two instances reserved at the same
+   * address are one set of statics wearing two names -- which is exactly what
+   * a COW child inherits on purpose, and exactly wrong for two peer workers.
+   */
+  readonly moduleBase?: number;
 }
 
 /** The child module's EXPORTS. Most callers want only these. */
@@ -301,7 +310,8 @@ export function childInstance(
   f: Fixture,
   options: ChildModuleOptions = {},
 ): ReturnType<typeof instantiateForkModule> {
-  const needed = CHILD_MODULE_BASE + 8 * 1024 * 1024;
+  const base = options.moduleBase ?? CHILD_MODULE_BASE;
+  const needed = base + 8 * 1024 * 1024;
   if (f.memory.buffer.byteLength < needed) {
     f.memory.grow(Math.ceil((needed - f.memory.buffer.byteLength) / PAGE));
   }
@@ -311,7 +321,7 @@ export function childInstance(
     ),
     memory: f.memory,
     ptrWidth: 4,
-    reserve: () => CHILD_MODULE_BASE,
+    reserve: () => base,
     label: options.label ?? "child module",
     ...(options.resolveExternref
       ? { hostImports: { resolve_externref: options.resolveExternref } }
