@@ -10538,3 +10538,47 @@ per guest; the generation-fence address is a per-process placement.
 With §194's numbering cutover before it, the guest's import, the module's
 numbering and the host's placement are now one object and one allocator. They
 were a per-caller convention holding two independent implementations in step.
+
+## §199 -- The last object import, probed rather than assumed
+
+§198 left `forkGuestObjectImportsUnserved` at 2 and called one of them "a
+maybe": `__wpk_fork_module_state_table_generation_addr`, the address of the
+shared table-generation fence. The module could place that fence in its own
+statics; the question was whether it could then EXPORT its address as the
+immutable global the guest imports, since a global's initializer is a
+const-expression and the address is `__memory_base + offset`.
+
+Probed on V8 (Node 24) with `wat2wasm 1.0.36`, rather than reasoned about:
+
+**The extended-const proposal is available and works.** A global initialized
+with `i64.add (global.get $base) (i64.const 64)` compiles and instantiates, and
+V8 reads back the computed value.
+
+**And it does not help, on wasm32.** The fork module imports `__memory_base` as
+an **i32**; the guest imports the generation address as an **i64**. No
+const-expression instruction converts between them -- extended-const adds
+`add`/`sub`/`mul` on a single type, and `i64.extend_i32_u` is rejected outright:
+
+```
+error: invalid initializer: instruction not valid in initializer expression:
+       i64.extend_i32_u
+```
+
+So the module cannot express that address as a const-initialized global while
+the two widths differ. The alternatives all cost more than the import: export
+it as a function and have the host read it (that is an `fm_*` entry, trading an
+object import for a module entry), or make the guest import an i32 on wasm32
+(an instrumenter change, and the ABI's business).
+
+**Conclusion: both remaining object imports are the real floor.**
+`__wpk_fork_module_activation` is per-activation while one module instance
+serves every activation, and this one is blocked by a type mismatch that only
+the ABI can remove. `forkGuestObjectImportsUnserved`'s target of 0 should be
+restated to 2 -- which is the maintainer's call, and is now a fact rather than a
+guess.
+
+Worth saying why this was worth twenty minutes: the previous three entries in
+this file each recorded a floor argument that turned out to be wrong when
+checked. The prior is genuinely "check it". This one checked out, and the
+difference between a floor that has been probed and one that has been asserted
+is the whole subject of sections 109, 191 and 198.
