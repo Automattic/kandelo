@@ -301,6 +301,36 @@ mod wasm {
         unsafe { __wpk_fork_capture_encode(activation, slot) }
     }
 
+    /// Hand back a capture recipe the GUEST will publish into the anyref
+    /// transit at `recipe + 1` on the instruction after this returns, having
+    /// first made that slot exist.
+    ///
+    /// Every capture entry that returns a recipe to the generator owes this:
+    /// `fork-instrument`'s codec does `table.set(transit, recipe + 1, value)`
+    /// straight after the call, and Rust emits no `table.grow`. The injected
+    /// `__wpk_fork_ref_gc_claim` has always met it; the entries that did not
+    /// trapped the PARENT mid-capture with "table index is out of bounds" --
+    /// visible the moment the host stopped sizing the table for the whole
+    /// graph up front (census section 188).
+    ///
+    /// UNGATED ON THE i31 PATH TODAY. Removing this call from
+    /// `__wpk_fork_ref_gc_i31` leaves every green test green: the fork that
+    /// showed the trap (`gc-reference-cycle-fresh-worker`, an i31 aliased
+    /// beside a struct/array cycle) is still red for a LATER reason, so nothing
+    /// currently reaches an i31 whose slot is past the table's end. It goes in
+    /// on the observed trap, not on a passing test, and the test that will gate
+    /// it is named in the plan's D9.
+    fn capture_recipe_publishable(recipe: i32) -> i32 {
+        if recipe < 0 {
+            return recipe;
+        }
+        if transit_grow_via_injector(recipe as u32 + 2) < 0 {
+            set_err(Errno::ENOMEM);
+            return -1;
+        }
+        recipe
+    }
+
     /// Safe wrapper over the injector-wired transit-grow placeholder.
     fn transit_grow_via_injector(needed: u32) -> i32 {
         // SAFETY: after injection this is a call to the emitted
@@ -1826,6 +1856,33 @@ mod wasm {
             begin_abort_impl()?;
         } else {
             begin_replay_impl()?;
+            // THE PARENT RESUMES INTO THE SAME GUEST CODE A CHILD DOES, so its
+            // guest asks the module the same reference questions on the way
+            // back up: route this GC value, load that exception's payload,
+            // which cache slot is this exnref. Every one of those reads the
+            // replay feed, and a parent has none -- it captured its graph, it
+            // never decoded one -- so each trapped the parent the moment its
+            // guest touched a reference it had carried.
+            //
+            // Decoding the arena it JUST SEALED gives it the same feed a child
+            // gets, from the same bytes, so one implementation answers both
+            // sides. The alternative was a second set of reads against the
+            // capture builder -- a parallel implementation of the same
+            // semantics, which is the duplication this lane exists to remove,
+            // and the builder cannot answer some of them at all (an exnref's
+            // cache index is replay state, not capture state).
+            //
+            // ONLY on the ordinary replay. An ABORT replay may be recovering
+            // from a seal that never wrote a transaction, so there may be
+            // nothing to decode; the parent's frames are what it needs there,
+            // and they are already sealed.
+            let root = match state().as_ref() {
+                Some(module) => module.module_state.root(),
+                None => 0,
+            };
+            if root != 0 {
+                begin_reference_replay_impl(root, 0)?;
+            }
         }
         let plan = build_rewind_plan_impl(abort)?;
         let count = GC_PLAN_COUNT.load(Ordering::Relaxed);
@@ -8391,21 +8448,11 @@ mod wasm {
         // and the errno a reader saw (census section 188).
         let handle = externref_handle_via_injector(slot);
         if handle > 0 {
-            let recipe = fm_capture_intern(INTERN_KIND_EXTERNREF, handle as u32, 0);
-            if recipe < 0 {
-                return recipe;
+            let recipe =
+                capture_recipe_publishable(fm_capture_intern(INTERN_KIND_EXTERNREF, handle as u32, 0));
+            if recipe >= 0 {
+                set_ok();
             }
-            // The guest publishes the value into the transit at `recipe + 1` on
-            // the instruction AFTER this returns, so the table has to hold that
-            // slot first -- the same obligation `__wpk_fork_ref_gc_claim` meets
-            // for a claimed GC value, and the reason a recipe returned from
-            // here without growing traps the guest with "table index is out of
-            // bounds" rather than failing anything the module can see.
-            if transit_grow_via_injector(recipe as u32 + 2) < 0 {
-                set_err(Errno::ENOMEM);
-                return -1;
-            }
-            set_ok();
             return recipe;
         }
         set_err(Errno::EOPNOTSUPP);
@@ -8660,7 +8707,7 @@ mod wasm {
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_gc_i31(payload: i32) -> i32 {
         match capture_builder() {
-            Ok(g) => capture_ok_id(g.intern_i31(payload)),
+            Ok(g) => capture_recipe_publishable(capture_ok_id(g.intern_i31(payload))),
             Err(e) => {
                 set_err(e);
                 -1
