@@ -4054,6 +4054,35 @@ is `MemoryFileSystem` — `vfs-image`, `sharedfs-safety`, `lazy-vfs`,
 `vfs-image-helpers`. They are not waiting on a capability; they go when the
 class goes, which is step 5.
 
+### A FIFTH CONSTRAINT, found by trying: some tests are not MECHANICALLY repointable
+
+`demo-login-image.test.ts` was tried as the second proof of the repeal and
+REVERTED. Every primitive it needs works on the bridge — checked one at a time
+rather than assumed: `createFileWithOwner` yields mode `4755`, a regular-file
+type, uid and gid 0; `isPathDeferred` answers false; `getLazyEntry` answers
+null; a `null`-offset read returns the exact bytes; the test's own `writeText`
+helper round-trips. And the test still fails at
+`expect(hasConfiguredDemoLogin(fs)).toBe(true)`.
+
+So the difference is in that test's own sequence rather than in any operation,
+and diagnosing it is real work rather than a rename. Left for someone with a
+clear head, on the principle that a half-diagnosed repoint is worse than none.
+
+**Two things it did reveal, which is why it was worth trying.**
+
+* `hasConfiguredDemoLogin` wraps its whole body in a `try`/`catch` that returns
+  FALSE. Any unfamiliarity with a filesystem — a missing method, a different
+  return shape — becomes "this image is not configured for login" rather than
+  an error naming what it could not do. That is the same shape as the errno
+  sign bug and as B45: a swallow that produces a plausible wrong answer instead
+  of a loud one. It is worth fixing whether or not the repoint proceeds.
+* The fixture registers `/usr/bin/login` **set-user-ID root, deferred, with no
+  digest** — the exact hazard the producer now refuses. Under
+  `MemoryFileSystem` it is silently allowed; under the Rust writer the
+  registration throws, naming the file and the three ways out. That is the
+  second fixture found encoding the defect, after
+  `kandelo-image-fs.test.ts`'s `/sudo`.
+
 ### The constraint as originally recorded
 
 
