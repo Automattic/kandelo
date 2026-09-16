@@ -8307,6 +8307,31 @@ caller census missed because I swept `apps/`, `host/` and `web-libs/` and not
 of the mapping than of a fixture. Setup after the rename: `"outcome":"succeeded"`,
 zero failed nodes.
 
+**The Node baseline is DONE, and it paid for itself.** A full host suite on the
+parent: **93 failed / 4321 passed**, against this branch's **92 / 4341**. One
+fewer failure and twenty more passes.
+
+Compared by failing SET rather than by count, because a count hides two moving
+in opposite directions. Exactly four files fail here and pass on the parent, and
+I had been reasoning all four were pre-existing. **Three were not:**
+
+* `shell-lazy-url-resolution` — imported a module I deleted; my census swept
+  `apps/`, `host/` and `web-libs/` and not `tests/`. Fixed `6314fc941`.
+* `rootfs-image-tree-parity` — the stale-image refusal "broke". It had not: the
+  test cleared an image's `KLZY` flag to simulate a pre-deferred-section image,
+  and that stopped being what staleness means once a current image carries an
+  in-body `SDEF` section. The test now zeroes `deferred_inode` too. Fixed
+  `311d3332d`.
+* `rootfs-package-manifest` — B45 read-side: `MemoryFileSystem.isPathDeferred`
+  answering false about a file that is deferred, because the legacy reader
+  cannot see `SDEF`. Fixed `311d3332d`.
+* `run-example-credentials` — passes in isolation. Flaky under full-suite load,
+  checked rather than assumed.
+
+**So the Node side is clear**, and the earlier "not attributable by inspection"
+now has a measurement behind it — which is the point, since inspection had it
+wrong three times out of four.
+
 **Open, in the order I would take them**: the four magic bytes (V-NAME's last
 step, deliberately left — see its section); the four image-adjacent browser
 failures; a true Node baseline, which is still owed because every claim about
