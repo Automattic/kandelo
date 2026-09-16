@@ -1,4 +1,4 @@
-//! Writer for the on-disk SFFS ("SharedFileSystem") image body.
+//! Writer for the on-disk KIFS (Kandelo Image File System) image body.
 //!
 //! `image.rs` is the reader this repository already trusts: it mounts the real
 //! 249 MiB `/` image and serves every base file's bytes out of it. This module
@@ -24,13 +24,13 @@
 //! `lamp.vfs` is 249 MiB and the kernel cannot hold an image in linear memory.
 //! So the writer never materializes file CONTENT: a data block that carries
 //! file bytes is recorded as a reference into a [`ContentSource`]
-//! (`id` + offset + length) and resolved only when [`SffsImage::read_at`]
+//! (`id` + offset + length) and resolved only when [`KandeloImage::read_at`]
 //! reaches it. What IS materialized is metadata — superblock, the two bitmaps,
 //! the inode table, directory data, indirect blocks — which for the largest
 //! image in the repo is a few MiB, the same order as the budget the reader
 //! already spends walking one.
 //!
-//! [`SffsImage::read_at`] has the shape `rootfs::export_tree_read(offset, out)`
+//! [`KandeloImage::read_at`] has the shape `rootfs::export_tree_read(offset, out)`
 //! already needs, so streaming emission (W-3) layers on top of this without
 //! redesigning the layout pass, and without a new host import.
 
@@ -1355,7 +1355,7 @@ impl KandeloImageWriter {
     ///
     /// Fallible now, because sealing writes the deferred section. An image
     /// with no deferred files cannot fail here and allocates nothing extra.
-    pub fn finish(mut self) -> Result<SffsImage, Errno> {
+    pub fn finish(mut self) -> Result<KandeloImage, Errno> {
         let deferred_inode = self.emit_deferred_section()?;
         let mut superblock = vec![0u8; BLOCK_SIZE];
         w32(&mut superblock, SB_MAGIC, KANDELO_IMAGE_MAGIC);
@@ -1399,7 +1399,7 @@ impl KandeloImageWriter {
         // before this section existed already has here.
         w32(&mut superblock, SB_DEFERRED_INODE, deferred_inode);
 
-        Ok(SffsImage {
+        Ok(KandeloImage {
             superblock,
             inode_bitmap: self.inode_bitmap,
             block_bitmap: self.block_bitmap,
@@ -1415,7 +1415,7 @@ impl KandeloImageWriter {
 }
 
 /// A finished image, addressable by byte offset without being resident.
-pub struct SffsImage {
+pub struct KandeloImage {
     superblock: Vec<u8>,
     inode_bitmap: Vec<u8>,
     block_bitmap: Vec<u8>,
@@ -1434,7 +1434,7 @@ enum BlockView<'a> {
     Content { id: u64, offset: u64, len: u32 },
 }
 
-impl SffsImage {
+impl KandeloImage {
     pub fn len(&self) -> u64 {
         self.total_blocks as u64 * BLOCK_SIZE as u64
     }
@@ -1546,7 +1546,7 @@ impl SffsImage {
     }
 
     /// Whole-image convenience for tests and for callers that already know the
-    /// image is small. Production emission must use [`SffsImage::read_at`].
+    /// image is small. Production emission must use [`KandeloImage::read_at`].
     pub fn to_vec<S: ContentSource + ?Sized>(&self, source: &S) -> Result<Vec<u8>, Errno> {
         let mut out = vec![0u8; self.len() as usize];
         let n = self.read_at(source, 0, &mut out)?;
@@ -1559,12 +1559,12 @@ impl SffsImage {
 
 /// A [`BlockSource`] over a finished image, so the reader in `image.rs` can
 /// mount what the writer produced without the image ever being resident.
-pub struct SffsImageSource<'a, S: ContentSource + ?Sized> {
-    pub image: &'a SffsImage,
+pub struct KandeloImageSource<'a, S: ContentSource + ?Sized> {
+    pub image: &'a KandeloImage,
     pub content: &'a S,
 }
 
-impl<S: ContentSource + ?Sized> BlockSource for SffsImageSource<'_, S> {
+impl<S: ContentSource + ?Sized> BlockSource for KandeloImageSource<'_, S> {
     fn len(&self) -> u64 {
         self.image.len()
     }
@@ -1595,7 +1595,7 @@ mod tests {
     use alloc::format;
     use alloc::string::{String, ToString};
 
-    /// The cross-language fixtures: the RAW SFFS body the TypeScript writer
+    /// The cross-language fixtures: the RAW KIFS body the TypeScript writer
     /// in `host/src/vfs/sharedfs-vendor.ts` produced for the same tree,
     /// raw-deflated. Regenerate with
     /// `host/scripts/gen-kandelo-image-writer-fixture.mts`.
@@ -1658,7 +1658,7 @@ mod tests {
     /// Builds the tree the `kandelo-image-small` fixture describes. `hello_mode` is a
     /// parameter only so the sensitivity test can perturb exactly one bit and
     /// still go through the real writer rather than patching bytes.
-    fn build_small_with(hello_mode: u32) -> (SffsImage, Slices) {
+    fn build_small_with(hello_mode: u32) -> (KandeloImage, Slices) {
         let big = pattern(45000, 1);
         let content = Slices(alloc::vec![big]);
 
@@ -1723,7 +1723,7 @@ mod tests {
         (w.finish().expect("finish"), content)
     }
 
-    fn build_small() -> (SffsImage, Slices) {
+    fn build_small() -> (KandeloImage, Slices) {
         build_small_with(0o644)
     }
 
@@ -1746,7 +1746,7 @@ mod tests {
         format!("{name}-{i}").into_bytes()
     }
 
-    fn build_wide() -> (SffsImage, Slices) {
+    fn build_wide() -> (KandeloImage, Slices) {
         let huge = pattern(1034 * BLOCK_SIZE + 1234, 9);
         let huge_len = huge.len() as u64;
         let content = Slices(alloc::vec![huge]);
@@ -1827,7 +1827,7 @@ mod tests {
         );
     }
 
-    fn build_slots() -> SffsImage {
+    fn build_slots() -> KandeloImage {
         let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 1024 * 1024,
             max_size_bytes: Some(32 * 1024 * 1024),
@@ -1886,7 +1886,7 @@ mod tests {
         // corrupt a directory, because the record is overwritten in place
         // without its rec_len changing. Walk the whole directory back.
         let image = build_slots();
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -1921,7 +1921,7 @@ mod tests {
         out.to_vec()
     }
 
-    fn build_tail() -> SffsImage {
+    fn build_tail() -> KandeloImage {
         let mut w = KandeloImageWriter::mkfs(KandeloImageConfig {
             size_bytes: 2 * 1024 * 1024,
             max_size_bytes: Some(128 * 1024 * 1024),
@@ -1961,7 +1961,7 @@ mod tests {
         // place a writer can silently make a directory unwalkable: the reader
         // steps by rec_len, so an over-long record eats its successor.
         let image = build_tail();
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -2031,7 +2031,7 @@ mod tests {
     #[test]
     fn the_existing_reader_mounts_what_the_writer_produced() {
         let (image, content) = build_small();
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &content,
         };
@@ -2093,7 +2093,7 @@ mod tests {
     #[test]
     fn the_existing_reader_walks_a_wide_directory_and_double_indirect_file() {
         let (image, content) = build_wide();
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &content,
         };
@@ -2251,7 +2251,7 @@ mod tests {
         // And the refusal leaves what was already written readable.
         let image = w.finish().expect("finish after a refused write");
         let content = NoContent;
-        let fs = KandeloImageFs::mount(SffsImageSource { image: &image, content: &content })
+        let fs = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &content })
             .expect("a refused write leaves a mountable image");
         let small = fs.resolve(b"/small", true).expect("the earlier file survives");
         let mut buf = [0u8; 8];
@@ -2281,7 +2281,7 @@ mod tests {
 
         let image = w.finish().expect("finish");
         let content = NoContent;
-        let fs = KandeloImageFs::mount(SffsImageSource { image: &image, content: &content })
+        let fs = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &content })
             .expect("mount");
         assert_ne!(
             fs.geometry().deferred_inode,
@@ -2299,7 +2299,7 @@ mod tests {
             .create_file(quiet_root, b"plain", 0o644, Content::Bytes(b"same tree"))
             .expect("create");
         let quiet_image = quiet.finish().expect("finish");
-        let quiet_fs = KandeloImageFs::mount(SffsImageSource { image: &quiet_image, content: &content })
+        let quiet_fs = KandeloImageFs::mount(KandeloImageSource { image: &quiet_image, content: &content })
             .expect("mount");
         assert_eq!(quiet_fs.geometry().deferred_inode, 0);
     }
@@ -2326,7 +2326,7 @@ mod tests {
         // refuses at the start, because the failure moves to whoever loads it.
         let image = w.finish().expect("a full filesystem still finishes");
         let content = NoContent;
-        let fs = KandeloImageFs::mount(SffsImageSource { image: &image, content: &content })
+        let fs = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &content })
             .expect("a full filesystem is still a mountable one");
         let root = fs.stat_ino(ROOT_INO).expect("root survives the failed write");
         assert_eq!(root.mode & 0xf000, 0x4000);
@@ -2395,7 +2395,7 @@ mod tests {
 
         let image = w.finish().expect("finish");
         // The grown image is still mountable and the file still reads back.
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -2437,7 +2437,7 @@ mod tests {
             .expect("create");
         w.set_times(ino, 111, 222, 333);
         let image = w.finish().expect("finish");
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -2462,7 +2462,7 @@ mod tests {
         write_file(&mut w, root, b"present", Content::Bytes(b"here"), 0o600, 0, 0);
         let image = w.finish().expect("finish");
 
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -2505,7 +2505,7 @@ mod tests {
             "no section means a zero in the superblock"
         );
 
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &plain,
             content: &NoContent,
         };
@@ -2538,7 +2538,7 @@ mod tests {
             .expect("deferred");
         let image = w.finish().expect("finish");
 
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -2657,7 +2657,7 @@ mod tests {
         w.create_deferred_file(root, b"a", 0o644, 10, 0, b"", b"", b"", b"u")
             .expect("deferred");
         let image = w.finish().expect("finish");
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };
@@ -2719,7 +2719,7 @@ mod tests {
             expected.push((ino, i as u64 * 1000, payload));
         }
         let image = w.finish().expect("finish");
-        let source = SffsImageSource {
+        let source = KandeloImageSource {
             image: &image,
             content: &NoContent,
         };

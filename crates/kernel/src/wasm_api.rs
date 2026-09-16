@@ -101,7 +101,7 @@ unsafe extern "C" {
     // whoever fetches decides whether that address may be fetched at all.
     //
     // An image-backed file is NOT deferred and never reaches here: the kernel
-    // reads its bytes out of the image through its own SFFS reader.
+    // reads its bytes out of the image through its own KIFS reader.
     //
     // `offset` is a 64-bit value split into 32-bit words for the JS boundary,
     // matching the host_pread offset convention.

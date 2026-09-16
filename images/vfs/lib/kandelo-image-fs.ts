@@ -1031,7 +1031,7 @@ export class KandeloImageFs {
    * The growth ceiling the exported image will declare.
    *
    * Asked of the producer rather than parsed out of the finished bytes: the
-   * ceiling lives in the container header and the SFFS superblock, and reading
+   * ceiling lives in the container header and the KIFS superblock, and reading
    * it here would put format parsing back on this side over an artifact the
    * module just produced.
    */

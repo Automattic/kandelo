@@ -3,7 +3,7 @@
  * resources the `/` image does NOT carry.
  *
  * The kernel owns the `/` tree and reads an image-backed file's content out of
- * the image itself, through its own SFFS reader. What is left over is one
+ * the image itself, through its own KIFS reader. What is left over is one
  * shape — fetch from a host transport, serve positioned bytes, report `EAGAIN`
  * while the fetch is in flight — behind one import,
  * `host_fetch_deferred(uri, offset, dest)`.

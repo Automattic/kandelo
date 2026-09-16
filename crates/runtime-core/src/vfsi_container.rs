@@ -1,11 +1,11 @@
-//! Writer for the VFS image *container* — the envelope around the SFFS body.
+//! Writer for the VFS image *container* — the envelope around the KIFS body.
 //!
 //! # Why this exists
 //!
 //! `image.rs` reads this container and `kandelo_image_write.rs` builds the body inside
 //! it, but until now nothing in Rust could WRITE the envelope. That made the
 //! Rust side unable to emit a production image however complete its body
-//! writer was: a `.vfs.zst` is not an SFFS body, it is this container holding
+//! writer was: a `.vfs.zst` is not an KIFS body, it is this container holding
 //! one. Lane Y filed it as gap 7.
 //!
 //! # Layout
@@ -52,7 +52,7 @@
 //!
 //! [`header`] and [`trailer`] are separate because the body is streamed. The
 //! writer never materializes file content (`lamp.vfs` is 249 MiB), so a caller
-//! emits the header, streams the body through `SffsImage::read_at`, then
+//! emits the header, streams the body through `KandeloImage::read_at`, then
 //! emits the trailer. [`wrap`] is the convenience for callers small enough to
 //! hold the whole image, and is what the tests use.
 

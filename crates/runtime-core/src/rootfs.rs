@@ -127,7 +127,7 @@ enum InodeKind {
 ///
 /// The `/` image is the kernel's own artifact: since the boot cutover the
 /// kernel mounts it and walks it ([`load_image`]), so for an ordinary file in
-/// that image the kernel can also *read* it, through the same SFFS cursor, and
+/// that image the kernel can also *read* it, through the same KIFS cursor, and
 /// needs no host byte store at all. That is the whole point of `Image`: a base
 /// file's bytes stop being something the host resolves by path on the kernel's
 /// behalf and become something the kernel addresses in the artifact it already
@@ -139,8 +139,8 @@ enum InodeKind {
 /// [`load_manifest`], where the host walked a filesystem the kernel never saw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaseSource {
-    /// The bytes are in the `/` image, at SFFS inode `blob_id`. Served by the
-    /// kernel's own SFFS reader; no host byte-store call.
+    /// The bytes are in the `/` image, at KIFS inode `blob_id`. Served by the
+    /// kernel's own KIFS reader; no host byte-store call.
     Image,
     /// The bytes are in the host's byte store, addressed by `blob_id`.
     Host,
@@ -355,7 +355,7 @@ struct RootfsState {
     /// are the builder's statements about its own artifact — but the section
     /// has to be in the container, and the container is the kernel's to write.
     image_metadata: Option<Vec<u8>>,
-    /// Where the `/` VFS image's SFFS filesystem lives inside the container,
+    /// Where the `/` VFS image's KIFS filesystem lives inside the container,
     /// and the superblock geometry [`load_image`] already validated. `None`
     /// until an image is loaded, and cleared by `reset()` with the rest of the
     /// store, so a failed load never leaves a geometry pointing at a tree that
@@ -366,7 +366,7 @@ struct RootfsState {
     image: Option<ImageGeometry>,
 }
 
-/// The `/` image's container-relative SFFS span plus its validated superblock
+/// The `/` image's container-relative KIFS span plus its validated superblock
 /// geometry. Enough to re-address the image's filesystem on any later read
 /// without re-parsing the container header or the superblock.
 #[derive(Debug, Clone, Copy)]
@@ -1244,7 +1244,7 @@ pub fn deferred_source(
 }
 
 /// Insert a base regular file whose bytes are served by the kernel from the `/`
-/// image itself, at SFFS inode `ino`. The image-authoritative counterpart to
+/// image itself, at KIFS inode `ino`. The image-authoritative counterpart to
 /// [`insert_base_file`]: same node, no host byte store behind it.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_image_file(
@@ -1778,7 +1778,7 @@ impl<S: crate::kandelo_image_fs::BlockSource> crate::kandelo_image_fs::BlockSour
     }
 }
 
-/// Read from SFFS inode `ino` of the loaded `/` image, through the same reader
+/// Read from KIFS inode `ino` of the loaded `/` image, through the same reader
 /// [`load_image`] walked the tree with.
 ///
 /// This is what `BaseSource::Image` means at the byte level. The host's whole
@@ -1815,7 +1815,7 @@ where
     filesystem.read_at(ino, offset, dst)
 }
 
-/// The SFFS inode number behind a `BaseSource::Image` node. `blob_id` is that
+/// The KIFS inode number behind a `BaseSource::Image` node. `blob_id` is that
 /// inode number by construction ([`insert_image_file`] passes one value for
 /// both), so a value that does not fit `u32` is a corrupt store rather than a
 /// large image.
@@ -1843,7 +1843,7 @@ const MAX_IMAGE_DIRS: usize = 1_000_000;
 ///
 /// This is the image-authoritative counterpart to [`load_manifest`]: instead of
 /// consuming a tree the host walked and re-encoded (RTFS), the kernel mounts the
-/// image's SFFS filesystem, walks it, and applies the image's own kernel-facing
+/// image's KIFS filesystem, walks it, and applies the image's own kernel-facing
 /// lazy-linkage section (`KLZY`, [`crate::klzy`]) to learn which inodes are
 /// deferred. The host stops resolving names entirely; it becomes a positioned
 /// byte window over one container it already holds.
@@ -2308,7 +2308,7 @@ fn demote_unverifiable_setid() {
 }
 
 /// [`set_base_times`] for a source that reports one millisecond timestamp, which
-/// is what an SFFS inode carries. Split the same way `emitRootfsManifest` splits
+/// is what an KIFS inode carries. Split the same way `emitRootfsManifest` splits
 /// it host-side, so the two loaders agree to the nanosecond.
 fn set_base_times_from_ms(path: &[u8], mtime_ms: u64) {
     let sec = mtime_ms / 1000;
@@ -3907,7 +3907,7 @@ pub fn export_tree_read(offset: i64, out: &mut [u8]) -> Result<usize, Errno> {
 }
 
 // ---------------------------------------------------------------------------
-// Image export (W-3): emit a real SFFS `/` image from the authoritative overlay
+// Image export (W-3): emit a real KIFS `/` image from the authoritative overlay
 // tree, streamed.
 //
 // WHAT THIS REPLACES, AND WHAT IT DOES NOT
@@ -3930,14 +3930,14 @@ pub fn export_tree_read(offset: i64, out: &mut [u8]) -> Result<usize, Errno> {
 // image's STRUCTURE — superblock, bitmaps, inode table, directory data,
 // indirect blocks — and records each file's content as a reference. Bytes are
 // pulled per chunk as the cursor reaches them: an image-backed file streams out
-// of the `/` image the kernel already has mounted, through the same SFFS reader
+// of the `/` image the kernel already has mounted, through the same KIFS reader
 // `load_image` walked it with, and is never resident.
 // ---------------------------------------------------------------------------
 
 /// Where one emitted file's bytes come from. An entry's index in
 /// [`ExportPlan::contents`] is the `id` handed to the writer.
 enum ImageContent {
-    /// Bytes in the loaded `/` image at SFFS inode N. Streamed.
+    /// Bytes in the loaded `/` image at KIFS inode N. Streamed.
     Image(u32),
     /// Bytes the overlay owns, at arena index N. Already resident.
     Overlay(u32),
@@ -3945,7 +3945,7 @@ enum ImageContent {
 
 /// A built image: its structure, plus how to resolve each content reference.
 pub struct ExportPlan {
-    image: crate::kandelo_image_write::SffsImage,
+    image: crate::kandelo_image_write::KandeloImage,
     contents: Vec<ImageContent>,
     /// Sockets and FIFOs have no representation in a `/` image. The base-image
     /// builder skips them too, so they are counted and reported rather than
@@ -4004,7 +4004,7 @@ where
 /// One directory entry still to emit.
 struct PendingExport {
     overlay: u32,
-    parent_sffs: u32,
+    parent_out: u32,
     name: Vec<u8>,
 }
 
@@ -4091,7 +4091,7 @@ fn blocks_for_file(size: u64) -> u64 {
 /// deterministic for a given tree, which is what lets it be compared at all.
 fn push_export_children(
     overlay_dir: u32,
-    parent_sffs: u32,
+    parent_out: u32,
     stack: &mut Vec<PendingExport>,
 ) -> Result<(), Errno> {
     ROOTFS.with(|state| {
@@ -4102,7 +4102,7 @@ fn push_export_children(
         for (name, &child) in entries.iter().rev() {
             stack.push(PendingExport {
                 overlay: child,
-                parent_sffs,
+                parent_out,
                 name: name.clone(),
             });
         }
@@ -4120,7 +4120,7 @@ fn push_export_children(
 fn apply_export_metadata(
     writer: &mut crate::kandelo_image_write::KandeloImageWriter,
     overlay: u32,
-    sffs_ino: u32,
+    out_ino: u32,
 ) -> Result<(), Errno> {
     let (uid, gid, mode, is_symlink, atime, mtime, ctime) = ROOTFS.with(|state| {
         let inode = state.get(overlay).ok_or(Errno::EIO)?;
@@ -4135,20 +4135,20 @@ fn apply_export_metadata(
             ms(inode.ctime_sec, inode.ctime_nsec),
         ))
     })?;
-    writer.set_owner(sffs_ino, uid, gid)?;
+    writer.set_owner(out_ino, uid, gid)?;
     // A symlink's permission bits are not meaningful and the writer fixes them
     // at 0777, matching the vendor; overwriting them would diverge.
     if !is_symlink {
-        writer.set_mode(sffs_ino, mode)?;
+        writer.set_mode(out_ino, mode)?;
     }
     match ROOTFS.with(|state| state.export_timestamp_ms) {
-        Some(fixed) => writer.set_times(sffs_ino, fixed, fixed, fixed),
-        None => writer.set_times(sffs_ino, atime, mtime, ctime),
+        Some(fixed) => writer.set_times(out_ino, fixed, fixed, fixed),
+        None => writer.set_times(out_ino, atime, mtime, ctime),
     }
     Ok(())
 }
 
-/// Walk the overlay and build a complete SFFS image for it.
+/// Walk the overlay and build a complete KIFS image for it.
 ///
 /// The walk uses an explicit stack, not recursion, for the same reason
 /// [`load_image`]'s does: tree depth is untrusted input in a browser and the
@@ -4257,7 +4257,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
 
     let mut contents: Vec<ImageContent> = Vec::new();
     let mut skipped_special = 0u32;
-    // Overlay arena index -> the SFFS inode it became, so the second and later
+    // Overlay arena index -> the KIFS inode it became, so the second and later
     // names for a hard-linked inode become a `link` rather than a second copy.
     let mut emitted: BTreeMap<u32, u32> = BTreeMap::new();
     // Archives already declared to the writer, so one is declared once however
@@ -4266,12 +4266,12 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         alloc::collections::BTreeSet::new();
 
     let root_idx = ROOTFS.with(|state| state.root).ok_or(Errno::EIO)?;
-    let root_sffs = writer.root();
-    apply_export_metadata(&mut writer, root_idx, root_sffs)?;
-    emitted.insert(root_idx, root_sffs);
+    let root_out = writer.root();
+    apply_export_metadata(&mut writer, root_idx, root_out)?;
+    emitted.insert(root_idx, root_out);
 
     let mut stack: Vec<PendingExport> = Vec::new();
-    push_export_children(root_idx, root_sffs, &mut stack)?;
+    push_export_children(root_idx, root_out, &mut stack)?;
 
     // Pass two: build. Each step reads the store briefly and releases it,
     // because the writer must never be driven while the store is borrowed — its
@@ -4334,22 +4334,22 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
 
         if let Some(existing) = already {
             // A second name for an inode already emitted: one hard link.
-            writer.link(item.parent_sffs, &item.name, existing)?;
+            writer.link(item.parent_out, &item.name, existing)?;
             continue;
         }
 
-        let sffs_ino = match node {
+        let out_ino = match node {
             ExportNode::Special => {
                 skipped_special += 1;
                 continue;
             }
             ExportNode::Dir => {
-                let ino = writer.mkdir(item.parent_sffs, &item.name, mode)?;
+                let ino = writer.mkdir(item.parent_out, &item.name, mode)?;
                 push_export_children(item.overlay, ino, &mut stack)?;
                 ino
             }
             ExportNode::Symlink(target) => {
-                writer.symlink(item.parent_sffs, &item.name, &target)?
+                writer.symlink(item.parent_out, &item.name, &target)?
             }
             ExportNode::LazyMember {
                 archive_id,
@@ -4390,7 +4390,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 // it. A file fetched standalone has nothing else, and its
                 // payload is the whole of what says where its bytes are.
                 writer.create_deferred_file(
-                    item.parent_sffs,
+                    item.parent_out,
                     &item.name,
                     mode,
                     size,
@@ -4412,7 +4412,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 // means. The URI is the whole of what says where they are; the
                 // payload is passed through without being read.
                 writer.create_deferred_file(
-                    item.parent_sffs,
+                    item.parent_out,
                     &item.name,
                     mode,
                     size,
@@ -4427,13 +4427,13 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 // `SharedFS.createLazyStub` is `open(O_CREAT)` plus an explicit
                 // forced truncate, which lands on the same bytes as a created
                 // empty file: size 0, data-sequence 1.
-                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b""))?
+                writer.create_file(item.parent_out, &item.name, mode, Content::Bytes(b""))?
             }
             ExportNode::ImageFile(image_inode, size) => {
                 let id = contents.len() as u64;
                 contents.push(ImageContent::Image(image_inode));
                 writer.create_file(
-                    item.parent_sffs,
+                    item.parent_out,
                     &item.name,
                     mode,
                     Content::Deferred { id, len: size },
@@ -4443,7 +4443,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 let id = contents.len() as u64;
                 contents.push(ImageContent::Overlay(overlay_idx));
                 writer.create_file(
-                    item.parent_sffs,
+                    item.parent_out,
                     &item.name,
                     mode,
                     Content::Deferred { id, len: size },
@@ -4451,8 +4451,8 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             }
         };
 
-        emitted.insert(item.overlay, sffs_ino);
-        apply_export_metadata(&mut writer, item.overlay, sffs_ino)?;
+        emitted.insert(item.overlay, out_ino);
+        apply_export_metadata(&mut writer, item.overlay, out_ino)?;
     }
 
     Ok(ExportPlan {
@@ -4817,7 +4817,7 @@ pub fn set_image_metadata(metadata: &[u8]) -> Result<(), Errno> {
 /// The exported image as a whole VFSI **container** — header, body, trailer —
 /// offset-addressable and streamed, exactly like [`export_image_read`].
 ///
-/// This is what a builder saves. `export_image_read` yields the SFFS body
+/// This is what a builder saves. `export_image_read` yields the KIFS body
 /// alone, which is not an image: it has no container header, so nothing can
 /// find the filesystem inside it or the sections beside it.
 ///
@@ -4906,7 +4906,7 @@ pub fn check_export_headroom(
     headroom: &crate::image_policy::Headroom,
 ) -> Result<crate::image_policy::PolicyOutcome, Errno> {
     let plan = build_export_image()?;
-    let source = crate::kandelo_image_write::SffsImageSource {
+    let source = crate::kandelo_image_write::KandeloImageSource {
         image: &plan.image,
         content: &crate::kandelo_image_write::NoContent,
     };
@@ -4948,13 +4948,13 @@ pub fn check_export_headroom(
 /// The growth ceiling the image this tree would export will declare.
 ///
 /// The builders read this out of finished image BYTES today, by parsing the
-/// container header and then the SFFS superblock — format parsing in
+/// container header and then the KIFS superblock — format parsing in
 /// TypeScript, over an artifact the kernel just produced. Asking the producer
 /// avoids both the parse and the copy: a 249 MiB image does not have to cross
 /// a boundary to answer a question about its own header.
 pub fn export_capacity_bytes() -> Result<u64, Errno> {
     let plan = build_export_image()?;
-    let source = crate::kandelo_image_write::SffsImageSource {
+    let source = crate::kandelo_image_write::KandeloImageSource {
         image: &plan.image,
         content: &crate::kandelo_image_write::NoContent,
     };
@@ -7353,7 +7353,7 @@ mod tests {
         release_handle(handle);
     }
 
-    /// 45,000 bytes is past SFFS's ten direct block pointers, so this read
+    /// 45,000 bytes is past KIFS's ten direct block pointers, so this read
     /// exercises the single-indirect path through the same host image window.
     #[test]
     fn image_backed_read_spans_indirect_blocks() {
@@ -7766,7 +7766,7 @@ mod tests {
         .expect("long symlink");
     }
 
-    /// A whole image with a URL-backed deferred file in it: an SFFS body whose
+    /// A whole image with a URL-backed deferred file in it: an KIFS body whose
     /// deferred section names one inode, a `KLZY` section declaring that inode
     /// deferred with no archive, and a real VFSI container around both.
     ///

@@ -303,7 +303,7 @@ export function assertVfsImageCapacity(
   }
   // Ask the producer when there is one, and otherwise ask the MODULE to read
   // the artifact. Neither branch parses a container here: the ceiling lives in
-  // the container header and the SFFS superblock, and reading it in TypeScript
+  // the container header and the KIFS superblock, and reading it in TypeScript
   // would be format knowledge on the wrong side of the boundary this lane
   // exists to draw. Callers that hold only bytes take the second branch.
   const actualMaxByteLength = fs?.exportCapacityBytes

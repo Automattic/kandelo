@@ -198,7 +198,7 @@ pub const MAX_ARCHIVES: u32 = 1 << 16;
 /// One deferred file, as the section describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeferredRecord {
-    /// The SFFS inode whose contents are deferred.
+    /// The KIFS inode whose contents are deferred.
     pub ino: u32,
     /// The file's real length. The inode in the body is a zero-length stub.
     pub size: u64,

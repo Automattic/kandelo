@@ -65,7 +65,7 @@ export interface VfsImageMetadata {
  *
  * Builder recipes — which packages go in the LAMP image, how WordPress is
  * preinstalled — are product configuration and stay in TypeScript. What should
- * NOT stay is their dependence on a particular implementation of the SFFS
+ * NOT stay is their dependence on a particular implementation of the KIFS
  * format. Eighteen of them took `MemoryFileSystem` purely as a parameter type
  * and never constructed one, so the coupling the budget counts was a type
  * import and nothing more.

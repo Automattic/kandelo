@@ -850,7 +850,7 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
         }
     }
     let mut source = image_source;
-    // The whole VFSI CONTAINER, not the bare SFFS body. A body is not an image:
+    // The whole VFSI CONTAINER, not the bare KIFS body. A body is not an image:
     // nothing can find the filesystem inside it or the sections beside it. The
     // builder saving these bytes should be saving something the kernel can load
     // back, and assembling the container host-side would make the host a second
@@ -1213,7 +1213,7 @@ pub unsafe extern "C" fn sm_register_lazy_file(
 /// of FACTS about the image, plus the verdict that needs kernel arithmetic.
 ///
 /// Capacity is reported and not judged here, deliberately. Parsing the ceiling
-/// out of a container header and an SFFS superblock is format knowledge and
+/// out of a container header and an KIFS superblock is format knowledge and
 /// belongs on this side; comparing the result to a number the profile declares
 /// is a comparison, and belongs with whoever holds the profile. Call with
 /// `out_len == 0` for the required size, the convention `sm_read_dir` uses.
@@ -1692,7 +1692,7 @@ mod tests {
         assert!(rc < 0, "a missing directory must be an error, not an empty listing, got {rc}");
     }
 
-    /// What does the export emit -- the raw SFFS body, or the whole VFSI
+    /// What does the export emit -- the raw KIFS body, or the whole VFSI
     /// container?
     ///
     /// It emitted a BODY, and this test pinned that, because the answer decided

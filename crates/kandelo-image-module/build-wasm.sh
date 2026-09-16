@@ -56,7 +56,7 @@ HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 # Naming runtime-core explicitly as well as kandelo-image-module: `cargo_closure_paths`
 # already walks path dependencies, so this is redundant today, and stays
 # correct if the substrate ever stops being a direct dependency.
-SFFS_MODULE_CLOSURE_CRATES="kandelo-image-module,runtime-core"
+IMAGE_MODULE_CLOSURE_CRATES="kandelo-image-module,runtime-core"
 
 # The recipe is part of the key, not just the crate graph. The flags below --
 # opt-level, the target features, the wasm-opt pass -- decide the artifact's
@@ -66,7 +66,7 @@ SFFS_MODULE_CLOSURE_CRATES="kandelo-image-module,runtime-core"
 # looked in only one of the two places the output comes from.
 closure_sha() {
   cargo run -q -p xtask --target "$HOST_TRIPLE" -- workspace-closure-sha \
-    --crates "$SFFS_MODULE_CLOSURE_CRATES" \
+    --crates "$IMAGE_MODULE_CLOSURE_CRATES" \
     --recipe crates/kandelo-image-module/build-wasm.sh
 }
 
@@ -137,7 +137,7 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
   if [[ "$staged_sha" != "$current_sha" ]]; then
     echo "kandelo-image-module: $artifact is stale: it was built for closure key" \
       "$staged_sha, but the current source tree" \
-      "($SFFS_MODULE_CLOSURE_CRATES) resolves to $current_sha. Rebuild with" \
+      "($IMAGE_MODULE_CLOSURE_CRATES) resolves to $current_sha. Rebuild with" \
       "'bash crates/kandelo-image-module/build-wasm.sh'." >&2
     exit 1
   fi

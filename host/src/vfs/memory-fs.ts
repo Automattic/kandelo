@@ -5470,13 +5470,13 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
-   * A LIVE view of the SFFS filesystem bytes this instance owns — the same
+   * A LIVE view of the KIFS filesystem bytes this instance owns — the same
    * bytes a VFS image carries at `VFS_IMAGE_HEADER_SIZE`, and the same bytes
    * `saveImage` copies out of.
    *
    * WHY this is exposed. Since the boot cutover the kernel owns `/`: it mounts
    * the `/` image's filesystem, walks it, and (as of the image-backed byte
-   * route) reads every base file's CONTENT out of it too, through its own SFFS
+   * route) reads every base file's CONTENT out of it too, through its own KIFS
    * reader. The kernel therefore needs the image body for the whole session,
    * not just for the boot walk. Handing it this view instead of a retained copy
    * of the container keeps ONE copy of a 16-256 MiB body in the worker rather

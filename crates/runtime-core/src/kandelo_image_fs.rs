@@ -1,4 +1,4 @@
-//! Read-only parser for the on-disk SFFS ("SharedFileSystem") image and its
+//! Read-only parser for the on-disk KIFS (Kandelo Image File System) image and its
 //! VFSI container. Ported from host/src/vfs/sharedfs-vendor.ts. no_std + alloc.
 //! Consumes DECOMPRESSED bytes (zstd is a host-side transport codec).
 //!
@@ -112,7 +112,7 @@ fn container_errno(error: Errno) -> Errno {
     }
 }
 
-/// Byte span of the inner SFFS filesystem inside a VFSI container.
+/// Byte span of the inner KIFS filesystem inside a VFSI container.
 ///
 /// The container is `magic | version | flags | sabLen | sab[sabLen] | ...`;
 /// everything after the SAB is host-side metadata (see [`kernel_lazy_span`]).
@@ -332,7 +332,7 @@ pub(crate) const INLINE_SYMLINK_SIZE: u64 = 40;
 /// one per 4 KiB chunk.
 type RawInode = [u8; INODE_SIZE];
 
-pub struct SffsStat {
+pub struct KandeloImageStat {
     pub ino: u32,
     pub mode: u32,
     pub nlink: u32,
@@ -377,7 +377,7 @@ pub struct KandeloImageGeometry {
 }
 
 pub(crate) const SB_TOTAL_INODES: u64 = 16;
-/// `f_type` for a mounted SFFS image: "SFFS" in ASCII.
+/// `f_type` for a mounted KIFS image: "KIFS" in ASCII.
 ///
 /// The value is the one `host/src/statfs.ts` already reports, so a program
 /// cannot tell from `statfs` whether the TypeScript or the Rust reader
@@ -506,7 +506,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// it from the artifact's own superblock is the only answer that cannot
     /// drift from what was written.
     ///
-    /// `f_bavail` equals `f_bfree`: SFFS reserves no blocks for a privileged
+    /// `f_bavail` equals `f_bfree`: KIFS reserves no blocks for a privileged
     /// user, so there is no second number to report and inventing a reserve
     /// here would understate the headroom a builder actually has.
     pub fn statfs(&self) -> Result<wasm_posix_shared::WasmStatfs, Errno> {
@@ -535,11 +535,11 @@ impl<S: BlockSource> KandeloImageFs<S> {
         })
     }
 
-    pub fn stat_ino(&self, ino: u32) -> Result<SffsStat, Errno> {
+    pub fn stat_ino(&self, ino: u32) -> Result<KandeloImageStat, Errno> {
         let raw = self.read_inode(ino)?;
         let nlink = r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)?;
         if nlink == 0 { return Err(Errno::ENOENT); } // free/orphaned slot
-        Ok(SffsStat {
+        Ok(KandeloImageStat {
             ino,
             mode: r32(&raw, INO_MODE).ok_or(Errno::EIO)?,
             nlink,
@@ -632,7 +632,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// records never straddle a block boundary). Skips free slots (`ino==0`)
     /// but still advances by `rec_len`; includes `.`/`..` (callers filter).
     /// On a corrupt record, stops scanning the rest of that block.
-    pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<SffsDirent>, Errno> {
+    pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<KandeloImageDirent>, Errno> {
         let st = self.stat_ino(dir_ino)?;
         if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }
         let size = st.size;
@@ -654,7 +654,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
                     break; // corrupt: stop scanning this block
                 }
                 if ino != 0 {
-                    out.push(SffsDirent {
+                    out.push(KandeloImageDirent {
                         ino,
                         name: block[off + DIRENT_HEADER..off + DIRENT_HEADER + name_len].to_vec(),
                     });
@@ -781,7 +781,7 @@ const MAX_SYMLINK_HOPS: u32 = 8;
 
 pub(crate) const DIRENT_HEADER: usize = 8;
 
-pub struct SffsDirent {
+pub struct KandeloImageDirent {
     pub ino: u32,
     pub name: Vec<u8>,
 }
@@ -915,10 +915,10 @@ mod tests {
         let fs = KandeloImageFs::mount(image).expect("mount");
         let st = fs.statfs().expect("statfs");
 
-        assert_eq!(st.f_type, KANDELO_IMAGE_SUPER_MAGIC, "reports itself as SFFS");
+        assert_eq!(st.f_type, KANDELO_IMAGE_SUPER_MAGIC, "reports itself as KIFS");
         assert_eq!(st.f_bsize, BLOCK_SIZE as u32);
-        assert_eq!(st.f_frsize, st.f_bsize, "SFFS has no fragment size distinct from its block size");
-        assert_eq!(st.f_bavail, st.f_bfree, "SFFS reserves no blocks, so available == free");
+        assert_eq!(st.f_frsize, st.f_bsize, "KIFS has no fragment size distinct from its block size");
+        assert_eq!(st.f_bavail, st.f_bfree, "KIFS reserves no blocks, so available == free");
 
         assert!(st.f_blocks > 0 && st.f_files > 0, "a mounted image has blocks and inodes");
         assert!(st.f_bfree <= st.f_blocks, "free blocks cannot exceed the total");
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn mount_rejects_oversized_inode_table() {
-        // SFFS superblock TOTAL_INODES is at SFFS-offset 16; the VFSI header
+        // The KIFS superblock TOTAL_INODES is at filesystem-offset 16; the VFSI header
         // adds 16 bytes, so the field lives at absolute `.vfs` offset 32.
         let mut img = TINY_VFS.to_vec();
         img[32..36].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
@@ -1114,7 +1114,7 @@ mod tests {
         let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
         // The errno is the contract, not merely that it failed: a reader
         // returning EIO here would look identical to `is_err()`.
-        // `.err()` rather than `unwrap_err()`: the Ok type is `SffsStat`,
+        // `.err()` rather than `unwrap_err()`: the Ok type is `KandeloImageStat`,
         // which is not `Debug`, and a production struct should not grow a
         // derive to satisfy a test.
         assert_eq!(fs.stat_ino(u32::MAX).err(), Some(Errno::ENOENT));
