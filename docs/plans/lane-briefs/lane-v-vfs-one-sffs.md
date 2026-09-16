@@ -94,10 +94,14 @@ then build what that demands. Slice by dependency. Never one big rewrite.
 - `./run.sh setup` does not rebuild musl once a sysroot exists. After editing
   `libc/musl-overlay/`, run `scripts/build-musl.sh` — the compiler reads the
   SYSROOT copy, not the overlay.
-- Known-broken independent of you: `packages/registry/bash/package.toml`
-  points at `ftpmirror.gnu.org`, which currently load-balances onto a mirror
-  returning 404, so `build-rootfs.sh` fails. The canonical `ftp.gnu.org` copy
-  is fine. This is with the maintainer.
+- The build is GREEN as of 2026-09-15: `./run.sh setup` reaches real exit
+  code 0 and `"outcome":"succeeded"`, and the browser suite runs to
+  completion at 164 passed / 14 failed — all fourteen on the documented
+  pre-existing list. If you see a build failure, it is probably yours.
+  Three blockers were cleared today and each hid the next: B40 (a GNU
+  redirector serving 404s, fixed by a mirror list), B43 (the Xcode
+  licence), and B44 (Xcode 27's `libSystem.tbd` being unreadable by the
+  pinned LLVM, fixed by building SpiderMonkey's host tools inside Nix).
 
 ## When you have something to merge
 

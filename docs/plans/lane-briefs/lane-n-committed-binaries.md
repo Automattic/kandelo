@@ -79,9 +79,14 @@ the fate of fixtures guarding the code it deletes.
 - Export `CARGO_NET_OFFLINE=true` for `./run.sh setup`.
 - **Gate on exit codes, never on piped output.** `./run.sh setup | tail` hands
   you `tail`'s status and will report success for a failed build.
-- Known-broken independent of you: `packages/registry/bash/package.toml` points
-  at `ftpmirror.gnu.org`, currently 404 via its chosen mirror, so
-  `build-rootfs.sh` fails. With the maintainer.
+- The build is GREEN as of 2026-09-15: `./run.sh setup` reaches real exit
+  code 0 and `"outcome":"succeeded"`, and the browser suite runs to
+  completion at 164 passed / 14 failed — all fourteen on the documented
+  pre-existing list. If you see a build failure, it is probably yours.
+  Three blockers were cleared today and each hid the next: B40 (a GNU
+  redirector serving 404s, fixed by a mirror list), B43 (the Xcode
+  licence), and B44 (Xcode 27's `libSystem.tbd` being unreadable by the
+  pinned LLVM, fixed by building SpiderMonkey's host tools inside Nix).
 
 ## When you have something to merge
 
