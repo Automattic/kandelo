@@ -15,13 +15,13 @@ import {
   hasConfiguredDemoLogin,
 } from "../../images/vfs/lib/demo-login";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-function writeText(fs: MemoryFileSystem, path: string, content: string): void {
+function writeText(fs: KandeloImageFs, path: string, content: string): void {
   const bytes = encoder.encode(content);
   const fd = fs.open(path, 0o1101, 0o644);
   try {
@@ -31,7 +31,7 @@ function writeText(fs: MemoryFileSystem, path: string, content: string): void {
   }
 }
 
-function readText(fs: MemoryFileSystem, path: string): string {
+function readText(fs: KandeloImageFs, path: string): string {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -45,7 +45,7 @@ function readText(fs: MemoryFileSystem, path: string): string {
 
 describe("canonical demo login image policy", () => {
   it("derives the maker account, wheel policy, and autologin message from one credential source", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
     ensureDirRecursive(fs, "/etc");
     ensureDirRecursive(fs, "/usr/bin");
     fs.createFileWithOwner(
@@ -158,7 +158,7 @@ describe("canonical demo login image policy", () => {
   });
 
   it("rejects ambiguous account, password, and wheel records", () => {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
     ensureDirRecursive(fs, "/etc");
     ensureDirRecursive(fs, "/usr/bin");
     fs.createFileWithOwner(
@@ -284,14 +284,23 @@ describe("canonical demo login image policy", () => {
     // eagerness union could be deleted and this file stayed green -- found by
     // perturbation, not by reading.
     const stage = (deferLogin: boolean) => {
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+      const fs = KandeloImageFs.create();
       ensureDirRecursive(fs, "/etc");
       ensureDirRecursive(fs, "/usr/bin");
       if (deferLogin) {
         // A url-backed single file: the case `isPathDeferred` alone does not
         // see, which is why the predicate asks both questions.
+        //
+        // WITH a digest, because the producer refuses to register set-user-ID
+        // deferred bytes it cannot vouch for, and that refusal is a different
+        // guard with its own test. Declaring one puts this fixture on the
+        // legal side of it, so what is left under test here is only the
+        // predicate: bytes that must be FETCHED are not bytes in the image,
+        // digest or no digest, and a login that depends on a fetch is not a
+        // configured login.
         fs.registerLazyFile(
           DEMO_LOGIN_PROGRAM_PATH, "https://example.invalid/login", 1, 0o4755,
+          "0".repeat(64),
         );
       } else {
         fs.createFileWithOwner(

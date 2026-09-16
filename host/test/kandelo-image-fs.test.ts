@@ -2,7 +2,7 @@ import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
-import { writeVfsBinary } from "../src/vfs/image-helpers";
+import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { OPEN_FLAGS } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
 
@@ -1038,5 +1038,81 @@ describe("set-ID on deferred bytes is refused by the producer", () => {
         archiveUri: "archives/tools.zip",
       })
     ).toThrow(/no digest was declared/);
+  });
+});
+
+describe("open's mode is spent on creation only", () => {
+  // POSIX gives `open` a mode so it can CREATE a file. An existing file keeps
+  // the permissions it has, through a truncation and through every write.
+  //
+  // The bridge did not, because the module's `sm_write_file` is the host's
+  // "replace this whole file" verb and SETS the mode it is handed, so every
+  // rewrite carried the opening caller's default. `writeVfsBinary` defaults to
+  // `0o755` and `writeVfsText` to `0o644`, which meant rewriting `/etc/shadow`
+  // through the second helper relabelled a 0640 file world-readable. Nothing
+  // reported it: the file was correct, its permissions were not, and the only
+  // symptom downstream was a configuration predicate answering "not
+  // configured" for an image that was.
+  //
+  // `MemoryFileSystem` has always behaved this way -- its vendor names the
+  // parameter `createMode` and writes it into the inode only on the creation
+  // branch -- so this is the bridge being brought to the incumbent, not a new
+  // rule for both.
+  it("keeps an existing file's mode through a truncating rewrite", () => {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/shadow", 0o640, 0, 0, new Uint8Array([1]));
+
+    writeVfsBinary(fs, "/etc/shadow", new TextEncoder().encode("rewritten"), 0o644);
+
+    expect(fs.stat("/etc/shadow").mode & 0o7777).toBe(0o640);
+  });
+
+  it("keeps the owner too, so a rewrite is not a chown either", () => {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/shadow", 0o640, 0, 42, new Uint8Array([1]));
+
+    writeVfsBinary(fs, "/etc/shadow", new TextEncoder().encode("rewritten"), 0o644);
+
+    expect(fs.stat("/etc/shadow")).toMatchObject({ uid: 0, gid: 42 });
+  });
+
+  it("still spends the mode when the file is being created", () => {
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/usr/bin");
+    writeVfsBinary(fs, "/usr/bin/tool", new Uint8Array([1]), 0o4755);
+    expect(fs.stat("/usr/bin/tool").mode & 0o7777).toBe(0o4755);
+  });
+
+  it("a chmod between opening and writing is what the write respects", () => {
+    // The handle remembers the mode it opened with; the FILE is the authority.
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/sudoers", 0o644, 0, 0, new Uint8Array([1]));
+
+    const fd = fs.open("/etc/sudoers", O_WRONLY_CREAT_TRUNC, 0o644);
+    try {
+      fs.chmod("/etc/sudoers", 0o440);
+      const bytes = new TextEncoder().encode("%wheel ALL=(ALL:ALL) ALL\n");
+      fs.write(fd, bytes, 0, bytes.length);
+    } finally {
+      fs.close(fd);
+    }
+
+    expect(fs.stat("/etc/sudoers").mode & 0o7777).toBe(0o440);
+  });
+
+  it("resolves a symlink before deciding the mode, because the write follows one", () => {
+    // `lstat` would report the LINK's mode and stamp it onto the target. The
+    // bytes land in the target, so the mode question is about the target too.
+    const fs = KandeloImageFs.create();
+    ensureDirRecursive(fs, "/etc");
+    fs.createFileWithOwner("/etc/shadow", 0o640, 0, 0, new Uint8Array([1]));
+    fs.symlink("/etc/shadow", "/etc/shadow-link");
+
+    writeVfsBinary(fs, "/etc/shadow-link", new TextEncoder().encode("x"), 0o666);
+
+    expect(fs.stat("/etc/shadow").mode & 0o7777).toBe(0o640);
   });
 });

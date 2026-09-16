@@ -483,16 +483,30 @@ export class KandeloImageFs {
   open(path: string, flags = 0, mode = 0o644): number {
     const create = (flags & OPEN_FLAGS.O_CREAT) !== 0;
     const truncate = (flags & OPEN_FLAGS.O_TRUNC) !== 0;
-    let exists = true;
+    // Followed, not `lstat`'d, because the write below follows: the mode that
+    // matters is the one on the file the name RESOLVES to, and a dangling
+    // symlink is a path that does not exist yet, which is also what POSIX
+    // `open` without `O_CREAT` reports for one.
+    let existing: number | null = null;
     try {
-      this.lstat(path);
+      existing = this.stat(path).mode & 0o7777;
     } catch (error) {
       if (!create) throw error; // ENOENT, before a handle is issued.
-      exists = false;
     }
-    if (!exists || truncate) this.writeFile(path, new Uint8Array(0), mode);
+    // POSIX spends `mode` only on creation: an existing file keeps the
+    // permissions it has, through a truncation and through every write. The
+    // module's `sm_write_file` is the host's "replace this whole file" verb
+    // and SETS the mode it is given, so the effective mode has to be chosen
+    // here or a rewrite silently relabels the file. It did: rewriting
+    // `/etc/shadow` through a helper that opens with `0o644` turned a 0640
+    // shadow file into a world-readable one, and the only symptom was a
+    // configuration predicate quietly answering "not configured".
+    const effective = existing ?? mode;
+    if (existing === null || truncate) {
+      this.writeFile(path, new Uint8Array(0), effective);
+    }
     const handle = this.nextHandle++;
-    this.openFiles.set(handle, { path, offset: 0, mode });
+    this.openFiles.set(handle, { path, offset: 0, mode: effective });
     return handle;
   }
 
@@ -548,7 +562,10 @@ export class KandeloImageFs {
     const next = new Uint8Array(end);
     next.set(existing, 0);
     next.set(incoming, at);
-    this.writeFile(open.path, next, open.mode);
+    // The file's mode NOW, not the one the handle was opened with: a write is
+    // never a chmod, and a caller that chmod'd between opening and writing
+    // means it.
+    this.writeFile(open.path, next, this.stat(open.path).mode & 0o7777);
 
     if (position === null) open.offset = at + incoming.byteLength;
     return incoming.byteLength;
