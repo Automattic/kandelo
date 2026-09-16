@@ -77,6 +77,9 @@ export interface ForkBorrowedReplayWorkspace {
 
 export type ForkModuleStat = (typeof FORK_MODULE_STATS)[number];
 
+/** `ENOMEM`: the module could not get memory, which a fork survives. */
+const FORK_MODULE_ENOMEM = 12;
+
 /**
  * The module's resume-catalog capacity, in ordinals.
  *
@@ -505,13 +508,39 @@ export class ForkModuleContinuationBackend {
     arenaRoot: number,
     sides: readonly ForkSideActivation[],
   ): number {
-    return this.call(
-      "fm_parent_begin_capture",
+    // AN ALLOCATION FAILURE HERE IS A FORK THAT ABORTS, NOT A WORKER THAT
+    // DIES. Opening a capture channel-mmaps the arena's first chunk, and under
+    // memory exhaustion that fails with ENOMEM -- which is the case
+    // `p_11_fork_continuation_enomem` exists to prove survivable: `fork()`
+    // returns `-ENOMEM`, no child is created, and the parent runs on.
+    //
+    // It was not survivable, because this threw a plain Error. The fork
+    // handler's catch distinguishes `ContinuationAllocationError` from every
+    // other failure precisely so an allocation failure can become an errno,
+    // and anything else can still be fatal; `sealCaptureAndSerialize` has
+    // thrown the typed error for the same reason since it was written. Nothing
+    // has unwound yet at this point, so there are no frames to replay and no
+    // capture to seal -- the errno is the whole of the abort.
+    const root = (this.exports.fm_parent_begin_capture as (...a: number[]) => number)(
       channelBase,
       arenaRoot,
       this.stageSides(sides),
       sides.length,
     );
+    const errno = this.lastErrno();
+    if (errno === FORK_MODULE_ENOMEM) {
+      throw new ContinuationAllocationError(
+        errno,
+        0,
+        `${this.label}: fm_parent_begin_capture could not allocate (errno ${errno})`,
+      );
+    }
+    if (errno !== 0) {
+      throw new Error(
+        `${this.label}: fm_parent_begin_capture failed with errno ${errno}`,
+      );
+    }
+    return root;
   }
 
   /**

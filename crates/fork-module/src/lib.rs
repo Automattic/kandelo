@@ -4384,6 +4384,15 @@ mod wasm {
         }
         finish_replay_impl()?;
         if let Some(st) = state().as_mut() {
+            // The ABORT finish releases the metadata arena too, for the reason
+            // `abort_impl` does: an aborted fork has no child to read it and
+            // no host call left that will. The ordinary finish deliberately
+            // does not -- a completed fork's arena is still read afterwards
+            // (a vfork borrower reads its owner's), and freeing it there would
+            // be pulling a live mapping out from under a reader.
+            if !st.module_state.is_adopted() {
+                st.module_state_chunks.release_all();
+            }
             st.in_abort = false;
         }
         Ok(())
@@ -4395,6 +4404,20 @@ mod wasm {
     fn abort_impl() -> Result<(), Errno> {
         if let Some(st) = state().as_mut() {
             release_fork_chunks(st);
+            // AND THE METADATA ARENA, which `release_fork_chunks` does not
+            // touch because a successful fork's arena outlives the replay that
+            // reads it. An ABORTED fork has no such reader: no child was
+            // created, and the parent is about to carry on with the arena's
+            // pages still mapped -- which `p_11_fork_continuation_enomem`
+            // catches by mmap'ing the three pages an aborted transaction
+            // touched and finding one of them unavailable.
+            //
+            // ONLY when this module mapped them. An adopted arena belongs to
+            // the process that did, and freeing another's mapping is the
+            // ownership error the whole chunk-list design exists to prevent.
+            if !st.module_state.is_adopted() {
+                st.module_state_chunks.release_all();
+            }
             st.in_abort = false;
         }
         Ok(())
@@ -6972,6 +6995,29 @@ mod wasm {
                 root as usize
             }
             Err(errno) => {
+                // RELEASE WHAT THE FAILED BEGIN ALREADY MAPPED. Opening a
+                // capture channel-mmaps the arena root and each activation's
+                // first frame chunk, so a failure part-way through leaves live
+                // mappings that nothing else will ever reach: the phase never
+                // advanced, so the host's abort path does not run, and the
+                // guest never unwinds to one.
+                //
+                // Leaking them is not abstract -- it is the SECOND fork after
+                // an ENOMEM failing with ENOMEM too, which is exactly what
+                // `p_11_fork_continuation_enomem` calls a leaked transaction.
+                //
+                // NOTHING GATES THIS PARTICULAR RELEASE TODAY. Removing it
+                // leaves P-11 passing, because P-11's allocation failures land
+                // in the frame reserve DURING the unwind, which the abort
+                // finish cleans up -- it never fails the begin itself. The
+                // release is here on the same reasoning as that one, not on a
+                // failing test, and the fixture that would gate it is one whose
+                // memory runs out at the first chunk of a capture.
+                // This is the same reclaim `fm_abort` performs, and the same
+                // principle `begin_capture_impl` states about the arena: the
+                // module frees exactly what the module mapped.
+                let _ = abort_impl();
+                enter_phase(PHASE_IDLE);
                 set_err(errno);
                 0
             }
