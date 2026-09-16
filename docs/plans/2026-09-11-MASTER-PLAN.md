@@ -673,6 +673,47 @@ writer. The relay re-applies onto whichever answer comes back.
 hunks — two of them textual accidents where git spliced the relay's rewrite of
 `host_fetch_deferred` into the `host_image_read` block that had replaced it.)*
 
+## B50 — after the lane F merge, no process that forks can start
+
+OPEN and **urgent**, found 2026-09-16 validating the lane F merge `3ea310260`.
+
+    fork-module: fork-module instantiation failed: LinkError:
+    WebAssembly.Instance(): table import 1 is smaller than initial 2, got 0
+      at instantiateForkModule (host/src/fork-module-instance.ts:600)
+      at centralizedWorkerMain (host/src/worker-main.ts:3643)
+
+**The module is internally inconsistent.** `wasm-objdump` on the freshly built
+`host/wasm/fork_module32.wasm` shows its own import requiring
+`env.__indirect_function_table` with **initial=2**, while the `dylink` section
+the host parses for the same value (`fork-module-instance.ts:166`,
+`tableSize: leb()`) yields **0**. The host then creates the table at
+`initial: info.tableSize` — zero — and instantiation is refused.
+
+**Not staleness.** Both the fork module and the kernel were rebuilt in the same
+`./run.sh setup` run that failed; the run reports `SUCCEEDED kernel/wasm32` and
+the module artifact is newer than the merge.
+
+**Blast radius: everything that forks.** `coreutils-docs` fails because it
+boots a kernel, which blocks `shell`, which blocks **all six browser
+products**. `./run.sh setup` does not complete, so the branch cannot currently
+be validated end to end.
+
+**The existing guards do not catch it.** `host/test/fork-module-instance.test.ts`
+passes 6/6 against the same tree, because it exercises a fixture rather than
+the shipped `host/wasm/fork_module32.wasm`. A test that instantiates the real
+artifact would have failed before the merge landed — worth adding whichever way
+the defect is resolved.
+
+**Not yet established:** whether lane F's own worktree reproduces this. Its
+closure reports its suite red for six package tests from an unrelated
+pkg-config path defect, so a real fork may not have been exercised after its
+final commits. That is the first thing to check, because it decides whether
+this is lane F's defect or something only the merge produces.
+
+**This is a maintainer decision:** have lane F fix the dylink/table
+disagreement, or revert `3ea310260` until it is fixed. The merge is already
+pushed to `brandonpayton/epoll-kernel-route`.
+
 ## B49 — the host's lazy table is empty for an SDEF image — CLOSED 2026-09-15
 
 **CLOSED by the URI relay (B42), as a side effect rather than as a fix.** The
