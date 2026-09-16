@@ -1037,11 +1037,38 @@ are in `docs/surface-budget.json`; the argument for each is in
 | `forkAtticImports` | **0** | 0 | **met** |
 | `forkGuestObjectImportsUnserved` | 3 | 0 | see below |
 | `forkModuleEntriesWithoutProductionCaller` | 2 | 0 | both are pending capability, not dead code |
-| `forkModuleHostEntries` | 58 | 5 | coarsening, not deletion — a design stride |
+| `forkModuleHostEntries` | 59 | 5 (see below) | move section-parsing into the module — **deferred to a follow-up** |
 | `forkTypeScript` | 887 | 484 | module-facing half; mostly the backend wrapper |
 | `forkPlatformTypeScript` | 1629 | 500 | the resume table and the child-import plan dominate |
 | `forkRestoredHostFloor` | 3949 | 3894 | process lifecycle and transport, largely out of scope |
 | `workerMainTypeScript` | 5501 | 2400 | the largest single item left |
+
+**`forkModuleHostEntries` and the fold that is NOT worth doing.** Collapsing
+the thirteen `fm_set_*` seeders into one `fm_seed(kind, a0..a4)` takes the
+count to 47 and moves no knowledge: a host still needs all thirteen facts,
+every argument slot's meaning per selector, and the order. It also loses the
+argument types. That was built and reverted on the maintainer's steer --
+"I don't want to dilute or mix abstractions. I just want to share as much of
+the code that calls these operations as possible, so any kind of host can take
+advantage of the flow."
+
+The fold that IS worth doing: five or six of the thirteen are "parse a custom
+section of the guest module", and the module already links the crate that
+parses every one of those formats. One coarse
+`fm_admit_activation(activation, bytes_ptr, len)` lets the module extract the
+format, resume catalog, GC codec, exception codec and template id itself, so
+the host stops knowing those sections exist -- and
+`host/src/fork-guest-sections.ts` (167 code lines), `fork-resume-catalog.ts`
+(117) and the reader half of `fork-continuation.ts` (152) are deleted rather
+than renamed. The remaining seven entries are placement, election and policy:
+genuinely the host's, and they should keep their names and their types.
+
+**So the honest target is not 5.** It is roughly 8, and the budget's `5` should
+be restated -- a target reachable only by diluting is a target that will be met
+that way. Census section 195 argues this. DEFERRED to a follow-up by the
+maintainer: it is a coherent piece with its own validation surface, and
+`crates/host-native` is not built by the host suite, so it needs an explicit
+`cargo check`.
 
 **The three object imports.** `__wpk_fork_module_activation` is genuinely the
 host's: it is per-activation and known only at instantiation, and one module

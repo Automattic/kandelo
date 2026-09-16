@@ -10254,3 +10254,81 @@ funcref table is still the host's: moving it into the module (the injector can
 define and export a funcref table as it does the anyref transit) would take
 `forkGuestObjectImportsUnserved` 3 -> 2. That is a smaller change than this one
 now that the numbering is settled, and it is not done here.
+
+## §195 -- The fold I started was the wrong fold, and the maintainer named why
+
+`forkModuleHostEntries` is 59 against a target of 5, and the obvious move is to
+collapse the thirteen `fm_set_*` seeding entries into one
+`fm_seed(kind, a0..a4)`. I built it. The module compiled, the selectors lived
+in `fork-codec` so all three sides shared one numbering, and the count would
+have gone 59 -> 47.
+
+**The maintainer's steer: "I don't want to dilute or mix abstractions. I just
+want to share as much of the code that calls these operations as possible, so
+any kind of host can take advantage of the flow. The result would be more wasm
+run by the host to coordinate forking with less host-specific
+implementation."**
+
+That is the right test, and the fold fails it. My own doc comment contained the
+admission: *"ORDER STILL MATTERS, exactly as it did before. Collapsing the
+entries did not collapse the sequence."* A host still had to know all thirteen
+facts, what each argument slot meant for each selector, and the order to send
+them in. Thirteen typed entries became one untyped one. The metric moved; the
+knowledge a new host must reimplement did not move at all. It also LOST
+something -- the argument types, which the compiler had been checking.
+
+Reverted before it touched either host.
+
+### What the right fold is
+
+Ask of each of the thirteen: **where does the host get this fact?**
+
+| fact | where the host reads it | can the module read it? |
+|---|---|---|
+| linked-frame format | `kandelo.wpk_fork.linked_frames` section | **yes** |
+| resume catalog (global + per activation) | the resume-catalog section | **yes** |
+| GC codec | `kandelo.wpk_fork.gc_codec` section | **yes** -- the host already only forwards raw bytes |
+| exception codec | its section | **yes**, same |
+| activation template id | a section, hashed | **yes** |
+| funcref catalog base | where the host laid this activation's slice in the MERGED table | no -- host placement |
+| static-root catalog base | same | no |
+| table-state owner | an election over `WebAssembly.Table` identity | no -- wasm cannot compare tables |
+| identity group, import provenance | how the host wired this guest's imports | no |
+| host exception owner | host policy | no |
+| borrowed workspace | host memory placement | no |
+
+Five or six of the thirteen are "parse a custom section of the guest module",
+and the module already links `fork-codec`, which parses every one of those
+formats. What the host uniquely has is not the CONTENT -- it is *which bytes
+belong to which activation, and where they are in memory*.
+
+So the fold worth doing is one coarse admission:
+
+```
+fm_admit_activation(activation_id, module_bytes_ptr, byte_len)
+```
+
+The module extracts the format, the resume catalog, the GC codec, the exception
+codec and the template id ITSELF. Five or six entries become one, and -- the
+part that matters -- **the host stops knowing those sections exist.** A new
+host hands over bytes it already has in hand and gets the whole flow. That is
+"more wasm coordinating the fork, less host-specific implementation".
+
+It also deletes host code rather than renaming it: `fork-guest-sections.ts`
+(167 code lines), `fork-resume-catalog.ts` (117) and the reader half of
+`fork-continuation.ts` (152) are host re-implementations of formats Rust
+already parses -- the "second implementation of a wire format, and both are
+executing" finding that opened this census, still standing in the one place it
+is easiest to close.
+
+The remaining seven are placement, election and policy: genuinely the host's,
+and they should keep their names and their types. **The honest target is not 5
+by collapsing. It is roughly 8 by moving section-parsing into the module, with
+the rest being the real floor** -- and `docs/surface-budget.json` should say so
+rather than keep a number that can only be reached by diluting.
+
+### Deferred, by the maintainer, to a follow-up
+
+Not done here. It is a coherent piece of work with its own validation surface
+(both hosts, and `crates/host-native` is not built by the usual host suite, so
+it needs an explicit `cargo check`), and it wants to be reviewable on its own.
