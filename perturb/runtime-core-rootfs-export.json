@@ -28,8 +28,8 @@
       "name": "the member is materialized into the body instead of described",
       "scope": "            ExportNode::LazyMember {",
       "scope_end": "\n            }\n",
-      "find": "                writer.create_deferred_file(\n                    item.parent_sffs,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    &uri,\n                    &digest,\n                    &payload,\n                )?",
-      "replace": "                let _ = (archive_id, source_path, size, payload, uri, digest);\n                writer.create_file(item.parent_sffs, &item.name, mode, Content::Bytes(b\"\"))?"
+      "find": "                writer.create_deferred_file(\n                    item.parent_out,\n                    &item.name,\n                    mode,\n                    size,\n                    archive_id,\n                    &source_path,\n                    &uri,\n                    &digest,\n                    &payload,\n                )?",
+      "replace": "                let _ = (archive_id, source_path, size, payload, uri, digest);\n                writer.create_file(item.parent_out, &item.name, mode, Content::Bytes(b\"\"))?"
     },
     {
       "name": "the loader throws away the description it was given",

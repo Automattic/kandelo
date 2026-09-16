@@ -41,8 +41,8 @@
    "name": "a normalized export writes each inode's own times anyway",
    "scope": "fn apply_export_metadata(",
    "scope_end": "\n}\n",
-   "find": "        Some(fixed) => writer.set_times(sffs_ino, fixed, fixed, fixed),",
-   "replace": "        Some(_) => writer.set_times(sffs_ino, atime, mtime, ctime),"
+   "find": "        Some(fixed) => writer.set_times(out_ino, fixed, fixed, fixed),",
+   "replace": "        Some(_) => writer.set_times(out_ino, atime, mtime, ctime),"
   },
   {
    "name": "a normalized export leaves the root stamped by a zero clock",

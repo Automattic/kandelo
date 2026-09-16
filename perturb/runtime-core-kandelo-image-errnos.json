@@ -11,7 +11,7 @@
   },
   {
    "name": "descending into a non-directory reports ENOENT instead of ENOTDIR",
-   "scope": "    pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<SffsDirent>, Errno> {",
+   "scope": "    pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<KandeloImageDirent>, Errno> {",
    "scope_end": "\n    }\n",
    "find": "        if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }",
    "replace": "        if file_type(st.mode) != 0x4000 { return Err(Errno::ENOENT); }"
