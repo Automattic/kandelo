@@ -4799,6 +4799,27 @@ remembering.
 
 `node-demo-workspace` is done too, but differently: its premise expired rather
 than its filesystem. See *"`/home/maker` is the kernel's"*.
+
+**`vfs/image-helpers.test.ts`, read assertion by assertion** — seven tests,
+three different answers, which is why this row says PORT *or* DELETE rather
+than "repoint":
+
+* **Four are type-only.** They pass a hand-built mock —
+  `{ mkdir, symlink } as unknown as MemoryFileSystem` — to exercise the
+  helper's error handling. The helper's own signature takes
+  `VfsImageFilesystem`, so the cast is already over-specific: naming the
+  interface instead removes the coupling and changes nothing.
+* **One ports.** *"Stages every byte of a binary file"* is about the HELPER and
+  `KandeloImageFs` can back it.
+* **One does not, and should not.** *"Reports terminal ENOSPC after preserving
+  a positive partial write"* constructs a deliberately small
+  `SharedArrayBuffer` and fills it. That is a claim about a FIXED-CAPACITY
+  backend, which `KandeloImageFs` is not — it is module-backed with a growth
+  ceiling. The test belongs with the ones whose subject IS `MemoryFileSystem`,
+  and goes when the class goes.
+
+The seventh is the barrel check (`writeBrowserVfsBinary === writeVfsBinary`)
+and touches no filesystem at all.
 | **builder helper** | **1** | `mariadb-image-helpers` | repoint the fixture |
 
 **So the genuine porting work is SIX files, not twenty-six**, and the twelve
