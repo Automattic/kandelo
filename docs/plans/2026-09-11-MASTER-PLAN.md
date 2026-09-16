@@ -8958,6 +8958,7 @@ sequence is Node first, then browser; the Node side is green above.
 | | parent | this branch |
 |---|---|---|
 | host suite | 93 failed / 4321 passed, **39 files** | 92 failed / **4349** passed, **39 files** |
+| host suite, re-measured 2026-09-16 after the ABI gate | — | **87 failed / 4361 passed, 39 files** |
 | chromium | 19 failed / 164 passed | 19 failed / **165** passed |
 
 The host failing SET is **identical** — 39 files, zero difference in either
@@ -8968,6 +8969,79 @@ isolation.
 
 So this branch introduces no failure the parent does not have, on either host,
 and passes more on both.
+
+### THE FAILING SET, WRITTEN DOWN — 2026-09-16, because "identical set" was never checkable
+
+This section has twice claimed the failing SET is identical and twice given
+only a COUNT. A count cannot be diffed later, and the whole reason this branch
+compares by set is that two failures moving in opposite directions read as
+zero. So here is the set, so the next comparison can be a diff rather than a
+claim.
+
+**39 files, 87 tests, after `./run.sh setup` and the declared-ABI gate:**
+
+* `../packages/registry/dinit/test/dinit-scripted-service.test.ts`
+* `../packages/registry/git/test/git.test.ts`
+* `../packages/registry/nginx/test/nginx.test.ts`
+* `../packages/registry/php/test/php-curl.test.ts`
+* `../packages/registry/php/test/php-hello.test.ts`
+* `../packages/registry/php/test/php-intl.test.ts`
+* `../packages/registry/wordpress/test/wordpress-site-editor.test.ts`
+* `../tests/package-system/browser-binary-dependencies.test.ts`
+* `../tests/package-system/installed-host-package.test.ts`
+* `../tests/package-system/kernel-test-fixtures.test.ts`
+* `../tests/package-system/resolve-binary.test.ts`
+* `../tests/package-system/rootfs-verified-source-contract.test.ts`
+* `../tests/package-system/source-rootfs-shell-bridge.test.ts`
+* `test/audio-integration.test.ts`
+* `test/dri-cube-pyramid.test.ts`
+* `test/exec-state-tracking.test.ts`
+* `test/fork-host-import-runtime.test.ts`
+* `test/fork-instrument-coverage.test.ts`
+* `test/gc-reference-cycle-fresh-worker.test.ts`
+* `test/gc-reference-state-fresh-worker.test.ts`
+* `test/getaddrinfo.test.ts`
+* `test/kernel-export-failure-audit.test.ts`
+* `test/kernel-large-transfer-protocol.test.ts`
+* `test/kernel-reservation-export-contract.test.ts`
+* `test/kernel-scratch-contract.test.ts`
+* `test/login.test.ts`
+* `test/man-shell-lazy-archive.test.ts`
+* `test/node-kernel-pipe-proxy.test.ts`
+* `test/opcache-prewarm.test.ts`
+* `test/ordinary-process-exit.test.ts`
+* `test/process-memory-reclamation-rss.test.ts`
+* `test/process-wait-lifecycle.test.ts`
+* `test/select-signal-guest.test.ts`
+* `test/spawn-blob-transport.test.ts`
+* `test/spawn-credential-order.test.ts`
+* `test/spawn-pid-authority.test.ts`
+* `test/terminfo-shared-db.test.ts`
+* `test/virtual-network-e2e.test.ts`
+* `test/wasm-binary-parse.test.ts`
+
+**What this run establishes, and what it does not.** It establishes that the
+gate refuses nothing in the whole suite — `EPROTO` appears nowhere in 4,498
+tests — and that the branch is 5 failures better and 12 passes better than its
+own last measurement, with the file count unchanged. It does NOT establish a
+set diff against that measurement, because that measurement recorded no set.
+That is the gap this entry closes going forward, not one it can close
+backwards.
+
+`node-demo-workspace` is gone from the set (ported this session) and
+`demo-login-image` was never in it.
+
+**One entry in `kernel-scratch-contract`'s audit belongs to this lane.** Its
+thirteen unreviewed occurrences include
+`images/vfs/lib/kandelo-image-fs.ts:175 wasm-instance-authority in
+KandeloImageFs.create: new WebAssembly.Instance(...)` — the bridge
+instantiating its own module, which arrived with `installModuleBytes`. The
+other twelve are `kernel-worker.ts`, `wasm-artifact-driver.ts` and
+`dylink-planner.ts`, plus five stale allowances, so this audit is red for
+reasons that are mostly lane K's. **But the bridge's occurrence is ours to
+review into the allowance**, and it is filed here rather than fixed because
+adding one entry to a list that is red by twelve others would look like
+progress and produce none.
 
 **Evidence.** Rust: runtime-core 2198, kandelo-image-module 80, host-native 74,
 wasm32 release clean. `xtask perturb --validate`: 376 trials, all anchoring; 14
