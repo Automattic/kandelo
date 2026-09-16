@@ -1788,6 +1788,54 @@ actually ran.** Before believing a perturbation, confirm the mutated code is
 on the path the verifier exercises.
 
 
+## CARRIED OPEN ITEMS — recorded so they are not lost when a lane closes
+
+Two things were found by lanes Y/V on 2026-09-16 that those lanes do not own.
+Both are written here rather than in a lane section, because a lane section
+closes and takes its contents with it.
+
+### O-1 — `host/test/opcache-prewarm.test.ts` has two RED tests, and nobody owns them
+
+*"Splits compile groups that contain duplicate declarations"* and *"writes cache
+files that a later PHP process can consume"* both fail with `written` = 0: the
+prewarmer produces no cache files at all.
+
+**Measured, not assumed, to be outside lane Y/V**: the test builds its image
+with `KandeloImageFs`, so it looked like a bridge defect. It is not — it fails
+identically against the unrevised bridge, checked by reverting the bridge change
+and re-running. The failure is in the PHP/opcache path, not the image.
+
+The maintainer's instruction when deciding to leave it: *"'Leave it, record it'
+is good as long as this isn't lost work before the plan closes."* Hence this
+section. **A red test nobody owns is how a real defect hides**, and this one is
+in the prewarmer that `docs/plans` elsewhere credits for the WordPress cold-boot
+work.
+
+### O-2 — the second binary tier may be dead, and it is what now blocks lane V step 5
+
+`binary-resolver.ts` resolves an artifact from two tiers: `local-binaries/`
+(built here) and `binaries/` (fetched). The maintainer's observation on
+2026-09-16: *"We currently only have local binaries. There is no longer
+retrieval of remote binaries (or at least there is no longer a remote build to
+pull from)."*
+
+**Measured in the lane worktree**: `binaries/` holds **10 files, every one a
+`shadowed-*.wasm` test fixture, and zero `.vfs`**. Every VFS image is under
+`local-binaries/source-only-v1/`.
+
+**Why it matters beyond tidiness.** With two tiers, the resolver's `.vfs` ABI
+check is a SELECTION input — it picks between a stale local copy and a fetched
+ABI-matching one (`binary-resolver.test.ts`: *"skips a stale local `.vfs.zst`
+when a fetched ABI-matching candidate exists"*). That is the last thing keeping
+`host/src/binary-resolver.ts` importing `memory-fs.ts`, and therefore the last
+thing blocking lane V step 5, now that the ABI REFUSAL has moved into the
+kernel. With one tier the check collapses to a refusal and the kernel already
+performs it.
+
+Parked by the maintainer as out of lane Y/V ("not now"). What it would take:
+the resolver tiers, `scripts/fetch-binaries.sh`, `tools/xtask/src/remote_fetch.rs`,
+and the CI pages-deployment checks that reference it.
+
 ## Release readiness for #1350 — a known, unclosed gap
 
 Recorded so it is not rediscovered. **`What "done" means for PR #1350` above
