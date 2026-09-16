@@ -3349,6 +3349,46 @@ vocabulary — `module-base-image.ts` already proves the point by declaring its
 own `ModuleLazyEntries` with the comment *"named so this file need not import
 it."*
 
+#### ONE OF THE TWO SPECS NEVER RUNS — found 2026-09-16, before repointing it
+
+`apps/browser-demos/playwright-server-policy.ts` pushes four regexes into
+`testIgnore` **unconditionally**, with no comment giving a reason:
+
+```ts
+/browser-package-layer\.spec\.ts$/,
+/kandelo-node\.spec\.ts$/,
+/lazy-archive-runtime\.spec\.ts$/,
+/rootfs-export\.spec\.ts$/,
+```
+
+So `lazy-archive-runtime.spec.ts` is not skipped and does not fail — it is
+**excluded from collection**. Its five tests appear nowhere in the 194 the
+chromium run collects: not as `✓`, not as `✘`, not as `-`. Confirmed by
+grepping the run's own log for the filename and getting zero hits, in a run
+that otherwise lists every test by name.
+
+**That inverts what the maintainer's instruction protects for this file.**
+"Delete the dead half but keep the browser specs alive" is about preserving
+coverage. There is no coverage here to preserve: the file has provided none
+for as long as that ignore has stood. Its fixture was still repointed
+(`KandeloImageFs` argument-for-argument, since the call shapes match exactly),
+because the file must not be what blocks deleting `memory-fs.ts` — but the
+change is **UNVALIDATED by the browser suite and will stay that way** until
+someone says why those four are ignored.
+
+**The other spec is real.** `package-deferred-tree-browser.spec.ts` ran and
+passed all three tests in the same run — retrying transient lazy package trees,
+failing SHA validation on a corrupt archive without materializing, and
+verifying imported seals before atomic activation. For that file the
+instruction bites exactly as intended, and its repoint has to preserve
+behaviour rather than merely compile.
+
+**Four specs excluded with no recorded reason is worth someone's attention.**
+It is the same failure shape as a green baseline that hides how much actually
+ran: a file that looks like coverage, is maintained like coverage, and is not
+coverage. Filed rather than changed — removing an ignore is not this lane's
+call, and three of the four are nothing to do with it.
+
 #### WHAT THE BROWSER SPECS ACTUALLY PROVE — checked before touching them
 
 The maintainer's instruction was to delete the dead half but keep the browser
