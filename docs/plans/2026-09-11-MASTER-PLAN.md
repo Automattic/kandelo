@@ -3383,6 +3383,28 @@ verifying imported seals before atomic activation. For that file the
 instruction bites exactly as intended, and its repoint has to preserve
 behaviour rather than merely compile.
 
+**WHEN IT WAS SILENCED, AND BY WHAT.** Before `48b6692e9a` ("Packages: Boot
+login from package-backed images", #1307, 2026-08-25) the ignore list held
+**only** two conditional `abi-staging` entries. That PR added an unconditional
+block of five: `/homebrew/i`, `browser-package-layer`,
+`kandelo-canonical-flat-shell`, `kandelo-node`, `lazy-archive-runtime`,
+`rootfs-export`. The Homebrew ones follow from its subject — it removed the
+Homebrew fixtures. **`lazy-archive-runtime` and `rootfs-export` do not, and the
+commit message does not mention them.**
+
+So this spec RAN until three weeks ago and was switched off inside a large
+unrelated change.
+
+**That matters for the port, because the kernel-path tests already exist.**
+This file's five tests boot a real kernel — `__runLazyVfsAcceptance` execs a
+binary out of the image — and they cover exactly the guarantees the legacy
+`package-deferred-tree-browser` tests cover through `MemoryFileSystem`:
+*"retries a transient lazy-tree response before surfacing EIO"*, *"reports
+digest failure without mutation and retries cleanly"*, *"boots, reads, and
+execs through verified lazy archives"*, plus CORS-proxied external archives.
+**Porting the three legacy tests to the kernel path may be re-enabling work
+that was silenced as collateral rather than writing new tests.**
+
 **Four specs excluded with no recorded reason is worth someone's attention.**
 It is the same failure shape as a green baseline that hides how much actually
 ran: a file that looks like coverage, is maintained like coverage, and is not
