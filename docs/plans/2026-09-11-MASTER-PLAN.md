@@ -3558,6 +3558,28 @@ them would throw away the only record of the kernel-path coverage Homebrew's
 removal took. Only its `packageTreeImages` fixture and the one test using it go
 with the module.
 
+**`dinit-image-helpers` repoints rather than dying, and the plan's row for it
+is stale.** It is listed under *"needs surface that does not exist —
+`getLazyEntry`/`isPathDeferred`"*. Both exist on the bridge:
+`isPathDeferred` at `kandelo-image-fs.ts:1083`, `getLazyEntry` at 1105. The
+latter's own comment says why it was implemented rather than stubbed:
+
+> A half that always says "no registration" turns those into the other half
+> alone, which drops exactly the URL-backed case … It is implemented now rather
+> than later because the next file to repoint DOES call it, and a stub that
+> answers plausibly is worse than one that throws.
+
+This is that file. `addDinitInit` asks
+`fs.getLazyEntry(path) !== null || fs.isPathDeferred(path)`, and the test's one
+real use needs only `/sbin/dinitctl` to BE deferred — which
+`registerLazyArchive` produces directly. The claim under test, that
+`addDinitInit` refuses a deferred dinit, is untouched.
+
+**That is the SECOND "needs surface that does not exist" row retired today**,
+after `exportLazyArchiveEntries`. Both named a SHAPE rather than a capability,
+and the bridge already answered the question in its own. The row should be
+re-read with that in mind before anyone builds to it.
+
 **And the CI configuration goes with the files.** `ci-run-test-suite.sh`'s
 suite list and `ci-vitest-evidence-classes.tsv`'s `source-only` row both name
 deleted specs. Leaving either behind is how a suite quietly stops covering what
