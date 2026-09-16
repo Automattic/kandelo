@@ -3309,6 +3309,32 @@ UNCHANGED, and the repoint follows it. A browser failure observed after both
 changes at once is unattributable, and this branch has already paid for that
 lesson twice.
 
+**And the repoint is much smaller than the file count suggests.** Read rather
+than estimated:
+
+| what | tests | what it takes |
+|---|---|---|
+| `lazy-archive-runtime.spec.ts` → `lazyImage()` | **4** | already `registerLazyArchiveFromEntries(url, parseZipCentralDirectory(archive), "/", undefined, identity(archive))`. That is `KandeloImageFs.registerLazyArchive({url, entries, mountPrefix, symlinkTargets, integrity})` argument for argument. **One swap.** No owner, no activation |
+| `lazy-archive-runtime.spec.ts` → `packageTreeImages()` | 1 | the deferred-tree API, with owner and activation |
+| `package-deferred-tree-browser.spec.ts` | 3 | the deferred-tree API |
+
+So four of the eight browser tests cost one line each, and four need the
+lazy/eager PAIR rebuilt. The eager half is what the deferred-tree API's
+`materialize` step did: expanding the same ZIP into resident files. The bridge
+has no equivalent verb, but it does not need one — `extractZipEntry` plus
+`createFileWithOwner` per member is what "eager" means, and doing it in the
+fixture rather than behind an API is honest about the fact that eager
+materialization is a TEST's idea of a starting state, not a thing production
+does.
+
+**The one genuine API question**, and it is inside this lane so it is mine:
+`registerLazyArchive` takes no owner while `registerArchiveMember` does. Either
+the fixture loops members, or the bulk helper grows `owner?: { uid, gid }` and
+forwards it. The second is one parameter on a helper that already forwards five,
+but it grows `imageFsTypeScript`, so it gets a caller census and a budget run
+like anything else. Decided after the baseline, not before, because the baseline
+is what makes the repoint's effect readable.
+
 #### THE MOVE WAS BUILT, REFUSED BY THE BUDGET, AND REVERTED — a decision for the maintainer
 
 It is written, it typechecks, and it is not landed. The patch is kept at
