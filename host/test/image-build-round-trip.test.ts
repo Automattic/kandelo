@@ -167,9 +167,12 @@ describe("overlaying /etc onto a fresh image", () => {
       readonly errno = 13;
     }
     const target = KandeloImageFs.create();
+    let attempts = 0;
     const denying = new Proxy(target, {
       get(inner, key, receiver) {
-        if (key === "lstat") return () => { throw new Denied("EACCES: lstat /etc"); };
+        if (key === "lstat") {
+          return () => { attempts += 1; throw new Denied("EACCES: lstat /etc"); };
+        }
         return Reflect.get(inner, key, receiver);
       },
     });
@@ -177,6 +180,23 @@ describe("overlaying /etc onto a fresh image", () => {
     await expect(
       overlayEtcFromRootfs(denying as unknown as typeof target, sourceImage),
     ).rejects.toThrow(/EACCES/);
+
+    // COUNTING the attempts is the assertion, and "it threw" is not.
+    //
+    // Swallowing a non-not-found error does not stop the error escaping — the
+    // copy proceeds, recurses, and hits the same refusal again a level down,
+    // so the call still rejects with EACCES either way. A mutation widening
+    // `isNotFound` to accept any errno survived a test that only checked the
+    // throw, because the throw was never the difference.
+    //
+    // What differs is whether the overlay STOPPED. Correct: one attempt, then
+    // out. Swallowed: four, as it blunders through `/etc` and its children
+    // treating a permission failure as an absent path.
+    expect(
+      attempts,
+      "a failure that is not not-found must stop the copy at the first path, "
+        + "not be swallowed and met again deeper in the tree",
+    ).toBe(1);
   });
 
   it("is idempotent, because a path that IS present is the other branch", async () => {
