@@ -10332,3 +10332,71 @@ rather than keep a number that can only be reached by diluting.
 Not done here. It is a coherent piece of work with its own validation surface
 (both hosts, and `crates/host-native` is not built by the usual host suite, so
 it needs an explicit `cargo check`), and it wants to be reviewable on its own.
+
+## §196 -- Two of the three owed guards are gated, with the mutants to prove it
+
+§191 and §192 recorded three guards as argued but unexercised, and said all
+three wanted the same thing: a worker that forks twice, with more than one
+activation. Two are closed here. Build keys are recorded per mutation against
+the baseline `d6a094ebcc7b`.
+
+### The staleness comparison (§192 addendum)
+
+The module decodes the reference graph lazily, on the first throw, and caches
+it -- decoding walks the arena and abandons the previous graph, so a fork that
+throws nothing should pay nothing. The cache is keyed by the arena root it was
+decoded from, compared against the root of the most recent replay. Without that
+comparison a second fork answers from the FIRST fork's graph: the wrong owner,
+so the exception is raised inside an activation that did not capture it.
+
+Reaching it needs two forks in one worker, which the capture fixture can do
+with an `fm_abort()` between them. **Two graphs with the same recipe id and
+different KINDS** make the staleness visible: graph A holds an exnref at id 1,
+graph B a struct. After replaying B, asking to raise id 1 must refuse it as
+not-an-exception (EINVAL). Answering from A instead finds an exnref, looks up
+its owner and traps inside an unbound `call_indirect` with no errno set.
+
+Mutation: drop the root comparison (`2a333a035e80`) -- FAILS, `expected +0 to
+be 22`. It survived everything before this fixture existed.
+
+One fixture detail worth keeping: a zero-length edge vector is refused
+(`__wpk_fork_ref_vector_finish` answers EINVAL), so both graphs give their
+aggregate one edge. Discovered by writing a struct with none and reading the
+refusal, not from any document.
+
+### The successful cross-activation throw (§192)
+
+`host/test/fork-module-exception-throw.test.ts` is new. It captures an exnref
+owned by activation 1 in a worker where activation 0 ALSO has a thrower bound
+-- activation 0 being exactly the one a module that ignored the owner would
+reach, since it is the primary and its slice is first in the drive table. Then
+it asserts the owner's thrower ran with this recipe, that no other
+activation's did, and that the raise PROPAGATED out of the module's frame.
+
+Two mutations, both caught:
+
+- **Ignore the owner, always call activation 0** (`570fcbd27c20`): two failures,
+  including `expected [Function] to throw error matching /activation 1 raised
+  2/ but got 'activation 0 raised 2'`. That is the mutation with no symptom of
+  its own -- a real function of the right type, called with an argument of the
+  right type -- which is why it needed a second activation to see.
+- **Tolerate a thrower that RETURNS** (`b77baa8e76e7`): the refusal loses its
+  errno. A replay continuing past an exception it never delivered is silent
+  corruption, so returning normally is a defect rather than a no-op.
+
+The thrower doubles raise a JavaScript error rather than a tagged wasm
+exception. That difference is stated in the file and does not touch what is
+under test: WHICH activation the module calls, with WHAT recipe, and whether
+the raise escapes instead of being swallowed. Raising a real tag needs a guest
+whose codec declares one, which is the third owed fixture's problem.
+
+### Still owed: the direct externref-returning host import (§191)
+
+Unchanged and not closed here. `fork-instrument`'s provenance pass rewrites
+DIRECT calls to externref-returning imports only; the gated-externref fixture
+mints through `call_indirect` (the residual gap that pass records in its own
+header) and the GC fixtures internalize a guest-allocated `anyref` with no host
+call to wrap. Closing it needs an instrumented guest artifact built for the
+purpose -- a hand-written module with such a call, run through
+`scripts/run-wasm-fork-instrument.sh` -- rather than a new arrangement of the
+fixtures that exist.

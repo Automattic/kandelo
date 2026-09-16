@@ -55,6 +55,7 @@ import { ForkAnyrefTransitTable } from "../src/fork-anyref-transit";
 import { instantiateFaithfulGuest } from "./fork-module-faithful-guest";
 import {
   CAPTURE_KIND_ARRAY,
+  CAPTURE_KIND_EXNREF,
   CAPTURE_KIND_STRUCT,
   INTERN_KIND_EXTERNREF,
   MMAP_FLOOR,
@@ -316,6 +317,71 @@ describe("fork-module typed-GC (struct/array/i31) admission + leaf rooting throu
     bindFaithfulGuest(fm, x, leafId + 1);
 
     expect(() => x.fm_drive_execute(planPtr, count)).toThrowError(/unreachable/i);
+  });
+
+  it("notices a decoded graph that belongs to a PREVIOUS fork", () => {
+    // The staleness comparison in `make_replay_graph_resident`, and the one
+    // guard on the exception-throw path that needs TWO forks in one worker to
+    // reach. Census 192's addendum recorded it as owed; this is the fixture it
+    // was owed.
+    //
+    // The module decodes a graph lazily, on the first throw, and caches it --
+    // decoding walks the arena and abandons the previous graph, so a fork that
+    // throws nothing should pay nothing. The cache is keyed by the arena root
+    // it was decoded from, compared against the root of the most recent replay.
+    // Without that comparison a second fork answers from the FIRST fork's
+    // graph, which means the WRONG OWNER, which means the exception is raised
+    // inside an activation that did not capture it.
+    //
+    // Two graphs with the same recipe id and different KINDS make that
+    // visible: graph A holds an exnref at id 1, graph B a struct. After
+    // replaying B, asking to raise id 1 must refuse it as not-an-exception
+    // (EINVAL, 22). Answering from A instead finds an exnref, looks up its
+    // owner, and traps inside an unbound `call_indirect` with no errno set --
+    // which is what the mutant does, at build key `2a333a035e80`.
+    const f = fixture();
+    const x = f.x as Record<string, (...a: number[]) => number>;
+
+    const a = captureGraph(f, [[INTERN_KIND_EXTERNREF, 44, 0]], [
+      {
+        kind: CAPTURE_KIND_EXNREF,
+        activation: 0,
+        typeOrdinal: 0,
+        layoutId: 0,
+        edges: ({ leaves }) => [leaves[0]!],
+      },
+    ]);
+    x.fm_begin_reference_replay(a.root, PID);
+    expect(f.errno(), "the first fork's replay begins").toBe(0);
+    // Make A resident, as a child's own admission gates do before its replay.
+    x.fm_decode_reference_graph(a.root);
+    expect(f.errno(), "the first fork's graph is resident").toBe(0);
+
+    x.fm_abort();
+    expect(f.errno(), "the first fork ends").toBe(0);
+    expect(x.fm_phase(), "and the worker is idle again").toBe(0);
+
+    const b = captureGraph(f, [[INTERN_KIND_EXTERNREF, 45, 0]], [
+      {
+        kind: CAPTURE_KIND_STRUCT,
+        activation: 0,
+        typeOrdinal: 0,
+        layoutId: 1,
+        scalars: new Uint8Array([1, 2, 3, 4]),
+        edges: ({ leaves }) => [leaves[0]!],
+      },
+    ]);
+    // The whole test rests on this: one recipe id, two meanings.
+    expect(
+      b.aggregateRecipes[0],
+      "both graphs must name the same recipe id",
+    ).toBe(a.aggregateRecipes[0]);
+    x.fm_begin_reference_replay(b.root, PID);
+    expect(f.errno(), "the second fork's replay begins").toBe(0);
+
+    const raise = x.__wpk_fork_ref_exn_broker_throw_recipe;
+    expect(() => raise(b.aggregateRecipes[0]!)).toThrow(WebAssembly.RuntimeError);
+    expect(x.fm_last_errno(), "answered from the SECOND graph").toBe(22);
   });
 
   it("refuses to RAISE a recipe that is not an exception, with a resident graph to ask", () => {
