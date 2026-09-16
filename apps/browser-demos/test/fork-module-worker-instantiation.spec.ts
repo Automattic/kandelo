@@ -19,11 +19,11 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(
+const imageFsModulePath = resolve(
   __dirname,
   "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
-const sffsModuleWasmPath = resolve(
+const imageModuleWasmPath = resolve(
   __dirname,
   "../../../local-binaries/kandelo_image_module32.wasm",
 );
@@ -48,8 +48,8 @@ async function runSingleFork(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      sffsImageFsModuleUrl,
-      sffsModuleBytes,
+      imageFsModuleUrl,
+      imageModuleBytes,
       fixtureUrl,
       argv0,
     }) => {
@@ -57,7 +57,7 @@ async function runSingleFork(
         /* @vite-ignore */ browserKernelModuleUrl
       );
       const { KandeloImageFs } = await import(
-        /* @vite-ignore */ sffsImageFsModuleUrl
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -100,7 +100,7 @@ async function runSingleFork(
         // A minimal image keeps this a BrowserKernel integration proof without
         // coupling it to the much larger shell image; d_01 is a self-contained
         // single-fork fixture that needs no rootfs.
-        const imageOwner = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         const vfsImage = await imageOwner.saveImage();
         await kernel.initFromImage({ vfsImage });
         initialized = true;
@@ -135,8 +135,8 @@ async function runSingleFork(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      sffsImageFsModuleUrl: asViteFsUrl(sffsImageFsModulePath),
-      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       fixtureUrl: asViteFsUrl(resolveBinary(FIXTURE)),
       argv0: FIXTURE,
     },

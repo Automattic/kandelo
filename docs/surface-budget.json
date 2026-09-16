@@ -51,7 +51,7 @@
       "target": 1515,
       "why": "Holds the fork drive loop. 6,083 -> 7,536 across the campaign; every fine-grained fm_* call leaves a host-side seeding and base-arithmetic loop behind by construction."
     },
-    "sffsTypeScript": {
+    "imageFsTypeScript": {
       "measure": "code lines (non-blank, non-comment) of host/src/vfs/sharedfs-vendor.ts",
       "ceiling": 3047,
       "slack": 54,
@@ -135,7 +135,7 @@
       "why": "The worker entries are where host-side sequencing accumulates, and nothing measured them. On 2026-09-14 three deletions landed in them — a lazy-registration protocol nobody sent, and the rootfs overlay repointed off MemoryFileSystem — and no campaign number moved at all. An unbanked reduction silently funds the next change's growth, which is the failure the banking rule exists to stop. **The target is a DIRECTION, not a measured floor.** The irreducible part is worker spawn, the syscall-channel transport and the Node/browser platform bridges; nobody has measured how much of these files that is."
     },
     "hostVfsTypeScript": {
-      "measure": "code lines (non-blank, non-comment) of host/src/vfs/*.ts excluding memory-fs.ts and sharedfs-vendor.ts, which memoryFsTypeScript and sffsTypeScript already count",
+      "measure": "code lines (non-blank, non-comment) of host/src/vfs/*.ts excluding memory-fs.ts and sharedfs-vendor.ts, which memoryFsTypeScript and imageFsTypeScript already count",
       "ceiling": 8801,
       "slack": 127,
       "target": 1267,
@@ -226,11 +226,11 @@
       "why": "Inversion is done when the host calls a handful of coarse entries and no longer drives the sequence. Each fine-grained fm_* entry leaves a host-side seeding loop behind, so the entry count and the TypeScript line count fall together or neither has moved."
     },
     "V": {
-      "title": "VFS image — one implementation of SFFS",
+      "title": "VFS image — one implementation of KIFS",
       "status": "open",
       "closure": [
         {
-          "surface": "sffsTypeScript",
+          "surface": "imageFsTypeScript",
           "atMost": 0
         },
         {

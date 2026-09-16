@@ -222,7 +222,7 @@ function countMatches(relPath: string, pattern: RegExp): number {
 const MEASURED_GLOBS: Record<string, string[]> = {
   forkTypeScript: ["host/src/fork-*.ts", "host/src/vfork-*.ts"],
   workerMainTypeScript: ["host/src/worker-main.ts"],
-  sffsTypeScript: ["host/src/vfs/sharedfs-vendor.ts"],
+  imageFsTypeScript: ["host/src/vfs/sharedfs-vendor.ts"],
   memoryFsTypeScript: ["host/src/vfs/memory-fs.ts"],
   kernelWorkerTypeScript: ["host/src/kernel-worker.ts"],
   kernelHostImportTypeScript: ["host/src/kernel.ts"],
@@ -237,7 +237,7 @@ const MEASURED_GLOBS: Record<string, string[]> = {
 const MEASURED: Record<string, () => number> = {
   forkTypeScript: () => lineCount(MEASURED_GLOBS.forkTypeScript!),
   workerMainTypeScript: () => lineCount(MEASURED_GLOBS.workerMainTypeScript!),
-  sffsTypeScript: () => lineCount(MEASURED_GLOBS.sffsTypeScript!),
+  imageFsTypeScript: () => lineCount(MEASURED_GLOBS.imageFsTypeScript!),
   hostImportFunctions: () =>
     Number.parseInt(
       /EXPECTED_HOST_IMPORT_COUNT: usize = (\d+)/.exec(
@@ -369,7 +369,7 @@ const MEASURED: Record<string, () => number> = {
       "host/src/browser-kernel-protocol.ts",
     ]),
   // The rest of host/src/vfs. memory-fs.ts and sharedfs-vendor.ts are excluded
-  // because memoryFsTypeScript and sffsTypeScript already count them, and a
+  // because memoryFsTypeScript and imageFsTypeScript already count them, and a
   // line counted twice is banked twice.
   hostVfsTypeScript: () =>
     lineCount(["host/src/vfs/*.ts"])

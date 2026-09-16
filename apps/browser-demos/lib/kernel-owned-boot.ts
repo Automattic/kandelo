@@ -9,7 +9,7 @@
 // left is the small, transient per-boot image-build FS; these helpers track it
 // and nudge WebKit's collector to reclaim it between boots.
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
-import sffsModuleUrl from "@kandelo-image-module32-wasm?url";
+import imageModuleUrl from "@kandelo-image-module32-wasm?url";
 import { overlayEtcFromRootfs } from "@host/vfs/rootfs-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 import rootfsVfsUrl from "@rootfs-vfs?url";
@@ -125,11 +125,11 @@ export function ensureImageWriterInstalled(): Promise<void> {
   // and a second demo switching images does not refetch a module that cannot
   // have changed.
   moduleInstall ??= (async () => {
-    const response = await fetch(sffsModuleUrl);
+    const response = await fetch(imageModuleUrl);
     if (!response.ok) {
       throw new Error(
         `failed to fetch the VFS image writer (${response.status} ${response.statusText}) `
-          + `from ${sffsModuleUrl}`,
+          + `from ${imageModuleUrl}`,
       );
     }
     KandeloImageFs.installModuleBytes(new Uint8Array(await response.arrayBuffer()));

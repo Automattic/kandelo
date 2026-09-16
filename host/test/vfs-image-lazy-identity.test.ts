@@ -10,7 +10,7 @@ import { zipSync } from "fflate";
  * recorded in the image's JSON still names the same inode in the image's body.
  *
  * This matters far beyond a hand-edited image. The W chain is moving image
- * WRITING into the kernel, and the kernel's SFFS writer assigns its own inode
+ * WRITING into the kernel, and the kernel's KIFS writer assigns its own inode
  * numbers — they have no reason to match the ones the host carries forward in
  * its lazy JSON, which it copies from the base image because URLs, transports,
  * integrity digests and activation modes are host authority the kernel

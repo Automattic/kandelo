@@ -31,7 +31,7 @@ export const browserForkModule32ModuleSpecifier = "@fork-module32-wasm";
 export const browserWasiModule32ModuleSpecifier = "@wasi-module32-wasm";
 
 /** The wasm32 image-writer module the VFS image bridge instantiates. */
-export const browserSffsModule32ModuleSpecifier = "@kandelo-image-module32-wasm";
+export const browserImageModule32ModuleSpecifier = "@kandelo-image-module32-wasm";
 // The standalone dynamic-linking planner (`crates/dylink-module`), supplied as
 // URL bytes so the kernel host can ship it to every process worker. wasm32 only:
 // the planner is not compiled per pointer width, it carries the process's width

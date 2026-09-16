@@ -18,8 +18,8 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
-const sffsModuleWasmPath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
+const imageFsModulePath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
+const imageModuleWasmPath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
 const shellWasm = resolve(repoRoot, "local-binaries/programs/wasm32/sh.wasm");
 const loginWasm = resolve(
   repoRoot,
@@ -69,8 +69,8 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
   const result = await page.evaluate(
     async ({
       browserKernelModuleUrl,
-      sffsImageFsModuleUrl,
-      sffsModuleBytes,
+      imageFsModuleUrl,
+      imageModuleBytes,
       kernelWasmUrl,
       shellWasmUrl,
       loginWasmUrl,
@@ -84,7 +84,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         /* @vite-ignore */ browserKernelModuleUrl
       );
       const { KandeloImageFs } = await import(
-        /* @vite-ignore */ sffsImageFsModuleUrl
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const fetchBytes = async (url: string): Promise<Uint8Array> => {
         const response = await fetch(url);
@@ -98,7 +98,7 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
         fetchBytes(sudoWasmUrl),
         fetchBytes(credentialsWasmUrl),
       ]);
-      const fs = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
+      const fs = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
       for (const path of [
         "/etc",
         "/bin",
@@ -275,8 +275,8 @@ test("browser login and sudo-lite enforce real guest authentication", async ({
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      sffsImageFsModuleUrl: asViteFsUrl(sffsImageFsModulePath),
-      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       kernelWasmUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
       shellWasmUrl: asViteFsUrl(shellWasm),
       loginWasmUrl: asViteFsUrl(loginWasm),

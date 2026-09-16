@@ -12,7 +12,7 @@
  *     `buildRootfsLazyWiring`, and re-encodes the whole thing as an RTFS v3 boot
  *     manifest.
  *
- *  B. `kernel_rootfs_load_image` — the kernel mounting the image's own SFFS
+ *  B. `kernel_rootfs_load_image` — the kernel mounting the image's own KIFS
  *     filesystem through a positioned byte window (`env.host_image_read`),
  *     walking it itself, and reading the image's own `KLZY` lazy-linkage
  *     section. The host resolves nothing.
@@ -20,7 +20,7 @@
  * The oracle is `kernel_rootfs_export_tree`, the RXPT serialization of the
  * overlay's authoritative tree. It is a real oracle rather than a tautology: the
  * two sides reach it through entirely different code (TypeScript `lstat` over a
- * restored `SharedFS` and a JSON-derived lazy map, versus Rust `sffs.rs` inode
+ * restored `SharedFS` and a JSON-derived lazy map, versus Rust `kandelo_image_fs.rs` inode
  * reads and a binary `KLZY` decode), and RXPT carries mode, uid, gid, size,
  * inode, symlink target, and times — so a disagreement about any of them fails
  * here rather than surfacing as a wrong `ls -l` months later.

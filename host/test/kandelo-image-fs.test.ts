@@ -174,7 +174,7 @@ describe("KandeloImageFs", () => {
   it("exports a whole container the kernel format readers accept", () => {
     // The bridge's half of the builder-facing save: drive the tree through the
     // ABI, then drain the finished image. What comes out must be a CONTAINER,
-    // because a bare SFFS body is not an image -- nothing can find the
+    // because a bare KIFS body is not an image -- nothing can find the
     // filesystem inside it or the sections beside it.
     const fs = KandeloImageFs.create();
     fs.mkdir("/usr", 0o755);

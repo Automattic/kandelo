@@ -11,7 +11,7 @@ import {
 } from "../apps/browser-demos/browser-binary-imports.mjs";
 import {
   browserForkModule32ModuleSpecifier,
-  browserSffsModule32ModuleSpecifier,
+  browserImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRootfsModuleSpecifier,
   browserWasiModule32ModuleSpecifier,
@@ -32,7 +32,7 @@ import {
 const BROWSER_WASM_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
   [browserForkModule32ModuleSpecifier, "fork_module32.wasm"],
   [browserWasiModule32ModuleSpecifier, "wasi_module32.wasm"],
-  [browserSffsModule32ModuleSpecifier, "kandelo_image_module32.wasm"],
+  [browserImageModule32ModuleSpecifier, "kandelo_image_module32.wasm"],
 ];
 
 export function browserAssetImportsForPolicy(

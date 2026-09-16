@@ -278,7 +278,7 @@ const kernelEntryIntrinsicAtomicsNotify = Atomics.notify;
 const KERNEL_ENTRY_I32_BYTES = 4;
 /**
  * Size of the VFSI container header (magic, version, flags, body length), and
- * therefore the container offset at which the SFFS filesystem body starts.
+ * therefore the container offset at which the KIFS filesystem body starts.
  * Mirrors `VFS_IMAGE_HEADER_SIZE` in `host/src/vfs/memory-fs.ts`, the writer —
  * mirrored rather than imported because this module is the host-agnostic
  * runtime core and imports nothing from the VFS layer.
@@ -2811,7 +2811,7 @@ export class CentralizedKernelWorker {
    */
   #rootfsImage: Uint8Array | null = null;
   /**
-   * A live view of the `/` image's SFFS body — the restored
+   * A live view of the `/` image's KIFS body — the restored
    * `MemoryFileSystem`'s own filesystem buffer, which is byte-for-byte the
    * image's body section (`MemoryFileSystem.imageBodyBytes`).
    *
@@ -5254,13 +5254,13 @@ export class CentralizedKernelWorker {
     // The container's header and trailing sections (lazy JSON, archive JSON,
     // metadata, `KLZY`) exist for the load and are never read again. The body
     // is different: the kernel serves every image-backed base file's content
-    // out of it, through its own SFFS reader, for the life of the session. So
+    // out of it, through its own KIFS reader, for the life of the session. So
     // the window stays open — but onto the copy the restored
     // `MemoryFileSystem` already holds, not onto a second one. See
     // KERNEL_IMAGE_WINDOW on `#rootfsImageRead`.
     //
     // Container coordinates are preserved across the swap: the kernel cached
-    // the image's own SFFS span at load and keeps addressing bytes by their
+    // the image's own KIFS span at load and keeps addressing bytes by their
     // offset in the container, so the body is served at
     // `VFS_IMAGE_HEADER_SIZE`. An offset outside the body is reported as
     // end-of-image rather than guessed at; nothing in the kernel asks for one,

@@ -20,7 +20,7 @@
  * `lazyArchiveInodes` maps rebuilt during restore. `KLZY`'s sizes come from the
  * serialized entries. Those are different code paths over different data
  * structures, and the manifest additionally reaches its entries by walking the
- * SFFS tree rather than by reading the JSON array. So an image whose stubs and
+ * KIFS tree rather than by reading the JSON array. So an image whose stubs and
  * whose metadata disagree fails this test.
  */
 

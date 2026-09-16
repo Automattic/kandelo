@@ -4921,7 +4921,7 @@ export class MemoryFileSystem implements FileSystemBackend {
      *
      * EXPECTED RETIREMENT. This gate should become unrepresentable once
      * archive descriptions move into the filesystem body alongside the
-     * per-file ones (see `crates/runtime-core/src/sffs_deferred.rs`). With one
+     * per-file ones (see `crates/runtime-core/src/sdef.rs`). With one
      * author there is no second description to disagree, exactly as for the
      * `KLZY`-versus-JSON check. Retire it then; do not leave it standing out
      * of caution once the condition is met.
@@ -7087,7 +7087,7 @@ export class MemoryFileSystem implements FileSystemBackend {
    * that is a legitimate older image, not a corrupt one. A declared section
    * over truncated or self-inconsistent framing throws.
    *
-   * Mirrors `sffs::kernel_lazy_span` + `klzy::decode_kernel_lazy_linkage` in
+   * Mirrors `kandelo_image_fs::kernel_lazy_span` + `klzy::decode_kernel_lazy_linkage` in
    * `crates/runtime-core`.
    */
   static readImageKernelLazyLinkage(

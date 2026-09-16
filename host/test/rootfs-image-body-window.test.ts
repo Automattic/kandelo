@@ -6,7 +6,7 @@ const O_RDONLY = 0;
 const O_WRONLY = 1;
 const O_CREAT = 0o100;
 const O_TRUNC = 0o1000;
-/** SFFS block size (`host/src/vfs/sharedfs-vendor.ts`). */
+/** KIFS block size (`host/src/vfs/sharedfs-vendor.ts`). */
 const BLOCK_SIZE = 4096;
 /** VFSI header: magic, version, flags, body length. */
 const VFS_IMAGE_HEADER_SIZE = 16;
@@ -34,13 +34,13 @@ function readFile(fs: MemoryFileSystem, path: string): Uint8Array {
 
 /**
  * The kernel now reads an image-backed file's CONTENT out of the `/` image,
- * through its own SFFS reader, for the life of the session — not just during
+ * through its own KIFS reader, for the life of the session — not just during
  * the boot walk. The host therefore keeps the image window open past boot, and
- * serves it from the SFFS body the restored `MemoryFileSystem` already holds
+ * serves it from the KIFS body the restored `MemoryFileSystem` already holds
  * (`imageBodyBytes`) rather than from a second retained copy of the container.
  *
  * That is a deliberate widening of the window in which the kernel reads a
- * buffer the host can still write to. `crates/runtime-core/src/sffs.rs`
+ * buffer the host can still write to. `crates/runtime-core/src/kandelo_image_fs.rs`
  * implements none of `SharedFS`'s `Atomics` discipline, so "the host does not
  * mutate what the kernel is reading" must be a PROVEN property, not one
  * inherited as an inference from call ordering. These tests pin it.
@@ -132,7 +132,7 @@ describe("the `/` image body the kernel reads through", () => {
 
     // And the image-backed file came through it untouched, both through this
     // instance and through an INDEPENDENT mount of the post-materialization
-    // body, which is the shape the kernel's own SFFS reader addresses it in.
+    // body, which is the shape the kernel's own KIFS reader addresses it in.
     expect(readFile(fs, "/etc/plain")).toEqual(plainBytes);
     const independent = MemoryFileSystem.fromExisting(fs.sharedBuffer);
     expect(readFile(independent, "/etc/plain")).toEqual(plainBytes);

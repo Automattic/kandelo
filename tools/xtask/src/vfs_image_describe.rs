@@ -228,7 +228,7 @@ pub fn describe_container(image: &[u8], label: &str) -> Result<ImageDescription,
 }
 
 fn fs_root<S: kandelo_image_fs::BlockSource>(_fs: &KandeloImageFs<S>) -> u32 {
-    // SFFS fixes the root inode at 1; `KandeloImageFs` exposes lookup from a directory
+    // KIFS fixes the root inode at 1; `KandeloImageFs` exposes lookup from a directory
     // inode rather than a root accessor.
     1
 }
@@ -717,7 +717,7 @@ mod tests {
     use super::*;
     use runtime_core::kandelo_image_write::{Content, NoContent, KandeloImageConfig, KandeloImageWriter};
 
-    /// Wrap a raw SFFS body in the minimal VFS image container.
+    /// Wrap a raw KIFS body in the minimal VFS image container.
     ///
     /// This exists only for the tests. It is deliberately NOT a general
     /// container writer: writing the container is lane Y's gap 7 and belongs

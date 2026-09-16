@@ -12,11 +12,11 @@ const browserKernelModulePath = resolve(
 // The Rust image writer. Its wasm arrives as bytes from Node, the shape the
 // program fixtures already use; the bridge no longer imports node builtins,
 // so a page can transform it like any other module.
-const sffsImageFsModulePath = resolve(
+const imageFsModulePath = resolve(
   repoRoot,
   "images/vfs/lib/kandelo-image-fs.ts",
 );
-const sffsModuleWasmPath = resolve(
+const imageModuleWasmPath = resolve(
   repoRoot,
   "local-binaries/kandelo_image_module32.wasm",
 );
@@ -52,8 +52,8 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
     async ({
       churnIterations,
       browserKernelUrl,
-      sffsImageFsUrl,
-      sffsModuleBytes,
+      imageFsModuleUrl,
+      imageModuleBytes,
       forkExecBytes,
       execChildBytes,
     }) => {
@@ -61,7 +61,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
         /* @vite-ignore */ browserKernelUrl
       );
       const { KandeloImageFs } = await import(
-        /* @vite-ignore */ sffsImageFsUrl
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -88,7 +88,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       });
 
       try {
-        const imageOwner = KandeloImageFs.create(new Uint8Array(sffsModuleBytes));
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         imageOwner.mkdir("/bin", 0o755);
         imageOwner.createFileWithOwner(
           "/bin/exec-child",
@@ -119,8 +119,8 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
         `/@fs/${browserKernelModulePath}`,
         baseURL,
       ).href,
-      sffsImageFsUrl: new URL(`/@fs/${sffsImageFsModulePath}`, baseURL).href,
-      sffsModuleBytes: Array.from(readFileSync(sffsModuleWasmPath)),
+      imageFsModuleUrl: new URL(`/@fs/${imageFsModulePath}`, baseURL).href,
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       forkExecBytes: Array.from(readFileSync(forkExecWasmPath)),
       execChildBytes: Array.from(readFileSync(execChildWasmPath)),
     },
