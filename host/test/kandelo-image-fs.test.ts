@@ -2,6 +2,7 @@ import { zstdCompressSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { OPEN_FLAGS } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
@@ -1114,5 +1115,94 @@ describe("open's mode is spent on creation only", () => {
     writeVfsBinary(fs, "/etc/shadow-link", new TextEncoder().encode("x"), 0o666);
 
     expect(fs.stat("/etc/shadow").mode & 0o7777).toBe(0o640);
+  });
+});
+
+describe("the two producers record one mount prefix", () => {
+  // A cross-producer test, which is the only kind that can catch this class.
+  // Each producer read alone looks right: `KandeloImageFs` stored the prefix it
+  // was handed, `MemoryFileSystem` stored the normalized one, and neither is
+  // wrong about itself. What is wrong is that they disagree about one fact,
+  // and the consumer -- `module-base-image.ts`, live in BOTH worker entries --
+  // reads whichever the image it was given happens to carry.
+  //
+  // Every shell lazy-archive spec declares `mountPrefix: "/usr/"`. Nine of
+  // them. So this is not a hypothetical spelling.
+  const archiveEntries = () => [
+    zipEntry({ fileName: "bin/tool", mode: 0o100755, uncompressedSize: 4 }),
+  ];
+
+  /**
+   * The descriptor half of an archive's seal payload.
+   *
+   * The module wraps every payload as
+   * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]`
+   * (`seal::encode` in `crates/kandelo-image-module/src/seal.rs`), and
+   * `module-base-image.ts` unwraps exactly this way before parsing. Reading it
+   * the same way here is the point: a guard that parsed the raw payload would
+   * be asserting against something no consumer sees.
+   */
+  const describedBy = (payload: Uint8Array): { mountPrefix?: unknown } => {
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    expect(view.getUint32(0, true)).toBe(1);
+    const length = view.getUint32(4, true);
+    return JSON.parse(new TextDecoder().decode(payload.subarray(8, 8 + length)));
+  };
+
+  it("normalizes a trailing slash, the way the legacy writer already did", async () => {
+    const bridge = KandeloImageFs.create();
+    bridge.registerLazyArchive({
+      url: "https://example.invalid/tool.zip",
+      entries: archiveEntries(),
+      mountPrefix: "/usr/",
+      integrity: { sha256: "0".repeat(64), bytes: 128 },
+    });
+    const { archives } = bridge.lazyEntries();
+    expect(archives).toHaveLength(1);
+    const described = describedBy(archives[0].descriptor);
+
+    const legacy = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
+    legacy.registerLazyArchiveFromEntries(
+      "https://example.invalid/tool.zip",
+      archiveEntries(),
+      "/usr/",
+      undefined,
+      { sha256: "0".repeat(64), bytes: 128 },
+    );
+    const [recorded] = legacy.exportLazyArchiveEntries();
+
+    // The assertion that matters is the EQUALITY, not the value: whichever
+    // spelling the project picks, one image must not describe itself
+    // differently from another built by the other producer.
+    expect(described.mountPrefix).toBe(recorded.mountPrefix);
+    expect(described.mountPrefix).toBe("/usr");
+  });
+
+  it("leaves a prefix that needs no normalizing exactly as it is", () => {
+    const bridge = KandeloImageFs.create();
+    bridge.registerLazyArchive({
+      url: "https://example.invalid/tool.zip",
+      entries: archiveEntries(),
+      mountPrefix: "/opt/tool",
+      integrity: { sha256: "0".repeat(64), bytes: 128 },
+    });
+    const { archives } = bridge.lazyEntries();
+    const described = describedBy(archives[0].descriptor);
+    expect(described.mountPrefix).toBe("/opt/tool");
+  });
+
+  it("records `/` for a root-mounted archive rather than the empty string", () => {
+    // `normalizeLazyArchiveMountPrefix` maps a bare "/" to "/" and not to "",
+    // and a consumer that joined an empty prefix would build a relative path.
+    const bridge = KandeloImageFs.create();
+    bridge.registerLazyArchive({
+      url: "https://example.invalid/root.zip",
+      entries: archiveEntries(),
+      mountPrefix: "/",
+      integrity: { sha256: "0".repeat(64), bytes: 128 },
+    });
+    const { archives } = bridge.lazyEntries();
+    const described = describedBy(archives[0].descriptor);
+    expect(described.mountPrefix).toBe("/");
   });
 });

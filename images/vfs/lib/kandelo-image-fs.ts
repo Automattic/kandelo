@@ -3,7 +3,10 @@ import { maybeDecompressImage } from "../../../host/src/vfs/vfs-image-transport"
 import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import type { ZipEntry } from "../../../host/src/vfs/zip";
-import { planLazyArchiveEntries } from "../../../host/src/vfs/lazy-archive-paths";
+import {
+  normalizeLazyArchiveMountPrefix,
+  planLazyArchiveEntries,
+} from "../../../host/src/vfs/lazy-archive-paths";
 
 /**
  * Builder-facing filesystem backed by the Rust image module.
@@ -751,8 +754,19 @@ export class KandeloImageFs {
     // CONSUMER does: rebuilding the kernel's lazy manifest from an image needs
     // the prefix, and inferring one from member paths would be inventing data
     // and would be wrong for any archive whose members do not share one.
+    // NORMALIZED, not as given. `planLazyArchiveEntries` above already
+    // normalizes this same value to place the members, so storing the raw one
+    // here made the call record two different spellings of one fact -- and the
+    // legacy writer recorded the normalized spelling, so the two producers
+    // disagreed for any prefix ending in `/`. Every shell lazy-archive spec
+    // uses `/usr/`.
+    //
+    // Nothing reads it yet: `buildRootfsLazyWiring` keys its transport policy
+    // by ADDRESS and never looks at a prefix. That is exactly why it is worth
+    // fixing now -- an unread disagreement between two producers is the state
+    // the errno signs were in until something read them.
     const descriptor = encoder.encode(JSON.stringify({
-      mountPrefix: args.mountPrefix,
+      mountPrefix: normalizeLazyArchiveMountPrefix(args.mountPrefix),
     }));
     const archiveBytes = args.integrity?.bytes ?? 0;
     // Raw bytes, not the hex the builders carry: a digest is a value, and the
