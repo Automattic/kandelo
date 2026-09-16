@@ -3434,10 +3434,32 @@ I stopped reading:
   reached during worker init. **There is no kernel-path equivalent to port
   to.**
 
-So the maintainer's option holds for two guarantees and not the third. Porting
-the seal guarantee means deciding whether the KERNEL should verify cohort seals
-at image load — a design question, not test work, and one this lane should put
-to the maintainer rather than answer.
+**AND THE COUNTERPART DOES EXIST — one layer below THAT.**
+`sm_load_image` (`crates/kandelo-image-module/src/lib.rs:221`) calls
+`seal::verify_cohorts(&rootfs::archive_payloads())` at line 246 and, on
+failure, resets the tree, releases the image and returns the error. Its comment
+states the design outright:
+
+> The incumbent exposes this as a separate `verify` the builder must remember
+> to await … a verification a caller can forget is one some caller eventually
+> will. Verifying here makes an UNVERIFIED loaded image unrepresentable rather
+> than merely discouraged.
+
+So the guarantee survives, and **more strongly than the legacy one**: the
+legacy path verifies through a method a caller must remember to call, and the
+legacy test asserts `exportLazyArchiveEntries()` throws until they do. The
+module verifies at load, unconditionally, or refuses the image.
+
+What has no counterpart is the FORGERY MECHANISM, not the guarantee. The port
+is forging a cohort seal in `seal.rs`'s format and asserting `sm_load_image`
+refuses — test-writing work, well defined, needing no decision from the
+maintainer. **The design question this section previously raised is
+withdrawn.**
+
+**Three revisions of one paragraph, each after reading one layer deeper, is
+itself the finding.** The rule written after the second — read the thing being
+forged AND the code that rejects it — would have been right the first time if
+it had been applied before speaking rather than after.
 
 **The lesson, because it is now twice in one session.** Both times I sized a
 port by reading one layer and stopping: the spec without its worker fixture,
