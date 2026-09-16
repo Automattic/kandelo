@@ -2856,13 +2856,38 @@ mod wasm {
     /// `append` returns NOTHING: without this, a failed append would be visible
     /// only as a short vector at replay, in the child, long after the cause.
     ///
-    /// One slot is enough because the emitted sequence is straight-line:
-    /// `begin`, N x (`encoder`, `append`), `finish`, with no guest call between
-    /// them (the encoders re-enter this module, never the guest). A second
-    /// `begin` before a `finish` would mean that shape changed, so it is a loud
-    /// `EINVAL` rather than a silently mis-counted vector.
-    static VECTOR_IN_FLIGHT: [AtomicU32; 3] =
-        [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
+    /// THE BUILDS NEST, which one slot could not hold. The claim here used to
+    /// be that the sequence is straight-line -- `begin`, N x (`encoder`,
+    /// `append`), `finish`, with no guest call between, because the encoders
+    /// re-enter this module and never the guest -- and that second half is
+    /// wrong: encoding an aggregate re-enters the GUEST's own codec through the
+    /// drive table, and that codec opens its own field vector while the outer
+    /// one is still open.
+    ///
+    /// The refusal that assumption produced was invisible. `begin` answered
+    /// EINVAL and -1; the guest cannot see it (append returns nothing), so it
+    /// appended into handle -1, finished a vector that was never open, and
+    /// defined the aggregate against vector ordinal 0xFFFFFFFF. That define
+    /// failed, its claimed placeholder stayed pending, and the CAPTURE refused
+    /// to seal -- four layers downstream, with `fork()` returning an errno the
+    /// program never checked (census section 189).
+    ///
+    /// So they are a stack now, innermost last, and `append`/`finish` name
+    /// their own handle rather than assuming the only one.
+    /// How deeply reference-vector builds may NEST. Eight is far past what the
+    /// emitted code reaches (a frame vector holding an aggregate whose field
+    /// vector holds another aggregate is depth three), and an overflow is a
+    /// loud refusal rather than a silently mis-counted vector.
+    const VECTOR_STACK_DEPTH: usize = 8;
+    #[repr(C, align(4))]
+    struct VectorInFlight(UnsafeCell<[[u32; 3]; VECTOR_STACK_DEPTH]>);
+    // SAFETY: single-threaded per worker (see HeapCell).
+    unsafe impl Sync for VectorInFlight {}
+    /// The OPEN reference-vector builds, innermost last. Each entry is
+    /// `[handle + 1, promised, appended]`.
+    static VECTOR_IN_FLIGHT: VectorInFlight =
+        VectorInFlight(UnsafeCell::new([[0u32; 3]; VECTOR_STACK_DEPTH]));
+    static VECTOR_IN_FLIGHT_DEPTH: AtomicU32 = AtomicU32::new(0);
 
     /// The resident capture builder for the current fork. `fm_capture_begin`
     /// creates it eagerly; this is the accessor the capture exports use. As a
@@ -7216,6 +7241,49 @@ mod wasm {
     /// bases partition the merged catalog, so that is the slice `slot` falls in.
     /// A worker that seeded no bases at all is the single-activation case, where
     /// activation 0 owns everything.
+    /// Turn a MERGED static-root catalog slot into a static-root recipe.
+    ///
+    /// The capture-side twin of `fm_static_root_slot`, which goes the other way
+    /// for replay. The injected `__wpk_fork_ref_gc_lookup` scan finds which
+    /// slot of the merged table holds the reference the guest is encoding, and
+    /// this turns that slot into the `(activation, ordinal)` coordinate the
+    /// graph records -- so the CHILD reconstructs the reference its own
+    /// instantiation already made, instead of a structural copy beside it.
+    ///
+    /// The owning activation is the one with the LARGEST base not above `slot`,
+    /// the same partition `fm_funcref_slot_to_recipe` inverts, and the same
+    /// default: a worker that seeded no base at all is the single-activation
+    /// case, where activation 0 owns everything.
+    ///
+    /// Returns 0 -- "not a static root", the answer `gc_lookup` gives for a
+    /// value it does not know -- when the bases and the scan disagree about the
+    /// table's shape, rather than recording a coordinate in the wrong
+    /// activation. A wrong static-root recipe is not a failure the child can
+    /// see: it would decode to another activation's root and pass every
+    /// structural check.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn fm_static_root_recipe(slot: u32) -> i32 {
+        let count = ACT_STATIC_ROOT_BASE_COUNT.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; the buffer outlives this borrow.
+        let map = unsafe { &*ACT_STATIC_ROOT_BASE.0.get() };
+        let mut owner: Option<(u32, u32)> = None;
+        for entry in map.iter().take(count) {
+            let (activation, base) = (entry[0], entry[1]);
+            if base <= slot && owner.is_none_or(|(_, best)| base > best) {
+                owner = Some((activation, base));
+            }
+        }
+        if count > 0 && owner.is_none() {
+            return 0;
+        }
+        let (activation, base) = owner.unwrap_or((0, 0));
+        capture_recipe_publishable(fm_capture_intern(
+            INTERN_KIND_STATIC_ROOT,
+            activation,
+            slot - base,
+        ))
+    }
+
     #[unsafe(no_mangle)]
     pub extern "C" fn fm_funcref_slot_to_recipe(slot: u32) -> i32 {
         let count = ACT_FUNC_CATALOG_BASE_COUNT.load(Ordering::Relaxed) as usize;
@@ -8924,8 +8992,9 @@ mod wasm {
     /// vector is already open (see `VECTOR_IN_FLIGHT`).
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_vector_begin(count: u32) -> i32 {
-        if VECTOR_IN_FLIGHT[0].load(Ordering::Relaxed) != 0 {
-            set_err(Errno::EINVAL);
+        let depth = VECTOR_IN_FLIGHT_DEPTH.load(Ordering::Relaxed) as usize;
+        if depth >= VECTOR_STACK_DEPTH {
+            set_err(Errno::E2BIG);
             return -1;
         }
         let handle = match capture_builder() {
@@ -8938,10 +9007,21 @@ mod wasm {
         if handle < 0 {
             return handle;
         }
-        VECTOR_IN_FLIGHT[0].store(handle as u32 + 1, Ordering::Relaxed);
-        VECTOR_IN_FLIGHT[1].store(count, Ordering::Relaxed);
-        VECTOR_IN_FLIGHT[2].store(0, Ordering::Relaxed);
+        // SAFETY: single-threaded per worker; `depth < VECTOR_STACK_DEPTH`.
+        let open = unsafe { &mut *VECTOR_IN_FLIGHT.0.get() };
+        open[depth] = [handle as u32 + 1, count, 0];
+        VECTOR_IN_FLIGHT_DEPTH.store(depth as u32 + 1, Ordering::Relaxed);
         handle
+    }
+
+    /// The index of the open build for `handle`, innermost first.
+    fn vector_in_flight_index(handle: u32) -> Option<usize> {
+        let depth = VECTOR_IN_FLIGHT_DEPTH.load(Ordering::Relaxed) as usize;
+        // SAFETY: single-threaded per worker; `depth <= VECTOR_STACK_DEPTH`.
+        let open = unsafe { &*VECTOR_IN_FLIGHT.0.get() };
+        (0..depth)
+            .rev()
+            .find(|&index| open[index][0] == handle.wrapping_add(1))
     }
 
     /// Guest-facing `env.__wpk_fork_ref_vector_append(handle, recipe_id)`.
@@ -8952,10 +9032,20 @@ mod wasm {
     /// short vector the child would reconstruct with missing references.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_vector_append(handle: u32, recipe_id: u32) {
+        let Some(index) = vector_in_flight_index(handle) else {
+            // Appending into a build that is not open cannot be counted, and
+            // counting it against another one would make a DIFFERENT vector
+            // finish wrong.
+            set_err(Errno::EINVAL);
+            return;
+        };
         match capture_builder() {
             Ok(g) => {
                 if capture_ok_void(g.append_vector(handle, recipe_id)) == 0 {
-                    VECTOR_IN_FLIGHT[2].fetch_add(1, Ordering::Relaxed);
+                    // SAFETY: single-threaded per worker; `index` came from the
+                    // live prefix of the stack.
+                    let open = unsafe { &mut *VECTOR_IN_FLIGHT.0.get() };
+                    open[index][2] += 1;
                 }
             }
             Err(e) => set_err(e),
@@ -8973,14 +9063,17 @@ mod wasm {
     /// open one.
     #[unsafe(no_mangle)]
     pub extern "C" fn __wpk_fork_ref_vector_finish(handle: u32) -> i32 {
-        let open = VECTOR_IN_FLIGHT[0].load(Ordering::Relaxed);
-        if open == 0 || open - 1 != handle {
+        let Some(index) = vector_in_flight_index(handle) else {
             set_err(Errno::EINVAL);
             return -1;
-        }
-        let promised = VECTOR_IN_FLIGHT[1].load(Ordering::Relaxed);
-        let appended = VECTOR_IN_FLIGHT[2].load(Ordering::Relaxed);
-        VECTOR_IN_FLIGHT[0].store(0, Ordering::Relaxed);
+        };
+        // SAFETY: single-threaded per worker; `index` is inside the live prefix.
+        let open = unsafe { &mut *VECTOR_IN_FLIGHT.0.get() };
+        let [_, promised, appended] = open[index];
+        // Finishing an OUTER build while an inner one is still open would mean
+        // the emitted nesting is not a stack; drop everything at or above it
+        // rather than leave an entry a later handle could match by accident.
+        VECTOR_IN_FLIGHT_DEPTH.store(index as u32, Ordering::Relaxed);
         if promised != appended {
             set_err(Errno::EINVAL);
             return -1;

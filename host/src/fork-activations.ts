@@ -96,6 +96,7 @@ export function forkActivationCatalogSink(records: {
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
   };
   merged: { take(activationId: number, catalog: WebAssembly.Table): void };
+  mergedStaticRoots: { take(activationId: number, catalog: WebAssembly.Table): void };
   staticRoots: Map<number, WebAssembly.Table>;
   owners: {
     register(activationId: number, ownerId: number, table: WebAssembly.Table): void;
@@ -106,8 +107,10 @@ export function forkActivationCatalogSink(records: {
       records.tables.registerCatalog(activationId, catalog);
       records.merged.take(activationId, catalog);
     },
-    registerStaticRoots: (activationId, catalog) =>
-      records.staticRoots.set(activationId, catalog),
+    registerStaticRoots: (activationId, catalog) => {
+      records.staticRoots.set(activationId, catalog);
+      records.mergedStaticRoots.take(activationId, catalog);
+    },
     registerTable: (activationId, ownerId, table) => {
       records.tables.register(activationId, ownerId, table);
       records.owners.register(activationId, ownerId, table);

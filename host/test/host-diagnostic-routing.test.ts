@@ -192,3 +192,52 @@ it("rejects malformed worker-side proxy data before binding consumers", () => {
   expect(createLazyFetcher).not.toHaveBeenCalled();
   expect(createTlsBackend).not.toHaveBeenCalled();
 });
+
+describe("an aborted fork says why", () => {
+  // WHY THIS EXISTS. A fork that aborts leaves the parent intact and returns
+  // `-errno` to the guest, which is correct -- and until 2026-09-15 it said
+  // nothing to anyone. A guest that does not check `fork()`'s return then
+  // fails somewhere else entirely, and the reason is gone: three separate
+  // defects wore that disguise in a single day, each costing an afternoon of
+  // probes compiled into the worker (census section 189).
+  //
+  // The invariant is EVERY abort path reports, not that some do. That is what
+  // a new abort site added without a report would break, and it is checkable
+  // from the source: the worker sets `forkAbortErrno` on exactly the paths
+  // that abort.
+  it("reports on every path that sets an abort errno", () => {
+    const assignments =
+      processWorkerSource.match(/forkAbortErrno = (?!0;)/g) ?? [];
+    // The helper's own declaration is `const reportForkAborted = (` , so this
+    // counts CALLS only.
+    const reports = processWorkerSource.match(/reportForkAborted\(/g) ?? [];
+    expect(assignments.length, "abort paths in worker-main").toBeGreaterThan(0);
+    expect(reports.length, "one report per abort path").toBe(assignments.length);
+  });
+
+  it("names the errno and a reason a reader can act on", () => {
+    expect(processWorkerSource).toMatch(
+      /type: "fork_aborted", pid, errno, reason/,
+    );
+    // The three causes, each in words rather than a code.
+    expect(processWorkerSource).toContain("the capture could not seal");
+    expect(processWorkerSource).toContain("cannot reconstruct in a fresh child");
+    expect(processWorkerSource).toContain(
+      "the kernel refused to create the child process",
+    );
+  });
+
+  it("reaches the host as a WARNING, because an abort can be correct", () => {
+    // An abort is the right outcome for a reference kind the platform refuses
+    // to reconstruct, so this must not read as a fault on the error channel.
+    const forward = sharedLifecycleSource.slice(
+      sharedLifecycleSource.indexOf('message.type === "fork_aborted"'),
+    );
+    const head = forward.slice(0, 800);
+    expect(head).toContain("reportHostDiagnostic(");
+    expect(head).toContain(
+      "`fork aborted with errno=${message.errno}: ${message.reason}`",
+    );
+    expect(head).toContain('"warn",');
+  });
+});

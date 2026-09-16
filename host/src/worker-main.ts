@@ -88,6 +88,7 @@ import {
   readLinkedFrameFormat,
   writeForkContinuationAnchor,
 } from "./fork-continuation";
+import { ForkMergedStaticRoots } from "./fork-merged-static-roots";
 import {
   buildForkGuestImports,
   forkActivationFrameImports,
@@ -3579,6 +3580,20 @@ export async function centralizedWorkerMain(
        * as the one line it always was rather than a coordinator method.
        */
       let forkAbortErrno = 0;
+      /**
+       * Say why a fork aborted, on the channel the host already reads.
+       *
+       * The parent survives and `fork()` returns `-errno`, which is correct --
+       * but a guest that does not check the return then fails somewhere else
+       * entirely and the reason is gone. It cost an afternoon three times over
+       * (census 189), which is why the platform now speaks even though nothing
+       * is broken in the parent.
+       */
+      const reportForkAborted = (errno: number, reason: string): void => {
+        port.postMessage(
+          { type: "fork_aborted", pid, errno, reason } satisfies WorkerToHostMessage,
+        );
+      };
       let useForkModule = false;
       // Phase 6 item 4: a borrowed (vfork) child instantiates its OWN fork-module
       // at a distinct `__memory_base` by channel-mmapping a fresh region on
@@ -3926,6 +3941,17 @@ export async function centralizedWorkerMain(
       );
       /** Each activation's static-root catalog, for a static-root recipe. */
       const forkStaticRoots = new Map<number, WebAssembly.Table>();
+      // The module's imported merged static-root table, which CAPTURE reads to
+      // recognise a statically initialised reference and REPLAY reads to
+      // reconstruct one. Filled per fork and cleared after, so it never pins a
+      // root; see the class for why that matters.
+      const forkMergedStaticRoots = new ForkMergedStaticRoots(
+        forkModuleInstance!.staticRootCatalog,
+        (activationId, base) =>
+          requireForkModuleBackend(forkModuleBackend, pid)
+            .setActivationStaticRootBase(activationId, base),
+        `pid=${pid}: merged static roots`,
+      );
       // The host's table facts: which physical table a coordinate names, and
       // which coordinate a mutated table is. The module owns the dirty journal
       // those mutations land in, reached through the same export it serves to
@@ -3957,6 +3983,7 @@ export async function centralizedWorkerMain(
             `pid=${pid}: merged function catalog`,
           ),
           staticRoots: forkStaticRoots,
+          mergedStaticRoots: forkMergedStaticRoots,
           owners: processTableStateOwners,
         }),
       );
@@ -4261,6 +4288,9 @@ export async function centralizedWorkerMain(
           // which is the `DRIVE_OP_MODULE_STATE_SAVE` step in the module's own
           // plan. Keeping it would have meant two save walks into two arenas.
           processCaptureModule?.begin();
+          // The capture is about to ask which slot holds a statically
+          // initialised reference, so the merged table has to hold them now.
+          forkMergedStaticRoots.fill();
           publishProcessLaunchRoot(0);
           publishProcessLaunchRoot(
             forkModule().parentBeginCapture(
@@ -5146,6 +5176,11 @@ export async function centralizedWorkerMain(
                   sealError.errno > 0 ? sealError.errno : STARTUP_ENOMEM;
                 forkResult = -errno;
                 forkAbortErrno = errno;
+                reportForkAborted(
+                  errno,
+                  "the capture could not seal (the parent's frames are intact "
+                    + "and were replayed; no child was created)",
+                );
                 forkModule().parentReplay(true);
                 if (forkModuleBackend && !initData.isForkChild) {
                   port.postMessage({
@@ -5184,6 +5219,11 @@ export async function centralizedWorkerMain(
               );
               forkResult = -FORK_REFERENCE_EOPNOTSUPP;
               forkAbortErrno = FORK_REFERENCE_EOPNOTSUPP;
+              reportForkAborted(
+                FORK_REFERENCE_EOPNOTSUPP,
+                `the capture carried a '${unsupportedKind}' reference this `
+                  + "platform cannot reconstruct in a fresh child",
+              );
               forkModule().parentReplay(true);
               // Path B P4 proof-of-use: when the co-resident module is enabled,
               // `beginAbortReplay` above routed through the module's OWN abort
@@ -5233,6 +5273,10 @@ export async function centralizedWorkerMain(
             forkResult = childPid;
             if (childPid < 0) {
               forkAbortErrno = -childPid;
+              reportForkAborted(
+                -childPid,
+                "the kernel refused to create the child process",
+              );
               forkModule().parentReplay(true);
             } else {
               forkModule().parentReplay(false);
@@ -6630,6 +6674,15 @@ export async function centralizedThreadWorkerMain(
                 `pid=${pid} tid=${tid}: merged function catalog`,
               ),
               staticRoots: new Map(),
+              // A pthread replica runs its OWN module instance, so its merged
+              // static-root table is its own too. It is filled per fork like
+              // the process one, by the fork path that opens the capture.
+              mergedStaticRoots: new ForkMergedStaticRoots(
+                threadForkModuleInstance.staticRootCatalog,
+                (activationId, base) =>
+                  backend.setActivationStaticRootBase(activationId, base),
+                `pid=${pid} tid=${tid}: merged static roots`,
+              ),
               owners: threadTableStateOwners,
             }),
           );

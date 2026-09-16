@@ -195,6 +195,8 @@ const STATIC_ROOT_CATALOG_IMPORT: &str = "__wpk_fork_static_root_catalog";
 /// merged anyref-catalog index (per-activation base + ordinal). Exported by
 /// `crates/fork-module/src/lib.rs`; traps on any inconsistency.
 const STATIC_ROOT_SLOT_HELPER_EXPORT: &str = "fm_static_root_slot";
+/// The capture-side twin: merged static-root slot -> static-root recipe.
+const STATIC_ROOT_RECIPE_HELPER_EXPORT: &str = "fm_static_root_recipe";
 
 // Serialized drive-step layout — MUST match `fork_codec::drive_plan`
 // (`DRIVE_STEP_SIZE`, `DRIVE_STEP_OFF_*`, `DRIVE_OP_*`). Four little-endian
@@ -2136,10 +2138,101 @@ fn inject_gc_lookup(module: &mut Module) -> Result<()> {
     let transit_table = exported_table(module, TRANSIT_TABLE_IMPORT)?;
     let find = exported_function(module, GC_IDENTITY_FIND_HELPER)?;
     let identity = import_host_ref_identity(module);
+    let catalog = imported_table(module, STATIC_ROOT_CATALOG_IMPORT)?;
+    let to_recipe = exported_function(module, STATIC_ROOT_RECIPE_HELPER_EXPORT)?;
 
     let mut builder = FunctionBuilder::new(&mut module.types, &[ValType::I32], &[ValType::I32]);
     let slot = module.locals.add(ValType::I32);
     let value = module.locals.add(ValType::Ref(RefType::ANYREF));
+    let want_id = module.locals.add(ValType::I32);
+    let found = module.locals.add(ValType::I32);
+    let i = module.locals.add(ValType::I32);
+    let size = module.locals.add(ValType::I32);
+    let entry_value = module.locals.add(ValType::Ref(RefType::ANYREF));
+
+    // THE STATIC-ROOT SCAN. A reference the module's own instantiation created
+    // must not be captured structurally: the child's instantiation makes it
+    // too, and a structural copy puts a SECOND object beside it -- a fork-only
+    // identity split `ref.eq` sees and nothing else does.
+    //
+    // So before answering "new", walk the merged static-root catalog for a slot
+    // holding this same reference. Identity is the host's answer (the same
+    // oracle the funcref scan uses, for the same reason: `ref.eq` validates
+    // only on `eqref`, and these are `anyref`), and every decision built on it
+    // -- which activation's slice the slot falls in, what ordinal it becomes --
+    // stays in the module. Linear, and deliberately so: capture is not a hot
+    // path, and a cached map would need invalidating on every `dlopen`.
+    let mut loop_body = builder.dangling_instr_seq(None);
+    let loop_id = loop_body.id();
+    loop_body
+        .local_get(i)
+        .local_get(size)
+        .binop(BinaryOp::I32GeU)
+        .if_else(
+            None,
+            // Scanned the whole catalog: not a static root.
+            |_done| {},
+            |work| {
+                work.local_get(i).table_get(catalog).local_set(entry_value);
+                // A null slot cannot be the reference we hold, and asking the
+                // host to identify null would make it invent an answer.
+                work.local_get(entry_value).ref_is_null().if_else(
+                    None,
+                    |_null| {},
+                    |occupied| {
+                        occupied
+                            .local_get(entry_value)
+                            .call(identity)
+                            .local_get(want_id)
+                            .binop(BinaryOp::I32Eq)
+                            .if_else(
+                                None,
+                                |hit| {
+                                    hit.local_get(i).call(to_recipe).local_set(found);
+                                    // PUBLISH the root's identity into the
+                                    // transit at `recipe + 1`, the way the
+                                    // claim and i31 paths do for the values
+                                    // they mint. The generator publishes for a
+                                    // FRESH claim; a value recognised as
+                                    // already-known returns through its
+                                    // `existing` branch, which publishes
+                                    // nothing -- so without this the PARENT's
+                                    // own replay reads an empty slot for a
+                                    // reference it is still holding.
+                                    // `fm_static_root_recipe` grew the table
+                                    // through this slot before returning.
+                                    hit.local_get(found).if_else(
+                                        None,
+                                        |ok| {
+                                            ok.local_get(found)
+                                                .i32_const(1)
+                                                .binop(BinaryOp::I32Add)
+                                                .local_get(entry_value)
+                                                .table_set(transit_table);
+                                        },
+                                        |_| {},
+                                    );
+                                },
+                                |_| {},
+                            );
+                    },
+                );
+                work.local_get(found).unop(UnaryOp::I32Eqz).if_else(
+                    None,
+                    |keep_going| {
+                        keep_going
+                            .local_get(i)
+                            .i32_const(1)
+                            .binop(BinaryOp::I32Add)
+                            .local_set(i);
+                        keep_going.instr(Br { block: loop_id });
+                    },
+                    |_| {},
+                );
+            },
+        );
+    drop(loop_body);
+
     {
         let mut body = builder.func_body();
         body.local_get(slot)
@@ -2154,7 +2247,21 @@ fn inject_gc_lookup(module: &mut Module) -> Result<()> {
             },
             |_| {},
         );
-        body.local_get(value).call(identity).call(find);
+        body.local_get(value).call(identity).local_set(want_id);
+        // An identity already claimed in THIS capture wins: it is what closes a
+        // cycle, and a value cannot be both a fresh claim and a static root.
+        body.local_get(want_id).call(find).local_tee(found);
+        body.if_else(
+            None,
+            |claimed| {
+                claimed.local_get(found).return_();
+            },
+            |_| {},
+        );
+        body.i32_const(0).local_set(found);
+        body.table_size(catalog).local_set(size);
+        body.instr(Loop { seq: loop_id });
+        body.local_get(found);
     }
     let shim = builder.finish(vec![slot], &mut module.funcs);
     module.exports.add(GC_LOOKUP_EXPORT, shim);

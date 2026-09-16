@@ -142,7 +142,6 @@
     "test/fork-static-root-catalog.test.ts",
     "test/fork-table-snapshot-roundtrip.test.ts",
     "test/fork-transit-relocation.test.ts",
-    "test/gc-reference-cycle-fresh-worker.test.ts",
     "test/getaddrinfo.test.ts",
     "test/interactive-stdin.test.ts",
     "test/kernel-allocator-churn.test.ts",
@@ -167,8 +166,6 @@
     "test/spawn-blob-transport.test.ts",
     "test/spawn-credential-order.test.ts",
     "test/spawn-pid-authority.test.ts",
-    "test/static-root-bare-local-fork-fresh-worker.test.ts",
-    "test/static-root-local-fork-fresh-worker.test.ts",
     "test/terminfo-shared-db.test.ts",
     "test/virtual-network-e2e.test.ts",
     "test/wasm-binary-parse.test.ts"

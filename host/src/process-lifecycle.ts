@@ -4555,6 +4555,20 @@ export function createProcessLifecycle<W extends LifecycleWorkerHandle>(
           + `drive_steps_executed=${message.driveSteps} `
           + `static_roots_published=${message.staticRoots}`,
       });
+    } else if (message.type === "fork_aborted" && message.pid === pid) {
+      // Say why a fork aborted. The parent survives and `fork()` returns
+      // `-errno`, which is right -- but a guest that does not check the return
+      // then fails somewhere else entirely, and the reason was never spoken.
+      // A warning, because an abort is the correct outcome for a reference
+      // kind the platform refuses to reconstruct.
+      reportHostDiagnostic(
+        {
+          pid,
+          source: "fork",
+          message: `fork aborted with errno=${message.errno}: ${message.reason}`,
+        },
+        "warn",
+      );
     } else if (message.type === "fork_module_region" && message.pid === pid) {
       // Record where this worker placed its co-resident fork-module region so
       // a COPIED fork child reuses the same base instead of double-mapping the
