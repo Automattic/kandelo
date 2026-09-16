@@ -886,6 +886,14 @@ methods. `SffsImageFs` already has 12. The other four —
 which step (1) deletes. So step (1) does not add to step (2)'s cost; it removes
 most of it.
 
+The STATIC side was counted separately, because instance methods are only half
+of what a boot path calls. Six statics: `create`, `readImageMetadata` and
+`readImageCapacity` already exist on `SffsImageFs`; `fromImage` exists as
+`loadImage`; `fromImagePreservingCapacity` has one caller and it is a test
+fixture, not the boot path; and `assertImageKernelAbi` composes over the
+existing `readImageMetadata`, which already returns what the image declares
+about itself. No new Rust, and no method the bridge must grow.
+
 A fifth looked like a genuine gap and is not.
 `verifyImportedSealsForCurrentBoot(buildFs)` delegates to
 `fs.verifyImportedLazyAtomicGroupSeals()`, which `SffsImageFs` does not have —
