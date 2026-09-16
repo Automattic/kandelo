@@ -3788,6 +3788,42 @@ both that in substance however the arithmetic is framed. The gate did its job:
 it stopped a change that would otherwise have gone in under a plausible
 explanation.
 
+### `sharedfs-safety` GUARDS A HAZARD THAT NO LONGER EXISTS — traced, 2026-09-16
+
+The maintainer asked the right question about the claim that its 32 tests
+cannot be ported: *does this mean each worker used to reach the bytes through
+a SharedArrayBuffer, and now only the kernel worker does?* Traced to a commit
+rather than reasoned:
+
+**`e5ae330d82` — "VFS: `/dev/shm` moves in-kernel — the host half, and the SAB
+goes with it"** — removed the `/dev/shm` MountConfig, the `MemoryFileSystem`
+behind it, **the SharedArrayBuffer that backed it (16 MiB on Node, 1 MiB in the
+browser)**, and the `shmSab` boot-message field that by then had "no sender and
+no receiver left".
+
+`/dev/shm` was the genuine case: POSIX shared memory is DEFINED by concurrent
+access, so a filesystem shared between workers was the point of it. The
+multi-view machinery `sharedfs-safety` exercises — `fromExisting(sab)`,
+`withNamespaceLock`, inode generation and data-sequence counters, `Atomics.wait`
+fallbacks — existed to make that safe.
+
+**Today no filesystem SharedArrayBuffer crosses a worker boundary.** Checked:
+
+* `fromExisting` has ONE production caller, inside `memory-fs.ts` itself,
+  building a verifier view in the SAME worker. Every other caller is a test.
+* The only worker that creates a real peer is
+  `host/test/fixtures/sharedfs-namespace-worker.ts`, which takes `fsBuffer` in
+  `workerData` purely to manufacture contention for these tests.
+* The worker protocols carry SABs for a process's `WebAssembly.Memory` and for
+  `stats` — not for a filesystem. `node-kernel-protocol.ts:84` states it:
+  *"No SharedArrayBuffer VFS (Node uses real filesystem via NodePlatformIO)."*
+* In the browser, `browser-kernel-worker-entry.ts` holds the root mount backend
+  INSIDE the kernel worker; guests reach it by syscall.
+
+**So it guards a hazard nothing CAN hit, not one nothing hits YET** — the
+distinction that matters for deleting it, and one this section could not have
+made from the test names alone.
+
 ### THE DELETION LANDED — `f75f7806e`, 2026-09-16
 
 2,317 lines gone, and `hostVfsTypeScript` **8801 → 7710 with the ceiling
