@@ -62,8 +62,8 @@
       "name": "open ignores O_TRUNC, splicing into the old file's bytes",
       "scope": "  open(path: string, flags = 0, mode = 0o644): number {",
       "scope_end": "\n  }\n",
-      "find": "    if (!exists || truncate) this.writeFile(path, new Uint8Array(0), mode);",
-      "replace": "    if (!exists) this.writeFile(path, new Uint8Array(0), mode);"
+      "find": "    if (existing === null || truncate) {",
+      "replace": "    if (existing === null) {"
     },
     {
       "name": "open creates a missing file even without O_CREAT",
