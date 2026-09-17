@@ -14206,6 +14206,75 @@ says nothing about whether production reaches it. That is a new entry for the
 causes catalogue, and it is the inverse of the sixth cause: not a guard that
 cannot fail, but a guard that fails correctly in a world nothing enters.
 
+### THE STAGED-PRODUCT PATH IS RETIRED — `768251c5e`, `23d1cb045`, 2026-09-17
+
+**7,532 lines deleted across two commits**, on the maintainer's call that the
+cause outlived the implementation: an ABI change still needs the complete
+product graph rebuilt at the exact commit, but this apparatus was shaped around
+Homebrew, and Homebrew went in `fc2f3ef834`.
+
+**MY FIRST ESTIMATE WAS WRONG BY A THIRD, and the census is why.** I sized the
+apparatus at 7,662 lines and proposed retiring all of it. Roughly a third is
+LIVE:
+
+| kept | because |
+|---|---|
+| `vfs_products/product_manifest.rs` | it is the product CATALOG — `local_build.rs` imports four items from it, and the browser gallery consumes what it generates through `pages-vfs-products.toml` |
+| the seventeen `images/vfs/products/*.toml` | they feed that catalog |
+| `vfs_products/canonical_json.rs` | `canonical_sha256` and `canonical_json_bytes` are used by `local_build.rs` |
+| `archive_extract_member.rs` | `rename_no_replace` is live in `local_build.rs` and `source_archive_cache.rs` |
+
+**A file can be one-third load-bearing.** "Retire the apparatus" was the right
+decision and "delete the directory" would have been the wrong execution of it;
+the difference is a census that reads every importer rather than the module's
+name.
+
+**WHAT CONFIRMED THE CALL, and it was not my analysis.** `scripts/
+ci-run-test-suite.sh` already listed `vfs-product-builder-contract.test.ts` in
+`disabled_software_excludes` — the same list as the `brew`, `bottle`, `formula`
+and `tap` patterns, and two `abi-staging` tests that no longer exist. **CI had
+already classified it as disabled software.** The list also carried two
+exclusions naming deleted files, which went in the same commit along with the
+groups test that mirrors the list exactly.
+
+**THE PERTURB SPECS WERE THE STRONGEST ILLUSION OF LIFE.** Five specs retired
+with the code — `product-builder-envelope` (5 trials), `staged-product-
+extraction` (4), `xtask-resolved-inputs` (34), `xtask-archive-tree` (13),
+`xtask-archive-paths` — and the campaign total falls **415 → 349**. Every one of
+them was green and killed every mutant it applied. **A green trial on
+unreachable code is indistinguishable from a green trial on a live guard**,
+because the verifier is a test driving the code directly. Mutation testing
+proves a guard is reachable FROM ITS TEST. Nothing in the method asks whether
+production reaches it. That belongs in the causes catalogue as the inverse of
+the sixth: not a guard that cannot fail, but one that fails correctly in a world
+nothing enters.
+
+**AND A BLANKET `allow(dead_code)` CAME OFF.** `canonical_json.rs` opened with
+one, added so "the first independently reviewable commit" could land quiet while
+its helpers were "about to become live command dependencies". They became live,
+and then this deletion orphaned two of them — and the allow would have kept both
+silent. `validate_git_sha` had no caller left but its own test and is deleted
+with it; `validate_repo_path_shape` is still used inside `validate_repo_path`
+and is now private. **A temporary allow outlives the temporary condition**, and
+the only reason these two surfaced is that the module was being read anyway.
+
+### THE FRESHNESS PROPOSAL IS WRITTEN — `docs/plans/2026-09-17-keyed-artifact-freshness.md`
+
+Requested by the maintainer rather than volunteered. The build key is recorded
+three ways — a key-addressed generation store, a `kandelo.build.key` custom
+section inside tier mirrors, `.build-key` sidecars for their siblings — and the
+one thing NOT keyed is the path a consumer resolves, so a stale artifact is
+present and served rather than absent.
+
+The proposal makes the resolved path carry the key. It cites three failures
+already on the record, including the one `local_build.rs` documents itself: on
+2026-09-09 a `./run.sh rebuild kernel` refreshed the SourceOnlyV1 projection and
+left the ambient `local-binaries/kernel.wasm` three days stale, `verify-fresh`
+reported green because it only checked the tier copy, and every host-native test
+failed on an import-type mismatch. It closes with the three things I did NOT
+check, one of which — whether the generation store is pruned — would change its
+first step.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
