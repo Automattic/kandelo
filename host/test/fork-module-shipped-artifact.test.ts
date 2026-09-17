@@ -123,12 +123,23 @@ describe("the shipped fork module", () => {
   });
 
   it.each(WIDTHS)("agrees across every staged copy, so no tier shadows a fresh build (%i-bit)", (width) => {
-    // `resolveBinary` does NOT return the file the build script last wrote.
-    // It walks ARTIFACT_TIERS, and `local-binaries/source-only-v1` is FIRST --
-    // so a stale module there shadows the fresh one in `local-binaries/` and
-    // `host/wasm/`. Census 90 recorded exactly that happening: "The tier kept a
-    // three-hour-old fork_module32.wasm while local-binaries/ had the fresh
-    // one."
+    // Every copy the build stages must agree, because more than one consumer
+    // picks a different one and they must not disagree about what the module
+    // is. Census 90 recorded the failure: "The tier kept a three-hour-old
+    // fork_module32.wasm while local-binaries/ had the fresh one."
+    //
+    // An earlier version of this comment said `local-binaries/source-only-v1`
+    // is FIRST in `ARTIFACT_TIERS` and therefore what `resolveBinary` returns.
+    // The first half is true and the second does not follow, which is why the
+    // list below names every path instead of deriving them from `resolved`.
+    // Measured here: `resolveBinary("fork_module32.wasm")` returns
+    // `local-binaries/fork_module32.wasm` even with the tier present, holding
+    // the file, and with the projection manifest published -- the source-only
+    // candidate must clear a generation-identity check that a hand-staged copy
+    // does not. The projection engine still compares source against projected
+    // (`coresident_side_module_projection_is_current`), so a stale tier copy
+    // is a real hazard; it is just not one that reaches us THROUGH the
+    // resolver.
     //
     // This is also why perturbing `host/wasm/fork_module32.wasm` to prove this
     // file's guards SURVIVED: the test never reads that copy. A reader
@@ -139,9 +150,20 @@ describe("the shipped fork module", () => {
     // disagreement is.
     const resolved = resolveBinary(`fork_module${width}.wasm`);
     const canonical = readFileSync(resolved);
+    const repo = join(import.meta.dirname, "..", "..");
     const staged = [
       join(import.meta.dirname, "..", "wasm", `fork_module${width}.wasm`),
-      join(import.meta.dirname, "..", "..", "local-binaries", `fork_module${width}.wasm`),
+      join(repo, "local-binaries", `fork_module${width}.wasm`),
+      // The source-only tier is listed EXPLICITLY rather than left to
+      // `resolveBinary`. It is first in `ARTIFACT_TIERS` and it holds the
+      // file, but the resolver still returns `local-binaries/` here: the
+      // source-only candidate has to clear a generation-identity check that a
+      // hand-staged copy does not. So `resolved` is NOT the tier copy, and a
+      // list built only from `resolved` never reads the one file this
+      // assertion is named for. Found by perturbation: appending a byte to
+      // the tier copy left this test GREEN while
+      // `build-wasm.sh --verify-fresh` correctly exited 1.
+      join(repo, "local-binaries", "source-only-v1", `fork_module${width}.wasm`),
     ];
     for (const path of staged) {
       if (!existsSync(path) || path === resolved) continue;
