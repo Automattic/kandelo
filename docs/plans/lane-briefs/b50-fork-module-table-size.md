@@ -91,6 +91,27 @@ after your final commits. If your worktree reproduces it, it is lane F's. If it
 does not, say so immediately — then it is something the merge produces and I
 need to know.
 
+## Two findings from your own worktree, taken read-only 2026-09-16
+
+**Your built module has THREE table imports; the merged build has two.**
+`/Users/brandon/kandelo-lane-f/host/wasm/fork_module32.wasm` (built 15:01):
+
+    table[0] funcref initial=2 <- env.__indirect_function_table
+    table[1] funcref initial=0 <- env.__wpk_fork_function_catalog
+    table[2] funcref initial=0 <- env.__wpk_fork_drive_table
+
+The module built from the merge has no `__wpk_fork_drive_table` import at all.
+`DRIVE_TABLE_IMPORT` is present in the source I merged
+(`crates/fork-module-inject/src/main.rs:67`), so the same source produced
+different modules — which points at the INJECTOR or its inputs, not at the
+module crate. Check whether the merge's build ran a stale
+`fork-module-inject`, or whether it takes an input that differs between the
+two trees.
+
+**Your branch has moved past what I merged.** I merged `56020b54a`; your tip
+is now `046c7530f`, three commits further. If any of those three touch this,
+say so first and I will re-merge rather than have you fix something twice.
+
 ## The guard that should have caught it
 
 `host/test/fork-module-instance.test.ts` passes **6/6** against the broken
