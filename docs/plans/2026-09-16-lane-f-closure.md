@@ -845,3 +845,52 @@ that exposed items 3-5, I reported "zero failures" from
 `FAILED · CONTINUING |`, so that matcher could never match. The build had
 failed. Same class as [[gate-on-exit-codes-not-greps]], on a run whose
 verdict I had already been told to read from the tool's own summary.
+
+## The identity table: why mmap-backed growth was built and then reverted
+
+The maintainer ruled "build mmap-backed growth" for the identity table, on my
+framing that 16,384 is still a static and the count scales with the guest's
+module set. I built it, and the build disproved the framing. Reverted, with the
+evidence here, because the decision should be remade on what is now known.
+
+**The static IS host-allocated memory.** `instantiateForkModule` computes
+`staticBytes = alignUp(info.memorySize, info.memoryAlign)` from the module's
+own `dylink` record and reserves the whole region in one `reserve(regionBytes)`
+call. Growing `GLOBAL_IDENTITY_MAX` grows `info.memorySize`, and the host
+reserves the larger region automatically -- which is why 512 -> 16,384 needed no
+syscall and no host change. "Static" and "host-allocated" are not opposites
+here; the static is the host allocation. My argument for mmap rested on treating
+them as opposites.
+
+**The spill is unreachable for every program this repo builds.** php with its
+full extension set needs 7,684 identities, comfortably under the 16,384 inline
+tier. So the mmap path would be dead code today, and dead code in a fork path is
+only exercised in production.
+
+**And it makes identity publishing BLOCK.** `channel_mmap` goes through
+`channel_syscall`, which ends in
+
+    while wasm_intr::memory_atomic_wait32(status_ptr, CH_PENDING, -1) == 0 {}
+
+-- an untimed wait for a kernel worker to clear the status. Identities are
+published during INSTANTIATION, so this would add a kernel round-trip to module
+setup, turning a memory write into a rendezvous. A stalled kernel becomes a
+stalled instantiation.
+
+**It also cannot be tested where the module is tested.** Every fork-module unit
+test drives a bare `WebAssembly.Memory` with no kernel behind the channel, so a
+test that reaches the spill parks forever rather than failing. Mine did: 0% CPU,
+killed after ten minutes. A guard that cannot run is worse than a stated bound.
+
+**Where that leaves it.** `9b13064204` stands: 16,384 with the per-artifact
+counts recorded, plus `fork-identity-capacity.test.ts`, which fails naming the
+real number when a program's export count approaches the bound. That is a static
+with a derivation and an alarm, not a magic number.
+
+If the bound genuinely needs to grow later, the option that avoids every problem
+above is a HOST-RESERVED identity region: add it to the layout in
+`fork-module-instance.ts` (which already carves static, shadow stack and staging
+slab) and seed its base through a module entry. No syscall, no blocking, sized
+by the host -- which can count catalog exports before publishing. The cost is one
+new `fm_*` entry, and `forkModuleHostEntries` is a budgeted surface, so it is a
+raise to argue rather than take.
