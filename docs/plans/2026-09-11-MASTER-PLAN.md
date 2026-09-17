@@ -14433,8 +14433,8 @@ tree; measures computed over it without checking anything out):
 | `hostKernelPlumbingTypeScript` | 4,575 | 4,582 | **4,582** | **PARENT — the lane's 4,575 FAILS** |
 | `forkModuleEntryPoints` | 69 | 71 | not computed | measure it |
 | `setuidLazyWithoutDigest` | 0 | 2 | not computed | measure it |
-| `forkTypeScript` | 19,804 | 890 | not computed | measure it; parent is the banked one |
-| `workerMainTypeScript` | 5,958 | 5,356 | not computed | measure it; parent is the banked one |
+| `forkTypeScript` | 19,804 | 890 | **do not predict** | the two branches measure it with DIFFERENT globs and helpers; read it off the budget |
+| `workerMainTypeScript` | 5,958 | 5,356 | 5,356 with the parent's measure | parent |
 
 **`hostKernelPlumbingTypeScript` is why the minimum rule is wrong.** The lane
 banked 4,575 before the parent added seven lines to files this lane never
@@ -14472,11 +14472,30 @@ ceilings are compared against, and this lane changed three of them:
 * `hostVfsTypeScript` is now a plain `lineCount(["host/src/vfs/*.ts"])`, because
   the files it used to subtract are gone.
 
-**The lane's side of those three measures must win**, because after the merge
-those paths do not exist and `lineCount` REFUSES a missing path on purpose — a
-renamed file must not read as a reduction. Keep the parent's measures and the
-budget fails with a missing-path error rather than a ceiling violation, which
-reads like a broken test and invites someone to "fix" it by restoring a ceiling.
+**THIS IS A RECONCILIATION, NOT A HUNK PICK — corrected after reading both
+files.** An earlier draft here said "the lane's side of those three measures
+must win". That is wrong and would discard ~260 lines of the parent's newer
+measurement machinery. The two files have diverged structurally:
+
+| | lane | parent |
+|---|---|---|
+| size | 966 lines | **1,224 lines** |
+| helpers | `lineCount`, **`deletedSurface`** | **`codeLineCount`** (renamed from `lineCount`), `codeLinesInSource`, `stripComments`, `forkModuleEntries`, `workerMainForkLines` |
+
+**Take the PARENT's file as the base** — it is newer and carries measures the
+lane has never seen — **and port the lane's three changes onto it**:
+`deletedSurface`, and the `memoryFsTypeScript` / `imageFsTypeScript` /
+`hostVfsTypeScript` measures that use or follow from it. The reason the lane's
+versions of those three are needed is unchanged: after the merge those paths do
+not exist, and the line counter REFUSES a missing path on purpose, so the
+parent's versions fail with a missing-path error that reads like a broken test.
+
+**AND A RETRACTION: ignore any `forkTypeScript` figure computed here.** I
+measured 6,461 against the merged tree and it fit neither side — because I used
+the LANE's glob (`host/src/fork-*.ts`) for an entry the lane never changed. The
+parent measures it through `host/src/fork-module-*.ts` and its own custom
+helpers. **Do not reimplement those measures to predict a number.** Resolve the
+files, run the budget, and read the value it reports.
 
 **Resolve the two files together or not at all.** A ceiling of 0 for
 `memoryFsTypeScript` requires the `deletedSurface` measure; pair the parent's
