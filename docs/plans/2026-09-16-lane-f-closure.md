@@ -423,9 +423,23 @@ that found all of this.
    `/Users/brandon/.cache/kandelo-lane-f/source-only`, whose segment is
    `kandelo-lane-f`, so nothing matches and `configure` gets an empty
    `PKG_CONFIG_PATH` although the icu artifact is complete and all three `.pc`
-   files sit exactly where `build-php.sh` points. Verified by running the
-   wrapper's own `case` statement against the real icu path (filtered) and
-   against a `/Users/brandon/.cache/kandelo/...` path (kept).
+   files sit exactly where `build-php.sh` points.
+
+   **Confirmed end-to-end, not by reading the glob.** Point `PKG_CONFIG_PATH`
+   at the real icu pkgconfig directory and ask the wrapper for the package;
+   then point it at a SYMLINK to that same directory whose path carries a
+   literal `kandelo` segment, and ask again:
+
+       PKG_CONFIG_PATH=<lane cache>/...icu.../lib/pkgconfig \
+         wasm32posix-pkg-config --exists icu-uc   -> exit 1
+
+       PKG_CONFIG_PATH=/tmp/.../kandelo/pkgconfig \
+         wasm32posix-pkg-config --exists icu-uc   -> exit 0
+
+   Same directory, same three `.pc` files, same contents. The only difference
+   is how the path is spelled, which is the whole claim. (Read the exit code
+   directly: piping this through `tail` reports the pipe's status and says 0
+   for both.)
 
    **What it blocks, measured.** `php/wasm32` is the ONLY package that fails a
    full `local-build` here; it blocks six php-dependent nodes (`wordpress`,
