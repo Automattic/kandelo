@@ -13473,6 +13473,52 @@ half is the next step, and it needs
 `apps/browser-demos/test/vfs-import-seal-boundary.spec.ts` to expect the
 kernel's refusal instead of `Lazy atomic activation (member|group)`.
 
+### THE BLOCKER WAS WRONG, AND THE WORD THAT CARRIED IT WAS "THEREFORE" — 2026-09-16
+
+**Two entries below say this removal is blocked on a maintainer decision about
+a security property. They are retracted.** The argument was: the spec asserts
+`workerStartedAfterRejection === false`, the kernel runs in a worker,
+THEREFORE a refusal the kernel makes cannot precede a worker starting. The
+premise is true and the inference does not follow, which is the shape worth
+catching rather than the conclusion.
+
+**Read instead of reasoned, the browser property is already the other one.**
+Nothing on the main thread inspects the image: `bootWorker` checks buffer
+ownership, fetches three module artifacts and calls `new Worker`, setting
+`workerStarted = true`. The host-side seal check runs inside
+`browser-kernel-worker-entry.ts` — **in that worker**. So the worker is
+always started before any image is judged. What makes the assertion pass is
+`bootWorker`'s catch: it calls `destroy()`, which sets `workerStarted = false`,
+and only then rethrows — *"failed initialization owns and tears down its
+half-created worker"*, in the code's own words.
+
+**The property is therefore "a rejected image leaves no kernel worker alive",
+and the kernel's own refusal satisfies it identically**: init fails, the catch
+tears down, the flag is false. Nothing about it depends on WHICH reader
+refused. What the removal actually changes is the error message the spec
+matches and the carrier the fixture forges.
+
+**The Node peer is a different and sharper claim**, and it is the one that
+genuinely inverts. `node-kernel-init-seal.test.ts` passes `new ArrayBuffer(0)`
+as the kernel deliberately: *"rootfs authentication must fail before kernel
+compilation is attempted"*. A kernel that refuses an image must first be
+compiled, so authentication-in-the-loader cannot preserve that ordering.
+
+**That ordering is not a trust boundary, and inverting it is an improvement.**
+The kernel is our own artifact; compiling it is not a risk taken on behalf of
+an untrusted input. The trust question is which parser meets untrusted image
+bytes first, and today the answer is a TypeScript filesystem this lane is
+deleting. After the inversion it is the hardened Rust loader — the same one
+that already refuses mismatched ABIs, undescribed archives and unverifiable
+set-ID bits. **Parsing untrusted bytes later, in Rust, beats parsing them
+earlier, in TypeScript.**
+
+**This is a lane decision and it is taken**: the ordering "authenticate before
+compiling the kernel" is retired, the property "a rejected image leaves no
+worker alive" is kept, and the seal claim itself now lives in `runtime-core`
+on a genuine exported container. Recorded here rather than only in a commit
+message because it reverses what the two entries below told a reader.
+
 ### THE HOST RESTORE IS READY TO GO EXCEPT FOR ONE FIXTURE — measured 2026-09-16
 
 **The removal was written, type-checked, and then backed out unlanded.** What
