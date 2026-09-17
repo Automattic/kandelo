@@ -134,6 +134,27 @@ if [[ "${1:-}" == "--verify-fresh" ]]; then
       status=1
       continue
     fi
+    # THE KEY IS NOT ENOUGH, because it stamps only THIS copy. `resolveBinary`
+    # searches `local-binaries/source-only-v1/` FIRST -- ahead of the artifact
+    # just verified -- and `verify-fresh`'s scan of that tier is scoped to
+    # `kernel.wasm` (see the resolver's note, and the staging comment below).
+    # So a stale module sitting one tier up passes every check here while being
+    # the module both hosts actually load, the build is skipped as fresh, and
+    # the staleness is invisible until something instantiates it.
+    #
+    # That is not hypothetical: the staging comment below records it costing a
+    # commit whose new export "existed in two tiers and the call resolved the
+    # third, so it read `undefined`". Compare the bytes rather than trust the
+    # stamp, since the shadowing copy carries no stamp of its own.
+    shadow="$REPO_ROOT/local-binaries/source-only-v1/fork_module${width}.wasm"
+    if [[ -f "$shadow" ]] && ! cmp -s "$shadow" "$artifact"; then
+      echo "fork-module: $shadow differs from $artifact, and it is the copy" \
+        "resolveBinary returns FIRST -- so the verified artifact is not the one" \
+        "the hosts load. Rebuild with 'bash crates/fork-module/build-wasm.sh'," \
+        "which stages all three tiers." >&2
+      status=1
+      continue
+    fi
     echo "fork-module: $artifact matches current source ($current_sha)" >&2
   done
   exit "$status"
