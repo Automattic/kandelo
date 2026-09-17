@@ -13694,6 +13694,51 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### NOTHING PASSES `moduleLazyEntries`, AND ONE CONSUMER IS BLIND — found 2026-09-17
+
+**`createBaseImageFromContainer`'s fourth argument has no caller in the
+repository.** Not the Node worker entry, not the browser worker entry, not the
+Pages asset closure — only `module-base-image.test.ts`. Every shipped image is
+module-written (lane Y closed on `images/` having zero importers of the
+TypeScript filesystem), so a call without that argument reads host-side JSON
+sections that are not there and answers **"this image has no deferred files"**
+for an image full of them.
+
+**What it costs, per consumer, measured rather than assumed:**
+
+| consumer | consequence |
+|---|---|
+| `scripts/build-local-vfs-asset-group.ts` | **broken.** It stages every lazy body a product references; it would stage NOTHING and then fail its own count check. Fixed in `2b54cc9ff` — it runs in Node and can load the image with `KandeloImageFs` directly |
+| `node-kernel-worker-entry.ts`, `browser-kernel-worker-entry.ts` | **degraded, not broken.** `buildRootfsLazyWiring` gets an empty transport table, so a deferred fetch goes straight to the address the kernel names. That is the courier contract working — but the DECLARED LENGTH goes unchecked, so a mirror serving the wrong bytes is caught only later, by the kernel's digest check on materialization |
+
+**The worker half is not fixed here, and the reason is a real boundary.** A
+browser worker would have to hold the image module's bytes to instantiate a
+`KandeloImageFs` — `installModuleBytes` exists for exactly that, and
+`apps/browser-demos/lib/kernel-owned-boot.ts` already does it on the main
+thread — so this is a browser-validated change to the boot path, not a test
+repoint. **It also decides the fate of the reader's section-reading branch**,
+which has no producer once `memory-fs.ts` is deleted: passing the argument at
+both entries is what makes that branch deletable rather than merely unused.
+
+**AND THE SCRIPT'S OWN TEST IS NOT RUN BY ANYTHING.**
+`scripts/build-local-vfs-asset-group.test.ts` is a `node:test` file;
+`host/vitest.config.ts` includes `test/**`, `../web-libs/**`,
+`../packages/registry/*/test/**`, `../tests/package-system/**` and
+`../examples/dlopen/**` — not `../scripts/**` — and no workflow runs
+`node --test` or `tsx --test` over it. Run by hand it fails at HEAD, on an
+unrelated registry check ("run.sh BROWSER_DEPS has unregistered VFS build
+target shell-vfs"). **Nine other `node:test` files are in the same position**
+(`benchmarks/`, `apps/browser-demos/`, `scripts/run-vfs-product-builder`).
+Filed, not fixed: deciding what runs them is a CI-ownership question.
+
+**A CENSUS LESSON, and it is the third time this lane has been bitten by the
+shape of a grep.** The importer count was measured with
+`from "[^"]*memory-fs"` — which misses `from "../host/src/vfs/memory-fs.ts"`.
+Six files were invisible to it, including the Pages script above. The pattern
+is now `(memory-fs|sharedfs-vendor)(\.ts)?["']`. **A census is a measurement,
+and a measurement whose rule is not written down cannot be reproduced or
+corrected.**
+
 ### THE STEP-4 TRANCHE: TEN FILES, AND THREE CLAIMS PORTED INTO RUST — 2026-09-17
 
 Importers of `memory-fs`/`sharedfs-vendor` across the repository: **60 → 44**
