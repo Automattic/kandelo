@@ -1172,3 +1172,88 @@ alone, which runs on every build and every verify-fresh. That is adequate
 coverage for the drift this lane found, and extending the vitest test to the
 siblings would duplicate the shell guard rather than add a dimension -- so it
 is left, named, for whoever decides otherwise.
+
+## REGRESSION I CAUSED: the identity table took P-11's address space
+
+`./run.sh setup` reaching exit 0 proves the BUILDS succeed. It does not prove
+fork works, and those are different claims. Running the fork suite (73 files,
+520 tests) found three failures, one of which is mine.
+
+Triage first, because two of the three are not:
+
+  * `fork-module-worker-instantiation` -- "drives a qualifying fork through
+    the co-resident module" timed out at 30s in the full parallel run and
+    PASSES in isolation (exit 0, 1 passed). A load flake, and the one test
+    that most directly proves the co-resident fork path works.
+  * `fork-host-import-runtime` (2 tests) -- reproduces in isolation, and is
+    already in `host/test/expected-failures.json` (64 entries). Known, banked,
+    not a regression. `wa_read_facts: malformed type section: invalid value
+    type`.
+  * `fork-instrument-coverage` -- "P-11 root and later continuation allocation
+    failures preserve the parent". NOT baselined, reproduces in isolation, and
+    is MINE.
+
+### The chain
+
+`9b13064204` raised `GLOBAL_IDENTITY_MAX` 512 -> 16,384 to fix the E2BIG that
+blocked wordpress and lamp. That table is `[[u32; 4]; N]` in the module's
+static BSS, and the host reserves the whole `dylink` `memorySize` out of the
+guest's memory in one `reserve(regionBytes)` call. So the cap is not a private
+module detail: it is guest address space.
+
+Measured, not inferred -- same build, only the constant changed:
+
+    16_384   memorySize 6,743,012   P-11 FAILS
+       512   memorySize 6,489,060   P-11 PASSES
+                  delta   253,952 = 16_384*16 - 512*16, exactly
+
+`programs/p_11_fork_continuation_enomem.c` mmaps 64 KiB pages until ENOMEM and
+needs at least two to set up its scenario; it reports "fewer than two filler
+mappings were available". 253,952 bytes is about four such pages, so the guest
+had only a couple of pages of slack and my change consumed them.
+
+That is worth stating plainly: this is not a brittle test. It is the module's
+static reservation leaving a guest almost nothing to map, which is the same
+concern the mmap-revert section raised from the other direction.
+
+### The trade, bisected
+
+| cap | P-11 | php headroom (needs 7,684) |
+|---|---|---|
+| 512 | passes | E2BIG -- wordpress and lamp break |
+| 8_192 | passes | 1.07x (508 spare entries) |
+| 9_216 | FAILS | 1.20x |
+| 10_240 | FAILS | 1.33x |
+| 12_288 | FAILS | 1.60x |
+| 16_384 | FAILS | 2.13x |
+
+The threshold is in (8_192, 9_216]. So the 2.1x recorded in `lib.rs` as "a
+bound with a reason" was never available: any cap that keeps P-11 green gives
+php at most about 1.2x.
+
+### What I did about it, and why not more
+
+Restored to the committed 16_384 and rebuilt; all six artifacts came back
+byte-identical (`58ac5e338fdda995` / `6391604b1641de07`), build-key
+`5bd1ca7969137211`, verify-fresh 0.
+
+I did NOT quietly drop the cap to 8_192 to turn P-11 green. It would work
+today, and it is one line. But 508 spare entries is one PHP extension from the
+same E2BIG this lane was sent to fix, and choosing to accept that risk is a
+product decision rather than a tidy-up. Tuning a constant until a check passes
+is the same move as raising a ceiling to make a check pass, which is standing
+forbidden -- the number stops meaning anything.
+
+So the options, all measured:
+
+  * `8_192` -- P-11 green, every product still builds, php at 1.07x. One line.
+  * `16_384` -- P-11 red, php at 2.13x. The committed state.
+  * host-reserved identity region -- the durable answer, already written up
+    above: the host sizes it (it can count catalog exports before publishing),
+    it does not come out of the module's `dylink` static, and neither number
+    has to be traded. Costs one `fm_*` entry against a budgeted surface, so it
+    is a raise to argue.
+
+My recommendation is the third, with `8_192` as the interim if P-11 needs to
+be green before that lands. Not taken unasked: both change a bound whose terms
+the maintainer set.
