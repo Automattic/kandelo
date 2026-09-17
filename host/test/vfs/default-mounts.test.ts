@@ -601,40 +601,52 @@ describe("resolveForBrowser", () => {
     image = await buildFixtureImage();
   });
 
-  it("produces memfs-scratch backends only, and no image mount", async () => {
-    const mounts = await resolveForBrowser(HOST_SCRATCH_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const hostBacked = HOST_SCRATCH_MOUNT_SPEC.filter((m) => m.source !== "image");
-    expect(mounts).toHaveLength(hostBacked.length);
+  // RETIRED 2026-09-16 with the browser's memfs-backed scratch mount, five
+  // cases: "produces memfs-scratch backends only", "restores the caller's
+  // host-backed mounts without adding default overlays", "keeps a uid/gid
+  // profile on an independent writable browser scratch mount", "applies
+  // declared scratch root modes", and "scratchSabBytes overrides apply per
+  // mount".
+  //
+  // All five drove `resolveForBrowser` into building a `MemoryFileSystem` over
+  // a `SharedArrayBuffer` for a scratch path, which is the last production use
+  // of the class this lane deletes. The browser resolver refuses such a mount
+  // now rather than backing it: the eight prefixes the in-kernel tmpfs owns are
+  // filtered out before it looks, and the browser host has no filesystem of its
+  // own to mount anywhere else.
+  //
+  // THE ASYMMETRY WITH NODE IS DELIBERATE and is not a parity gap. Node backs a
+  // non-tmpfs scratch mount with a `HostFileSystem` over a real session
+  // directory, because session seed trees must land below a surviving scratch
+  // mount — `materializeSessionSeedTrees` insists on it, and the kernel's own
+  // `rootfs.rs` names `/run/kandelo-run` as the canonical foreign mount. The
+  // browser protocol carries no `sessionSeedTrees` field, so the facility that
+  // justifies Node's branch cannot reach the browser's.
+  //
+  // What replaces them is one case asserting the refusal, below.
 
-    const io = new VirtualPlatformIO(mounts, new NodeTimeProvider());
-    for (const m of mounts) {
-      expect(m.backend).toBeInstanceOf(MemoryFileSystem);
-      expect(m.backend).not.toBeInstanceOf(HostFileSystem);
-      expect(io.statfs(m.mountPoint).flags & ST_NOSUID).toBe(ST_NOSUID);
-    }
+  it("refuses a browser scratch mount the kernel does not serve", async () => {
+    await expect(
+      resolveForBrowser(
+        [
+          { path: "/", source: "image" },
+          { path: "/run", source: "scratch", mode: 0o755 },
+        ],
+        image,
+      ),
+    ).rejects.toThrow(/browser scratch mount \/run has no backend/);
   });
 
-  it("restores the caller's host-backed mounts without adding default overlays", async () => {
-    const productSpec: MountSpec[] = [
-      { path: "/", source: "image", readonly: false },
-      {
-        path: "/run",
-        source: "scratch",
-        mode: 0o1777,
-        uid: 0,
-        gid: 0,
-        ephemeral: true,
-      },
-    ];
-    const mounts = await restoreBrowserKernelInitMounts(image, productSpec);
-    // `/run` is not one of the prefixes the in-kernel tmpfs owns, so it stays
-    // host-backed; `/` does not come back at all. The claim is still "exactly
-    // what the caller declared, with nothing added" — what changed is that an
-    // image mount is not something the host declares a backend for.
-    expect(mounts.map((mount) => mount.mountPoint)).toEqual(["/run"]);
+  it("resolves the canonical spec to no mounts at all", async () => {
+    // Every scratch path in `DEFAULT_MOUNT_SPEC` is one the in-kernel tmpfs
+    // owns, and `/` is the kernel's too, so the browser host mounts nothing.
+    // Pinning the empty result is what makes the removal visible: a future
+    // change that reintroduced a host backend would show up here rather than
+    // as a second authority the kernel never consults.
+    expect(await resolveForBrowser(DEFAULT_MOUNT_SPEC, image)).toEqual([]);
   });
+
+
 
   it("emits no `/` mount in the browser either", async () => {
     const mounts = await resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
@@ -643,58 +655,7 @@ describe("resolveForBrowser", () => {
     expect(mounts.find((m) => m.mountPoint === "/")).toBeUndefined();
   });
 
-  it("keeps a uid/gid profile on an independent writable browser scratch mount", async () => {
-    const mounts = await resolveForBrowser(HOST_SCRATCH_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const tmp = mounts.find((m) => m.mountPoint === "/run");
-    const home = mounts.find((m) => m.mountPoint === "/home/dev");
-    expect(tmp).toBeDefined();
-    expect(home).toBeDefined();
-    expect(tmp!.backend).not.toBe(home!.backend);
 
-    const tmpData = new TextEncoder().encode("tmp scratch");
-    const tmpFd = tmp!.backend.open(
-      "/x.txt",
-      O_WRONLY | O_CREAT | O_TRUNC,
-      0o644,
-    );
-    tmp!.backend.write(tmpFd, tmpData, null, tmpData.length);
-    tmp!.backend.close(tmpFd);
-    expect(new TextDecoder().decode(readMountFile(tmp!.backend, "/x.txt"))).toBe(
-      "tmp scratch",
-    );
-
-    const homeData = new TextEncoder().encode("profile scratch");
-    const homeFd = home!.backend.open(
-      "/profile.txt",
-      O_WRONLY | O_CREAT | O_TRUNC,
-      0o644,
-    );
-    home!.backend.write(homeFd, homeData, null, homeData.length);
-    home!.backend.close(homeFd);
-    expect(
-      new TextDecoder().decode(readMountFile(home!.backend, "/profile.txt")),
-    ).toBe("profile scratch");
-    expect(() => tmp!.backend.stat("/profile.txt")).toThrow();
-  });
-
-  it("applies declared scratch root modes", async () => {
-    const mounts = await resolveForBrowser(HOST_SCRATCH_MOUNT_SPEC, image, {
-      scratchSabBytes: tinyScratch,
-    });
-    const sticky = mounts.find((m) => m.mountPoint === "/run")!.backend as MemoryFileSystem;
-    const varSpool = mounts.find((m) => m.mountPoint === "/var/spool")!.backend as MemoryFileSystem;
-    const home = mounts.find((m) => m.mountPoint === "/home/dev")!.backend as MemoryFileSystem;
-    const admin = mounts.find((m) => m.mountPoint === "/opt/admin")!.backend as MemoryFileSystem;
-    expect(sticky.stat("/").mode & 0o7777).toBe(0o1777);
-    expect(varSpool.stat("/").mode & 0o7777).toBe(0o1777);
-    expect(home.stat("/").uid).toBe(1000);
-    expect(home.stat("/").gid).toBe(1000);
-    expect(admin.stat("/").mode & 0o7777).toBe(0o700);
-    expect(admin.stat("/").uid).toBe(0);
-    expect(admin.stat("/").gid).toBe(0);
-  });
 
   // See the Node case above: the host restores `/etc/group` verbatim.
 
@@ -716,19 +677,6 @@ describe("resolveForBrowser", () => {
   // and the Node entry still releases its per-boot session directory in
   // `buildVirtualPlatformIO`'s catch. What is genuinely gone is "before",
   // and the plan records why that ordering was not a trust boundary.
-  it("scratchSabBytes overrides apply per mount", async () => {
-    const explicit = {
-      "/run": 4 * 1024 * 1024,
-      "/var/cache": 256 * 1024,
-    };
-    const mounts = await resolveForBrowser(HOST_SCRATCH_MOUNT_SPEC, image, {
-      scratchSabBytes: { ...tinyScratch, ...explicit },
-    });
-    const run = mounts.find((m) => m.mountPoint === "/run")!.backend as MemoryFileSystem;
-    const cache = mounts.find((m) => m.mountPoint === "/var/cache")!.backend as MemoryFileSystem;
-    expect(run.sharedBuffer.byteLength).toBe(4 * 1024 * 1024);
-    expect(cache.sharedBuffer.byteLength).toBe(256 * 1024);
-  });
 
   it("throws on duplicate mount paths", () => {
     const dup: MountSpec[] = [

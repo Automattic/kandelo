@@ -84,5 +84,5 @@ export { backendPathconf } from "../pathconf";
 export type { PathconfProfile } from "../pathconf";
 export type { PathconfValue } from "../types";
 export { DEFAULT_MOUNT_SPEC, resolveForBrowser } from "./default-mounts";
-export type { MountSpec, BrowserResolverOptions } from "./default-mounts";
+export type { MountSpec } from "./default-mounts";
 export { resolveForNode } from "./default-mounts-node";
