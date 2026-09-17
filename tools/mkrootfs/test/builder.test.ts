@@ -13,7 +13,6 @@ import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
-import { refuseImageThisReaderCannotSee } from "../src/cli/sdef-reader-guard.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "fixtures");
@@ -908,73 +907,28 @@ describe("image builder — round-trip", () => {
     }
   });
 
-  it("refuses to let a KLZY-only reader answer about an SDEF image", async () => {
-    // The builder writes `SDEF`; `MemoryFileSystem` reads `KLZY`. Handed one of
-    // these images it finds NO deferred files and reports each as a
-    // zero-length ordinary file — which `inspect` would print, `extract` would
-    // write to disk, and `add` would save back, turning a rootfs full of lazy
-    // binaries into an image with none. Every one of those is a wrong answer
-    // indistinguishable from a right one.
-    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-sdef-guard-"));
-    try {
-      const manifest = join(tmp, "MANIFEST");
-      writeFileSync(
-        manifest,
-        [
-          "/ d 0755 0 0",
-          "/bin d 0755 0 0",
-          "/bin/tool f 0755 0 0 lazy_url=binaries/tool.wasm lazy_size=4242",
-          "",
-        ].join("\n"),
-      );
-      const image = await buildImage({ sourceTree: tmp, manifest, repoRoot: tmp });
-
-      // The reader that cannot see them says there are none...
-      const blind = MemoryFileSystem.fromImage(image);
-      expect(blind.exportLazyEntries()).toHaveLength(0);
-      // ...and the reader that can says otherwise, which is the whole disagreement.
-      const truth = KandeloImageFs.create();
-      truth.loadImage(image);
-      expect(truth.lazyEntries().files).toHaveLength(1);
-
-      expect(() => refuseImageThisReaderCannotSee(image, blind))
-        .toThrow(/deferred file\(s\) in a section this reader does not understand/);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("lets a KLZY-only reader answer about an image with nothing deferred", async () => {
-    // The control. Without it the guard could be refusing every image and the
-    // test above would read exactly the same.
-    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-sdef-guard-ok-"));
-    try {
-      const manifest = join(tmp, "MANIFEST");
-      writeFileSync(manifest, "/ d 0755 0 0\n/plain.txt f 0644 0 0 src=plain.txt\n");
-      writeFileSync(join(tmp, "plain.txt"), "hi");
-      const image = await buildImage({ sourceTree: tmp, manifest, repoRoot: tmp });
-      const blind = MemoryFileSystem.fromImage(image);
-      expect(() => refuseImageThisReaderCannotSee(image, blind)).not.toThrow();
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  });
-
-  it("lets a KLZY reader answer about a KLZY image it CAN see", async () => {
-    // The other control, and the one that matters most. `KandeloImageFs` reads
-    // `KLZY` too, so a guard that skipped the "does this reader already see
-    // them?" check would consult the truth reader, find deferred files, and
-    // refuse an image the caller reads perfectly well — breaking every
-    // memfs-written image instead of catching the unreadable ones.
-    const memfs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
-    memfs.mkdirWithOwner("/bin", 0o755, 0, 0);
-    memfs.registerLazyFile("/bin/tool", "https://example.invalid/tool.wasm", 4242, 0o755);
-    const image = await memfs.saveImage();
-
-    const reader = MemoryFileSystem.fromImage(image);
-    expect(reader.exportLazyEntries().length).toBeGreaterThan(0);
-    expect(() => refuseImageThisReaderCannotSee(image, reader)).not.toThrow();
-  });
+  // RETIRED 2026-09-17 with `sdef-reader-guard.ts`, three cases: the refusal,
+  // and its two controls.
+  //
+  // The guard existed because `mkrootfs`'s CLI read images with
+  // `MemoryFileSystem` — which reads `KLZY` — while its own builder writes
+  // `SDEF`. A blind reader finds no deferred files and reports each as a
+  // zero-length ordinary file, so `inspect` would print that, `extract` would
+  // write it to disk, and `add` would SAVE IT BACK, turning a rootfs full of
+  // lazy binaries into an image with none. Refusing was the honest answer
+  // available at the time.
+  //
+  // Its own docstring named the fix and why it was blocked: the verbs could
+  // not read with `KandeloImageFs` because "the seal verification they perform
+  // has no module entry point, and adding one breaches
+  // `kandeloImageModuleEntryPoints`". That is no longer true, and no entry
+  // point was added — `rootfs::load_image` authenticates cohort seals itself,
+  // so `loadImage` verifies through the door that already existed.
+  //
+  // All three verbs read with the module now, so there is no second reader to
+  // disagree with and nothing left to refuse. A guard that cannot fire is a
+  // second place for a rule to live; this one is deleted rather than kept as
+  // reassurance.
 
   it("stamps the declared capacity into the image it emits", async () => {
     // The capacity is a PROMISE carried by the artifact — consumers size

@@ -23,8 +23,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
-import { refuseImageThisReaderCannotSee } from "./sdef-reader-guard.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
+import { describeImageLoadFailure } from "./image-load-failure.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs add <image> <vfs-path> [options]
 
@@ -206,7 +206,7 @@ function typeChar(mode: number): "f" | "d" | "l" | "?" {
   }
 }
 
-function lookupExisting(mfs: MemoryFileSystem, path: string): "f" | "d" | "l" | "?" | null {
+function lookupExisting(mfs: KandeloImageFs, path: string): "f" | "d" | "l" | "?" | null {
   try {
     const st = mfs.lstat(path);
     return typeChar(st.mode);
@@ -257,16 +257,19 @@ export async function runAdd(args: string[]): Promise<number> {
     return 1;
   }
 
-  let mfs: MemoryFileSystem;
+  let mfs: KandeloImageFs;
   try {
-    mfs = MemoryFileSystem.fromImage(imageBytes);
-    // WHY: authenticate before source reads, namespace mutation, or image writes.
-    await mfs.verifyImportedLazyAtomicGroupSeals();
-    refuseImageThisReaderCannotSee(imageBytes, mfs);
+    // THE ONE THAT MATTERED MOST. This verb SAVES the image back, so a reader
+    // blind to `SDEF` did not merely misreport a rootfs full of lazy binaries
+    // — it wrote one out with none. The guard that stood here refused rather
+    // than let that happen; reading with the module means there is nothing to
+    // refuse, and `loadImage` authenticates the cohort seals before any source
+    // read or namespace mutation, which is what this verb owed.
+    mfs = KandeloImageFs.create();
+    mfs.loadImage(imageBytes);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(
-      `mkrootfs add: not a valid VFS image (${parsed.image}): ${msg}\n`,
+      `mkrootfs add: ${describeImageLoadFailure(e, parsed.image)}\n`,
     );
     return 1;
   }

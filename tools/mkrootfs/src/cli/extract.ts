@@ -24,8 +24,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
-import { refuseImageThisReaderCannotSee } from "./sdef-reader-guard.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
+import { describeImageLoadFailure } from "./image-load-failure.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs extract <image> <out-dir> [options]
 
@@ -97,7 +97,7 @@ interface ExtractEntry {
   target?: string;
 }
 
-function collectEntries(mfs: MemoryFileSystem): ExtractEntry[] {
+function collectEntries(mfs: KandeloImageFs): ExtractEntry[] {
   const out: ExtractEntry[] = [];
 
   function readFileContent(path: string, size: number): Uint8Array {
@@ -241,16 +241,18 @@ export async function runExtract(args: string[]): Promise<number> {
     return 1;
   }
 
-  let mfs: MemoryFileSystem;
+  let mfs: KandeloImageFs;
   try {
-    mfs = MemoryFileSystem.fromImage(bytes);
-    // WHY: authenticate before creating an output directory or copying entries.
-    await mfs.verifyImportedLazyAtomicGroupSeals();
-    refuseImageThisReaderCannotSee(bytes, mfs);
+    // The reader that can see an `SDEF` section, so a deferred file is not
+    // written to disk as a zero-length ordinary one. `loadImage`
+    // authenticates the image's cohort seals on the way in, which is the
+    // check this verb owed before creating an output directory — and owed
+    // through a reader that could actually find the archives to check.
+    mfs = KandeloImageFs.create();
+    mfs.loadImage(bytes);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(
-      `mkrootfs extract: not a valid VFS image (${parsed.image}): ${msg}\n`,
+      `mkrootfs extract: ${describeImageLoadFailure(e, parsed.image)}\n`,
     );
     return 1;
   }

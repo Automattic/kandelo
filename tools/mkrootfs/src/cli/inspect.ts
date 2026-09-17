@@ -9,8 +9,8 @@
 // alphabetically before output, so diffs across builds are stable.
 
 import { readFileSync } from "node:fs";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
-import { refuseImageThisReaderCannotSee } from "./sdef-reader-guard.ts";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
+import { describeImageLoadFailure } from "./image-load-failure.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs inspect <image> [options]
 
@@ -111,7 +111,7 @@ export interface InspectEntry {
   target?: string;
 }
 
-function collectEntries(mfs: MemoryFileSystem): InspectEntry[] {
+function collectEntries(mfs: KandeloImageFs): InspectEntry[] {
   const out: InspectEntry[] = [];
 
   function visit(path: string): void {
@@ -212,15 +212,28 @@ export async function runInspect(args: string[]): Promise<number> {
     return 1;
   }
 
-  let mfs: MemoryFileSystem;
+  let mfs: KandeloImageFs;
   try {
-    mfs = MemoryFileSystem.fromImage(bytes);
-    // WHY: stdout must never expose namespace claims from an unauthenticated image.
-    await mfs.verifyImportedLazyAtomicGroupSeals();
-    refuseImageThisReaderCannotSee(bytes, mfs);
+    // READ WITH THE READER THAT KNOWS. This used to load the image into
+    // `MemoryFileSystem`, which reads `KLZY` while the builder writes `SDEF`,
+    // and then call `refuseImageThisReaderCannotSee` — a guard that compared
+    // the two readers and REFUSED rather than answer wrongly, because an
+    // unseen deferred file prints as a zero-length ordinary one.
+    //
+    // That guard documented its own fix and why it was blocked: the verbs
+    // could not read with `KandeloImageFs` because "the seal verification they
+    // perform has no module entry point, and adding one breaches
+    // `kandeloImageModuleEntryPoints`". That is no longer true and no entry
+    // point was added — `rootfs::load_image` authenticates cohort seals
+    // itself, so `loadImage` verifies through the door that already existed.
+    // The check stdout depends on is inherent in the load now, rather than a
+    // separate call that passed by finding an empty list.
+    mfs = KandeloImageFs.create();
+    mfs.loadImage(bytes);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`mkrootfs inspect: not a valid VFS image (${parsed.image}): ${msg}\n`);
+    process.stderr.write(
+      `mkrootfs inspect: ${describeImageLoadFailure(e, parsed.image)}\n`,
+    );
     return 1;
   }
 
