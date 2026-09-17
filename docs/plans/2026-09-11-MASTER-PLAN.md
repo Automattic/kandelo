@@ -13385,6 +13385,54 @@ spelled line. **An anchor matching two places reads exactly like one that was
 never applied** — the validator says so in those words, and it is the same
 hazard as `count == 1` passing because a sibling edit made it unique.
 
+### THE BOUNDARY MOVED INTO THE LOADER — `4c5e16d56`, `b964ed51c`, 2026-09-16
+
+**Option (a) below was taken, and the measurement that justified it is the one
+the section said was missing.**
+
+All three shipped images — `rootfs.vfs`, `shell.vfs.zst`, `lamp.vfs.zst` —
+already load through `KandeloImageFs`, which is `sm_load_image`, which already
+ran this verifier. So every archive payload they carry is a well-formed seal
+envelope, and none of them carries `KLZY` (flag `1<<4` clear in every header).
+Moving the check into `rootfs::load_image` therefore changes no shipped
+artifact's behaviour.
+
+**What it did need was one rule the module's copy never had to state**: an
+EMPTY payload is the absence of a description, not a malformed one. `KLZY` has
+no payload field, so an image described that way arrives with an empty vector
+per archive, and refusing it would refuse every pre-`SDEF` image for not
+saying something its carrier cannot say. It does not weaken the check —
+blanking a member's payload does not hide it from its cohort, because the
+members that remain still declare the count.
+
+**Three runtime-core fixtures had to stop using a bare stand-in.** They passed
+`b"sha256:abc"` as "an opaque description", faithful while the loader carried
+payloads without reading them. They now wrap it exactly as
+`sm_register_lazy_archive` does. The claim is unchanged; the fixture is now an
+image a producer would emit.
+
+**`sm_load_image`'s own arm is deleted.** A load returning `Ok` has already
+verified, so it could not fire — the sixth cause, a guard something else
+already decided. Deleting it also leaves ONE failure arm where there were two,
+which is the permanent form of the double-free fix: there is no longer a
+second cleanup convention to drift from.
+
+**AND THE TRIALS CAUGHT WHAT THE GREEN SUITES DID NOT.** Both trials on the
+new call SURVIVED at first — not subtly: the check had no test in
+`runtime-core` at all, because every test that exercised it verifies against
+`kandelo-image-module`. **Moving a guard between crates moves it out of its
+tests' reach even when both crates are green**, and a spec whose `verify`
+names the old crate reports a survivor rather than a failure. The replacement
+test builds a cohort of two supplied with one, and carries a negative control
+— the same tree sealed to a complete cohort of one must load — because
+without it the test would pass for any refusal at all.
+
+**This increment is ADDITIVE.** The host's restore and its browser boundary
+spec are untouched, so the boot now authenticates twice. Removing the host
+half is the next step, and it needs
+`apps/browser-demos/test/vfs-import-seal-boundary.spec.ts` to expect the
+kernel's refusal instead of `Lazy atomic activation (member|group)`.
+
 ### THE SEAL BOUNDARY AT BOOT IS THE REMAINING V5 BLOCKER, AND IT IS A DESIGN DECISION
 
 **Measured 2026-09-16, and this is what keeps `memory-fs.ts` alive.**
