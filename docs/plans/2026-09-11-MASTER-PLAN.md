@@ -14407,6 +14407,54 @@ kernel is rebuilt**, when most of these 38 should disappear and a genuine
 both-sides run becomes cheap and meaningful. Recorded here so nobody quotes
 "38 vs 39" as if it were the clean result the earlier deletion got.
 
+### THE BOTH-SIDES COMPARISON IS DONE, AND IT IS CLEAN — 2026-09-17
+
+**`f92fee4f2` and `23d1cb045`, same machine, same rebuilt closure**, via a
+code-only checkout round trip in the lane worktree with a restoring trap. The
+branch was restored automatically on exit.
+
+| | failing files | failing tests | run |
+|---|---|---|---|
+| before (`f92fee4f2`) | **39** | **84** | 4,061 |
+| after (`23d1cb045`) | **38** | 89 | 4,039 |
+
+**THE BASELINE REPRODUCED EXACTLY.** This plan recorded 39 files / 84 tests from
+an earlier session on a different tree; the before-side run returns 39 and 84.
+That is worth more than the comparison itself — it means the recorded number was
+a real measurement rather than a snapshot that had drifted.
+
+**ONE FILE STOPPED FAILING, AND IT IS OURS.**
+`vfs-product-builder-contract.test.ts` contributed both of its failures to the
+before side — the ABI-7 gate this session repaired — and contributes none to the
+after side because the retirement deleted the file with the code it tested.
+
+**FIVE MORE FAILING TESTS, ALL ACCOUNTED FOR, AND NONE A NEW FILE.** Every file
+carrying an extra failure was **already failing before**:
+
+| file | before | after | checked |
+|---|---|---|---|
+| `virtual-network-e2e` | 4 | 8 | fails in isolation too — on four DIFFERENT cases again |
+| `fork-instrument-coverage` | 1 | 2 | **passes alone** |
+| `dinit-scripted-service` | 1 | 2 | **passes alone**; already recorded here as a contention flake |
+| `run-example-credentials` | 0 | 1 | **passes 9/9 alone** |
+
+`virtual-network-e2e` is the instructive one: run alone it fails on *"routes
+POSIX UDP sendto/recvfrom"*, *"routes POSIX TCP connect/accept/read/write"* and
+the two packaged-`nc` cases; in the full suite it failed on *"drains native data
+queued before FIN"*, *"flushes a queued accepted reply"*, *"keeps a
+fork-inherited accepted socket alive"* and *"wakes a blocked accepted read"*.
+**A file whose failing CASES change between runs is unstable, not regressed** —
+and it was failing on both sides regardless.
+
+**SO THE RETIREMENT INTRODUCED NO REGRESSION THIS SUITE CAN SEE.** The failing
+FILE set is a strict improvement: minus `vfs-product-builder-contract` (deleted),
+minus `wordpress-site-editor` (flake), plus `run-example-credentials` (flake that
+passes alone). Nothing in any area this session touched.
+
+**This closes the evidence gap the lane's own standard demanded**, and it is the
+same shape the `memory-fs.ts` deletion got: both sides, one machine, one closure,
+failing set compared file by file rather than by count.
+
 ### THE SUITE AGAINST A COHERENT TREE — 2026-09-17, and what it does and does not settle
 
 **Run at `23d1cb045` with the closure rebuilt**: `Test Files  38 failed | 369
