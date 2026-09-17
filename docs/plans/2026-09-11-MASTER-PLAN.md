@@ -13988,6 +13988,59 @@ this session's four commits, and **zero** after this one; `tsc -p
 host/tsconfig.typecheck.json` clean; surface budget 101/101; `xtask perturb
 --validate` 416 trials all anchoring.
 
+### A PERMISSION OUTLIVED THE BUILDER ALLOWED TO ASK FOR IT — `5e75d6930`, 2026-09-17
+
+**`openMiniatureVfsProductBuild` granted one caller the right to accept a
+`local-fixture` reference** — a build pointing outside the exact-source world.
+Its only caller was `images/vfs/scripts/build-abi-staging-mini-vfs.ts`, deleted
+with the Homebrew staging pipeline in `fc2f3ef834` on 2026-08-26. The entry
+point outlived it by three weeks.
+
+**This is worse than ordinary dead code, and the difference is worth stating.**
+What it exports is a WEAKENED POLICY. Dead code does nothing until called; a
+dead permission does something the moment anyone calls it, and what it does is
+opt the caller out of the rule every other builder obeys. `fc2f3ef834`'s own
+description names the shape — "a second, unused path that still had to be
+reasoned about" — so this is finishing that commit's deletion rather than
+starting a new one.
+
+Gone with it: the `allowLocalFixture` parameter through three functions, the
+`--allow-local-fixture` flag TypeScript could send, and the explicit refusal
+whose message named the miniature builder. The class is now refused by **not
+being in the list**, the same way every other unknown reference class is.
+
+**WHICH LAYER REFUSES — H-15 again, in a test that had already been written to
+avoid it.** The Rust envelope validator runs BEFORE the TypeScript parse, so a
+local-fixture document never reaches the parse's `oneOf` over the reference
+class; the message that arrives is Rust's. The old case asserted `/local-
+fixture/`, which BOTH layers' messages match, so it could not have told them
+apart — and after this change the TypeScript message no longer contains the
+phrase at all, while the case still passes. It is renamed and now says which
+layer answers.
+
+**`--validate` earned its keep twice in one change.** The rename moved the
+envelope trial's scope (`openVfsProductBuildWithPolicy` → `openVfsProductBuild`)
+and then its anchor (the call lost its second argument), and the check reported
+each in turn with the exact text it could not find. **5 trials, 0 survived, 0
+invalid, 0 timed out** afterwards.
+
+**OPEN FOR THE MAINTAINER, deliberately not taken.** Rust still has
+`allow_local_fixture`, the `--allow-local-fixture` CLI flag, a `match` arm for
+the permitted case and a unit test asserting it. **Nothing in the repository
+passes it any more.** Removing it would delete a flag from `xtask`'s public
+command surface, which is a tool-interface change rather than an in-lane
+cleanup, and the arm is cheap to keep. The argument for removing it: a
+permission no caller can request is a rule with a documented exception that
+cannot occur, and its refusal message names a builder that no longer exists. The
+argument for keeping it: `xtask` is invoked by scripts outside this repository's
+call graph, and a flag is a contract.
+
+**Evidence**: vfs-product-builder-contract 11/11; `tsc -p
+images/tsconfig.typecheck.json` **zero errors** — which is the typecheck that
+actually covers this file, the host one being `include: ["src"]`, and which has
+returned to the zero baseline the plan recorded before it drifted to seven;
+surface budget 101/101; `xtask perturb --validate` 415 trials all anchoring.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
