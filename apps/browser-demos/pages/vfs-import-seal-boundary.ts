@@ -1,5 +1,6 @@
 import { BrowserKernel } from "../../../host/src/browser-kernel-host";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { ensureImageWriterInstalled } from "../lib/kernel-owned-boot";
 
 /**
  * Exercise the real BrowserKernel -> worker init path with explicit bytes.
@@ -23,6 +24,12 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 export async function rejectRefusedImageAtBrowserWorkerInit(
   declaredAbi: number,
 ): Promise<{ error: string; workerStartedAfterRejection: boolean }> {
+  // `KandeloImageFs.create()` is synchronous and a fetch is not, so a browser
+  // page installs the image-writer module bytes once before the first create.
+  // Node reads them off disk; the browser cannot, and the bridge says so by
+  // name rather than falling back to a reader that cannot see an `SDEF`
+  // section — which is what defect B45 was.
+  await ensureImageWriterInstalled();
   const fs = KandeloImageFs.create();
   fs.mkdir("/etc", 0o755);
   fs.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);

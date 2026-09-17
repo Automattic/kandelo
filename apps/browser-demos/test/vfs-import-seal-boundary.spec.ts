@@ -28,7 +28,14 @@ test("browser worker init refuses an image the kernel rejects, and keeps no work
     return rejectRefusedImageAtBrowserWorkerInit(7);
   }, { moduleUrl: helperModuleUrl });
 
-  expect(result.error).toMatch(/Kernel worker init failed/);
+  // The KERNEL's refusal, not the harness's. The browser host prefixes it
+  // "Kernel worker failed:" where Node says "Kernel worker init failed:", so
+  // matching the prefix would have pinned the host's phrasing; this matches
+  // the part that says initialization is what failed. The control that makes
+  // the refusal specifically about the declared ABI lives in
+  // `host/test/node-kernel-init-refused-image.test.ts`, where the same tree
+  // boots when nothing is declared wrong.
+  expect(result.error).toMatch(/kernel initialization completion failed/);
   expect(result.error).not.toMatch(/unexpectedly passed/);
   expect(result.workerStartedAfterRejection).toBe(false);
 });
