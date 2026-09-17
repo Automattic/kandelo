@@ -13808,6 +13808,44 @@ failure. **A perturbation run that does not finish leaves the tree mutated, and
 `deferred-uri-provider.json` have not been RUN against the rewritten pipe.
 `--validate` says all 417 anchor, and anchoring is not killing.
 
+### TWO EXPORTS THE CASCADE LEFT BEHIND — `a24e8d10c`, 2026-09-17
+
+**A caller census over `rootfs-lazy-archives.ts`'s exports after the pipe
+rewrite found two with no consumer anywhere, and one doc link pointing at a
+deleted function.**
+
+| export | what the census said | what it actually was |
+|---|---|---|
+| `RootfsLazyArchive` | 1 importer | **0.** The one hit is `host/test/support/rootfs-manifest-oracle.ts`, which DECLARES its own identical interface rather than importing this one |
+| `DeferredUrlFetch` | 0 | the fetch signature the transport table used to be handed; with no table, the signature is written where it is used |
+| `{@link imageReadFromBody}` | — | a doc link in `imageReadFromContainer`'s comment to a function deleted with `memory-fs.ts` |
+
+**The oracle is worth its own line, because a grep count of 1 looked like a
+consumer and was not.** A census that counts NAME occurrences answers a
+different question from one that counts IMPORTS, and the two diverge exactly
+where a test has grown its own copy of a production shape. Reading the hit
+rather than the count is what separated them.
+
+**THE DECISION INSIDE THE LANE: bank it, do not let slack hold it.** The pipe
+rewrite left `hostVfsTypeScript` at 5,991 against a ceiling of 6,091 and this
+plan recorded "ceiling left where the budget's own verdict says it may stay" —
+true, because 100 lines is inside the 127-line slack and nothing failed. That
+was the wrong call and is now reversed: **6091 -> 5986**, the measured value.
+A reduction that is merely TOLERATED is a reduction the next growth gets to
+spend without anyone arguing for it, which is the same ratchet running
+backwards. 100 of those lines are the pipe cascade's remainder; 5 are these
+exports.
+
+**How the banked number was measured rather than assumed**: setting the ceiling
+to 5,985 FAILS with "hostVfsTypeScript is 5986, above its ceiling of 5985",
+which is the budget reporting its own measure. A ceiling written from a
+hand-count is a guess; one written from a failure is a reading.
+
+**Evidence**: `tsc -p host/tsconfig.typecheck.json` clean; surface budget
+101/101; `rootfs-lazy-archives`, `module-base-image` and
+`exec-lazy-archive-binary` 17/17; `xtask perturb --validate` 417 trials, every
+trial still anchors.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
