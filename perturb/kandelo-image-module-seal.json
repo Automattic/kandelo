@@ -1,7 +1,7 @@
 {
- "_comment": "The seal codec and cohort verifier. Its own spec because a spec mutates ONE file, and these guards live in seal.rs rather than the ABI surface in lib.rs. The verifier is the one place in this lane where a surviving mutant means a security check that does not check. MOVED 2026-09-16 with `seal.rs` itself, from `kandelo-image-module` into `runtime-core`, so `rootfs::load_image` can authenticate cohorts at the door every caller passes through \u2014 the kernel's boot as well as a builder's derived load. The trials are unchanged; only the file they mutate and the crate they verify against moved. The empty-payload pair arrived with the move: `KLZY` has no payload field, so an image described that way reaches the verifier with an empty vector per archive, and refusing it would refuse every pre-`SDEF` image for not saying something its carrier cannot say. Skipping EVERY payload instead disables the check, so both directions are trialled.",
+ "_comment": "The seal codec and cohort verifier. Its own spec because a spec mutates ONE file, and these guards live in seal.rs rather than the ABI surface in lib.rs. The verifier is the one place in this lane where a surviving mutant means a security check that does not check. MOVED 2026-09-16 with `seal.rs` itself, from `kandelo-image-module` into `runtime-core`, so `rootfs::load_image` can authenticate cohorts at the door every caller passes through \u2014 the kernel's boot as well as a builder's derived load. The trials are unchanged; only the file they mutate and the crate they verify against moved. RETIRED 2026-09-16, the empty-payload pair: a second emptiness check was added to `verify_cohorts` when the verifier moved, and `decode` had already returned `SealState::None` for empty bytes since it was written. The trial for it survived because the guard could not fail -- the sixth cause, something else had already decided -- and the guard is deleted rather than given a test. The rule now lives as a comment on the early return that enforces it. AND THE VERIFY NAMES BOTH CRATES, which the move nearly cost. `seal.rs` moved to `runtime-core` and its unit tests went with it, but four trials are about the PRODUCER -- the export door that re-seals -- and the tests that kill those live in `kandelo-image-module`. Repointing the verify at the new crate alone made four trials survive that had been killed for weeks, which reads exactly like a regression and was a spec no longer running the tests that answer it.",
  "file": "crates/runtime-core/src/seal.rs",
- "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "build": "scripts/dev-shell.sh cargo build -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
  "trials": [
   {
@@ -122,20 +122,6 @@
    "scope_end": "\n}\n",
    "find": "            put_u32(&mut out, *expected_count);",
    "replace": "            put_u32(&mut out, 0);"
-  },
-  {
-   "name": "an EMPTY payload is refused instead of read as no description",
-   "scope": "        if bytes.is_empty() {",
-   "scope_end": "\n        }",
-   "find": "        if bytes.is_empty() {\n            continue;\n        }",
-   "replace": "        if false {\n            continue;\n        }"
-  },
-  {
-   "name": "any payload is skipped, not only an empty one",
-   "scope": "        if bytes.is_empty() {",
-   "scope_end": "\n        }",
-   "find": "        if bytes.is_empty() {\n            continue;\n        }",
-   "replace": "        if true {\n            continue;\n        }"
   }
  ]
 }

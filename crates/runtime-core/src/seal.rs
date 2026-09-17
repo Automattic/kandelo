@@ -217,6 +217,21 @@ impl<'a> Reader<'a> {
 /// representable state, and one described by `KLZY` always has exactly that,
 /// because `KLZY` carries no descriptor field at all.
 pub fn decode(bytes: &[u8]) -> Result<ArchivePayload, Errno> {
+    // AN EMPTY PAYLOAD IS THE ABSENCE OF A DESCRIPTION, not a malformed one,
+    // and this early return is the whole of that rule.
+    //
+    // It matters more since `rootfs::load_image` began authenticating cohorts:
+    // `KLZY` has no payload field at all, so an image described that way
+    // reaches the verifier with an empty vector for every archive, and a
+    // loader that refused it would refuse every pre-`SDEF` image for not
+    // saying something its carrier cannot say. A second emptiness check in
+    // `verify_cohorts` was written and then deleted — it could not fail,
+    // because this decided first.
+    //
+    // It does not weaken the check. Blanking a member's payload does not hide
+    // it from a cohort: the members that remain still declare the count, and a
+    // cohort short of its count is refused. What blanking buys is one fewer
+    // member, which is the thing atomic activation exists to catch.
     if bytes.is_empty() {
         return Ok(ArchivePayload { descriptor: Vec::new(), seal: SealState::None });
     }
@@ -392,20 +407,6 @@ pub fn verify_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<(), Errno> {
     let mut cohorts: Vec<(Vec<u8>, u32, [u8; 32], Vec<(Vec<u8>, [u8; 32])>)> = Vec::new();
 
     for (_archive_id, bytes) in archives {
-        // AN EMPTY PAYLOAD IS THE ABSENCE OF A DESCRIPTION, not a malformed
-        // one. `KLZY` has no payload field at all, so an image described that
-        // way arrives here with an empty vector for every archive — and a
-        // loader that refused it would refuse every pre-`SDEF` image on the
-        // grounds that it did not say something its carrier cannot say.
-        //
-        // It does not weaken the check. Blanking a member's payload does not
-        // hide it from a cohort: the members that remain still declare the
-        // count, and a cohort short of its count is refused below. What
-        // blanking buys an attacker is one fewer member, which is the thing
-        // atomic activation exists to catch.
-        if bytes.is_empty() {
-            continue;
-        }
         // Decoded ONCE. Decoding twice would let a payload that parsed
         // differently on the second read pass a check made against the first.
         let payload = decode(bytes)?;
