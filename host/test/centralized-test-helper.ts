@@ -23,7 +23,7 @@ import {
   NodeKernelHost,
   resolveRootfsArtifact,
 } from "../src/node-kernel-host";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -509,7 +509,12 @@ async function prepareExecTargetTestRootfs(
     return configured;
   }
 
-  let rootfs: MemoryFileSystem;
+  // BUILT BY THE MODULE every builder uses. This helper injects exec programs
+  // into a rootfs image for most of the suite, so what it writes decides which
+  // producer the tests downstream are actually exercising — and until now that
+  // was the TypeScript filesystem, whose images describe deferred files in a
+  // carrier no shipped artifact uses.
+  let rootfs: KandeloImageFs;
   if (configured === undefined) {
     let programBytes = 0;
     for (const hostPath of options.execPrograms.values()) {
@@ -523,14 +528,19 @@ async function prepareExecTargetTestRootfs(
     if (!Number.isSafeInteger(capacity)) {
       throw new Error("test exec target rootfs capacity overflows");
     }
-    rootfs = MemoryFileSystem.create(new SharedArrayBuffer(capacity));
+    rootfs = KandeloImageFs.create();
+    rootfs.setImageCapacity(capacity);
   } else {
     const image = configured === "default"
       ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
       : configured instanceof Uint8Array
         ? configured
         : new Uint8Array(configured);
-    rootfs = MemoryFileSystem.fromImagePreservingCapacity(image);
+    // `loadImage` IS the capacity-preserving load: the module restores the
+    // image's declared ceiling, which is what `fromImagePreservingCapacity`
+    // existed to do on the other side.
+    rootfs = KandeloImageFs.create();
+    rootfs.loadImage(image);
   }
 
   for (const [path, hostPath] of options.execPrograms) {
