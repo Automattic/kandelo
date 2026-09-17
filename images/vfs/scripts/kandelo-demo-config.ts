@@ -1,9 +1,9 @@
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   KANDELO_DEMO_CONFIG_PATH,
+  genericDemoPresentation,
   type DemoActionConfig,
   type DemoActionGroupConfig,
-  type DemoAssetConfig,
   type DemoGuideConfig,
   type DemoPresentationConfig,
   type KandeloDemoConfig,
@@ -13,38 +13,43 @@ import {
   writeVfsFile,
 } from "./vfs-image-helpers";
 
+/**
+ * The terminal presentation, from the one place that defines presentations.
+ *
+ * `genericDemoPresentation("terminal")` in the session library returns this
+ * object field for field. It was written out again here, and a policy written
+ * twice is a policy that can disagree with itself -- which the web one below
+ * does. Calling the library keeps the builders' surface (the name every
+ * `build-*-vfs-image.ts` imports) while leaving one definition of what a
+ * terminal demo looks like.
+ */
 export function terminalPresentation(): DemoPresentationConfig {
-  return {
-    bootPrimary: "syslog",
-    runningPrimary: ["terminal", "syslog"],
-    terminalAccess: "primary",
-    internalsAccess: "drawer",
-  };
+  return genericDemoPresentation("terminal");
 }
 
+/**
+ * The web presentation, which DELIBERATELY DIFFERS from the library's.
+ *
+ * `genericDemoPresentation("web")` orders the running surfaces
+ * `["web", "terminal", "syslog"]`; this one puts syslog second, so a web demo
+ * stays on the boot log while the HTTP preview is still coming up rather than
+ * falling back to a terminal. The comment for that has been here since the
+ * function was written.
+ *
+ * **Whether the divergence is intended or drift is not this lane's to decide**,
+ * because the running-surface order is what a viewer sees. It is left as it was
+ * and written up rather than quietly unified with the library: unifying it
+ * would change five shipped demos (`lamp`, `wordpress-mariadb`,
+ * `wordpress-sqlite`, `wordpress`, and the two nginx images) without anyone
+ * asking for it.
+ */
 export function webPresentation(): DemoPresentationConfig {
   return {
     bootPrimary: "syslog",
-    // Web demos should stay on the boot log while the HTTP preview is
-    // still unavailable; Terminal remains accessible as a drawer.
     runningPrimary: ["web", "syslog", "terminal"],
     terminalAccess: "drawer",
     internalsAccess: "drawer",
   };
-}
-
-export function framebufferPresentation(autoCommand?: string): DemoPresentationConfig {
-  return {
-    bootPrimary: "syslog",
-    runningPrimary: ["framebuffer", "terminal", "syslog"],
-    terminalAccess: "drawer",
-    internalsAccess: "drawer",
-    ...(autoCommand ? { autoCommand } : {}),
-  };
-}
-
-export function externalAsset(config: DemoAssetConfig): DemoAssetConfig {
-  return config;
 }
 
 export function action(
