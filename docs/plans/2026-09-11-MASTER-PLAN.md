@@ -13691,6 +13691,35 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### OVERNIGHT AUTHORISATIONS — maintainer, 2026-09-17
+
+**Three more answers, given so the lane does not stall while the maintainer is
+away. They stand until withdrawn.**
+
+1. **Delete `memory-fs.ts` and `sharedfs-vendor.ts` when nothing imports
+   them** — unprompted, in the same tranche that removes the last importer,
+   with the surface reduction banked and the full host suite run on BOTH sides
+   plus a browser cycle. It is one revertable commit if the maintainer dislikes
+   it.
+2. **Drop `network-demo-worker.ts`'s host `/dev/shm` mount.** It backs a prefix
+   the in-kernel tmpfs owns, which makes it a second authority the kernel never
+   consults — the exact thing `tmpfs.rs` warns about where it serves
+   `/dev/shm`. Its browser spec is already one of the long-standing baseline
+   failures; if it stays red it stays red, and what changed is recorded so the
+   eventual fixer is not misled.
+3. **Audit `vfs.test.ts` claim by claim**, the treatment the `sharedfs` family
+   got, rather than splitting it mechanically or deferring it.
+
+**And one thing that turned out NOT to be a blocker**, checked before asking:
+`packages/registry/service-vfs-demo.ts` and `php/test/browser/run-php.ts` look
+like they need a live filesystem over an image, and do not. Both load an image,
+mutate it — write files, `chmod` — and save it back before booting a kernel
+from the result. That is image EDITING, which `KandeloImageFs` does directly,
+and the seal verification they perform explicitly becomes inherent in
+`loadImage`. Recorded because the same shape will appear again: **"mounts a
+filesystem" and "edits an image" look identical at the call site and are not
+the same requirement.**
+
 ### THE ENDGAME'S RULES — maintainer decisions, 2026-09-16
 
 **Four answers that settle how lane V finishes.** Recorded here because they
