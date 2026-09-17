@@ -43,13 +43,6 @@
 
 import type { LazyDownloadEvent } from "./lazy-download-event";
 
-/** Total byte size of a lazy archive, recorded in the trailing archive table
- * so the kernel can validate/plan reads before the archive is fetched. */
-export interface RootfsLazyArchive {
-  readonly archiveId: number;
-  readonly size: number | bigint;
-}
-
 const EAGAIN = -11;
 const EIO = -5;
 const ENOENT = -2;
@@ -78,7 +71,7 @@ const ENOSYS = -38;
 /**
  * Serve container-offset reads straight from the container bytes.
  *
- * The peer of {@link imageReadFromBody}, and the simpler one: a caller holding
+ * The only reader left, and the simplest one it could be: a caller holding
  * the whole container answers in container coordinates without subtracting
  * anything. Both worker entries already hold those bytes — they are what the
  * kernel is handed as `imageBytes` — so nothing has to be a filesystem for the
@@ -95,9 +88,6 @@ export function imageReadFromContainer(
     return n;
   };
 }
-
-/** Fetch bytes for a URL. The whole of what a dumb pipe needs to be able to do. */
-export type DeferredUrlFetch = (url: string) => Promise<Uint8Array>;
 
 /**
  * Report transfer progress.
