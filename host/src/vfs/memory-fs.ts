@@ -7061,9 +7061,11 @@ export class MemoryFileSystem implements FileSystemBackend {
   /**
    * Restore an image with the growth ceiling recorded in its SharedFS
    * superblock. This is the low-level synchronous parser; imported v3 atomic
-   * seals remain unverified. Before inspecting, mutating, or booting imported
-   * state, use `restoreVerifiedVfsImagePreservingCapacity()` or explicitly
-   * await `verifyImportedLazyAtomicGroupSeals()`.
+   * seals remain unverified, and nothing wraps it any more —
+   * `restoreVerifiedVfsImagePreservingCapacity()` went with `load-image.ts`
+   * when its last caller stopped mounting an image. A caller that needs the
+   * seals authenticated should read the image through `KandeloImageFs`, whose
+   * `loadImage` verifies them because `sm_load_image` does.
    *
    * Use fromImage() when a caller intentionally supplies a different runtime
    * ceiling.
@@ -7086,10 +7088,10 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Allocates a new SharedArrayBuffer and populates it from the image.
    *
    * This low-level synchronous parser cannot authenticate imported v3 atomic
-   * seals. Normal imported-image consumers should await
-   * `restoreVerifiedVfsImage()` instead; private format code must explicitly
-   * await `verifyImportedLazyAtomicGroupSeals()` before it inspects, mutates,
-   * or boots the restored filesystem.
+   * seals, and the wrapper that did — `restoreVerifiedVfsImage()` — is gone
+   * with `load-image.ts`. Reading an image through `KandeloImageFs`
+   * authenticates it on the way in; this parser does not, and no caller
+   * outside this file's own tests reaches it any more.
    *
    * When `maxByteLength` is specified, creates a growable SharedArrayBuffer
    * so the filesystem can expand beyond the image's original size, up to the

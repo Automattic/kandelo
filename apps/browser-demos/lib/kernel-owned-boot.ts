@@ -88,7 +88,8 @@ export async function finalizeKernelOwnedImage(buildFs: KandeloImageFs): Promise
 /**
  * Restore an image for BUILDING on: mutate the tree, then re-export it.
  *
- * The app-side peer of `host/src/vfs/load-image.ts`, and the split is a
+ * The app-side peer of what `host/src/vfs/load-image.ts` used to be, and the
+ * split is a
  * layering fact rather than a preference. That module returns a live mount
  * BACKEND and must stay `MemoryFileSystem`, which owes `append`, `seek`,
  * `fpathconf` and the rest of the runtime surface. This returns an image
