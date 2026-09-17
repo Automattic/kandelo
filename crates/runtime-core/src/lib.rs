@@ -53,6 +53,7 @@ pub mod scratch_alloc;
 pub mod kandelo_image_fs;
 pub mod vfsi_container;
 pub mod sdef;
+pub mod seal;
 pub mod kandelo_image_write;
 pub mod shared_mapping_policy;
 pub mod signal;

@@ -1,0 +1,21 @@
+{
+ "file": "crates/runtime-core/src/rootfs.rs",
+ "verify": "scripts/dev-shell.sh cargo test -q -p runtime-core --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
+ "trials": [
+  {
+   "name": "the load door does not authenticate cohorts at all",
+   "scope": "    crate::seal::verify_cohorts(&archive_payloads())?;",
+   "scope_end": "\n",
+   "find": "    crate::seal::verify_cohorts(&archive_payloads())?;",
+   "replace": "    let _ = &archive_payloads;"
+  },
+  {
+   "name": "a failed authentication is noticed and then not acted on",
+   "scope": "    crate::seal::verify_cohorts(&archive_payloads())?;",
+   "scope_end": "\n",
+   "find": "    crate::seal::verify_cohorts(&archive_payloads())?;",
+   "replace": "    let _ = crate::seal::verify_cohorts(&archive_payloads());"
+  }
+ ],
+ "_comment": "Cohort authentication moved into `rootfs::load_image` on 2026-09-16 so the KERNEL's boot is covered and not only a builder's derived load. Before that the boot-time boundary was the host restoring the whole `/` image into a second filesystem and calling `verifyImportedLazyAtomicGroupSeals` on it -- up to a gigabyte materialized, then dropped from the guest mounts unread. The empty-payload trials guard the compatibility half: `KLZY` has no payload field, so an image described that way arrives with an empty vector per archive, and refusing it would refuse every pre-`SDEF` image for not saying something its carrier cannot say. Skipping EVERY payload instead would disable the check entirely, which is why both directions are trialled."
+}

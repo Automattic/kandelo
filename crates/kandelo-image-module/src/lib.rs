@@ -62,7 +62,7 @@ mod wasm {
 // image construction. A wide surface a host never sees costs the host floor
 // nothing.
 
-mod seal;
+use runtime_core::seal;
 
 use runtime_core::rootfs;
 use wasm_posix_shared::Errno;
@@ -231,44 +231,19 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
     unsafe { *IMAGE.0.get() = Some((ptr, len)) };
 
     match rootfs::load_image(len as u64, image_source) {
-        Ok(entries) => {
-            // AUTHENTICATE BEFORE THE IMAGE IS USABLE, not beside it.
-            //
-            // The incumbent exposes this as a separate `verify` the builder
-            // must remember to await — a contract that exists only because
-            // `SubtleCrypto` is a promise. A synchronous digest has no such
-            // excuse, and a verification a caller can forget is one some caller
-            // eventually will. Verifying here makes an UNVERIFIED loaded image
-            // unrepresentable rather than merely discouraged.
-            //
-            // A refusal unloads: an image that failed to authenticate must not
-            // be left mounted for the next call to build on.
-            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {
-                rootfs::reset();
-                // OWNERSHIP DID NOT TRANSFER, so clear the slot WITHOUT
-                // freeing — exactly what the `Err` arm below does, and what
-                // the contract fifty lines above states in as many words:
-                // "on FAILURE ownership does not transfer and the host still
-                // owns its buffer".
-                //
-                // This called `release_image()`, which FREES.
-                // `KandeloImageFs.loadImage` implements the documented
-                // contract and frees the buffer in its own `catch`, so an
-                // image whose seals did not authenticate was freed twice,
-                // once by each side that believed it owned it — `dealloc`
-                // called on the same pointer, which is heap corruption and
-                // not a refusal. A corrupt image corrupted the builder
-                // reading it.
-                //
-                // The surviving failure path is the one below; this one now
-                // does the same thing, so there is no longer a second
-                // convention to drift from.
-                // SAFETY: single-threaded module.
-                unsafe { *IMAGE.0.get() = None };
-                return err(e);
-            }
-            i32::try_from(entries).unwrap_or(i32::MAX)
-        }
+        // The cohort seals are authenticated by `rootfs::load_image` itself,
+        // so this arm CANNOT fire: a load that returns `Ok` has already
+        // verified them. A guard that cannot fail is not a spare one, it is a
+        // second place for the rule to be written, so it goes with its
+        // trials rather than being kept as reassurance.
+        //
+        // What it leaves behind is one failure arm instead of two, which is
+        // also the permanent fix for the defect that lived here: the
+        // verification arm freed the host's buffer while the documented
+        // contract — and `KandeloImageFs.loadImage`, which implements it —
+        // says the host still owns it on failure, so a tampered image was
+        // `dealloc`ed twice.
+        Ok(entries) => i32::try_from(entries).unwrap_or(i32::MAX),
         Err(e) => {
             // Ownership did not transfer: clear the slot WITHOUT freeing, so
             // the host's buffer is still the host's to free.

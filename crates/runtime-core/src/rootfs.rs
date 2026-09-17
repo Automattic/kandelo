@@ -2305,6 +2305,32 @@ where
     // exactly the files it is about. Doing it here also means `lstat` never
     // reports a set-ID bit the kernel would not honour.
     demote_unverifiable_setid();
+    // AUTHENTICATE BEFORE THE IMAGE IS USABLE, not beside it.
+    //
+    // This ran only in `sm_load_image` -- the image MODULE's entry point -- so
+    // a builder loading a base image authenticated its cohorts and a KERNEL
+    // booting the same artifact did not. What stood in for it at boot was the
+    // host restoring the whole `/` image into a SECOND filesystem and calling
+    // `verifyImportedLazyAtomicGroupSeals` on that: up to a gigabyte
+    // materialized, then dropped from the guest mounts unread, so that one
+    // boundary could be checked.
+    //
+    // THIS READS THE PAYLOAD, which `runtime-core` otherwise treats as opaque,
+    // and that is a deliberate reversal recorded with its reasoning. Carrying
+    // a payload needs no knowledge of it; refusing an image whose cohorts do
+    // not authenticate does. The alternative placements were measured and
+    // rejected: giving the kernel the image MODULE pulls a three-thousand-line
+    // builder into a shipped wasm for a verifier, and authenticating through
+    // the bridge at boot loads `lamp.vfs` twice at 249 MiB each.
+    //
+    // Placed after `demote_unverifiable_setid` for the reason that runs where
+    // it does: the image's description is complete here, and the archive
+    // payloads this reads are the ones the walk has just recorded.
+    //
+    // `load_image` resets on any error, so a refusal leaves no half-mounted
+    // tree for the next call to build on.
+    crate::seal::verify_cohorts(&archive_payloads())?;
+
     Ok(count)
 }
 
@@ -7845,6 +7871,23 @@ mod tests {
 
     /// Distinct constants so a round-trip test that crossed two of them would
     /// fail rather than pass by coincidence.
+    /// An archive payload shaped the way a PRODUCER writes one: the caller's
+    /// fetch description inside a seal envelope that declares no seal.
+    ///
+    /// The fixtures below used a bare `b"sha256:abc"` as a stand-in for an
+    /// opaque description, which was faithful while the loader carried
+    /// payloads without reading them. It authenticates cohorts now, so a bare
+    /// stand-in is an image no producer emits — `sm_register_lazy_archive`
+    /// wraps every descriptor exactly like this. The claim these fixtures make
+    /// is unchanged: whatever the image carries comes back byte for byte.
+    fn unsealed_payload(descriptor: &[u8]) -> Vec<u8> {
+        crate::seal::encode(&crate::seal::ArchivePayload {
+            descriptor: descriptor.to_vec(),
+            seal: crate::seal::SealState::None,
+        })
+        .expect("encode an unsealed payload")
+    }
+
     const ARCHIVE_URI: &[u8] = b"https://example.invalid/php-8.3.zip";
     const ARCHIVE_DIGEST: [u8; crate::sdef::DIGEST_LEN] =
         [0xA1; crate::sdef::DIGEST_LEN];
@@ -7866,7 +7909,7 @@ mod tests {
             8_000_000,
             ARCHIVE_URI,
             &ARCHIVE_DIGEST,
-            b"sha256:feed",
+            &unsealed_payload(b"sha256:feed"),
         )
         .expect("declare");
         // The standalone file is addressed by `url`; its digest covers the
@@ -8007,7 +8050,7 @@ mod tests {
         insert_base_dir(b"/", 0o755, 0, 0, 1).expect("root");
         mkdir(b"/usr", 0o755, 0, 0).expect("mkdir /usr");
         declare_archive(3, 8_000_000).expect("declare archive");
-        set_archive_payload(3, b"sha256:abc").expect("describe it");
+        set_archive_payload(3, &unsealed_payload(b"sha256:abc")).expect("describe it");
         insert_lazy_file(
             b"/usr/php",
             3,
@@ -8050,7 +8093,7 @@ mod tests {
         let carried = ROOTFS.with(|state| {
             state.archives.get(&3).map(|entry| entry.payload.clone())
         });
-        assert_eq!(carried.as_deref(), Some(&b"sha256:abc"[..]));
+        assert_eq!(carried, Some(unsealed_payload(b"sha256:abc")));
 
         // And the ordinary file is still ordinary -- not swept up as deferred.
         assert_eq!(lstat(b"/etc-ish").expect("stat").st_size, 14);
@@ -8084,7 +8127,7 @@ mod tests {
         // And its descriptor, which KLZY has no field for and SDEF does.
         assert_eq!(
             ROOTFS.with(|state| state.archives.get(&3).map(|e| e.payload.clone())),
-            Some(b"sha256:feed".to_vec()),
+            Some(unsealed_payload(b"sha256:feed")),
         );
         // ... along with the two fields v5 promoted OUT of that descriptor,
         // which the kernel does not merely carry: the address it will hand the

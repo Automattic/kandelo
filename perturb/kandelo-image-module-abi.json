@@ -276,27 +276,6 @@
    "replace": "    let _ = (uid, gid);\n    ok_or_errno(rootfs::insert_base_dir(b\"/\", root_mode, 0, 0, 1))"
   },
   {
-   "name": "a load never verifies the seals of what it loaded",
-   "scope": "pub unsafe extern \"C\" fn sm_load_image",
-   "scope_end": "\n}\n",
-   "find": "            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {",
-   "replace": "            if let Err(e) = Ok::<(), Errno>(()) {"
-  },
-  {
-   "name": "an image that failed to authenticate stays mounted",
-   "scope": "pub unsafe extern \"C\" fn sm_load_image",
-   "scope_end": "\n}\n",
-   "find": "                rootfs::reset();",
-   "replace": "                let _ = rootfs::archive_payloads;"
-  },
-  {
-   "name": "a refused load frees the host's buffer, as the shipped defect did",
-   "scope": "pub unsafe extern \"C\" fn sm_load_image",
-   "scope_end": "\n}\n",
-   "find": "                unsafe { *IMAGE.0.get() = None };",
-   "replace": "                release_image();"
-  },
-  {
    "name": "registration stores the caller's bytes as the payload",
    "scope": "pub unsafe extern \"C\" fn sm_register_lazy_file",
    "scope_end": "\n}\n",
@@ -435,20 +414,6 @@
    "scope_end": "\n}\n",
    "find": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &entry.digest).is_err()",
    "replace": "            || put_bytes(&mut buf, &entry.uri).is_err()\n            || put_bytes(&mut buf, &runtime_core::sdef::DIGEST_NONE).is_err()"
-  },
-  {
-   "name": "a refused load leaves the slot set, so the NEXT load frees a buffer the host owns",
-   "scope": "            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {",
-   "scope_end": "\n            }",
-   "find": "                unsafe { *IMAGE.0.get() = None };",
-   "replace": "                let _ = &IMAGE;"
-  },
-  {
-   "name": "the cohort seals are not verified at the load door at all",
-   "scope": "            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {",
-   "scope_end": "\n            }",
-   "find": "            if let Err(e) = seal::verify_cohorts(&rootfs::archive_payloads()) {",
-   "replace": "            if let Err(e) = Ok::<(), Errno>(()) {"
   }
  ],
  "build": "scripts/dev-shell.sh cargo build -q -p kandelo-image-module --target \"$(rustc -vV | sed -n 's/^host: //p')\" >/dev/null 2>&1",
@@ -458,5 +423,5 @@
    "why": "Unfalsifiable by construction. The trial deleted an `archive_digest_ptr == 0` check in `sm_register_lazy_file`, but `slice` already returns an empty slice for a null pointer and `digest_from` already reads empty as 'none declared', so the mutant took the same path and produced the same digest. The survivor was a redundant guard, not a missing test; the guard was removed and the test that documents the behaviour kept."
   }
  ],
- "_comment": " RETIRED 2026-09-16: \"an image that failed to authenticate stays resident\" mutated `release_image()` away and expected a kill, so it asserted that a refused load must FREE the host's buffer. That IS the double free fixed in 81e95a3e9 -- the module freed and `KandeloImageFs.loadImage` freed again in its catch. A trial can encode the wrong contract, and this one then defended the defect for as long as it passed. It is replaced by its inverse, which kills the shipped behaviour instead of requiring it."
+ "_comment": " RETIRED 2026-09-16: \"an image that failed to authenticate stays resident\" mutated `release_image()` away and expected a kill, so it asserted that a refused load must FREE the host's buffer. That IS the double free fixed in 81e95a3e9 -- the module freed and `KandeloImageFs.loadImage` freed again in its catch. A trial can encode the wrong contract, and this one then defended the defect for as long as it passed. It is replaced by its inverse, which kills the shipped behaviour instead of requiring it. RETIRED 2026-09-16, four trials, when `sm_load_image`'s own cohort check was deleted: `rootfs::load_image` authenticates now, so a load returning `Ok` has already verified and the module's arm could not fire. A guard that cannot fail is a second place for one rule to be written. Their subject did not disappear with them \u2014 the OWNERSHIP of a refusal is still covered by \"a refused load adopts the host's buffer anyway\" on the surviving `Err` arm, which is the arm every failure now takes, and the cohort check itself is trialled where it now lives, in `runtime-core-seal-load.json`."
 }
