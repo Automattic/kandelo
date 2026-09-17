@@ -13846,6 +13846,62 @@ hand-count is a guess; one written from a failure is a reading.
 `exec-lazy-archive-binary` 17/17; `xtask perturb --validate` 417 trials, every
 trial still anchors.
 
+### THE CONTAINER'S HEADER PARSER HAD NO CALLER — `82b772346`, 2026-09-17
+
+**`vfs-image-transport.ts` was two modules sharing a file.** One is the
+decompression bound, reached on every image `images/vfs/lib/kandelo-image-fs.ts`
+loads. The other was a header parser, the container's magic, version and four
+section flags, and three slicers for the host-side JSON sections — and a
+repo-wide census, across every file type rather than just `.ts`, found **zero
+callers** for `parseImageHeader`, `sectionOffsetAfterArchives`,
+`lazySectionBytes`, `archiveSectionBytes` and `assertSectionFlagsConsistent`.
+Their callers were `memory-fs.ts` and `module-base-image.ts`'s section-reading
+branch. Both are deleted.
+
+**The flags are the clearest statement of what this campaign is for.**
+`crates/runtime-core/src/vfsi_container.rs` defines the same four bits and is
+the reader that parses containers; the TypeScript constants were **a second
+spelling of the format with nothing reading it**. Two things survive, each for a
+stated reason: `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`, because
+`rootfs-image-load.test.ts` clears that bit to build the stale image whose loud
+refusal it asserts, and the four `MAX_*` section bounds, now un-exported,
+because the decompression ceiling is their sum.
+
+**A doc comment is not evidence, and this one was stale in the usual way.** The
+test file's own header said the module survives because "`module-base-image.ts`
+reads a container's host-side sections through `parseImageHeader`". True when
+written; false within days, and nothing failed when it stopped being true. The
+rationale for keeping code is exactly the kind of recorded fact that has to be
+re-derived rather than quoted.
+
+**THREE GATES, AND THE ONE THAT COULD NOT SPEAK IS THE FINDING.**
+
+| gate | what it said |
+|---|---|
+| `xtask perturb --validate` | **ROTTED**, all three header trials, the moment their scopes went — the spec-rot check doing precisely its job |
+| vitest | caught three surviving bound cases left without the helper they shared with the retired ones |
+| `tsc -p host/tsconfig.typecheck.json` | **nothing.** Its `include` is `["src"]`, so no test file is type-checked at all |
+
+`header is not defined` and `VFS_IMAGE_HEADER_SIZE is not defined` are compile
+errors that reached vitest as runtime `ReferenceError`s. **FUTURE WORK, not this
+lane** (maintainer's call, 2026-09-17): `host/tsconfig.typecheck.json` covers
+`src` only, which is the same shape as the `images/` typecheck no job runs and
+the ten `node:test` files no runner includes. Three unrun or under-scoped gates
+is a pattern rather than three accidents.
+
+**The three repaired cases came out better than they went in.** They had built a
+whole well-formed VFSI header to obtain bytes that are not a zstd frame. They
+now call `notAFrame(n)` and say what they actually depend on —
+`maybeDecompressImage` branches on the zstd magic alone and never looks at what
+follows. The constants had been letting them name more than they needed.
+
+**Evidence**: `tsc -p host/tsconfig.typecheck.json` clean; surface budget
+101/101 with `hostVfsTypeScript` banked 5986 -> 5874 (5873 FAILS with "is
+5874"); vfs-image-transport, kandelo-image-fs, rootfs-image-load and
+module-base-image **83/83**; `xtask perturb --validate` 414 trials all
+anchoring; and the surviving five trials RUN — **5 trials, 0 survived, 0
+invalid, 0 timed out**, tree clean afterwards with no `.perturb-in-progress`.
+
 ### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
 
 **`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
