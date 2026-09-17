@@ -13694,6 +13694,56 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### LANE V IS CLOSED — `ead9da12f`, 2026-09-17, and what is owed after it
+
+**`memory-fs.ts` and `sharedfs-vendor.ts` are deleted**, with
+`materialization-plan.ts`, `hardlink-graph.ts` and `kernel-lazy-section.ts`
+(no other importer), sixteen test files, four fixture generators and every
+barrel re-export of them: about **12,900 lines**. `imageFsTypeScript` and
+`memoryFsTypeScript` reach 0, `hostVfsTypeScript` banks 7074 -> 6091, and the
+lane closure gate FAILED a lane marked open whose conditions were all met —
+so the status flipped because a measurement said so, which is the mechanism
+working rather than a judgement call.
+
+**THREE THINGS THE DELETION TAUGHT, none of them visible before it:**
+
+1. **Eleven `build.toml` files named the deleted modules as build inputs**, and
+   `xtask build-deps program-index` refuses an input it cannot find. Every
+   package whose cache identity reached those files would have failed to index.
+   The gate caught it the moment the files went.
+2. **The budget had no notion of a DELETED surface.** `lineCount` refuses a
+   missing path on purpose — a renamed file must not read as a reduction — so
+   a deleted one failed for the right reason at the wrong question.
+   `deletedSurface` declares it and asserts the stronger thing: every path the
+   surface names must be absent, so a half-deleted surface still fails.
+3. **`hostVfsTypeScript` subtracted two files that no longer exist.** The
+   measure excluded them to avoid double-banking; with them gone the
+   subtraction had nothing to subtract and the guard fired on the exclusion
+   itself.
+
+**WHAT IS OWED, and neither is a formality.** The full host-suite comparison
+against the pre-deletion baseline captured at `9aefdf505` — **39 failing files
+/ 84 failing tests of 4,402**, with `dinit-scripted-service` among them only
+under full-suite contention (it passes 2/2 alone) — and the wasm32 kernel build
+owed by the runtime-core doc-comment edit. Both were in flight when the commit
+landed; the commit says so in those words rather than implying they passed.
+
+**AND THE BROWSER CYCLE IS BLOCKED ON PROVISIONING, not on this work.** The
+worktree's source-only tier is stale: `xtask verify-fresh` names
+`local-binaries/source-only-v1/kernel.wasm` as built for a different key, and
+the resolver refuses to mix tiers — so every demo page fails to load with
+"Package artifact closure is incomplete" and the chromium run measures nothing.
+140 of 194 had "failed" that way before it was stopped. **A runtime-core change
+of TEST code moved the kernel's build key**, which is the closure-derived
+cache-key design working as designed and worth knowing: adding a Rust test
+invalidates every downstream image. `./run.sh setup` is the fix, and it is a
+provisioning step rather than a defect.
+
+**The targeted browser evidence that DOES stand**: `nosuid-exec` (1 case) and
+`ruby-posix-spawn` (2 cases) pass against Chromium with the new page-side
+backend and image builder, because those specs navigate to a bare harness page
+rather than a demo that imports the refused tier.
+
 ### THE REPOINT PHASE IS DONE — importers 60 -> 25, `9766a4e19`, 2026-09-17
 
 **Every file that can be repointed has been.** What remains is the deletion's
