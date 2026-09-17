@@ -9869,6 +9869,19 @@ one that may hold a stale symlink.
 
 # LANE Y — VFS image builders write the image format in TypeScript
 
+> **CLOSED 2026-09-13** on its own stated condition (zero files under
+> `images/` importing the TypeScript filesystem, down from 36), and the two
+> things its closure note listed as still open are now closed too: **gap 21**
+> is fixed — `shell-vfs-build.test.ts` carries the case as a plain `it` with
+> "GAP 21, closed" beside it — and **the shipped base images are rebuilt
+> through the Rust producer**, measured on the artifacts.
+>
+> **Everything below is the record, not a backlog.** Its "STATE ON" sections
+> are dated snapshots; the current state of the image writers is that there is
+> one producer, and lane V's closure (near the end of this document) is what
+> removed the second.
+
+
 ## STATE ON 2026-09-16 — read this first
 
 **Landed and pushed to `brandonpayton/lane-y-image-writer`.** Every commit
