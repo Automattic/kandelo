@@ -13694,6 +13694,69 @@ where it was"*. The four php-intl cases are the reason the second sentence is
 not derivable from the first — a suite this size moves a little on its own,
 and only a both-sides run tells you which movement is yours.
 
+### THE STEP-4 TRANCHE: TEN FILES, AND THREE CLAIMS PORTED INTO RUST — 2026-09-17
+
+Importers of `memory-fs`/`sharedfs-vendor` across the repository: **60 → 44**
+in one sitting. What moved, and what each move decided:
+
+| file | disposition |
+|---|---|
+| `vfs-image-helpers` | repointed; one ENOSPC case retired |
+| `mariadb-test-source-copy`, `dinit-image-helpers`, `vfs/default-mounts`, `node-host-vfs-only-metadata`, `node-lazy-archive-runtime` | repointed — every one builds an image for a test about something else |
+| `vfs/image-helpers` | the deliberate ENOSPC holdout retired |
+| `vfs/directory-fsync` | the `MemoryFileSystem` arm retired; the host-backed one stays |
+| `host-file-offset` | one arm of a two-arm case retired; OPFS keeps the claim |
+| `lazy-vfs`, `symlink`, `rootfs-image-body-window` | retired whole, after audit |
+| `node-rootfs-export` | reads its exports back through the module |
+
+**THE SAME FINDING TWICE, and it is a rule rather than a coincidence: a claim
+about a FIXED-CAPACITY filesystem cannot be re-made against the producer that
+ships.** Both ENOSPC cases asserted that a backend running out mid-write leaves
+the partial bytes. `KandeloImageFs` has no fixed capacity to run out of — its
+memory grows with what is written, and capacity is a DECLARED CEILING recorded
+in the image rather than an allocation, which is the maintainer's decision of
+2026-09-13. What both cases defended — a mid-write failure propagating rather
+than silently omitting a file — survives in the mock-driven cases beside them.
+The distinction worth keeping: this is not "redundant with Rust" and not
+"incongruous with the kernel FS". It is a claim whose PRECONDITION no longer
+exists.
+
+**THREE CLAIMS PORTED INTO RUST, which is this lane's work where TypeScript
+cannot make them by design:**
+
+1. **A dangling symlink is itself a file.** `lstat` answers about the link, so
+   a link to nothing still reports itself; anything that follows it says
+   ENOENT. Conflating them makes a broken alias invisible to `ls -l`, which is
+   the state a user needs in order to fix it.
+2. **`unlink` removes the symlink, not what it points at.** The opposite is the
+   dangerous one: deleting an alias would delete the file it aliases. Asserted
+   in both directions, because removing the TARGET must leave the alias as a
+   now-dangling link, and a one-direction test passes for a filesystem that
+   ignores symlinks entirely.
+3. **Materializing one deferred file leaves every other file's bytes
+   untouched.** THE HAZARD OUTLIVED THE MECHANISM it was written for. In the
+   host it was one `SharedArrayBuffer` serving the kernel's image window while
+   a materialization wrote into it; in the kernel it is an overlay write
+   landing on another inode's storage. Same failure, same silence — the kernel
+   would read a wrong tree with no error anywhere — and nothing in Rust
+   asserted it. The test puts a BASE file beside the deferred one, because a
+   base file's content is read back out of the image and is exactly what a
+   wrongly-placed overlay write would corrupt.
+
+All three have trials: the link's type erased, `unlink` following a final
+symlink, and the materialization landing in the neighbouring inode.
+
+**AND THE TWO REMAINING ROLES ARE NOW CLEARLY DIFFERENT SHAPES OF WORK.**
+FIXTURE files are mechanical and nearly done. BACKEND files are not, and
+`advisory-lock-kernel.test.ts` shows why in one line: it mounts THREE
+independent backends and asserts that two of them allocate the same inode
+number, because the claim is that file identity is qualified by backend object
+rather than by mount path. `HostFileSystem` cannot produce that — its inodes
+are the host's real ones — so the sixteen BACKEND files need an in-memory
+`FileSystemBackend` that is not the 8,000-line production class. That is the
+next decision this lane owes, and it is a test-support question rather than a
+production one.
+
 ### `lazy-vfs.test.ts` RETIRED, TWELVE CLAIMS AUDITED — `4fcc1dd4c`, 2026-09-17
 
 The 2026-09-16 audit of this file listed four dispositions and left the rest
