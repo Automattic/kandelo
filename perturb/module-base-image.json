@@ -1,5 +1,5 @@
 {
-  "_comment": "The module-backed base image, and the `DeferredBody` record it answers in. FOUR TRIALS RETIRED 2026-09-17 with the code they mutated: the mount prefix dropped, an archive with no declared mount prefix accepted, every member filed under the first archive, and the seal envelope read as the descriptor itself. All four described a reconstruction this reader no longer performs -- it opened an archive's descriptor to recover a mount prefix, and grouped members to fill a list, for a record that was immediately reduced back to an address, its mirrors and a length. Nothing downstream read either field. A trial for deleted code cannot fail, and keeping it as an always-ROTTED spec teaches people to ignore `--validate`.",
+  "_comment": "The module-backed base image, and the `DeferredBody` record it answers in. FOUR TRIALS RETIRED 2026-09-17 with the code they mutated: the mount prefix dropped, an archive with no declared mount prefix accepted, every member filed under the first archive, and the seal envelope read as the descriptor itself. All four described a reconstruction this reader no longer performs -- it opened an archive's descriptor to recover a mount prefix, and grouped members to fill a list, for a record that was immediately reduced back to an address, its mirrors and a length. Nothing downstream read either field. A trial for deleted code cannot fail, and keeping it as an always-ROTTED spec teaches people to ignore `--validate`. SIX MORE RETIRED 2026-09-17 with the section-reading branch itself: the lazy half read from the wrong section, the section entries coming back empty, an archive's mirrors rebased while its address kept the stale spelling, an archive reporting no mirrors, the declared length and digest dropped on the section path, and the module consulted even when the sections carried the answer. The branch had no producer -- every builder writes `SDEF` -- so it answered \"no deferred files\" for every shipped image, and a trial for a branch nothing reaches proves nothing.",
   "file": "host/src/vfs/module-base-image.ts",
   "verify": "cd host && npx vitest run test/module-base-image.test.ts >/dev/null 2>&1",
   "trials": [
@@ -9,20 +9,6 @@
       "scope_end": "\n}\n",
       "find": "  return { baseImage, imageRead };",
       "replace": "  return { baseImage, imageRead: (at, dest) => imageRead(at - 16, dest) };"
-    },
-    {
-      "name": "the lazy entries come back empty instead of from the container",
-      "scope": "    deferredFiles: () => {",
-      "scope_end": "\n    },\n",
-      "find": "      const listed = Array.isArray(lazy) ? lazy : [];",
-      "replace": "      const listed: unknown[] = [];"
-    },
-    {
-      "name": "the lazy half is read from the archive section",
-      "scope": "  const lazy = decodeSection(",
-      "scope_end": "\n  );\n",
-      "find": "    lazySectionBytes(parsed, sections),",
-      "replace": "    archiveSectionBytes(parsed, sections),"
     },
     {
       "name": "the deployment base is never applied, so a relative URL stays relative",
@@ -39,27 +25,6 @@
       "replace": "    lazyUrlBase === undefined ? url : lazyUrlBase + url;"
     },
     {
-      "name": "an archive's mirrors are rebased but its address keeps the stale spelling",
-      "scope": "    deferredArchives: () => {",
-      "scope_end": "\n    },\n",
-      "find": "          address: transports[0] ?? \"\",",
-      "replace": "          address: typeof entry.url === \"string\" ? entry.url : \"\","
-    },
-    {
-      "name": "an archive reports no mirrors, so a size mismatch has nowhere to go",
-      "scope": "  const declaredTransports = (entry: Record<string, unknown>): string[] => {",
-      "scope_end": "\n  };\n",
-      "find": "    if (listed.length > 0) return listed.map(rebaseUrl);",
-      "replace": "    if (false) return listed.map(rebaseUrl);"
-    },
-    {
-      "name": "an archive's declared length and digest are dropped on the section path",
-      "scope": "  const declaredIdentity = (",
-      "scope_end": "\n  };\n",
-      "find": "    const identity = asRecord(entry.content) ?? asRecord(entry.integrity);",
-      "replace": "    const identity = asRecord(entry.content);"
-    },
-    {
       "name": "a module-built image's deferred files are reported as none",
       "scope": "    deferredFiles: () => {",
       "scope_end": "\n    },\n",
@@ -72,13 +37,6 @@
       "scope_end": "\n    },\n",
       "find": "          .filter((file) => file.archiveId === 0)",
       "replace": "          .filter(() => true)"
-    },
-    {
-      "name": "the module is consulted even when the sections carry the answer",
-      "scope": "  const fromModule = lazy === null && archives === null",
-      "scope_end": ";\n",
-      "find": "  const fromModule = lazy === null && archives === null && moduleLazyEntries !== undefined",
-      "replace": "  const fromModule = moduleLazyEntries !== undefined"
     },
     {
       "name": "an archive with no address is accepted, and mounts something that never activates",

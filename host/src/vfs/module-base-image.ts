@@ -7,24 +7,19 @@
  * The deferred BYTES come from the module: it holds the image and serves any
  * offset, which is what `open`/`read`/`close` and the image window need.
  *
- * The lazy METADATA does not, and cannot. `KLZY` carries no fetch description
- * — whoever fetches decides whether a URL may be fetched — so a lazy file
- * loaded from an image has no URL on the module side at all. A parity test
- * established that the hard way by returning empty URLs for every entry. The
- * URLs and archive records live in the container's host-side JSON sections,
- * written there by the producer and parsed only by the host, which is the
- * courier contract working rather than a gap in the module.
+ * The lazy METADATA comes from the module too, and that is a change. It used
+ * to come from the container's host-side JSON sections, because `KLZY` carries
+ * no fetch description — a parity test established that the hard way by
+ * returning empty URLs for every entry. Those sections have no producer any
+ * more: every builder writes the image's own `SDEF` section instead, where the
+ * address is a typed field the kernel itself reads.
  *
- * So this reads the container for metadata and the module for bytes, which is
- * exactly the split `MemoryFileSystem` performs today — with the 8,000-line
- * filesystem in between removed.
+ * SO THE SECTION-READING HALF IS GONE, 2026-09-17, and with it the structural
+ * readers, the JSON decode, and the three container-section helpers it
+ * imported. What is left is one path: ask the module. A caller that passes no
+ * module gets nothing, which is the truthful answer to "what does this
+ * container say about its deferred files" from a reader that has asked nobody.
  */
-import {
-  archiveSectionBytes,
-  lazySectionBytes,
-  parseImageHeader,
-  sectionOffsetAfterArchives,
-} from "./vfs-image-transport";
 import { resolveLazyUrl } from "./lazy-url";
 import type { DeferredBody, RootfsOverlayBaseImage } from "./rootfs-lazy-archives";
 
@@ -70,15 +65,6 @@ function bytesToSha256Hex(digest: Uint8Array): string {
 // module hands over, and the seal half is authenticated in the loader by
 // `rootfs::load_image` rather than inspected here.
 
-function decodeSection(bytes: Uint8Array | null, label: string): unknown {
-  if (bytes === null) return null;
-  try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`${label} is not valid UTF-8 JSON: ${detail}`);
-  }
-}
 
 /**
  * Build the overlay's base image from the container and a reader for its bytes.
@@ -106,44 +92,27 @@ export function createBaseImageFromContainer(
    */
   lazyUrlBase?: string,
   /**
-   * Where the lazy metadata lives when the container's JSON sections do not
-   * carry it.
+   * Where the lazy metadata lives: the module that holds the loaded image.
    *
-   * **The two producers do not agree, and this is not a style difference.**
-   * Measured: a `MemoryFileSystem`-built image records a deferred URL in the
-   * host-side JSON sections and leaves the KLZY descriptor empty; an image
-   * built through the module records it in the KLZY descriptor and writes no
-   * JSON sections at all. Neither writes both.
+   * THE OTHER BRANCH IS GONE, 2026-09-17, with the producer that fed it. A
+   * `MemoryFileSystem`-built image recorded a deferred URL in host-side JSON
+   * sections; a module-built image records it in the image's own `SDEF`
+   * section and writes no JSON sections at all. Every builder writes the
+   * second kind now, so reading the sections returned an empty list for every
+   * shipped image — and this argument is the only way to get an answer.
    *
-   * Today's production images are the first kind, so the sections are present
-   * and this is unused. It exists because deleting `memory-fs.ts` makes every
-   * image the second kind, and then reading only the sections would return an
-   * empty list for an image full of deferred files — a load failure reported
-   * as a successful load of nothing.
+   * OMITTING IT IS STILL LEGAL AND STILL ANSWERS NOTHING, which is what both
+   * worker entries do today: a boot then holds no transport policy and fetches
+   * each address as the image wrote it. That is the courier contract working
+   * rather than a gap — but it means the declared LENGTH of an archive goes
+   * unchecked by the host, and the check that remains is the kernel's digest
+   * on materialization. Closing that is a boot-path change (a browser worker
+   * would have to hold the image module's bytes), recorded in the master plan
+   * rather than smuggled in here.
    */
   moduleLazyEntries?: () => ModuleLazyEntries,
 ): { baseImage: RootfsOverlayBaseImage; imageRead: (at: number, dest: Uint8Array) => number } {
-  const parsed = parseImageHeader(container);
-  const sections = sectionOffsetAfterArchives(
-    parsed.image,
-    parsed.view,
-    parsed.flags,
-    parsed.sabLen,
-  );
-  const lazy = decodeSection(
-    lazySectionBytes(parsed, sections),
-    "VFS image lazy metadata",
-  );
-  const archives = decodeSection(
-    archiveSectionBytes(parsed, sections),
-    "VFS image lazy archive metadata",
-  );
-
-  // Sections absent and a module to ask: the image was built through the
-  // module, which kept the URLs the sections would have carried.
-  const fromModule = lazy === null && archives === null && moduleLazyEntries !== undefined
-    ? moduleLazyEntries()
-    : undefined;
+  const fromModule = moduleLazyEntries?.();
 
   // No open/read/close. The overlay used to pull deferred bytes THROUGH this
   // object; it now fetches them itself, so what remains is the metadata the
@@ -151,43 +120,6 @@ export function createBaseImageFromContainer(
   // about anyway.
   const rebaseUrl = (url: string): string =>
     lazyUrlBase === undefined ? url : resolveLazyUrl(lazyUrlBase, url);
-
-  // WHAT A HOST-SIDE SECTION RECORDS, read structurally rather than cast.
-  //
-  // These sections are JSON written by the legacy producer, and the legacy
-  // shape was a TYPE this file imported from the filesystem that declared it.
-  // Reading the three fields a host acts on needs no such import, and the cast
-  // it replaces was never sound anyway: the bytes are parsed from an image
-  // that can arrive from a shared link, so a declared type here asserted
-  // something about untrusted input that nothing had checked.
-  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
-    typeof value === "object" && value !== null
-      ? (value as Record<string, unknown>)
-      : undefined;
-  const declaredTransports = (entry: Record<string, unknown>): string[] => {
-    const content = asRecord(entry.content);
-    const listed = Array.isArray(content?.transports)
-      ? (content.transports as unknown[]).filter(
-        (url): url is string => typeof url === "string" && url.length > 0,
-      )
-      : [];
-    if (listed.length > 0) return listed.map(rebaseUrl);
-    return typeof entry.url === "string" && entry.url.length > 0
-      ? [rebaseUrl(entry.url)]
-      : [];
-  };
-  const declaredIdentity = (
-    entry: Record<string, unknown>,
-  ): { bytes: number | undefined; sha256: string | undefined } => {
-    // `content` first, `integrity` second: a v3 tree describes its bytes in
-    // `content` and older entries in `integrity`, and an entry carrying both
-    // is describing one archive twice.
-    const identity = asRecord(entry.content) ?? asRecord(entry.integrity);
-    return {
-      bytes: typeof identity?.bytes === "number" ? identity.bytes : undefined,
-      sha256: typeof identity?.sha256 === "string" ? identity.sha256 : undefined,
-    };
-  };
 
   const baseImage: RootfsOverlayBaseImage = {
     deferredFiles: () => {
@@ -203,18 +135,11 @@ export function createBaseImageFromContainer(
             sha256: undefined,
           }));
       }
-      const listed = Array.isArray(lazy) ? lazy : [];
-      return listed.flatMap((value): DeferredBody[] => {
-        const entry = asRecord(value);
-        if (entry === undefined) return [];
-        const url = typeof entry.url === "string" ? rebaseUrl(entry.url) : "";
-        return [{
-          address: url,
-          transports: url === "" ? [] : [url],
-          bytes: typeof entry.size === "number" ? entry.size : undefined,
-          sha256: undefined,
-        }];
-      });
+      // NO MODULE, NO ANSWER — and that is the truthful one. The image's
+      // deferred description lives in its own `SDEF` section, which only the
+      // module reads; a caller that did not pass one is holding a container it
+      // has asked nobody about.
+      return [];
     },
     deferredArchives: () => {
       if (fromModule !== undefined) {
@@ -245,19 +170,7 @@ export function createBaseImageFromContainer(
           };
         });
       }
-      const listed = Array.isArray(archives) ? archives : [];
-      return listed.flatMap((value): DeferredBody[] => {
-        const entry = asRecord(value);
-        if (entry === undefined) return [];
-        const transports = declaredTransports(entry);
-        const { bytes, sha256 } = declaredIdentity(entry);
-        return [{
-          address: transports[0] ?? "",
-          transports,
-          bytes,
-          sha256,
-        }];
-      });
+      return [];
     },
   };
 
